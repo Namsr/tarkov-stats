@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src --no-import-alias --use-npm)",
+      "PowerShell(npx create-next-app@latest \"D:\\\\1703n\\\\tarkov dev 2\" --typescript --tailwind --eslint --app --no-src --no-import-alias --use-npm 2>&1)",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"User\"\\); where.exe node; node --version; where.exe npm; npm --version)",
+      "PowerShell($base = \"D:\\\\1703n\\\\tarkov dev 2\"; New-Item -ItemType Directory -Force -Path \"$base\\\\types\",\"$base\\\\lib\",\"$base\\\\data\",\"$base\\\\scripts\",\"$base\\\\components\",\"$base\\\\app\\\\player\\\\[aid]\",\"$base\\\\app\\\\api\\\\player\\\\search\",\"$base\\\\app\\\\api\\\\player\\\\profile\",\"$base\\\\app\\\\api\\\\benchmarks\" | Select-Object FullName)",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:player.tarkov.dev)",
+      "WebFetch(domain:tarkov.dev)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.tarkov.dev)",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"User\"\\); try { Invoke-WebRequest -Uri \"https://player.tarkov.dev/name/namsr_TTV\" -UseBasicParsing -ErrorAction Stop } catch { $_.Exception.Response.StatusCode; $_.Exception.Response.Headers | ForEach-Object { $_ }; $_.ErrorDetails.Message })",
+      "PowerShell($env:PATH = [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"PATH\",\"User\"\\); try { $r = Invoke-WebRequest -Uri \"https://player.tarkov.dev/name/namsr_TTV\" -UseBasicParsing -ErrorAction Stop; $r.Content } catch { \"Status: $\\($_.Exception.Response.StatusCode\\)\"; \"Headers:\"; foreach\\($h in $_.Exception.Response.Headers.GetEnumerator\\(\\)\\) { \"$\\($h.Key\\): $\\($h.Value\\)\" }; \"Body: $\\($_.ErrorDetails.Message\\)\" })",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:players.tarkov.dev)",
+      "WebFetch(domain:developers.cloudflare.com)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :3000)",
+      "Bash(\"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" run dev)",
+      "mcp__Claude_in_Chrome__list_connected_browsers",
+      "mcp__Claude_in_Chrome__switch_browser",
+      "Bash(taskkill /PID 22596 /F)",
+      "Bash(curl -s -X POST \"https://api.tarkov.dev/graphql\" -H \"Content-Type: application/json\" -d \"{\\\\\"query\\\\\": \\\\\"{ players\\(name: \\\\\\\\\\\\\"namsr_TTV\\\\\\\\\\\\\"\\) { aid name level } }\\\\\"}\")",
+      "Bash(curl -s -X POST \"https://api.tarkov.dev/graphql\" -H \"Content-Type: application/json\" -d \"{\\\\\"query\\\\\": \\\\\"{ __schema { queryType { fields { name description } } } }\\\\\"}\")",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE: %%{http_code}\" \"https://player.tarkov.dev/name/namsr_TTV\")",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE: %%{http_code}\" \"https://player.tarkov.dev/name/namsr_TTV?token=test\")",
+      "Bash(\"C:\\\\Program Files\\\\nodejs\\\\node.exe\" -e \"const p = require\\('./node_modules/@marsidev/react-turnstile/package.json'\\); console.log\\(p.version\\);\")",
+      "Bash(\"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" run build)",
+      "Bash(npm run *)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(git --version)"
+    ]
+  }
+}
