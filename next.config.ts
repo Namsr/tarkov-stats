@@ -12,6 +12,9 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Минимальный self-contained вывод для Docker-образа:
+  // .next/standalone содержит только нужные для рантайма файлы.
+  output: "standalone",
   async headers() {
     return [
       {

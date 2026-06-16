@@ -1,0 +1,30 @@
+# Селфхост tarkov-stats: приложение + Cloudflare Tunnel.
+#
+# Безопасность:
+#  - У сервиса `web` НЕТ секции `ports:` — он не публикуется наружу.
+#    Доступен только внутри docker-сети, по имени `web`. На твоём роутере
+#    не нужно открывать ни одного порта.
+#  - Наружу выходит только `cloudflared`, и то исходящим соединением к
+#    Cloudflare. Твой домашний IP не светится, входящих портов нет.
+
+services:
+  web:
+    build:
+      context: .
+      args:
+        # Берётся из .env (см. .env рядом с этим файлом)
+        NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY}
+    restart: unless-stopped
+    expose:
+      - "3000"            # виден только внутри docker-сети, не на хосте
+    # Никаких published `ports:` — это намеренно.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Токен туннеля из панели Cloudflare Zero Trust (см. инструкцию)
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - web
