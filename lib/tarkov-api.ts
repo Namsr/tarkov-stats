@@ -1,7 +1,15 @@
-import { PlayerSearchResult, PlayerProfile } from "@/types/tarkov";
+import { PlayerSearchResult, PlayerProfile, ParsedPlayerStats } from "@/types/tarkov";
 
+/** Captcha-gated live service (nickname search + live account fetch). */
 const PLAYER_API_BASE = "https://player.tarkov.dev";
+/** Captcha-free static cache of already-viewed profiles, keyed by account id. */
+const PUBLIC_PROFILE_BASE = "https://players.tarkov.dev";
 
+/**
+ * Nickname search. Requires a valid Cloudflare Turnstile token bound to
+ * tarkov.dev's hostname, so it only works from a real browser session on
+ * tarkov.dev — not server-to-server. Kept for reference / future use.
+ */
 export async function searchPlayer(
   nickname: string,
   turnstileToken?: string
@@ -19,6 +27,7 @@ export async function searchPlayer(
   return res.json();
 }
 
+/** Live, captcha-gated profile fetch by account id. Kept for reference. */
 export async function getPlayerProfile(
   aid: number,
   turnstileToken?: string
@@ -35,19 +44,54 @@ export async function getPlayerProfile(
   return res.json();
 }
 
-export async function getPlayerLevels(): Promise<
-  { level: number; exp: number }[]
-> {
+/**
+ * Captcha-free profile fetch by account id from the public static cache.
+ * Returns null when the profile isn't cached (404) — i.e. nobody has viewed
+ * this id on tarkov.dev yet, so it can't be served without the captcha flow.
+ */
+export async function getPublicProfile(
+  aid: number
+): Promise<PlayerProfile | null> {
+  const url = `${PUBLIC_PROFILE_BASE}/profile/${aid}.json`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Public profile fetch failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+type PlayerLevel = { level: number; exp: number };
+
+let levelsCache: { data: PlayerLevel[]; ts: number } | null = null;
+const LEVELS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+/** Reference table mapping cumulative XP to character level, cached in-isolate. */
+export async function getPlayerLevels(): Promise<PlayerLevel[]> {
+  const now = Date.now();
+  if (levelsCache && now - levelsCache.ts < LEVELS_TTL_MS) {
+    return levelsCache.data;
+  }
   const res = await fetch("https://api.tarkov.dev/graphql", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: `{ playerLevels { level exp } }`,
-    }),
+    body: JSON.stringify({ query: `{ playerLevels { level exp } }` }),
   });
   if (!res.ok) throw new Error(`GraphQL request failed: ${res.status}`);
-  const data = await res.json();
-  return data.data.playerLevels;
+  const data = (await res.json()) as { data: { playerLevels: PlayerLevel[] } };
+  const levels = [...data.data.playerLevels].sort((a, b) => a.exp - b.exp);
+  levelsCache = { data: levels, ts: now };
+  return levels;
+}
+
+/** Resolves a character level from cumulative experience. */
+export function expToLevel(exp: number, levels: PlayerLevel[]): number {
+  let level = 0;
+  for (const l of levels) {
+    if (exp >= l.exp) level = l.level;
+    else break;
+  }
+  return level;
 }
 
 function getCounterValue(
@@ -59,85 +103,103 @@ function getCounterValue(
       item.Key.length === keys.length &&
       keys.every((k, i) => item.Key[i] === k)
   );
-  return entry?.Value ?? 0;
+  // Values come from untrusted external JSON — coerce and reject non-finite.
+  const v = Number(entry?.Value);
+  return Number.isFinite(v) ? v : 0;
 }
 
-export function parseProfileStats(profile: PlayerProfile) {
-  const pmc = profile.pmcStats;
-  const scav = profile.scavStats;
+const round = (n: number, d = 2) => {
+  const f = 10 ** d;
+  return Math.round(n * f) / f;
+};
 
-  const pmcRaids = pmc?.eft?.totalRaidCount ?? 0;
-  const scavRaids = scav?.eft?.totalRaidCount ?? 0;
+/**
+ * Parses the real public profile payload into flat stats.
+ * Real schema: profile.{pmc,scav}Stats.eft.{totalInGameTime, overAllCounters.Items}
+ * with counters keyed like ["Sessions","Pmc"], ["ExitStatus","Survived","Pmc"],
+ * ["Deaths"], ["Kills"], ["KilledPmc"], ["LongestWinStreak","Pmc"], etc.
+ */
+export function parseProfileStats(
+  profile: PlayerProfile,
+  levels?: PlayerLevel[]
+): ParsedPlayerStats {
+  const pmcEft = profile.pmcStats?.eft;
+  const scavEft = profile.scavStats?.eft;
+  const pmcCounters = pmcEft?.overAllCounters?.Items ?? [];
+  const scavCounters = scavEft?.overAllCounters?.Items ?? [];
+
+  const pmcRaids = getCounterValue(pmcCounters, "Sessions", "Pmc");
+  const scavRaids = getCounterValue(scavCounters, "Sessions", "Scav");
   const totalRaids = pmcRaids + scavRaids;
 
-  const pmcSurvived = pmc?.eft?.survivedRaidCount ?? 0;
-  const scavSurvived = scav?.eft?.survivedRaidCount ?? 0;
-  const totalSurvived = pmcSurvived + scavSurvived;
-  const survivalRate = totalRaids > 0 ? (totalSurvived / totalRaids) * 100 : 0;
+  const pmcSurvived = getCounterValue(pmcCounters, "ExitStatus", "Survived", "Pmc");
+  const scavSurvived = getCounterValue(scavCounters, "ExitStatus", "Survived", "Scav");
+  const survivedRaids = pmcSurvived + scavSurvived;
+  const survivalRate = totalRaids > 0 ? (survivedRaids / totalRaids) * 100 : 0;
 
-  const pmcCounters = pmc?.overAllCounters?.Items ?? [];
-  const scavCounters = scav?.overAllCounters?.Items ?? [];
-
-  const pmcKills =
-    getCounterValue(pmcCounters, "Kills") ||
-    getCounterValue(pmcCounters, "Sessions", "Pmc", "Kills");
-  const scavKills =
-    getCounterValue(scavCounters, "Kills") ||
-    getCounterValue(scavCounters, "Sessions", "Pmc", "Kills");
+  const pmcKills = getCounterValue(pmcCounters, "Kills");
+  const scavKills = getCounterValue(scavCounters, "Kills");
   const totalKills = pmcKills + scavKills;
 
-  const pmcDeaths =
-    getCounterValue(pmcCounters, "Deaths") ||
-    getCounterValue(pmcCounters, "Sessions", "Pmc", "Deaths");
-  const scavDeaths =
-    getCounterValue(scavCounters, "Deaths") ||
-    getCounterValue(scavCounters, "Sessions", "Pmc", "Deaths");
+  const pmcDeaths = getCounterValue(pmcCounters, "Deaths");
+  const scavDeaths = getCounterValue(scavCounters, "Deaths");
   const deaths = pmcDeaths + scavDeaths;
 
+  const pmcKilledPmc = getCounterValue(pmcCounters, "KilledPmc");
+  const scavKilledPmc = getCounterValue(scavCounters, "KilledPmc");
+  const killedPmc = pmcKilledPmc + scavKilledPmc;
+
+  const runThrough = getCounterValue(pmcCounters, "ExitStatus", "Runner", "Pmc");
+
   const kdRatio = deaths > 0 ? totalKills / deaths : totalKills;
+  const pmcKdRatio = pmcDeaths > 0 ? pmcKilledPmc / pmcDeaths : pmcKilledPmc;
   const killsPerRaid = totalRaids > 0 ? totalKills / totalRaids : 0;
 
-  const pmcTime = pmc?.totalInGameTime ?? 0;
-  const scavTime = scav?.totalInGameTime ?? 0;
-  const hoursPlayed = (pmcTime + scavTime) / 3600;
+  // totalInGameTime is an account-wide value duplicated in both pmcStats.eft and
+  // scavStats.eft (same number), so we take it once rather than summing.
+  const inGameSeconds = pmcEft?.totalInGameTime ?? scavEft?.totalInGameTime ?? 0;
+  const hoursPlayed = inGameSeconds / 3600;
+  const avgLifespan = totalRaids > 0 ? inGameSeconds / totalRaids / 60 : 0;
 
   const headshots = getCounterValue(pmcCounters, "HeadShots");
   const headshotRate = totalKills > 0 ? (headshots / totalKills) * 100 : 0;
 
-  const longestWinStreak =
-    getCounterValue(pmcCounters, "LongestWinStreak") ||
-    getCounterValue(pmcCounters, "CurrentWinStreak");
-
-  const avgLifespan =
-    totalRaids > 0 ? (pmcTime + scavTime) / totalRaids / 60 : 0;
+  const longestWinStreak = getCounterValue(pmcCounters, "LongestWinStreak", "Pmc");
 
   const achievementsCount = profile.achievements
     ? Object.keys(profile.achievements).length
     : 0;
 
+  const experience = profile.info?.experience ?? profile.experience ?? 0;
+  const level = levels && levels.length > 0 ? expToLevel(experience, levels) : 0;
+
   return {
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
-    level: profile.info?.experience
-      ? profile.level ?? 0
-      : profile.level ?? 0,
-    experience: profile.info?.experience ?? profile.experience ?? 0,
+    level,
+    prestige: profile.info?.prestigeLevel ?? 0,
+    experience,
     side: profile.info?.side ?? "Unknown",
     totalRaids,
     pmcRaids,
     scavRaids,
-    survivalRate: Math.round(survivalRate * 10) / 10,
+    survivedRaids,
+    survivalRate: round(survivalRate, 1),
     totalKills,
-    killsPerRaid: Math.round(killsPerRaid * 100) / 100,
-    kdRatio: Math.round(kdRatio * 100) / 100,
+    killedPmc,
+    killsPerRaid: round(killsPerRaid),
+    kdRatio: round(kdRatio),
+    pmcKdRatio: round(pmcKdRatio),
     deaths,
-    hoursPlayed: Math.round(hoursPlayed * 10) / 10,
+    pmcDeaths,
+    runThrough,
+    hoursPlayed: round(hoursPlayed, 1),
     longestWinStreak,
     achievementsCount,
-    registrationDate: profile.info?.registrationDate ?? profile.registrationDate ?? 0,
-    lastActiveDate: profile.info?.lastActiveDate ?? profile.lastActiveDate ?? 0,
+    registrationDate: profile.info?.registrationDate ?? 0,
+    lastActiveDate: profile.info?.lastActiveDate ?? 0,
     headshots,
-    headshotRate: Math.round(headshotRate * 10) / 10,
-    avgLifespan: Math.round(avgLifespan * 10) / 10,
+    headshotRate: round(headshotRate, 1),
+    avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
   };
 }

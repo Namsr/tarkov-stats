@@ -3,17 +3,23 @@ const maxRequests = 30;
 
 const store = new Map<string, number[]>();
 
-setInterval(() => {
-  const now = Date.now();
+// Note: this is a best-effort, per-isolate limiter. On Cloudflare Workers each
+// isolate keeps its own Map, so it caps bursts per instance rather than globally.
+// Cleanup is done lazily on access — a top-level setInterval is disallowed in
+// the Workers global scope.
+function prune(now: number) {
   for (const [ip, timestamps] of store) {
     const filtered = timestamps.filter((t) => now - t < windowMs);
     if (filtered.length === 0) store.delete(ip);
     else store.set(ip, filtered);
   }
-}, 60_000);
+}
 
 export function checkRateLimit(ip: string): { allowed: boolean; remaining: number } {
   const now = Date.now();
+  // Opportunistic cleanup so the Map can't grow unbounded.
+  if (store.size > 5000) prune(now);
+
   const timestamps = (store.get(ip) ?? []).filter((t) => now - t < windowMs);
 
   if (timestamps.length >= maxRequests) {

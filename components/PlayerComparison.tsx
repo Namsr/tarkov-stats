@@ -31,7 +31,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
     if (open && benchmarks.length === 0) {
       fetch("/api/benchmarks")
         .then((r) => r.json())
-        .then(setBenchmarks)
+        .then((d) => setBenchmarks(d as BenchmarkBucket[]))
         .catch(() => {});
     }
   }, [open, benchmarks.length]);

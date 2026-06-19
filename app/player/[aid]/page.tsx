@@ -2,12 +2,9 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { getProfileDirect } from "@/lib/player-api-client";
-import { parseProfileStats } from "@/lib/tarkov-api";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerComparison from "@/components/PlayerComparison";
-import TurnstileWidget from "@/components/TurnstileWidget";
 
 interface Props {
   params: Promise<{ aid: string }>;
@@ -19,41 +16,40 @@ export default function PlayerPage({ params }: Props) {
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [turnstileToken, setTurnstileToken] = useState("");
 
   useEffect(() => {
-    if (!turnstileToken) return;
-
-    const aidNum = Number(aid);
-    if (isNaN(aidNum)) {
-      setError("Invalid player ID");
-      setLoading(false);
-      return;
-    }
-
+    let cancelled = false;
     setLoading(true);
     setError("");
 
-    getProfileDirect(aidNum, turnstileToken)
-      .then((data) => {
-        setProfile(data);
-        setStats(parseProfileStats(data));
+    fetch(`/api/player/profile?aid=${encodeURIComponent(aid)}`)
+      .then(async (res) => {
+        const data = (await res.json()) as {
+          error?: string;
+          profile?: PlayerProfile;
+          stats?: ParsedPlayerStats;
+        };
+        if (!res.ok || !data.profile || !data.stats) {
+          throw new Error(data.error ?? "Failed to load profile");
+        }
+        return { profile: data.profile, stats: data.stats };
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load profile"))
-      .finally(() => setLoading(false));
-  }, [aid, turnstileToken]);
+      .then((data) => {
+        if (cancelled) return;
+        setProfile(data.profile);
+        setStats(data.stats);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load profile");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-  if (!turnstileToken) {
-    return (
-      <main className="flex-1 flex flex-col items-center justify-center px-4 gap-6">
-        <div className="text-center space-y-2">
-          <h2 className="text-lg font-bold text-[var(--accent)]">Verification Required</h2>
-          <p className="text-gray-400 text-sm">Complete the check below to view player stats</p>
-        </div>
-        <TurnstileWidget onToken={setTurnstileToken} />
-      </main>
-    );
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, [aid]);
 
   if (loading) {
     return (
@@ -73,7 +69,9 @@ export default function PlayerPage({ params }: Props) {
   if (error || !stats || !profile) {
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
-        <p className="text-[var(--danger)] text-lg">{error || "Unknown error"}</p>
+        <p className="text-[var(--danger)] text-lg text-center max-w-md">
+          {error || "Unknown error"}
+        </p>
         <Link href="/" className="text-[var(--accent)] hover:underline">
           Back to search
         </Link>
@@ -82,29 +80,24 @@ export default function PlayerPage({ params }: Props) {
   }
 
   const mainStats = [
+    { label: "Hours Played", value: stats.hoursPlayed },
+    { label: "Level", value: stats.level },
+    { label: "Prestige", value: stats.prestige },
     { label: "Total Raids", value: stats.totalRaids },
     { label: "PMC Raids", value: stats.pmcRaids },
     { label: "Scav Raids", value: stats.scavRaids },
     { label: "Survival Rate", value: `${stats.survivalRate}`, suffix: "%" },
-    { label: "K/D Ratio", value: stats.kdRatio },
+    { label: "K/D (all)", value: stats.kdRatio },
+    { label: "PMC K/D", value: stats.pmcKdRatio },
     { label: "Total Kills", value: stats.totalKills.toLocaleString() },
+    { label: "PMC Kills", value: stats.killedPmc.toLocaleString() },
     { label: "Kills / Raid", value: stats.killsPerRaid },
     { label: "Deaths", value: stats.deaths.toLocaleString() },
-    { label: "Headshot Rate", value: `${stats.headshotRate}`, suffix: "%" },
-    { label: "Hours Played", value: stats.hoursPlayed },
-    { label: "Avg Lifespan", value: `${stats.avgLifespan}`, suffix: " min" },
-    { label: "Win Streak", value: stats.longestWinStreak },
-    { label: "Level", value: stats.level },
-    { label: "Experience", value: stats.experience.toLocaleString() },
+    { label: "Run-throughs", value: stats.runThrough },
+    { label: "Win Streak (PMC)", value: stats.longestWinStreak },
     { label: "Achievements", value: stats.achievementsCount },
+    { label: "Experience", value: stats.experience.toLocaleString() },
   ];
-
-  const regDate = stats.registrationDate
-    ? new Date(stats.registrationDate * 1000).toLocaleDateString()
-    : "N/A";
-  const lastActive = stats.lastActiveDate
-    ? new Date(stats.lastActiveDate * 1000).toLocaleDateString()
-    : "N/A";
 
   const skills: SkillEntry[] = profile.skills?.Common ?? [];
 
@@ -126,8 +119,8 @@ export default function PlayerPage({ params }: Props) {
               </h1>
               <div className="flex flex-wrap gap-3 text-sm text-gray-500 mt-1">
                 <span>Side: {stats.side}</span>
-                <span>Registered: {regDate}</span>
-                <span>Last active: {lastActive}</span>
+                {stats.prestige > 0 && <span>Prestige {stats.prestige}</span>}
+                <span>#{aid}</span>
               </div>
             </div>
           </div>
@@ -171,7 +164,7 @@ export default function PlayerPage({ params }: Props) {
         </div>
 
         <div className="lg:w-96 shrink-0">
-          <PlayerComparison stats={stats} turnstileToken={turnstileToken} />
+          <PlayerComparison stats={stats} turnstileToken="" />
         </div>
       </div>
     </main>

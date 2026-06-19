@@ -5,8 +5,11 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,32}$/;
 
 export async function GET(request: NextRequest) {
+  // Prefer Cloudflare's trusted client IP; fall back to the proxy's
+  // X-Forwarded-For when self-hosted behind Caddy.
   const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     "unknown";
 
   const { allowed, headers } = getRateLimitHeaders(ip);
