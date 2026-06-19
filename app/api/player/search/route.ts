@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchPlayer } from "@/lib/tarkov-api";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
+import { getClientIp } from "@/lib/client-ip";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,32}$/;
 
 export async function GET(request: NextRequest) {
-  // Prefer Cloudflare's trusted client IP; fall back to the proxy's
-  // X-Forwarded-For when self-hosted behind Caddy.
-  const ip =
-    request.headers.get("cf-connecting-ip")?.trim() ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown";
+  const ip = getClientIp(request);
 
-  const { allowed, headers } = getRateLimitHeaders(ip);
+  const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "search" });
   if (!allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },

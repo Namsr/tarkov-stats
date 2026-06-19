@@ -44,21 +44,53 @@ export async function getPlayerProfile(
   return res.json();
 }
 
+// In-process кэш upstream-профилей по aid. Снижает удары по players.tarkov.dev
+// (риск бана IP VPS / амплификации) и частоту записи одинаковых строк в БД.
+// Кэшируем и 404 (null) — защита от перебора несуществующих id.
+type CachedProfile = { profile: PlayerProfile | null; ts: number };
+const profileCache = new Map<number, CachedProfile>();
+const PROFILE_TTL_MS = 5 * 60 * 1000; // 5 минут
+const PROFILE_CACHE_MAX = 2000;
+
+function cacheProfile(aid: number, profile: PlayerProfile | null, ts: number) {
+  if (profileCache.size > PROFILE_CACHE_MAX) {
+    for (const [k, v] of profileCache) {
+      if (ts - v.ts >= PROFILE_TTL_MS) profileCache.delete(k);
+    }
+    if (profileCache.size > PROFILE_CACHE_MAX) profileCache.clear();
+  }
+  profileCache.set(aid, { profile, ts });
+}
+
+export interface PublicProfileResult {
+  profile: PlayerProfile | null;
+  fromCache: boolean;
+}
+
 /**
  * Captcha-free profile fetch by account id from the public static cache.
- * Returns null when the profile isn't cached (404) — i.e. nobody has viewed
- * this id on tarkov.dev yet, so it can't be served without the captcha flow.
+ * `profile` is null when not cached upstream (404). `fromCache` says whether the
+ * result came from our in-process cache (caller can then skip the DB upsert).
  */
-export async function getPublicProfile(
-  aid: number
-): Promise<PlayerProfile | null> {
+export async function getPublicProfile(aid: number): Promise<PublicProfileResult> {
+  const now = Date.now();
+  const hit = profileCache.get(aid);
+  if (hit && now - hit.ts < PROFILE_TTL_MS) {
+    return { profile: hit.profile, fromCache: true };
+  }
+
   const url = `${PUBLIC_PROFILE_BASE}/profile/${aid}.json`;
   const res = await fetch(url);
-  if (res.status === 404) return null;
+  if (res.status === 404) {
+    cacheProfile(aid, null, now);
+    return { profile: null, fromCache: false };
+  }
   if (!res.ok) {
     throw new Error(`Public profile fetch failed: ${res.status}`);
   }
-  return res.json();
+  const profile = (await res.json()) as PlayerProfile;
+  cacheProfile(aid, profile, now);
+  return { profile, fromCache: false };
 }
 
 type PlayerLevel = { level: number; exp: number };

@@ -42,6 +42,11 @@ export const AVG_COLS = [
 const DIST_SQL =
   "SELECT bracket_key, COUNT(*) AS n FROM players GROUP BY bracket_key ORDER BY MIN(hours)";
 
+// Кап на рост таблицы: после лимита новые aid не добавляются (существующие
+// продолжают обновляться). Защищает диск VPS и датасет /average от
+// автоматического наполнения ботами. 0 = без лимита.
+const MAX_PLAYERS = Number(process.env.MAX_PLAYERS ?? 200_000) || 0;
+
 function avgSql(where: string): string {
   return `SELECT COUNT(*) AS n, ${AVG_COLS.map((c) => `AVG(${c}) AS ${c}`).join(", ")} FROM players ${where}`;
 }
@@ -96,6 +101,13 @@ async function d1Store(): Promise<PlayerStore | null> {
     if (!db) return null;
     return {
       async upsert(aid, stats, ids) {
+        if (MAX_PLAYERS > 0) {
+          const existing = await db.prepare("SELECT 1 FROM players WHERE aid = ?").bind(aid).first();
+          if (!existing) {
+            const row = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
+            if (row && row.n >= MAX_PLAYERS) return;
+          }
+        }
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids)).run();
       },
       async averages(min, max) {
@@ -131,6 +143,13 @@ async function sqliteStore(): Promise<PlayerStore | null> {
     const db = sqliteDb;
     return {
       async upsert(aid, stats, ids) {
+        if (MAX_PLAYERS > 0) {
+          const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
+          if (!existing) {
+            const row = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
+            if (row && row.n >= MAX_PLAYERS) return;
+          }
+        }
         db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids));
       },
       async averages(min, max) {

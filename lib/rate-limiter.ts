@@ -1,45 +1,63 @@
-const windowMs = 60_000;
-const maxRequests = 30;
+const DEFAULT_WINDOW_MS = 60_000;
+const DEFAULT_MAX = 30;
 
+// Best-effort, in-process limiter. На одном Node-инстансе Map живёт в процессе
+// (сбрасывается при рестарте); на Cloudflare Workers — в пределах изолята.
+// Ключ = "<bucket>:<ip>", так что разные эндпоинты лимитируются раздельно.
+// Cleanup ленивый — top-level setInterval в Workers-скоупе запрещён.
 const store = new Map<string, number[]>();
 
-// Note: this is a best-effort, per-isolate limiter. On Cloudflare Workers each
-// isolate keeps its own Map, so it caps bursts per instance rather than globally.
-// Cleanup is done lazily on access — a top-level setInterval is disallowed in
-// the Workers global scope.
-function prune(now: number) {
-  for (const [ip, timestamps] of store) {
+function prune(now: number, windowMs: number) {
+  for (const [key, timestamps] of store) {
     const filtered = timestamps.filter((t) => now - t < windowMs);
-    if (filtered.length === 0) store.delete(ip);
-    else store.set(ip, filtered);
+    if (filtered.length === 0) store.delete(key);
+    else store.set(key, filtered);
   }
 }
 
-export function checkRateLimit(ip: string): { allowed: boolean; remaining: number } {
+export interface RateLimitOptions {
+  /** Окно в мс (по умолчанию 60_000). */
+  windowMs?: number;
+  /** Максимум запросов в окне (по умолчанию 30). */
+  max?: number;
+  /** Namespace ключа, чтобы лимиты эндпоинтов не пересекались. */
+  bucket?: string;
+}
+
+export function checkRateLimit(
+  ip: string,
+  opts: RateLimitOptions = {}
+): { allowed: boolean; remaining: number; limit: number; windowMs: number } {
+  const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
+  const max = opts.max ?? DEFAULT_MAX;
+  const key = `${opts.bucket ?? "default"}:${ip}`;
   const now = Date.now();
-  // Opportunistic cleanup so the Map can't grow unbounded.
-  if (store.size > 5000) prune(now);
 
-  const timestamps = (store.get(ip) ?? []).filter((t) => now - t < windowMs);
+  // Opportunistic cleanup так, чтобы Map не рос бесконечно.
+  if (store.size > 5000) prune(now, windowMs);
 
-  if (timestamps.length >= maxRequests) {
-    store.set(ip, timestamps);
-    return { allowed: false, remaining: 0 };
+  const timestamps = (store.get(key) ?? []).filter((t) => now - t < windowMs);
+
+  if (timestamps.length >= max) {
+    store.set(key, timestamps);
+    return { allowed: false, remaining: 0, limit: max, windowMs };
   }
 
   timestamps.push(now);
-  store.set(ip, timestamps);
-  return { allowed: true, remaining: maxRequests - timestamps.length };
+  store.set(key, timestamps);
+  return { allowed: true, remaining: max - timestamps.length, limit: max, windowMs };
 }
 
-export function getRateLimitHeaders(ip: string) {
-  const { allowed, remaining } = checkRateLimit(ip);
+export function getRateLimitHeaders(ip: string, opts: RateLimitOptions = {}) {
+  const { allowed, remaining, limit, windowMs } = checkRateLimit(ip, opts);
   return {
     allowed,
     headers: {
-      "X-RateLimit-Limit": String(maxRequests),
+      "X-RateLimit-Limit": String(limit),
       "X-RateLimit-Remaining": String(remaining),
-      "X-RateLimit-Reset": String(Math.ceil(Date.now() / 1000) + 60),
+      "X-RateLimit-Reset": String(
+        Math.ceil(Date.now() / 1000) + Math.ceil(windowMs / 1000)
+      ),
     },
   };
 }
