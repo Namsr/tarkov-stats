@@ -39,8 +39,24 @@ export const AVG_COLS = [
   "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "deaths",
   "killed_pmc", "run_through", "longest_win_streak", "achv_count", "level", "prestige",
 ];
-const DIST_SQL =
-  "SELECT bracket_key, COUNT(*) AS n FROM players GROUP BY bracket_key ORDER BY MIN(hours)";
+// Per-playtime-bracket aggregate: player count plus, optionally, the SUM of a
+// chosen metric column (so the caller can derive a weighted average per bracket
+// when adjacent brackets are merged). `column` is whitelisted by the caller and
+// re-checked here — column names cannot be bound parameters, so it is inlined.
+function aggSql(column: string | null): string {
+  if (column != null && !/^[a-z_]+$/.test(column)) {
+    throw new Error(`invalid metric column: ${column}`);
+  }
+  const sumExpr = column ? `COALESCE(SUM(${column}), 0)` : "0";
+  return (
+    `SELECT bracket_key, COUNT(*) AS n, ${sumExpr} AS s ` +
+    `FROM players GROUP BY bracket_key ORDER BY MIN(hours)`
+  );
+}
+
+function toBracketAggs(rows: { bracket_key: string; n: number; s: number }[]): BracketAgg[] {
+  return rows.map((r) => ({ bracket_key: r.bracket_key, n: Number(r.n), sum: Number(r.s) }));
+}
 
 // Кап на рост таблицы: после лимита новые aid не добавляются (существующие
 // продолжают обновляться). Защищает диск VPS и датасет /average от
@@ -73,15 +89,23 @@ export interface AverageRow {
   n: number;
   [metric: string]: number | null;
 }
-export interface BracketCount {
+export interface BracketAgg {
+  /** Playtime bracket, e.g. "0-50" or "10000+". */
   bracket_key: string;
+  /** Players in the bracket. */
   n: number;
+  /** SUM of the selected metric column over the bracket (0 in count mode). */
+  sum: number;
 }
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
   averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
-  distribution(): Promise<BracketCount[]>;
+  /**
+   * Player count per playtime bracket. When `column` is given, also returns the
+   * SUM of that column per bracket so a per-bracket average can be computed.
+   */
+  bracketAggregate(column: string | null): Promise<BracketAgg[]>;
 }
 
 let warned = false;
@@ -114,9 +138,9 @@ async function d1Store(): Promise<PlayerStore | null> {
         const { where, params } = rangeClause(min, max);
         return (await db.prepare(avgSql(where)).bind(...params).first()) as AverageRow | null;
       },
-      async distribution() {
-        const { results } = await db.prepare(DIST_SQL).all();
-        return (results ?? []) as BracketCount[];
+      async bracketAggregate(column) {
+        const { results } = await db.prepare(aggSql(column)).all();
+        return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
       },
     };
   } catch {
@@ -156,8 +180,9 @@ async function sqliteStore(): Promise<PlayerStore | null> {
         const { where, params } = rangeClause(min, max);
         return db.prepare(avgSql(where)).get(...params) as AverageRow;
       },
-      async distribution() {
-        return db.prepare(DIST_SQL).all() as BracketCount[];
+      async bracketAggregate(column) {
+        const rows = db.prepare(aggSql(column)).all() as { bracket_key: string; n: number; s: number }[];
+        return toBracketAggs(rows);
       },
     };
   } catch (e) {
