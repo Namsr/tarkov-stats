@@ -84,11 +84,18 @@ export async function getPlayerLevels(): Promise<PlayerLevel[]> {
   return levels;
 }
 
-/** Resolves a character level from cumulative experience. */
+/**
+ * Resolves a character level from total experience.
+ * playerLevels[].exp is the XP required FOR each level (an increment), so the
+ * level is the highest one whose cumulative (running-sum) requirement is met.
+ */
 export function expToLevel(exp: number, levels: PlayerLevel[]): number {
+  const sorted = [...levels].sort((a, b) => a.level - b.level);
+  let cumulative = 0;
   let level = 0;
-  for (const l of levels) {
-    if (exp >= l.exp) level = l.level;
+  for (const l of sorted) {
+    cumulative += l.exp;
+    if (exp >= cumulative) level = l.level;
     else break;
   }
   return level;
