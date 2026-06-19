@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import AuthButton from "@/components/AuthButton";
+import AverageNavButton from "@/components/AverageNavButton";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,12 +23,7 @@ export default function RootLayout({
             TARKOV STATS
           </Link>
           <div className="flex items-center gap-3">
-            <Link
-              href="/average"
-              className="px-3 py-1.5 text-sm rounded bg-[var(--input-bg)] border border-[var(--card-border)] text-gray-300 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
-            >
-              Average Player Statistics
-            </Link>
+            <AverageNavButton />
             <AuthButton />
           </div>
         </header>

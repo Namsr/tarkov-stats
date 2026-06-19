@@ -3,19 +3,19 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import StatCard from "@/components/StatCard";
+import MetricPicker from "@/components/MetricPicker";
+import { buildHistogram, type BracketAgg } from "@/lib/histogram";
+import { DEFAULT_Y, resolveY, formatValue } from "@/lib/metrics";
 
 interface AverageRow {
   n: number;
   [metric: string]: number | null;
 }
-interface BracketCount {
-  bracket_key: string;
-  n: number;
-}
 interface AverageResponse {
   total: number;
   averages: AverageRow | null;
-  brackets: BracketCount[];
+  brackets: BracketAgg[];
+  metric: string;
 }
 
 const RANGES: { label: string; min: number | null; max: number | null }[] = [
@@ -57,6 +57,7 @@ function fmt(v: number | null | undefined, decimals = 1): string {
 
 export default function AveragePage() {
   const [rangeIdx, setRangeIdx] = useState(0);
+  const [yMetric, setYMetric] = useState(DEFAULT_Y);
   const [data, setData] = useState<AverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -66,12 +67,12 @@ export default function AveragePage() {
     const params = new URLSearchParams();
     if (r.min != null) params.set("minHours", String(r.min));
     if (r.max != null) params.set("maxHours", String(r.max));
-    const qs = params.toString();
+    params.set("metric", yMetric);
 
     let cancelled = false;
     setLoading(true);
     setError("");
-    fetch(`/api/average${qs ? `?${qs}` : ""}`)
+    fetch(`/api/average?${params.toString()}`)
       .then(async (res) => {
         const j = (await res.json()) as AverageResponse & { error?: string };
         if (!res.ok) throw new Error(j.error ?? "Failed to load");
@@ -90,12 +91,19 @@ export default function AveragePage() {
     return () => {
       cancelled = true;
     };
-  }, [rangeIdx]);
+  }, [rangeIdx, yMetric]);
 
   const averages = data?.averages ?? null;
   const sampleN = averages?.n ?? 0;
   const total = data?.total ?? 0;
-  const maxBracket = Math.max(1, ...(data?.brackets ?? []).map((b) => b.n));
+
+  // The histogram reflects the metric the data is actually for (data.metric),
+  // not the pending selection, so labels never mismatch mid-fetch.
+  const yDef = resolveY(data?.metric);
+  const isCount = yDef.agg === "count";
+  const bins = buildHistogram(data?.brackets ?? []);
+  const valueOf = (b: { n: number; sum: number }) => (isCount ? b.n : b.n > 0 ? b.sum / b.n : 0);
+  const maxVal = Math.max(1, ...bins.map(valueOf));
 
   return (
     <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
@@ -131,7 +139,7 @@ export default function AveragePage() {
             </option>
           ))}
         </select>
-        {!loading && (
+        {data && (
           <span className="text-sm text-gray-500">
             based on <span className="text-[var(--accent)] font-medium">{sampleN.toLocaleString()}</span>{" "}
             account{sampleN === 1 ? "" : "s"}
@@ -141,7 +149,7 @@ export default function AveragePage() {
 
       {error && <p className="text-[var(--danger)] text-sm mb-4">{error}</p>}
 
-      {loading ? (
+      {!data ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {Array.from({ length: 12 }).map((_, i) => (
             <div key={i} className="h-20 skeleton rounded-lg" />
@@ -164,28 +172,71 @@ export default function AveragePage() {
         </div>
       )}
 
-      {/* Per-bracket sample distribution */}
-      <h2 className="text-sm uppercase tracking-wider text-gray-500 mt-10 mb-3">
-        Sample size per 50h bracket
+      {/* Distribution by playtime — pick what the bar height measures */}
+      <h2 className="text-sm uppercase tracking-wider text-gray-500 mt-10 mb-1">
+        Distribution by playtime
       </h2>
-      {(data?.brackets ?? []).length === 0 ? (
-        <p className="text-gray-600 text-sm">No data yet.</p>
-      ) : (
-        <div className="space-y-1.5">
-          {data!.brackets.map((b) => (
-            <div key={b.bracket_key} className="flex items-center gap-3 text-sm">
-              <span className="w-28 shrink-0 text-gray-400">{b.bracket_key} h</span>
-              <div className="flex-1 bg-[var(--input-bg)] rounded h-4 overflow-hidden">
-                <div
-                  className="h-full bg-[var(--accent)]/60"
-                  style={{ width: `${(b.n / maxBracket) * 100}%` }}
-                />
+      <p className="text-xs text-gray-600 mb-4">
+        The bottom axis is always playtime. Pick a stat on the left to change what
+        the bar height shows — player count, or that stat averaged over each
+        playtime range. Ranges stay wide where the sample is thin and split toward
+        50&nbsp;h steps as more accounts are collected.
+      </p>
+
+      <div className="flex flex-col sm:flex-row gap-4">
+        {/* Y-axis metric picker */}
+        <MetricPicker value={yMetric} onChange={setYMetric} />
+
+        {/* Chart */}
+        <div className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+          <div className="text-[11px] text-gray-500 mb-2">
+            <span className="text-[var(--accent)] font-medium">{yDef.label}</span> by playtime
+          </div>
+          {!data ? (
+            <div className="h-52 skeleton rounded" />
+          ) : bins.length === 0 ? (
+            <p className="text-gray-600 text-sm">No data yet.</p>
+          ) : (
+            <div className={`overflow-x-auto ${loading ? "opacity-60" : ""} transition-opacity`}>
+              <div className="flex items-end gap-1.5 h-52 border-b border-[var(--card-border)]">
+                {bins.map((b) => {
+                  const v = valueOf(b);
+                  return (
+                    <div
+                      key={b.lo}
+                      className="flex-1 min-w-[26px] h-full flex flex-col items-center justify-end"
+                      title={
+                        isCount
+                          ? `${b.label} h · ${b.n.toLocaleString()} player${b.n === 1 ? "" : "s"}`
+                          : `${b.label} h · ${formatValue(yDef, v)} avg · ${b.n.toLocaleString()} player${b.n === 1 ? "" : "s"}`
+                      }
+                    >
+                      <span className="text-[10px] leading-none text-gray-400 mb-1">
+                        {formatValue(yDef, v)}
+                      </span>
+                      <div
+                        className="w-full bg-[var(--accent)]/60 hover:bg-[var(--accent)] rounded-t transition-colors"
+                        style={{ height: `${(v / maxVal) * 88}%`, minHeight: 2 }}
+                      />
+                    </div>
+                  );
+                })}
               </div>
-              <span className="w-12 shrink-0 text-right text-[var(--foreground)]">{b.n}</span>
+              <div className="flex gap-1.5 mt-2">
+                {bins.map((b) => (
+                  <span
+                    key={b.lo}
+                    className="flex-1 min-w-[26px] text-[9px] leading-tight text-gray-500 text-center"
+                  >
+                    {b.label}
+                  </span>
+                ))}
+              </div>
+              <div className="text-[10px] text-gray-600 text-center mt-2">hours played</div>
             </div>
-          ))}
+          )}
         </div>
-      )}
+      </div>
     </main>
   );
 }
