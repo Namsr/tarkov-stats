@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "tarkov-stats",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "e29c68d1-ab8f-4f71-9530-391def302b62",
       "migrations_dir": "migrations"
     }
   ]
