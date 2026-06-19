@@ -37,10 +37,16 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Каталог для локальной БД игроков (node:sqlite). Делаем его владельцем nextjs,
+# чтобы примонтированный сюда docker-volume унаследовал права на запись.
+RUN mkdir -p /data && chown nextjs:nodejs /data
+
 USER nextjs
 
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+ENV SQLITE_PATH="/data/players.db"
 
-CMD ["node", "server.js"]
+# --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
+CMD ["node", "--experimental-sqlite", "server.js"]

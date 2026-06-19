@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPublicProfile, parseProfileStats, getPlayerLevels } from "@/lib/tarkov-api";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { parsePlayerId } from "@/lib/player-id";
-import { getDB, upsertPlayer } from "@/lib/db";
+import { getStore } from "@/lib/db";
 
 export async function GET(request: NextRequest) {
   // Prefer Cloudflare's trusted client IP; fall back to the proxy's
@@ -45,15 +45,15 @@ export async function GET(request: NextRequest) {
 
     // Best-effort: upsert this player (keyed by account id) so re-lookups update
     // the row rather than double-counting it in any derived stats.
-    const db = await getDB();
-    if (db) {
+    const store = await getStore();
+    if (store) {
       const achievementIds = profile.achievements
         ? Object.keys(profile.achievements)
         : [];
       try {
-        await upsertPlayer(db, aid, stats, achievementIds);
+        await store.upsert(aid, stats, achievementIds);
       } catch (e) {
-        console.error("player upsert failed", e);
+        console.error("player store failed", e);
       }
     }
 

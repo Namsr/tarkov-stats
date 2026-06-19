@@ -1,125 +1,106 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
 
-// Minimal structural type for the subset of the D1 API we use. Avoids depending
-// on Cloudflare's global types, which aren't present in a plain Node/Docker build.
-interface D1Like {
-  prepare(sql: string): {
-    bind(...values: unknown[]): { run(): Promise<unknown> };
-  };
+// One row per collected player, keyed by account id. Re-looking up the same
+// player UPDATES the row (counted once, always current). Works on two backends:
+//   - Cloudflare D1 (when deployed to Workers)
+//   - node:sqlite local file (self-hosted Node/Docker) — needs --experimental-sqlite
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS players (
+  aid INTEGER PRIMARY KEY,
+  nickname TEXT, side TEXT, prestige INTEGER DEFAULT 0, level INTEGER DEFAULT 0,
+  experience INTEGER DEFAULT 0, hours REAL DEFAULT 0, bracket_key TEXT,
+  total_raids INTEGER DEFAULT 0, pmc_raids INTEGER DEFAULT 0, scav_raids INTEGER DEFAULT 0,
+  survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
+  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
+  longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
+  survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
+  achievements TEXT, fetched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
+CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
+`;
+
+const COLS = [
+  "aid", "nickname", "side", "prestige", "level", "experience", "hours", "bracket_key",
+  "total_raids", "pmc_raids", "scav_raids", "survived", "deaths", "pmc_deaths",
+  "total_kills", "killed_pmc", "run_through", "longest_win_streak",
+  "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
+  "achv_count", "achievements", "fetched_at",
+];
+const UPSERT_SQL =
+  `INSERT INTO players (${COLS.join(", ")}) VALUES (${COLS.map(() => "?").join(", ")}) ` +
+  `ON CONFLICT(aid) DO UPDATE SET ` +
+  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
+
+function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[]): unknown[] {
+  return [
+    aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
+    bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
+    s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc, s.runThrough, s.longestWinStreak,
+    s.kdRatio, s.pmcKdRatio, s.survivalRate, s.killsPerRaid, s.achievementsCount,
+    JSON.stringify(achievementIds), Date.now(),
+  ];
 }
 
-let warnedNoDb = false;
-let warnedCtx = false;
+export interface PlayerStore {
+  upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
+}
 
-/**
- * Returns the D1 binding when running on Cloudflare, or null otherwise — e.g.
- * the self-hosted Node/Docker build, where there is no D1. Storage is
- * best-effort: a missing binding must never break a profile lookup.
- */
-export async function getDB(): Promise<D1Like | null> {
+let warned = false;
+function warn(msg: string) {
+  if (!warned) {
+    warned = true;
+    console.warn("player store:", msg);
+  }
+}
+
+// Cloudflare D1 backend.
+async function d1Store(): Promise<PlayerStore | null> {
   try {
     const mod = await import("@opennextjs/cloudflare");
-    const { env } = mod.getCloudflareContext();
-    const db = (env as { DB?: D1Like }).DB;
-    if (!db) {
-      if (!warnedNoDb) {
-        warnedNoDb = true;
-        console.warn("getDB: no D1 binding — player storage disabled.");
-      }
-      return null;
-    }
-    return db;
+    const env = mod.getCloudflareContext().env as { DB?: { prepare(sql: string): { bind(...v: unknown[]): { run(): Promise<unknown> } } } };
+    if (!env.DB) return null;
+    const db = env.DB;
+    return {
+      async upsert(aid, stats, ids) {
+        await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids)).run();
+      },
+    };
   } catch {
-    if (!warnedCtx) {
-      warnedCtx = true;
-      console.warn(
-        "getDB: Cloudflare context unavailable — player storage disabled (expected on self-host)."
-      );
-    }
     return null;
   }
 }
 
-/**
- * Upserts one collected player keyed by account id. Re-looking up the same
- * player UPDATES the existing row (counted once, always current).
- */
-export async function upsertPlayer(
-  db: D1Like,
-  aid: number,
-  stats: ParsedPlayerStats,
-  achievementIds: string[]
-): Promise<void> {
-  const bracketKey = bracketFor(stats.hoursPlayed).key;
+// node:sqlite backend (self-hosted). DB handle is cached per process.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let sqliteDb: any = null;
+async function sqliteStore(): Promise<PlayerStore | null> {
+  try {
+    if (!sqliteDb) {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const file = process.env.SQLITE_PATH || "/data/players.db";
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      // Specifier cast keeps the build from type-resolving the (Node-only) module.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sqlite = (await import("node:sqlite" as string)) as any;
+      sqliteDb = new sqlite.DatabaseSync(file);
+      sqliteDb.exec(SCHEMA);
+    }
+    const db = sqliteDb;
+    return {
+      async upsert(aid, stats, ids) {
+        db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids));
+      },
+    };
+  } catch (e) {
+    warn("sqlite unavailable: " + (e as Error).message);
+    return null;
+  }
+}
 
-  await db
-    .prepare(
-      `INSERT INTO players (
-        aid, nickname, side, prestige, level, experience, hours, bracket_key,
-        total_raids, pmc_raids, scav_raids, survived, deaths, pmc_deaths,
-        total_kills, killed_pmc, run_through, longest_win_streak,
-        kd_ratio, pmc_kd_ratio, survival_rate, kills_per_raid,
-        achv_count, achievements, fetched_at
-      ) VALUES (
-        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-        ?9, ?10, ?11, ?12, ?13, ?14,
-        ?15, ?16, ?17, ?18,
-        ?19, ?20, ?21, ?22,
-        ?23, ?24, ?25
-      )
-      ON CONFLICT(aid) DO UPDATE SET
-        nickname = excluded.nickname,
-        side = excluded.side,
-        prestige = excluded.prestige,
-        level = excluded.level,
-        experience = excluded.experience,
-        hours = excluded.hours,
-        bracket_key = excluded.bracket_key,
-        total_raids = excluded.total_raids,
-        pmc_raids = excluded.pmc_raids,
-        scav_raids = excluded.scav_raids,
-        survived = excluded.survived,
-        deaths = excluded.deaths,
-        pmc_deaths = excluded.pmc_deaths,
-        total_kills = excluded.total_kills,
-        killed_pmc = excluded.killed_pmc,
-        run_through = excluded.run_through,
-        longest_win_streak = excluded.longest_win_streak,
-        kd_ratio = excluded.kd_ratio,
-        pmc_kd_ratio = excluded.pmc_kd_ratio,
-        survival_rate = excluded.survival_rate,
-        kills_per_raid = excluded.kills_per_raid,
-        achv_count = excluded.achv_count,
-        achievements = excluded.achievements,
-        fetched_at = excluded.fetched_at`
-    )
-    .bind(
-      aid,
-      stats.nickname,
-      stats.side,
-      stats.prestige,
-      stats.level,
-      stats.experience,
-      stats.hoursPlayed,
-      bracketKey,
-      stats.totalRaids,
-      stats.pmcRaids,
-      stats.scavRaids,
-      stats.survivedRaids,
-      stats.deaths,
-      stats.pmcDeaths,
-      stats.totalKills,
-      stats.killedPmc,
-      stats.runThrough,
-      stats.longestWinStreak,
-      stats.kdRatio,
-      stats.pmcKdRatio,
-      stats.survivalRate,
-      stats.killsPerRaid,
-      stats.achievementsCount,
-      JSON.stringify(achievementIds),
-      Date.now()
-    )
-    .run();
+/** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
+export async function getStore(): Promise<PlayerStore | null> {
+  return (await d1Store()) ?? (await sqliteStore());
 }
