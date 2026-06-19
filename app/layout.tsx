@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,6 +16,17 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]">
+        <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">
+          <Link href="/" className="font-bold tracking-tight text-[var(--accent)]">
+            TARKOV STATS
+          </Link>
+          <Link
+            href="/average"
+            className="px-3 py-1.5 text-sm rounded bg-[var(--input-bg)] border border-[var(--card-border)] text-gray-300 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+          >
+            Average Player Statistics
+          </Link>
+        </header>
         {children}
       </body>
     </html>

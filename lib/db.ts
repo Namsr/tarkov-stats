@@ -33,6 +33,27 @@ const UPSERT_SQL =
   `ON CONFLICT(aid) DO UPDATE SET ` +
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
 
+// Metrics averaged for the "average player portrait".
+export const AVG_COLS = [
+  "hours", "total_raids", "pmc_raids", "scav_raids", "survival_rate",
+  "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "deaths",
+  "killed_pmc", "run_through", "longest_win_streak", "achv_count", "level", "prestige",
+];
+const DIST_SQL =
+  "SELECT bracket_key, COUNT(*) AS n FROM players GROUP BY bracket_key ORDER BY MIN(hours)";
+
+function avgSql(where: string): string {
+  return `SELECT COUNT(*) AS n, ${AVG_COLS.map((c) => `AVG(${c}) AS ${c}`).join(", ")} FROM players ${where}`;
+}
+
+function rangeClause(min: number | null, max: number | null): { where: string; params: number[] } {
+  const conds: string[] = [];
+  const params: number[] = [];
+  if (min != null) { conds.push("hours >= ?"); params.push(min); }
+  if (max != null) { conds.push("hours < ?"); params.push(max); }
+  return { where: conds.length ? "WHERE " + conds.join(" AND ") : "", params };
+}
+
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[]): unknown[] {
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
@@ -43,8 +64,19 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[]): u
   ];
 }
 
+export interface AverageRow {
+  n: number;
+  [metric: string]: number | null;
+}
+export interface BracketCount {
+  bracket_key: string;
+  n: number;
+}
+
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
+  averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
+  distribution(): Promise<BracketCount[]>;
 }
 
 let warned = false;
@@ -59,12 +91,20 @@ function warn(msg: string) {
 async function d1Store(): Promise<PlayerStore | null> {
   try {
     const mod = await import("@opennextjs/cloudflare");
-    const env = mod.getCloudflareContext().env as { DB?: { prepare(sql: string): { bind(...v: unknown[]): { run(): Promise<unknown> } } } };
-    if (!env.DB) return null;
-    const db = env.DB;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (mod.getCloudflareContext().env as any).DB;
+    if (!db) return null;
     return {
       async upsert(aid, stats, ids) {
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids)).run();
+      },
+      async averages(min, max) {
+        const { where, params } = rangeClause(min, max);
+        return (await db.prepare(avgSql(where)).bind(...params).first()) as AverageRow | null;
+      },
+      async distribution() {
+        const { results } = await db.prepare(DIST_SQL).all();
+        return (results ?? []) as BracketCount[];
       },
     };
   } catch {
@@ -92,6 +132,13 @@ async function sqliteStore(): Promise<PlayerStore | null> {
     return {
       async upsert(aid, stats, ids) {
         db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids));
+      },
+      async averages(min, max) {
+        const { where, params } = rangeClause(min, max);
+        return db.prepare(avgSql(where)).get(...params) as AverageRow;
+      },
+      async distribution() {
+        return db.prepare(DIST_SQL).all() as BracketCount[];
       },
     };
   } catch (e) {
