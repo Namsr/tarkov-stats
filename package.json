@@ -10,7 +10,10 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-build": "opennextjs-cloudflare build",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "d1:create": "wrangler d1 create tarkov-stats",
+    "d1:migrate:local": "wrangler d1 migrations apply tarkov-stats --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply tarkov-stats --remote"
   },
   "dependencies": {
     "@marsidev/react-turnstile": "^1.5.2",

@@ -3,47 +3,43 @@ export interface PlayerSearchResult {
   name: string;
 }
 
+/**
+ * Shape of the public profile JSON served by https://players.tarkov.dev/profile/{aid}.json
+ * Only the fields we actually rely on are typed strictly; the rest is left open.
+ */
 export interface PlayerProfile {
   aid: number;
-  nickname: string;
-  experience: number;
-  level: number;
-  registrationDate: number;
-  lastActiveDate: number;
-  bannedUntil: number;
-  isBanned: boolean;
-  gameEdition: string;
-  memberCategory: number;
-  selectedMemberCategory: number;
   info: {
+    nickname: string;
     side: string;
     experience: number;
-    registrationDate: number;
-    lastActiveDate: number;
-    bannedUntil: number;
-    isBanned: boolean;
-    nickname: string;
-    memberCategory: number;
-    selectedMemberCategory: number;
-    gameEdition: string;
+    memberCategory?: number;
+    selectedMemberCategory?: number;
+    prestigeLevel?: number;
+    // The following are NOT present in the public profile payload, kept optional
+    // for backwards-compatibility with older callers.
+    registrationDate?: number;
+    lastActiveDate?: number;
   };
-  pmcStats: RaidStats;
-  scavStats: RaidStats;
-  achievements: Record<string, number>;
-  skills: SkillData;
-  favoriteWeapons: WeaponStat[];
+  pmcStats?: RaidStats;
+  scavStats?: RaidStats;
+  achievements?: Record<string, number>;
+  skills?: SkillData;
+  /** Unix ms timestamp of when tarkov.dev last refreshed this cached profile. */
+  updated?: number;
+  // Legacy/optional top-level fallbacks (not present in real payload).
+  nickname?: string;
+  experience?: number;
+  level?: number;
+  registrationDate?: number;
+  lastActiveDate?: number;
   [key: string]: unknown;
 }
 
 export interface RaidStats {
-  totalInGameTime: number;
-  overAllCounters: OverallCounters;
   eft: {
-    totalRaidCount: number;
-    survivedRaidCount: number;
-    killedRaidCount: number;
-    missInActionRaidCount: number;
-    runThroughRaidCount: number;
+    totalInGameTime: number;
+    overAllCounters: OverallCounters;
     [key: string]: unknown;
   };
 }
@@ -94,16 +90,22 @@ export interface Streamer {
 export interface ParsedPlayerStats {
   nickname: string;
   level: number;
+  prestige: number;
   experience: number;
   side: string;
   totalRaids: number;
   pmcRaids: number;
   scavRaids: number;
+  survivedRaids: number;
   survivalRate: number;
   totalKills: number;
+  killedPmc: number;
   killsPerRaid: number;
   kdRatio: number;
+  pmcKdRatio: number;
   deaths: number;
+  pmcDeaths: number;
+  runThrough: number;
   hoursPlayed: number;
   longestWinStreak: number;
   achievementsCount: number;

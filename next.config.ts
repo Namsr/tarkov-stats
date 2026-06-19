@@ -1,4 +1,9 @@
 import type { NextConfig } from "next";
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+
+// Makes Cloudflare bindings (D1, etc.) available via getCloudflareContext()
+// during `next dev`. No-op in production builds.
+initOpenNextCloudflareForDev();
 
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },

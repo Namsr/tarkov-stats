@@ -5,9 +5,9 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,32}$/;
 
 export async function GET(request: NextRequest) {
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown";
+  // Cloudflare sets cf-connecting-ip to the real client IP; X-Forwarded-For is
+  // client-spoofable and would let a caller mint unlimited rate-limit buckets.
+  const ip = request.headers.get("cf-connecting-ip")?.trim() || "unknown";
 
   const { allowed, headers } = getRateLimitHeaders(ip);
   if (!allowed) {

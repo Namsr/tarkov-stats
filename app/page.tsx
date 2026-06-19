@@ -17,9 +17,9 @@ export default function Home() {
         <SearchBar autoFocus />
 
         <p className="text-xs text-gray-600 text-center max-w-sm">
-          Search for any Escape from Tarkov player by nickname to view their
-          stats, compare against average benchmarks, or go head-to-head with
-          another player.
+          Look up any Escape from Tarkov player by account ID to view their
+          stats and see how they compare against the average player for their
+          playtime.
         </p>
       </div>
     </main>
