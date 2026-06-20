@@ -58,6 +58,35 @@ function toBracketAggs(rows: { bracket_key: string; n: number; s: number }[]): B
   return rows.map((r) => ({ bracket_key: r.bracket_key, n: Number(r.n), sum: Number(r.s) }));
 }
 
+// Per-achievement baseline: for every achievement seen in the sample, how many
+// players own it and the mean/variance of THEIR playtime. `json_each` expands the
+// stored achievement-id array (one virtual row per id per player); grouping gives
+// owner count plus the moments needed for a (hours) z-score. mean_sq lets us
+// derive variance = mean_sq − mean² in one pass (Welford-free, good enough here).
+// achievements is always valid JSON (we write JSON.stringify of an array), but we
+// guard NULL/'' to be safe against any legacy rows.
+const ACH_BASELINE_SQL =
+  `SELECT je.value AS ach_id, COUNT(*) AS owners, ` +
+  `AVG(p.hours) AS mean_hours, AVG(p.hours * p.hours) AS mean_sq ` +
+  `FROM players AS p, json_each(p.achievements) AS je ` +
+  `WHERE p.achievements IS NOT NULL AND p.achievements != '' ` +
+  `GROUP BY je.value`;
+
+function toAchStats(
+  rows: { ach_id: string; owners: number; mean_hours: number; mean_sq: number }[]
+): AchievementStat[] {
+  return rows.map((r) => {
+    const mean = Number(r.mean_hours) || 0;
+    const variance = Math.max(0, (Number(r.mean_sq) || 0) - mean * mean);
+    return {
+      ach_id: String(r.ach_id),
+      owners: Number(r.owners),
+      meanHours: mean,
+      stdHours: Math.sqrt(variance),
+    };
+  });
+}
+
 // Кап на рост таблицы: после лимита новые aid не добавляются (существующие
 // продолжают обновляться). Защищает диск VPS и датасет /average от
 // автоматического наполнения ботами. 0 = без лимита.
@@ -98,6 +127,25 @@ export interface BracketAgg {
   sum: number;
 }
 
+/** Playtime baseline for a single achievement across the whole sample. */
+export interface AchievementStat {
+  /** Achievement id (matches tarkov.dev achievement ids). */
+  ach_id: string;
+  /** Players in the sample who own it. */
+  owners: number;
+  /** Mean playtime (hours) of owners — the "typical unlock hours". */
+  meanHours: number;
+  /** Std-dev of owner playtime; 0 when owners are near-identical or singular. */
+  stdHours: number;
+}
+
+export interface AchievementBaseline {
+  /** Total players in the sample (for prevalence = owners / total). */
+  total: number;
+  /** One row per achievement seen in the sample. */
+  achievements: AchievementStat[];
+}
+
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
   averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
@@ -106,6 +154,11 @@ export interface PlayerStore {
    * SUM of that column per bracket so a per-bracket average can be computed.
    */
   bracketAggregate(column: string | null): Promise<BracketAgg[]>;
+  /**
+   * Per-achievement playtime baseline over the whole sample: owner count plus
+   * the mean/std of owner playtime, for rarity and early-unlock z-scores.
+   */
+  achievementBaseline(): Promise<AchievementBaseline>;
 }
 
 let warned = false;
@@ -141,6 +194,16 @@ async function d1Store(): Promise<PlayerStore | null> {
       async bracketAggregate(column) {
         const { results } = await db.prepare(aggSql(column)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
+      },
+      async achievementBaseline() {
+        const totalRow = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
+        const { results } = await db.prepare(ACH_BASELINE_SQL).all();
+        return {
+          total: Number(totalRow?.n ?? 0),
+          achievements: toAchStats(
+            (results ?? []) as { ach_id: string; owners: number; mean_hours: number; mean_sq: number }[]
+          ),
+        };
       },
     };
   } catch {
@@ -183,6 +246,13 @@ async function sqliteStore(): Promise<PlayerStore | null> {
       async bracketAggregate(column) {
         const rows = db.prepare(aggSql(column)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
+      },
+      async achievementBaseline() {
+        const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
+        const rows = db.prepare(ACH_BASELINE_SQL).all() as {
+          ach_id: string; owners: number; mean_hours: number; mean_sq: number;
+        }[];
+        return { total: Number(totalRow?.n ?? 0), achievements: toAchStats(rows) };
       },
     };
   } catch (e) {

@@ -133,6 +133,42 @@ export function expToLevel(exp: number, levels: PlayerLevel[]): number {
   return level;
 }
 
+/** Static metadata for an achievement (names, rarity, BSG-wide completion %). */
+export interface AchievementMeta {
+  id: string;
+  name: string;
+  side: string;
+  rarity: string;
+  /** BSG's official share of ALL players who have it. */
+  playersCompletedPercent: number;
+  /** BSG's share among players who reached the relevant content. */
+  adjustedPlayersCompletedPercent: number;
+}
+
+let achievementsCache: { data: Map<string, AchievementMeta>; ts: number } | null = null;
+const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+/** Achievement id -> metadata, cached in-isolate. Rarely changes (per wipe). */
+export async function getAchievements(): Promise<Map<string, AchievementMeta>> {
+  const now = Date.now();
+  if (achievementsCache && now - achievementsCache.ts < ACHIEVEMENTS_TTL_MS) {
+    return achievementsCache.data;
+  }
+  const res = await fetch("https://api.tarkov.dev/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query:
+        `{ achievements { id name side rarity playersCompletedPercent adjustedPlayersCompletedPercent } }`,
+    }),
+  });
+  if (!res.ok) throw new Error(`GraphQL request failed: ${res.status}`);
+  const data = (await res.json()) as { data: { achievements: AchievementMeta[] } };
+  const map = new Map((data.data.achievements ?? []).map((a) => [a.id, a]));
+  achievementsCache = { data: map, ts: now };
+  return map;
+}
+
 function getCounterValue(
   items: { Key: string[]; Value: number }[],
   ...keys: string[]

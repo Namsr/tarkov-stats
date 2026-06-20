@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import StatCard from "@/components/StatCard";
 import MetricPicker from "@/components/MetricPicker";
+import AchievementBreakdown from "@/components/AchievementBreakdown";
 import { buildHistogram, type BracketAgg } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY, formatValue } from "@/lib/metrics";
 import { PLAYTIME_RANGES } from "@/lib/playtime-brackets";
@@ -55,6 +56,15 @@ export default function AveragePage() {
   const [data, setData] = useState<AverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showAch, setShowAch] = useState(false);
+
+  function openBreakdown() {
+    setShowAch(true);
+    // Wait for the panel to mount before scrolling it into view.
+    requestAnimationFrame(() =>
+      document.getElementById("ach-breakdown")?.scrollIntoView({ behavior: "smooth", block: "start" })
+    );
+  }
 
   useEffect(() => {
     const r = RANGES[rangeIdx];
@@ -97,7 +107,8 @@ export default function AveragePage() {
   const isCount = yDef.agg === "count";
   const bins = buildHistogram(data?.brackets ?? []);
   const valueOf = (b: { n: number; sum: number }) => (isCount ? b.n : b.n > 0 ? b.sum / b.n : 0);
-  const maxVal = Math.max(1, ...bins.map(valueOf));
+  const peak = Math.max(0, ...bins.map(valueOf));
+  const maxVal = peak || 1; // avoid /0 when every value is 0; otherwise scale to the real peak
 
   return (
     <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
@@ -155,16 +166,37 @@ export default function AveragePage() {
         </p>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {METRICS.map((m) => (
-            <StatCard
-              key={m.key}
-              label={`Avg ${m.label}`}
-              value={fmt(averages?.[m.key], m.decimals ?? 1)}
-              suffix={m.suffix}
-            />
-          ))}
+          {METRICS.map((m) => {
+            const card = (
+              <StatCard
+                label={`Avg ${m.label}`}
+                value={fmt(averages?.[m.key], m.decimals ?? 1)}
+                suffix={m.suffix}
+              />
+            );
+            // The achievements card is a shortcut into the hidden breakdown panel.
+            if (m.key === "achv_count") {
+              return (
+                <button
+                  key={m.key}
+                  onClick={openBreakdown}
+                  title="Show achievement breakdown"
+                  className="relative text-left rounded-lg transition-shadow hover:ring-1 hover:ring-[var(--accent)]/60 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] group"
+                >
+                  {card}
+                  <span className="absolute top-3 right-3 text-[11px] text-gray-600 group-hover:text-[var(--accent)] transition-colors">
+                    ▸
+                  </span>
+                </button>
+              );
+            }
+            return <div key={m.key}>{card}</div>;
+          })}
         </div>
       )}
+
+      {/* Achievement breakdown — drilldown from the "Avg achievements" card above. */}
+      <AchievementBreakdown open={showAch} onToggle={() => setShowAch((o) => !o)} />
 
       {/* Distribution by playtime — pick what the bar height measures */}
       <h2 className="text-sm uppercase tracking-wider text-gray-500 mt-10 mb-1">

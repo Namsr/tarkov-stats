@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerComparison from "@/components/PlayerComparison";
+import EarlyUnlocks from "@/components/EarlyUnlocks";
 
 interface Props {
   params: Promise<{ aid: string }>;
@@ -100,6 +101,7 @@ export default function PlayerPage({ params }: Props) {
   ];
 
   const skills: SkillEntry[] = profile.skills?.Common ?? [];
+  const ownedAchievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
 
   return (
     <main className="flex-1 px-4 py-8 max-w-7xl mx-auto w-full">
@@ -161,6 +163,8 @@ export default function PlayerPage({ params }: Props) {
               </div>
             </div>
           )}
+
+          <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
         </div>
 
         <div className="lg:w-96 shrink-0">
