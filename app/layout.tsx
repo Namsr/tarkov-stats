@@ -7,7 +7,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Tarkov Stats Comparator",
   description:
-    "Look up Escape from Tarkov player statistics and compare against benchmarks or other players.",
+    "Look up Escape from Tarkov player statistics and compare against the average player or other players.",
 };
 
 export default function RootLayout({

@@ -70,18 +70,6 @@ export interface WeaponStat {
   Count: number;
 }
 
-export interface BenchmarkBucket {
-  label: string;
-  minRaids: number;
-  maxRaids: number;
-  sampleSize: number;
-  medianKD: number;
-  medianSurvivalRate: number;
-  medianKillsPerRaid: number;
-  medianTotalKills: number;
-  medianRaids: number;
-}
-
 export interface Streamer {
   name: string;
   nickname: string;
