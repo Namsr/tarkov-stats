@@ -1,15 +1,23 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { ParsedPlayerStats, BenchmarkBucket, Streamer, PlayerSearchResult } from "@/types/tarkov";
+import { ParsedPlayerStats, Streamer, PlayerSearchResult } from "@/types/tarkov";
 import { searchPlayerDirect, getProfileDirect } from "@/lib/player-api-client";
 import { parseProfileStats } from "@/lib/tarkov-api";
+import { rangeForHours } from "@/lib/playtime-brackets";
 import ComparisonTable from "./ComparisonTable";
 import StreamerList from "./StreamerList";
 import PercentileBadge from "./PercentileBadge";
 import streamersData from "@/data/streamers.json";
 
 type Mode = "benchmark" | "player";
+
+interface AverageData {
+  /** Players sampled in the bracket. */
+  n: number;
+  /** Per-metric averages keyed by DB column (kd_ratio, survival_rate, ...). */
+  averages: Record<string, number | null>;
+}
 
 interface Props {
   stats: ParsedPlayerStats;
@@ -19,7 +27,8 @@ interface Props {
 export default function PlayerComparison({ stats, turnstileToken }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("benchmark");
-  const [benchmarks, setBenchmarks] = useState<BenchmarkBucket[]>([]);
+  const [avgData, setAvgData] = useState<AverageData | null>(null);
+  const [avgError, setAvgError] = useState("");
   const [otherStats, setOtherStats] = useState<ParsedPlayerStats | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PlayerSearchResult[]>([]);
@@ -27,18 +36,33 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
   const [error, setError] = useState("");
   const streamers: Streamer[] = streamersData;
 
-  useEffect(() => {
-    if (open && benchmarks.length === 0) {
-      fetch("/api/benchmarks")
-        .then((r) => r.json())
-        .then((d) => setBenchmarks(d as BenchmarkBucket[]))
-        .catch(() => {});
-    }
-  }, [open, benchmarks.length]);
+  // Match the player into the same playtime bracket the /average page uses and
+  // pull that bracket's live averages (and real sample count) from the DB.
+  const bracket = rangeForHours(stats.hoursPlayed);
 
-  const matchedBucket = benchmarks.find(
-    (b) => stats.totalRaids >= b.minRaids && stats.totalRaids <= b.maxRaids
-  );
+  useEffect(() => {
+    if (!open || mode !== "benchmark" || avgData) return;
+    const params = new URLSearchParams();
+    params.set("minHours", String(bracket.min));
+    if (bracket.max != null) params.set("maxHours", String(bracket.max));
+
+    let cancelled = false;
+    fetch(`/api/average?${params.toString()}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const averages =
+          (d as { averages?: Record<string, number | null> | null }).averages ?? {};
+        setAvgData({ n: Number(averages.n ?? 0), averages });
+      })
+      .catch(() => {
+        if (!cancelled) setAvgError("Failed to load averages");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode, bracket.min, bracket.max, avgData]);
 
   const fetchPlayerByNickname = useCallback(async (nickname: string) => {
     setLoading(true);
@@ -164,50 +188,54 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
 
       {mode === "benchmark" && (
         <div className="space-y-4">
-          {matchedBucket ? (
+          {avgError ? (
+            <p className="text-[var(--danger)] text-sm">{avgError}</p>
+          ) : !avgData ? (
+            <p className="text-gray-500 text-sm">Loading averages…</p>
+          ) : avgData.n === 0 ? (
+            <p className="text-gray-500 text-sm">
+              Your bracket:{" "}
+              <span className="text-[var(--accent)]">{bracket.label}</span> — no
+              players sampled here yet. The sample grows as players are looked up
+              by ID.
+            </p>
+          ) : (
             <>
               <p className="text-sm text-gray-400">
                 Your bracket:{" "}
-                <span className="text-[var(--accent)]">{matchedBucket.label}</span>
-                {" "}({matchedBucket.sampleSize} players sampled)
+                <span className="text-[var(--accent)]">{bracket.label}</span>{" "}
+                ({avgData.n.toLocaleString()} player{avgData.n === 1 ? "" : "s"} sampled)
               </p>
               <div className="space-y-3">
                 {[
-                  { label: "K/D Ratio", player: stats.kdRatio, median: matchedBucket.medianKD },
-                  { label: "Survival Rate", player: stats.survivalRate, median: matchedBucket.medianSurvivalRate },
-                  { label: "Kills/Raid", player: stats.killsPerRaid, median: matchedBucket.medianKillsPerRaid },
-                  { label: "Total Kills", player: stats.totalKills, median: matchedBucket.medianTotalKills },
-                  { label: "Total Raids", player: stats.totalRaids, median: matchedBucket.medianRaids },
-                ].map((row) => (
-                  <div
-                    key={row.label}
-                    className="flex items-center justify-between py-2 border-b border-[var(--card-border)]/50"
-                  >
-                    <div className="flex flex-col">
-                      <span className="text-sm text-gray-400">{row.label}</span>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className="text-[var(--accent)] font-medium">
-                          You: {typeof row.player === "number" ? row.player.toFixed(2) : row.player}
-                        </span>
-                        <span className="text-gray-500">
-                          Avg: {row.median.toFixed(2)}
-                        </span>
+                  { label: "K/D Ratio", player: stats.kdRatio, avg: avgData.averages.kd_ratio },
+                  { label: "Survival Rate", player: stats.survivalRate, avg: avgData.averages.survival_rate },
+                  { label: "Kills/Raid", player: stats.killsPerRaid, avg: avgData.averages.kills_per_raid },
+                  { label: "Total Kills", player: stats.totalKills, avg: avgData.averages.total_kills },
+                  { label: "Total Raids", player: stats.totalRaids, avg: avgData.averages.total_raids },
+                ]
+                  .filter((row): row is { label: string; player: number; avg: number } =>
+                    typeof row.avg === "number"
+                  )
+                  .map((row) => (
+                    <div
+                      key={row.label}
+                      className="flex items-center justify-between py-2 border-b border-[var(--card-border)]/50"
+                    >
+                      <div className="flex flex-col">
+                        <span className="text-sm text-gray-400">{row.label}</span>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[var(--accent)] font-medium">
+                            You: {row.player.toFixed(2)}
+                          </span>
+                          <span className="text-gray-500">Avg: {row.avg.toFixed(2)}</span>
+                        </div>
                       </div>
+                      <PercentileBadge playerValue={row.player} medianValue={row.avg} />
                     </div>
-                    <PercentileBadge
-                      playerValue={row.player}
-                      medianValue={row.median}
-                    />
-                  </div>
-                ))}
+                  ))}
               </div>
             </>
-          ) : (
-            <p className="text-gray-500 text-sm">
-              {benchmarks.length === 0
-                ? "Loading benchmarks..."
-                : "No matching benchmark bracket found."}
-            </p>
           )}
         </div>
       )}

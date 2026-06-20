@@ -6,6 +6,7 @@ import StatCard from "@/components/StatCard";
 import MetricPicker from "@/components/MetricPicker";
 import { buildHistogram, type BracketAgg } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY, formatValue } from "@/lib/metrics";
+import { PLAYTIME_RANGES } from "@/lib/playtime-brackets";
 
 interface AverageRow {
   n: number;
@@ -20,14 +21,7 @@ interface AverageResponse {
 
 const RANGES: { label: string; min: number | null; max: number | null }[] = [
   { label: "All hours", min: null, max: null },
-  { label: "0–50 h", min: 0, max: 50 },
-  { label: "50–100 h", min: 50, max: 100 },
-  { label: "100–200 h", min: 100, max: 200 },
-  { label: "200–500 h", min: 200, max: 500 },
-  { label: "500–1000 h", min: 500, max: 1000 },
-  { label: "1000–2000 h", min: 1000, max: 2000 },
-  { label: "2000–5000 h", min: 2000, max: 5000 },
-  { label: "5000+ h", min: 5000, max: null },
+  ...PLAYTIME_RANGES,
 ];
 
 const METRICS: { key: string; label: string; suffix?: string; decimals?: number }[] = [
