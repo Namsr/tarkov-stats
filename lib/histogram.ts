@@ -7,14 +7,12 @@
 // its players, so the caller can show either the count or a weighted average.
 // The X axis is always playtime; columns render at equal width.
 
-export interface BracketAgg {
-  /** Playtime bracket, e.g. "0-50" or "10000+". */
-  bracket_key: string;
-  /** Players in the bracket. */
-  n: number;
-  /** SUM of the selected metric over the bracket. */
-  sum: number;
-}
+import type { BracketAgg } from "@/lib/db";
+import { abbrevThousands } from "@/lib/metrics";
+
+// The wire shape is defined once in lib/db.ts (the producer); re-exported here
+// so chart code can keep importing it from the histogram module.
+export type { BracketAgg };
 
 export interface HistBin {
   /** Inclusive lower hour bound. */
@@ -41,11 +39,8 @@ function parseKey(key: string): { lo: number; hi: number | null } {
 }
 
 function formatHours(h: number): string {
-  if (h >= 1000) {
-    const k = h / 1000;
-    return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
-  }
-  return String(h);
+  // 50h/100h-aligned bounds need 2 decimals to stay distinct as 'k' (1050 -> "1.05k").
+  return h >= 1000 ? abbrevThousands(h, 2) : String(h);
 }
 
 function labelFor(lo: number, hi: number | null): string {

@@ -18,11 +18,7 @@ export default function AverageNavButton() {
     : `${base} bg-[var(--input-bg)] border-[var(--card-border)] text-gray-300 hover:text-[var(--accent)] hover:border-[var(--accent)]`;
 
   return (
-    <Link
-      href={active ? "/" : "/average"}
-      className={className}
-      aria-current={active ? "page" : undefined}
-    >
+    <Link href={active ? "/" : "/average"} className={className}>
       Average Player Statistics
     </Link>
   );

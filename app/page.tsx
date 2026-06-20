@@ -1,9 +1,11 @@
 import SearchBar from "@/components/SearchBar";
+import AuthErrorBanner from "@/components/AuthErrorBanner";
 
 export default function Home() {
   return (
     <main className="flex-1 flex flex-col items-center justify-center px-4">
       <div className="flex flex-col items-center gap-8 max-w-xl w-full">
+        <AuthErrorBanner />
         <div className="text-center">
           <div className="text-6xl mb-4">☠</div>
           <h1 className="text-3xl font-bold text-[var(--accent)] tracking-tight">

@@ -45,13 +45,17 @@ export function resolveY(key: string | null | undefined): YMetric {
   return (key && Y_MAP.get(key)) || Y_MAP.get(DEFAULT_Y)!;
 }
 
+/** Abbreviates a number with a 'k' suffix, trailing zeros trimmed: 1240 -> "1.2k", 1050 (2 dp) -> "1.05k". */
+export function abbrevThousands(v: number, decimals = 1): string {
+  return `${parseFloat((v / 1000).toFixed(decimals))}k`;
+}
+
 /** Formats a bar value, e.g. 1240 -> "1.2k", 1.24 -> "1.24", 41.3 -> "41.3%". */
 export function formatValue(m: YMetric, v: number): string {
   const d = m.decimals ?? 0;
   let s: string;
   if (d === 0 && Math.abs(v) >= 1000) {
-    const k = v / 1000;
-    s = `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+    s = abbrevThousands(v, 1);
   } else {
     s = v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
   }
