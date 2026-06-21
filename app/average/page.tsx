@@ -114,12 +114,13 @@ export default function AveragePage() {
 
   return (
     <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
-      <div className="flex items-baseline justify-between flex-wrap gap-2 mb-6">
-        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("nav.average")}</h1>
-        <Link href="/" className="text-sm text-gray-500 hover:text-[var(--accent)]">
-          {t("nav.searchById")}
-        </Link>
-      </div>
+      <Link
+        href="/"
+        className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+      >
+        {t("common.back")}
+      </Link>
+      <h1 className="text-2xl font-bold text-[var(--accent)] mb-6">{t("nav.average")}</h1>
 
       {/* Total scanned accounts */}
       <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 mb-6">

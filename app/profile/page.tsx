@@ -87,11 +87,14 @@ export default function ProfilePage() {
 
   return (
     <main className="flex-1 px-4 py-8 max-w-3xl mx-auto w-full space-y-8">
-      <div className="flex items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("profile.title")}</h1>
-        <Link href="/" className="text-sm text-gray-500 hover:text-[var(--accent)]">
-          {t("nav.searchById")}
+      <div>
+        <Link
+          href="/"
+          className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+        >
+          {t("common.back")}
         </Link>
+        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("profile.title")}</h1>
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}
