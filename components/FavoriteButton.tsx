@@ -7,7 +7,8 @@ import { useFavorites } from "@/lib/favorites/context";
 // Keep in sync with MAX_FAVORITES in lib/db.ts (only used for the message text).
 const MAX_FAVORITES = 50;
 
-/** ★ pin/unpin toggle for a game account. Renders nothing for signed-out users. */
+/** ★ pin/unpin toggle for a game account. Signed-out users see it disabled
+ *  with a "sign in required" hint on hover. */
 export default function FavoriteButton({
   aid,
   nickname,
@@ -19,7 +20,26 @@ export default function FavoriteButton({
   const { enabled, has, toggle } = useFavorites();
   const [msg, setMsg] = useState("");
 
-  if (!enabled) return null;
+  // Signed-out: show the button but disabled, with a hover hint that auth is needed.
+  if (!enabled) {
+    return (
+      <div className="relative shrink-0 group">
+        <button
+          type="button"
+          disabled
+          aria-disabled="true"
+          title={t("fav.authRequired")}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-[var(--card-border)] text-gray-500 opacity-60 cursor-not-allowed"
+        >
+          <span aria-hidden>☆</span>
+          <span className="hidden sm:inline">{t("fav.add")}</span>
+        </button>
+        <span className="pointer-events-none absolute right-0 top-full mt-1 z-10 whitespace-nowrap rounded border border-[var(--card-border)] bg-[var(--card-bg)] px-2 py-1 text-xs text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">
+          {t("fav.authRequired")}
+        </span>
+      </div>
+    );
+  }
 
   const active = has(aid);
 
