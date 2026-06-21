@@ -144,6 +144,21 @@ const en: Dict = {
   "early.typical": "typical ~{h} h",
   "early.haveIt": "{pct}% have it",
   "early.sigmaTooltip": "Standard deviations earlier than the typical owner",
+  "common.close": "Close",
+  "faq.title": "FAQ",
+  "faq.ariaOpen": "Open FAQ",
+  "faq.q1": "How do I load a profile?",
+  "faq.q2": "I get an error loading a profile",
+  "faq.q3": "What is this site for?",
+  "faq.q4": "How can I help development?",
+  "faq.q5": "I have ideas for the site",
+  "faq.a1.before": "The site looks players up by account ID — paste a numeric ID or a tarkov.dev profile link into the search box and hit “View”. Don't know the ID? Find the player on",
+  "faq.a1.after": "and copy the profile link or the number from its URL.",
+  "faq.a2": "Most often the profile just isn't cached on tarkov.dev yet, or it's hidden by privacy settings. Open the player's profile once on tarkov.dev, then come back and search again. If the error sticks around, wait a moment — you may have hit the request rate limit.",
+  "faq.a3": "The site collects Escape from Tarkov player stats and uses them to show how a player stacks up against everyone else with similar playtime — where they're above or below average and how far they deviate from the norm. The more profiles people look up, the sharper the average-player picture gets, and the easier the outliers are to spot.",
+  "faq.a4.text": "You can support development with a donation:",
+  "faq.a5.text": "Send your ideas to",
+  "faq.a5.stream": "or share them live on stream at",
 };
 
 const ru: Dict = {
@@ -278,6 +293,21 @@ const ru: Dict = {
   "early.typical": "обычно ~{h} ч",
   "early.haveIt": "есть у {pct}%",
   "early.sigmaTooltip": "На сколько стандартных отклонений раньше типичного владельца",
+  "common.close": "Закрыть",
+  "faq.title": "Частые вопросы",
+  "faq.ariaOpen": "Открыть вопросы",
+  "faq.q1": "Не понимаю, как загрузить профиль",
+  "faq.q2": "Выдаёт ошибку при загрузке профиля",
+  "faq.q3": "Для чего нужен этот сайт?",
+  "faq.q4": "Как помочь в разработке?",
+  "faq.q5": "У меня есть идеи по сайту",
+  "faq.a1.before": "Сайт ищет игроков по ID аккаунта — вставьте числовой ID или ссылку на профиль tarkov.dev в строку поиска и нажмите «Открыть». Не знаете ID? Найдите игрока на",
+  "faq.a1.after": "и скопируйте ссылку на профиль или число из её адреса.",
+  "faq.a2": "Чаще всего профиль просто ещё не закэширован на tarkov.dev или скрыт настройками приватности. Откройте профиль игрока один раз на tarkov.dev, затем вернитесь и повторите поиск. Если ошибка не пропадает — немного подождите: возможно, сработало ограничение по числу запросов.",
+  "faq.a3": "Сайт собирает статистику игроков Escape from Tarkov и по ней показывает, как игрок выглядит на фоне остальных с похожим наигрышем: где он выше или ниже среднего и насколько сильно отклоняется от нормы. Чем больше профилей пробивают, тем точнее портрет среднего игрока — и тем заметнее аномалии.",
+  "faq.a4.text": "Поддержать разработку можно донатом:",
+  "faq.a5.text": "Пишите идеи на почту",
+  "faq.a5.stream": "или прямо на стриме",
 };
 
 export const dict: Record<Lang, Dict> = { en, ru };
