@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useI18n } from "@/lib/i18n/context";
 
 // Mirrors the /api/average/achievements row shape. Defined locally so this
 // client component never imports the server-only route module.
@@ -54,6 +55,7 @@ export default function AchievementBreakdown({
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useI18n();
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -72,11 +74,11 @@ export default function AchievementBreakdown({
     fetch("/api/average/achievements")
       .then(async (res) => {
         const j = (await res.json()) as Payload & { error?: string };
-        if (!res.ok) throw new Error(j.error ?? "Failed to load");
+        if (!res.ok) throw new Error(j.error ?? t("achv.error"));
         return j;
       })
       .then((j) => !cancelled && setData(j))
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load"))
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : t("achv.error")))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -105,16 +107,15 @@ export default function AchievementBreakdown({
         className="flex items-center gap-2 text-sm uppercase tracking-wider text-gray-400 hover:text-[var(--accent)] transition-colors"
       >
         <span className={`text-gray-500 transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
-        Achievement breakdown
+        {t("achv.toggle")}
       </button>
 
       {open && (
         <div className="mt-3 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
           <p className="text-xs text-gray-600 mb-4">
-            How rare each achievement is in our sample vs BSG&apos;s official rate, and the{" "}
-            <span className="text-gray-400">typical playtime</span> at which owners have it
-            (mean&nbsp;±&nbsp;std). That baseline powers the &ldquo;early unlock&rdquo; flags on
-            player profiles.
+            {t("achv.desc.before")}{" "}
+            <span className="text-gray-400">{t("achv.desc.highlight")}</span>{" "}
+            {t("achv.desc.after")}
           </p>
 
           {error ? (
@@ -127,7 +128,7 @@ export default function AchievementBreakdown({
             </div>
           ) : data.achievements.length === 0 ? (
             <p className="text-gray-500 text-sm">
-              No achievements collected yet. Look up some players by ID to build the sample.
+              {t("achv.empty")}
             </p>
           ) : (
             <>
@@ -136,14 +137,14 @@ export default function AchievementBreakdown({
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Filter by name…"
+                  placeholder={t("achv.filterPlaceholder")}
                   className="flex-1 min-w-[140px] px-3 py-1.5 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
                 />
                 <div className="flex gap-1 text-xs">
                   {([
-                    ["rarity", "Rarity"],
-                    ["hours", "Typical hours"],
-                    ["owners", "Owners"],
+                    ["rarity", t("achv.sort.rarity")],
+                    ["hours", t("achv.sort.hours")],
+                    ["owners", t("achv.sort.owners")],
                   ] as [SortKey, string][]).map(([key, label]) => (
                     <button
                       key={key}
@@ -164,17 +165,17 @@ export default function AchievementBreakdown({
                 <table className="w-full text-sm border-collapse">
                   <thead className="sticky top-0 bg-[var(--card-bg)] text-[11px] uppercase tracking-wider text-gray-500">
                     <tr className="text-left border-b border-[var(--card-border)]">
-                      <th className="py-2 pr-2 font-normal">Achievement</th>
-                      <th className="py-2 px-2 font-normal text-right" title="Share of our sample that owns it">
-                        Sample %
+                      <th className="py-2 pr-2 font-normal">{t("achv.col.achievement")}</th>
+                      <th className="py-2 px-2 font-normal text-right" title={t("achv.col.sample.title")}>
+                        {t("achv.col.sample")}
                       </th>
-                      <th className="py-2 px-2 font-normal text-right" title="BSG's official completion rate">
-                        Official %
+                      <th className="py-2 px-2 font-normal text-right" title={t("achv.col.official.title")}>
+                        {t("achv.col.official")}
                       </th>
-                      <th className="py-2 px-2 font-normal text-right" title="Typical playtime of owners (mean ± std)">
-                        Typical h
+                      <th className="py-2 px-2 font-normal text-right" title={t("achv.col.typical.title")}>
+                        {t("achv.col.typical")}
                       </th>
-                      <th className="py-2 pl-2 font-normal text-right">Owners</th>
+                      <th className="py-2 pl-2 font-normal text-right">{t("achv.col.owners")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -197,7 +198,7 @@ export default function AchievementBreakdown({
                           <td className="py-2 px-2 text-right text-gray-500">{fmtPct(a.officialPct)}%</td>
                           <td
                             className={`py-2 px-2 text-right ${noisy ? "text-gray-600" : "text-gray-300"}`}
-                            title={noisy ? "Too few owners for a reliable baseline" : undefined}
+                            title={noisy ? t("achv.noisy.title") : undefined}
                           >
                             {fmtHours(a.meanHours)}
                             <span className="text-gray-600"> ± {fmtHours(a.stdHours)}</span>
@@ -211,9 +212,10 @@ export default function AchievementBreakdown({
               </div>
 
               <p className="text-[10px] text-gray-600 mt-3">
-                Based on {data.total.toLocaleString()} sampled account
-                {data.total === 1 ? "" : "s"}. Rows with under {MIN_RELIABLE_OWNERS} owners have a
-                dimmed, unreliable playtime baseline.
+                {t("achv.footer", {
+                  n: data.total.toLocaleString(),
+                  min: MIN_RELIABLE_OWNERS,
+                })}
               </p>
             </>
           )}

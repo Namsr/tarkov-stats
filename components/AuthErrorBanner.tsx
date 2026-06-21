@@ -1,31 +1,37 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useI18n } from "@/lib/i18n/context";
 
 // The Google callback redirects to "/?auth_error=<reason>" on any failure.
 // Without this, a failed login silently bounces home and looks like nothing
 // happened. Map the known reasons to a readable message and show it once.
-const MESSAGES: Record<string, string> = {
-  not_configured: "Google sign-in isn't configured on the server yet.",
-  invalid_state: "Sign-in session expired or was blocked — please try again.",
-  login_failed: "Couldn't complete Google sign-in — please try again.",
-  access_denied: "Sign-in was cancelled.",
-};
+const KNOWN_CODES = new Set([
+  "not_configured",
+  "invalid_state",
+  "login_failed",
+  "access_denied",
+]);
 
 export default function AuthErrorBanner() {
-  const [message, setMessage] = useState<string | null>(null);
+  const { t } = useI18n();
+  const [code, setCode] = useState<string | null>(null);
 
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get("auth_error");
-    if (!code) return;
-    setMessage(MESSAGES[code] ?? `Sign-in failed (${code}).`);
+    const param = new URLSearchParams(window.location.search).get("auth_error");
+    if (!param) return;
+    setCode(param);
     // Strip the param so a refresh or share doesn't re-trigger the banner.
     const url = new URL(window.location.href);
     url.searchParams.delete("auth_error");
     window.history.replaceState({}, "", url);
   }, []);
 
-  if (!message) return null;
+  if (!code) return null;
+
+  const message = KNOWN_CODES.has(code)
+    ? t("authError." + code)
+    : t("authError.fallback", { code });
 
   return (
     <div

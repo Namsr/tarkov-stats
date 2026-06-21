@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useI18n } from "@/lib/i18n/context";
 import StatCard from "@/components/StatCard";
 import MetricPicker from "@/components/MetricPicker";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
@@ -25,21 +26,21 @@ const RANGES: { label: string; min: number | null; max: number | null }[] = [
   ...PLAYTIME_RANGES,
 ];
 
-const METRICS: { key: string; label: string; suffix?: string; decimals?: number }[] = [
-  { key: "kd_ratio", label: "K/D (all)", decimals: 2 },
-  { key: "pmc_kd_ratio", label: "PMC K/D", decimals: 2 },
-  { key: "survival_rate", label: "Survival Rate", suffix: "%", decimals: 1 },
-  { key: "kills_per_raid", label: "Kills / Raid", decimals: 2 },
-  { key: "total_raids", label: "Raids", decimals: 0 },
-  { key: "total_kills", label: "Total Kills", decimals: 0 },
-  { key: "killed_pmc", label: "PMC Kills", decimals: 0 },
-  { key: "deaths", label: "Deaths", decimals: 0 },
-  { key: "run_through", label: "Run-throughs", decimals: 1 },
-  { key: "longest_win_streak", label: "Win Streak", decimals: 1 },
-  { key: "achv_count", label: "Achievements", decimals: 1 },
-  { key: "hours", label: "Hours", decimals: 0 },
-  { key: "level", label: "Level", decimals: 0 },
-  { key: "prestige", label: "Prestige", decimals: 2 },
+const METRICS: { key: string; suffix?: string; decimals?: number }[] = [
+  { key: "kd_ratio", decimals: 2 },
+  { key: "pmc_kd_ratio", decimals: 2 },
+  { key: "survival_rate", suffix: "%", decimals: 1 },
+  { key: "kills_per_raid", decimals: 2 },
+  { key: "total_raids", decimals: 0 },
+  { key: "total_kills", decimals: 0 },
+  { key: "killed_pmc", decimals: 0 },
+  { key: "deaths", decimals: 0 },
+  { key: "run_through", decimals: 1 },
+  { key: "longest_win_streak", decimals: 1 },
+  { key: "achv_count", decimals: 1 },
+  { key: "hours", decimals: 0 },
+  { key: "level", decimals: 0 },
+  { key: "prestige", decimals: 2 },
 ];
 
 function fmt(v: number | null | undefined, decimals = 1): string {
@@ -51,6 +52,7 @@ function fmt(v: number | null | undefined, decimals = 1): string {
 }
 
 export default function AveragePage() {
+  const { t } = useI18n();
   const [rangeIdx, setRangeIdx] = useState(0);
   const [yMetric, setYMetric] = useState(DEFAULT_Y);
   const [data, setData] = useState<AverageResponse | null>(null);
@@ -79,14 +81,14 @@ export default function AveragePage() {
     fetch(`/api/average?${params.toString()}`)
       .then(async (res) => {
         const j = (await res.json()) as AverageResponse & { error?: string };
-        if (!res.ok) throw new Error(j.error ?? "Failed to load");
+        if (!res.ok) throw new Error(j.error ?? t("common.loadFailed"));
         return j;
       })
       .then((j) => {
         if (!cancelled) setData(j);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
+        if (!cancelled) setError(e instanceof Error ? e.message : t("common.loadFailed"));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -113,26 +115,26 @@ export default function AveragePage() {
   return (
     <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
       <div className="flex items-baseline justify-between flex-wrap gap-2 mb-6">
-        <h1 className="text-2xl font-bold text-[var(--accent)]">Average Player Statistics</h1>
+        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("nav.average")}</h1>
         <Link href="/" className="text-sm text-gray-500 hover:text-[var(--accent)]">
-          &larr; Search by ID
+          {t("nav.searchById")}
         </Link>
       </div>
 
       {/* Total scanned accounts */}
       <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 mb-6">
-        <div className="text-xs uppercase tracking-wider text-gray-500">Accounts scanned</div>
+        <div className="text-xs uppercase tracking-wider text-gray-500">{t("average.accountsScanned")}</div>
         <div className="text-3xl font-bold text-[var(--foreground)]">
           {total.toLocaleString()}
         </div>
         <p className="text-xs text-gray-600 mt-1">
-          The sample grows every time a player is looked up by ID.
+          {t("average.sampleGrows")}
         </p>
       </div>
 
       {/* Hours range selector */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <label className="text-sm text-gray-400">Playtime range:</label>
+        <label className="text-sm text-gray-400">{t("average.playtimeRange")}</label>
         <select
           value={rangeIdx}
           onChange={(e) => setRangeIdx(Number(e.target.value))}
@@ -140,14 +142,13 @@ export default function AveragePage() {
         >
           {RANGES.map((r, i) => (
             <option key={r.label} value={i}>
-              {r.label}
+              {r.min == null && r.max == null ? t("range.all") : `${r.label} ${t("unit.h")}`}
             </option>
           ))}
         </select>
         {data && (
           <span className="text-sm text-gray-500">
-            based on <span className="text-[var(--accent)] font-medium">{sampleN.toLocaleString()}</span>{" "}
-            account{sampleN === 1 ? "" : "s"}
+            {t("average.basedOn", { n: sampleN.toLocaleString() })}
           </span>
         )}
       </div>
@@ -162,14 +163,14 @@ export default function AveragePage() {
         </div>
       ) : sampleN === 0 ? (
         <p className="text-gray-500">
-          No accounts in this range yet. Look up some players by ID to build the sample.
+          {t("average.emptyRange")}
         </p>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {METRICS.map((m) => {
             const card = (
               <StatCard
-                label={`Avg ${m.label}`}
+                label={`${t("common.avg")} ${t("metric." + m.key)}`}
                 value={fmt(averages?.[m.key], m.decimals ?? 1)}
                 suffix={m.suffix}
               />
@@ -180,7 +181,7 @@ export default function AveragePage() {
                 <button
                   key={m.key}
                   onClick={openBreakdown}
-                  title="Show achievement breakdown"
+                  title={t("average.showAchBreakdown")}
                   className="relative text-left rounded-lg transition-shadow hover:ring-1 hover:ring-[var(--accent)]/60 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] group"
                 >
                   {card}
@@ -200,13 +201,10 @@ export default function AveragePage() {
 
       {/* Distribution by playtime — pick what the bar height measures */}
       <h2 className="text-sm uppercase tracking-wider text-gray-500 mt-10 mb-1">
-        Distribution by playtime
+        {t("average.distributionHeading")}
       </h2>
       <p className="text-xs text-gray-600 mb-4">
-        The bottom axis is always playtime. Pick a stat on the left to change what
-        the bar height shows — player count, or that stat averaged over each
-        playtime range. Ranges stay wide where the sample is thin and split toward
-        50&nbsp;h steps as more accounts are collected.
+        {t("average.distributionDesc")}
       </p>
 
       <div className="flex flex-col sm:flex-row gap-4">
@@ -216,12 +214,15 @@ export default function AveragePage() {
         {/* Chart */}
         <div className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
           <div className="text-[11px] text-gray-500 mb-2">
-            <span className="text-[var(--accent)] font-medium">{yDef.label}</span> by playtime
+            <span className="text-[var(--accent)] font-medium">
+              {yDef.agg === "avg" ? `${t("common.avg")} ${t("metric." + yDef.key)}` : t("metric." + yDef.key)}
+            </span>{" "}
+            {t("average.byPlaytime")}
           </div>
           {!data ? (
             <div className="h-52 skeleton rounded" />
           ) : bins.length === 0 ? (
-            <p className="text-gray-600 text-sm">No data yet.</p>
+            <p className="text-gray-600 text-sm">{t("average.noDataYet")}</p>
           ) : (
             <div className={`overflow-x-auto ${loading ? "opacity-60" : ""} transition-opacity`}>
               <div className="flex items-end gap-1.5 h-52 border-b border-[var(--card-border)]">
@@ -233,8 +234,15 @@ export default function AveragePage() {
                       className="flex-1 min-w-[26px] h-full flex flex-col items-center justify-end"
                       title={
                         isCount
-                          ? `${b.label} h · ${b.n.toLocaleString()} player${b.n === 1 ? "" : "s"}`
-                          : `${b.label} h · ${formatValue(yDef, v)} avg · ${b.n.toLocaleString()} player${b.n === 1 ? "" : "s"}`
+                          ? t("average.barTipCount", {
+                              label: b.label,
+                              n: b.n.toLocaleString(),
+                            })
+                          : t("average.barTipAvg", {
+                              label: b.label,
+                              avg: formatValue(yDef, v),
+                              n: b.n.toLocaleString(),
+                            })
                       }
                     >
                       <span className="text-[10px] leading-none text-gray-400 mb-1">
@@ -258,7 +266,7 @@ export default function AveragePage() {
                   </span>
                 ))}
               </div>
-              <div className="text-[10px] text-gray-600 text-center mt-2">hours played</div>
+              <div className="text-[10px] text-gray-600 text-center mt-2">{t("average.hoursPlayed")}</div>
             </div>
           )}
         </div>

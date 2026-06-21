@@ -1,3 +1,7 @@
+"use client";
+
+import { useI18n } from "@/lib/i18n/context";
+
 interface PercentileBadgeProps {
   playerValue: number;
   medianValue: number;
@@ -9,6 +13,8 @@ export default function PercentileBadge({
   medianValue,
   higherIsBetter = true,
 }: PercentileBadgeProps) {
+  const { t } = useI18n();
+
   if (medianValue === 0) return null;
 
   const diff = ((playerValue - medianValue) / medianValue) * 100;
@@ -19,7 +25,7 @@ export default function PercentileBadge({
     ? "bg-[var(--success)]/15 text-[var(--success)] border-[var(--success)]/30"
     : "bg-[var(--danger)]/15 text-[var(--danger)] border-[var(--danger)]/30";
 
-  const label = isAbove ? "Above avg" : "Below avg";
+  const label = isAbove ? t("pct.above") : t("pct.below");
 
   return (
     <span

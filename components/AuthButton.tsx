@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import type { SessionUser } from "@/lib/auth/session";
+import { useI18n } from "@/lib/i18n/context";
 
 export default function AuthButton() {
+  const { t } = useI18n();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -37,7 +39,7 @@ export default function AuthButton() {
         className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[var(--card-bg)] border border-[var(--card-border)] rounded hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
       >
         <GoogleIcon />
-        Sign in
+        {t("auth.signIn")}
       </a>
     );
   }
@@ -69,7 +71,7 @@ export default function AuthButton() {
         disabled={loggingOut}
         className="text-xs text-gray-500 hover:text-[var(--danger)] transition-colors disabled:opacity-50"
       >
-        {loggingOut ? "..." : "Logout"}
+        {loggingOut ? "..." : t("auth.logout")}
       </button>
     </div>
   );

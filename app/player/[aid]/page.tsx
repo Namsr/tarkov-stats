@@ -6,12 +6,14 @@ import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerComparison from "@/components/PlayerComparison";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
+import { useI18n } from "@/lib/i18n/context";
 
 interface Props {
   params: Promise<{ aid: string }>;
 }
 
 export default function PlayerPage({ params }: Props) {
+  const { t } = useI18n();
   const { aid } = use(params);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
@@ -31,7 +33,7 @@ export default function PlayerPage({ params }: Props) {
           stats?: ParsedPlayerStats;
         };
         if (!res.ok || !data.profile || !data.stats) {
-          throw new Error(data.error ?? "Failed to load profile");
+          throw new Error(data.error ?? t("player.loadError"));
         }
         return { profile: data.profile, stats: data.stats };
       })
@@ -41,7 +43,7 @@ export default function PlayerPage({ params }: Props) {
         setStats(data.stats);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load profile");
+        if (!cancelled) setError(err instanceof Error ? err.message : t("player.loadError"));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -71,33 +73,33 @@ export default function PlayerPage({ params }: Props) {
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
         <p className="text-[var(--danger)] text-lg text-center max-w-md">
-          {error || "Unknown error"}
+          {error || t("player.unknownError")}
         </p>
         <Link href="/" className="text-[var(--accent)] hover:underline">
-          Back to search
+          {t("common.back")}
         </Link>
       </main>
     );
   }
 
   const mainStats = [
-    { label: "Hours Played", value: stats.hoursPlayed },
-    { label: "Level", value: stats.level },
-    { label: "Prestige", value: stats.prestige },
-    { label: "Total Raids", value: stats.totalRaids },
-    { label: "PMC Raids", value: stats.pmcRaids },
-    { label: "Scav Raids", value: stats.scavRaids },
-    { label: "Survival Rate", value: `${stats.survivalRate}`, suffix: "%" },
-    { label: "K/D (all)", value: stats.kdRatio },
-    { label: "PMC K/D", value: stats.pmcKdRatio },
-    { label: "Total Kills", value: stats.totalKills.toLocaleString() },
-    { label: "PMC Kills", value: stats.killedPmc.toLocaleString() },
-    { label: "Kills / Raid", value: stats.killsPerRaid },
-    { label: "Deaths", value: stats.deaths.toLocaleString() },
-    { label: "Run-throughs", value: stats.runThrough },
-    { label: "Win Streak (PMC)", value: stats.longestWinStreak },
-    { label: "Achievements", value: stats.achievementsCount },
-    { label: "Experience", value: stats.experience.toLocaleString() },
+    { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+    { label: t("player.level"), value: stats.level },
+    { label: t("player.prestige"), value: stats.prestige },
+    { label: t("player.totalRaids"), value: stats.totalRaids },
+    { label: t("player.pmcRaids"), value: stats.pmcRaids },
+    { label: t("player.scavRaids"), value: stats.scavRaids },
+    { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
+    { label: t("player.kdAll"), value: stats.kdRatio },
+    { label: t("player.pmcKd"), value: stats.pmcKdRatio },
+    { label: t("player.totalKills"), value: stats.totalKills.toLocaleString() },
+    { label: t("player.pmcKills"), value: stats.killedPmc.toLocaleString() },
+    { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
+    { label: t("player.deaths"), value: stats.deaths.toLocaleString() },
+    { label: t("player.runThroughs"), value: stats.runThrough },
+    { label: t("player.winStreakPmc"), value: stats.longestWinStreak },
+    { label: t("player.achievements"), value: stats.achievementsCount },
+    { label: t("player.experience"), value: stats.experience.toLocaleString() },
   ];
 
   const skills: SkillEntry[] = profile.skills?.Common ?? [];
@@ -109,7 +111,7 @@ export default function PlayerPage({ params }: Props) {
         href="/"
         className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
       >
-        &larr; Back to search
+        {t("common.back")}
       </Link>
 
       <div className="flex flex-col lg:flex-row gap-8">
@@ -120,8 +122,10 @@ export default function PlayerPage({ params }: Props) {
                 {stats.nickname}
               </h1>
               <div className="flex flex-wrap gap-3 text-sm text-gray-500 mt-1">
-                <span>Side: {stats.side}</span>
-                {stats.prestige > 0 && <span>Prestige {stats.prestige}</span>}
+                <span>{t("player.sideLabel", { side: stats.side })}</span>
+                {stats.prestige > 0 && (
+                  <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
+                )}
                 <span>#{aid}</span>
               </div>
             </div>
@@ -141,7 +145,7 @@ export default function PlayerPage({ params }: Props) {
           {skills.length > 0 && (
             <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
               <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-3">
-                Skills
+                {t("player.skills")}
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                 {skills

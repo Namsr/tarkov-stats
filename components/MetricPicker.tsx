@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Y_METRICS } from "@/lib/metrics";
+import { useI18n } from "@/lib/i18n/context";
 
 /**
  * Collapsed picker for the distribution chart's Y axis: shows the current
@@ -15,9 +16,12 @@ export default function MetricPicker({
   value: string;
   onChange: (key: string) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = Y_METRICS.find((m) => m.key === value) ?? Y_METRICS[0];
+  const labelFor = (m: (typeof Y_METRICS)[number]) =>
+    m.agg === "avg" ? `${t("common.avg")} ${t("metric." + m.key)}` : t("metric." + m.key);
 
   useEffect(() => {
     if (!open) return;
@@ -44,7 +48,7 @@ export default function MetricPicker({
         aria-expanded={open}
         className="w-full flex items-center justify-between gap-2 text-sm px-3 py-1.5 rounded border bg-[var(--input-bg)] border-[var(--card-border)] text-gray-200 hover:border-[var(--accent)] transition-colors"
       >
-        <span className="truncate">{selected.label}</span>
+        <span className="truncate">{labelFor(selected)}</span>
         <span className={`text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}>▾</span>
       </button>
 
@@ -71,7 +75,7 @@ export default function MetricPicker({
                       : "text-gray-300 hover:bg-[var(--input-bg)] hover:text-[var(--accent)]"
                   }`}
                 >
-                  {m.label}
+                  {labelFor(m)}
                 </button>
               </li>
             );

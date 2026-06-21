@@ -1,7 +1,11 @@
+"use client";
+
 import SearchBar from "@/components/SearchBar";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
+import { useI18n } from "@/lib/i18n/context";
 
 export default function Home() {
+  const { t } = useI18n();
   return (
     <main className="flex-1 flex flex-col items-center justify-center px-4">
       <div className="flex flex-col items-center gap-8 max-w-xl w-full">
@@ -12,16 +16,14 @@ export default function Home() {
             TARKOV STATS
           </h1>
           <p className="text-sm text-gray-500 mt-1 uppercase tracking-widest">
-            Comparator
+            {t("home.subtitle")}
           </p>
         </div>
 
         <SearchBar autoFocus />
 
         <p className="text-xs text-gray-600 text-center max-w-sm">
-          Look up any Escape from Tarkov player by account ID to view their
-          stats and see how they compare against the average player for their
-          playtime.
+          {t("home.description")}
         </p>
       </div>
     </main>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useI18n } from "@/lib/i18n/context";
 
 interface AchievementRow {
   id: string;
@@ -52,6 +53,7 @@ export default function EarlyUnlocks({
   playerHours: number;
   ownedIds: string[];
 }) {
+  const { t } = useI18n();
   const [unlocks, setUnlocks] = useState<EarlyUnlock[] | null>(null);
 
   useEffect(() => {
@@ -94,9 +96,9 @@ export default function EarlyUnlocks({
 
   return (
     <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
-      <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-1">Early unlocks</h2>
+      <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-1">{t("early.heading")}</h2>
       <p className="text-xs text-gray-600 mb-3">
-        Achievements earned with far less playtime than typical for the sample.
+        {t("early.description")}
       </p>
       <div className="space-y-2">
         {unlocks.map((u) => {
@@ -109,15 +111,17 @@ export default function EarlyUnlocks({
               <div className="min-w-0">
                 <div className="text-gray-200 truncate">{u.name}</div>
                 <div className="text-[11px] text-gray-500">
-                  {fmtHours(playerHours)} h · typical ~{fmtHours(u.meanHours)} h ·{" "}
-                  {u.samplePct < 10 ? u.samplePct.toFixed(2) : u.samplePct.toFixed(1)}% have it
+                  {fmtHours(playerHours)} {t("unit.h")} · {t("early.typical", { h: fmtHours(u.meanHours) })} ·{" "}
+                  {t("early.haveIt", {
+                    pct: u.samplePct < 10 ? u.samplePct.toFixed(2) : u.samplePct.toFixed(1),
+                  })}
                 </div>
               </div>
               <span
                 className={`shrink-0 font-medium tabular-nums ${
                   strong ? "text-amber-400" : "text-gray-400"
                 }`}
-                title="Standard deviations earlier than the typical owner"
+                title={t("early.sigmaTooltip")}
               >
                 {u.z.toFixed(1)}σ
               </span>

@@ -9,15 +9,18 @@ export interface PlaytimeRange {
   max: number | null;
 }
 
+// Labels are unit-less (just the hour range); the localized "h"/"ч" unit is
+// appended at render via t("unit.h") so the brackets read correctly in both
+// languages.
 export const PLAYTIME_RANGES: PlaytimeRange[] = [
-  { label: "0–50 h", min: 0, max: 50 },
-  { label: "50–100 h", min: 50, max: 100 },
-  { label: "100–200 h", min: 100, max: 200 },
-  { label: "200–500 h", min: 200, max: 500 },
-  { label: "500–1000 h", min: 500, max: 1000 },
-  { label: "1000–2000 h", min: 1000, max: 2000 },
-  { label: "2000–5000 h", min: 2000, max: 5000 },
-  { label: "5000+ h", min: 5000, max: null },
+  { label: "0–50", min: 0, max: 50 },
+  { label: "50–100", min: 50, max: 100 },
+  { label: "100–200", min: 100, max: 200 },
+  { label: "200–500", min: 200, max: 500 },
+  { label: "500–1000", min: 500, max: 1000 },
+  { label: "1000–2000", min: 1000, max: 2000 },
+  { label: "2000–5000", min: 2000, max: 5000 },
+  { label: "5000+", min: 5000, max: null },
 ];
 
 /** The playtime band a given number of hours falls into. */

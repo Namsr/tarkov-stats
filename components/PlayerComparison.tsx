@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useI18n } from "@/lib/i18n/context";
 import { ParsedPlayerStats, Streamer, PlayerSearchResult } from "@/types/tarkov";
 import { searchPlayerDirect, getProfileDirect } from "@/lib/player-api-client";
 import { parseProfileStats } from "@/lib/tarkov-api";
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export default function PlayerComparison({ stats, turnstileToken }: Props) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("benchmark");
   const [avgData, setAvgData] = useState<AverageData | null>(null);
@@ -56,13 +58,13 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
         setAvgData({ n: Number(averages.n ?? 0), averages });
       })
       .catch(() => {
-        if (!cancelled) setAvgError("Failed to load averages");
+        if (!cancelled) setAvgError(t("compare.errAverages"));
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open, mode, bracket.min, bracket.max, avgData]);
+  }, [open, mode, bracket.min, bracket.max, avgData, t]);
 
   const fetchPlayerByNickname = useCallback(async (nickname: string) => {
     setLoading(true);
@@ -71,17 +73,17 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
     try {
       const results = await searchPlayerDirect(nickname, turnstileToken);
       if (results.length === 0) {
-        setError("Player not found");
+        setError(t("compare.errPlayerNotFound"));
         setLoading(false);
         return;
       }
       const profile = await getProfileDirect(results[0].aid, turnstileToken);
       setOtherStats(parseProfileStats(profile));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch player");
+      setError(err instanceof Error ? err.message : t("compare.errFetchPlayer"));
     }
     setLoading(false);
-  }, [turnstileToken]);
+  }, [turnstileToken, t]);
 
   async function handleSearch() {
     if (searchQuery.length < 2) return;
@@ -90,7 +92,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
     try {
       const data = await searchPlayerDirect(searchQuery, turnstileToken);
       if (data.length === 0) {
-        setError("No players found");
+        setError(t("compare.errNoPlayers"));
         setSearchResults([]);
       } else if (data.length === 1) {
         await fetchPlayerByAid(data[0].aid);
@@ -99,7 +101,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
         setSearchResults(data);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed");
+      setError(err instanceof Error ? err.message : t("compare.errSearch"));
     }
     setLoading(false);
   }
@@ -113,7 +115,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
       const profile = await getProfileDirect(aid, turnstileToken);
       setOtherStats(parseProfileStats(profile));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch player");
+      setError(err instanceof Error ? err.message : t("compare.errFetchPlayer"));
     }
     setLoading(false);
   }
@@ -126,17 +128,17 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
 
   const comparisonRows = otherStats
     ? [
-        { label: "Total Raids", valueA: stats.totalRaids, valueB: otherStats.totalRaids },
-        { label: "Survival Rate", valueA: stats.survivalRate, valueB: otherStats.survivalRate, suffix: "%" },
-        { label: "K/D Ratio", valueA: stats.kdRatio, valueB: otherStats.kdRatio },
-        { label: "Total Kills", valueA: stats.totalKills, valueB: otherStats.totalKills },
-        { label: "Kills/Raid", valueA: stats.killsPerRaid, valueB: otherStats.killsPerRaid },
-        { label: "Headshot Rate", valueA: stats.headshotRate, valueB: otherStats.headshotRate, suffix: "%" },
-        { label: "Hours Played", valueA: stats.hoursPlayed, valueB: otherStats.hoursPlayed },
-        { label: "Avg Lifespan", valueA: stats.avgLifespan, valueB: otherStats.avgLifespan, suffix: " min" },
-        { label: "Win Streak", valueA: stats.longestWinStreak, valueB: otherStats.longestWinStreak },
-        { label: "Achievements", valueA: stats.achievementsCount, valueB: otherStats.achievementsCount },
-        { label: "Level", valueA: stats.level, valueB: otherStats.level },
+        { label: t("compare.totalRaids"), valueA: stats.totalRaids, valueB: otherStats.totalRaids },
+        { label: t("compare.survivalRate"), valueA: stats.survivalRate, valueB: otherStats.survivalRate, suffix: "%" },
+        { label: t("compare.kdRatio"), valueA: stats.kdRatio, valueB: otherStats.kdRatio },
+        { label: t("compare.totalKills"), valueA: stats.totalKills, valueB: otherStats.totalKills },
+        { label: t("compare.killsPerRaid"), valueA: stats.killsPerRaid, valueB: otherStats.killsPerRaid },
+        { label: t("compare.headshotRate"), valueA: stats.headshotRate, valueB: otherStats.headshotRate, suffix: "%" },
+        { label: t("compare.hoursPlayed"), valueA: stats.hoursPlayed, valueB: otherStats.hoursPlayed },
+        { label: t("compare.avgLifespan"), valueA: stats.avgLifespan, valueB: otherStats.avgLifespan, suffix: t("compare.minSuffix") },
+        { label: t("compare.winStreak"), valueA: stats.longestWinStreak, valueB: otherStats.longestWinStreak },
+        { label: t("compare.achievements"), valueA: stats.achievementsCount, valueB: otherStats.achievementsCount },
+        { label: t("compare.level"), valueA: stats.level, valueB: otherStats.level },
       ]
     : [];
 
@@ -146,7 +148,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
         onClick={() => setOpen(true)}
         className="px-4 py-2 bg-[var(--accent)] text-[var(--background)] rounded font-medium hover:bg-[var(--accent-dim)] transition-colors"
       >
-        Compare
+        {t("compare.button")}
       </button>
     );
   }
@@ -154,7 +156,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
   return (
     <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-[var(--accent)]">Comparison</h2>
+        <h2 className="text-lg font-bold text-[var(--accent)]">{t("compare.heading")}</h2>
         <button
           onClick={() => setOpen(false)}
           className="text-gray-500 hover:text-gray-300 text-xl"
@@ -172,7 +174,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
               : "bg-[var(--input-bg)] text-gray-400 hover:text-gray-200"
           }`}
         >
-          vs Average
+          {t("compare.vsAverage")}
         </button>
         <button
           onClick={() => setMode("player")}
@@ -182,7 +184,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
               : "bg-[var(--input-bg)] text-gray-400 hover:text-gray-200"
           }`}
         >
-          vs Player
+          {t("compare.vsPlayer")}
         </button>
       </div>
 
@@ -191,28 +193,28 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
           {avgError ? (
             <p className="text-[var(--danger)] text-sm">{avgError}</p>
           ) : !avgData ? (
-            <p className="text-gray-500 text-sm">Loading averages…</p>
+            <p className="text-gray-500 text-sm">{t("compare.loadingAverages")}</p>
           ) : avgData.n === 0 ? (
             <p className="text-gray-500 text-sm">
-              Your bracket:{" "}
-              <span className="text-[var(--accent)]">{bracket.label}</span> — no
-              players sampled here yet. The sample grows as players are looked up
-              by ID.
+              {t("compare.yourBracket")}{" "}
+              <span className="text-[var(--accent)]">{bracket.label} {t("unit.h")}</span>
+              {" — "}
+              {t("compare.noSample")}
             </p>
           ) : (
             <>
               <p className="text-sm text-gray-400">
-                Your bracket:{" "}
-                <span className="text-[var(--accent)]">{bracket.label}</span>{" "}
-                ({avgData.n.toLocaleString()} player{avgData.n === 1 ? "" : "s"} sampled)
+                {t("compare.yourBracket")}{" "}
+                <span className="text-[var(--accent)]">{bracket.label} {t("unit.h")}</span>{" "}
+                ({t("compare.sampled", { n: avgData.n.toLocaleString() })})
               </p>
               <div className="space-y-3">
                 {[
-                  { label: "K/D Ratio", player: stats.kdRatio, avg: avgData.averages.kd_ratio },
-                  { label: "Survival Rate", player: stats.survivalRate, avg: avgData.averages.survival_rate },
-                  { label: "Kills/Raid", player: stats.killsPerRaid, avg: avgData.averages.kills_per_raid },
-                  { label: "Total Kills", player: stats.totalKills, avg: avgData.averages.total_kills },
-                  { label: "Total Raids", player: stats.totalRaids, avg: avgData.averages.total_raids },
+                  { label: t("compare.kdRatio"), player: stats.kdRatio, avg: avgData.averages.kd_ratio },
+                  { label: t("compare.survivalRate"), player: stats.survivalRate, avg: avgData.averages.survival_rate },
+                  { label: t("compare.killsPerRaid"), player: stats.killsPerRaid, avg: avgData.averages.kills_per_raid },
+                  { label: t("compare.totalKills"), player: stats.totalKills, avg: avgData.averages.total_kills },
+                  { label: t("compare.totalRaids"), player: stats.totalRaids, avg: avgData.averages.total_raids },
                 ]
                   .filter((row): row is { label: string; player: number; avg: number } =>
                     typeof row.avg === "number"
@@ -226,9 +228,9 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
                         <span className="text-sm text-gray-400">{row.label}</span>
                         <div className="flex items-center gap-3 mt-1">
                           <span className="text-[var(--accent)] font-medium">
-                            You: {row.player.toFixed(2)}
+                            {t("compare.you")}: {row.player.toFixed(2)}
                           </span>
-                          <span className="text-gray-500">Avg: {row.avg.toFixed(2)}</span>
+                          <span className="text-gray-500">{t("common.avg")}: {row.avg.toFixed(2)}</span>
                         </div>
                       </div>
                       <PercentileBadge playerValue={row.player} medianValue={row.avg} />
@@ -248,7 +250,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder="Enter player nickname..."
+              placeholder={t("compare.nicknamePlaceholder")}
               className="flex-1 px-3 py-2 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
             />
             <button
@@ -256,7 +258,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
               disabled={loading}
               className="px-4 py-2 bg-[var(--accent)] text-[var(--background)] rounded text-sm font-medium hover:bg-[var(--accent-dim)] disabled:opacity-50"
             >
-              {loading ? "..." : "Search"}
+              {loading ? "..." : t("compare.search")}
             </button>
           </div>
 

@@ -1,3 +1,7 @@
+"use client";
+
+import { useI18n } from "@/lib/i18n/context";
+
 interface ComparisonRow {
   label: string;
   valueA: number;
@@ -17,13 +21,14 @@ export default function ComparisonTable({
   nameB,
   rows,
 }: ComparisonTableProps) {
+  const { t } = useI18n();
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse">
         <thead>
           <tr className="border-b border-[var(--card-border)]">
             <th className="py-3 px-4 text-left text-xs uppercase tracking-wider text-gray-500">
-              Metric
+              {t("cmp.metric")}
             </th>
             <th className="py-3 px-4 text-right text-xs uppercase tracking-wider text-[var(--accent)]">
               {nameA}

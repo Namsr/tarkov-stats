@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useI18n } from "@/lib/i18n/context";
 
 /**
  * Header link to the Average Player Statistics page that doubles as a toggle:
@@ -10,6 +11,7 @@ import { usePathname } from "next/navigation";
  */
 export default function AverageNavButton() {
   const pathname = usePathname();
+  const { t } = useI18n();
   const active = pathname === "/average";
 
   const base = "px-3 py-1.5 text-sm rounded border transition-colors";
@@ -19,7 +21,7 @@ export default function AverageNavButton() {
 
   return (
     <Link href={active ? "/" : "/average"} className={className}>
-      Average Player Statistics
+      {t("nav.average")}
     </Link>
   );
 }

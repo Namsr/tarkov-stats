@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { parsePlayerId } from "@/lib/player-id";
+import { useI18n } from "@/lib/i18n/context";
 
 export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const router = useRouter();
@@ -12,7 +14,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
   function submit() {
     const aid = parsePlayerId(query);
     if (aid === null) {
-      setError("Enter a numeric account ID or a tarkov.dev profile link.");
+      setError(t("search.error"));
       return;
     }
     setError("");
@@ -30,7 +32,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
             if (error) setError("");
           }}
           onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder="Account ID or tarkov.dev profile link..."
+          placeholder={t("search.placeholder")}
           autoFocus={autoFocus}
           className="flex-1 px-4 py-3 bg-[var(--input-bg)] border border-[var(--card-border)] rounded-lg text-[var(--foreground)] placeholder:text-gray-500 focus:outline-none focus:border-[var(--accent)] transition-colors"
         />
@@ -38,14 +40,14 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
           onClick={submit}
           className="px-5 py-3 bg-[var(--accent)] text-[var(--background)] rounded-lg font-medium hover:bg-[var(--accent-dim)] transition-colors"
         >
-          View
+          {t("search.view")}
         </button>
       </div>
 
       {error && <p className="mt-2 text-sm text-[var(--danger)]">{error}</p>}
 
       <p className="mt-3 text-xs text-gray-600">
-        Don&apos;t know the ID? Find the player on{" "}
+        {t("search.helpBefore")}{" "}
         <a
           href="https://tarkov.dev/players"
           target="_blank"
@@ -54,7 +56,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
         >
           tarkov.dev/players
         </a>{" "}
-        and paste the profile link or the number from its URL.
+        {t("search.helpAfter")}
       </p>
     </div>
   );
