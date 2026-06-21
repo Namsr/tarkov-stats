@@ -1,16 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
-import { ParsedPlayerStats, Streamer, PlayerSearchResult } from "@/types/tarkov";
-import { searchPlayerDirect, getProfileDirect } from "@/lib/player-api-client";
-import { parseProfileStats } from "@/lib/tarkov-api";
+import { ParsedPlayerStats } from "@/types/tarkov";
+import { parsePlayerId } from "@/lib/player-id";
 import { rangeForHours } from "@/lib/playtime-brackets";
 import ComparisonTable from "./ComparisonTable";
-import StreamerList from "./StreamerList";
 import PercentileBadge from "./PercentileBadge";
-import streamersData from "@/data/streamers.json";
 
 type Mode = "benchmark" | "player";
 
@@ -23,10 +20,9 @@ interface AverageData {
 
 interface Props {
   stats: ParsedPlayerStats;
-  turnstileToken: string;
 }
 
-export default function PlayerComparison({ stats, turnstileToken }: Props) {
+export default function PlayerComparison({ stats }: Props) {
   const { t } = useI18n();
   const { enabled: favEnabled, favorites } = useFavorites();
   const [open, setOpen] = useState(false);
@@ -35,10 +31,8 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
   const [avgError, setAvgError] = useState("");
   const [otherStats, setOtherStats] = useState<ParsedPlayerStats | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<PlayerSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const streamers: Streamer[] = streamersData;
 
   // Match the player into the same playtime bracket the /average page uses and
   // pull that bracket's live averages (and real sample count) from the DB.
@@ -68,64 +62,30 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
     };
   }, [open, mode, bracket.min, bracket.max, avgData, t]);
 
-  const fetchPlayerByNickname = useCallback(async (nickname: string) => {
-    setLoading(true);
-    setError("");
-    setOtherStats(null);
-    try {
-      const results = await searchPlayerDirect(nickname, turnstileToken);
-      if (results.length === 0) {
-        setError(t("compare.errPlayerNotFound"));
-        setLoading(false);
-        return;
-      }
-      const profile = await getProfileDirect(results[0].aid, turnstileToken);
-      setOtherStats(parseProfileStats(profile));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("compare.errFetchPlayer"));
-    }
-    setLoading(false);
-  }, [turnstileToken, t]);
-
-  async function handleSearch() {
-    if (searchQuery.length < 2) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await searchPlayerDirect(searchQuery, turnstileToken);
-      if (data.length === 0) {
-        setError(t("compare.errNoPlayers"));
-        setSearchResults([]);
-      } else if (data.length === 1) {
-        await fetchPlayerByAid(data[0].aid);
-        setSearchResults([]);
-      } else {
-        setSearchResults(data);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t("compare.errSearch"));
-    }
-    setLoading(false);
-  }
-
+  // Compare against another account by id, via the server route (no captcha
+  // needed) — same source the main player page uses, so stats include level.
   async function fetchPlayerByAid(aid: number) {
     setLoading(true);
     setError("");
     setOtherStats(null);
-    setSearchResults([]);
     try {
-      const profile = await getProfileDirect(aid, turnstileToken);
-      setOtherStats(parseProfileStats(profile));
+      const res = await fetch(`/api/player/profile?aid=${aid}`);
+      const data = (await res.json()) as { stats?: ParsedPlayerStats; error?: string };
+      if (!res.ok || !data.stats) throw new Error(data.error ?? t("compare.errFetchPlayer"));
+      setOtherStats(data.stats);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("compare.errFetchPlayer"));
     }
     setLoading(false);
   }
 
-  function handleStreamerSelect(streamer: Streamer) {
-    setMode("player");
-    setSearchQuery(streamer.nickname);
-    fetchPlayerByNickname(streamer.nickname);
+  function handleSearch() {
+    const aid = parsePlayerId(searchQuery);
+    if (aid === null) {
+      setError(t("search.error"));
+      return;
+    }
+    fetchPlayerByAid(aid);
   }
 
   const comparisonRows = otherStats
@@ -252,7 +212,7 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder={t("compare.nicknamePlaceholder")}
+              placeholder={t("compare.idPlaceholder")}
               className="flex-1 px-3 py-2 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
             />
             <button
@@ -264,29 +224,18 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
             </button>
           </div>
 
-          {searchResults.length > 1 && (
-            <ul className="bg-[var(--input-bg)] border border-[var(--card-border)] rounded max-h-40 overflow-y-auto">
-              {searchResults.map((r) => (
-                <li key={r.aid}>
-                  <button
-                    onClick={() => fetchPlayerByAid(r.aid)}
-                    className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--accent)]/10 flex justify-between"
-                  >
-                    <span>{r.name}</span>
-                    <span className="text-gray-500 text-xs">#{r.aid}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
           {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
 
-          {favEnabled && favorites.length > 0 && (
-            <div>
-              <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
-                {t("compare.favorites")}
-              </h3>
+          {/* Quick-pick from the user's favorites (replaces the streamer list) */}
+          <div>
+            <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+              {t("compare.favoritesHeading")}
+            </h3>
+            {!favEnabled ? (
+              <p className="text-sm text-gray-500">{t("fav.authRequired")}</p>
+            ) : favorites.length === 0 ? (
+              <p className="text-sm text-gray-500">{t("profile.empty")}</p>
+            ) : (
               <div className="flex flex-wrap gap-2">
                 {favorites.map((f) => (
                   <button
@@ -299,14 +248,8 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
                   </button>
                 ))}
               </div>
-            </div>
-          )}
-
-          <StreamerList
-            streamers={streamers}
-            onSelect={handleStreamerSelect}
-            loading={loading}
-          />
+            )}
+          </div>
 
           {otherStats && (
             <ComparisonTable

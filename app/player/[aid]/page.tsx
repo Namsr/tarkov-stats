@@ -174,7 +174,7 @@ export default function PlayerPage({ params }: Props) {
         </div>
 
         <div className="lg:w-96 shrink-0">
-          <PlayerComparison stats={stats} turnstileToken="" />
+          <PlayerComparison stats={stats} />
         </div>
       </div>
     </main>
