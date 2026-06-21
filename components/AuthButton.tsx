@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { SessionUser } from "@/lib/auth/session";
 import { useI18n } from "@/lib/i18n/context";
 
 export default function AuthButton() {
   const { t } = useI18n();
+  const pathname = usePathname();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -46,12 +48,15 @@ export default function AuthButton() {
   }
 
   const initial = (user.name || user.email || "?").charAt(0).toUpperCase();
+  // Toggle, like AverageNavButton: while on /profile a second click goes home.
+  const onProfile = pathname === "/profile";
 
   return (
     <div className="flex items-center gap-3">
       <Link
-        href="/profile"
+        href={onProfile ? "/" : "/profile"}
         title={t("nav.profile")}
+        aria-current={onProfile ? "page" : undefined}
         className="flex items-center gap-2 hover:opacity-80 transition-opacity"
       >
         {user.picture ? (
@@ -61,15 +66,25 @@ export default function AuthButton() {
             alt=""
             width={28}
             height={28}
-            className="rounded-full border border-[var(--card-border)]"
+            className={`rounded-full border ${
+              onProfile ? "border-[var(--accent)] ring-1 ring-[var(--accent)]" : "border-[var(--card-border)]"
+            }`}
             referrerPolicy="no-referrer"
           />
         ) : (
-          <div className="h-7 w-7 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold">
+          <div
+            className={`h-7 w-7 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold ${
+              onProfile ? "ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-[var(--background)]" : ""
+            }`}
+          >
             {initial}
           </div>
         )}
-        <span className="text-sm text-gray-300 hidden sm:inline max-w-32 truncate">
+        <span
+          className={`text-sm hidden sm:inline max-w-32 truncate ${
+            onProfile ? "text-[var(--accent)]" : "text-gray-300"
+          }`}
+        >
           {user.name || user.email}
         </span>
       </Link>
