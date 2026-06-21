@@ -19,6 +19,19 @@ CREATE TABLE IF NOT EXISTS players (
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
+
+-- Игровые аккаунты, привязанные пользователем (вход через Google) в избранное.
+-- Ключ — user_sub (стабильный Google-id из JWT-сессии) + aid. nickname хранится
+-- снимком, чтобы рисовать список без обращения к tarkov.dev; обновляется при
+-- "обновить все". is_main помечает основной аккаунт пользователя (ровно один).
+CREATE TABLE IF NOT EXISTS favorites (
+  user_sub TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  nickname TEXT, note TEXT, is_main INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_sub, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_sub);
 `;
 
 const COLS = [
@@ -91,6 +104,9 @@ function toAchStats(
 // продолжают обновляться). Защищает диск VPS и датасет /average от
 // автоматического наполнения ботами. 0 = без лимита.
 const MAX_PLAYERS = Number(process.env.MAX_PLAYERS ?? 200_000) || 0;
+
+// Лимит избранного на пользователя — защита от раздувания таблицы одним аккаунтом.
+const MAX_FAVORITES = 50;
 
 function avgSql(where: string): string {
   return `SELECT COUNT(*) AS n, ${AVG_COLS.map((c) => `AVG(${c}) AS ${c}`).join(", ")} FROM players ${where}`;
@@ -169,13 +185,24 @@ function warn(msg: string) {
   }
 }
 
-// Cloudflare D1 backend.
-async function d1Store(): Promise<PlayerStore | null> {
+// Cloudflare D1 binding (env.DB), or null off-Workers / when unbound. Shared by
+// the player store and the favorites store.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getD1(): Promise<any | null> {
   try {
     const mod = await import("@opennextjs/cloudflare");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = (mod.getCloudflareContext().env as any).DB;
-    if (!db) return null;
+    return (mod.getCloudflareContext().env as any).DB ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Cloudflare D1 backend.
+async function d1Store(): Promise<PlayerStore | null> {
+  const db = await getD1();
+  if (!db) return null;
+  try {
     return {
       async upsert(aid, stats, ids) {
         if (MAX_PLAYERS > 0) {
@@ -211,10 +238,13 @@ async function d1Store(): Promise<PlayerStore | null> {
   }
 }
 
-// node:sqlite backend (self-hosted). DB handle is cached per process.
+// node:sqlite backend (self-hosted). DB handle is cached per process and shared
+// by the player store and the favorites store (one file, one connection, schema
+// applied once).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any = null;
-async function sqliteStore(): Promise<PlayerStore | null> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getSqliteDb(): Promise<any | null> {
   try {
     if (!sqliteDb) {
       const fs = await import("node:fs");
@@ -227,7 +257,17 @@ async function sqliteStore(): Promise<PlayerStore | null> {
       sqliteDb = new sqlite.DatabaseSync(file);
       sqliteDb.exec(SCHEMA);
     }
-    const db = sqliteDb;
+    return sqliteDb;
+  } catch (e) {
+    warn("sqlite unavailable: " + (e as Error).message);
+    return null;
+  }
+}
+
+async function sqliteStore(): Promise<PlayerStore | null> {
+  const db = await getSqliteDb();
+  if (!db) return null;
+  try {
     return {
       async upsert(aid, stats, ids) {
         if (MAX_PLAYERS > 0) {
@@ -264,4 +304,157 @@ async function sqliteStore(): Promise<PlayerStore | null> {
 /** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
 export async function getStore(): Promise<PlayerStore | null> {
   return (await d1Store()) ?? (await sqliteStore());
+}
+
+// ── Favorites: game accounts a signed-in user has pinned ──────────────────────
+
+/** One pinned game account, as stored for a user. */
+export interface Favorite {
+  aid: number;
+  /** Snapshot of the nickname (refreshed by "refresh all"); may be null. */
+  nickname: string | null;
+  /** Free-text user note / label, or null. */
+  note: string | null;
+  /** Whether this is the user's own ("main") account. At most one per user. */
+  isMain: boolean;
+  /** Unix ms when it was pinned. */
+  createdAt: number;
+}
+
+export interface FavoritesStore {
+  /** A user's favorites, main first, then newest first. */
+  list(userSub: string): Promise<Favorite[]>;
+  /** Pin an account. "exists" if already pinned, "limit" if over MAX_FAVORITES. */
+  add(
+    userSub: string,
+    aid: number,
+    nickname: string | null,
+    note: string | null
+  ): Promise<"ok" | "exists" | "limit">;
+  /** Unpin. */
+  remove(userSub: string, aid: number): Promise<void>;
+  /** Set/clear the note. */
+  setNote(userSub: string, aid: number, note: string | null): Promise<void>;
+  /** Mark one favorite as the user's main account (clears the flag on the rest). */
+  setMain(userSub: string, aid: number): Promise<void>;
+  /** Refresh the stored nickname snapshot. */
+  updateNickname(userSub: string, aid: number, nickname: string | null): Promise<void>;
+}
+
+const FAV_LIST_SQL =
+  "SELECT aid, nickname, note, is_main, created_at FROM favorites " +
+  "WHERE user_sub = ? ORDER BY is_main DESC, created_at DESC";
+const FAV_INSERT_SQL =
+  "INSERT INTO favorites (user_sub, aid, nickname, note, is_main, created_at) " +
+  "VALUES (?, ?, ?, ?, 0, ?)";
+
+interface FavRow {
+  aid: number;
+  nickname: string | null;
+  note: string | null;
+  is_main: number;
+  created_at: number;
+}
+
+function toFavorites(rows: FavRow[]): Favorite[] {
+  return rows.map((r) => ({
+    aid: Number(r.aid),
+    nickname: r.nickname ?? null,
+    note: r.note ?? null,
+    isMain: Number(r.is_main) === 1,
+    createdAt: Number(r.created_at),
+  }));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function d1FavoritesStore(db: any): FavoritesStore {
+  return {
+    async list(userSub) {
+      const { results } = await db.prepare(FAV_LIST_SQL).bind(userSub).all();
+      return toFavorites((results ?? []) as FavRow[]);
+    },
+    async add(userSub, aid, nickname, note) {
+      const existing = await db
+        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
+        .bind(userSub, aid)
+        .first();
+      if (existing) return "exists";
+      const row = (await db
+        .prepare("SELECT COUNT(*) AS n FROM favorites WHERE user_sub = ?")
+        .bind(userSub)
+        .first()) as { n: number } | null;
+      if (row && row.n >= MAX_FAVORITES) return "limit";
+      await db.prepare(FAV_INSERT_SQL).bind(userSub, aid, nickname, note, Date.now()).run();
+      return "ok";
+    },
+    async remove(userSub, aid) {
+      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").bind(userSub, aid).run();
+    },
+    async setNote(userSub, aid, note) {
+      await db
+        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?")
+        .bind(note, userSub, aid)
+        .run();
+    },
+    async setMain(userSub, aid) {
+      await db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").bind(userSub).run();
+      await db
+        .prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND aid = ?")
+        .bind(userSub, aid)
+        .run();
+    },
+    async updateNickname(userSub, aid, nickname) {
+      await db
+        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?")
+        .bind(nickname, userSub, aid)
+        .run();
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sqliteFavoritesStore(db: any): FavoritesStore {
+  return {
+    async list(userSub) {
+      return toFavorites(db.prepare(FAV_LIST_SQL).all(userSub) as FavRow[]);
+    },
+    async add(userSub, aid, nickname, note) {
+      const existing = db
+        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
+        .get(userSub, aid);
+      if (existing) return "exists";
+      const row = db
+        .prepare("SELECT COUNT(*) AS n FROM favorites WHERE user_sub = ?")
+        .get(userSub) as { n: number };
+      if (row && row.n >= MAX_FAVORITES) return "limit";
+      db.prepare(FAV_INSERT_SQL).run(userSub, aid, nickname, note, Date.now());
+      return "ok";
+    },
+    async remove(userSub, aid) {
+      db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").run(userSub, aid);
+    },
+    async setNote(userSub, aid, note) {
+      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
+    },
+    async setMain(userSub, aid) {
+      db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").run(userSub);
+      db.prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND aid = ?").run(userSub, aid);
+    },
+    async updateNickname(userSub, aid, nickname) {
+      db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
+    },
+  };
+}
+
+/**
+ * Returns the active favorites store (D1 on Cloudflare, else node:sqlite), or
+ * null. On D1 the `favorites` table must be created via migration first
+ * (scripts/favorites-d1.sql); node:sqlite auto-creates it from SCHEMA.
+ */
+export async function getFavoritesStore(): Promise<FavoritesStore | null> {
+  const d1 = await getD1();
+  if (d1) return d1FavoritesStore(d1);
+  const sq = await getSqliteDb();
+  if (sq) return sqliteFavoritesStore(sq);
+  return null;
 }

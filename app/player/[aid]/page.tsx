@@ -6,6 +6,7 @@ import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerComparison from "@/components/PlayerComparison";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
+import FavoriteButton from "@/components/FavoriteButton";
 import { useI18n } from "@/lib/i18n/context";
 
 interface Props {
@@ -116,7 +117,7 @@ export default function PlayerPage({ params }: Props) {
 
       <div className="flex flex-col lg:flex-row gap-8">
         <div className="flex-1 space-y-6">
-          <div className="flex items-center gap-4">
+          <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-[var(--accent)]">
                 {stats.nickname}
@@ -129,6 +130,7 @@ export default function PlayerPage({ params }: Props) {
                 <span>#{aid}</span>
               </div>
             </div>
+            <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

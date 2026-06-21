@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { useFavorites } from "@/lib/favorites/context";
 import { ParsedPlayerStats, Streamer, PlayerSearchResult } from "@/types/tarkov";
 import { searchPlayerDirect, getProfileDirect } from "@/lib/player-api-client";
 import { parseProfileStats } from "@/lib/tarkov-api";
@@ -27,6 +28,7 @@ interface Props {
 
 export default function PlayerComparison({ stats, turnstileToken }: Props) {
   const { t } = useI18n();
+  const { enabled: favEnabled, favorites } = useFavorites();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("benchmark");
   const [avgData, setAvgData] = useState<AverageData | null>(null);
@@ -279,6 +281,26 @@ export default function PlayerComparison({ stats, turnstileToken }: Props) {
           )}
 
           {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+
+          {favEnabled && favorites.length > 0 && (
+            <div>
+              <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+                {t("compare.favorites")}
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {favorites.map((f) => (
+                  <button
+                    key={f.aid}
+                    onClick={() => fetchPlayerByAid(f.aid)}
+                    disabled={loading}
+                    className="px-3 py-1.5 text-sm bg-[var(--card-bg)] border border-[var(--card-border)] rounded hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors disabled:opacity-50"
+                  >
+                    {f.nickname || `#${f.aid}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <StreamerList
             streamers={streamers}
