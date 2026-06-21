@@ -6,6 +6,7 @@ import AverageNavButton from "@/components/AverageNavButton";
 import LanguageToggle from "@/components/LanguageToggle";
 import FaqWidget from "@/components/FaqWidget";
 import { LanguageProvider } from "@/lib/i18n/context";
+import { FavoritesProvider } from "@/lib/favorites/context";
 import { dict, type Lang } from "@/lib/i18n/dictionary";
 import "./globals.css";
 
@@ -36,18 +37,20 @@ export default async function RootLayout({
     <html lang={lang} className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]">
         <LanguageProvider initialLang={lang}>
-          <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">
-            <Link href="/" className="font-bold tracking-tight text-[var(--accent)]">
-              TARKOV STATS
-            </Link>
-            <div className="flex items-center gap-3">
-              <AverageNavButton />
-              <AuthButton />
-              <LanguageToggle />
-            </div>
-          </header>
-          {children}
-          <FaqWidget />
+          <FavoritesProvider>
+            <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">
+              <Link href="/" className="font-bold tracking-tight text-[var(--accent)]">
+                TARKOV STATS
+              </Link>
+              <div className="flex items-center gap-3">
+                <AverageNavButton />
+                <AuthButton />
+                <LanguageToggle />
+              </div>
+            </header>
+            {children}
+            <FaqWidget />
+          </FavoritesProvider>
         </LanguageProvider>
       </body>
     </html>

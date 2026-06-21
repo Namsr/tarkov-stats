@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { SessionUser } from "@/lib/auth/session";
 import { useI18n } from "@/lib/i18n/context";
 
@@ -48,24 +49,30 @@ export default function AuthButton() {
 
   return (
     <div className="flex items-center gap-3">
-      {user.picture ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={user.picture}
-          alt=""
-          width={28}
-          height={28}
-          className="rounded-full border border-[var(--card-border)]"
-          referrerPolicy="no-referrer"
-        />
-      ) : (
-        <div className="h-7 w-7 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold">
-          {initial}
-        </div>
-      )}
-      <span className="text-sm text-gray-300 hidden sm:inline max-w-32 truncate">
-        {user.name || user.email}
-      </span>
+      <Link
+        href="/profile"
+        title={t("nav.profile")}
+        className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+      >
+        {user.picture ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={user.picture}
+            alt=""
+            width={28}
+            height={28}
+            className="rounded-full border border-[var(--card-border)]"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="h-7 w-7 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold">
+            {initial}
+          </div>
+        )}
+        <span className="text-sm text-gray-300 hidden sm:inline max-w-32 truncate">
+          {user.name || user.email}
+        </span>
+      </Link>
       <button
         onClick={logout}
         disabled={loggingOut}
