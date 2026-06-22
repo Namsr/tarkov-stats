@@ -95,7 +95,7 @@ function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
  * brackets are simply absent from the input (so gaps collapse), and the bin
  * resolution adapts to how much data exists.
  */
-export function buildHistogram(aggs: BracketAgg[]): HistBin[] {
+export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): HistBin[] {
   const cells = aggs
     .map((b) => ({ ...parseKey(b.bracket_key), n: b.n, sum: b.sum }))
     .filter((c) => Number.isFinite(c.lo) && c.n > 0)
@@ -103,9 +103,15 @@ export function buildHistogram(aggs: BracketAgg[]): HistBin[] {
 
   if (cells.length === 0) return [];
 
+  // Pool harder until the bars fit the caller's budget (e.g. how many columns
+  // the chart is wide enough to show). Never below a single bar — you can't
+  // merge past one — and never above the hard readability cap.
+  const cap = Number.isFinite(maxBins)
+    ? Math.max(1, Math.min(MAX_BINS, Math.floor(maxBins)))
+    : MAX_BINS;
   let minCount = MIN_BIN_COUNT;
   let bins = mergeToThreshold(cells, minCount);
-  while (bins.length > MAX_BINS) {
+  while (bins.length > cap && bins.length > 1) {
     minCount = Math.ceil(minCount * 1.5);
     bins = mergeToThreshold(cells, minCount);
   }

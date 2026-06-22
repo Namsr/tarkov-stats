@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import StatCard from "@/components/StatCard";
@@ -43,6 +43,13 @@ const METRICS: { key: string; suffix?: string; decimals?: number }[] = [
   { key: "prestige", decimals: 2 },
 ];
 
+// Bar geometry, kept in sync with the chart's `min-w-[26px]` floor and the
+// `gap-1.5` (6px) column gap below. Used to pick how many bars fit the measured
+// chart width so the histogram pools to fit instead of overflowing into a
+// horizontal scrollbar.
+const BAR_MIN_PX = 26;
+const BAR_GAP_PX = 6;
+
 function fmt(v: number | null | undefined, decimals = 1): string {
   if (v == null || Number.isNaN(v)) return "—";
   return v.toLocaleString(undefined, {
@@ -59,6 +66,22 @@ export default function AveragePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAch, setShowAch] = useState(false);
+  // Measured content width of the chart card, so we can pool the histogram down
+  // to however many bars actually fit instead of spilling into a scrollbar.
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [chartW, setChartW] = useState(0);
+
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      // contentRect.width is the box inside the card's padding — exactly the
+      // room the bars get.
+      setChartW(entries[0].contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   function openBreakdown() {
     setShowAch(true);
@@ -107,7 +130,12 @@ export default function AveragePage() {
   // not the pending selection, so labels never mismatch mid-fetch.
   const yDef = resolveY(data?.metric);
   const isCount = yDef.agg === "count";
-  const bins = buildHistogram(data?.brackets ?? []);
+  // How many `min-w-[26px]` bars (+6px gaps) fit the measured width. Before the
+  // first measurement (chartW 0) fall back to the module default. N bars need
+  // N*BAR + (N-1)*GAP px, so N = floor((width + GAP) / (BAR + GAP)).
+  const fitBins =
+    chartW > 0 ? Math.max(1, Math.floor((chartW + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX))) : undefined;
+  const bins = buildHistogram(data?.brackets ?? [], fitBins);
   const valueOf = (b: { n: number; sum: number }) => (isCount ? b.n : b.n > 0 ? b.sum / b.n : 0);
   const peak = Math.max(0, ...bins.map(valueOf));
   const maxVal = peak || 1; // avoid /0 when every value is 0; otherwise scale to the real peak
@@ -213,7 +241,10 @@ export default function AveragePage() {
         <MetricPicker value={yMetric} onChange={setYMetric} />
 
         {/* Chart */}
-        <div className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+        <div
+          ref={chartRef}
+          className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4"
+        >
           <div className="text-[11px] text-gray-500 mb-2">
             <span className="text-[var(--accent)] font-medium">
               {yDef.agg === "avg" ? `${t("common.avg")} ${t("metric." + yDef.key)}` : t("metric." + yDef.key)}
