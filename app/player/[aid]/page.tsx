@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerComparison from "@/components/PlayerComparison";
+import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
 import { useI18n } from "@/lib/i18n/context";
@@ -173,7 +174,8 @@ export default function PlayerPage({ params }: Props) {
           <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
         </div>
 
-        <div className="lg:w-96 shrink-0">
+        <div className="lg:w-96 shrink-0 space-y-6">
+          <CheaterScore stats={stats} />
           <PlayerComparison stats={stats} />
         </div>
       </div>

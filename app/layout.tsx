@@ -35,7 +35,14 @@ export default async function RootLayout({
 
   return (
     <html lang={lang} className="h-full antialiased">
-      <body className="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]">
+      {/* suppressHydrationWarning: browser extensions (Bitdefender etc.) inject
+          attributes like bis_register / __processed_…__ into <body> before React
+          hydrates. This only ignores attribute/text diffs on <body> itself —
+          real hydration mismatches in the content tree still surface. */}
+      <body
+        className="min-h-full flex flex-col bg-[var(--background)] text-[var(--foreground)]"
+        suppressHydrationWarning
+      >
         <LanguageProvider initialLang={lang}>
           <FavoritesProvider>
             <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">

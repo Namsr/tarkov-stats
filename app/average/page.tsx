@@ -225,6 +225,10 @@ export default function AveragePage() {
         </div>
       )}
 
+      {data && sampleN > 0 && (
+        <p className="text-xs text-gray-600 mt-3">{t("average.robustNote")}</p>
+      )}
+
       {/* Achievement breakdown — drilldown from the "Avg achievements" card above. */}
       <AchievementBreakdown open={showAch} onToggle={() => setShowAch((o) => !o)} />
 
