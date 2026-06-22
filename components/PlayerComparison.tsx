@@ -95,7 +95,6 @@ export default function PlayerComparison({ stats }: Props) {
         { label: t("compare.kdRatio"), valueA: stats.kdRatio, valueB: otherStats.kdRatio },
         { label: t("compare.totalKills"), valueA: stats.totalKills, valueB: otherStats.totalKills },
         { label: t("compare.killsPerRaid"), valueA: stats.killsPerRaid, valueB: otherStats.killsPerRaid },
-        { label: t("compare.headshotRate"), valueA: stats.headshotRate, valueB: otherStats.headshotRate, suffix: "%" },
         { label: t("compare.hoursPlayed"), valueA: stats.hoursPlayed, valueB: otherStats.hoursPlayed },
         { label: t("compare.avgLifespan"), valueA: stats.avgLifespan, valueB: otherStats.avgLifespan, suffix: t("compare.minSuffix") },
         { label: t("compare.winStreak"), valueA: stats.longestWinStreak, valueB: otherStats.longestWinStreak },

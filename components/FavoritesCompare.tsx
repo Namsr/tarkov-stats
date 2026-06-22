@@ -26,7 +26,6 @@ const METRICS: MetricDef[] = [
   { key: "kpr", labelKey: "compare.killsPerRaid", get: (s) => s.killsPerRaid, dec: 2 },
   { key: "kills", labelKey: "compare.totalKills", get: (s) => s.totalKills, dec: 0 },
   { key: "raids", labelKey: "compare.totalRaids", get: (s) => s.totalRaids, dec: 0 },
-  { key: "hs", labelKey: "compare.headshotRate", get: (s) => s.headshotRate, suffix: "%", dec: 1 },
   { key: "hours", labelKey: "compare.hoursPlayed", get: (s) => s.hoursPlayed, dec: 0 },
   { key: "streak", labelKey: "compare.winStreak", get: (s) => s.longestWinStreak, dec: 0 },
   { key: "level", labelKey: "compare.level", get: (s) => s.level, dec: 0 },

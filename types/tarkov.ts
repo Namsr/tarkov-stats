@@ -99,8 +99,6 @@ export interface ParsedPlayerStats {
   achievementsCount: number;
   registrationDate: number;
   lastActiveDate: number;
-  headshots: number;
-  headshotRate: number;
   avgLifespan: number;
   totalLootValue: number;
   [key: string]: unknown;

@@ -236,9 +236,6 @@ export function parseProfileStats(
   const hoursPlayed = inGameSeconds / 3600;
   const avgLifespan = totalRaids > 0 ? inGameSeconds / totalRaids / 60 : 0;
 
-  const headshots = getCounterValue(pmcCounters, "HeadShots");
-  const headshotRate = totalKills > 0 ? (headshots / totalKills) * 100 : 0;
-
   const longestWinStreak = getCounterValue(pmcCounters, "LongestWinStreak", "Pmc");
 
   const achievementsCount = profile.achievements
@@ -272,8 +269,6 @@ export function parseProfileStats(
     achievementsCount,
     registrationDate: profile.info?.registrationDate ?? 0,
     lastActiveDate: profile.info?.lastActiveDate ?? 0,
-    headshots,
-    headshotRate: round(headshotRate, 1),
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
   };
