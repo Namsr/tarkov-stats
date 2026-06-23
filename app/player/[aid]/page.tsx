@@ -175,7 +175,7 @@ export default function PlayerPage({ params }: Props) {
         </div>
 
         <div className="lg:w-96 shrink-0 space-y-6">
-          <CheaterScore stats={stats} />
+          <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
           <PlayerComparison stats={stats} />
         </div>
       </div>

@@ -34,36 +34,63 @@ function needle(score: number): { x: number; y: number } {
   return { x: 160 + 96 * Math.cos(rad), y: 160 - 96 * Math.sin(rad) };
 }
 
-export default function CheaterScore({ stats }: { stats: ParsedPlayerStats }) {
+// /api/average/achievements response (only the fields the score needs).
+interface AchPayload {
+  total: number;
+  achievements: { id: string; owners: number; samplePct: number; meanHours: number }[];
+}
+
+export default function CheaterScore({
+  stats,
+  ownedAchievementIds,
+}: {
+  stats: ParsedPlayerStats;
+  ownedAchievementIds: string[];
+}) {
   const { t } = useI18n();
   const [result, setResult] = useState<CheaterScoreResult | null>(null);
   const [loading, setLoading] = useState(true);
 
   const bracket = rangeForHours(stats.hoursPlayed);
+  // Stable dep: the effect refetches only when the owned-achievement set changes.
+  const ownedKey = ownedAchievementIds.join(",");
 
   useEffect(() => {
     let cancelled = false;
+    const ownedIds = ownedKey ? ownedKey.split(",") : [];
     const params = new URLSearchParams();
     params.set("minHours", String(bracket.min));
     if (bracket.max != null) params.set("maxHours", String(bracket.max));
 
-    fetch(`/api/baseline?${params.toString()}`)
-      .then((r) => (r.ok ? (r.json() as Promise<Baseline>) : null))
-      .then((baseline) => {
-        if (!cancelled) setResult(scoreCheater(stats, baseline));
-      })
-      .catch(() => {
-        // No baseline → still show the absolute-floor score.
-        if (!cancelled) setResult(scoreCheater(stats, null));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    Promise.all([
+      fetch(`/api/baseline?${params.toString()}`)
+        .then((r) => (r.ok ? (r.json() as Promise<Baseline>) : null))
+        .catch(() => null),
+      fetch(`/api/average/achievements`)
+        .then((r) => (r.ok ? (r.json() as Promise<AchPayload>) : null))
+        .catch(() => null),
+    ]).then(([baseline, achPayload]) => {
+      if (cancelled) return;
+      const ach =
+        achPayload && Array.isArray(achPayload.achievements)
+          ? {
+              ownedIds,
+              stats: achPayload.achievements.map((a) => ({
+                id: a.id,
+                owners: a.owners,
+                samplePct: a.samplePct,
+                meanHours: a.meanHours,
+              })),
+            }
+          : null;
+      setResult(scoreCheater(stats, baseline, ach));
+      setLoading(false);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [stats, bracket.min, bracket.max]);
+  }, [stats, bracket.min, bracket.max, ownedKey]);
 
   if (loading || !result) {
     return <div className="h-64 skeleton rounded-lg" />;

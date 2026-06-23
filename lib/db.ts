@@ -168,7 +168,7 @@ function emptyAverageRow(): AverageRow {
 // Signals scored for "cheating risk" (suspicious when high). The baseline returns
 // the mean + std of each within a playtime range, for within-bracket z-scores.
 // Keep in sync with SIGNALS in lib/cheater-score.ts.
-const SCORE_COLS = ["survival_rate", "kd_ratio", "pmc_kd_ratio", "kills_per_raid"];
+const SCORE_COLS = ["survival_rate", "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "longest_win_streak"];
 
 // One row: count plus AVG(col) and AVG(col*col) per metric, so std =
 // sqrt(E[x²] − E[x]²) is one pass. Columns are whitelisted constants, re-checked

@@ -3,15 +3,12 @@
 // signals drove it. This is a statistical SUSPICION score, not proof — see the
 // disclaimer rendered in the UI.
 //
-// Each scored signal is suspicious only when HIGH (high survival, K/D, kills/raid).
-// Two evidence sources are combined per signal:
-//   - absolute ramp [normal..extreme]: a day-1 floor, also used when the player's
-//     playtime bracket has too few samples for a meaningful z-score. Thresholds
-//     sit at deliberately blatant levels so legit veterans aren't flagged by it.
-//   - within-bracket z-score: (value − mean) / std over players of SIMILAR
-//     playtime, so a 3000 h veteran is judged against other veterans, not rookies.
-// We take the max of the two, so either a blatant absolute value OR a strong
-// in-bracket anomaly raises the score.
+// Numeric signals are suspicious only when HIGH. Each combines two evidence axes
+// (max of the two): an absolute ramp [normal..extreme] (a day-1 floor, also used
+// when the playtime bracket is too thin for a z-score) and a within-bracket
+// z-score (vs players of SIMILAR playtime, so a veteran is judged against
+// veterans). A separate achievement signal flags owning a rare, normally-late
+// achievement at low playtime (e.g. "Master of ULTRA" at 100 h).
 
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
@@ -22,52 +19,73 @@ export interface MetricBaseline {
 
 /** Mean + std of each scored metric over a playtime bracket (from /api/baseline). */
 export interface Baseline {
-  /** Players the baseline was computed over. */
   n: number;
   metrics: Record<string, MetricBaseline>;
+}
+
+/** Per-achievement baseline row used by the rare/early-achievement signal. */
+export interface AchievementStat {
+  id: string;
+  /** Players in the sample who own it. */
+  owners: number;
+  /** Share of the whole sample that owns it (rarity, %). */
+  samplePct: number;
+  /** Typical current playtime (hours) of owners — proxy for "normally held by". */
+  meanHours: number;
+}
+
+export interface AchievementInput {
+  /** Achievement ids the scored player owns. */
+  ownedIds: string[];
+  /** The sample-wide per-achievement baseline. */
+  stats: AchievementStat[];
 }
 
 export type RiskTier = "low" | "medium" | "high" | "severe";
 
 export interface ScoreFactor {
-  /** Metric key — reuses the shared `metric.*` i18n labels. */
+  /** Factor key — reuses the shared `metric.*` i18n labels. */
   key: string;
-  /** This signal's 0..(weight*100) contribution to the final score. */
+  /** This factor's 0..(weight*100) contribution to the final score. */
   points: number;
-  /** The player's raw value for this signal. */
+  /** The player's raw value for this factor (0 for the achievement factor). */
   value: number;
-  /** Within-bracket z-score, or null when the sample is too thin to trust. */
+  /** Within-bracket z-score, or null (absolute-only or achievement factor). */
   z: number | null;
 }
 
 export interface CheaterScoreResult {
-  /** Final risk score, 0–100. */
   score: number;
   tier: RiskTier;
-  /** Per-signal contributions, sorted high→low. */
   factors: ScoreFactor[];
-  /** Bracket sample size the baseline came from. */
   sampleN: number;
-  /** Whether within-bracket z-scores contributed (vs the absolute-only floor). */
   basedOnSample: boolean;
 }
 
 interface SignalDef {
   key: string;
   weight: number;
-  /** At/below this the signal is unremarkable (contribution 0). */
   normal: number;
-  /** At/above this it's maximally suspicious (contribution 1). */
   extreme: number;
   get: (s: ParsedPlayerStats) => number;
 }
 
+// Numeric signals (weights sum with ACH_WEIGHT to 1.0).
 const SIGNALS: SignalDef[] = [
-  { key: "survival_rate", weight: 0.28, normal: 55, extreme: 88, get: (s) => s.survivalRate },
-  { key: "kd_ratio", weight: 0.24, normal: 6, extreme: 16, get: (s) => s.kdRatio },
-  { key: "pmc_kd_ratio", weight: 0.24, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
-  { key: "kills_per_raid", weight: 0.24, normal: 3, extreme: 8, get: (s) => s.killsPerRaid },
+  { key: "survival_rate", weight: 0.18, normal: 55, extreme: 88, get: (s) => s.survivalRate },
+  { key: "kd_ratio", weight: 0.16, normal: 6, extreme: 16, get: (s) => s.kdRatio },
+  { key: "pmc_kd_ratio", weight: 0.12, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
+  { key: "kills_per_raid", weight: 0.14, normal: 3, extreme: 8, get: (s) => s.killsPerRaid },
+  { key: "longest_win_streak", weight: 0.1, normal: 15, extreme: 45, get: (s) => s.longestWinStreak },
 ];
+
+// Achievement signal — weighted highest: owning a rare, normally-late achievement
+// at low playtime is hard to fake and a strong tell.
+const ACH_WEIGHT = 0.3;
+const ACH_MIN_OWNERS = 10; // enough owners for a trustworthy baseline
+const ACH_LATE_GAME_HOURS = 200; // only achievements that normally take real time
+const ACH_RARE_LO = 3; // samplePct ≤ this → fully "rare"
+const ACH_RARE_HI = 30; // samplePct ≥ this → not rare
 
 const MIN_SAMPLE = 30; // bracket players needed before z-scores are trusted
 const Z_LO = 2; // z at which a metric starts contributing
@@ -82,9 +100,29 @@ function tierFor(score: number): RiskTier {
   return "severe";
 }
 
+// Strongest "rare achievement owned far too early" contribution among owned ones.
+// earliness = how far the player's hours sit below the achievement's typical owner
+// hours; rarity scales it up for uncommon achievements.
+function achievementSub(playerHours: number, ach: AchievementInput | null | undefined): number {
+  if (!ach || !(playerHours > 0)) return 0;
+  const owned = new Set(ach.ownedIds);
+  let best = 0;
+  for (const a of ach.stats) {
+    if (!owned.has(a.id)) continue;
+    if (a.owners < ACH_MIN_OWNERS || a.meanHours < ACH_LATE_GAME_HOURS) continue;
+    const earliness = clamp01((a.meanHours - playerHours) / a.meanHours);
+    if (earliness <= 0) continue;
+    const rarity = clamp01((ACH_RARE_HI - a.samplePct) / (ACH_RARE_HI - ACH_RARE_LO));
+    const contribution = earliness * (0.5 + 0.5 * rarity);
+    if (contribution > best) best = contribution;
+  }
+  return best;
+}
+
 export function scoreCheater(
   stats: ParsedPlayerStats,
-  baseline: Baseline | null
+  baseline: Baseline | null,
+  achievements?: AchievementInput | null
 ): CheaterScoreResult {
   const sampleN = baseline?.n ?? 0;
   const basedOnSample = sampleN >= MIN_SAMPLE;
@@ -104,6 +142,10 @@ export function scoreCheater(
     const sub = basedOnSample ? Math.max(abs, rel) : abs;
     return { key: sig.key, points: sig.weight * sub * 100, value, z };
   });
+
+  // Rare/early achievement factor (independent of the bracket sample).
+  const aSub = achievementSub(stats.hoursPlayed, achievements);
+  factors.push({ key: "ach_early", points: ACH_WEIGHT * aSub * 100, value: aSub, z: null });
 
   const score = Math.round(factors.reduce((s, f) => s + f.points, 0));
   factors.sort((a, b) => b.points - a.points);
