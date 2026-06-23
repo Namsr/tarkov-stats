@@ -29,7 +29,7 @@ export default function PercentileBadge({
 
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium ${bgColor}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium whitespace-nowrap ${bgColor}`}
     >
       {isAbove ? "▲" : "▼"} {absDiff.toFixed(0)}% {label}
     </span>

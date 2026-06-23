@@ -6,8 +6,7 @@ import { useFavorites } from "@/lib/favorites/context";
 import { ParsedPlayerStats } from "@/types/tarkov";
 import { parsePlayerId } from "@/lib/player-id";
 import { rangeForHours } from "@/lib/playtime-brackets";
-import ComparisonTable from "./ComparisonTable";
-import PercentileBadge from "./PercentileBadge";
+import ComparisonTable, { type ComparisonRow } from "./ComparisonTable";
 
 type Mode = "benchmark" | "player";
 
@@ -21,6 +20,28 @@ interface AverageData {
 interface Props {
   stats: ParsedPlayerStats;
 }
+
+// Metrics shown in BOTH comparison modes — identical rows and widths; only the
+// opponent column (the bracket average vs the picked player) differs. `avg` is the
+// /api/average column name; `get` reads the same value off a ParsedPlayerStats.
+const METRICS: {
+  get: (s: ParsedPlayerStats) => number;
+  avg: string;
+  labelKey: string;
+  decimals: number;
+  suffix?: string;
+}[] = [
+  { get: (s) => s.kdRatio, avg: "kd_ratio", labelKey: "compare.kdRatio", decimals: 2 },
+  { get: (s) => s.pmcKdRatio, avg: "pmc_kd_ratio", labelKey: "metric.pmc_kd_ratio", decimals: 2 },
+  { get: (s) => s.survivalRate, avg: "survival_rate", labelKey: "compare.survivalRate", decimals: 1, suffix: "%" },
+  { get: (s) => s.killsPerRaid, avg: "kills_per_raid", labelKey: "compare.killsPerRaid", decimals: 2 },
+  { get: (s) => s.totalKills, avg: "total_kills", labelKey: "compare.totalKills", decimals: 0 },
+  { get: (s) => s.totalRaids, avg: "total_raids", labelKey: "compare.totalRaids", decimals: 0 },
+  { get: (s) => s.longestWinStreak, avg: "longest_win_streak", labelKey: "compare.winStreak", decimals: 0 },
+  { get: (s) => s.achievementsCount, avg: "achv_count", labelKey: "compare.achievements", decimals: 0 },
+  { get: (s) => s.hoursPlayed, avg: "hours", labelKey: "compare.hoursPlayed", decimals: 0 },
+  { get: (s) => s.level, avg: "level", labelKey: "compare.level", decimals: 0 },
+];
 
 export default function PlayerComparison({ stats }: Props) {
   const { t } = useI18n();
@@ -88,20 +109,19 @@ export default function PlayerComparison({ stats }: Props) {
     fetchPlayerByAid(aid);
   }
 
-  const comparisonRows = otherStats
-    ? [
-        { label: t("compare.totalRaids"), valueA: stats.totalRaids, valueB: otherStats.totalRaids },
-        { label: t("compare.survivalRate"), valueA: stats.survivalRate, valueB: otherStats.survivalRate, suffix: "%" },
-        { label: t("compare.kdRatio"), valueA: stats.kdRatio, valueB: otherStats.kdRatio },
-        { label: t("compare.totalKills"), valueA: stats.totalKills, valueB: otherStats.totalKills },
-        { label: t("compare.killsPerRaid"), valueA: stats.killsPerRaid, valueB: otherStats.killsPerRaid },
-        { label: t("compare.hoursPlayed"), valueA: stats.hoursPlayed, valueB: otherStats.hoursPlayed },
-        { label: t("compare.avgLifespan"), valueA: stats.avgLifespan, valueB: otherStats.avgLifespan, suffix: t("compare.minSuffix") },
-        { label: t("compare.winStreak"), valueA: stats.longestWinStreak, valueB: otherStats.longestWinStreak },
-        { label: t("compare.achievements"), valueA: stats.achievementsCount, valueB: otherStats.achievementsCount },
-        { label: t("compare.level"), valueA: stats.level, valueB: otherStats.level },
-      ]
-    : [];
+  // Same rows for both modes; only the opponent value lookup differs. Skips
+  // metrics whose opponent value is unavailable (e.g. an average not yet computed).
+  function buildRows(
+    opponentValue: (m: (typeof METRICS)[number]) => number | null | undefined
+  ): ComparisonRow[] {
+    const rows: ComparisonRow[] = [];
+    for (const m of METRICS) {
+      const valueB = opponentValue(m);
+      if (typeof valueB !== "number") continue;
+      rows.push({ label: t(m.labelKey), valueA: m.get(stats), valueB, decimals: m.decimals, suffix: m.suffix });
+    }
+    return rows;
+  }
 
   if (!open) {
     return (
@@ -169,37 +189,11 @@ export default function PlayerComparison({ stats }: Props) {
                 <span className="text-[var(--accent)]">{bracket.label} {t("unit.h")}</span>{" "}
                 ({t("compare.sampled", { n: avgData.n.toLocaleString() })})
               </p>
-              <p className="text-xs text-gray-500">
-                <span className="text-[var(--accent)] font-medium break-words">{stats.nickname}</span>{" "}
-                {t("compare.vsAverage")}
-              </p>
-              <div className="space-y-3">
-                {[
-                  { label: t("compare.kdRatio"), player: stats.kdRatio, avg: avgData.averages.kd_ratio },
-                  { label: t("compare.survivalRate"), player: stats.survivalRate, avg: avgData.averages.survival_rate },
-                  { label: t("compare.killsPerRaid"), player: stats.killsPerRaid, avg: avgData.averages.kills_per_raid },
-                  { label: t("compare.totalKills"), player: stats.totalKills, avg: avgData.averages.total_kills },
-                  { label: t("compare.totalRaids"), player: stats.totalRaids, avg: avgData.averages.total_raids },
-                ]
-                  .filter((row): row is { label: string; player: number; avg: number } =>
-                    typeof row.avg === "number"
-                  )
-                  .map((row) => (
-                    <div
-                      key={row.label}
-                      className="flex items-center justify-between py-2 border-b border-[var(--card-border)]/50"
-                    >
-                      <div className="flex flex-col">
-                        <span className="text-sm text-gray-400">{row.label}</span>
-                        <div className="flex items-center gap-3 mt-1 tabular-nums">
-                          <span className="text-[var(--accent)] font-medium">{row.player.toFixed(2)}</span>
-                          <span className="text-gray-500">{t("common.avg")}: {row.avg.toFixed(2)}</span>
-                        </div>
-                      </div>
-                      <PercentileBadge playerValue={row.player} medianValue={row.avg} />
-                    </div>
-                  ))}
-              </div>
+              <ComparisonTable
+                nameA={stats.nickname}
+                nameB={t("compare.avgName")}
+                rows={buildRows((m) => avgData.averages[m.avg])}
+              />
             </>
           )}
         </div>
@@ -227,7 +221,7 @@ export default function PlayerComparison({ stats }: Props) {
 
           {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
 
-          {/* Quick-pick from the user's favorites (replaces the streamer list) */}
+          {/* Quick-pick from the user's favorites */}
           <div>
             <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-2">
               {t("compare.favoritesHeading")}
@@ -256,7 +250,7 @@ export default function PlayerComparison({ stats }: Props) {
             <ComparisonTable
               nameA={stats.nickname}
               nameB={otherStats.nickname}
-              rows={comparisonRows}
+              rows={buildRows((m) => m.get(otherStats))}
             />
           )}
         </div>
