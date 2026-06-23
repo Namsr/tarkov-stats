@@ -169,6 +169,10 @@ export default function PlayerComparison({ stats }: Props) {
                 <span className="text-[var(--accent)]">{bracket.label} {t("unit.h")}</span>{" "}
                 ({t("compare.sampled", { n: avgData.n.toLocaleString() })})
               </p>
+              <p className="text-xs text-gray-500">
+                <span className="text-[var(--accent)] font-medium break-words">{stats.nickname}</span>{" "}
+                {t("compare.vsAverage")}
+              </p>
               <div className="space-y-3">
                 {[
                   { label: t("compare.kdRatio"), player: stats.kdRatio, avg: avgData.averages.kd_ratio },
@@ -187,10 +191,8 @@ export default function PlayerComparison({ stats }: Props) {
                     >
                       <div className="flex flex-col">
                         <span className="text-sm text-gray-400">{row.label}</span>
-                        <div className="flex items-center gap-3 mt-1">
-                          <span className="text-[var(--accent)] font-medium truncate max-w-[160px]">
-                            {stats.nickname}: {row.player.toFixed(2)}
-                          </span>
+                        <div className="flex items-center gap-3 mt-1 tabular-nums">
+                          <span className="text-[var(--accent)] font-medium">{row.player.toFixed(2)}</span>
                           <span className="text-gray-500">{t("common.avg")}: {row.avg.toFixed(2)}</span>
                         </div>
                       </div>
