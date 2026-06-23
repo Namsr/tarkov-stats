@@ -73,8 +73,8 @@ interface SignalDef {
 // Numeric signals (weights sum with ACH_WEIGHT to 1.0).
 const SIGNALS: SignalDef[] = [
   { key: "survival_rate", weight: 0.18, normal: 55, extreme: 88, get: (s) => s.survivalRate },
-  { key: "kd_ratio", weight: 0.16, normal: 6, extreme: 16, get: (s) => s.kdRatio },
-  { key: "pmc_kd_ratio", weight: 0.12, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
+  { key: "pmc_kd_ratio", weight: 0.16, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
+  { key: "kd_ratio", weight: 0.12, normal: 6, extreme: 16, get: (s) => s.kdRatio },
   { key: "kills_per_raid", weight: 0.14, normal: 3, extreme: 8, get: (s) => s.killsPerRaid },
   { key: "longest_win_streak", weight: 0.1, normal: 15, extreme: 45, get: (s) => s.longestWinStreak },
 ];
