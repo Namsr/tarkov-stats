@@ -49,10 +49,11 @@ export default function FaqWidget() {
       q: t("faq.q4"),
       a: (
         <>
-          {t("faq.a4.text")}{" "}
-          <a className={LINK} href="https://new.donatepay.ru/@namsr" target="_blank" rel="noopener noreferrer">
-            DonatePay
+          {t("faq.a4.before")}{" "}
+          <a className={LINK} href="https://tarkov.dev" target="_blank" rel="noopener noreferrer">
+            tarkov.dev
           </a>
+          {t("faq.a4.after")}
         </>
       ),
     },
@@ -60,11 +61,36 @@ export default function FaqWidget() {
       q: t("faq.q5"),
       a: (
         <>
-          {t("faq.a5.text")}{" "}
+          {t("faq.a5.before")}{" "}
+          <a className={LINK} href="https://github.com/Namsr/tarkov-stats" target="_blank" rel="noopener noreferrer">
+            GitHub
+          </a>
+          {t("faq.a5.after")}
+        </>
+      ),
+    },
+    { q: t("faq.q6"), a: t("faq.a6") },
+    { q: t("faq.q7"), a: t("faq.a7") },
+    {
+      q: t("faq.q8"),
+      a: (
+        <>
+          {t("faq.a8.text")}{" "}
+          <a className={LINK} href="https://new.donatepay.ru/@namsr" target="_blank" rel="noopener noreferrer">
+            DonatePay
+          </a>
+        </>
+      ),
+    },
+    {
+      q: t("faq.q9"),
+      a: (
+        <>
+          {t("faq.a9.text")}{" "}
           <a className={LINK} href="mailto:namsrr@protonmail.com">
             namsrr@protonmail.com
           </a>{" "}
-          {t("faq.a5.stream")}{" "}
+          {t("faq.a9.stream")}{" "}
           <a className={LINK} href="https://www.twitch.tv/namsr__" target="_blank" rel="noopener noreferrer">
             twitch.tv/namsr__
           </a>
