@@ -23,14 +23,25 @@ Edit `data/streamers.json`:
 
 Streamers appear as quick-compare buttons on the player profile page.
 
-## Deploying to Vercel
+## Deploying
 
-1. Push this repository to GitHub.
-2. Go to [vercel.com/new](https://vercel.com/new) and import the repository.
-3. Vercel auto-detects Next.js — no configuration needed.
-4. Click **Deploy**.
+Production runs on a VPS as Docker containers behind Caddy (TLS + reverse
+proxy): see `docker-compose.vps.yml` + `Caddyfile`. A home/Cloudflare-Tunnel
+variant is documented in [SELFHOST.md](SELFHOST.md).
 
-No environment variables are required (all APIs are public).
+```bash
+docker compose -f docker-compose.vps.yml up -d --build
+```
+
+Environment variables (in `.env`, see `.env.selfhost.example`):
+
+| Var | Required | Purpose |
+|-----|----------|---------|
+| `AUTH_SECRET` | yes (for sign-in) | Signs the session JWT (`openssl rand -base64 32`) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | yes (for sign-in) | Google OAuth client |
+| `PUBLIC_BASE_URL` | yes behind a proxy | Pins the OAuth redirect URI (e.g. `https://tarkovstats.ru`) |
+| `TRUSTED_IP_HEADER` | no (default `x-real-ip`) | Proxy header trusted for the rate-limit client IP (`cf-connecting-ip` behind Cloudflare) |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | Turnstile sitekey (build-time) |
 
 ## Architecture
 

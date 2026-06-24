@@ -1,0 +1,5 @@
+# Нормализуем переносы строк, но файлы, исполняемые на Linux-проде, всегда LF —
+# иначе CRLF из Windows-чекаута ломает shebang shell-скриптов и парсинг Caddyfile.
+* text=auto
+*.sh text eol=lf
+Caddyfile text eol=lf

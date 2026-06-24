@@ -1,0 +1,70 @@
+# Боевой деплой на VPS: web (Next.js) за Caddy (TLS + reverse proxy).
+# Секреты НЕ инлайнятся — берутся из .env рядом с этим файлом (env_file).
+# Запуск: docker compose -f docker-compose.vps.yml up -d --build
+services:
+  web:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-0x4AAAAAAAVVIHGZCr2PPwrR}
+    env_file:
+      - .env
+    restart: unless-stopped
+    expose:
+      - "3000"
+    # --- hardening ---
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    # FS только для чтения, кроме явных точек записи:
+    #   /data (volume) — players.db; /tmp и /app/.next/cache (ISR) — tmpfs.
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    mem_limit: 1024m
+    pids_limit: 256
+    volumes:
+      - players_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    # --- hardening ---
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Нужна только для bind на привилегированные 80/443.
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    pids_limit: 128
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  players_data:
+  caddy_data:
+  caddy_config:

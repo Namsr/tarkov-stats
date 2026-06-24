@@ -6,16 +6,17 @@ const isDev = process.env.NODE_ENV === "development";
 // рендерить всё динамически). 'unsafe-inline' нужен для inline-бутстрапа Next и
 // inline-стилей; внешние источники минимальны:
 //   challenges.cloudflare.com — Turnstile (скрипт + iframe + XHR)
-//   player.tarkov.dev         — прямой fetch сравнения игроков с фронта
 //   lh3.googleusercontent.com — аватар залогиненного через Google пользователя
-// В dev добавляем 'unsafe-eval' (React refresh) и ws: (HMR).
+// Браузер ходит на upstream (tarkov.dev) только через наши /api/* роуты, поэтому
+// в connect-src его НЕТ — нужен лишь 'self'. В dev добавляем 'unsafe-eval'
+// (React refresh) и ws: (HMR).
 const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data: https://lh3.googleusercontent.com",
   "font-src 'self'",
-  `connect-src 'self' https://player.tarkov.dev https://challenges.cloudflare.com${isDev ? " ws:" : ""}`,
+  `connect-src 'self' https://challenges.cloudflare.com${isDev ? " ws:" : ""}`,
   "frame-src https://challenges.cloudflare.com",
   "worker-src 'self' blob:",
   "object-src 'none'",
@@ -35,6 +36,17 @@ const securityHeaders = [
     value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
   },
   { key: "X-DNS-Prefetch-Control", value: "on" },
+  // HSTS — только в проде (на http://localhost браузер его всё равно игнорит, но
+  // не светим заголовок в dev). 1 год + поддомены (www); без preload, чтобы не
+  // брать необратимое обязательство. Прод всегда за HTTPS (Cloudflare/Caddy).
+  ...(isDev
+    ? []
+    : [
+        {
+          key: "Strict-Transport-Security",
+          value: "max-age=31536000; includeSubDomains",
+        },
+      ]),
 ];
 
 const nextConfig: NextConfig = {
