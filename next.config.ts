@@ -55,6 +55,13 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Убираем x-powered-by: Next.js — не светим стек.
   poweredByHeader: false,
+  // RFC 9116 security.txt по каноническому пути → отдаёт route handler
+  // (/.well-known нельзя сделать папкой в app/, т.к. имя начинается с точки).
+  async rewrites() {
+    return [
+      { source: "/.well-known/security.txt", destination: "/api/security-txt" },
+    ];
+  },
   async headers() {
     return [
       {
