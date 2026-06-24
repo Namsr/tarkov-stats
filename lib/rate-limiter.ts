@@ -48,16 +48,11 @@ export function checkRateLimit(
   return { allowed: true, remaining: max - timestamps.length, limit: max, windowMs };
 }
 
+// Раньше отдавали X-RateLimit-Limit/Remaining/Reset, но это раскрывало точные
+// пороги лимитера (подсказка злоумышленнику, как подстроиться под обход) и ничего
+// не давало фронту — он их не читает. Прячем: наружу уходит только решение
+// allowed, без заголовков. Сигнатура сохранена, чтобы роуты не трогать.
 export function getRateLimitHeaders(ip: string, opts: RateLimitOptions = {}) {
-  const { allowed, remaining, limit, windowMs } = checkRateLimit(ip, opts);
-  return {
-    allowed,
-    headers: {
-      "X-RateLimit-Limit": String(limit),
-      "X-RateLimit-Remaining": String(remaining),
-      "X-RateLimit-Reset": String(
-        Math.ceil(Date.now() / 1000) + Math.ceil(windowMs / 1000)
-      ),
-    },
-  };
+  const { allowed } = checkRateLimit(ip, opts);
+  return { allowed, headers: {} as Record<string, string> };
 }
