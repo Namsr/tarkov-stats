@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { EVENT_ACHIEVEMENT_IDS } from "@/lib/cheater-score";
 
 interface AchievementRow {
   id: string;
@@ -71,7 +72,13 @@ export default function EarlyUnlocks({
           return;
         }
         const flagged = data.achievements
-          .filter((a) => owned.has(a.id) && a.owners >= MIN_OWNERS && a.stdHours > 0)
+          .filter(
+            (a) =>
+              owned.has(a.id) &&
+              !EVENT_ACHIEVEMENT_IDS.has(a.id) && // event-only achievements aren't a cheating signal
+              a.owners >= MIN_OWNERS &&
+              a.stdHours > 0
+          )
           .map((a) => ({
             id: a.id,
             name: a.name,

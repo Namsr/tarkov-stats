@@ -84,7 +84,7 @@ export default function PlayerPage({ params }: Props) {
     );
   }
 
-  const mainStats = [
+  const mainStats: { label: string; value: string | number; suffix?: string }[] = [
     { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
     { label: t("player.level"), value: stats.level },
     { label: t("player.prestige"), value: stats.prestige },
@@ -99,10 +99,17 @@ export default function PlayerPage({ params }: Props) {
     { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
     { label: t("player.deaths"), value: stats.deaths.toLocaleString() },
     { label: t("player.runThroughs"), value: stats.runThrough },
+    { label: t("player.outcome.killed"), value: stats.pmcExitKilled },
+    { label: t("player.outcome.left"), value: stats.pmcExitLeft },
+    { label: t("player.outcome.transit"), value: stats.pmcExitTransit },
     { label: t("player.winStreakPmc"), value: stats.longestWinStreak },
     { label: t("player.achievements"), value: stats.achievementsCount },
     { label: t("player.experience"), value: stats.experience.toLocaleString() },
   ];
+  // MissingInAction is effectively retired in current wipes; surface it only when nonzero.
+  if (stats.pmcExitMia > 0) {
+    mainStats.push({ label: t("player.outcome.mia"), value: stats.pmcExitMia });
+  }
 
   const skills: SkillEntry[] = profile.skills?.Common ?? [];
   const ownedAchievementIds = profile.achievements ? Object.keys(profile.achievements) : [];

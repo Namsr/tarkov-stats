@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS players (
   survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
   total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
   longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
-  survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
+  survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
+  pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
   achievements TEXT, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
@@ -54,6 +55,7 @@ const COLS = [
   "total_raids", "pmc_raids", "scav_raids", "survived", "deaths", "pmc_deaths",
   "total_kills", "killed_pmc", "run_through", "longest_win_streak",
   "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
+  "pmc_survival_rate", "pmc_kills_per_raid",
   "achv_count", "achievements", "fetched_at",
 ];
 const UPSERT_SQL =
@@ -167,8 +169,8 @@ function emptyAverageRow(): AverageRow {
 
 // Signals scored for "cheating risk" (suspicious when high). The baseline returns
 // the mean + std of each within a playtime range, for within-bracket z-scores.
-// Keep in sync with SIGNALS in lib/cheater-score.ts.
-const SCORE_COLS = ["survival_rate", "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "longest_win_streak"];
+// PMC-only — keep in sync with SIGNALS in lib/cheater-score.ts.
+const SCORE_COLS = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
 
 // One row: count plus AVG(col) and AVG(col*col) per metric, so std =
 // sqrt(E[x²] − E[x]²) is one pass. Columns are whitelisted constants, re-checked
@@ -204,7 +206,8 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
     bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
     s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc, s.runThrough, s.longestWinStreak,
-    s.kdRatio, s.pmcKdRatio, s.survivalRate, s.killsPerRaid, s.achievementsCount,
+    s.kdRatio, s.pmcKdRatio, s.survivalRate, s.killsPerRaid,
+    s.pmcSurvivalRate, s.pmcKillsPerRaid, s.achievementsCount,
     JSON.stringify(achievementIds), now,
   ];
 }
@@ -424,6 +427,16 @@ async function getSqliteDb(): Promise<any | null> {
       const sqlite = (await import("node:sqlite" as string)) as any;
       sqliteDb = new sqlite.DatabaseSync(file);
       sqliteDb.exec(SCHEMA);
+      // Lightweight migration for DBs created before the PMC score columns existed.
+      // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
+      // them here; a duplicate-column error on already-migrated DBs is expected.
+      for (const col of ["pmc_survival_rate", "pmc_kills_per_raid"]) {
+        try {
+          sqliteDb.exec(`ALTER TABLE players ADD COLUMN ${col} REAL DEFAULT 0`);
+        } catch {
+          /* column already exists */
+        }
+      }
     }
     return sqliteDb;
   } catch (e) {

@@ -94,6 +94,18 @@ export interface ParsedPlayerStats {
   deaths: number;
   pmcDeaths: number;
   runThrough: number;
+  // PMC-only aggregates — the cheating-risk score is computed from these so that
+  // easy, high-survival Scav raids can't mask (or fake) the signal.
+  pmcSurvived: number;
+  pmcSurvivalRate: number;
+  pmcKills: number;
+  pmcKillsPerRaid: number;
+  // Full PMC raid-outcome breakdown (counts; sum to pmcRaids). runThrough above is
+  // the "Runner" outcome — kept separately for the existing stat card.
+  pmcExitKilled: number;
+  pmcExitLeft: number;
+  pmcExitTransit: number;
+  pmcExitMia: number;
   hoursPlayed: number;
   longestWinStreak: number;
   achievementsCount: number;

@@ -70,12 +70,15 @@ interface SignalDef {
   get: (s: ParsedPlayerStats) => number;
 }
 
-// Numeric signals (weights sum with ACH_WEIGHT to 1.0).
+// Numeric signals (weights sum with ACH_WEIGHT to 1.0). PMC-ONLY by design: Scav
+// raids (easy, high-survival, often run-throughs) are excluded so they can neither
+// mask nor fake cheating. The combined K/D and the single PMC-vs-PMC K/D collapse
+// into one PMC K/D signal here. Keys must match SCORE_COLS in lib/db.ts (the
+// within-bracket z-score baseline reads those columns).
 const SIGNALS: SignalDef[] = [
-  { key: "survival_rate", weight: 0.18, normal: 55, extreme: 88, get: (s) => s.survivalRate },
-  { key: "pmc_kd_ratio", weight: 0.16, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
-  { key: "kd_ratio", weight: 0.12, normal: 6, extreme: 16, get: (s) => s.kdRatio },
-  { key: "kills_per_raid", weight: 0.14, normal: 3, extreme: 8, get: (s) => s.killsPerRaid },
+  { key: "pmc_survival_rate", weight: 0.2, normal: 55, extreme: 88, get: (s) => s.pmcSurvivalRate },
+  { key: "pmc_kd_ratio", weight: 0.24, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
+  { key: "pmc_kills_per_raid", weight: 0.16, normal: 3, extreme: 8, get: (s) => s.pmcKillsPerRaid },
   { key: "longest_win_streak", weight: 0.1, normal: 15, extreme: 45, get: (s) => s.longestWinStreak },
 ];
 
@@ -86,6 +89,36 @@ const ACH_MIN_OWNERS = 10; // enough owners for a trustworthy baseline
 const ACH_LATE_GAME_HOURS = 200; // only achievements that normally take real time
 const ACH_RARE_LO = 3; // samplePct ≤ this → fully "rare"
 const ACH_RARE_HI = 30; // samplePct ≥ this → not rare
+
+// Event achievements: obtainable ONLY during past, time-limited events. A long-dormant
+// account that earned one years ago looks anomalous next to same-playtime-bracket peers
+// who never had the chance to get it — which wrongly inflates its risk. These are still
+// COLLECTED and shown (the achievement baseline in lib/db.ts counts every owned id, so
+// their prevalence is still visible) — they just must not DRIVE the cheating score.
+// Keyed by tarkov.dev achievement id; comments are the in-game names. Exported so the
+// EarlyUnlocks panel (the same early-unlock suspicion logic) can exclude them too.
+export const EVENT_ACHIEVEMENT_IDS = new Set<string>([
+  "660fe21454670811e304c045", // Maslenitsa
+  "668bf47c781d446fdc083711", // High Competition
+  "6634cae870af846d2868dada", // Local Strong Man
+  "6634ca69ee506a5c3e61be56", // Involved in Peace
+  "6634c8886e083a141f4aa3f4", // Cardinal Richelieu
+  "66742c003a67b164a300fcbf", // A Key to Salvation
+  "66e2a7e5919bad697104f4b3", // Highway to the Danger Zone
+  "670feb95a4e71050310cc14b", // Complete Remission
+  "670febed5ee0fc738a0965a4", // Fatal Outcome
+  "675998a894008342eb04e47f", // Khorovod
+  "67a0e57117e34930e50075f3", // In Search of an Exit
+  "67a0e57b972c11a3f50773b2", // Dungeon Master
+  "685d3d6b81d993fda109cdb8", // One Last Ride
+  "685d6539127e4806240f3bcd", // Through to the End
+  "68936a7a672ffe94a509446b", // Targrad Tales
+  "693a83434cb1cf587c0a63f9", // Whiteout
+  "6984ab58ee0ae2c0d5075f33", // Duck Hunt
+  "69de1be5d378f8aef8008409", // Habet, hoc habet!
+  "69de1c2be33584b09a098e93", // Morituri te salutant
+  "6a04f93d7a6a2b325906bb5c", // Awaiting Departure
+]);
 
 const MIN_SAMPLE = 30; // bracket players needed before z-scores are trusted
 const Z_LO = 2; // z at which a metric starts contributing
@@ -109,6 +142,7 @@ function achievementSub(playerHours: number, ach: AchievementInput | null | unde
   let best = 0;
   for (const a of ach.stats) {
     if (!owned.has(a.id)) continue;
+    if (EVENT_ACHIEVEMENT_IDS.has(a.id)) continue; // event-only — collected, but never scored
     if (a.owners < ACH_MIN_OWNERS || a.meanHours < ACH_LATE_GAME_HOURS) continue;
     const earliness = clamp01((a.meanHours - playerHours) / a.meanHours);
     if (earliness <= 0) continue;

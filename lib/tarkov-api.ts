@@ -226,9 +226,22 @@ export function parseProfileStats(
 
   const runThrough = getCounterValue(pmcCounters, "ExitStatus", "Runner", "Pmc");
 
+  // Full PMC raid-outcome breakdown. Survived (pmcSurvived) and Runner (runThrough)
+  // are computed above; these are the remaining outcomes. Together they partition
+  // every PMC session (sum ≈ pmcRaids).
+  const pmcExitKilled = getCounterValue(pmcCounters, "ExitStatus", "Killed", "Pmc");
+  const pmcExitLeft = getCounterValue(pmcCounters, "ExitStatus", "Left", "Pmc");
+  const pmcExitTransit = getCounterValue(pmcCounters, "ExitStatus", "Transit", "Pmc");
+  const pmcExitMia = getCounterValue(pmcCounters, "ExitStatus", "MissingInAction", "Pmc");
+
   const kdRatio = deaths > 0 ? totalKills / deaths : totalKills;
   const pmcKdRatio = pmcDeaths > 0 ? pmcKilledPmc / pmcDeaths : pmcKilledPmc;
   const killsPerRaid = totalRaids > 0 ? totalKills / totalRaids : 0;
+
+  // PMC-only versions of survival and kills-per-raid — these feed the cheating-risk
+  // score (Scav raids excluded). pmcKills is all kills made while playing PMC.
+  const pmcSurvivalRate = pmcRaids > 0 ? (pmcSurvived / pmcRaids) * 100 : 0;
+  const pmcKillsPerRaid = pmcRaids > 0 ? pmcKills / pmcRaids : 0;
 
   // totalInGameTime is an account-wide value duplicated in both pmcStats.eft and
   // scavStats.eft (same number), so we take it once rather than summing.
@@ -264,6 +277,14 @@ export function parseProfileStats(
     deaths,
     pmcDeaths,
     runThrough,
+    pmcSurvived,
+    pmcSurvivalRate: round(pmcSurvivalRate, 1),
+    pmcKills,
+    pmcKillsPerRaid: round(pmcKillsPerRaid),
+    pmcExitKilled,
+    pmcExitLeft,
+    pmcExitTransit,
+    pmcExitMia,
     hoursPlayed: round(hoursPlayed, 1),
     longestWinStreak,
     achievementsCount,
