@@ -13,6 +13,9 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
 export interface MetricBaseline {
+  /** Players in the bracket that actually HAVE this metric (value > 0). The z-score
+   * is only trusted once enough of them exist — see scoreCheater. */
+  n: number;
   mean: number;
   std: number;
 }
@@ -168,7 +171,11 @@ export function scoreCheater(
     let z: number | null = null;
     let rel = 0;
     const b = baseline?.metrics[sig.key];
-    if (basedOnSample && b && b.std > 0) {
+    // Only trust a metric's z-score once enough players actually have it populated.
+    // Without this, a column still backfilling (mostly 0s) yields a near-zero mean
+    // that makes every real value look like an extreme outlier. Falls back to the
+    // absolute ramp, which is ~0 for a below-average player.
+    if (basedOnSample && b && b.std > 0 && b.n >= MIN_SAMPLE) {
       z = (value - b.mean) / b.std;
       rel = clamp01((z - Z_LO) / (Z_HI - Z_LO));
     }

@@ -172,13 +172,21 @@ function emptyAverageRow(): AverageRow {
 // PMC-only — keep in sync with SIGNALS in lib/cheater-score.ts.
 const SCORE_COLS = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
 
-// One row: count plus AVG(col) and AVG(col*col) per metric, so std =
-// sqrt(E[x²] − E[x]²) is one pass. Columns are whitelisted constants, re-checked
-// here because column names cannot be bound parameters.
+// Per metric: the populated count plus AVG(col) and AVG(col*col), so std =
+// sqrt(E[x²] − E[x]²) is one pass. Mean/std/count are taken ONLY over rows where the
+// metric is populated (value > 0): a column still backfilling (0 until a profile is
+// re-fetched) would otherwise drag the mean to ~0 and make every real value look like
+// an extreme outlier. cnt_ lets the score decide whether to trust this metric's
+// z-score yet. Columns are whitelisted constants, re-checked here because column names
+// cannot be bound parameters.
 function baselineSql(where: string): string {
   const cols = SCORE_COLS.map((c) => {
     if (!/^[a-z_]+$/.test(c)) throw new Error(`invalid metric column: ${c}`);
-    return `AVG(${c}) AS m_${c}, AVG(${c} * ${c}) AS sq_${c}`;
+    return (
+      `COUNT(CASE WHEN ${c} > 0 THEN 1 END) AS cnt_${c}, ` +
+      `AVG(CASE WHEN ${c} > 0 THEN ${c} END) AS m_${c}, ` +
+      `AVG(CASE WHEN ${c} > 0 THEN ${c} * ${c} END) AS sq_${c}`
+    );
   }).join(", ");
   return `SELECT COUNT(*) AS n, ${cols} FROM players ${where}`;
 }
@@ -188,7 +196,8 @@ function toBaseline(row: Record<string, number> | null | undefined): BaselineRes
   for (const c of SCORE_COLS) {
     const mean = Number(row?.[`m_${c}`] ?? 0) || 0;
     const sq = Number(row?.[`sq_${c}`] ?? 0) || 0;
-    metrics[c] = { mean, std: Math.sqrt(Math.max(0, sq - mean * mean)) };
+    const cnt = Number(row?.[`cnt_${c}`] ?? 0) || 0;
+    metrics[c] = { n: cnt, mean, std: Math.sqrt(Math.max(0, sq - mean * mean)) };
   }
   return { n: Number(row?.n ?? 0), metrics };
 }
@@ -284,6 +293,8 @@ export interface AchievementBaseline {
 }
 
 export interface MetricBaseline {
+  /** Players in the range that actually have this metric populated (value > 0). */
+  n: number;
   mean: number;
   std: number;
 }
