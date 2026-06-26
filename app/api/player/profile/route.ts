@@ -11,10 +11,12 @@ export async function GET(request: NextRequest) {
   // Строгий лимит: роут делает upstream-fetch к tarkov.dev и пишет строку в БД
   // (датасет /average), поэтому жёстче общего лимита.
   const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "profile", max: 10 });
+  // Профиль не кэшируем у браузера/CDN — иначе «Обновить»/F5 показывал бы старое.
+  const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },
-      { status: 429, headers }
+      { status: 429, headers: noStore }
     );
   }
 
@@ -22,19 +24,22 @@ export async function GET(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json(
       { error: "Invalid account ID. Paste a numeric id or a tarkov.dev profile link." },
-      { status: 400, headers }
+      { status: 400, headers: noStore }
     );
   }
 
+  // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
+  const force = request.nextUrl.searchParams.get("refresh") === "1";
+
   try {
-    const { profile, fromCache } = await getPublicProfile(aid);
+    const { profile, fromCache } = await getPublicProfile(aid, { force });
     if (!profile) {
       return NextResponse.json(
         {
           error:
             "Profile not found. It may be private, or hasn't been viewed on tarkov.dev yet — open it there once to cache it, then retry.",
         },
-        { status: 404, headers }
+        { status: 404, headers: noStore }
       );
     }
 
@@ -57,11 +62,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ profile, stats }, { headers });
+    return NextResponse.json({ profile, stats }, { headers: noStore });
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch player profile" },
-      { status: 502, headers }
+      { status: 502, headers: noStore }
     );
   }
 }

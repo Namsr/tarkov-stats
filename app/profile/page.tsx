@@ -7,6 +7,7 @@ import { useFavorites } from "@/lib/favorites/context";
 import FavoritesList from "@/components/FavoritesList";
 import FavoritesCompare from "@/components/FavoritesCompare";
 import StatCard from "@/components/StatCard";
+import { isReload } from "@/lib/is-reload";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
 interface FavStatsResponse {
@@ -18,14 +19,14 @@ export default function ProfilePage() {
   const { enabled, loading, favorites } = useFavorites();
   const [statsByAid, setStatsByAid] = useState<Map<number, ParsedPlayerStats | null>>(new Map());
   const [statsLoading, setStatsLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [statsError, setStatsError] = useState("");
 
-  const loadStats = useCallback(async () => {
-    setRefreshing(true);
+  // force=true (страница открыта через перезагрузку) обходит 5-мин кэш upstream,
+  // чтобы подтянуть то, что игрок только что обновил на tarkov.dev.
+  const loadStats = useCallback(async (force = false) => {
     setStatsError("");
     try {
-      const res = await fetch("/api/favorites/stats");
+      const res = await fetch(`/api/favorites/stats${force ? "?refresh=1" : ""}`);
       if (!res.ok) throw new Error();
       const data = (await res.json()) as FavStatsResponse;
       const map = new Map<number, ParsedPlayerStats | null>();
@@ -34,7 +35,6 @@ export default function ProfilePage() {
     } catch {
       setStatsError(t("profile.loadError"));
     } finally {
-      setRefreshing(false);
       setStatsLoading(false);
     }
   }, [t]);
@@ -42,10 +42,11 @@ export default function ProfilePage() {
   // Pull stats once the session resolves. Only the signed-in + has-pins case
   // needs an upstream round-trip; otherwise nothing renders the stats anyway.
   useEffect(() => {
-    // Fetch-on-condition once the session resolves; re-fetching is manual.
+    // Fetch-on-condition once the session resolves. On a full page reload (F5) we
+    // force-bypass the cache so favorites reflect a just-refreshed tarkov.dev cache.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (enabled && favorites.length > 0) loadStats();
-    // Intentionally keyed on `enabled` only — re-fetching is manual ("refresh all").
+    if (enabled && favorites.length > 0) loadStats(isReload());
+    // Intentionally keyed on `enabled` only — otherwise re-fetching is via reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
@@ -142,12 +143,7 @@ export default function ProfilePage() {
             </section>
           )}
 
-          <FavoritesList
-            statsByAid={statsByAid}
-            statsLoading={statsLoading}
-            onRefreshAll={loadStats}
-            refreshing={refreshing}
-          />
+          <FavoritesList statsByAid={statsByAid} statsLoading={statsLoading} />
 
           <section className="space-y-3">
             <div>

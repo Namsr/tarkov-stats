@@ -8,7 +8,9 @@ import PlayerComparison from "@/components/PlayerComparison";
 import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
+import RefreshButton from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
+import { isReload } from "@/lib/is-reload";
 
 interface Props {
   params: Promise<{ aid: string }>;
@@ -27,7 +29,8 @@ export default function PlayerPage({ params }: Props) {
     setLoading(true);
     setError("");
 
-    fetch(`/api/player/profile?aid=${encodeURIComponent(aid)}`)
+    // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
+    fetch(`/api/player/profile?aid=${encodeURIComponent(aid)}${isReload() ? "&refresh=1" : ""}`)
       .then(async (res) => {
         const data = (await res.json()) as {
           error?: string;
@@ -138,7 +141,10 @@ export default function PlayerPage({ params }: Props) {
                 <span>#{aid}</span>
               </div>
             </div>
-            <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
+            <div className="flex items-center gap-2 shrink-0">
+              <RefreshButton aid={Number(aid)} />
+              <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

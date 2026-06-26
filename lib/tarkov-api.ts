@@ -71,12 +71,21 @@ export interface PublicProfileResult {
  * Captcha-free profile fetch by account id from the public static cache.
  * `profile` is null when not cached upstream (404). `fromCache` says whether the
  * result came from our in-process cache (caller can then skip the DB upsert).
+ * Pass `{ force: true }` to bypass the in-process cache and always re-fetch
+ * upstream (the explicit "Refresh" / page reload path).
  */
-export async function getPublicProfile(aid: number): Promise<PublicProfileResult> {
+export async function getPublicProfile(
+  aid: number,
+  opts: { force?: boolean } = {}
+): Promise<PublicProfileResult> {
   const now = Date.now();
-  const hit = profileCache.get(aid);
-  if (hit && now - hit.ts < PROFILE_TTL_MS) {
-    return { profile: hit.profile, fromCache: true };
+  // force обходит in-process кэш: всё равно идём в upstream и перезаписываем кэш
+  // свежим ответом (fromCache=false → вызывающий сделает upsert в БД).
+  if (!opts.force) {
+    const hit = profileCache.get(aid);
+    if (hit && now - hit.ts < PROFILE_TTL_MS) {
+      return { profile: hit.profile, fromCache: true };
+    }
   }
 
   const url = `${PUBLIC_PROFILE_BASE}/profile/${aid}.json`;

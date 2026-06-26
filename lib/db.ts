@@ -21,21 +21,6 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 
--- История снапшотов для дельта-детекции (смена режима игры со временем) — по строке
--- на момент опроса. ТОЛЬКО кумулятивные счётчики, без nickname/JSON-ачивок (≈100 байт
--- на строку). Пишется лишь при НОВОЙ активности (см. snapshotChanged), у "спящих"
--- аккаунтов история не растёт. Держим последние N на aid (см. SNAPSHOT_PRUNE_SQL).
--- PRIMARY KEY (aid, fetched_at) заодно даёт индекс для "последний снапшот по aid".
-CREATE TABLE IF NOT EXISTS player_snapshots (
-  aid INTEGER NOT NULL, fetched_at INTEGER NOT NULL,
-  hours REAL DEFAULT 0, experience INTEGER DEFAULT 0, level INTEGER DEFAULT 0, prestige INTEGER DEFAULT 0,
-  total_raids INTEGER DEFAULT 0, pmc_raids INTEGER DEFAULT 0, scav_raids INTEGER DEFAULT 0,
-  survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
-  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
-  longest_win_streak INTEGER DEFAULT 0,
-  PRIMARY KEY (aid, fetched_at)
-);
-
 -- Игровые аккаунты, привязанные пользователем (вход через Google) в избранное.
 -- Ключ — user_sub (стабильный Google-id из JWT-сессии) + aid. nickname хранится
 -- снимком, чтобы рисовать список без обращения к tarkov.dev; обновляется при
@@ -221,45 +206,6 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
   ];
 }
 
-// ── История снапшотов: запись истории для дельта-детекции ──────────────────────
-// Сколько последних снапшотов держим на аккаунт (26 ≈ год при опросе раз в 2 недели).
-// 0 = без лимита. Защищает диск VPS от неограниченного роста истории.
-const MAX_SNAPSHOTS_PER_PLAYER = Number(process.env.MAX_SNAPSHOTS_PER_PLAYER ?? 26) || 0;
-
-const SNAPSHOT_COLS = [
-  "aid", "fetched_at", "hours", "experience", "level", "prestige",
-  "total_raids", "pmc_raids", "scav_raids", "survived", "deaths", "pmc_deaths",
-  "total_kills", "killed_pmc", "run_through", "longest_win_streak",
-];
-// OR IGNORE — на случай двух опросов в одну мс (PK aid+fetched_at), не падаем.
-const SNAPSHOT_INSERT_SQL =
-  `INSERT OR IGNORE INTO player_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
-  `VALUES (${SNAPSHOT_COLS.map(() => "?").join(", ")})`;
-const SNAPSHOT_LAST_SQL =
-  "SELECT total_raids, total_kills FROM player_snapshots WHERE aid = ? ORDER BY fetched_at DESC LIMIT 1";
-// Чистим всё, кроме последних N снапшотов аккаунта (по убыванию fetched_at).
-const SNAPSHOT_PRUNE_SQL =
-  "DELETE FROM player_snapshots WHERE aid = ? AND fetched_at NOT IN " +
-  "(SELECT fetched_at FROM player_snapshots WHERE aid = ? ORDER BY fetched_at DESC LIMIT ?)";
-
-function snapshotArgs(aid: number, s: ParsedPlayerStats, now: number): unknown[] {
-  return [
-    aid, now, s.hoursPlayed, s.experience, s.level, s.prestige,
-    s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids, s.deaths, s.pmcDeaths,
-    s.totalKills, s.killedPmc, s.runThrough, s.longestWinStreak,
-  ];
-}
-
-// Была ли новая активность с прошлого снапшота? Сравниваем кумулятивные raids/kills:
-// если оба не изменились — рейдов не было, снапшот не пишем (нет null-last → первый).
-function snapshotChanged(
-  last: { total_raids: number; total_kills: number } | null | undefined,
-  s: ParsedPlayerStats
-): boolean {
-  if (!last) return true;
-  return Number(last.total_raids) !== s.totalRaids || Number(last.total_kills) !== s.totalKills;
-}
-
 export interface AverageRow {
   n: number;
   [metric: string]: number | null;
@@ -363,16 +309,6 @@ async function d1Store(): Promise<PlayerStore | null> {
           }
         }
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
-        // История: снапшот только при новой активности, затем чистим хвост.
-        const last = (await db.prepare(SNAPSHOT_LAST_SQL).bind(aid).first()) as
-          | { total_raids: number; total_kills: number }
-          | null;
-        if (snapshotChanged(last, stats)) {
-          await db.prepare(SNAPSHOT_INSERT_SQL).bind(...snapshotArgs(aid, stats, now)).run();
-          if (MAX_SNAPSHOTS_PER_PLAYER > 0) {
-            await db.prepare(SNAPSHOT_PRUNE_SQL).bind(aid, aid, MAX_SNAPSHOTS_PER_PLAYER).run();
-          }
-        }
       },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
@@ -471,16 +407,6 @@ async function sqliteStore(): Promise<PlayerStore | null> {
           }
         }
         db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids, now));
-        // История: снапшот только при новой активности, затем чистим хвост.
-        const last = db.prepare(SNAPSHOT_LAST_SQL).get(aid) as
-          | { total_raids: number; total_kills: number }
-          | undefined;
-        if (snapshotChanged(last, stats)) {
-          db.prepare(SNAPSHOT_INSERT_SQL).run(...snapshotArgs(aid, stats, now));
-          if (MAX_SNAPSHOTS_PER_PLAYER > 0) {
-            db.prepare(SNAPSHOT_PRUNE_SQL).run(aid, aid, MAX_SNAPSHOTS_PER_PLAYER);
-          }
-        }
       },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
@@ -531,7 +457,7 @@ export async function getStore(): Promise<PlayerStore | null> {
 /** One pinned game account, as stored for a user. */
 export interface Favorite {
   aid: number;
-  /** Snapshot of the nickname (refreshed by "refresh all"); may be null. */
+  /** Snapshot of the nickname (refreshed whenever stats are pulled); may be null. */
   nickname: string | null;
   /** Free-text user note / label, or null. */
   note: string | null;

@@ -25,6 +25,9 @@ export async function GET(request: NextRequest) {
   const favStore = await getFavoritesStore();
   if (!favStore) return NextResponse.json({ favorites: [] }, { headers });
 
+  // ?refresh=1 (per-account «Обновить» / перезагрузка страницы) обходит 5-мин кэш.
+  const force = request.nextUrl.searchParams.get("refresh") === "1";
+
   const favorites = await favStore.list(user.sub);
   const noStore = { ...headers, "Cache-Control": "no-store" };
   if (favorites.length === 0) return NextResponse.json({ favorites: [] }, { headers: noStore });
@@ -37,7 +40,7 @@ export async function GET(request: NextRequest) {
   const enriched: FavoriteWithStats[] = [];
   for (const fav of favorites) {
     try {
-      const { profile, fromCache } = await getPublicProfile(fav.aid);
+      const { profile, fromCache } = await getPublicProfile(fav.aid, { force });
       if (!profile) {
         enriched.push({ ...fav, stats: null });
         continue;

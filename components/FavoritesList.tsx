@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
+import RefreshButton from "@/components/RefreshButton";
 import type { Favorite } from "@/lib/db";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
@@ -11,26 +12,15 @@ interface Props {
   statsByAid: Map<number, ParsedPlayerStats | null>;
   /** True until the first /favorites/stats load resolves. */
   statsLoading: boolean;
-  onRefreshAll: () => void;
-  refreshing: boolean;
 }
 
-export default function FavoritesList({ statsByAid, statsLoading, onRefreshAll, refreshing }: Props) {
+export default function FavoritesList({ statsByAid, statsLoading }: Props) {
   const { t } = useI18n();
   const { favorites, remove, setNote, setMain } = useFavorites();
 
   return (
     <section className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm uppercase tracking-wider text-gray-500">{t("profile.listHeading")}</h2>
-        <button
-          onClick={onRefreshAll}
-          disabled={refreshing}
-          className="text-xs px-2.5 py-1.5 rounded border border-[var(--card-border)] text-gray-400 hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
-        >
-          {refreshing ? t("profile.refreshing") : t("profile.refreshAll")}
-        </button>
-      </div>
+      <h2 className="text-sm uppercase tracking-wider text-gray-500">{t("profile.listHeading")}</h2>
       <ul className="space-y-2">
         {favorites.map((fav) => (
           <FavoriteRow
@@ -100,6 +90,7 @@ function FavoriteRow({
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
+        <RefreshButton aid={fav.aid} />
         <input
           value={note}
           onChange={(e) => setNoteLocal(e.target.value)}
