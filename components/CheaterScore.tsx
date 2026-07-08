@@ -37,7 +37,7 @@ function needle(score: number): { x: number; y: number } {
 // /api/average/achievements response (only the fields the score needs).
 interface AchPayload {
   total: number;
-  achievements: { id: string; owners: number; samplePct: number; meanHours: number }[];
+  achievements: { id: string; owners: number; samplePct: number; meanHours: number; earlyHours: number }[];
 }
 
 export default function CheaterScore({
@@ -80,6 +80,7 @@ export default function CheaterScore({
                 owners: a.owners,
                 samplePct: a.samplePct,
                 meanHours: a.meanHours,
+                earlyHours: a.earlyHours,
               })),
             }
           : null;

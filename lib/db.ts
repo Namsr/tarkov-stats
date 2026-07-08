@@ -81,23 +81,36 @@ function toBracketAggs(rows: { bracket_key: string; n: number; s: number }[]): B
 // achievements is always valid JSON (we write JSON.stringify of an array), but we
 // guard NULL/'' to be safe against any legacy rows.
 const ACH_BASELINE_SQL =
-  `SELECT je.value AS ach_id, COUNT(*) AS owners, ` +
-  `AVG(p.hours) AS mean_hours, AVG(p.hours * p.hours) AS mean_sq ` +
+  `WITH expanded AS (` +
+  `SELECT je.value AS ach_id, p.hours AS hours ` +
   `FROM players AS p, json_each(p.achievements) AS je ` +
-  `WHERE p.achievements IS NOT NULL AND p.achievements != '' ` +
-  `GROUP BY je.value`;
+  `WHERE p.achievements IS NOT NULL AND p.achievements != ''` +
+  `), ranked AS (` +
+  `SELECT ach_id, hours, ` +
+  `COUNT(*) OVER (PARTITION BY ach_id) AS owners, ` +
+  `AVG(hours) OVER (PARTITION BY ach_id) AS mean_hours, ` +
+  `AVG(hours * hours) OVER (PARTITION BY ach_id) AS mean_sq, ` +
+  `ROW_NUMBER() OVER (PARTITION BY ach_id ORDER BY hours) AS rn ` +
+  `FROM expanded` +
+  `) ` +
+  `SELECT ach_id, MAX(owners) AS owners, MAX(mean_hours) AS mean_hours, ` +
+  `MAX(mean_sq) AS mean_sq, ` +
+  `MIN(CASE WHEN rn = CAST((owners + 4) / 5 AS INTEGER) THEN hours END) AS early_hours ` +
+  `FROM ranked GROUP BY ach_id`;
 
 function toAchStats(
-  rows: { ach_id: string; owners: number; mean_hours: number; mean_sq: number }[]
+  rows: { ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number }[]
 ): AchievementStat[] {
   return rows.map((r) => {
     const mean = Number(r.mean_hours) || 0;
     const variance = Math.max(0, (Number(r.mean_sq) || 0) - mean * mean);
+    const early = Number(r.early_hours) || mean;
     return {
       ach_id: String(r.ach_id),
       owners: Number(r.owners),
       meanHours: mean,
       stdHours: Math.sqrt(variance),
+      earlyHours: early,
     };
   });
 }
@@ -229,6 +242,8 @@ export interface AchievementStat {
   meanHours: number;
   /** Std-dev of owner playtime; 0 when owners are near-identical or singular. */
   stdHours: number;
+  /** Lower-percentile owner playtime used as the early-unlock suspicion threshold. */
+  earlyHours: number;
 }
 
 export interface AchievementBaseline {
@@ -339,7 +354,9 @@ async function d1Store(): Promise<PlayerStore | null> {
         return {
           total: Number(totalRow?.n ?? 0),
           achievements: toAchStats(
-            (results ?? []) as { ach_id: string; owners: number; mean_hours: number; mean_sq: number }[]
+            (results ?? []) as {
+              ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number;
+            }[]
           ),
         };
       },
@@ -431,7 +448,7 @@ async function sqliteStore(): Promise<PlayerStore | null> {
       async achievementBaseline() {
         const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
         const rows = db.prepare(ACH_BASELINE_SQL).all() as {
-          ach_id: string; owners: number; mean_hours: number; mean_sq: number;
+          ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number;
         }[];
         return { total: Number(totalRow?.n ?? 0), achievements: toAchStats(rows) };
       },

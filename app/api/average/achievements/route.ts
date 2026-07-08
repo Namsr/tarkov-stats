@@ -16,6 +16,7 @@ export interface AchievementRow {
   officialPct: number;
   meanHours: number;
   stdHours: number;
+  earlyHours: number;
 }
 
 interface Payload {
@@ -30,6 +31,7 @@ interface BaselineRow {
   samplePct: number;
   meanHours: number;
   stdHours: number;
+  earlyHours: number;
 }
 
 // Memoize ONLY the heavy json_each scan in-isolate. Names are merged fresh per
@@ -51,6 +53,7 @@ async function loadBaseline(): Promise<{ total: number; rows: BaselineRow[] }> {
     samplePct: total > 0 ? (a.owners / total) * 100 : 0,
     meanHours: a.meanHours,
     stdHours: a.stdHours,
+    earlyHours: a.earlyHours,
   }));
   // Most-owned first: the rows with the firmest baseline lead.
   rows.sort((x, y) => y.owners - x.owners);
@@ -79,6 +82,7 @@ export async function GET() {
         officialPct: m?.playersCompletedPercent ?? 0,
         meanHours: r.meanHours,
         stdHours: r.stdHours,
+        earlyHours: r.earlyHours,
       };
     });
 

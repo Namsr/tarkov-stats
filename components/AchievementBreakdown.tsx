@@ -15,6 +15,7 @@ interface AchievementRow {
   officialPct: number;
   meanHours: number;
   stdHours: number;
+  earlyHours: number;
 }
 
 interface Payload {
@@ -69,8 +70,12 @@ export default function AchievementBreakdown({
   useEffect(() => {
     if (!open || data) return;
     let cancelled = false;
-    setLoading(true);
-    setError("");
+    Promise.resolve().then(() => {
+      if (!cancelled) {
+        setLoading(true);
+        setError("");
+      }
+    });
     fetch("/api/average/achievements")
       .then(async (res) => {
         const j = (await res.json()) as Payload & { error?: string };
@@ -83,7 +88,7 @@ export default function AchievementBreakdown({
     return () => {
       cancelled = true;
     };
-  }, [open, data]);
+  }, [open, data, t]);
 
   const rows = useMemo(() => {
     if (!data) return [];
@@ -93,7 +98,7 @@ export default function AchievementBreakdown({
       : data.achievements.slice();
     filtered.sort((a, b) => {
       if (sort === "rarity") return a.samplePct - b.samplePct; // rarest in our sample first
-      if (sort === "hours") return b.meanHours - a.meanHours; // latest-game first
+      if (sort === "hours") return b.earlyHours - a.earlyHours; // latest early-owner threshold first
       return b.owners - a.owners;
     });
     return filtered;
@@ -200,7 +205,7 @@ export default function AchievementBreakdown({
                             className={`py-2 px-2 text-right ${noisy ? "text-gray-600" : "text-gray-300"}`}
                             title={noisy ? t("achv.noisy.title") : undefined}
                           >
-                            {fmtHours(a.meanHours)}
+                            {fmtHours(a.earlyHours)}
                             <span className="text-gray-600"> ± {fmtHours(a.stdHours)}</span>
                           </td>
                           <td className="py-2 pl-2 text-right text-gray-500">{a.owners.toLocaleString()}</td>
