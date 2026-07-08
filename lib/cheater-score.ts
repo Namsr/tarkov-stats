@@ -35,6 +35,8 @@ export interface AchievementStat {
   samplePct: number;
   /** Typical current playtime (hours) of owners — proxy for "normally held by". */
   meanHours: number;
+  /** Lower-percentile owner playtime used as the early-unlock suspicion threshold. */
+  earlyHours: number;
 }
 
 export interface AchievementInput {
@@ -146,8 +148,9 @@ function achievementSub(playerHours: number, ach: AchievementInput | null | unde
   for (const a of ach.stats) {
     if (!owned.has(a.id)) continue;
     if (EVENT_ACHIEVEMENT_IDS.has(a.id)) continue; // event-only — collected, but never scored
-    if (a.owners < ACH_MIN_OWNERS || a.meanHours < ACH_LATE_GAME_HOURS) continue;
-    const earliness = clamp01((a.meanHours - playerHours) / a.meanHours);
+    const earlyHours = Number.isFinite(a.earlyHours) && a.earlyHours > 0 ? a.earlyHours : a.meanHours;
+    if (a.owners < ACH_MIN_OWNERS || earlyHours < ACH_LATE_GAME_HOURS) continue;
+    const earliness = clamp01((earlyHours - playerHours) / earlyHours);
     if (earliness <= 0) continue;
     const rarity = clamp01((ACH_RARE_HI - a.samplePct) / (ACH_RARE_HI - ACH_RARE_LO));
     const contribution = earliness * (0.5 + 0.5 * rarity);

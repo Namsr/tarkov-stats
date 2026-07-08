@@ -12,6 +12,7 @@ interface AchievementRow {
   samplePct: number;
   meanHours: number;
   stdHours: number;
+  earlyHours: number;
 }
 
 interface Payload {
@@ -25,6 +26,7 @@ interface EarlyUnlock {
   rarity: string;
   z: number;
   meanHours: number;
+  earlyHours: number;
   samplePct: number;
 }
 
@@ -58,12 +60,14 @@ export default function EarlyUnlocks({
   const [unlocks, setUnlocks] = useState<EarlyUnlock[] | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     if (!(playerHours > 0) || ownedIds.length === 0) {
-      setUnlocks([]);
-      return;
+      Promise.resolve().then(() => !cancelled && setUnlocks([]));
+      return () => {
+        cancelled = true;
+      };
     }
     const owned = new Set(ownedIds);
-    let cancelled = false;
     fetch("/api/average/achievements")
       .then((res) => (res.ok ? (res.json() as Promise<Payload>) : null))
       .then((data) => {
@@ -77,14 +81,16 @@ export default function EarlyUnlocks({
               owned.has(a.id) &&
               !EVENT_ACHIEVEMENT_IDS.has(a.id) && // event-only achievements aren't a cheating signal
               a.owners >= MIN_OWNERS &&
+              a.earlyHours >= 200 &&
               a.stdHours > 0
           )
           .map((a) => ({
             id: a.id,
             name: a.name,
             rarity: a.rarity,
-            z: (playerHours - a.meanHours) / a.stdHours,
+            z: (playerHours - a.earlyHours) / a.stdHours,
             meanHours: a.meanHours,
+            earlyHours: a.earlyHours,
             samplePct: a.samplePct,
           }))
           .filter((u) => u.z <= Z_THRESHOLD)
@@ -118,7 +124,7 @@ export default function EarlyUnlocks({
               <div className="min-w-0">
                 <div className="text-gray-200 truncate">{u.name}</div>
                 <div className="text-[11px] text-gray-500">
-                  {fmtHours(playerHours)} {t("unit.h")} · {t("early.typical", { h: fmtHours(u.meanHours) })} ·{" "}
+                  {fmtHours(playerHours)} {t("unit.h")} · {t("early.typical", { h: fmtHours(u.earlyHours) })} ·{" "}
                   {t("early.haveIt", {
                     pct: u.samplePct < 10 ? u.samplePct.toFixed(2) : u.samplePct.toFixed(1),
                   })}
