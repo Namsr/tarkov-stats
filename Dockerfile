@@ -36,6 +36,7 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 
 # Каталог для локальной БД игроков (node:sqlite). Делаем его владельцем nextjs,
 # чтобы примонтированный сюда docker-volume унаследовал права на запись.

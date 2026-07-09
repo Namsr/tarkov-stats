@@ -1,6 +1,6 @@
 -- Favorites table for the Cloudflare D1 backend.
 --
--- node:sqlite (the self-hosted / VPS backend) auto-creates this from SCHEMA in
+-- node:sqlite (the VPS backend) auto-creates this from SCHEMA in
 -- lib/db.ts, so this file is ONLY needed when running on Cloudflare Workers with
 -- a D1 binding. Apply it once per database, e.g.:
 --

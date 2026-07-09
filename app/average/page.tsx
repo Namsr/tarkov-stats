@@ -99,8 +99,10 @@ export default function AveragePage() {
     params.set("metric", yMetric);
 
     let cancelled = false;
+    /* eslint-disable react-hooks/set-state-in-effect */
     setLoading(true);
     setError("");
+    /* eslint-enable react-hooks/set-state-in-effect */
     fetch(`/api/average?${params.toString()}`)
       .then(async (res) => {
         const j = (await res.json()) as AverageResponse & { error?: string };
@@ -120,7 +122,7 @@ export default function AveragePage() {
     return () => {
       cancelled = true;
     };
-  }, [rangeIdx, yMetric]);
+  }, [rangeIdx, yMetric, t]);
 
   const averages = data?.averages ?? null;
   const sampleN = averages?.n ?? 0;

@@ -26,8 +26,10 @@ export default function PlayerPage({ params }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    /* eslint-disable react-hooks/set-state-in-effect */
     setLoading(true);
     setError("");
+    /* eslint-enable react-hooks/set-state-in-effect */
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     fetch(`/api/player/profile?aid=${encodeURIComponent(aid)}${isReload() ? "&refresh=1" : ""}`)
@@ -57,7 +59,7 @@ export default function PlayerPage({ params }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [aid]);
+  }, [aid, t]);
 
   if (loading) {
     return (

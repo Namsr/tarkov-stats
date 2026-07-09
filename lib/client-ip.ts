@@ -12,8 +12,8 @@ import type { NextRequest } from "next/server";
  *   TRUSTED_IP_HEADER=x-real-ip        (по умолчанию) — за Caddy, который делает
  *     `header_up X-Real-IP {remote_host}` и перезаписывает любое клиентское
  *     значение реальным TCP-пиром.
- *   TRUSTED_IP_HEADER=cf-connecting-ip                — за Cloudflare (Tunnel или
- *     Workers): заголовок ставит сам Cloudflare из реального edge-пира и
+ *   TRUSTED_IP_HEADER=cf-connecting-ip                — за Cloudflare proxied DNS
+ *     или Workers: заголовок ставит сам Cloudflare из реального edge-пира и
  *     вырезает клиентские копии.
  *
  * Раньше код брал cf-connecting-ip → x-real-ip → последний элемент XFF по

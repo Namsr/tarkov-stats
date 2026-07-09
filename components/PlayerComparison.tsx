@@ -3,12 +3,13 @@
 import { useState, useEffect } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
-import { ParsedPlayerStats } from "@/types/tarkov";
+import type { ParsedPlayerStats, PlayerSearchResult } from "@/types/tarkov";
 import { parsePlayerId } from "@/lib/player-id";
 import { rangeForHours } from "@/lib/playtime-brackets";
 import ComparisonTable, { type ComparisonRow } from "./ComparisonTable";
 
 type Mode = "benchmark" | "player";
+const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 
 interface AverageData {
   /** Players sampled in the bracket. */
@@ -52,6 +53,7 @@ export default function PlayerComparison({ stats }: Props) {
   const [avgError, setAvgError] = useState("");
   const [otherStats, setOtherStats] = useState<ParsedPlayerStats | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PlayerSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -89,6 +91,7 @@ export default function PlayerComparison({ stats }: Props) {
     setLoading(true);
     setError("");
     setOtherStats(null);
+    setSearchResults([]);
     try {
       const res = await fetch(`/api/player/profile?aid=${aid}`);
       const data = (await res.json()) as { stats?: ParsedPlayerStats; error?: string };
@@ -100,13 +103,43 @@ export default function PlayerComparison({ stats }: Props) {
     setLoading(false);
   }
 
-  function handleSearch() {
-    const aid = parsePlayerId(searchQuery);
+  async function handleSearch() {
+    const clean = searchQuery.trim();
+    const aid = parsePlayerId(clean);
     if (aid === null) {
-      setError(t("search.error"));
+      if (!NICKNAME_RE.test(clean)) {
+        setError(t("search.error"));
+        setSearchResults([]);
+        return;
+      }
+
+      setLoading(true);
+      setError("");
+      setOtherStats(null);
+      setSearchResults([]);
+      try {
+        const res = await fetch(`/api/player/search?name=${encodeURIComponent(clean)}`);
+        if (res.status === 503) throw new Error(t("search.indexUnavailable"));
+        if (!res.ok) throw new Error(t("compare.errSearch"));
+
+        const found = (await res.json()) as PlayerSearchResult[];
+        if (found.length === 0) throw new Error(t("compare.errNoPlayers"));
+
+        const exact = found.find((p) => p.name.toLowerCase() === clean.toLowerCase());
+        if (exact) {
+          await fetchPlayerByAid(exact.aid);
+          return;
+        }
+
+        setSearchResults(found);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("compare.errSearch"));
+      } finally {
+        setLoading(false);
+      }
       return;
     }
-    fetchPlayerByAid(aid);
+    await fetchPlayerByAid(aid);
   }
 
   // Same rows for both modes; only the opponent value lookup differs. Skips
@@ -205,13 +238,18 @@ export default function PlayerComparison({ stats }: Props) {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                if (searchResults.length) setSearchResults([]);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleSearch();
+              }}
               placeholder={t("compare.idPlaceholder")}
               className="flex-1 px-3 py-2 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
             />
             <button
-              onClick={handleSearch}
+              onClick={() => void handleSearch()}
               disabled={loading}
               className="px-4 py-2 bg-[var(--accent)] text-[var(--background)] rounded text-sm font-medium hover:bg-[var(--accent-dim)] disabled:opacity-50"
             >
@@ -220,6 +258,27 @@ export default function PlayerComparison({ stats }: Props) {
           </div>
 
           {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+
+          {searchResults.length > 0 && (
+            <div className="rounded border border-[var(--card-border)] bg-[var(--card-bg)] p-2">
+              <p className="px-2 pb-2 text-xs uppercase tracking-wider text-gray-500">
+                {t("search.resultsHeading")}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {searchResults.map((player) => (
+                  <button
+                    key={player.aid}
+                    type="button"
+                    onClick={() => fetchPlayerByAid(player.aid)}
+                    disabled={loading}
+                    className="px-3 py-1.5 text-sm bg-[var(--input-bg)] border border-[var(--card-border)] rounded hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors disabled:opacity-50"
+                  >
+                    {player.name} <span className="text-xs text-gray-500">#{player.aid}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Quick-pick from the user's favorites */}
           <div>

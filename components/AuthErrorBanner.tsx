@@ -15,17 +15,18 @@ const KNOWN_CODES = new Set([
 
 export default function AuthErrorBanner() {
   const { t } = useI18n();
-  const [code, setCode] = useState<string | null>(null);
+  const [code] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("auth_error");
+  });
 
   useEffect(() => {
-    const param = new URLSearchParams(window.location.search).get("auth_error");
-    if (!param) return;
-    setCode(param);
+    if (!code) return;
     // Strip the param so a refresh or share doesn't re-trigger the banner.
     const url = new URL(window.location.href);
     url.searchParams.delete("auth_error");
     window.history.replaceState({}, "", url);
-  }, []);
+  }, [code]);
 
   if (!code) return null;
 
