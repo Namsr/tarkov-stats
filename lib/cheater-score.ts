@@ -149,11 +149,12 @@ function achievementSub(playerHours: number, ach: AchievementInput | null | unde
     if (!owned.has(a.id)) continue;
     if (EVENT_ACHIEVEMENT_IDS.has(a.id)) continue; // event-only — collected, but never scored
     const earlyHours = Number.isFinite(a.earlyHours) && a.earlyHours > 0 ? a.earlyHours : a.meanHours;
-    if (a.owners < ACH_MIN_OWNERS || earlyHours < ACH_LATE_GAME_HOURS) continue;
+    if (a.owners < ACH_MIN_OWNERS || a.samplePct >= ACH_RARE_HI || earlyHours < ACH_LATE_GAME_HOURS) continue;
     const earliness = clamp01((earlyHours - playerHours) / earlyHours);
     if (earliness <= 0) continue;
     const rarity = clamp01((ACH_RARE_HI - a.samplePct) / (ACH_RARE_HI - ACH_RARE_LO));
-    const contribution = earliness * (0.5 + 0.5 * rarity);
+    if (rarity <= 0) continue;
+    const contribution = earliness * rarity;
     if (contribution > best) best = contribution;
   }
   return best;
