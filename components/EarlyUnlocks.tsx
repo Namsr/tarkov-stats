@@ -36,6 +36,7 @@ interface EarlyUnlock {
 const MIN_SAMPLE = 30;
 const MIN_OWNERS = 10;
 const Z_THRESHOLD = -1.5;
+const MAX_RARE_SAMPLE_PCT = 30;
 const MAX_SHOWN = 6;
 
 function fmtHours(h: number): string {
@@ -81,6 +82,7 @@ export default function EarlyUnlocks({
               owned.has(a.id) &&
               !EVENT_ACHIEVEMENT_IDS.has(a.id) && // event-only achievements aren't a cheating signal
               a.owners >= MIN_OWNERS &&
+              a.samplePct < MAX_RARE_SAMPLE_PCT &&
               a.earlyHours >= 200 &&
               a.stdHours > 0
           )
