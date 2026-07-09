@@ -76,7 +76,7 @@ CREATE TABLE player_index_next (
 `);
 }
 
-async function fetchIndex(url, db, force) {
+async function requestIndex(url, db, force) {
   const headers = {
     accept: "application/json",
     "user-agent": process.env.PLAYER_INDEX_USER_AGENT || DEFAULT_UA,
@@ -95,60 +95,210 @@ async function fetchIndex(url, db, force) {
     throw new Error(`index download failed: HTTP ${res.status}`);
   }
 
-  const text = await res.text();
-  if (text.trimStart().startsWith("<")) {
-    throw new Error("index download returned HTML instead of JSON");
-  }
-
-  const json = JSON.parse(text);
-  if (!json || typeof json !== "object" || Array.isArray(json)) {
-    throw new Error("index JSON must be an object of accountId -> nickname");
-  }
-
   return {
     unchanged: false,
-    json,
+    res,
     etag: res.headers.get("etag"),
     lastModified: res.headers.get("last-modified"),
-    bytes: Buffer.byteLength(text),
   };
 }
 
-function loadImportTable(db, json, syncedAt) {
-  initImportTable(db);
+function skipWs(buffer, pos) {
+  while (pos < buffer.length && /\s/.test(buffer[pos])) pos += 1;
+  return pos;
+}
 
-  const insert = db.prepare(
-    "INSERT OR REPLACE INTO player_index_next " +
-      "(aid, nickname, nickname_lower, synced_at) VALUES (?, ?, ?, ?)"
-  );
+function readJsonString(buffer, start) {
+  if (start >= buffer.length) return null;
+  if (buffer[start] !== "\"") throw new Error("expected JSON string");
+
+  let out = "";
+  let i = start + 1;
+  while (i < buffer.length) {
+    const ch = buffer[i];
+    if (ch === "\"") return { value: out, next: i + 1 };
+    if (ch !== "\\") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (i + 1 >= buffer.length) return null;
+    const esc = buffer[i + 1];
+    if (esc === "u") {
+      if (i + 6 > buffer.length) return null;
+      const hex = buffer.slice(i + 2, i + 6);
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw new Error("invalid unicode escape");
+      out += String.fromCharCode(Number.parseInt(hex, 16));
+      i += 6;
+      continue;
+    }
+
+    const decoded =
+      esc === "\"" ? "\"" :
+      esc === "\\" ? "\\" :
+      esc === "/" ? "/" :
+      esc === "b" ? "\b" :
+      esc === "f" ? "\f" :
+      esc === "n" ? "\n" :
+      esc === "r" ? "\r" :
+      esc === "t" ? "\t" :
+      null;
+    if (decoded == null) throw new Error("invalid escape sequence");
+    out += decoded;
+    i += 2;
+  }
+
+  return null;
+}
+
+function createIndexParser(onEntry) {
+  let buffer = "";
+  let pos = 0;
+  let state = "start";
+  let currentKey = "";
+  let done = false;
+
+  function parse(final = false) {
+    while (!done) {
+      pos = skipWs(buffer, pos);
+      if (pos >= buffer.length) break;
+
+      if (state === "start") {
+        if (buffer[pos] === "<") throw new Error("index download returned HTML instead of JSON");
+        if (buffer[pos] !== "{") throw new Error("index JSON must be an object");
+        pos += 1;
+        state = "keyOrEnd";
+        continue;
+      }
+
+      if (state === "keyOrEnd") {
+        if (buffer[pos] === "}") {
+          pos += 1;
+          state = "done";
+          done = true;
+          break;
+        }
+        const key = readJsonString(buffer, pos);
+        if (!key) break;
+        currentKey = key.value;
+        pos = key.next;
+        state = "colon";
+        continue;
+      }
+
+      if (state === "colon") {
+        if (buffer[pos] !== ":") throw new Error("expected ':' after account id");
+        pos += 1;
+        state = "value";
+        continue;
+      }
+
+      if (state === "value") {
+        const value = readJsonString(buffer, pos);
+        if (!value) break;
+        onEntry(currentKey, value.value);
+        currentKey = "";
+        pos = value.next;
+        state = "commaOrEnd";
+        continue;
+      }
+
+      if (state === "commaOrEnd") {
+        if (buffer[pos] === ",") {
+          pos += 1;
+          state = "keyOrEnd";
+          continue;
+        }
+        if (buffer[pos] === "}") {
+          pos += 1;
+          state = "done";
+          done = true;
+          break;
+        }
+        throw new Error("expected ',' or '}' after nickname");
+      }
+    }
+
+    if (pos > 0) {
+      buffer = buffer.slice(pos);
+      pos = 0;
+    }
+
+    if (final) {
+      pos = skipWs(buffer, pos);
+      if (!done || pos < buffer.length) throw new Error("truncated or invalid index JSON");
+    }
+  }
+
+  return {
+    append(chunk) {
+      buffer += chunk;
+      parse(false);
+    },
+    finish(chunk) {
+      if (chunk) buffer += chunk;
+      parse(true);
+    },
+  };
+}
+
+async function streamIndex(response, onEntry) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("index response has no readable body");
+
+  const decoder = new TextDecoder();
+  const parser = createIndexParser(onEntry);
+  let bytes = 0;
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    parser.append(decoder.decode(value, { stream: true }));
+  }
+  parser.finish(decoder.decode());
+  return bytes;
+}
+
+async function consumeIndex(db, response, syncedAt, dryRun) {
+  let insert = null;
+  if (!dryRun) {
+    initImportTable(db);
+    insert = db.prepare(
+      "INSERT OR REPLACE INTO player_index_next " +
+        "(aid, nickname, nickname_lower, synced_at) VALUES (?, ?, ?, ?)"
+    );
+  }
 
   let inserted = 0;
   let skipped = 0;
+  let sourceRows = 0;
 
-  db.exec("BEGIN");
+  if (!dryRun) db.exec("BEGIN");
   try {
-    for (const [aidRaw, nicknameRaw] of Object.entries(json)) {
+    const bytes = await streamIndex(response, (aidRaw, nicknameRaw) => {
+      sourceRows += 1;
       const aid = Number(aidRaw);
       const nickname = typeof nicknameRaw === "string" ? nicknameRaw.trim() : "";
       if (!Number.isInteger(aid) || aid <= 0 || !NICKNAME_RE.test(nickname)) {
         skipped += 1;
-        continue;
+        return;
       }
 
-      insert.run(aid, nickname, nickname.toLowerCase(), syncedAt);
+      if (insert) insert.run(aid, nickname, nickname.toLowerCase(), syncedAt);
       inserted += 1;
 
       if (inserted % 100000 === 0) {
         console.log(`loaded ${inserted.toLocaleString("en-US")} rows...`);
       }
-    }
-    db.exec("COMMIT");
+    });
+    if (!dryRun) db.exec("COMMIT");
+    return { inserted, skipped, sourceRows, bytes };
   } catch (error) {
-    db.exec("ROLLBACK");
+    if (!dryRun) db.exec("ROLLBACK");
     throw error;
   }
-
-  return { inserted, skipped };
 }
 
 function swapImportTable(db, meta) {
@@ -195,37 +345,30 @@ async function main() {
   console.log(`syncing player index from ${url}`);
   console.log(`sqlite: ${resolved}`);
 
-  const downloaded = await fetchIndex(url, db, force);
+  const downloaded = await requestIndex(url, db, force);
   if (downloaded.unchanged) {
     console.log("player index is unchanged");
     db.close();
     return;
   }
 
-  const sourceRows = Object.keys(downloaded.json).length;
+  const syncedAt = Date.now();
+  const result = await consumeIndex(db, downloaded.res, syncedAt, dryRun);
   console.log(
-    `downloaded ${(downloaded.bytes / 1024 / 1024).toFixed(1)} MiB, ` +
-      `${sourceRows.toLocaleString("en-US")} source rows`
+    `downloaded ${(result.bytes / 1024 / 1024).toFixed(1)} MiB, ` +
+      `${result.sourceRows.toLocaleString("en-US")} source rows`
   );
 
   if (dryRun) {
-    let valid = 0;
-    for (const [aidRaw, nicknameRaw] of Object.entries(downloaded.json)) {
-      const aid = Number(aidRaw);
-      const nickname = typeof nicknameRaw === "string" ? nicknameRaw.trim() : "";
-      if (Number.isInteger(aid) && aid > 0 && NICKNAME_RE.test(nickname)) valid += 1;
-    }
-    console.log(`dry run: ${valid.toLocaleString("en-US")} valid rows`);
+    console.log(`dry run: ${result.inserted.toLocaleString("en-US")} valid rows`);
     db.close();
     return;
   }
 
-  const syncedAt = Date.now();
-  const { inserted, skipped } = loadImportTable(db, downloaded.json, syncedAt);
   swapImportTable(db, {
     syncedAt,
     url,
-    inserted,
+    inserted: result.inserted,
     etag: downloaded.etag,
     lastModified: downloaded.lastModified,
   });
@@ -235,8 +378,8 @@ async function main() {
 
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   console.log(
-    `done: ${inserted.toLocaleString("en-US")} rows, ` +
-      `${skipped.toLocaleString("en-US")} skipped, ${seconds}s`
+    `done: ${result.inserted.toLocaleString("en-US")} rows, ` +
+      `${result.skipped.toLocaleString("en-US")} skipped, ${seconds}s`
   );
 }
 
