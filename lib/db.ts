@@ -1,4 +1,4 @@
-import type { ParsedPlayerStats } from "@/types/tarkov";
+import type { ParsedPlayerStats, PlayerSearchResult } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
 
 // One row per collected player, keyed by account id. Re-looking up the same
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS players (
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
+CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
 -- Игровые аккаунты, привязанные пользователем (вход через Google) в избранное.
 -- Ключ — user_sub (стабильный Google-id из JWT-сессии) + aid. nickname хранится
@@ -122,6 +123,20 @@ const MAX_PLAYERS = Number(process.env.MAX_PLAYERS ?? 200_000) || 0;
 
 // Лимит избранного на пользователя — защита от раздувания таблицы одним аккаунтом.
 const MAX_FAVORITES = 50;
+
+const PLAYER_SEARCH_SQL =
+  "SELECT aid, nickname AS name FROM players " +
+  "WHERE nickname IS NOT NULL AND nickname LIKE ? ESCAPE '\\' " +
+  "ORDER BY CASE WHEN nickname = ? COLLATE NOCASE THEN 0 ELSE 1 END, " +
+  "LENGTH(nickname), nickname COLLATE NOCASE, aid LIMIT ?";
+
+function nicknamePrefix(nickname: string): string {
+  return nickname.trim().replace(/[\\%_]/g, "\\$&") + "%";
+}
+
+function toPlayerSearchResults(rows: { aid: number; name: string }[]): PlayerSearchResult[] {
+  return rows.map((row) => ({ aid: Number(row.aid), name: String(row.name) }));
+}
 
 // Робастный портрет среднего игрока: по КАЖДОЙ метрике отбрасываем по TRIM_FRACTION
 // с обоих хвостов (триммированное среднее), чтобы читеры/боты с экстремальными
@@ -269,6 +284,7 @@ export interface BaselineResult {
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
+  search(nickname: string, limit: number): Promise<PlayerSearchResult[]>;
   averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
@@ -324,6 +340,13 @@ async function d1Store(): Promise<PlayerStore | null> {
           }
         }
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
+      },
+      async search(nickname, limit) {
+        const { results } = await db
+          .prepare(PLAYER_SEARCH_SQL)
+          .bind(nicknamePrefix(nickname), nickname.trim(), limit)
+          .all();
+        return toPlayerSearchResults((results ?? []) as { aid: number; name: string }[]);
       },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
@@ -424,6 +447,12 @@ async function sqliteStore(): Promise<PlayerStore | null> {
           }
         }
         db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids, now));
+      },
+      async search(nickname, limit) {
+        const rows = db
+          .prepare(PLAYER_SEARCH_SQL)
+          .all(nicknamePrefix(nickname), nickname.trim(), limit) as { aid: number; name: string }[];
+        return toPlayerSearchResults(rows);
       },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
