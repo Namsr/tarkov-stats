@@ -3,8 +3,8 @@
 // ranges (e.g. 0–1000, 1000–3000); as the sample grows the bars split apart and
 // converge toward the underlying 50h resolution.
 //
-// Each bar carries both a player count and the SUM of the selected metric over
-// its players, so the caller can show either the count or a weighted average.
+// Each bar carries a player count and raw SUM while its final boundaries are
+// formed. The API then attaches the trimmed average for those exact boundaries.
 // The X axis is always playtime; columns render at equal width.
 
 import type { BracketAgg } from "@/lib/db";
@@ -23,6 +23,8 @@ export interface HistBin {
   n: number;
   /** SUM of the selected metric over the pooled players. */
   sum: number;
+  /** Server-computed trimmed mean for average metrics. */
+  avg?: number | null;
   /** Playtime range label, e.g. "1k–3k". */
   label: string;
 }
@@ -30,7 +32,7 @@ export interface HistBin {
 /** Each displayed bar should pool at least this many players before it splits. */
 const MIN_BIN_COUNT = 5;
 /** Hard cap on bars so the chart stays readable; threshold is raised to fit. */
-const MAX_BINS = 36;
+export const MAX_HISTOGRAM_BINS = 36;
 
 function parseKey(key: string): { lo: number; hi: number | null } {
   if (key.endsWith("+")) return { lo: Number(key.slice(0, -1)), hi: null };
@@ -95,7 +97,10 @@ function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
  * brackets are simply absent from the input (so gaps collapse), and the bin
  * resolution adapts to how much data exists.
  */
-export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): HistBin[] {
+export function buildHistogram(
+  aggs: BracketAgg[],
+  maxBins: number = MAX_HISTOGRAM_BINS
+): HistBin[] {
   const cells = aggs
     .map((b) => ({ ...parseKey(b.bracket_key), n: b.n, sum: b.sum }))
     .filter((c) => Number.isFinite(c.lo) && c.n > 0)
@@ -107,8 +112,8 @@ export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): 
   // the chart is wide enough to show). Never below a single bar — you can't
   // merge past one — and never above the hard readability cap.
   const cap = Number.isFinite(maxBins)
-    ? Math.max(1, Math.min(MAX_BINS, Math.floor(maxBins)))
-    : MAX_BINS;
+    ? Math.max(1, Math.min(MAX_HISTOGRAM_BINS, Math.floor(maxBins)))
+    : MAX_HISTOGRAM_BINS;
   let minCount = MIN_BIN_COUNT;
   let bins = mergeToThreshold(cells, minCount);
   while (bins.length > cap && bins.length > 1) {

@@ -6,7 +6,7 @@ import { useI18n } from "@/lib/i18n/context";
 import StatCard from "@/components/StatCard";
 import MetricPicker from "@/components/MetricPicker";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
-import { buildHistogram, type BracketAgg } from "@/lib/histogram";
+import { MAX_HISTOGRAM_BINS, type HistBin } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY, formatValue } from "@/lib/metrics";
 import { PLAYTIME_RANGES } from "@/lib/playtime-brackets";
 
@@ -17,7 +17,7 @@ interface AverageRow {
 interface AverageResponse {
   total: number;
   averages: AverageRow | null;
-  brackets: BracketAgg[];
+  histogram: HistBin[];
   metric: string;
 }
 
@@ -63,7 +63,7 @@ export default function AveragePage() {
   const [rangeIdx, setRangeIdx] = useState(0);
   const [yMetric, setYMetric] = useState(DEFAULT_Y);
   const [data, setData] = useState<AverageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [settledRequest, setSettledRequest] = useState("");
   const [error, setError] = useState("");
   const [showAch, setShowAch] = useState(false);
   // Measured content width of the chart card, so we can pool the histogram down
@@ -83,6 +83,18 @@ export default function AveragePage() {
     return () => ro.disconnect();
   }, []);
 
+  // N bars need N*BAR + (N-1)*GAP px. The API uses this budget to form the
+  // final bins before calculating their trimmed averages.
+  const fitBins =
+    chartW > 0
+      ? Math.min(
+          MAX_HISTOGRAM_BINS,
+          Math.max(1, Math.floor((chartW + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX)))
+        )
+      : MAX_HISTOGRAM_BINS;
+  const requestKey = `${rangeIdx}:${yMetric}:${fitBins}`;
+  const loading = settledRequest !== requestKey;
+
   function openBreakdown() {
     setShowAch(true);
     // Wait for the panel to mount before scrolling it into view.
@@ -97,10 +109,9 @@ export default function AveragePage() {
     if (r.min != null) params.set("minHours", String(r.min));
     if (r.max != null) params.set("maxHours", String(r.max));
     params.set("metric", yMetric);
+    params.set("maxBins", String(fitBins));
 
     let cancelled = false;
-    setLoading(true);
-    setError("");
     fetch(`/api/average?${params.toString()}`)
       .then(async (res) => {
         const j = (await res.json()) as AverageResponse & { error?: string };
@@ -108,19 +119,22 @@ export default function AveragePage() {
         return j;
       })
       .then((j) => {
-        if (!cancelled) setData(j);
+        if (!cancelled) {
+          setData(j);
+          setError("");
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : t("common.loadFailed"));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setSettledRequest(requestKey);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [rangeIdx, yMetric]);
+  }, [rangeIdx, yMetric, fitBins, requestKey, t]);
 
   const averages = data?.averages ?? null;
   const sampleN = averages?.n ?? 0;
@@ -130,13 +144,8 @@ export default function AveragePage() {
   // not the pending selection, so labels never mismatch mid-fetch.
   const yDef = resolveY(data?.metric);
   const isCount = yDef.agg === "count";
-  // How many `min-w-[26px]` bars (+6px gaps) fit the measured width. Before the
-  // first measurement (chartW 0) fall back to the module default. N bars need
-  // N*BAR + (N-1)*GAP px, so N = floor((width + GAP) / (BAR + GAP)).
-  const fitBins =
-    chartW > 0 ? Math.max(1, Math.floor((chartW + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX))) : undefined;
-  const bins = buildHistogram(data?.brackets ?? [], fitBins);
-  const valueOf = (b: { n: number; sum: number }) => (isCount ? b.n : b.n > 0 ? b.sum / b.n : 0);
+  const bins = data?.histogram ?? [];
+  const valueOf = (b: HistBin) => (isCount ? b.n : b.avg ?? 0);
   const peak = Math.max(0, ...bins.map(valueOf));
   const maxVal = peak || 1; // avoid /0 when every value is 0; otherwise scale to the real peak
   const focusMetrics = METRICS.slice(0, 4);
@@ -201,7 +210,7 @@ export default function AveragePage() {
         </div>
       </section>
 
-      {error && <p className="text-[var(--danger)] text-sm mt-5">{error}</p>}
+      {error && !loading && <p className="text-[var(--danger)] text-sm mt-5">{error}</p>}
 
       {!data ? (
         <div className="detail-grid mt-5">

@@ -164,6 +164,29 @@ function metricAvgSql(column: string, where: string, trim: boolean): string {
   );
 }
 
+// Self-contained trimmed mean for a single playtime range. Unlike
+// metricAvgSql(), this query derives n inside the same statement, which keeps
+// the trim window consistent even while the background importer is adding
+// players. It is used for the final, already-pooled histogram bins.
+function histogramAvgSql(column: string, where: string): string {
+  if (!AVG_COLS.includes(column) || !/^[a-z_]+$/.test(column)) {
+    throw new Error(`invalid metric column: ${column}`);
+  }
+  return (
+    `WITH ranked AS (` +
+    `SELECT COALESCE(${column}, 0) AS v, ` +
+    `ROW_NUMBER() OVER (ORDER BY COALESCE(${column}, 0)) AS rn, ` +
+    `COUNT(*) OVER () AS n ` +
+    `FROM players ${where}` +
+    `), trimmed AS (` +
+    `SELECT v, rn, n, ` +
+    `CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END AS off ` +
+    `FROM ranked` +
+    `) ` +
+    `SELECT AVG(v) AS a FROM trimmed WHERE rn > off AND rn <= n - off`
+  );
+}
+
 // Окно обрезки для выборки размера n: смещение хвоста и сколько строк взять из
 // середины. Возвращает trim=false (off=0) для малой выборки — тогда считаем
 // обычное среднее по всему диапазону.
@@ -247,6 +270,13 @@ export interface BracketAgg {
   sum: number;
 }
 
+export interface HistogramRange {
+  /** Inclusive lower playtime bound. */
+  lo: number;
+  /** Exclusive upper playtime bound; null means open-ended. */
+  hi: number | null;
+}
+
 /** Playtime baseline for a single achievement across the whole sample. */
 export interface AchievementStat {
   /** Achievement id (matches tarkov.dev achievement ids). */
@@ -291,6 +321,12 @@ export interface PlayerStore {
    * SUM of that column per bracket so a per-bracket average can be computed.
    */
   bracketAggregate(column: string | null): Promise<BracketAgg[]>;
+  /**
+   * Trimmed mean of one metric for each final display range. The range count is
+   * derived inside each SQL statement so concurrent imports cannot skew which
+   * rows are trimmed.
+   */
+  histogramAverages(column: string, ranges: readonly HistogramRange[]): Promise<(number | null)[]>;
   /**
    * Per-achievement playtime baseline over the whole sample: owner count plus
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
@@ -370,6 +406,18 @@ async function d1Store(): Promise<PlayerStore | null> {
       async bracketAggregate(column) {
         const { results } = await db.prepare(aggSql(column)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
+      },
+      async histogramAverages(column, ranges) {
+        if (ranges.length === 0) return [];
+        const statements = ranges.map((range) => {
+          const { where, params } = rangeClause(range.lo, range.hi);
+          return db.prepare(histogramAvgSql(column, where)).bind(...params);
+        });
+        const results = await db.batch(statements);
+        return results.map((result: { results?: { a: number | null }[] }) => {
+          const value = result.results?.[0]?.a;
+          return value == null ? null : Number(value);
+        });
       },
       async achievementBaseline() {
         const totalRow = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
@@ -473,6 +521,15 @@ async function sqliteStore(): Promise<PlayerStore | null> {
       async bracketAggregate(column) {
         const rows = db.prepare(aggSql(column)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
+      },
+      async histogramAverages(column, ranges) {
+        return ranges.map((range) => {
+          const { where, params } = rangeClause(range.lo, range.hi);
+          const row = db.prepare(histogramAvgSql(column, where)).get(...params) as
+            | { a: number | null }
+            | undefined;
+          return row?.a == null ? null : Number(row.a);
+        });
       },
       async achievementBaseline() {
         const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
