@@ -20,8 +20,8 @@ export default function FavoritesList({ statsByAid, statsLoading }: Props) {
 
   return (
     <section className="space-y-3">
-      <h2 className="text-sm uppercase tracking-wider text-gray-500">{t("profile.listHeading")}</h2>
-      <ul className="space-y-2">
+      <h2 className="section-heading">{t("profile.listHeading")}</h2>
+      <ul className="space-y-3">
         {favorites.map((fav) => (
           <FavoriteRow
             key={fav.aid}
@@ -69,27 +69,27 @@ function FavoriteRow({
     : t("profile.statsUnavailable");
 
   return (
-    <li className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <li className="data-panel p-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <Link
             href={`/player/${fav.aid}`}
-            className="font-medium text-[var(--accent)] hover:underline truncate"
+            className="font-[var(--heading-font)] font-bold tracking-wide text-[var(--foreground)] hover:text-[var(--accent)] truncate"
           >
             {fav.nickname || `#${fav.aid}`}
           </Link>
           {fav.isMain && (
-            <span className="text-[10px] uppercase tracking-wider bg-[var(--accent)]/15 text-[var(--accent)] px-1.5 py-0.5 rounded">
+            <span className="text-[10px] uppercase tracking-wider bg-[var(--accent)]/15 text-[var(--accent)] px-2 py-1 rounded-full">
               {t("profile.main")}
             </span>
           )}
         </div>
-        <div className="text-xs text-gray-500 mt-0.5">
+        <div className="text-xs text-[var(--muted)] mt-1">
           #{fav.aid} · {quick}
         </div>
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
         <RefreshButton aid={fav.aid} />
         <input
           value={note}
@@ -99,13 +99,13 @@ function FavoriteRow({
           placeholder={t("profile.notePlaceholder")}
           maxLength={120}
           aria-label={t("profile.note")}
-          className="w-40 sm:w-48 px-2 py-1 text-xs bg-[var(--input-bg)] border border-[var(--card-border)] rounded focus:outline-none focus:border-[var(--accent)]"
+          className="w-40 sm:w-48 min-h-10 px-3 text-xs bg-[var(--input-bg)] border border-[var(--card-border)] rounded-lg focus:outline-none focus:border-[var(--accent)]"
         />
         {!fav.isMain && (
           <button
             onClick={() => onSetMain(fav.aid)}
             title={t("profile.setMain")}
-            className="text-xs text-gray-500 hover:text-[var(--accent)] whitespace-nowrap"
+            className="ghost-button !min-h-10 !px-3 !py-2 text-[10px] whitespace-nowrap"
           >
             {t("profile.setMain")}
           </button>
@@ -114,7 +114,7 @@ function FavoriteRow({
           onClick={() => onRemove(fav.aid)}
           title={t("fav.remove")}
           aria-label={t("fav.remove")}
-          className="text-gray-500 hover:text-[var(--danger)] text-lg leading-none"
+          className="grid h-10 w-10 place-items-center rounded-full border border-[var(--card-border)] text-[var(--muted)] hover:border-[var(--danger)] hover:text-[var(--danger)] text-lg leading-none"
         >
           ✕
         </button>

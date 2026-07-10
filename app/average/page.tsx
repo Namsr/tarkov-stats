@@ -139,174 +139,149 @@ export default function AveragePage() {
   const valueOf = (b: { n: number; sum: number }) => (isCount ? b.n : b.n > 0 ? b.sum / b.n : 0);
   const peak = Math.max(0, ...bins.map(valueOf));
   const maxVal = peak || 1; // avoid /0 when every value is 0; otherwise scale to the real peak
+  const focusMetrics = METRICS.slice(0, 4);
+  const detailMetrics = METRICS.slice(4);
+
+  function renderMetric(m: (typeof METRICS)[number]) {
+    const card = (
+      <StatCard
+        label={`${t("common.avg")} ${t("metric." + m.key)}`}
+        value={fmt(averages?.[m.key], m.decimals ?? 1)}
+        suffix={m.suffix}
+      />
+    );
+
+    if (m.key !== "achv_count") return <div key={m.key}>{card}</div>;
+
+    return (
+      <button
+        key={m.key}
+        onClick={openBreakdown}
+        title={t("average.showAchBreakdown")}
+        className="relative text-left rounded-[10px] transition-transform hover:-translate-y-0.5 focus:outline-none"
+      >
+        {card}
+        <span className="absolute right-4 top-4 text-xs text-[var(--accent)]" aria-hidden>↗</span>
+      </button>
+    );
+  }
 
   return (
-    <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
+    <main className="page-frame">
       <Link
         href="/"
-        className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+        className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors inline-block"
       >
         {t("common.back")}
       </Link>
-      <h1 className="text-2xl font-bold text-[var(--accent)] mb-6">{t("nav.average")}</h1>
+      <p className="page-kicker mt-7">{t("average.summary")}</p>
+      <h1 className="page-title">{t("nav.average")}</h1>
 
-      {/* Total scanned accounts */}
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 mb-6">
-        <div className="text-xs uppercase tracking-wider text-gray-500">{t("average.accountsScanned")}</div>
-        <div className="text-3xl font-bold text-[var(--foreground)]">
-          {total.toLocaleString()}
+      <section className="summary-strip surface">
+        <div className="summary-strip__copy">
+          <div className="section-kicker">{t("average.accountsScanned")}</div>
+          <div className="summary-strip__number">{total.toLocaleString()}</div>
+          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">{t("average.sampleGrows")}</p>
         </div>
-        <p className="text-xs text-gray-600 mt-1">
-          {t("average.sampleGrows")}
-        </p>
-      </div>
+        <div className="flex flex-col gap-2 sm:items-end">
+          <label className="section-kicker" htmlFor="playtime-range">{t("average.playtimeRange")}</label>
+          <select
+            id="playtime-range"
+            value={rangeIdx}
+            onChange={(e) => setRangeIdx(Number(e.target.value))}
+            className="min-h-12 rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] px-4 text-sm text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
+          >
+            {RANGES.map((r, i) => (
+              <option key={r.label} value={i}>
+                {r.min == null && r.max == null ? t("range.all") : `${r.label} ${t("unit.h")}`}
+              </option>
+            ))}
+          </select>
+          {data && <span className="text-xs text-[var(--muted)]">{t("average.basedOn", { n: sampleN.toLocaleString() })}</span>}
+        </div>
+      </section>
 
-      {/* Hours range selector */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <label className="text-sm text-gray-400">{t("average.playtimeRange")}</label>
-        <select
-          value={rangeIdx}
-          onChange={(e) => setRangeIdx(Number(e.target.value))}
-          className="px-3 py-2 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
-        >
-          {RANGES.map((r, i) => (
-            <option key={r.label} value={i}>
-              {r.min == null && r.max == null ? t("range.all") : `${r.label} ${t("unit.h")}`}
-            </option>
-          ))}
-        </select>
-        {data && (
-          <span className="text-sm text-gray-500">
-            {t("average.basedOn", { n: sampleN.toLocaleString() })}
-          </span>
-        )}
-      </div>
-
-      {error && <p className="text-[var(--danger)] text-sm mb-4">{error}</p>}
+      {error && <p className="text-[var(--danger)] text-sm mt-5">{error}</p>}
 
       {!data ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="detail-grid mt-5">
           {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="h-20 skeleton rounded-lg" />
+            <div key={i} className="h-28 skeleton rounded-xl" />
           ))}
         </div>
       ) : sampleN === 0 ? (
-        <p className="text-gray-500">
+        <p className="mt-5 text-[var(--muted)]">
           {t("average.emptyRange")}
         </p>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {METRICS.map((m) => {
-            const card = (
-              <StatCard
-                label={`${t("common.avg")} ${t("metric." + m.key)}`}
-                value={fmt(averages?.[m.key], m.decimals ?? 1)}
-                suffix={m.suffix}
-              />
-            );
-            // The achievements card is a shortcut into the hidden breakdown panel.
-            if (m.key === "achv_count") {
-              return (
-                <button
-                  key={m.key}
-                  onClick={openBreakdown}
-                  title={t("average.showAchBreakdown")}
-                  className="relative text-left rounded-lg transition-shadow hover:ring-1 hover:ring-[var(--accent)]/60 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] group"
-                >
-                  {card}
-                  <span className="absolute top-3 right-3 text-[11px] text-gray-600 group-hover:text-[var(--accent)] transition-colors">
-                    ▸
-                  </span>
-                </button>
-              );
-            }
-            return <div key={m.key}>{card}</div>;
-          })}
-        </div>
-      )}
+        <>
+          <section className="mt-5">
+            <h2 className="section-heading mb-3">{t("average.summary")}</h2>
+            <div className="detail-grid">{focusMetrics.map(renderMetric)}</div>
+            <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">{t("average.robustNote")}</p>
+          </section>
 
-      {data && sampleN > 0 && (
-        <p className="text-xs text-gray-600 mt-3">{t("average.robustNote")}</p>
-      )}
-
-      {/* Achievement breakdown — drilldown from the "Avg achievements" card above. */}
-      <AchievementBreakdown open={showAch} onToggle={() => setShowAch((o) => !o)} />
-
-      {/* Distribution by playtime — pick what the bar height measures */}
-      <h2 className="text-sm uppercase tracking-wider text-gray-500 mt-10 mb-1">
-        {t("average.distributionHeading")}
-      </h2>
-      <p className="text-xs text-gray-600 mb-4">
-        {t("average.distributionDesc")}
-      </p>
-
-      <div className="flex flex-col sm:flex-row gap-4">
-        {/* Y-axis metric picker */}
-        <MetricPicker value={yMetric} onChange={setYMetric} />
-
-        {/* Chart */}
-        <div
-          ref={chartRef}
-          className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4"
-        >
-          <div className="text-[11px] text-gray-500 mb-2">
-            <span className="text-[var(--accent)] font-medium">
-              {yDef.agg === "avg" ? `${t("common.avg")} ${t("metric." + yDef.key)}` : t("metric." + yDef.key)}
-            </span>{" "}
-            {t("average.byPlaytime")}
-          </div>
-          {!data ? (
-            <div className="h-52 skeleton rounded" />
-          ) : bins.length === 0 ? (
-            <p className="text-gray-600 text-sm">{t("average.noDataYet")}</p>
-          ) : (
-            <div className={`overflow-x-auto ${loading ? "opacity-60" : ""} transition-opacity`}>
-              <div className="flex items-end gap-1.5 h-52 border-b border-[var(--card-border)]">
-                {bins.map((b) => {
-                  const v = valueOf(b);
-                  return (
-                    <div
-                      key={b.lo}
-                      className="flex-1 min-w-[26px] h-full flex flex-col items-center justify-end"
-                      title={
-                        isCount
-                          ? t("average.barTipCount", {
-                              label: b.label,
-                              n: b.n.toLocaleString(),
-                            })
-                          : t("average.barTipAvg", {
-                              label: b.label,
-                              avg: formatValue(yDef, v),
-                              n: b.n.toLocaleString(),
-                            })
-                      }
-                    >
-                      <span className="text-[10px] leading-none text-gray-400 mb-1">
-                        {formatValue(yDef, v)}
-                      </span>
-                      <div
-                        className="w-full bg-[var(--accent)]/60 hover:bg-[var(--accent)] rounded-t transition-colors"
-                        style={{ height: `${(v / maxVal) * 88}%`, minHeight: 2 }}
-                      />
-                    </div>
-                  );
-                })}
+          <section className="mt-10">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="section-heading">{t("average.distributionHeading")}</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">{t("average.distributionDesc")}</p>
               </div>
-              <div className="flex gap-1.5 mt-2">
-                {bins.map((b) => (
-                  <span
-                    key={b.lo}
-                    className="flex-1 min-w-[26px] text-[9px] leading-tight text-gray-500 text-center"
-                  >
-                    {b.label}
-                  </span>
-                ))}
-              </div>
-              <div className="text-[10px] text-gray-600 text-center mt-2">{t("average.hoursPlayed")}</div>
+              <MetricPicker value={yMetric} onChange={setYMetric} />
             </div>
-          )}
-        </div>
-      </div>
+
+            <div ref={chartRef} className="chart-panel data-panel">
+              <div className="text-xs text-[var(--muted)] mb-4">
+                <span className="text-[var(--accent)] font-semibold">
+                  {yDef.agg === "avg" ? `${t("common.avg")} ${t("metric." + yDef.key)}` : t("metric." + yDef.key)}
+                </span>{" "}
+                {t("average.byPlaytime")}
+              </div>
+              {bins.length === 0 ? (
+                <p className="text-[var(--muted)] text-sm">{t("average.noDataYet")}</p>
+              ) : (
+                <div className={`overflow-x-auto ${loading ? "opacity-60" : ""} transition-opacity`}>
+                  <div className="flex items-end gap-1.5 h-60 border-b border-[var(--card-border)]">
+                    {bins.map((b) => {
+                      const v = valueOf(b);
+                      return (
+                        <div
+                          key={b.lo}
+                          className="flex-1 min-w-[26px] h-full flex flex-col items-center justify-end"
+                          title={
+                            isCount
+                              ? t("average.barTipCount", { label: b.label, n: b.n.toLocaleString() })
+                              : t("average.barTipAvg", { label: b.label, avg: formatValue(yDef, v), n: b.n.toLocaleString() })
+                          }
+                        >
+                          <span className="text-[10px] leading-none text-[var(--muted)] mb-2">{formatValue(yDef, v)}</span>
+                          <div
+                            className="w-full bg-[var(--accent)]/65 hover:bg-[var(--accent)] rounded-t transition-colors"
+                            style={{ height: `${(v / maxVal) * 88}%`, minHeight: 2 }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-1.5 mt-3">
+                    {bins.map((b) => (
+                      <span key={b.lo} className="flex-1 min-w-[26px] text-[9px] leading-tight text-[var(--muted)] text-center">{b.label}</span>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-[var(--muted)] text-center mt-3">{t("average.hoursPlayed")}</div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="mt-10">
+            <h2 className="section-heading mb-3">{t("average.fullMetrics")}</h2>
+            <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>
+          </section>
+
+          <AchievementBreakdown open={showAch} onToggle={() => setShowAch((o) => !o)} />
+        </>
+      )}
     </main>
   );
 }

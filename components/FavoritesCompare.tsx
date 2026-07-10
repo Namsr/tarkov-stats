@@ -45,15 +45,15 @@ export default function FavoritesCompare({ favorites, statsByAid }: Props) {
     .filter((c): c is { fav: Favorite; stats: ParsedPlayerStats } => c.stats !== null);
 
   if (cols.length < 2) {
-    return <p className="text-sm text-gray-500">{t("profile.compareNeedTwo")}</p>;
+    return <p className="text-sm text-[var(--muted)]">{t("profile.compareNeedTwo")}</p>;
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto border border-[var(--card-border)] rounded-xl">
       <table className="w-full border-collapse min-w-[28rem]">
         <thead>
           <tr className="border-b border-[var(--card-border)]">
-            <th className="py-3 px-3 text-left text-xs uppercase tracking-wider text-gray-500">
+            <th className="py-3 px-3 text-left text-xs uppercase tracking-wider text-[var(--muted)]">
               {t("cmp.metric")}
             </th>
             {cols.map((c) => (
@@ -76,9 +76,9 @@ export default function FavoritesCompare({ favorites, statsByAid }: Props) {
             return (
               <tr
                 key={m.key}
-                className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/20 transition-colors"
+                className="border-b border-[var(--card-border)]/70 hover:bg-[var(--input-bg)] transition-colors"
               >
-                <td className="py-3 px-3 text-sm text-gray-400">{t(m.labelKey)}</td>
+                <td className="py-3 px-3 text-sm text-[var(--muted-strong)]">{t(m.labelKey)}</td>
                 {cols.map((c, i) => {
                   const v = values[i];
                   const isBest = !allEqual && v === best;
@@ -86,7 +86,7 @@ export default function FavoritesCompare({ favorites, statsByAid }: Props) {
                     <td
                       key={c.fav.aid}
                       className={`py-3 px-3 text-right font-medium ${
-                        isBest ? "text-[var(--success)]" : "text-gray-300"
+                        isBest ? "text-[var(--success)]" : "text-[var(--muted-strong)]"
                       }`}
                     >
                       {fmt(v, m.dec)}

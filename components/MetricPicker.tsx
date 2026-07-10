@@ -40,22 +40,22 @@ export default function MetricPicker({
   }, [open]);
 
   return (
-    <div ref={ref} className="relative sm:w-44 shrink-0">
+    <div ref={ref} className="relative sm:w-52 shrink-0">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="w-full flex items-center justify-between gap-2 text-sm px-3 py-1.5 rounded border bg-[var(--input-bg)] border-[var(--card-border)] text-gray-200 hover:border-[var(--accent)] transition-colors"
+        className="ghost-button w-full flex justify-between gap-2 !text-left"
       >
         <span className="truncate">{labelFor(selected)}</span>
-        <span className={`text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}>▾</span>
+        <span className={`text-[var(--muted)] transition-transform ${open ? "rotate-180" : ""}`}>▾</span>
       </button>
 
       {open && (
         <ul
           role="listbox"
-          className="absolute z-20 mt-1 w-full sm:w-48 max-h-72 overflow-y-auto rounded border border-[var(--card-border)] bg-[var(--card-bg)] shadow-lg py-1"
+          className="absolute z-20 mt-2 w-full max-h-72 overflow-y-auto rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] shadow-xl py-1"
         >
           {Y_METRICS.map((m) => {
             const on = m.key === value;
@@ -72,7 +72,7 @@ export default function MetricPicker({
                   className={`w-full text-left text-sm px-3 py-1.5 transition-colors ${
                     on
                       ? "bg-[var(--accent)]/15 text-[var(--accent)] font-medium"
-                      : "text-gray-300 hover:bg-[var(--input-bg)] hover:text-[var(--accent)]"
+                      : "text-[var(--muted-strong)] hover:bg-[var(--input-bg)] hover:text-[var(--foreground)]"
                   }`}
                 >
                   {labelFor(m)}

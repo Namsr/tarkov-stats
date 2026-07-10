@@ -94,7 +94,7 @@ export default function CheaterScore({
   }, [stats, bracket.min, bracket.max, ownedKey]);
 
   if (loading || !result) {
-    return <div className="h-64 skeleton rounded-lg" />;
+    return <div className="h-64 skeleton rounded-xl" />;
   }
 
   const color = TIER_COLOR[result.tier];
@@ -102,10 +102,10 @@ export default function CheaterScore({
   const shown = result.factors.filter((f) => f.points >= 1);
 
   return (
-    <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+    <div className="data-panel p-5">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs uppercase tracking-wider text-gray-500">{t("cheater.heading")}</span>
-        <span className="text-gray-600 text-xs cursor-help" title={t("cheater.disclaimer")} aria-label={t("cheater.disclaimer")}>
+        <span className="section-kicker">{t("cheater.heading")}</span>
+        <span className="text-[var(--muted)] text-xs cursor-help" title={t("cheater.disclaimer")} aria-label={t("cheater.disclaimer")}>
           ⓘ
         </span>
       </div>

@@ -127,7 +127,7 @@ export default function PlayerComparison({ stats }: Props) {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="px-4 py-2 bg-[var(--accent)] text-[var(--background)] rounded font-medium hover:bg-[var(--accent-dim)] transition-colors"
+        className="tactical-button w-full"
       >
         {t("compare.button")}
       </button>
@@ -135,34 +135,34 @@ export default function PlayerComparison({ stats }: Props) {
   }
 
   return (
-    <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-6 space-y-6">
+    <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-[var(--accent)]">{t("compare.heading")}</h2>
+        <h2 className="section-heading text-base">{t("compare.heading")}</h2>
         <button
           onClick={() => setOpen(false)}
-          className="text-gray-500 hover:text-gray-300 text-xl"
+          className="grid h-9 w-9 place-items-center rounded-full border border-[var(--card-border)] text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--foreground)]"
         >
           ✕
         </button>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setMode("benchmark")}
-          className={`px-3 py-1.5 text-sm rounded transition-colors ${
+          className={`ghost-button !min-h-9 !px-3 !py-2 text-xs ${
             mode === "benchmark"
-              ? "bg-[var(--accent)] text-[var(--background)]"
-              : "bg-[var(--input-bg)] text-gray-400 hover:text-gray-200"
+              ? "!border-[var(--accent)] !text-[var(--accent)]"
+              : ""
           }`}
         >
           {t("compare.vsAverage")}
         </button>
         <button
           onClick={() => setMode("player")}
-          className={`px-3 py-1.5 text-sm rounded transition-colors ${
+          className={`ghost-button !min-h-9 !px-3 !py-2 text-xs ${
             mode === "player"
-              ? "bg-[var(--accent)] text-[var(--background)]"
-              : "bg-[var(--input-bg)] text-gray-400 hover:text-gray-200"
+              ? "!border-[var(--accent)] !text-[var(--accent)]"
+              : ""
           }`}
         >
           {t("compare.vsPlayer")}
@@ -208,12 +208,12 @@ export default function PlayerComparison({ stats }: Props) {
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               placeholder={t("compare.idPlaceholder")}
-              className="flex-1 px-3 py-2 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
+              className="search-unit__input !min-h-11 !rounded-lg !text-sm"
             />
             <button
               onClick={handleSearch}
               disabled={loading}
-              className="px-4 py-2 bg-[var(--accent)] text-[var(--background)] rounded text-sm font-medium hover:bg-[var(--accent-dim)] disabled:opacity-50"
+              className="tactical-button !min-h-11 !px-4 disabled:opacity-50"
             >
               {loading ? "..." : t("compare.search")}
             </button>

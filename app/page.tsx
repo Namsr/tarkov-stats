@@ -7,24 +7,16 @@ import { useI18n } from "@/lib/i18n/context";
 export default function Home() {
   const { t } = useI18n();
   return (
-    <main className="flex-1 flex flex-col items-center justify-center px-4">
-      <div className="flex flex-col items-center gap-8 max-w-xl w-full">
+    <main className="home-hero">
+      <div className="home-command">
         <AuthErrorBanner />
-        <div className="text-center">
-          <div className="text-6xl mb-4">☠</div>
-          <h1 className="text-3xl font-bold text-[var(--accent)] tracking-tight">
-            TARKOV STATS
-          </h1>
-          <p className="text-sm text-gray-500 mt-1 uppercase tracking-widest">
-            {t("home.subtitle")}
-          </p>
-        </div>
+        <p className="page-kicker">{t("home.subtitle")}</p>
+        <h1 className="home-command__title">
+          TARKOV <span>STATS</span>
+        </h1>
+        <p className="home-command__description">{t("home.description")}</p>
 
         <SearchBar autoFocus />
-
-        <p className="text-xs text-gray-600 text-center max-w-sm">
-          {t("home.description")}
-        </p>
       </div>
     </main>
   );

@@ -110,9 +110,9 @@ export default function EarlyUnlocks({
   if (!unlocks || unlocks.length === 0) return null;
 
   return (
-    <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
-      <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-1">{t("early.heading")}</h2>
-      <p className="text-xs text-gray-600 mb-3">
+    <div className="data-panel p-5">
+      <h2 className="section-heading text-base mb-2">{t("early.heading")}</h2>
+      <p className="text-sm text-[var(--muted)] mb-4">
         {t("early.description")}
       </p>
       <div className="space-y-2">
@@ -121,11 +121,11 @@ export default function EarlyUnlocks({
           return (
             <div
               key={u.id}
-              className="flex items-center justify-between gap-3 text-sm py-1.5 px-2 rounded bg-[var(--input-bg)]"
+              className="flex items-center justify-between gap-3 text-sm py-2.5 border-b border-[var(--card-border)] last:border-0"
             >
               <div className="min-w-0">
-                <div className="text-gray-200 truncate">{u.name}</div>
-                <div className="text-[11px] text-gray-500">
+                <div className="text-[var(--muted-strong)] truncate">{u.name}</div>
+                <div className="text-[11px] text-[var(--muted)]">
                   {fmtHours(playerHours)} {t("unit.h")} · {t("early.typical", { h: fmtHours(u.earlyHours) })} ·{" "}
                   {t("early.haveIt", {
                     pct: u.samplePct < 10 ? u.samplePct.toFixed(2) : u.samplePct.toFixed(1),
@@ -134,7 +134,7 @@ export default function EarlyUnlocks({
               </div>
               <span
                 className={`shrink-0 font-medium tabular-nums ${
-                  strong ? "text-amber-400" : "text-gray-400"
+                  strong ? "text-[var(--accent)]" : "text-[var(--muted-strong)]"
                 }`}
                 title={t("early.sigmaTooltip")}
               >
