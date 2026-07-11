@@ -47,6 +47,8 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 ENV SQLITE_PATH="/data/players.db"
+ENV BANS_SQLITE_PATH="/data/bans.db"
+ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
 
 # --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
 CMD ["node", "--experimental-sqlite", "server.js"]

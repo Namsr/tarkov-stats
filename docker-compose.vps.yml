@@ -9,6 +9,7 @@ services:
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-0x4AAAAAAAVVIHGZCr2PPwrR}
     env_file:
       - .env
+      - .env.private
     restart: unless-stopped
     expose:
       - "3000"

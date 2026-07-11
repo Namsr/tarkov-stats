@@ -1,5 +1,6 @@
 import type { ParsedPlayerStats, PlayerSearchResult } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
+import { isAidBanned } from "@/lib/ban-db";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -21,6 +22,14 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
+
+-- A small local tombstone makes removal durable even though the full ban data
+-- lives in a separate database. It also closes the check-then-insert race.
+CREATE TABLE IF NOT EXISTS excluded_players (
+  aid INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 
 -- Игровые аккаунты, привязанные пользователем (вход через Google) в избранное.
 -- Ключ — user_sub (стабильный Google-id из JWT-сессии) + aid. nickname хранится
@@ -46,6 +55,12 @@ const COLS = [
 ];
 const UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) VALUES (${COLS.map(() => "?").join(", ")}) ` +
+  `ON CONFLICT(aid) DO UPDATE SET ` +
+  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
+const SQLITE_UPSERT_SQL =
+  `INSERT INTO players (${COLS.join(", ")}) ` +
+  `SELECT ${COLS.map(() => "?").join(", ")} ` +
+  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
 
@@ -367,6 +382,7 @@ async function d1Store(): Promise<PlayerStore | null> {
   try {
     return {
       async upsert(aid, stats, ids) {
+        if (await isAidBanned(aid)) return;
         const now = Date.now();
         if (MAX_PLAYERS > 0) {
           const existing = await db.prepare("SELECT 1 FROM players WHERE aid = ?").bind(aid).first();
@@ -494,7 +510,7 @@ async function sqliteStore(): Promise<PlayerStore | null> {
             if (row && row.n >= MAX_PLAYERS) return;
           }
         }
-        db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids, now));
+        db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
       },
       async search(nickname, limit) {
         const rows = db
