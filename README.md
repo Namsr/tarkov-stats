@@ -51,6 +51,22 @@ Environment variables (in `.env`, see `.env.selfhost.example`):
 - Average-player stats are computed live from the collected player database (Cloudflare D1 in the hosted build, node:sqlite when self-hosted)
 - Security headers configured in `next.config.ts`
 
+## Historical player statistics
+
+The project stores longitudinal player snapshots so future aggregate views can
+describe not only a player's current statistics, but how those statistics change
+over time. The first observation is a baseline; progression is calculated only
+between later observations. Confirmed banned accounts are excluded from the
+ordinary-player baseline and retained separately for aggregate research.
+
+Runtime data uses three SQLite files in the same `/data` Docker volume:
+
+- `players.db`: latest ordinary player rows used by the average-player pages;
+- `progression.db`: historical snapshots of non-banned accounts;
+- `bans.db`: banned accounts and their historical snapshots.
+
+`backup-db.sh` creates online-consistent compressed backups of all three files.
+
 ## External APIs
 
 | API | Purpose |
