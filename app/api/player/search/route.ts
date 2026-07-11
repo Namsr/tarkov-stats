@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStore } from "@/lib/db";
+import { getPlayerIndexStore } from "@/lib/db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 
@@ -26,11 +26,14 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const store = await getStore();
-    if (!store) {
-      return NextResponse.json({ error: "Player search unavailable" }, { status: 503, headers });
+    const index = await getPlayerIndexStore();
+    if (!index || !(await index.isReady())) {
+      return NextResponse.json(
+        { error: "Player nickname index is not ready" },
+        { status: 503, headers }
+      );
     }
-    const results = await store.search(name, SEARCH_LIMIT);
+    const results = await index.search(name, SEARCH_LIMIT);
     return NextResponse.json(results, { headers });
   } catch {
     return NextResponse.json(

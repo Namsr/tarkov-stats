@@ -33,6 +33,18 @@ variant is documented in [SELFHOST.md](SELFHOST.md).
 docker compose -f docker-compose.vps.yml up -d --build
 ```
 
+Nickname search uses a local SQLite copy of the public tarkov.dev player index.
+Populate it after deployment, then run the same command daily from cron or a
+systemd timer:
+
+```bash
+docker compose -f docker-compose.vps.yml exec web node --experimental-sqlite scripts/sync-player-index.mjs
+```
+
+The sync uses `ETag` / `Last-Modified`, so an unchanged index is not downloaded
+or rewritten. Profiles themselves are still fetched on demand by account ID;
+the refresh button bypasses the short local profile cache.
+
 Environment variables (in `.env`, see `.env.selfhost.example`):
 
 | Var | Required | Purpose |
@@ -42,6 +54,7 @@ Environment variables (in `.env`, see `.env.selfhost.example`):
 | `PUBLIC_BASE_URL` | yes behind a proxy | Pins the OAuth redirect URI (e.g. `https://tarkovstats.ru`) |
 | `TRUSTED_IP_HEADER` | no (default `x-real-ip`) | Proxy header trusted for the rate-limit client IP (`cf-connecting-ip` behind Cloudflare) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | Turnstile sitekey (build-time) |
+| `PLAYER_INDEX_USER_AGENT` | no | User-Agent used by the nickname-index sync script |
 
 ## Architecture
 
@@ -55,6 +68,6 @@ Environment variables (in `.env`, see `.env.selfhost.example`):
 
 | API | Purpose |
 |-----|---------|
-| `player.tarkov.dev/name/{nick}` | Search players by nickname |
-| `player.tarkov.dev/account/{aid}` | Fetch full player profile |
+| `players.tarkov.dev/profile/index.json` | Public nickname to account-ID index for local search |
+| `players.tarkov.dev/profile/{aid}.json` | Cached public player profile by account ID |
 | `api.tarkov.dev/graphql` | Game data (player level XP thresholds) |

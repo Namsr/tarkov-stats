@@ -1,4 +1,4 @@
-import type { ParsedPlayerStats, PlayerSearchResult } from "@/types/tarkov";
+import type { ParsedPlayerStats } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
 
 // One row per collected player, keyed by account id. Re-looking up the same
@@ -34,6 +34,20 @@ CREATE TABLE IF NOT EXISTS favorites (
   PRIMARY KEY (user_sub, aid)
 );
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_sub);
+
+-- Local snapshot of players.tarkov.dev/profile/index.json. This table is a
+-- nickname directory only; profile statistics are still loaded on demand.
+CREATE TABLE IF NOT EXISTS player_index (
+  aid INTEGER PRIMARY KEY,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_player_index_nickname_lower ON player_index(nickname_lower);
+CREATE TABLE IF NOT EXISTS player_index_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 const COLS = [
@@ -123,20 +137,6 @@ const MAX_PLAYERS = Number(process.env.MAX_PLAYERS ?? 200_000) || 0;
 
 // Лимит избранного на пользователя — защита от раздувания таблицы одним аккаунтом.
 const MAX_FAVORITES = 50;
-
-const PLAYER_SEARCH_SQL =
-  "SELECT aid, nickname AS name FROM players " +
-  "WHERE nickname IS NOT NULL AND nickname LIKE ? ESCAPE '\\' " +
-  "ORDER BY CASE WHEN nickname = ? COLLATE NOCASE THEN 0 ELSE 1 END, " +
-  "LENGTH(nickname), nickname COLLATE NOCASE, aid LIMIT ?";
-
-function nicknamePrefix(nickname: string): string {
-  return nickname.trim().replace(/[\\%_]/g, "\\$&") + "%";
-}
-
-function toPlayerSearchResults(rows: { aid: number; name: string }[]): PlayerSearchResult[] {
-  return rows.map((row) => ({ aid: Number(row.aid), name: String(row.name) }));
-}
 
 // Робастный портрет среднего игрока: по КАЖДОЙ метрике отбрасываем по TRIM_FRACTION
 // с обоих хвостов (триммированное среднее), чтобы читеры/боты с экстремальными
@@ -314,7 +314,6 @@ export interface BaselineResult {
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
-  search(nickname: string, limit: number): Promise<PlayerSearchResult[]>;
   averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
@@ -337,6 +336,16 @@ export interface PlayerStore {
    * z-scores behind the cheating-risk score.
    */
   baseline(minHours: number | null, maxHours: number | null): Promise<BaselineResult>;
+}
+
+export interface PlayerIndexResult {
+  aid: number;
+  name: string;
+}
+
+export interface PlayerIndexStore {
+  isReady(): Promise<boolean>;
+  search(nickname: string, limit: number): Promise<PlayerIndexResult[]>;
 }
 
 let warned = false;
@@ -376,13 +385,6 @@ async function d1Store(): Promise<PlayerStore | null> {
           }
         }
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
-      },
-      async search(nickname, limit) {
-        const { results } = await db
-          .prepare(PLAYER_SEARCH_SQL)
-          .bind(nicknamePrefix(nickname), nickname.trim(), limit)
-          .all();
-        return toPlayerSearchResults((results ?? []) as { aid: number; name: string }[]);
       },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
@@ -496,12 +498,6 @@ async function sqliteStore(): Promise<PlayerStore | null> {
         }
         db.prepare(UPSERT_SQL).run(...argsFor(aid, stats, ids, now));
       },
-      async search(nickname, limit) {
-        const rows = db
-          .prepare(PLAYER_SEARCH_SQL)
-          .all(nicknamePrefix(nickname), nickname.trim(), limit) as { aid: number; name: string }[];
-        return toPlayerSearchResults(rows);
-      },
       async averages(min, max) {
         const { where, params } = rangeClause(min, max);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
@@ -553,6 +549,100 @@ async function sqliteStore(): Promise<PlayerStore | null> {
 /** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
 export async function getStore(): Promise<PlayerStore | null> {
   return (await d1Store()) ?? (await sqliteStore());
+}
+
+function normalizeNickname(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function toIndexResults(rows: { aid: number; name: string }[]): PlayerIndexResult[] {
+  return rows.map((row) => ({ aid: Number(row.aid), name: String(row.name) }));
+}
+
+function pushUniqueIndexResults(
+  out: PlayerIndexResult[],
+  seen: Set<number>,
+  rows: PlayerIndexResult[],
+  limit: number
+) {
+  for (const row of rows) {
+    if (seen.has(row.aid)) continue;
+    seen.add(row.aid);
+    out.push(row);
+    if (out.length >= limit) break;
+  }
+}
+
+const INDEX_READY_SQL = "SELECT value FROM player_index_meta WHERE key = 'synced_at'";
+const INDEX_EXACT_SQL =
+  "SELECT aid, nickname AS name FROM player_index WHERE nickname_lower = ? ORDER BY aid LIMIT ?";
+const INDEX_PREFIX_SQL =
+  "SELECT aid, nickname AS name FROM player_index " +
+  "WHERE nickname_lower >= ? AND nickname_lower < ? " +
+  "ORDER BY nickname_lower, aid LIMIT ?";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function d1PlayerIndexStore(db: any): PlayerIndexStore {
+  return {
+    async isReady() {
+      return Boolean(await db.prepare(INDEX_READY_SQL).first());
+    },
+    async search(nickname, limit) {
+      const q = normalizeNickname(nickname);
+      const exact = await db.prepare(INDEX_EXACT_SQL).bind(q, limit).all();
+      const prefix = await db.prepare(INDEX_PREFIX_SQL).bind(q, `${q}\uffff`, limit * 2).all();
+      const out: PlayerIndexResult[] = [];
+      const seen = new Set<number>();
+      pushUniqueIndexResults(
+        out,
+        seen,
+        toIndexResults((exact.results ?? []) as { aid: number; name: string }[]),
+        limit
+      );
+      pushUniqueIndexResults(
+        out,
+        seen,
+        toIndexResults((prefix.results ?? []) as { aid: number; name: string }[]),
+        limit
+      );
+      return out;
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sqlitePlayerIndexStore(db: any): PlayerIndexStore {
+  return {
+    async isReady() {
+      return Boolean(db.prepare(INDEX_READY_SQL).get());
+    },
+    async search(nickname, limit) {
+      const q = normalizeNickname(nickname);
+      const exact = toIndexResults(
+        db.prepare(INDEX_EXACT_SQL).all(q, limit) as { aid: number; name: string }[]
+      );
+      const prefix = toIndexResults(
+        db.prepare(INDEX_PREFIX_SQL).all(q, `${q}\uffff`, limit * 2) as {
+          aid: number;
+          name: string;
+        }[]
+      );
+      const out: PlayerIndexResult[] = [];
+      const seen = new Set<number>();
+      pushUniqueIndexResults(out, seen, exact, limit);
+      pushUniqueIndexResults(out, seen, prefix, limit);
+      return out;
+    },
+  };
+}
+
+/** Returns the synced public nickname index, or null if no DB backend exists. */
+export async function getPlayerIndexStore(): Promise<PlayerIndexStore | null> {
+  const d1 = await getD1();
+  if (d1) return d1PlayerIndexStore(d1);
+  const sqlite = await getSqliteDb();
+  if (sqlite) return sqlitePlayerIndexStore(sqlite);
+  return null;
 }
 
 // ── Favorites: game accounts a signed-in user has pinned ──────────────────────

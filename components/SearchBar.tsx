@@ -36,6 +36,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
       setResults([]);
       try {
         const response = await fetch(`/api/player/search?name=${encodeURIComponent(clean)}`);
+        if (response.status === 503) throw new Error(t("search.indexUnavailable"));
         if (!response.ok) throw new Error(t("search.searchFailed"));
 
         const found = (await response.json()) as PlayerSearchResult[];
