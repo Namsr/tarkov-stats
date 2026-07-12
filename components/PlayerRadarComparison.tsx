@@ -350,10 +350,14 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
   const averageRatios = ratiosFor(DEMO_AVERAGES, true);
   const favoriteRatios = ratiosFor(favoriteValues);
   const playerRatios = ratiosFor(playerValues);
-  const axisMaximums = axes.map((_, index) =>
-    Math.max(1, playerRatios[index] ?? 0, favoriteRatios[index] ?? 0)
-  );
   const rings = [25, 50, 75, 100];
+
+  // Keep the cohort average at 50% on every axis. The smooth logarithmic
+  // scale leaves room for both weaker and extreme values without a hard cap.
+  const radiusForRatio = (ratio: number) => {
+    if (ratio <= 0) return 0;
+    return (0.5 + Math.atan(Math.log(ratio)) / Math.PI) * RADIUS;
+  };
 
   const placeTooltip = (
     index: number,
@@ -411,7 +415,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
     if (!visible || cohort?.quality !== "sufficient") return null;
     const style = SERIES[key];
     const seriesPoints = ratios.map((ratio, index) =>
-      ratio === null ? null : point(index, (ratio / axisMaximums[index]) * RADIUS)
+      ratio === null ? null : point(index, radiusForRatio(ratio))
     );
     const complete = seriesPoints.every((value) => value !== null);
     return (
