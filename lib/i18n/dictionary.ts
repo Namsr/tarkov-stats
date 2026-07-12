@@ -286,6 +286,7 @@ const en: Dict = {
   "faq.a7": "Almost nothing. From Google we only receive your account ID, email, name and avatar — kept in a signed cookie in your browser, not in a separate database. The only thing stored on the server is your list of pinned players. Public stats of looked-up players are cached to compute the averages, but that's open tarkov.dev data, not your personal info.",
   "faq.a8.text": "You can support development with a donation:",
   "faq.a9.text": "Send your ideas to",
+  "faq.a9.discord": "in the developer's Discord",
   "faq.a9.stream": "or share them live on stream at",
 };
 
@@ -563,6 +564,7 @@ const ru: Dict = {
   "faq.a7": "Почти ничего. От Google приходят только ID аккаунта, почта, имя и аватар — они хранятся в подписанной cookie в вашем браузере, а не в отдельной базе. На сервере сохраняется лишь список закреплённых вами игроков. Публичная статистика просмотренных игроков кешируется для расчёта средних, но это открытые данные tarkov.dev, а не ваши личные.",
   "faq.a8.text": "Поддержать разработку можно донатом:",
   "faq.a9.text": "Пишите идеи на почту",
+  "faq.a9.discord": "в Discord разработчика",
   "faq.a9.stream": "или прямо на стриме",
 };
 

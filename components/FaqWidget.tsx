@@ -83,7 +83,11 @@ export default function FaqWidget() {
           {t("faq.a9.text")}{" "}
           <a className={LINK} href="mailto:namsrr@protonmail.com">
             namsrr@protonmail.com
-          </a>{" "}
+          </a>{", "}
+          {t("faq.a9.discord")}{" "}
+          <a className={LINK} href="https://discord.gg/aKqG9JgC2X" target="_blank" rel="noopener noreferrer">
+            Discord
+          </a>{", "}
           {t("faq.a9.stream")}{" "}
           <a className={LINK} href="https://www.twitch.tv/namsr__" target="_blank" rel="noopener noreferrer">
             twitch.tv/namsr__
