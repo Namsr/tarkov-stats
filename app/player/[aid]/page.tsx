@@ -160,37 +160,32 @@ export default function PlayerPage({ params, searchParams }: Props) {
         </div>
       </section>
 
-      <div className="mt-5">
+      <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
         <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
+        <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
       </div>
 
-      <div className="page-grid mt-5">
-        <div className="space-y-5">
-          <section>
-            <div className="mb-3 flex items-baseline justify-between gap-4">
-              <h2 className="section-heading">{t("player.raidStats")}</h2>
-              <span className="section-kicker">{t("player.coreStats")}</span>
-            </div>
-            <div className="data-ledger">
-              {raidStats.map((item) => (
-                <StatCard key={item.label} {...item} />
-              ))}
-            </div>
-          </section>
+      <div className="mt-5 space-y-5">
+        <section>
+          <div className="mb-3 flex items-baseline justify-between gap-4">
+            <h2 className="section-heading">{t("player.raidStats")}</h2>
+            <span className="section-kicker">{t("player.coreStats")}</span>
+          </div>
+          <div className="data-ledger">
+            {raidStats.map((item) => (
+              <StatCard key={item.label} {...item} />
+            ))}
+          </div>
+        </section>
 
-          <section>
-            <h2 className="section-heading mb-3">{t("player.progression")}</h2>
-            <div className="detail-grid detail-grid--compact">
-              {progressionStats.map((item) => (
-                <StatCard key={item.label} {...item} />
-              ))}
-            </div>
-          </section>
-        </div>
-
-        <aside>
-          <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
-        </aside>
+        <section>
+          <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+          <div className="detail-grid detail-grid--compact">
+            {progressionStats.map((item) => (
+              <StatCard key={item.label} {...item} />
+            ))}
+          </div>
+        </section>
       </div>
 
       {skills.length > 0 ? (

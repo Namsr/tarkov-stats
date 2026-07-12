@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
 import type { ParsedPlayerStats } from "@/types/tarkov";
@@ -243,6 +243,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   const [favoriteError, setFavoriteError] = useState("");
   const [activeAxis, setActiveAxis] = useState<number | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ left: 8, top: 8 });
 
   const center = dimension === "hours" ? stats.hoursPlayed : stats.pmcRaids;
 
@@ -334,7 +335,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
       cohort?.quality === "sufficient" &&
       typeof average.value === "number" &&
       average.value > 0 &&
-      average.count >= MIN_AXIS_SAMPLE;
+      average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE);
     return { metric, average, available };
   });
 
@@ -349,34 +350,31 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
   const averageRatios = ratiosFor(DEMO_AVERAGES, true);
   const favoriteRatios = ratiosFor(favoriteValues);
   const playerRatios = ratiosFor(playerValues);
-  const maxRatio = Math.max(
-    2,
-    ...playerRatios.filter((ratio): ratio is number => ratio !== null),
-    ...favoriteRatios.filter((ratio): ratio is number => ratio !== null)
+  const axisMaximums = axes.map((_, index) =>
+    Math.max(1, playerRatios[index] ?? 0, favoriteRatios[index] ?? 0)
   );
-  const targetStep = maxRatio / 4;
-  const magnitude = 10 ** Math.floor(Math.log10(targetStep));
-  const normalizedStep = targetStep / magnitude;
-  const stepFactor =
-    normalizedStep < 1.5 ? 1 : normalizedStep < 3.5 ? 2 : normalizedStep < 7.5 ? 5 : 10;
-  const ringStep = stepFactor * magnitude;
-  const scaleMax = maxRatio <= 2 ? 2 : Math.ceil(maxRatio / ringStep) * ringStep;
-  const rings =
-    scaleMax === 2
-      ? [0.5, 1, 1.5, 2]
-      : Array.from(
-          new Set(
-            [
-              1,
-              ...Array.from(
-                { length: Math.round(scaleMax / ringStep) },
-                (_, index) => (index + 1) * ringStep
-              ),
-            ]
-              .map((ratio) => Math.round(ratio * 100) / 100)
-              .sort((a, b) => a - b)
-          )
-        );
+  const rings = [25, 50, 75, 100];
+
+  const placeTooltip = (
+    index: number,
+    target: SVGCircleElement,
+    pointer?: { clientX: number; clientY: number }
+  ) => {
+    const wrapper = target.ownerSVGElement?.parentElement;
+    if (!wrapper) return;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const pointerX = pointer?.clientX || targetRect.right;
+    const pointerY = pointer?.clientY || targetRect.top;
+    setTooltipPosition({
+      left: Math.max(8, Math.min(pointerX - wrapperRect.left + 12, wrapperRect.width - 260)),
+      top: Math.max(8, pointerY - wrapperRect.top + 12),
+    });
+    setActiveAxis(index);
+  };
+
+  const placeTooltipAtPointer = (index: number, event: ReactMouseEvent<SVGCircleElement>) =>
+    placeTooltip(index, event.currentTarget, event);
 
   const formatValue = (metric: MetricDefinition, value: number | null) => {
     if (value === null || !Number.isFinite(value)) return t("radar.notAvailable");
@@ -413,7 +411,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
     if (!visible || cohort?.quality !== "sufficient") return null;
     const style = SERIES[key];
     const seriesPoints = ratios.map((ratio, index) =>
-      ratio === null ? null : point(index, (ratio / scaleMax) * RADIUS)
+      ratio === null ? null : point(index, (ratio / axisMaximums[index]) * RADIUS)
     );
     const complete = seriesPoints.every((value) => value !== null);
     return (
@@ -467,11 +465,12 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
                 r="15"
                 fill="transparent"
                 className="cursor-help"
-                onMouseEnter={() => setActiveAxis(index)}
+                onMouseEnter={(event) => placeTooltipAtPointer(index, event)}
+                onMouseMove={(event) => placeTooltipAtPointer(index, event)}
                 onMouseLeave={() =>
                   setActiveAxis((current) => (current === index ? null : current))
                 }
-                onClick={() => setActiveAxis(index)}
+                onClick={(event) => placeTooltipAtPointer(index, event)}
               />
             </g>
           ) : null
@@ -542,8 +541,9 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
       <div className="relative mx-auto mt-2 max-w-4xl">
         {active && (
           <div
-            className="pointer-events-none absolute right-2 top-2 z-10 max-w-64 rounded border border-[var(--card-border)] bg-[var(--background)]/95 p-3 text-xs shadow-xl"
+            className="pointer-events-none absolute z-10 w-64 max-w-[calc(100%_-_1rem)] rounded border border-[var(--card-border)] bg-[var(--background)]/95 p-3 text-xs shadow-xl"
             role="tooltip"
+            style={tooltipPosition}
           >
             <div className="font-medium text-gray-200">{t(active.metric.labelKey)}</div>
             <div className="mt-1 space-y-1 text-gray-400">
@@ -572,22 +572,22 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
           viewBox="0 0 720 470"
           className="block h-auto w-full"
           role="img"
-          aria-labelledby="player-radar-title player-radar-desc"
+          aria-label={t("radar.svgTitle")}
+          aria-describedby="player-radar-desc"
         >
-          <title id="player-radar-title">{t("radar.svgTitle")}</title>
           <desc id="player-radar-desc">{t("radar.svgDescription")}</desc>
           {rings.map((ratio) => (
             <g key={ratio} aria-hidden="true">
               <polygon
-                points={pointsAt((ratio / scaleMax) * RADIUS)}
+                points={pointsAt((ratio / 100) * RADIUS)}
                 fill="none"
                 stroke="var(--card-border)"
-                strokeWidth={ratio === 1 ? "2" : "1"}
+                strokeWidth={ratio === 100 ? "2" : "1"}
                 vectorEffect="non-scaling-stroke"
               />
               <text
                 x={CX + 7}
-                y={CY - (ratio / scaleMax) * RADIUS + 13}
+                y={CY - (ratio / 100) * RADIUS + 13}
                 fill="#6b7280"
                 fontSize="11"
               >
@@ -657,11 +657,15 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
                   tabIndex={0}
                   role="button"
                   aria-label={t("radar.axisAria", { metric: t(metric.labelKey) })}
-                  onMouseEnter={() => setActiveAxis(index)}
+                  onMouseEnter={(event) => placeTooltipAtPointer(index, event)}
+                  onMouseMove={(event) => placeTooltipAtPointer(index, event)}
                   onMouseLeave={() => setActiveAxis((current) => (current === index ? null : current))}
-                  onFocus={() => setActiveAxis(index)}
+                  onFocus={(event) => placeTooltip(index, event.currentTarget)}
                   onBlur={() => setActiveAxis((current) => (current === index ? null : current))}
-                  onClick={() => setActiveAxis((current) => (current === index ? null : index))}
+                  onClick={(event) => {
+                    if (activeAxis === index) setActiveAxis(null);
+                    else placeTooltipAtPointer(index, event);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
