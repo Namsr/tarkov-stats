@@ -11,12 +11,19 @@ import {
 import type { Favorite } from "@/lib/db";
 
 export type ToggleResult = "added" | "removed" | "limit" | "noop";
+export type FavoritesAuthStatus =
+  | "loading"
+  | "authenticated"
+  | "unauthenticated"
+  | "error";
 
 interface FavoritesValue {
   /** True once we know the user is signed in (GET /api/favorites returned 200). */
   enabled: boolean;
   /** True until the first load resolves. */
   loading: boolean;
+  /** Distinguishes a signed-out session from a failed session check. */
+  authStatus: FavoritesAuthStatus;
   favorites: Favorite[];
   has: (aid: number) => boolean;
   /** Toggle a pin; returns what happened so callers can surface the limit. */
@@ -35,22 +42,28 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [authStatus, setAuthStatus] = useState<FavoritesAuthStatus>("loading");
 
   const refresh = useCallback(async () => {
+    setLoading(true);
+    setAuthStatus("loading");
     try {
       const res = await fetch("/api/favorites");
       if (!res.ok) {
         // 401 → not signed in: the feature is simply disabled, never an error.
         setEnabled(false);
         setFavorites([]);
+        setAuthStatus(res.status === 401 ? "unauthenticated" : "error");
         return;
       }
       const data = (await res.json()) as { favorites: Favorite[] };
       setEnabled(true);
       setFavorites(data.favorites ?? []);
+      setAuthStatus("authenticated");
     } catch {
       setEnabled(false);
       setFavorites([]);
+      setAuthStatus("error");
     } finally {
       setLoading(false);
     }
@@ -154,8 +167,19 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<FavoritesValue>(
-    () => ({ enabled, loading, favorites, has, toggle, remove, setNote, setMain, refresh }),
-    [enabled, loading, favorites, has, toggle, remove, setNote, setMain, refresh]
+    () => ({
+      enabled,
+      loading,
+      authStatus,
+      favorites,
+      has,
+      toggle,
+      remove,
+      setNote,
+      setMain,
+      refresh,
+    }),
+    [enabled, loading, authStatus, favorites, has, toggle, remove, setNote, setMain, refresh]
   );
 
   return <FavoritesContext.Provider value={value}>{children}</FavoritesContext.Provider>;

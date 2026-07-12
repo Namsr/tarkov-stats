@@ -1,71 +1,59 @@
-// Turns the fixed 50h/100h playtime brackets stored in the DB into an *adaptive*
-// histogram for display: when there are few players the bars span wide playtime
-// ranges (e.g. 0–1000, 1000–3000); as the sample grows the bars split apart and
-// converge toward the underlying 50h resolution.
-//
-// Each bar carries both a player count and the SUM of the selected metric over
-// its players, so the caller can show either the count or a weighted average.
-// The X axis is always playtime; columns render at equal width.
+// Converts the API's fixed buckets into adaptive display bins. The chart can
+// consume both the legacy playtime bracket keys and dimension-independent
+// numeric buckets used for playtime and PMC raids.
 
 import type { BracketAgg } from "@/lib/db";
 import { abbrevThousands } from "@/lib/metrics";
 
-// The wire shape is defined once in lib/db.ts (the producer); re-exported here
-// so chart code can keep importing it from the histogram module.
 export type { BracketAgg };
 
-export interface HistBin {
-  /** Inclusive lower hour bound. */
+export interface BucketAgg {
   lo: number;
-  /** Exclusive upper hour bound, or null for the open-ended top bin. */
   hi: number | null;
-  /** Players pooled into the bar. */
   n: number;
-  /** SUM of the selected metric over the pooled players. */
   sum: number;
-  /** Playtime range label, e.g. "1k–3k". */
+}
+
+export interface HistBin {
+  /** Inclusive lower bound. */
+  lo: number;
+  /** Exclusive upper bound, or null for an open-ended top bin. */
+  hi: number | null;
+  n: number;
+  sum: number;
   label: string;
 }
 
-/** Each displayed bar should pool at least this many players before it splits. */
 const MIN_BIN_COUNT = 5;
-/** Hard cap on bars so the chart stays readable; threshold is raised to fit. */
 const MAX_BINS = 36;
 
 function parseKey(key: string): { lo: number; hi: number | null } {
   if (key.endsWith("+")) return { lo: Number(key.slice(0, -1)), hi: null };
-  const [a, b] = key.split("-");
-  return { lo: Number(a), hi: Number(b) };
+  const [lo, hi] = key.split("-");
+  return { lo: Number(lo), hi: Number(hi) };
 }
 
-function formatHours(h: number): string {
-  // 50h/100h-aligned bounds need 2 decimals to stay distinct as 'k' (1050 -> "1.05k").
-  return h >= 1000 ? abbrevThousands(h, 2) : String(h);
+function formatBound(value: number): string {
+  return value >= 1000 ? abbrevThousands(value, 2) : String(value);
 }
 
 function labelFor(lo: number, hi: number | null): string {
-  return hi == null ? `${formatHours(lo)}+` : `${formatHours(lo)}–${formatHours(hi)}`;
+  return hi == null ? `${formatBound(lo)}+` : `${formatBound(lo)}–${formatBound(hi)}`;
 }
 
 type Cell = { lo: number; hi: number | null; n: number; sum: number };
 
-/**
- * Greedily pool adjacent brackets left-to-right until each bar clears minCount.
- * Bars tile the axis continuously: each bar's lower edge is the previous bar's
- * upper edge, so an empty gap between populated brackets is absorbed rather than
- * shown as a hole.
- */
 function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
   const bins: HistBin[] = [];
-  let cursor = cells[0].lo; // contiguous lower edge for the next bar
+  let cursor = cells[0].lo;
   let hi: number | null = null;
   let n = 0;
   let sum = 0;
 
-  for (const c of cells) {
-    hi = c.hi;
-    n += c.n;
-    sum += c.sum;
+  for (const cell of cells) {
+    hi = cell.hi;
+    n += cell.n;
+    sum += cell.sum;
     if (n >= minCount) {
       bins.push({ lo: cursor, hi, n, sum, label: labelFor(cursor, hi) });
       cursor = hi ?? cursor;
@@ -74,7 +62,6 @@ function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
     }
   }
 
-  // A sub-threshold remainder folds into the previous bar rather than dangling.
   if (n > 0) {
     const last = bins[bins.length - 1];
     if (last) {
@@ -90,30 +77,47 @@ function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
   return bins;
 }
 
-/**
- * Builds the adaptive histogram from the DB's per-bracket aggregates. Empty
- * brackets are simply absent from the input (so gaps collapse), and the bin
- * resolution adapts to how much data exists.
- */
-export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): HistBin[] {
-  const cells = aggs
-    .map((b) => ({ ...parseKey(b.bracket_key), n: b.n, sum: b.sum }))
-    .filter((c) => Number.isFinite(c.lo) && c.n > 0)
+function build(cells: Cell[], maxBins: number): HistBin[] {
+  const sorted = cells
+    .filter(
+      (cell) =>
+        Number.isFinite(cell.lo) &&
+        (cell.hi == null || (Number.isFinite(cell.hi) && cell.hi > cell.lo)) &&
+        Number.isFinite(cell.n) &&
+        Number.isFinite(cell.sum) &&
+        cell.n > 0,
+    )
     .sort((a, b) => a.lo - b.lo);
 
-  if (cells.length === 0) return [];
+  if (sorted.length === 0) return [];
 
-  // Pool harder until the bars fit the caller's budget (e.g. how many columns
-  // the chart is wide enough to show). Never below a single bar — you can't
-  // merge past one — and never above the hard readability cap.
   const cap = Number.isFinite(maxBins)
     ? Math.max(1, Math.min(MAX_BINS, Math.floor(maxBins)))
     : MAX_BINS;
   let minCount = MIN_BIN_COUNT;
-  let bins = mergeToThreshold(cells, minCount);
+  let bins = mergeToThreshold(sorted, minCount);
   while (bins.length > cap && bins.length > 1) {
     minCount = Math.ceil(minCount * 1.5);
-    bins = mergeToThreshold(cells, minCount);
+    bins = mergeToThreshold(sorted, minCount);
   }
   return bins;
+}
+
+export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): HistBin[] {
+  return build(
+    aggs.map((bucket) => ({ ...parseKey(bucket.bracket_key), n: bucket.n, sum: bucket.sum })),
+    maxBins,
+  );
+}
+
+export function buildNumericHistogram(aggs: BucketAgg[], maxBins: number = MAX_BINS): HistBin[] {
+  return build(
+    aggs.map((bucket) => ({
+      lo: Number(bucket.lo),
+      hi: bucket.hi == null ? null : Number(bucket.hi),
+      n: Number(bucket.n),
+      sum: Number(bucket.sum),
+    })),
+    maxBins,
+  );
 }

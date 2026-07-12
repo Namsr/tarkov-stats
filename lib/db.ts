@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS players (
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
+CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
 
 -- A small local tombstone makes removal durable even though the full ban data
 -- lives in a separate database. It also closes the check-then-insert race.
@@ -68,7 +69,19 @@ export const AVG_COLS = [
   "hours", "total_raids", "pmc_raids", "scav_raids", "survival_rate",
   "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "deaths",
   "killed_pmc", "run_through", "longest_win_streak", "achv_count", "level", "prestige",
+  "pmc_survival_rate",
 ];
+
+export type RangeDimension = "hours" | "pmc_raids";
+
+const RANGE_COLUMNS: Record<RangeDimension, "hours" | "pmc_raids"> = {
+  hours: "hours",
+  pmc_raids: "pmc_raids",
+};
+
+function rangeColumn(dimension: RangeDimension): "hours" | "pmc_raids" {
+  return RANGE_COLUMNS[dimension];
+}
 // Per-playtime-bracket aggregate: player count plus, optionally, the SUM of a
 // chosen metric column (so the caller can derive a weighted average per bracket
 // when adjacent brackets are merged). `column` is whitelisted by the caller and
@@ -84,8 +97,41 @@ function aggSql(column: string | null): string {
   );
 }
 
+function bucketAggSql(dimension: RangeDimension, column: string | null): string {
+  if (column != null && !/^[a-z_]+$/.test(column)) {
+    throw new Error(`invalid metric column: ${column}`);
+  }
+  const dimensionColumn = rangeColumn(dimension);
+  const loExpr = dimension === "hours"
+    ? `CASE WHEN ${dimensionColumn} >= 10000 THEN 10000 ` +
+      `WHEN ${dimensionColumn} < 2000 THEN CAST(${dimensionColumn} / 50 AS INTEGER) * 50 ` +
+      `ELSE 2000 + CAST((${dimensionColumn} - 2000) / 100 AS INTEGER) * 100 END`
+    : `CASE WHEN ${dimensionColumn} >= 3000 THEN 3000 ` +
+      `WHEN ${dimensionColumn} < 1000 THEN CAST(${dimensionColumn} / 25 AS INTEGER) * 25 ` +
+      `ELSE 1000 + CAST((${dimensionColumn} - 1000) / 50 AS INTEGER) * 50 END`;
+  const hiExpr = dimension === "hours"
+    ? `CASE WHEN ${dimensionColumn} >= 10000 THEN NULL ` +
+      `WHEN ${dimensionColumn} < 2000 THEN ${loExpr} + 50 ELSE ${loExpr} + 100 END`
+    : `CASE WHEN ${dimensionColumn} >= 3000 THEN NULL ` +
+      `WHEN ${dimensionColumn} < 1000 THEN ${loExpr} + 25 ELSE ${loExpr} + 50 END`;
+  const sumExpr = column ? `COALESCE(SUM(${column}), 0)` : "0";
+  return (
+    `SELECT ${loExpr} AS lo, ${hiExpr} AS hi, COUNT(*) AS n, ${sumExpr} AS s ` +
+    `FROM players GROUP BY ${loExpr}, ${hiExpr} ORDER BY lo`
+  );
+}
+
 function toBracketAggs(rows: { bracket_key: string; n: number; s: number }[]): BracketAgg[] {
   return rows.map((r) => ({ bracket_key: r.bracket_key, n: Number(r.n), sum: Number(r.s) }));
+}
+
+function toBucketAggs(rows: { lo: number; hi: number | null; n: number; s: number }[]): BucketAgg[] {
+  return rows.map((r) => ({
+    lo: Number(r.lo),
+    hi: r.hi == null ? null : Number(r.hi),
+    n: Number(r.n),
+    sum: Number(r.s),
+  }));
 }
 
 // Per-achievement baseline: for every achievement seen in the sample, how many
@@ -215,12 +261,105 @@ function toBaseline(row: Record<string, number> | null | undefined): BaselineRes
   return { n: Number(row?.n ?? 0), metrics };
 }
 
-function rangeClause(min: number | null, max: number | null): { where: string; params: number[] } {
+function legacyHoursRangeClause(min: number | null, max: number | null): { where: string; params: number[] } {
   const conds: string[] = [];
   const params: number[] = [];
   if (min != null) { conds.push("hours >= ?"); params.push(min); }
   if (max != null) { conds.push("hours < ?"); params.push(max); }
   return { where: conds.length ? "WHERE " + conds.join(" AND ") : "", params };
+}
+
+function statRangeClause(range: StatRange): { where: string; params: number[] } {
+  const column = rangeColumn(range.dimension);
+  const conds: string[] = [];
+  const params: number[] = [];
+  if (range.requirePositive) conds.push(`${column} > 0`);
+  if (range.min != null) { conds.push(`${column} >= ?`); params.push(range.min); }
+  if (range.max != null) {
+    conds.push(`${column} ${range.maxInclusive === false ? "<" : "<="} ?`);
+    params.push(range.max);
+  }
+  if (range.excludeAid != null) { conds.push("aid != ?"); params.push(range.excludeAid); }
+  return { where: conds.length ? "WHERE " + conds.join(" AND ") : "", params };
+}
+
+const COHORT_PERCENTAGES = [10, 15, 20, 25, 30] as const;
+const COHORT_TARGET = 20;
+const RADAR_COLS = [
+  "kd_ratio",
+  "pmc_kd_ratio",
+  "kills_per_raid",
+  "pmc_survival_rate",
+  "longest_win_streak",
+  "level",
+] as const;
+
+function cohortBounds(dimension: RangeDimension, center: number, percent: number): CohortBounds {
+  const ratio = percent / 100;
+  if (dimension === "hours") {
+    return {
+      min: Math.max(0, Math.floor(center * (1 - ratio) * 10) / 10),
+      max: Math.ceil(center * (1 + ratio) * 10) / 10,
+    };
+  }
+  return {
+    min: Math.max(0, Math.floor(center * (1 - ratio))),
+    max: Math.ceil(center * (1 + ratio)),
+  };
+}
+
+function cohortCountSql(
+  dimension: RangeDimension,
+  ranges: { percent: CohortPercent; bounds: CohortBounds }[]
+): string {
+  const column = rangeColumn(dimension);
+  const counts = ranges.map(
+    ({ percent }) => `SUM(CASE WHEN ${column} >= ? AND ${column} <= ? THEN 1 ELSE 0 END) AS n${percent}`
+  ).join(", ");
+  return `SELECT MAX(${column}) AS max_value, ${counts} FROM players WHERE ${column} > 0 AND aid != ?`;
+}
+
+function uniqueCohortRanges(dimension: RangeDimension, center: number) {
+  const seen = new Set<string>();
+  return COHORT_PERCENTAGES.flatMap((percent) => {
+    const bounds = cohortBounds(dimension, center, percent);
+    const key = `${bounds.min}:${bounds.max}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ percent, bounds }];
+  });
+}
+
+function populatedMetricClause(metric: string, where: string): string {
+  if (metric !== "pmc_survival_rate") return where;
+  return where ? `${where} AND pmc_survival_rate > 0` : "WHERE pmc_survival_rate > 0";
+}
+
+function emptyCohortMetrics(): Record<RadarMetric, CohortMetric> {
+  return Object.fromEntries(
+    RADAR_COLS.map((metric) => [metric, { value: null, count: 0 }])
+  ) as Record<RadarMetric, CohortMetric>;
+}
+
+function unavailableCohort(
+  dimension: RangeDimension,
+  center: number,
+  percent: CohortPercent,
+  bounds: CohortBounds,
+  n: number,
+  reason: CohortUnavailableReason
+): CohortResult {
+  return {
+    dimension,
+    center,
+    target: COHORT_TARGET,
+    percent,
+    bounds,
+    n,
+    quality: "unavailable",
+    reason,
+    averages: emptyCohortMetrics(),
+  };
 }
 
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
@@ -238,6 +377,16 @@ export interface AverageRow {
   n: number;
   [metric: string]: number | null;
 }
+export interface StatRange {
+  dimension: RangeDimension;
+  min: number | null;
+  max: number | null;
+  /** New API ranges are inclusive; legacy hour ranges explicitly set this false. */
+  maxInclusive?: boolean;
+  excludeAid?: number;
+  /** Exclude rows with zero activity in the selected dimension (cohort queries). */
+  requirePositive?: boolean;
+}
 export interface BracketAgg {
   /** Playtime bracket, e.g. "0-50" or "10000+". */
   bracket_key: string;
@@ -245,6 +394,43 @@ export interface BracketAgg {
   n: number;
   /** SUM of the selected metric column over the bracket (0 in count mode). */
   sum: number;
+}
+export interface BucketAgg {
+  lo: number;
+  /** null denotes the open-ended top bucket. Other bucket highs are exclusive. */
+  hi: number | null;
+  n: number;
+  sum: number;
+}
+export interface RangeBounds {
+  min: number;
+  max: number;
+}
+export type RadarMetric = (typeof RADAR_COLS)[number];
+export type CohortPercent = (typeof COHORT_PERCENTAGES)[number];
+export interface CohortBounds {
+  min: number;
+  max: number;
+}
+export interface CohortMetric {
+  value: number | null;
+  count: number;
+}
+export type CohortUnavailableReason =
+  | "no_activity"
+  | "above_coverage"
+  | "insufficient_similar_hours"
+  | "insufficient_similar_raids";
+export interface CohortResult {
+  dimension: RangeDimension;
+  center: number;
+  target: number;
+  percent: CohortPercent;
+  bounds: CohortBounds;
+  n: number;
+  quality: "sufficient" | "unavailable";
+  reason: CohortUnavailableReason | null;
+  averages: Record<RadarMetric, CohortMetric>;
 }
 
 /** Playtime baseline for a single achievement across the whole sample. */
@@ -284,12 +470,18 @@ export interface BaselineResult {
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
-  averages(minHours: number | null, maxHours: number | null): Promise<AverageRow | null>;
+  averages(range: StatRange): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
    * SUM of that column per bracket so a per-bracket average can be computed.
    */
   bracketAggregate(column: string | null): Promise<BracketAgg[]>;
+  /** Full distribution for the chosen range dimension. */
+  bucketAggregate(dimension: RangeDimension, column: string | null): Promise<BucketAgg[]>;
+  /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
+  rangeBounds(dimension: RangeDimension): Promise<RangeBounds>;
+  /** Adaptive comparison group around one player's playtime or PMC raid count. */
+  cohort(dimension: RangeDimension, center: number, excludeAid: number): Promise<CohortResult>;
   /**
    * Per-achievement playtime baseline over the whole sample: owner count plus
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
@@ -341,8 +533,8 @@ async function d1Store(): Promise<PlayerStore | null> {
         }
         await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
       },
-      async averages(min, max) {
-        const { where, params } = rangeClause(min, max);
+      async averages(range) {
+        const { where, params } = statRangeClause(range);
         const cnt = (await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
@@ -364,6 +556,93 @@ async function d1Store(): Promise<PlayerStore | null> {
         const { results } = await db.prepare(aggSql(column)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
       },
+      async bucketAggregate(dimension, column) {
+        const { results } = await db.prepare(bucketAggSql(dimension, column)).all();
+        return toBucketAggs(
+          (results ?? []) as { lo: number; hi: number | null; n: number; s: number }[]
+        );
+      },
+      async rangeBounds(dimension) {
+        const column = rangeColumn(dimension);
+        const row = (await db.prepare(
+          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players`
+        ).first()) as { lo: number | null; hi: number | null } | null;
+        if (row?.lo == null || row.hi == null) {
+          return { min: 0, max: dimension === "hours" ? 5000 : 1000 };
+        }
+        return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
+      },
+      async cohort(dimension, center, excludeAid) {
+        if (center <= 0) {
+          return unavailableCohort(
+            dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
+          );
+        }
+        const ranges = uniqueCohortRanges(dimension, center);
+        const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
+        const countRow = (await db.prepare(cohortCountSql(dimension, ranges))
+          .bind(...countParams, excludeAid)
+          .first()) as Record<string, number | null> | null;
+        const countFor = (bounds: CohortBounds) => {
+          const match = ranges.find((entry) =>
+            entry.bounds.min === bounds.min && entry.bounds.max === bounds.max
+          );
+          return Number(match ? countRow?.[`n${match.percent}`] ?? 0 : 0);
+        };
+        const selected = COHORT_PERCENTAGES.map((percent) => ({
+          percent,
+          bounds: cohortBounds(dimension, center, percent),
+        })).find(({ bounds }) => countFor(bounds) >= COHORT_TARGET);
+        if (!selected) {
+          const percent = 30;
+          const bounds = cohortBounds(dimension, center, percent);
+          const n = countFor(bounds);
+          const maxValue = Number(countRow?.max_value ?? 0);
+          const reason: CohortUnavailableReason = maxValue < bounds.min
+            ? "above_coverage"
+            : dimension === "hours"
+              ? "insufficient_similar_hours"
+              : "insufficient_similar_raids";
+          return unavailableCohort(dimension, center, percent, bounds, n, reason);
+        }
+        const groupRange: StatRange = {
+          dimension,
+          min: selected.bounds.min,
+          max: selected.bounds.max,
+          maxInclusive: true,
+          excludeAid,
+          requirePositive: true,
+        };
+        const { where, params } = statRangeClause(groupRange);
+        const averages = emptyCohortMetrics();
+        await Promise.all(RADAR_COLS.map(async (metric) => {
+          const metricWhere = populatedMetricClause(metric, where);
+          const count = metric === "pmc_survival_rate"
+            ? Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0)
+            : countFor(selected.bounds);
+          if (count < COHORT_TARGET) {
+            averages[metric] = { value: null, count };
+            return;
+          }
+          const { trim, off, lim } = trimWindow(count);
+          const queryParams = trim ? [...params, lim, off] : params;
+          const row = (await db.prepare(metricAvgSql(metric, metricWhere, trim))
+            .bind(...queryParams)
+            .first()) as { a: number | null } | null;
+          averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
+        }));
+        return {
+          dimension,
+          center,
+          target: COHORT_TARGET,
+          percent: selected.percent,
+          bounds: selected.bounds,
+          n: countFor(selected.bounds),
+          quality: "sufficient",
+          reason: null,
+          averages,
+        };
+      },
       async achievementBaseline() {
         const totalRow = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
         const { results } = await db.prepare(ACH_BASELINE_SQL).all();
@@ -377,7 +656,7 @@ async function d1Store(): Promise<PlayerStore | null> {
         };
       },
       async baseline(min, max) {
-        const { where, params } = rangeClause(min, max);
+        const { where, params } = legacyHoursRangeClause(min, max);
         const row = (await db.prepare(baselineSql(where)).bind(...params).first()) as
           | Record<string, number>
           | null;
@@ -441,8 +720,8 @@ async function sqliteStore(): Promise<PlayerStore | null> {
         }
         db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
       },
-      async averages(min, max) {
-        const { where, params } = rangeClause(min, max);
+      async averages(range) {
+        const { where, params } = statRangeClause(range);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
@@ -461,6 +740,92 @@ async function sqliteStore(): Promise<PlayerStore | null> {
         const rows = db.prepare(aggSql(column)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
       },
+      async bucketAggregate(dimension, column) {
+        const rows = db.prepare(bucketAggSql(dimension, column)).all() as {
+          lo: number; hi: number | null; n: number; s: number;
+        }[];
+        return toBucketAggs(rows);
+      },
+      async rangeBounds(dimension) {
+        const column = rangeColumn(dimension);
+        const row = db.prepare(
+          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players`
+        ).get() as { lo: number | null; hi: number | null } | undefined;
+        if (row?.lo == null || row.hi == null) {
+          return { min: 0, max: dimension === "hours" ? 5000 : 1000 };
+        }
+        return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
+      },
+      async cohort(dimension, center, excludeAid) {
+        if (center <= 0) {
+          return unavailableCohort(
+            dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
+          );
+        }
+        const ranges = uniqueCohortRanges(dimension, center);
+        const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
+        const countRow = db.prepare(cohortCountSql(dimension, ranges))
+          .get(...countParams, excludeAid) as Record<string, number | null> | undefined;
+        const countFor = (bounds: CohortBounds) => {
+          const match = ranges.find((entry) =>
+            entry.bounds.min === bounds.min && entry.bounds.max === bounds.max
+          );
+          return Number(match ? countRow?.[`n${match.percent}`] ?? 0 : 0);
+        };
+        const selected = COHORT_PERCENTAGES.map((percent) => ({
+          percent,
+          bounds: cohortBounds(dimension, center, percent),
+        })).find(({ bounds }) => countFor(bounds) >= COHORT_TARGET);
+        if (!selected) {
+          const percent = 30;
+          const bounds = cohortBounds(dimension, center, percent);
+          const n = countFor(bounds);
+          const maxValue = Number(countRow?.max_value ?? 0);
+          const reason: CohortUnavailableReason = maxValue < bounds.min
+            ? "above_coverage"
+            : dimension === "hours"
+              ? "insufficient_similar_hours"
+              : "insufficient_similar_raids";
+          return unavailableCohort(dimension, center, percent, bounds, n, reason);
+        }
+        const groupRange: StatRange = {
+          dimension,
+          min: selected.bounds.min,
+          max: selected.bounds.max,
+          maxInclusive: true,
+          excludeAid,
+          requirePositive: true,
+        };
+        const { where, params } = statRangeClause(groupRange);
+        const averages = emptyCohortMetrics();
+        for (const metric of RADAR_COLS) {
+          const metricWhere = populatedMetricClause(metric, where);
+          const count = metric === "pmc_survival_rate"
+            ? Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0)
+            : countFor(selected.bounds);
+          if (count < COHORT_TARGET) {
+            averages[metric] = { value: null, count };
+            continue;
+          }
+          const { trim, off, lim } = trimWindow(count);
+          const stmt = db.prepare(metricAvgSql(metric, metricWhere, trim));
+          const row = (trim ? stmt.get(...params, lim, off) : stmt.get(...params)) as
+            | { a: number | null }
+            | undefined;
+          averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
+        }
+        return {
+          dimension,
+          center,
+          target: COHORT_TARGET,
+          percent: selected.percent,
+          bounds: selected.bounds,
+          n: countFor(selected.bounds),
+          quality: "sufficient",
+          reason: null,
+          averages,
+        };
+      },
       async achievementBaseline() {
         const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
         const rows = db.prepare(ACH_BASELINE_SQL).all() as {
@@ -469,7 +834,7 @@ async function sqliteStore(): Promise<PlayerStore | null> {
         return { total: Number(totalRow?.n ?? 0), achievements: toAchStats(rows) };
       },
       async baseline(min, max) {
-        const { where, params } = rangeClause(min, max);
+        const { where, params } = legacyHoursRangeClause(min, max);
         const row = db.prepare(baselineSql(where)).get(...params) as Record<string, number> | undefined;
         return toBaseline(row);
       },

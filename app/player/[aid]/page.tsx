@@ -4,7 +4,7 @@ import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
-import PlayerComparison from "@/components/PlayerComparison";
+import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
@@ -14,11 +14,14 @@ import { isReload } from "@/lib/is-reload";
 
 interface Props {
   params: Promise<{ aid: string }>;
+  searchParams: Promise<{ radarDemo?: string | string[] }>;
 }
 
-export default function PlayerPage({ params }: Props) {
+export default function PlayerPage({ params, searchParams }: Props) {
   const { t } = useI18n();
   const { aid } = use(params);
+  const query = use(searchParams);
+  const radarDemo = process.env.NODE_ENV === "development" && query.radarDemo === "1";
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,6 +29,8 @@ export default function PlayerPage({ params }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the route-level request state whenever the account changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError("");
 
@@ -57,7 +62,7 @@ export default function PlayerPage({ params }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [aid]);
+  }, [aid, t]);
 
   if (loading) {
     return (
@@ -126,71 +131,71 @@ export default function PlayerPage({ params }: Props) {
         {t("common.back")}
       </Link>
 
-      <div className="flex flex-col lg:flex-row gap-8">
-        <div className="flex-1 space-y-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-[var(--accent)]">
-                {stats.nickname}
-              </h1>
-              <div className="flex flex-wrap gap-3 text-sm text-gray-500 mt-1">
-                <span>{t("player.sideLabel", { side: stats.side })}</span>
-                {stats.prestige > 0 && (
-                  <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
-                )}
-                <span>#{aid}</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <RefreshButton aid={Number(aid)} />
-              <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
+      <div className="space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-[var(--accent)]">{stats.nickname}</h1>
+            <div className="flex flex-wrap gap-3 text-sm text-gray-500 mt-1">
+              <span>{t("player.sideLabel", { side: stats.side })}</span>
+              {stats.prestige > 0 && (
+                <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
+              )}
+              <span>#{aid}</span>
             </div>
           </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {mainStats.map((s) => (
-              <StatCard
-                key={s.label}
-                label={s.label}
-                value={s.value}
-                suffix={s.suffix}
-              />
-            ))}
+          <div className="flex items-center gap-2 shrink-0">
+            <RefreshButton aid={Number(aid)} />
+            <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
           </div>
+        </div>
 
-          {skills.length > 0 && (
-            <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
-              <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-3">
-                {t("player.skills")}
-              </h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
-                {skills
-                  .filter((s) => s.Progress > 0)
-                  .sort((a, b) => b.Progress - a.Progress)
-                  .map((skill) => (
-                    <div
-                      key={skill.Id}
-                      className="flex justify-between text-sm py-1 px-2 rounded bg-[var(--input-bg)]"
-                    >
-                      <span className="text-gray-400 truncate">
-                        {skill.Id.replace(/([A-Z])/g, " $1").trim()}
-                      </span>
-                      <span className="text-[var(--accent)] ml-2">
-                        {Math.floor(skill.Progress)}
-                      </span>
-                    </div>
-                  ))}
-              </div>
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <div className="flex-1">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {mainStats.map((s) => (
+                <StatCard
+                  key={s.label}
+                  label={s.label}
+                  value={s.value}
+                  suffix={s.suffix}
+                />
+              ))}
             </div>
-          )}
-
-          <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
+          </div>
+          <div className="lg:w-96 shrink-0">
+            <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
+          </div>
         </div>
 
-        <div className="lg:w-96 shrink-0 space-y-6">
-          <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
-          <PlayerComparison stats={stats} />
-        </div>
+        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
+
+        {skills.length > 0 && (
+          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
+            <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-3">
+              {t("player.skills")}
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+              {skills
+                .filter((s) => s.Progress > 0)
+                .sort((a, b) => b.Progress - a.Progress)
+                .map((skill) => (
+                  <div
+                    key={skill.Id}
+                    className="flex justify-between text-sm py-1 px-2 rounded bg-[var(--input-bg)]"
+                  >
+                    <span className="text-gray-400 truncate">
+                      {skill.Id.replace(/([A-Z])/g, " $1").trim()}
+                    </span>
+                    <span className="text-[var(--accent)] ml-2">
+                      {Math.floor(skill.Progress)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
       </div>
     </main>
   );
