@@ -376,7 +376,7 @@ export default function AveragePage() {
                     aria-pressed={dimension === option}
                     className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
                       dimension === option
-                        ? "bg-[var(--accent)] text-black"
+                        ? "bg-[var(--accent)] text-[var(--background)]"
                         : "text-[var(--muted)] hover:text-[var(--foreground)]"
                     }`}
                   >
