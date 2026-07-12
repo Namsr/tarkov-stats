@@ -63,6 +63,7 @@ const FALLBACK_BOUNDS: Record<RangeDimension, RangeBounds> = {
 
 const BAR_MIN_PX = 26;
 const BAR_GAP_PX = 6;
+const MIN_RANGE_SPAN = 50;
 
 function fmt(value: number | null | undefined, decimals = 1): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -220,12 +221,60 @@ export default function AveragePage() {
     ? { min: Math.floor(data.bounds.min), max: Math.ceil(data.bounds.max) }
     : inferBounds(bins, FALLBACK_BOUNDS[dimension]);
   const visibleSelection = selection ?? bounds;
+  const minRangeSpan = Math.min(MIN_RANGE_SPAN, bounds.max - bounds.min);
   const valueOf = (bin: Pick<HistBin, "n" | "sum">) =>
     isCount ? bin.n : bin.n > 0 ? bin.sum / bin.n : 0;
   const maxValue = Math.max(1, ...bins.map(valueOf));
   const dimensionUnit = t(dimension === "hours" ? "unit.h" : "average.unitRaids");
   const focusMetrics = METRICS.slice(0, 4);
   const detailMetrics = METRICS.slice(4);
+
+  function boundaryPosition(value: number, edge: "low" | "high"): number {
+    if (bins.length === 0 || value <= bins[0].lo) return 0;
+    const width = Math.max(1, chartWidth);
+    const gap = chartWidth > 0 ? BAR_GAP_PX : 0;
+    const barWidth = Math.max(0, (width - gap * (bins.length - 1)) / bins.length);
+    for (let index = 0; index < bins.length; index += 1) {
+      const bin = bins[index];
+      const end = bin.hi ?? bounds.max + 1;
+      if (value < end || (edge === "high" && value === end)) {
+        const fraction = Math.min(1, Math.max(0, (value - bin.lo) / Math.max(1, end - bin.lo)));
+        return (index * (barWidth + gap) + fraction * barWidth) / width;
+      }
+    }
+    return 1;
+  }
+
+  function valueAtPosition(position: number, edge: "low" | "high"): number {
+    if (bins.length === 0) return edge === "low" ? bounds.min : bounds.max;
+    const width = Math.max(1, chartWidth);
+    const gap = chartWidth > 0 ? BAR_GAP_PX : 0;
+    const barWidth = Math.max(0, (width - gap * (bins.length - 1)) / bins.length);
+    const cellWidth = barWidth + gap;
+    const pixel = Math.min(width, Math.max(0, position * width));
+    const index = Math.min(bins.length - 1, Math.floor(pixel / Math.max(1, cellWidth)));
+    const bin = bins[index];
+    const end = bin.hi ?? bounds.max + 1;
+    const offset = pixel - index * cellWidth;
+    if (offset > barWidth && index < bins.length - 1) {
+      return edge === "low" ? Math.ceil(bins[index + 1].lo) : Math.ceil(end) - 1;
+    }
+    const fraction = Math.min(1, Math.max(0, offset / Math.max(1, barWidth)));
+    const boundary = bin.lo + fraction * Math.max(1, end - bin.lo);
+    const value = edge === "high" ? Math.round(boundary) - 1 : Math.round(boundary);
+    return Math.min(bounds.max, Math.max(bounds.min, value));
+  }
+
+  function selectBin(bin: HistBin) {
+    let min = Math.max(bounds.min, Math.ceil(bin.lo));
+    let max = Math.min(bounds.max, Math.ceil(bin.hi ?? bounds.max + 1) - 1);
+    if (max - min < minRangeSpan) max = min + minRangeSpan;
+    if (max > bounds.max) {
+      max = bounds.max;
+      min = Math.max(bounds.min, max - minRangeSpan);
+    }
+    setSelection({ min, max });
+  }
 
   function renderMetric(metric: (typeof METRICS)[number]) {
     const card = (
@@ -273,31 +322,6 @@ export default function AveragePage() {
             {t("average.sampleGrows")}
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:items-end">
-          <span className="section-kicker">{t("average.dimensionLabel")}</span>
-          <div className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1">
-            {(["hours", "pmc_raids"] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => changeDimension(option)}
-                aria-pressed={dimension === option}
-                className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
-                  dimension === option
-                    ? "bg-[var(--accent)] text-black"
-                    : "text-[var(--muted)] hover:text-[var(--foreground)]"
-                }`}
-              >
-                {t(option === "hours" ? "average.dimensionHours" : "average.dimensionPmcRaids")}
-              </button>
-            ))}
-          </div>
-          {data && (
-            <span className="text-xs text-[var(--muted)]">
-              {t("average.basedOn", { n: sampleN.toLocaleString() })}
-            </span>
-          )}
-        </div>
       </section>
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
@@ -338,7 +362,36 @@ export default function AveragePage() {
               )}
             </p>
           </div>
-          <MetricPicker value={yMetric} onChange={setYMetric} />
+          <div className="flex flex-col gap-3 sm:items-end">
+            <div>
+              <span className="mb-2 block text-xs text-[var(--muted)]">
+                {t("average.dimensionLabel")}
+              </span>
+              <div className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1">
+                {(["hours", "pmc_raids"] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => changeDimension(option)}
+                    aria-pressed={dimension === option}
+                    className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
+                      dimension === option
+                        ? "bg-[var(--accent)] text-black"
+                        : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {t(option === "hours" ? "average.dimensionHours" : "average.dimensionPmcRaids")}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <MetricPicker value={yMetric} onChange={setYMetric} />
+            {data && (
+              <span className="text-xs text-[var(--muted)]">
+                {t("average.basedOn", { n: sampleN.toLocaleString() })}
+              </span>
+            )}
+          </div>
         </div>
 
         <div ref={chartRef} className="chart-panel data-panel">
@@ -362,9 +415,11 @@ export default function AveragePage() {
                   const value = valueOf(bin);
                   const slice = selectedSlice(bin, visibleSelection, bounds.max);
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={`${bin.lo}-${bin.hi ?? "open"}`}
                       className="flex h-full min-w-[26px] flex-1 flex-col items-center justify-end"
+                      onClick={() => selectBin(bin)}
                       title={t(
                         isCount
                           ? "average.barTipCountDimension"
@@ -393,7 +448,7 @@ export default function AveragePage() {
                           style={{ left: `${slice.left}%`, width: `${slice.width}%` }}
                         />
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -429,6 +484,12 @@ export default function AveragePage() {
               lowLabel={t("average.rangeMinAria")}
               highLabel={t("average.rangeMaxAria")}
               disabled={!data || bounds.max <= bounds.min}
+              minSpan={minRangeSpan}
+              minVisualGap={chartWidth > 0 ? 20 / chartWidth : 0}
+              toPosition={(value, edge) =>
+                boundaryPosition(edge === "high" ? value + 1 : value, edge)
+              }
+              fromPosition={valueAtPosition}
               onChange={(min, max) => setSelection({ min, max })}
             />
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -437,14 +498,17 @@ export default function AveragePage() {
                 <input
                   type="number"
                   min={bounds.min}
-                  max={visibleSelection.max}
+                  max={visibleSelection.max - minRangeSpan}
                   step={1}
                   value={visibleSelection.min}
                   onChange={(event) => {
                     const next = Number(event.target.value);
                     if (Number.isFinite(next)) {
                       setSelection({
-                        min: Math.max(bounds.min, Math.min(next, visibleSelection.max)),
+                        min: Math.max(
+                          bounds.min,
+                          Math.min(next, visibleSelection.max - minRangeSpan),
+                        ),
                         max: visibleSelection.max,
                       });
                     }
@@ -456,7 +520,7 @@ export default function AveragePage() {
                 <span className="mb-1 block">{t("average.rangeTo")}</span>
                 <input
                   type="number"
-                  min={visibleSelection.min}
+                  min={visibleSelection.min + minRangeSpan}
                   max={bounds.max}
                   step={1}
                   value={visibleSelection.max}
@@ -465,7 +529,10 @@ export default function AveragePage() {
                     if (Number.isFinite(next)) {
                       setSelection({
                         min: visibleSelection.min,
-                        max: Math.min(bounds.max, Math.max(next, visibleSelection.min)),
+                        max: Math.min(
+                          bounds.max,
+                          Math.max(next, visibleSelection.min + minRangeSpan),
+                        ),
                       });
                     }
                   }}

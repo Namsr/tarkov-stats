@@ -342,12 +342,41 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
     axes.map((axis) => {
       if (!axis.available || !values) return null;
       if (average) return 1;
-      return Math.max(0, Math.min(2, values[axis.metric.key] / (axis.average.value as number)));
+      const ratio = values[axis.metric.key] / (axis.average.value as number);
+      return Number.isFinite(ratio) ? Math.max(0, ratio) : null;
     });
 
   const averageRatios = ratiosFor(DEMO_AVERAGES, true);
   const favoriteRatios = ratiosFor(favoriteValues);
   const playerRatios = ratiosFor(playerValues);
+  const maxRatio = Math.max(
+    2,
+    ...playerRatios.filter((ratio): ratio is number => ratio !== null),
+    ...favoriteRatios.filter((ratio): ratio is number => ratio !== null)
+  );
+  const targetStep = maxRatio / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(targetStep));
+  const normalizedStep = targetStep / magnitude;
+  const stepFactor =
+    normalizedStep < 1.5 ? 1 : normalizedStep < 3.5 ? 2 : normalizedStep < 7.5 ? 5 : 10;
+  const ringStep = stepFactor * magnitude;
+  const scaleMax = maxRatio <= 2 ? 2 : Math.ceil(maxRatio / ringStep) * ringStep;
+  const rings =
+    scaleMax === 2
+      ? [0.5, 1, 1.5, 2]
+      : Array.from(
+          new Set(
+            [
+              1,
+              ...Array.from(
+                { length: Math.round(scaleMax / ringStep) },
+                (_, index) => (index + 1) * ringStep
+              ),
+            ]
+              .map((ratio) => Math.round(ratio * 100) / 100)
+              .sort((a, b) => a - b)
+          )
+        );
 
   const formatValue = (metric: MetricDefinition, value: number | null) => {
     if (value === null || !Number.isFinite(value)) return t("radar.notAvailable");
@@ -384,7 +413,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
     if (!visible || cohort?.quality !== "sufficient") return null;
     const style = SERIES[key];
     const seriesPoints = ratios.map((ratio, index) =>
-      ratio === null ? null : point(index, (ratio / 2) * RADIUS)
+      ratio === null ? null : point(index, (ratio / scaleMax) * RADIUS)
     );
     const complete = seriesPoints.every((value) => value !== null);
     return (
@@ -421,16 +450,30 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
         )}
         {seriesPoints.map((value, index) =>
           value ? (
-            <circle
-              key={METRICS[index].key}
-              cx={value.x}
-              cy={value.y}
-              r="5"
-              fill={style.color}
-              stroke="var(--card-bg)"
-              strokeWidth="2"
-              vectorEffect="non-scaling-stroke"
-            />
+            <g key={METRICS[index].key}>
+              <circle
+                cx={value.x}
+                cy={value.y}
+                r="5"
+                fill={style.color}
+                stroke="var(--card-bg)"
+                strokeWidth="2"
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+              <circle
+                cx={value.x}
+                cy={value.y}
+                r="15"
+                fill="transparent"
+                className="cursor-help"
+                onMouseEnter={() => setActiveAxis(index)}
+                onMouseLeave={() =>
+                  setActiveAxis((current) => (current === index ? null : current))
+                }
+                onClick={() => setActiveAxis(index)}
+              />
+            </g>
           ) : null
         )}
       </g>
@@ -533,10 +576,10 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
         >
           <title id="player-radar-title">{t("radar.svgTitle")}</title>
           <desc id="player-radar-desc">{t("radar.svgDescription")}</desc>
-          {[0.5, 1, 1.5, 2].map((ratio) => (
+          {rings.map((ratio) => (
             <g key={ratio} aria-hidden="true">
               <polygon
-                points={pointsAt((ratio / 2) * RADIUS)}
+                points={pointsAt((ratio / scaleMax) * RADIUS)}
                 fill="none"
                 stroke="var(--card-border)"
                 strokeWidth={ratio === 1 ? "2" : "1"}
@@ -544,7 +587,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
               />
               <text
                 x={CX + 7}
-                y={CY - (ratio / 2) * RADIUS + 13}
+                y={CY - (ratio / scaleMax) * RADIUS + 13}
                 fill="#6b7280"
                 fontSize="11"
               >

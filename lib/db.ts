@@ -681,7 +681,11 @@ async function d1Store(): Promise<PlayerStore | null> {
           const count = metric === "pmc_survival_rate"
             ? Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0)
             : countFor(selected.bounds);
-          if (count < COHORT_TARGET) {
+          // The cohort itself is already guaranteed to contain at least 20 players.
+          // PMC survival is a backfilled field, so average the confirmed values that
+          // exist instead of hiding the axis until 20 profiles have been refreshed.
+          const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COHORT_TARGET;
+          if (count < minimumPopulatedCount) {
             averages[metric] = { value: null, count };
             return;
           }
@@ -876,7 +880,11 @@ async function sqliteStore(): Promise<PlayerStore | null> {
           const count = metric === "pmc_survival_rate"
             ? Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0)
             : countFor(selected.bounds);
-          if (count < COHORT_TARGET) {
+          // The cohort itself is already guaranteed to contain at least 20 players.
+          // PMC survival is a backfilled field, so average the confirmed values that
+          // exist instead of hiding the axis until 20 profiles have been refreshed.
+          const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COHORT_TARGET;
+          if (count < minimumPopulatedCount) {
             averages[metric] = { value: null, count };
             continue;
           }

@@ -160,6 +160,10 @@ export default function PlayerPage({ params, searchParams }: Props) {
         </div>
       </section>
 
+      <div className="mt-5">
+        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
+      </div>
+
       <div className="page-grid mt-5">
         <div className="space-y-5">
           <section>
@@ -187,10 +191,6 @@ export default function PlayerPage({ params, searchParams }: Props) {
         <aside>
           <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
         </aside>
-      </div>
-
-      <div className="mt-5">
-        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
       </div>
 
       {skills.length > 0 ? (
