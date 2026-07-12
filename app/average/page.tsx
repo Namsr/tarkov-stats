@@ -33,6 +33,7 @@ interface AverageResponse {
   averages: AverageRow | null;
   brackets?: BracketAgg[];
   buckets?: BucketAgg[];
+  histogram?: HistBin[];
   bounds?: RangeBounds;
   dimension?: RangeDimension;
   metric: string;
@@ -102,8 +103,8 @@ function inferBounds(bins: HistBin[], fallback: RangeBounds): RangeBounds {
 function selectedSlice(bin: HistBin, range: RangeBounds, axisMax: number) {
   const end = bin.hi ?? axisMax + 1;
   const width = Math.max(1, end - bin.lo);
-  // Slider values are integral and both endpoints are inclusive, represented as
-  // a half-open interval here so a one-value selection remains visible.
+  // Slider endpoints are inclusive. Represent the selection as a half-open
+  // interval so even a single selected value remains visible.
   const selectedStart = Math.max(bin.lo, range.min);
   const selectedEnd = Math.min(end, range.max + 1);
   const overlap = Math.max(0, selectedEnd - selectedStart);
@@ -124,12 +125,14 @@ export default function AveragePage() {
   const [error, setError] = useState("");
   const [showAch, setShowAch] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
-  const [chartW, setChartW] = useState(0);
+  const [chartWidth, setChartWidth] = useState(0);
 
   useEffect(() => {
     const element = chartRef.current;
     if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => setChartW(entries[0].contentRect.width));
+    const observer = new ResizeObserver((entries) => {
+      setChartWidth(entries[0].contentRect.width);
+    });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
@@ -154,6 +157,7 @@ export default function AveragePage() {
         setError("");
       }
     });
+
     fetch(`/api/average?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => {
         const json = (await response.json()) as AverageResponse & { error?: string };
@@ -173,7 +177,7 @@ export default function AveragePage() {
         });
       })
       .catch((fetchError: unknown) => {
-        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (fetchError instanceof Error && fetchError.name === "AbortError") return;
         setError(fetchError instanceof Error ? fetchError.message : t("common.loadFailed"));
       })
       .finally(() => {
@@ -185,9 +189,11 @@ export default function AveragePage() {
 
   function openBreakdown() {
     setShowAch(true);
-    requestAnimationFrame(() =>
-      document.getElementById("ach-breakdown")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    );
+    requestAnimationFrame(() => {
+      document
+        .getElementById("ach-breakdown")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   function changeDimension(next: RangeDimension) {
@@ -204,7 +210,9 @@ export default function AveragePage() {
   const yDef = resolveY(data?.metric ?? yMetric);
   const isCount = yDef.agg === "count";
   const fitBins =
-    chartW > 0 ? Math.max(1, Math.floor((chartW + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX))) : undefined;
+    chartWidth > 0
+      ? Math.max(1, Math.floor((chartWidth + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX)))
+      : undefined;
   const bins = data?.buckets?.length
     ? buildNumericHistogram(data.buckets, fitBins)
     : buildHistogram(data?.brackets ?? [], fitBins);
@@ -212,126 +220,130 @@ export default function AveragePage() {
     ? { min: Math.floor(data.bounds.min), max: Math.ceil(data.bounds.max) }
     : inferBounds(bins, FALLBACK_BOUNDS[dimension]);
   const visibleSelection = selection ?? bounds;
-  const valueOf = (bin: { n: number; sum: number }) =>
+  const valueOf = (bin: Pick<HistBin, "n" | "sum">) =>
     isCount ? bin.n : bin.n > 0 ? bin.sum / bin.n : 0;
   const maxValue = Math.max(1, ...bins.map(valueOf));
   const dimensionUnit = t(dimension === "hours" ? "unit.h" : "average.unitRaids");
+  const focusMetrics = METRICS.slice(0, 4);
+  const detailMetrics = METRICS.slice(4);
+
+  function renderMetric(metric: (typeof METRICS)[number]) {
+    const card = (
+      <StatCard
+        label={`${t("common.avg")} ${t("metric." + metric.key)}`}
+        value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
+        suffix={metric.suffix}
+      />
+    );
+
+    if (metric.key !== "achv_count") return <div key={metric.key}>{card}</div>;
+
+    return (
+      <button
+        key={metric.key}
+        type="button"
+        onClick={openBreakdown}
+        title={t("average.showAchBreakdown")}
+        className="relative rounded-[10px] text-left transition-transform hover:-translate-y-0.5 focus:outline-none"
+      >
+        {card}
+        <span className="absolute right-4 top-4 text-xs text-[var(--accent)]" aria-hidden="true">
+          ↗
+        </span>
+      </button>
+    );
+  }
 
   return (
-    <main className="flex-1 px-4 py-8 max-w-5xl mx-auto w-full">
+    <main className="page-frame">
       <Link
         href="/"
-        className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+        className="inline-block text-sm text-[var(--muted)] transition-colors hover:text-[var(--foreground)]"
       >
         {t("common.back")}
       </Link>
-      <h1 className="text-2xl font-bold text-[var(--accent)] mb-6">{t("nav.average")}</h1>
+      <p className="page-kicker mt-7">{t("average.summary")}</p>
+      <h1 className="page-title">{t("nav.average")}</h1>
 
-      <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 mb-6">
-        <div className="text-xs uppercase tracking-wider text-gray-500">{t("average.accountsScanned")}</div>
-        <div className="text-3xl font-bold text-[var(--foreground)]">{total.toLocaleString()}</div>
-        <p className="text-xs text-gray-600 mt-1">{t("average.sampleGrows")}</p>
-      </div>
-
-      {data && (
-        <p className="mb-4 text-sm text-gray-500">
-          {t("average.basedOn", { n: sampleN.toLocaleString() })}
-        </p>
-      )}
-      {error && <p className="text-[var(--danger)] text-sm mb-4">{error}</p>}
-
-      {!data ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {Array.from({ length: 12 }).map((_, index) => (
-            <div key={index} className="h-20 skeleton rounded-lg" />
-          ))}
-        </div>
-      ) : sampleN === 0 ? (
-        <p className="text-gray-500">{t("average.emptyRange")}</p>
-      ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {METRICS.map((metric) => {
-            const card = (
-              <StatCard
-                label={`${t("common.avg")} ${t("metric." + metric.key)}`}
-                value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
-                suffix={metric.suffix}
-              />
-            );
-            if (metric.key === "achv_count") {
-              return (
-                <button
-                  key={metric.key}
-                  onClick={openBreakdown}
-                  title={t("average.showAchBreakdown")}
-                  className="relative text-left rounded-lg transition-shadow hover:ring-1 hover:ring-[var(--accent)]/60 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] group"
-                >
-                  {card}
-                  <span
-                    aria-hidden="true"
-                    className="absolute top-3 right-3 text-[11px] text-gray-600 group-hover:text-[var(--accent)] transition-colors"
-                  >
-                    ↓
-                  </span>
-                </button>
-              );
-            }
-            return <div key={metric.key}>{card}</div>;
-          })}
-        </div>
-      )}
-
-      {data && sampleN > 0 && <p className="text-xs text-gray-600 mt-3">{t("average.robustNote")}</p>}
-      <AchievementBreakdown open={showAch} onToggle={() => setShowAch((open) => !open)} />
-
-      <div className="mt-10 mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-1">
-            {t(
-              dimension === "hours"
-                ? "average.distributionHeading"
-                : "average.distributionHeadingPmcRaids",
-            )}
-          </h2>
-          <p className="text-xs text-gray-600">
-            {t(
-              dimension === "hours"
-                ? "average.distributionDesc"
-                : "average.distributionDescPmcRaids",
-            )}
+      <section className="summary-strip surface">
+        <div className="summary-strip__copy">
+          <div className="section-kicker">{t("average.accountsScanned")}</div>
+          <div className="summary-strip__number">{total.toLocaleString()}</div>
+          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
+            {t("average.sampleGrows")}
           </p>
         </div>
-        <div>
-          <span className="mb-1 block text-xs text-gray-500">{t("average.dimensionLabel")}</span>
-          <div className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1">
+        <div className="flex flex-col gap-2 sm:items-end">
+          <span className="section-kicker">{t("average.dimensionLabel")}</span>
+          <div className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1">
             {(["hours", "pmc_raids"] as const).map((option) => (
               <button
                 key={option}
                 type="button"
                 onClick={() => changeDimension(option)}
                 aria-pressed={dimension === option}
-                className={`min-h-10 rounded-md px-3 text-sm transition-colors ${
+                className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
                   dimension === option
                     ? "bg-[var(--accent)] text-black"
-                    : "text-gray-400 hover:text-[var(--foreground)]"
+                    : "text-[var(--muted)] hover:text-[var(--foreground)]"
                 }`}
               >
                 {t(option === "hours" ? "average.dimensionHours" : "average.dimensionPmcRaids")}
               </button>
             ))}
           </div>
+          {data && (
+            <span className="text-xs text-[var(--muted)]">
+              {t("average.basedOn", { n: sampleN.toLocaleString() })}
+            </span>
+          )}
         </div>
-      </div>
+      </section>
 
-      <div className="flex flex-col sm:flex-row gap-4">
-        <MetricPicker value={yMetric} onChange={setYMetric} />
+      {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
 
-        <div
-          ref={chartRef}
-          className="flex-1 min-w-0 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4"
-        >
-          <div className="text-[11px] text-gray-500 mb-2">
-            <span className="text-[var(--accent)] font-medium">
+      {!data ? (
+        <div className="detail-grid mt-5">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="h-28 rounded-xl skeleton" />
+          ))}
+        </div>
+      ) : sampleN === 0 ? (
+        <p className="mt-5 text-[var(--muted)]">{t("average.emptyRange")}</p>
+      ) : (
+        <section className="mt-5">
+          <h2 className="section-heading mb-3">{t("average.summary")}</h2>
+          <div className="detail-grid">{focusMetrics.map(renderMetric)}</div>
+          <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
+            {t("average.robustNote")}
+          </p>
+        </section>
+      )}
+
+      <section className="mt-10">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="section-heading">
+              {t(
+                dimension === "hours"
+                  ? "average.distributionHeading"
+                  : "average.distributionHeadingPmcRaids",
+              )}
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">
+              {t(
+                dimension === "hours"
+                  ? "average.distributionDesc"
+                  : "average.distributionDescPmcRaids",
+              )}
+            </p>
+          </div>
+          <MetricPicker value={yMetric} onChange={setYMetric} />
+        </div>
+
+        <div ref={chartRef} className="chart-panel data-panel">
+          <div className="mb-4 text-xs text-[var(--muted)]">
+            <span className="font-semibold text-[var(--accent)]">
               {yDef.agg === "avg"
                 ? `${t("common.avg")} ${t("metric." + yDef.key)}`
                 : t("metric." + yDef.key)}
@@ -340,28 +352,36 @@ export default function AveragePage() {
           </div>
 
           {!data ? (
-            <div className="h-52 skeleton rounded" />
+            <div className="h-60 rounded skeleton" />
           ) : bins.length === 0 ? (
-            <p className="text-gray-600 text-sm">{t("average.noDataYet")}</p>
+            <p className="text-sm text-[var(--muted)]">{t("average.noDataYet")}</p>
           ) : (
             <div className={`overflow-x-auto transition-opacity ${loading ? "opacity-60" : ""}`}>
-              <div className="flex items-end gap-1.5 h-52 border-b border-[var(--card-border)]">
+              <div className="flex h-60 items-end gap-1.5 border-b border-[var(--card-border)]">
                 {bins.map((bin) => {
                   const value = valueOf(bin);
                   const slice = selectedSlice(bin, visibleSelection, bounds.max);
                   return (
                     <div
                       key={`${bin.lo}-${bin.hi ?? "open"}`}
-                      className="flex-1 min-w-[26px] h-full flex flex-col items-center justify-end"
-                      title={t(isCount ? "average.barTipCountDimension" : "average.barTipAvgDimension", {
-                        label: bin.label,
-                        unit: dimensionUnit,
-                        ...(isCount
-                          ? { n: bin.n.toLocaleString() }
-                          : { avg: formatValue(yDef, value), n: bin.n.toLocaleString() }),
-                      })}
+                      className="flex h-full min-w-[26px] flex-1 flex-col items-center justify-end"
+                      title={t(
+                        isCount
+                          ? "average.barTipCountDimension"
+                          : "average.barTipAvgDimension",
+                        {
+                          label: bin.label,
+                          unit: dimensionUnit,
+                          ...(isCount
+                            ? { n: bin.n.toLocaleString() }
+                            : {
+                                avg: formatValue(yDef, value),
+                                n: bin.n.toLocaleString(),
+                              }),
+                        },
+                      )}
                     >
-                      <span className="text-[10px] leading-none text-gray-400 mb-1">
+                      <span className="mb-2 text-[10px] leading-none text-[var(--muted)]">
                         {formatValue(yDef, value)}
                       </span>
                       <div
@@ -377,24 +397,24 @@ export default function AveragePage() {
                   );
                 })}
               </div>
-              <div className="flex gap-1.5 mt-2">
+              <div className="mt-3 flex gap-1.5">
                 {bins.map((bin) => (
                   <span
                     key={`${bin.lo}-${bin.hi ?? "open"}`}
-                    className="flex-1 min-w-[26px] text-[9px] leading-tight text-gray-500 text-center"
+                    className="min-w-[26px] flex-1 text-center text-[9px] leading-tight text-[var(--muted)]"
                   >
                     {bin.label}
                   </span>
                 ))}
               </div>
-              <div className="text-[10px] text-gray-600 text-center mt-2">
+              <div className="mt-3 text-center text-[10px] text-[var(--muted)]">
                 {t(dimension === "hours" ? "average.hoursPlayed" : "average.pmcRaidsPlayed")}
               </div>
             </div>
           )}
 
-          <div className="mt-5 border-t border-[var(--card-border)] pt-4">
-            <p className="mb-2 text-center text-sm text-gray-400" aria-live="polite">
+          <div className="mt-6 border-t border-[var(--card-border)] pt-5">
+            <p className="mb-3 text-center text-sm text-[var(--muted)]" aria-live="polite">
               {t("average.selectedRange", {
                 min: visibleSelection.min.toLocaleString(),
                 max: visibleSelection.max.toLocaleString(),
@@ -412,7 +432,7 @@ export default function AveragePage() {
               onChange={(min, max) => setSelection({ min, max })}
             />
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <label className="text-xs text-gray-500">
+              <label className="text-xs text-[var(--muted)]">
                 <span className="mb-1 block">{t("average.rangeFrom")}</span>
                 <input
                   type="number"
@@ -423,13 +443,16 @@ export default function AveragePage() {
                   onChange={(event) => {
                     const next = Number(event.target.value);
                     if (Number.isFinite(next)) {
-                      setSelection({ min: Math.max(bounds.min, Math.min(next, visibleSelection.max)), max: visibleSelection.max });
+                      setSelection({
+                        min: Math.max(bounds.min, Math.min(next, visibleSelection.max)),
+                        max: visibleSelection.max,
+                      });
                     }
                   }}
-                  className="w-full rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm focus:border-[var(--accent)] focus:outline-none"
+                  className="min-h-11 w-full rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
                 />
               </label>
-              <label className="text-xs text-gray-500">
+              <label className="text-xs text-[var(--muted)]">
                 <span className="mb-1 block">{t("average.rangeTo")}</span>
                 <input
                   type="number"
@@ -440,16 +463,28 @@ export default function AveragePage() {
                   onChange={(event) => {
                     const next = Number(event.target.value);
                     if (Number.isFinite(next)) {
-                      setSelection({ min: visibleSelection.min, max: Math.min(bounds.max, Math.max(next, visibleSelection.min)) });
+                      setSelection({
+                        min: visibleSelection.min,
+                        max: Math.min(bounds.max, Math.max(next, visibleSelection.min)),
+                      });
                     }
                   }}
-                  className="w-full rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm focus:border-[var(--accent)] focus:outline-none"
+                  className="min-h-11 w-full rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
                 />
               </label>
             </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      {data && sampleN > 0 && (
+        <section className="mt-10">
+          <h2 className="section-heading mb-3">{t("average.fullMetrics")}</h2>
+          <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>
+        </section>
+      )}
+
+      <AchievementBreakdown open={showAch} onToggle={() => setShowAch((open) => !open)} />
     </main>
   );
 }

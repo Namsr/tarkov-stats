@@ -1,29 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useI18n } from "@/lib/i18n/context";
 
 const LINK = "text-[var(--accent)] hover:underline";
 
-/** Floating "?" help button (bottom-right) that opens an FAQ accordion. */
+/** Global FAQ control with a safe, non-overlapping dialog on every route. */
 export default function FaqWidget() {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [openQ, setOpenQ] = useState<number | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
@@ -101,45 +95,49 @@ export default function FaqWidget() {
   ];
 
   return (
-    <div ref={ref} className="fixed bottom-4 right-4 z-50">
+    <>
       {open && (
-        <div
-          role="dialog"
-          aria-label={t("faq.title")}
-          className="absolute bottom-full right-0 mb-3 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-[var(--card-border)] bg-[var(--card-bg)] shadow-xl overflow-hidden"
-        >
-          <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-[var(--accent)]">
+        <div className="faq-backdrop" onMouseDown={() => setOpen(false)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("faq.title")}
+            className="faq-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--card-border)]">
+              <h2 className="section-heading text-base text-[var(--accent)]">
               {t("faq.title")}
-            </h2>
-            <button
-              onClick={() => setOpen(false)}
-              aria-label={t("common.close")}
-              className="text-gray-500 hover:text-gray-200 text-lg leading-none"
-            >
-              ✕
-            </button>
+              </h2>
+              <button
+                onClick={() => setOpen(false)}
+                aria-label={t("common.close")}
+                className="grid h-10 w-10 place-items-center rounded-full border border-[var(--card-border)] text-xl text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--foreground)]"
+              >
+                ✕
+              </button>
+            </div>
+            <ul className="max-h-[70vh] overflow-y-auto py-1">
+              {items.map((item, i) => {
+                const on = openQ === i;
+                return (
+                  <li key={i} className="border-b border-[var(--card-border)]/70 last:border-0">
+                    <button
+                      onClick={() => setOpenQ(on ? null : i)}
+                      aria-expanded={on}
+                      className="w-full flex items-start gap-3 text-left px-5 py-4 text-sm text-[var(--muted-strong)] hover:text-[var(--foreground)] transition-colors"
+                    >
+                      <span className={`text-[var(--accent)] mt-0.5 transition-transform ${on ? "rotate-90" : ""}`}>▸</span>
+                      <span className="flex-1">{item.q}</span>
+                    </button>
+                    {on && (
+                      <div className="px-5 pb-4 pl-10 text-sm text-[var(--muted)] leading-relaxed">{item.a}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
-          <ul className="max-h-[70vh] overflow-y-auto py-1">
-            {items.map((item, i) => {
-              const on = openQ === i;
-              return (
-                <li key={i} className="border-b border-[var(--card-border)]/40 last:border-0">
-                  <button
-                    onClick={() => setOpenQ(on ? null : i)}
-                    aria-expanded={on}
-                    className="w-full flex items-start gap-2 text-left px-4 py-2.5 text-sm text-gray-200 hover:text-[var(--accent)] transition-colors"
-                  >
-                    <span className={`text-gray-500 mt-0.5 transition-transform ${on ? "rotate-90" : ""}`}>▸</span>
-                    <span className="flex-1">{item.q}</span>
-                  </button>
-                  {on && (
-                    <div className="px-4 pb-3 pl-9 text-sm text-gray-400 leading-relaxed">{item.a}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
         </div>
       )}
 
@@ -147,10 +145,10 @@ export default function FaqWidget() {
         onClick={() => setOpen((o) => !o)}
         aria-label={t("faq.ariaOpen")}
         aria-expanded={open}
-        className="w-11 h-11 rounded-full bg-[var(--accent)] text-[var(--background)] text-xl font-bold shadow-lg hover:bg-[var(--accent-dim)] transition-colors flex items-center justify-center"
+        className="faq-trigger"
       >
-        ?
+        {t("faq.title")}
       </button>
-    </div>
+    </>
   );
 }

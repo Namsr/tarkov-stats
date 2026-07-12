@@ -28,7 +28,7 @@ export default function RefreshButton({
       target="_blank"
       rel="noopener noreferrer"
       title={t("player.refreshHint")}
-      className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-[var(--card-border)] text-gray-400 hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors ${className}`}
+      className={`ghost-button flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
     >
       <span aria-hidden>⟳</span>
       <span className="hidden sm:inline">{t("player.refresh")}</span>

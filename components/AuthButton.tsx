@@ -32,14 +32,14 @@ export default function AuthButton() {
   }
 
   if (loading) {
-    return <div className="h-8 w-20 skeleton rounded" aria-hidden />;
+    return <div className="h-10 w-24 skeleton rounded-full" aria-hidden />;
   }
 
   if (!user) {
     return (
       <a
         href="/api/auth/google"
-        className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[var(--card-bg)] border border-[var(--card-border)] rounded hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+        className="tactical-control gap-2"
       >
         <GoogleIcon />
         {t("auth.signIn")}
@@ -57,7 +57,7 @@ export default function AuthButton() {
         href={onProfile ? "/" : "/profile"}
         title={t("nav.profile")}
         aria-current={onProfile ? "page" : undefined}
-        className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+        className="flex items-center gap-2 hover:opacity-80 transition-opacity min-w-0"
       >
         {user.picture ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -73,7 +73,7 @@ export default function AuthButton() {
           />
         ) : (
           <div
-            className={`h-7 w-7 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold ${
+          className={`h-8 w-8 rounded-full bg-[var(--accent)] text-[var(--background)] flex items-center justify-center text-sm font-bold ${
               onProfile ? "ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-[var(--background)]" : ""
             }`}
           >
@@ -81,7 +81,7 @@ export default function AuthButton() {
           </div>
         )}
         <span
-          className={`text-sm hidden sm:inline max-w-32 truncate ${
+          className={`text-sm hidden lg:inline max-w-32 truncate ${
             onProfile ? "text-[var(--accent)]" : "text-gray-300"
           }`}
         >
@@ -91,7 +91,7 @@ export default function AuthButton() {
       <button
         onClick={logout}
         disabled={loggingOut}
-        className="text-xs text-gray-500 hover:text-[var(--danger)] transition-colors disabled:opacity-50"
+        className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition-colors disabled:opacity-50"
       >
         {loggingOut ? "..." : t("auth.logout")}
       </button>

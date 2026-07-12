@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
-import Link from "next/link";
-import AuthButton from "@/components/AuthButton";
-import AverageNavButton from "@/components/AverageNavButton";
-import LanguageToggle from "@/components/LanguageToggle";
+import SiteHeader from "@/components/SiteHeader";
 import FaqWidget from "@/components/FaqWidget";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
@@ -45,16 +42,7 @@ export default async function RootLayout({
       >
         <LanguageProvider initialLang={lang}>
           <FavoritesProvider>
-            <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--card-border)]">
-              <Link href="/" className="font-bold tracking-tight text-[var(--accent)]">
-                TARKOV STATS
-              </Link>
-              <div className="flex items-center gap-3">
-                <AverageNavButton />
-                <AuthButton />
-                <LanguageToggle />
-              </div>
-            </header>
+            <SiteHeader />
             {children}
             <FaqWidget />
           </FavoritesProvider>

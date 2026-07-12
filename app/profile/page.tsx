@@ -44,7 +44,6 @@ export default function ProfilePage() {
   useEffect(() => {
     // Fetch-on-condition once the session resolves. On a full page reload (F5) we
     // force-bypass the cache so favorites reflect a just-refreshed tarkov.dev cache.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (enabled && favorites.length > 0) loadStats(isReload());
     // Intentionally keyed on `enabled` only — otherwise re-fetching is via reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -53,11 +52,11 @@ export default function ProfilePage() {
   // Session still resolving.
   if (loading) {
     return (
-      <main className="flex-1 px-4 py-8 max-w-3xl mx-auto w-full">
+      <main className="page-frame max-w-3xl">
         <div className="h-8 w-40 skeleton rounded mb-6" />
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-16 skeleton rounded-lg" />
+            <div key={i} className="h-20 skeleton rounded-xl" />
           ))}
         </div>
       </main>
@@ -67,18 +66,21 @@ export default function ProfilePage() {
   // Signed out.
   if (!enabled) {
     return (
-      <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4 text-center">
-        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("profile.title")}</h1>
-        <p className="text-sm text-gray-400 max-w-sm">{t("profile.signInPrompt")}</p>
+      <main className="home-hero">
+        <div className="home-command text-center">
+        <p className="page-kicker">{t("nav.profile")}</p>
+        <h1 className="home-command__title text-[clamp(2.7rem,10vw,5.4rem)]">{t("profile.title")}</h1>
+        <p className="home-command__description">{t("profile.signInPrompt")}</p>
         <a
           href="/api/auth/google"
-          className="flex items-center gap-2 px-4 py-2 text-sm bg-[var(--card-bg)] border border-[var(--card-border)] rounded hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+          className="tactical-button mt-7"
         >
           {t("auth.signIn")}
         </a>
-        <Link href="/" className="text-sm text-gray-500 hover:text-[var(--accent)]">
+        <Link href="/" className="block mt-5 text-sm text-[var(--muted)] hover:text-[var(--foreground)]">
           {t("common.back")}
         </Link>
+        </div>
       </main>
     );
   }
@@ -87,47 +89,48 @@ export default function ProfilePage() {
   const mainStats = main ? statsByAid.get(main.aid) ?? null : null;
 
   return (
-    <main className="flex-1 px-4 py-8 max-w-3xl mx-auto w-full space-y-8">
+    <main className="page-frame max-w-5xl space-y-10">
       <div>
         <Link
           href="/"
-          className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+          className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-7 inline-block"
         >
           {t("common.back")}
         </Link>
-        <h1 className="text-2xl font-bold text-[var(--accent)]">{t("profile.title")}</h1>
+        <p className="page-kicker">{t("nav.profile")}</p>
+        <h1 className="page-title">{t("profile.title")}</h1>
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}
 
       {favorites.length === 0 ? (
-        <div className="text-center py-12">
-          <p className="text-gray-400">{t("profile.empty")}</p>
-          <p className="text-sm text-gray-600 mt-1">{t("profile.emptyHint")}</p>
-          <Link href="/" className="inline-block mt-4 text-[var(--accent)] hover:underline">
+        <div className="surface text-center py-14 px-5">
+          <p className="text-[var(--muted-strong)]">{t("profile.empty")}</p>
+          <p className="text-sm text-[var(--muted)] mt-2">{t("profile.emptyHint")}</p>
+          <Link href="/" className="inline-block mt-6 text-[var(--accent)] hover:underline underline-offset-4">
             {t("common.back")}
           </Link>
         </div>
       ) : (
         <>
           {main && (
-            <section className="space-y-3">
+            <section className="surface p-5 sm:p-6 space-y-5">
               <div className="flex items-center justify-between">
-                <h2 className="text-sm uppercase tracking-wider text-gray-500">
+                <h2 className="section-heading text-base">
                   {t("profile.mainHeading")}
                 </h2>
                 <Link
                   href={`/player/${main.aid}`}
-                  className="text-sm text-[var(--accent)] hover:underline"
+                  className="ghost-button !min-h-9 !px-3 !py-2 text-xs text-[var(--accent)]"
                 >
                   {t("profile.open")}
                 </Link>
               </div>
-              <div className="text-xl font-bold text-[var(--accent)]">
+              <div className="font-[var(--heading-font)] text-3xl font-extrabold tracking-wide text-[var(--foreground)]">
                 {mainStats?.nickname || main.nickname || `#${main.aid}`}
               </div>
               {mainStats ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="detail-grid detail-grid--compact">
                   <StatCard label={t("player.hoursPlayed")} value={Math.round(mainStats.hoursPlayed).toLocaleString()} />
                   <StatCard label={t("player.level")} value={mainStats.level} />
                   <StatCard label={t("player.survivalRate")} value={String(mainStats.survivalRate)} suffix="%" />
@@ -136,7 +139,7 @@ export default function ProfilePage() {
                   <StatCard label={t("player.totalKills")} value={mainStats.totalKills.toLocaleString()} />
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-[var(--muted)]">
                   {statsLoading ? t("common.loading") : t("profile.statsUnavailable")}
                 </p>
               )}
@@ -145,12 +148,12 @@ export default function ProfilePage() {
 
           <FavoritesList statsByAid={statsByAid} statsLoading={statsLoading} />
 
-          <section className="space-y-3">
+          <section className="data-panel p-5 sm:p-6 space-y-4">
             <div>
-              <h2 className="text-sm uppercase tracking-wider text-gray-500">
+              <h2 className="section-heading text-base">
                 {t("profile.compareHeading")}
               </h2>
-              <p className="text-xs text-gray-600 mt-1">{t("profile.compareHint")}</p>
+              <p className="text-sm text-[var(--muted)] mt-2">{t("profile.compareHint")}</p>
             </div>
             <FavoritesCompare favorites={favorites} statsByAid={statsByAid} />
           </section>

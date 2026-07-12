@@ -3,12 +3,12 @@
 // signals drove it. This is a statistical SUSPICION score, not proof — see the
 // disclaimer rendered in the UI.
 //
-// Numeric signals are suspicious only when HIGH. Each combines two evidence axes
-// (max of the two): an absolute ramp [normal..extreme] (a day-1 floor, also used
-// when the playtime bracket is too thin for a z-score) and a within-bracket
-// z-score (vs players of SIMILAR playtime, so a veteran is judged against
-// veterans). A separate achievement signal flags owning a rare, normally-late
-// achievement at low playtime (e.g. "Master of ULTRA" at 100 h).
+// Numeric signals are suspicious only when HIGH. Combat metrics combine two
+// evidence axes (max of the two): an absolute ramp [normal..extreme] and a
+// within-bracket z-score (vs players of SIMILAR playtime). Prestige uses its
+// progression pace instead. A separate achievement signal flags owning a rare,
+// normally-late achievement well before the typical owner playtime, and a bounded
+// compound bonus represents several independent extreme signals occurring at once.
 
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
@@ -35,7 +35,7 @@ export interface AchievementStat {
   samplePct: number;
   /** Typical current playtime (hours) of owners — proxy for "normally held by". */
   meanHours: number;
-  /** Lower-percentile owner playtime used as the early-unlock suspicion threshold. */
+  /** Lower-percentile owner playtime used as the early-owner anchor. */
   earlyHours: number;
 }
 
@@ -73,27 +73,52 @@ interface SignalDef {
   normal: number;
   extreme: number;
   get: (s: ParsedPlayerStats) => number;
+  /** Optional contextual absolute score (for example, prestige per hour). */
+  absolute?: (s: ParsedPlayerStats, value: number) => number;
 }
 
-// Numeric signals (weights sum with ACH_WEIGHT to 1.0). PMC-ONLY by design: Scav
-// raids (easy, high-survival, often run-throughs) are excluded so they can neither
-// mask nor fake cheating. The combined K/D and the single PMC-vs-PMC K/D collapse
-// into one PMC K/D signal here. Keys must match SCORE_COLS in lib/db.ts (the
-// within-bracket z-score baseline reads those columns).
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+// Prestige is only suspicious in context. One early prestige is weak evidence;
+// several prestiges at a pace far faster than roughly one per 650 account-hours
+// are much harder to explain. At four or more prestiges the pace has full
+// confidence; prestige 1 deliberately contributes nothing by itself.
+function prestigeProgressionSub(s: ParsedPlayerStats): number {
+  if (!(s.hoursPlayed > 0) || s.prestige < 2) return 0;
+  const hoursPerPrestige = s.hoursPlayed / s.prestige;
+  const pace = clamp01((650 - hoursPerPrestige) / (650 - 300));
+  const confidence = clamp01((s.prestige - 1) / 3);
+  return pace * confidence;
+}
+
+// Numeric signals (weights sum with ACH_WEIGHT to 1.0). Combat signals are
+// PMC-only by design: Scav raids (easy, high-survival, often run-throughs) are
+// excluded so they can neither mask nor fake cheating. The contextual prestige
+// signal is absolute-only; the other keys match SCORE_COLS in lib/db.ts for
+// within-playtime-bracket z-scores.
 const SIGNALS: SignalDef[] = [
-  { key: "pmc_survival_rate", weight: 0.2, normal: 55, extreme: 88, get: (s) => s.pmcSurvivalRate },
-  { key: "pmc_kd_ratio", weight: 0.24, normal: 4, extreme: 12, get: (s) => s.pmcKdRatio },
-  { key: "pmc_kills_per_raid", weight: 0.16, normal: 3, extreme: 8, get: (s) => s.pmcKillsPerRaid },
-  { key: "longest_win_streak", weight: 0.1, normal: 15, extreme: 45, get: (s) => s.longestWinStreak },
+  { key: "pmc_survival_rate", weight: 0.12, normal: 55, extreme: 88, get: (s) => s.pmcSurvivalRate },
+  { key: "pmc_kd_ratio", weight: 0.3, normal: 4, extreme: 8, get: (s) => s.pmcKdRatio },
+  { key: "pmc_kills_per_raid", weight: 0.08, normal: 3, extreme: 8, get: (s) => s.pmcKillsPerRaid },
+  { key: "longest_win_streak", weight: 0.1, normal: 15, extreme: 60, get: (s) => s.longestWinStreak },
+  {
+    key: "prestige",
+    weight: 0.22,
+    normal: 0,
+    extreme: 1,
+    get: (s) => s.prestige,
+    absolute: (s) => prestigeProgressionSub(s),
+  },
 ];
 
-// Achievement signal — weighted highest: owning a rare, normally-late achievement
-// at low playtime is hard to fake and a strong tell.
-const ACH_WEIGHT = 0.3;
+// A rare, normally-late achievement at low playtime is a strong progression tell.
+const ACH_WEIGHT = 0.18;
 const ACH_MIN_OWNERS = 10; // enough owners for a trustworthy baseline
 const ACH_LATE_GAME_HOURS = 200; // only achievements that normally take real time
 const ACH_RARE_LO = 3; // samplePct ≤ this → fully "rare"
 const ACH_RARE_HI = 30; // samplePct ≥ this → not rare
+const COMPOUND_MAX_POINTS = 15;
+const COMPOUND_START = 0.6;
 
 // Event achievements: obtainable ONLY during past, time-limited events. A long-dormant
 // account that earned one years ago looks anomalous next to same-playtime-bracket peers
@@ -129,8 +154,6 @@ const MIN_SAMPLE = 30; // bracket players needed before z-scores are trusted
 const Z_LO = 2; // z at which a metric starts contributing
 const Z_HI = 6; // z at which it's maximally suspicious
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
-
 function tierFor(score: number): RiskTier {
   if (score < 20) return "low";
   if (score < 45) return "medium";
@@ -138,9 +161,12 @@ function tierFor(score: number): RiskTier {
   return "severe";
 }
 
-// Strongest "rare achievement owned far too early" contribution among owned ones.
-// earliness = how far the player's hours sit below the achievement's typical owner
-// hours; rarity scales it up for uncommon achievements.
+// Strongest "rare achievement owned far earlier than typical" contribution. The
+// old model only scored players below the owners' 20th-percentile hours; that made
+// a 1,269 h player score zero for achievements whose owners average 4,000–6,700 h
+// whenever a few very-low-hour owners pulled that percentile down. We now score
+// the whole interval from the early-owner anchor to the mean, reaching 1 at or
+// below the early anchor and 0 at the mean. Rarity still scales the result.
 function achievementSub(playerHours: number, ach: AchievementInput | null | undefined): number {
   if (!ach || !(playerHours > 0)) return 0;
   const owned = new Set(ach.ownedIds);
@@ -148,9 +174,15 @@ function achievementSub(playerHours: number, ach: AchievementInput | null | unde
   for (const a of ach.stats) {
     if (!owned.has(a.id)) continue;
     if (EVENT_ACHIEVEMENT_IDS.has(a.id)) continue; // event-only — collected, but never scored
-    const earlyHours = Number.isFinite(a.earlyHours) && a.earlyHours > 0 ? a.earlyHours : a.meanHours;
-    if (a.owners < ACH_MIN_OWNERS || a.samplePct >= ACH_RARE_HI || earlyHours < ACH_LATE_GAME_HOURS) continue;
-    const earliness = clamp01((earlyHours - playerHours) / earlyHours);
+    const meanHours = Number.isFinite(a.meanHours) && a.meanHours > 0 ? a.meanHours : 0;
+    if (a.owners < ACH_MIN_OWNERS || a.samplePct >= ACH_RARE_HI || meanHours < ACH_LATE_GAME_HOURS) continue;
+    if (playerHours >= meanHours) continue;
+    const rawEarlyHours = Number.isFinite(a.earlyHours) && a.earlyHours > 0 ? a.earlyHours : meanHours;
+    const earlyHours = Math.min(rawEarlyHours, meanHours);
+    // Keep a useful ramp even when a small/tight sample puts the two anchors
+    // nearly together; the value still cannot exceed the rarity-scaled cap.
+    const progressionSpan = Math.max(meanHours - earlyHours, meanHours * 0.25);
+    const earliness = clamp01((meanHours - playerHours) / progressionSpan);
     if (earliness <= 0) continue;
     const rarity = clamp01((ACH_RARE_HI - a.samplePct) / (ACH_RARE_HI - ACH_RARE_LO));
     if (rarity <= 0) continue;
@@ -170,7 +202,9 @@ export function scoreCheater(
 
   const factors: ScoreFactor[] = SIGNALS.map((sig) => {
     const value = sig.get(stats);
-    const abs = clamp01((value - sig.normal) / (sig.extreme - sig.normal));
+    const abs = sig.absolute
+      ? clamp01(sig.absolute(stats, value))
+      : clamp01((value - sig.normal) / (sig.extreme - sig.normal));
 
     let z: number | null = null;
     let rel = 0;
@@ -192,7 +226,30 @@ export function scoreCheater(
   const aSub = achievementSub(stats.hoursPlayed, achievements);
   factors.push({ key: "ach_early", points: ACH_WEIGHT * aSub * 100, value: aSub, z: null });
 
-  const score = Math.round(factors.reduce((s, f) => s + f.points, 0));
+  // Independent extreme signals reinforce one another. Add a bounded compound
+  // bonus only when at least three signals are already strong, so one flashy stat
+  // cannot produce a severe score on its own.
+  const strengths = factors
+    .map((f) => {
+      const weight = f.key === "ach_early" ? ACH_WEIGHT : SIGNALS.find((s) => s.key === f.key)?.weight;
+      return weight ? clamp01(f.points / (weight * 100)) : 0;
+    })
+    .sort((a, b) => b - a);
+  const thirdStrongest = strengths[2] ?? 0;
+  const compoundSub = clamp01((thirdStrongest - COMPOUND_START) / (1 - COMPOUND_START));
+  const basePoints = factors.reduce((sum, factor) => sum + factor.points, 0);
+  const compoundPoints = Math.min(
+    COMPOUND_MAX_POINTS * compoundSub,
+    Math.max(0, 100 - basePoints)
+  );
+  factors.push({
+    key: "compound_anomaly",
+    points: compoundPoints,
+    value: thirdStrongest,
+    z: null,
+  });
+
+  const score = Math.min(100, Math.round(factors.reduce((s, f) => s + f.points, 0)));
   factors.sort((a, b) => b.points - a.points);
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
 }

@@ -14,10 +14,10 @@ export default function AverageNavButton() {
   const { t } = useI18n();
   const active = pathname === "/average";
 
-  const base = "px-3 py-1.5 text-sm rounded border transition-colors";
+  const base = "tactical-nav-link";
   const className = active
-    ? `${base} bg-[var(--accent)]/15 border-[var(--accent)] text-[var(--accent)] font-medium`
-    : `${base} bg-[var(--input-bg)] border-[var(--card-border)] text-gray-300 hover:text-[var(--accent)] hover:border-[var(--accent)]`;
+    ? `${base} is-active`
+    : base;
 
   return (
     <Link href={active ? "/" : "/average"} className={className}>

@@ -11,7 +11,7 @@ export default function LanguageToggle() {
     <div
       role="group"
       aria-label="Language"
-      className="flex items-center rounded border border-[var(--card-border)] overflow-hidden text-xs"
+      className="flex items-center rounded-full border border-[var(--card-border)] overflow-hidden text-xs min-h-10"
     >
       {LANGS.map((l) => {
         const active = l === lang;
@@ -21,10 +21,10 @@ export default function LanguageToggle() {
             type="button"
             onClick={() => setLang(l)}
             aria-pressed={active}
-            className={`px-2 py-1.5 font-semibold uppercase transition-colors ${
+            className={`h-10 min-w-10 px-2 font-semibold uppercase transition-colors ${
               active
                 ? "bg-[var(--accent)] text-[var(--background)]"
-                : "text-gray-400 hover:text-[var(--accent)]"
+                : "text-[var(--muted)] hover:text-[var(--foreground)]"
             }`}
           >
             {l}

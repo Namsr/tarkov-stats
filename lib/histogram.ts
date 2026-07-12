@@ -1,6 +1,6 @@
 // Converts the API's fixed buckets into adaptive display bins. The chart can
-// consume both the legacy playtime bracket keys and dimension-independent
-// numeric buckets used for playtime and PMC raids.
+// consume both legacy playtime bracket keys and dimension-independent numeric
+// buckets used for playtime and PMC raids.
 
 import type { BracketAgg } from "@/lib/db";
 import { abbrevThousands } from "@/lib/metrics";
@@ -21,11 +21,14 @@ export interface HistBin {
   hi: number | null;
   n: number;
   sum: number;
+  /** Optional server-computed average retained for API compatibility. */
+  avg?: number | null;
   label: string;
 }
 
 const MIN_BIN_COUNT = 5;
-const MAX_BINS = 36;
+/** Hard cap on bars so the chart remains readable. */
+export const MAX_HISTOGRAM_BINS = 36;
 
 function parseKey(key: string): { lo: number; hi: number | null } {
   if (key.endsWith("+")) return { lo: Number(key.slice(0, -1)), hi: null };
@@ -62,6 +65,7 @@ function mergeToThreshold(cells: Cell[], minCount: number): HistBin[] {
     }
   }
 
+  // Fold a sub-threshold remainder into the previous bar.
   if (n > 0) {
     const last = bins[bins.length - 1];
     if (last) {
@@ -92,8 +96,8 @@ function build(cells: Cell[], maxBins: number): HistBin[] {
   if (sorted.length === 0) return [];
 
   const cap = Number.isFinite(maxBins)
-    ? Math.max(1, Math.min(MAX_BINS, Math.floor(maxBins)))
-    : MAX_BINS;
+    ? Math.max(1, Math.min(MAX_HISTOGRAM_BINS, Math.floor(maxBins)))
+    : MAX_HISTOGRAM_BINS;
   let minCount = MIN_BIN_COUNT;
   let bins = mergeToThreshold(sorted, minCount);
   while (bins.length > cap && bins.length > 1) {
@@ -103,14 +107,24 @@ function build(cells: Cell[], maxBins: number): HistBin[] {
   return bins;
 }
 
-export function buildHistogram(aggs: BracketAgg[], maxBins: number = MAX_BINS): HistBin[] {
+export function buildHistogram(
+  aggs: BracketAgg[],
+  maxBins: number = MAX_HISTOGRAM_BINS,
+): HistBin[] {
   return build(
-    aggs.map((bucket) => ({ ...parseKey(bucket.bracket_key), n: bucket.n, sum: bucket.sum })),
+    aggs.map((bucket) => ({
+      ...parseKey(bucket.bracket_key),
+      n: bucket.n,
+      sum: bucket.sum,
+    })),
     maxBins,
   );
 }
 
-export function buildNumericHistogram(aggs: BucketAgg[], maxBins: number = MAX_BINS): HistBin[] {
+export function buildNumericHistogram(
+  aggs: BucketAgg[],
+  maxBins: number = MAX_HISTOGRAM_BINS,
+): HistBin[] {
   return build(
     aggs.map((bucket) => ({
       lo: Number(bucket.lo),

@@ -71,7 +71,6 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // Fetch-on-mount: load favorites (and learn whether the user is signed in).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
   }, [refresh]);
 

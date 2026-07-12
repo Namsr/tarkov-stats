@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
+CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
 -- A small local tombstone makes removal durable even though the full ban data
 -- lives in a separate database. It also closes the check-then-insert race.
@@ -43,6 +44,20 @@ CREATE TABLE IF NOT EXISTS favorites (
   PRIMARY KEY (user_sub, aid)
 );
 CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_sub);
+
+-- Local snapshot of players.tarkov.dev/profile/index.json. This table is a
+-- nickname directory only; profile statistics are still loaded on demand.
+CREATE TABLE IF NOT EXISTS player_index (
+  aid INTEGER PRIMARY KEY,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_player_index_nickname_lower ON player_index(nickname_lower);
+CREATE TABLE IF NOT EXISTS player_index_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 const COLS = [
@@ -207,6 +222,29 @@ function metricAvgSql(column: string, where: string, trim: boolean): string {
   return (
     `SELECT AVG(v) AS a FROM ` +
     `(SELECT ${column} AS v FROM players ${where} ORDER BY ${column} LIMIT ? OFFSET ?)`
+  );
+}
+
+// Self-contained trimmed mean for a single playtime range. Unlike
+// metricAvgSql(), this query derives n inside the same statement, which keeps
+// the trim window consistent even while the background importer is adding
+// players. It is used for the final, already-pooled histogram bins.
+function histogramAvgSql(column: string, where: string): string {
+  if (!AVG_COLS.includes(column) || !/^[a-z_]+$/.test(column)) {
+    throw new Error(`invalid metric column: ${column}`);
+  }
+  return (
+    `WITH ranked AS (` +
+    `SELECT COALESCE(${column}, 0) AS v, ` +
+    `ROW_NUMBER() OVER (ORDER BY COALESCE(${column}, 0)) AS rn, ` +
+    `COUNT(*) OVER () AS n ` +
+    `FROM players ${where}` +
+    `), trimmed AS (` +
+    `SELECT v, rn, n, ` +
+    `CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END AS off ` +
+    `FROM ranked` +
+    `) ` +
+    `SELECT AVG(v) AS a FROM trimmed WHERE rn > off AND rn <= n - off`
   );
 }
 
@@ -433,6 +471,13 @@ export interface CohortResult {
   averages: Record<RadarMetric, CohortMetric>;
 }
 
+export interface HistogramRange {
+  /** Inclusive lower playtime bound. */
+  lo: number;
+  /** Exclusive upper playtime bound; null means open-ended. */
+  hi: number | null;
+}
+
 /** Playtime baseline for a single achievement across the whole sample. */
 export interface AchievementStat {
   /** Achievement id (matches tarkov.dev achievement ids). */
@@ -483,6 +528,12 @@ export interface PlayerStore {
   /** Adaptive comparison group around one player's playtime or PMC raid count. */
   cohort(dimension: RangeDimension, center: number, excludeAid: number): Promise<CohortResult>;
   /**
+   * Trimmed mean of one metric for each final display range. The range count is
+   * derived inside each SQL statement so concurrent imports cannot skew which
+   * rows are trimmed.
+   */
+  histogramAverages(column: string, ranges: readonly HistogramRange[]): Promise<(number | null)[]>;
+  /**
    * Per-achievement playtime baseline over the whole sample: owner count plus
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
    */
@@ -492,6 +543,16 @@ export interface PlayerStore {
    * z-scores behind the cheating-risk score.
    */
   baseline(minHours: number | null, maxHours: number | null): Promise<BaselineResult>;
+}
+
+export interface PlayerIndexResult {
+  aid: number;
+  name: string;
+}
+
+export interface PlayerIndexStore {
+  isReady(): Promise<boolean>;
+  search(nickname: string, limit: number): Promise<PlayerIndexResult[]>;
 }
 
 let warned = false;
@@ -642,6 +703,18 @@ async function d1Store(): Promise<PlayerStore | null> {
           reason: null,
           averages,
         };
+      },
+      async histogramAverages(column, ranges) {
+        if (ranges.length === 0) return [];
+        const statements = ranges.map((range) => {
+          const { where, params } = legacyHoursRangeClause(range.lo, range.hi);
+          return db.prepare(histogramAvgSql(column, where)).bind(...params);
+        });
+        const results = await db.batch(statements);
+        return results.map((result: { results?: { a: number | null }[] }) => {
+          const value = result.results?.[0]?.a;
+          return value == null ? null : Number(value);
+        });
       },
       async achievementBaseline() {
         const totalRow = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
@@ -826,6 +899,15 @@ async function sqliteStore(): Promise<PlayerStore | null> {
           averages,
         };
       },
+      async histogramAverages(column, ranges) {
+        return ranges.map((range) => {
+          const { where, params } = legacyHoursRangeClause(range.lo, range.hi);
+          const row = db.prepare(histogramAvgSql(column, where)).get(...params) as
+            | { a: number | null }
+            | undefined;
+          return row?.a == null ? null : Number(row.a);
+        });
+      },
       async achievementBaseline() {
         const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
         const rows = db.prepare(ACH_BASELINE_SQL).all() as {
@@ -848,6 +930,100 @@ async function sqliteStore(): Promise<PlayerStore | null> {
 /** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
 export async function getStore(): Promise<PlayerStore | null> {
   return (await d1Store()) ?? (await sqliteStore());
+}
+
+function normalizeNickname(s: string): string {
+  return s.trim().toLowerCase();
+}
+
+function toIndexResults(rows: { aid: number; name: string }[]): PlayerIndexResult[] {
+  return rows.map((row) => ({ aid: Number(row.aid), name: String(row.name) }));
+}
+
+function pushUniqueIndexResults(
+  out: PlayerIndexResult[],
+  seen: Set<number>,
+  rows: PlayerIndexResult[],
+  limit: number
+) {
+  for (const row of rows) {
+    if (seen.has(row.aid)) continue;
+    seen.add(row.aid);
+    out.push(row);
+    if (out.length >= limit) break;
+  }
+}
+
+const INDEX_READY_SQL = "SELECT value FROM player_index_meta WHERE key = 'synced_at'";
+const INDEX_EXACT_SQL =
+  "SELECT aid, nickname AS name FROM player_index WHERE nickname_lower = ? ORDER BY aid LIMIT ?";
+const INDEX_PREFIX_SQL =
+  "SELECT aid, nickname AS name FROM player_index " +
+  "WHERE nickname_lower >= ? AND nickname_lower < ? " +
+  "ORDER BY nickname_lower, aid LIMIT ?";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function d1PlayerIndexStore(db: any): PlayerIndexStore {
+  return {
+    async isReady() {
+      return Boolean(await db.prepare(INDEX_READY_SQL).first());
+    },
+    async search(nickname, limit) {
+      const q = normalizeNickname(nickname);
+      const exact = await db.prepare(INDEX_EXACT_SQL).bind(q, limit).all();
+      const prefix = await db.prepare(INDEX_PREFIX_SQL).bind(q, `${q}\uffff`, limit * 2).all();
+      const out: PlayerIndexResult[] = [];
+      const seen = new Set<number>();
+      pushUniqueIndexResults(
+        out,
+        seen,
+        toIndexResults((exact.results ?? []) as { aid: number; name: string }[]),
+        limit
+      );
+      pushUniqueIndexResults(
+        out,
+        seen,
+        toIndexResults((prefix.results ?? []) as { aid: number; name: string }[]),
+        limit
+      );
+      return out;
+    },
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sqlitePlayerIndexStore(db: any): PlayerIndexStore {
+  return {
+    async isReady() {
+      return Boolean(db.prepare(INDEX_READY_SQL).get());
+    },
+    async search(nickname, limit) {
+      const q = normalizeNickname(nickname);
+      const exact = toIndexResults(
+        db.prepare(INDEX_EXACT_SQL).all(q, limit) as { aid: number; name: string }[]
+      );
+      const prefix = toIndexResults(
+        db.prepare(INDEX_PREFIX_SQL).all(q, `${q}\uffff`, limit * 2) as {
+          aid: number;
+          name: string;
+        }[]
+      );
+      const out: PlayerIndexResult[] = [];
+      const seen = new Set<number>();
+      pushUniqueIndexResults(out, seen, exact, limit);
+      pushUniqueIndexResults(out, seen, prefix, limit);
+      return out;
+    },
+  };
+}
+
+/** Returns the synced public nickname index, or null if no DB backend exists. */
+export async function getPlayerIndexStore(): Promise<PlayerIndexStore | null> {
+  const d1 = await getD1();
+  if (d1) return d1PlayerIndexStore(d1);
+  const sqlite = await getSqliteDb();
+  if (sqlite) return sqlitePlayerIndexStore(sqlite);
+  return null;
 }
 
 // ── Favorites: game accounts a signed-in user has pinned ──────────────────────

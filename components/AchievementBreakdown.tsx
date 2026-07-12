@@ -41,7 +41,7 @@ function fmtPct(v: number): string {
 function rarityClass(rarity: string): string {
   switch (rarity.toLowerCase()) {
     case "legendary":
-      return "text-amber-400";
+      return "text-[var(--foreground)]";
     case "rare":
       return "text-sky-400";
     default:
@@ -109,15 +109,15 @@ export default function AchievementBreakdown({
       <button
         onClick={onToggle}
         aria-expanded={open}
-        className="flex items-center gap-2 text-sm uppercase tracking-wider text-gray-400 hover:text-[var(--accent)] transition-colors"
+        className="ghost-button flex gap-2"
       >
         <span className={`text-gray-500 transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
         {t("achv.toggle")}
       </button>
 
       {open && (
-        <div className="mt-3 bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
-          <p className="text-xs text-gray-600 mb-4">
+        <div className="data-panel mt-3 p-5">
+          <p className="text-sm text-[var(--muted)] mb-5">
             {t("achv.desc.before")}{" "}
             <span className="text-gray-400">{t("achv.desc.highlight")}</span>{" "}
             {t("achv.desc.after")}
@@ -128,7 +128,7 @@ export default function AchievementBreakdown({
           ) : loading || !data ? (
             <div className="space-y-2">
               {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="h-8 skeleton rounded" />
+                <div key={i} className="h-8 skeleton rounded-lg" />
               ))}
             </div>
           ) : data.achievements.length === 0 ? (
@@ -143,7 +143,7 @@ export default function AchievementBreakdown({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder={t("achv.filterPlaceholder")}
-                  className="flex-1 min-w-[140px] px-3 py-1.5 bg-[var(--input-bg)] border border-[var(--card-border)] rounded text-sm focus:outline-none focus:border-[var(--accent)]"
+                  className="flex-1 min-w-[140px] min-h-11 px-3 bg-[var(--input-bg)] border border-[var(--card-border)] rounded-lg text-sm focus:outline-none focus:border-[var(--accent)]"
                 />
                 <div className="flex gap-1 text-xs">
                   {([

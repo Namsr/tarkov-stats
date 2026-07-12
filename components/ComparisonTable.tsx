@@ -26,32 +26,32 @@ interface ComparisonTableProps {
 export default function ComparisonTable({ nameA, nameB, rows }: ComparisonTableProps) {
   const { t } = useI18n();
   return (
-    <table className="w-full table-fixed border-collapse">
+    <table className="w-full table-fixed border-collapse text-sm">
       <thead>
-        <tr className="border-b border-[var(--card-border)] text-[11px] uppercase tracking-wider">
-          <th className="w-[30%] py-2 px-1.5 text-left text-gray-500">{t("cmp.metric")}</th>
+        <tr className="border-b border-[var(--card-border)] text-[10px] uppercase tracking-wider">
+          <th className="w-[30%] py-2.5 px-1.5 text-left text-[var(--muted)]">{t("cmp.metric")}</th>
           <th className="w-[19%] py-2 px-1.5 text-right text-[var(--accent)]">
             <span className="block truncate" title={nameA}>{nameA}</span>
           </th>
-          <th className="w-[19%] py-2 px-1.5 text-right text-gray-400">
+          <th className="w-[19%] py-2.5 px-1.5 text-right text-[var(--muted-strong)]">
             <span className="block truncate" title={nameB}>{nameB}</span>
           </th>
-          <th className="w-[32%] py-2 px-1.5 text-right text-gray-500" />
+          <th className="w-[32%] py-2.5 px-1.5 text-right text-[var(--muted)]" />
         </tr>
       </thead>
       <tbody>
         {rows.map((row) => (
           <tr key={row.label} className="border-b border-[var(--card-border)]/50">
-            <td className="py-2 px-1.5 text-sm text-gray-400 break-words">{row.label}</td>
-            <td className="py-2 px-1.5 text-right text-sm font-medium text-[var(--accent)] tabular-nums">
+            <td className="py-2.5 px-1.5 text-[var(--muted-strong)] break-words">{row.label}</td>
+            <td className="py-2.5 px-1.5 text-right font-medium text-[var(--accent)] tabular-nums">
               {fmt(row.valueA, row.decimals)}
               {row.suffix ?? ""}
             </td>
-            <td className="py-2 px-1.5 text-right text-sm text-gray-400 tabular-nums">
+            <td className="py-2.5 px-1.5 text-right text-[var(--muted-strong)] tabular-nums">
               {fmt(row.valueB, row.decimals)}
               {row.suffix ?? ""}
             </td>
-            <td className="py-2 px-1.5 text-right">
+            <td className="py-2.5 px-1.5 text-right">
               <PercentileBadge
                 playerValue={row.valueA}
                 medianValue={row.valueB}

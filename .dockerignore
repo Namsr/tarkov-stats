@@ -11,3 +11,12 @@ npm-debug.log*
 Dockerfile
 .dockerignore
 docker-compose.yml
+.codex-local
+backups
+data
+*.bak
+*.bak.*
+*.db
+*.db-*
+*.db.*
+*.log

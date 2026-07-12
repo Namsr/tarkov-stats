@@ -254,7 +254,6 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
       center: String(center),
       excludeAid: String(aid),
     });
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCohortLoading(true);
     setCohortError("");
     fetch(`/api/average/cohort?${params.toString()}`, { signal: controller.signal })
@@ -290,7 +289,6 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
       return;
     }
     const controller = new AbortController();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFavoriteLoading(true);
     setFavoriteError("");
     setFavoriteStats(null);

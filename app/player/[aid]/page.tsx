@@ -21,7 +21,8 @@ export default function PlayerPage({ params, searchParams }: Props) {
   const { t } = useI18n();
   const { aid } = use(params);
   const query = use(searchParams);
-  const radarDemo = process.env.NODE_ENV === "development" && query.radarDemo === "1";
+  const radarDemoParam = Array.isArray(query.radarDemo) ? query.radarDemo[0] : query.radarDemo;
+  const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,7 +31,6 @@ export default function PlayerPage({ params, searchParams }: Props) {
   useEffect(() => {
     let cancelled = false;
     // Reset the route-level request state whenever the account changes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError("");
 
@@ -92,111 +92,140 @@ export default function PlayerPage({ params, searchParams }: Props) {
     );
   }
 
-  const mainStats: { label: string; value: string | number; suffix?: string }[] = [
+  const coreStats: { label: string; value: string | number; suffix?: string }[] = [
     { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
-    { label: t("player.level"), value: stats.level },
-    { label: t("player.prestige"), value: stats.prestige },
+    { label: t("player.pmcKd"), value: stats.pmcKdRatio },
+    { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
+    { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
+  ];
+
+  const raidStats: { label: string; value: string | number; suffix?: string }[] = [
     { label: t("player.totalRaids"), value: stats.totalRaids },
     { label: t("player.pmcRaids"), value: stats.pmcRaids },
     { label: t("player.scavRaids"), value: stats.scavRaids },
-    { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
     { label: t("player.kdAll"), value: stats.kdRatio },
-    { label: t("player.pmcKd"), value: stats.pmcKdRatio },
     { label: t("player.totalKills"), value: stats.totalKills.toLocaleString() },
     { label: t("player.pmcKills"), value: stats.killedPmc.toLocaleString() },
-    { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
     { label: t("player.deaths"), value: stats.deaths.toLocaleString() },
     { label: t("player.runThroughs"), value: stats.runThrough },
     { label: t("player.outcome.killed"), value: stats.pmcExitKilled },
     { label: t("player.outcome.left"), value: stats.pmcExitLeft },
     { label: t("player.outcome.transit"), value: stats.pmcExitTransit },
     { label: t("player.winStreakPmc"), value: stats.longestWinStreak },
-    { label: t("player.achievements"), value: stats.achievementsCount },
-    { label: t("player.experience"), value: stats.experience.toLocaleString() },
   ];
   // MissingInAction is effectively retired in current wipes; surface it only when nonzero.
   if (stats.pmcExitMia > 0) {
-    mainStats.push({ label: t("player.outcome.mia"), value: stats.pmcExitMia });
+    raidStats.push({ label: t("player.outcome.mia"), value: stats.pmcExitMia });
   }
+
+  const progressionStats: { label: string; value: string | number; suffix?: string }[] = [
+    { label: t("player.level"), value: stats.level },
+    { label: t("player.prestige"), value: stats.prestige },
+    { label: t("player.achievements"), value: stats.achievementsCount },
+    { label: t("player.experience"), value: stats.experience.toLocaleString() },
+  ];
 
   const skills: SkillEntry[] = profile.skills?.Common ?? [];
   const ownedAchievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
 
   return (
-    <main className="flex-1 px-4 py-8 max-w-7xl mx-auto w-full">
+    <main className="page-frame">
       <Link
         href="/"
-        className="text-sm text-gray-500 hover:text-[var(--accent)] transition-colors mb-6 inline-block"
+        className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-8 inline-block"
       >
         {t("common.back")}
       </Link>
 
-      <div className="space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-[var(--accent)]">{stats.nickname}</h1>
-            <div className="flex flex-wrap gap-3 text-sm text-gray-500 mt-1">
+      <section className="surface p-5 sm:p-7">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <p className="page-kicker">#{aid}</p>
+            <h1 className="page-title break-words">{stats.nickname}</h1>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
               <span>{t("player.sideLabel", { side: stats.side })}</span>
-              {stats.prestige > 0 && (
-                <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
-              )}
-              <span>#{aid}</span>
+              {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <RefreshButton aid={Number(aid)} />
             <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
           </div>
         </div>
 
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-          <div className="flex-1">
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {mainStats.map((s) => (
-                <StatCard
-                  key={s.label}
-                  label={s.label}
-                  value={s.value}
-                  suffix={s.suffix}
-                />
+        <div className="detail-grid mt-7">
+          {coreStats.map((item) => (
+            <StatCard key={item.label} {...item} />
+          ))}
+        </div>
+      </section>
+
+      <div className="page-grid mt-5">
+        <div className="space-y-5">
+          <section>
+            <div className="mb-3 flex items-baseline justify-between gap-4">
+              <h2 className="section-heading">{t("player.raidStats")}</h2>
+              <span className="section-kicker">{t("player.coreStats")}</span>
+            </div>
+            <div className="data-ledger">
+              {raidStats.map((item) => (
+                <StatCard key={item.label} {...item} />
               ))}
             </div>
-          </div>
-          <div className="lg:w-96 shrink-0">
-            <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
-          </div>
+          </section>
+
+          <section>
+            <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+            <div className="detail-grid detail-grid--compact">
+              {progressionStats.map((item) => (
+                <StatCard key={item.label} {...item} />
+              ))}
+            </div>
+          </section>
         </div>
 
-        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
+        <aside>
+          <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
+        </aside>
+      </div>
 
-        {skills.length > 0 && (
-          <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4">
-            <h2 className="text-sm uppercase tracking-wider text-gray-500 mb-3">
-              {t("player.skills")}
-            </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+      <div className="mt-5">
+        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
+      </div>
+
+      {skills.length > 0 ? (
+        <div className="page-grid mt-5">
+          <section className="data-panel p-5">
+            <h2 className="section-heading text-base mb-4">{t("player.skills")}</h2>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 max-h-80 overflow-y-auto pr-1">
               {skills
                 .filter((s) => s.Progress > 0)
                 .sort((a, b) => b.Progress - a.Progress)
                 .map((skill) => (
                   <div
                     key={skill.Id}
-                    className="flex justify-between text-sm py-1 px-2 rounded bg-[var(--input-bg)]"
+                    className="flex min-w-0 justify-between gap-2 border-b border-[var(--card-border)] py-2 text-sm"
                   >
-                    <span className="text-gray-400 truncate">
+                    <span className="text-[var(--muted-strong)] truncate">
                       {skill.Id.replace(/([A-Z])/g, " $1").trim()}
                     </span>
-                    <span className="text-[var(--accent)] ml-2">
+                    <span className="text-[var(--accent)] tabular-nums">
                       {Math.floor(skill.Progress)}
                     </span>
                   </div>
                 ))}
             </div>
-          </div>
-        )}
+          </section>
 
-        <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
-      </div>
+          <aside>
+            <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
+          </aside>
+        </div>
+      ) : (
+        <div className="mt-5 ml-auto max-w-[360px]">
+          <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
+        </div>
+      )}
     </main>
   );
 }

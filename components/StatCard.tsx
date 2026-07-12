@@ -3,9 +3,10 @@ interface StatCardProps {
   value: string | number;
   benchmarkDiff?: number | null;
   suffix?: string;
+  className?: string;
 }
 
-export default function StatCard({ label, value, benchmarkDiff, suffix }: StatCardProps) {
+export default function StatCard({ label, value, benchmarkDiff, suffix, className = "" }: StatCardProps) {
   const diffColor =
     benchmarkDiff != null
       ? benchmarkDiff >= 0
@@ -16,17 +17,17 @@ export default function StatCard({ label, value, benchmarkDiff, suffix }: StatCa
   const diffSign = benchmarkDiff != null && benchmarkDiff >= 0 ? "+" : "";
 
   return (
-    <div className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 flex flex-col gap-1">
-      <span className="text-xs uppercase tracking-wider text-gray-500">
+    <div className={`metric-card flex flex-col gap-2 ${className}`}>
+      <span className="metric-card__label">
         {label}
       </span>
       <div className="flex items-end gap-2">
-        <span className="text-2xl font-bold text-[var(--accent)]">
+        <span className="metric-card__value">
           {value}
-          {suffix && <span className="text-sm text-gray-400 ml-1">{suffix}</span>}
+          {suffix && <span className="metric-card__suffix ml-1">{suffix}</span>}
         </span>
         {benchmarkDiff != null && (
-          <span className={`text-sm font-medium ${diffColor} mb-0.5`}>
+          <span className={`text-xs font-bold ${diffColor} mb-0.5`}>
             {diffSign}{benchmarkDiff.toFixed(1)}%
           </span>
         )}
