@@ -46,12 +46,6 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
           return;
         }
 
-        const exact = found.find((player) => player.name.toLowerCase() === clean.toLowerCase());
-        if (exact) {
-          router.push(`/player/${exact.aid}`);
-          return;
-        }
-
         setResults(found);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : t("search.searchFailed"));
