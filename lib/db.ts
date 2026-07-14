@@ -1,6 +1,10 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
 import { isAidBanned } from "@/lib/ban-db";
+import { LEGACY_IDENTITY, type ProfileIdentity } from "@/types/seasonal";
+import { initializeFavoritesSchema } from "@/lib/favorites-schema";
+import { seasonalCandidateOrderParameters } from "@/lib/seasonal/scanner";
+import type { GameMode } from "@/types/seasonal";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -24,6 +28,26 @@ CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
+CREATE TABLE IF NOT EXISTS mode_players (
+  mode TEXT NOT NULL CHECK (mode IN ('pve', 'arena')),
+  aid INTEGER NOT NULL,
+  nickname TEXT, side TEXT, prestige INTEGER DEFAULT 0, level INTEGER DEFAULT 0,
+  experience INTEGER DEFAULT 0, hours REAL DEFAULT 0, bracket_key TEXT,
+  total_raids INTEGER DEFAULT 0, pmc_raids INTEGER DEFAULT 0, scav_raids INTEGER DEFAULT 0,
+  survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
+  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
+  longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
+  survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
+  pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
+  achievements TEXT, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
+  PRIMARY KEY (mode, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
+CREATE INDEX IF NOT EXISTS idx_mode_players_hours ON mode_players(mode, hours);
+CREATE INDEX IF NOT EXISTS idx_mode_players_pmc_raids ON mode_players(mode, pmc_raids);
+CREATE VIEW IF NOT EXISTS pve_players AS SELECT * FROM mode_players WHERE mode = 'pve';
+CREATE VIEW IF NOT EXISTS arena_players AS SELECT * FROM mode_players WHERE mode = 'arena';
+
 -- A small local tombstone makes removal durable even though the full ban data
 -- lives in a separate database. It also closes the check-then-insert race.
 CREATE TABLE IF NOT EXISTS excluded_players (
@@ -38,12 +62,14 @@ CREATE TABLE IF NOT EXISTS excluded_players (
 -- "обновить все". is_main помечает основной аккаунт пользователя (ровно один).
 CREATE TABLE IF NOT EXISTS favorites (
   user_sub TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'regular',
+  cycle_id TEXT NOT NULL DEFAULT 'persistent',
   aid INTEGER NOT NULL,
   nickname TEXT, note TEXT, is_main INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (user_sub, aid)
+  PRIMARY KEY (user_sub, mode, cycle_id, aid)
 );
-CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_sub);
+CREATE INDEX IF NOT EXISTS idx_favorites_user_identity ON favorites(user_sub, mode, cycle_id);
 
 -- Local snapshot of players.tarkov.dev/profile/index.json. This table is a
 -- nickname directory only; profile statistics are still loaded on demand.
@@ -78,6 +104,30 @@ const SQLITE_UPSERT_SQL =
   `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
+const MODE_UPSERT_SQL =
+  `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
+  `VALUES (?, ${COLS.map(() => "?").join(", ")}, ?) ` +
+  `ON CONFLICT(mode, aid) DO UPDATE SET ` +
+  [...COLS.filter((c) => c !== "aid"), "stats_json"]
+    .map((c) => `${c} = excluded.${c}`).join(", ");
+const SQLITE_MODE_UPSERT_SQL =
+  `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
+  `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
+  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
+  `ON CONFLICT(mode, aid) DO UPDATE SET ` +
+  [...COLS.filter((c) => c !== "aid"), "stats_json"]
+    .map((c) => `${c} = excluded.${c}`).join(", ");
+
+export type CrossSectionMode = Exclude<GameMode, "seasonal">;
+type PlayerTable = "players" | "pve_players" | "arena_players";
+
+function tableFor(mode: CrossSectionMode): PlayerTable {
+  return mode === "regular" ? "players" : `${mode}_players`;
+}
+
+function scopePlayerSql(sql: string, table: PlayerTable): string {
+  return table === "players" ? sql : sql.replace(/\bplayers\b/g, table);
+}
 
 // Metrics averaged for the "average player portrait".
 export const AVG_COLS = [
@@ -515,6 +565,7 @@ export interface BaselineResult {
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
+  stored(aid: number): Promise<{ stats: ParsedPlayerStats; achievementIds: string[] } | null>;
   averages(range: StatRange): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
@@ -555,6 +606,36 @@ export interface PlayerIndexStore {
   search(nickname: string, limit: number): Promise<PlayerIndexResult[]>;
 }
 
+function parseStoredPlayer(
+  row: { stats_json?: string; achievements?: string } | null | undefined,
+): { stats: ParsedPlayerStats; achievementIds: string[] } | null {
+  if (!row?.stats_json) return null;
+  try {
+    const stats = JSON.parse(row.stats_json) as ParsedPlayerStats;
+    const achievementIds = JSON.parse(row.achievements ?? "[]") as unknown;
+    if (!stats || typeof stats !== "object" || typeof stats.nickname !== "string") return null;
+    return {
+      stats,
+      achievementIds: Array.isArray(achievementIds)
+        ? achievementIds.filter((id): id is string => typeof id === "string")
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface DeterministicPlayerIndexCursor {
+  orderKey: number;
+  aid: number;
+}
+
+export interface DeterministicPlayerIndexPage {
+  players: (PlayerIndexResult & { orderKey: number; trustedHours: number | null })[];
+  nextCursor: DeterministicPlayerIndexCursor | null;
+}
+
+
 let warned = false;
 function warn(msg: string) {
   if (!warned) {
@@ -577,22 +658,40 @@ async function getD1(): Promise<any | null> {
 }
 
 // Cloudflare D1 backend.
-async function d1Store(): Promise<PlayerStore | null> {
-  const db = await getD1();
-  if (!db) return null;
+async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
+  const rawDb = await getD1();
+  if (!rawDb) return null;
   try {
+    const table = tableFor(mode);
+    const q = (sql: string) => scopePlayerSql(sql, table);
+    const db = {
+      prepare: (sql: string) => rawDb.prepare(q(sql)),
+      batch: (statements: unknown[]) => rawDb.batch(statements),
+    };
     return {
       async upsert(aid, stats, ids) {
         if (await isAidBanned(aid)) return;
         const now = Date.now();
         if (MAX_PLAYERS > 0) {
-          const existing = await db.prepare("SELECT 1 FROM players WHERE aid = ?").bind(aid).first();
+          const existing = await db.prepare(q("SELECT 1 FROM players WHERE aid = ?")).bind(aid).first();
           if (!existing) {
-            const row = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
+            const row = (await db.prepare(q("SELECT COUNT(*) AS n FROM players")).first()) as { n: number } | null;
             if (row && row.n >= MAX_PLAYERS) return;
           }
         }
-        await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
+        if (mode === "regular") {
+          await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
+        } else {
+          await rawDb.prepare(MODE_UPSERT_SQL)
+            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats)).run();
+        }
+      },
+      async stored(aid) {
+        if (mode === "regular") return null;
+        const row = await db.prepare(q(
+          "SELECT stats_json, achievements FROM players WHERE aid = ?"
+        )).bind(aid).first() as { stats_json?: string; achievements?: string } | null;
+        return parseStoredPlayer(row);
       },
       async averages(range) {
         const { where, params } = statRangeClause(range);
@@ -750,6 +849,7 @@ async function d1Store(): Promise<PlayerStore | null> {
 // applied once).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any = null;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getSqliteDb(): Promise<any | null> {
   try {
@@ -762,7 +862,12 @@ async function getSqliteDb(): Promise<any | null> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
       sqliteDb = new sqlite.DatabaseSync(file);
+      const hasFavorites = sqliteDb.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
+      ).get();
+      if (hasFavorites) initializeFavoritesSchema(sqliteDb);
       sqliteDb.exec(SCHEMA);
+      initializeFavoritesSchema(sqliteDb);
       // Lightweight migration for DBs created before the PMC score columns existed.
       // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
       // them here; a duplicate-column error on already-migrated DBs is expected.
@@ -781,10 +886,13 @@ async function getSqliteDb(): Promise<any | null> {
   }
 }
 
-async function sqliteStore(): Promise<PlayerStore | null> {
-  const db = await getSqliteDb();
-  if (!db) return null;
+async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> {
+  const rawDb = await getSqliteDb();
+  if (!rawDb) return null;
   try {
+    const table = tableFor(mode);
+    const q = (sql: string) => scopePlayerSql(sql, table);
+    const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
       async upsert(aid, stats, ids) {
         const now = Date.now();
@@ -795,7 +903,19 @@ async function sqliteStore(): Promise<PlayerStore | null> {
             if (row && row.n >= MAX_PLAYERS) return;
           }
         }
-        db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+        if (mode === "regular") {
+          db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+        } else {
+          rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+            .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+        }
+      },
+      async stored(aid) {
+        if (mode === "regular") return null;
+        const row = db.prepare(
+          "SELECT stats_json, achievements FROM players WHERE aid = ?"
+        ).get(aid) as { stats_json?: string; achievements?: string } | undefined;
+        return parseStoredPlayer(row);
       },
       async averages(range) {
         const { where, params } = statRangeClause(range);
@@ -936,8 +1056,8 @@ async function sqliteStore(): Promise<PlayerStore | null> {
 }
 
 /** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
-export async function getStore(): Promise<PlayerStore | null> {
-  return (await d1Store()) ?? (await sqliteStore());
+export async function getStore(mode: CrossSectionMode = "regular"): Promise<PlayerStore | null> {
+  return (await d1Store(mode)) ?? (await sqliteStore(mode));
 }
 
 function normalizeNickname(s: string): string {
@@ -1034,10 +1154,71 @@ export async function getPlayerIndexStore(): Promise<PlayerIndexStore | null> {
   return null;
 }
 
+/**
+ * Stable pseudo-random traversal for the nickname-only public index. The index
+ * has no activity metadata, so callers validate each returned aid separately.
+ * Cached `players.hours` is trusted because it was parsed server-side from the
+ * public PvP profile and is never accepted from a browser request.
+ */
+export async function getDeterministicPlayerIndexPage(
+  cycleId: string,
+  cursor: DeterministicPlayerIndexCursor | null,
+  limit: number,
+): Promise<DeterministicPlayerIndexPage | null> {
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(cycleId)) throw new Error("invalid cycleId");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) throw new Error("invalid index page limit");
+  const { multiplier, offset } = seasonalCandidateOrderParameters(cycleId);
+  const cursorKey = cursor?.orderKey ?? -1;
+  const cursorAid = cursor?.aid ?? 0;
+  const sql = `WITH ordered AS (
+    SELECT i.aid, i.nickname AS name,
+      ((i.aid * ? + ?) & 2147483647) AS order_key,
+      CASE WHEN p.hours IS NOT NULL AND p.hours >= 0 THEN p.hours ELSE NULL END AS trusted_hours
+    FROM player_index i LEFT JOIN players p ON p.aid = i.aid
+  ) SELECT aid, name, order_key, trusted_hours FROM ordered
+    WHERE order_key > ? OR (order_key = ? AND aid > ?)
+    ORDER BY order_key, aid LIMIT ?`;
+  const d1 = await getD1();
+  let rows: Record<string, unknown>[];
+  if (d1) {
+    const result = await d1.prepare(sql)
+      .bind(multiplier, offset, cursorKey, cursorKey, cursorAid, limit).all();
+    rows = (result.results ?? []) as Record<string, unknown>[];
+  } else {
+    const sqlite = await getSqliteDb();
+    if (!sqlite) return null;
+    rows = sqlite.prepare(sql).all(multiplier, offset, cursorKey, cursorKey, cursorAid, limit) as Record<string, unknown>[];
+  }
+  const players = rows.map((row) => ({
+    aid: Number(row.aid),
+    name: String(row.name),
+    orderKey: Number(row.order_key),
+    trustedHours: row.trusted_hours == null ? null : Number(row.trusted_hours),
+  }));
+  const last = players.at(-1);
+  return {
+    players,
+    nextCursor: last && players.length === limit ? { orderKey: last.orderKey, aid: last.aid } : null,
+  };
+}
+
+/** One trusted, already-parsed PvP playtime value; no upstream request. */
+export async function getTrustedPublicHours(aid: number): Promise<number | null> {
+  if (!Number.isSafeInteger(aid) || aid <= 0) return null;
+  const d1 = await getD1();
+  const row = d1
+    ? await d1.prepare("SELECT hours FROM players WHERE aid = ? AND hours >= 0").bind(aid).first()
+    : (await getSqliteDb())?.prepare("SELECT hours FROM players WHERE aid = ? AND hours >= 0").get(aid);
+  if (!row || !Number.isFinite(Number((row as { hours?: unknown }).hours))) return null;
+  return Number((row as { hours: unknown }).hours);
+}
+
 // ── Favorites: game accounts a signed-in user has pinned ──────────────────────
 
 /** One pinned game account, as stored for a user. */
 export interface Favorite {
+  mode: ProfileIdentity["mode"];
+  cycleId: string;
   aid: number;
   /** Snapshot of the nickname (refreshed whenever stats are pulled); may be null. */
   nickname: string | null;
@@ -1051,32 +1232,44 @@ export interface Favorite {
 
 export interface FavoritesStore {
   /** A user's favorites, main first, then newest first. */
-  list(userSub: string): Promise<Favorite[]>;
+  list(userSub: string, identity?: FavoriteIdentity | null): Promise<Favorite[]>;
   /** Pin an account. "exists" if already pinned, "limit" if over MAX_FAVORITES. */
   add(
     userSub: string,
     aid: number,
     nickname: string | null,
-    note: string | null
+    note: string | null,
+    identity?: FavoriteIdentity
   ): Promise<"ok" | "exists" | "limit">;
   /** Unpin. */
-  remove(userSub: string, aid: number): Promise<void>;
+  remove(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
   /** Set/clear the note. */
-  setNote(userSub: string, aid: number, note: string | null): Promise<void>;
+  setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<void>;
   /** Mark one favorite as the user's main account (clears the flag on the rest). */
-  setMain(userSub: string, aid: number): Promise<void>;
+  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
   /** Refresh the stored nickname snapshot. */
-  updateNickname(userSub: string, aid: number, nickname: string | null): Promise<void>;
+  updateNickname(userSub: string, aid: number, nickname: string | null, identity?: FavoriteIdentity): Promise<void>;
+}
+
+export type FavoriteIdentity = Pick<ProfileIdentity, "mode" | "cycleId">;
+
+function favoriteIdentity(identity?: FavoriteIdentity): FavoriteIdentity {
+  return identity ?? LEGACY_IDENTITY;
 }
 
 const FAV_LIST_SQL =
-  "SELECT aid, nickname, note, is_main, created_at FROM favorites " +
+  "SELECT mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
+  "WHERE user_sub = ? AND mode = ? AND cycle_id = ? ORDER BY is_main DESC, created_at DESC";
+const FAV_LIST_ALL_SQL =
+  "SELECT mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
   "WHERE user_sub = ? ORDER BY is_main DESC, created_at DESC";
 const FAV_INSERT_SQL =
-  "INSERT INTO favorites (user_sub, aid, nickname, note, is_main, created_at) " +
-  "VALUES (?, ?, ?, ?, 0, ?)";
+  "INSERT INTO favorites (user_sub, mode, cycle_id, aid, nickname, note, is_main, created_at) " +
+  "VALUES (?, ?, ?, ?, ?, ?, 0, ?)";
 
 interface FavRow {
+  mode: ProfileIdentity["mode"];
+  cycle_id: string;
   aid: number;
   nickname: string | null;
   note: string | null;
@@ -1086,6 +1279,8 @@ interface FavRow {
 
 function toFavorites(rows: FavRow[]): Favorite[] {
   return rows.map((r) => ({
+    mode: r.mode,
+    cycleId: r.cycle_id,
     aid: Number(r.aid),
     nickname: r.nickname ?? null,
     note: r.note ?? null,
@@ -1097,14 +1292,20 @@ function toFavorites(rows: FavRow[]): Favorite[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function d1FavoritesStore(db: any): FavoritesStore {
   return {
-    async list(userSub) {
-      const { results } = await db.prepare(FAV_LIST_SQL).bind(userSub).all();
+    async list(userSub, identity) {
+      if (identity === null) {
+        const { results } = await db.prepare(FAV_LIST_ALL_SQL).bind(userSub).all();
+        return toFavorites((results ?? []) as FavRow[]);
+      }
+      const id = favoriteIdentity(identity);
+      const { results } = await db.prepare(FAV_LIST_SQL).bind(userSub, id.mode, id.cycleId).all();
       return toFavorites((results ?? []) as FavRow[]);
     },
-    async add(userSub, aid, nickname, note) {
+    async add(userSub, aid, nickname, note, identity) {
+      const id = favoriteIdentity(identity);
       const existing = await db
-        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
-        .bind(userSub, aid)
+        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
+        .bind(userSub, id.mode, id.cycleId, aid)
         .first();
       if (existing) return "exists";
       const row = (await db
@@ -1112,29 +1313,33 @@ function d1FavoritesStore(db: any): FavoritesStore {
         .bind(userSub)
         .first()) as { n: number } | null;
       if (row && row.n >= MAX_FAVORITES) return "limit";
-      await db.prepare(FAV_INSERT_SQL).bind(userSub, aid, nickname, note, Date.now()).run();
+      await db.prepare(FAV_INSERT_SQL).bind(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now()).run();
       return "ok";
     },
-    async remove(userSub, aid) {
-      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").bind(userSub, aid).run();
+    async remove(userSub, aid, identity) {
+      const id = favoriteIdentity(identity);
+      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").bind(userSub, id.mode, id.cycleId, aid).run();
     },
-    async setNote(userSub, aid, note) {
+    async setNote(userSub, aid, note, identity) {
+      const id = favoriteIdentity(identity);
       await db
-        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?")
-        .bind(note, userSub, aid)
+        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
+        .bind(note, userSub, id.mode, id.cycleId, aid)
         .run();
     },
-    async setMain(userSub, aid) {
+    async setMain(userSub, aid, identity) {
+      const id = favoriteIdentity(identity);
       await db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").bind(userSub).run();
       await db
-        .prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND aid = ?")
-        .bind(userSub, aid)
+        .prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
+        .bind(userSub, id.mode, id.cycleId, aid)
         .run();
     },
-    async updateNickname(userSub, aid, nickname) {
+    async updateNickname(userSub, aid, nickname, identity) {
+      const id = favoriteIdentity(identity);
       await db
-        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?")
-        .bind(nickname, userSub, aid)
+        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
+        .bind(nickname, userSub, id.mode, id.cycleId, aid)
         .run();
     },
   };
@@ -1143,33 +1348,42 @@ function d1FavoritesStore(db: any): FavoritesStore {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqliteFavoritesStore(db: any): FavoritesStore {
   return {
-    async list(userSub) {
-      return toFavorites(db.prepare(FAV_LIST_SQL).all(userSub) as FavRow[]);
+    async list(userSub, identity) {
+      if (identity === null) {
+        return toFavorites(db.prepare(FAV_LIST_ALL_SQL).all(userSub) as FavRow[]);
+      }
+      const id = favoriteIdentity(identity);
+      return toFavorites(db.prepare(FAV_LIST_SQL).all(userSub, id.mode, id.cycleId) as FavRow[]);
     },
-    async add(userSub, aid, nickname, note) {
+    async add(userSub, aid, nickname, note, identity) {
+      const id = favoriteIdentity(identity);
       const existing = db
-        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
-        .get(userSub, aid);
+        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
+        .get(userSub, id.mode, id.cycleId, aid);
       if (existing) return "exists";
       const row = db
         .prepare("SELECT COUNT(*) AS n FROM favorites WHERE user_sub = ?")
         .get(userSub) as { n: number };
       if (row && row.n >= MAX_FAVORITES) return "limit";
-      db.prepare(FAV_INSERT_SQL).run(userSub, aid, nickname, note, Date.now());
+      db.prepare(FAV_INSERT_SQL).run(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now());
       return "ok";
     },
-    async remove(userSub, aid) {
-      db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").run(userSub, aid);
+    async remove(userSub, aid, identity) {
+      const id = favoriteIdentity(identity);
+      db.prepare("DELETE FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(userSub, id.mode, id.cycleId, aid);
     },
-    async setNote(userSub, aid, note) {
-      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
+    async setNote(userSub, aid, note, identity) {
+      const id = favoriteIdentity(identity);
+      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(note, userSub, id.mode, id.cycleId, aid);
     },
-    async setMain(userSub, aid) {
+    async setMain(userSub, aid, identity) {
+      const id = favoriteIdentity(identity);
       db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").run(userSub);
-      db.prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND aid = ?").run(userSub, aid);
+      db.prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(userSub, id.mode, id.cycleId, aid);
     },
-    async updateNickname(userSub, aid, nickname) {
-      db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
+    async updateNickname(userSub, aid, nickname, identity) {
+      const id = favoriteIdentity(identity);
+      db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(nickname, userSub, id.mode, id.cycleId, aid);
     },
   };
 }

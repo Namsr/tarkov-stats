@@ -1,0 +1,43 @@
+{
+  "gameMode": "seasonal",
+  "cycleId": "season-2026-01",
+  "aid": 730001,
+  "profile": {
+    "updated": 1783501200000,
+    "info": {
+      "nickname": "SolRunner",
+      "experience": 125000
+    },
+    "skills": {
+      "Common": [
+        { "Id": "Endurance", "LastAccess": 1783490000 },
+        { "Id": "Strength", "LastAccess": 1783500000 }
+      ]
+    },
+    "achievements": {
+      "first_raid": 1783495000
+    },
+    "pmcStats": {
+      "eft": {
+        "overAllCounters": {
+          "Items": [
+            { "Key": ["Sessions", "Pmc"], "Value": 12 },
+            { "Key": ["ExitStatus", "Survived", "Pmc"], "Value": 7 },
+            { "Key": ["Deaths"], "Value": 5 },
+            { "Key": ["Kills"], "Value": 31 },
+            { "Key": ["KilledPmc"], "Value": 8 }
+          ]
+        }
+      }
+    },
+    "scavStats": {
+      "eft": {
+        "overAllCounters": {
+          "Items": [
+            { "Key": ["Sessions", "Scav"], "Value": 3 }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -10,11 +10,11 @@ import type { NextRequest } from "next/server";
  * разными прокси, поэтому доверенный заголовок задаётся явно через env:
  *
  *   TRUSTED_IP_HEADER=x-real-ip        (по умолчанию) — за Caddy, который делает
- *     `header_up X-Real-IP {remote_host}` и перезаписывает любое клиентское
- *     значение реальным TCP-пиром.
- *   TRUSTED_IP_HEADER=cf-connecting-ip                — за Cloudflare (Tunnel или
- *     Workers): заголовок ставит сам Cloudflare из реального edge-пира и
- *     вырезает клиентские копии.
+ *     `header_up X-Real-IP {client_ip}` и перезаписывает любое клиентское
+ *     значение проверенным адресом клиента.
+ *   TRUSTED_IP_HEADER=cf-connecting-ip                — только когда приложение
+ *     напрямую стоит за доверенным Cloudflare-only hop (Tunnel или Workers).
+ *     В гибридном Caddy-сетапе остаётся x-real-ip.
  *
  * Раньше код брал cf-connecting-ip → x-real-ip → последний элемент XFF по
  * очереди. За Caddy (наш прод) cf-connecting-ip и XFF клиент подделывает

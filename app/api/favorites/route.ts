@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
-import { getFavoritesStore } from "@/lib/db";
+import { getFavoritesStore, type FavoriteIdentity } from "@/lib/db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
+import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 
 const NICK_MAX = 32;
 const NOTE_MAX = 120;
@@ -13,6 +14,14 @@ function clean(v: unknown, max: number): string | null {
   if (typeof v !== "string") return null;
   const s = v.trim().slice(0, max);
   return s.length ? s : null;
+}
+
+function parseIdentity(modeValue: unknown, cycleValue: unknown): FavoriteIdentity | null {
+  const mode = modeValue == null || modeValue === "" ? "regular" : modeValue;
+  if (!isGameMode(mode)) return null;
+  if (cycleValue != null && typeof cycleValue !== "string") return null;
+  const cycleId = normalizeCycleId(cycleValue as string | null | undefined, mode);
+  return cycleId === null ? null : { mode, cycleId };
 }
 
 type Guard =
@@ -41,7 +50,17 @@ export async function GET(request: NextRequest) {
   const store = await getFavoritesStore();
   if (!store) return NextResponse.json({ favorites: [] }, { headers: g.headers });
 
-  const favorites = await store.list(g.sub);
+  const all = request.nextUrl.searchParams.get("all") === "1";
+  const identity = all
+    ? null
+    : parseIdentity(
+        request.nextUrl.searchParams.get("mode"),
+        request.nextUrl.searchParams.get("cycle")
+      );
+  if (!all && !identity) {
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
+  }
+  const favorites = await store.list(g.sub, identity);
   return NextResponse.json({ favorites }, { headers: { ...g.headers, "Cache-Control": "no-store" } });
 }
 
@@ -51,7 +70,7 @@ export async function POST(request: NextRequest) {
   if (!g.ok) return g.response;
 
   const body = (await request.json().catch(() => null)) as
-    | { aid?: unknown; nickname?: unknown; note?: unknown }
+    | { aid?: unknown; nickname?: unknown; note?: unknown; mode?: unknown; cycle?: unknown }
     | null;
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: g.headers });
 
@@ -59,11 +78,21 @@ export async function POST(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: g.headers });
   }
+  const identity = parseIdentity(body.mode, body.cycle);
+  if (!identity) {
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
+  }
 
   const store = await getFavoritesStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
 
-  const result = await store.add(g.sub, aid, clean(body.nickname, NICK_MAX), clean(body.note, NOTE_MAX));
+  const result = await store.add(
+    g.sub,
+    aid,
+    clean(body.nickname, NICK_MAX),
+    clean(body.note, NOTE_MAX),
+    identity
+  );
   if (result === "limit") return NextResponse.json({ error: "limit" }, { status: 409, headers: g.headers });
   if (result === "exists") return NextResponse.json({ ok: true, already: true }, { headers: g.headers });
   return NextResponse.json({ ok: true }, { status: 201, headers: g.headers });
@@ -78,9 +107,16 @@ export async function DELETE(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: g.headers });
   }
+  const identity = parseIdentity(
+    request.nextUrl.searchParams.get("mode"),
+    request.nextUrl.searchParams.get("cycle")
+  );
+  if (!identity) {
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
+  }
 
   const store = await getFavoritesStore();
-  if (store) await store.remove(g.sub, aid);
+  if (store) await store.remove(g.sub, aid, identity);
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }
 
@@ -90,7 +126,7 @@ export async function PATCH(request: NextRequest) {
   if (!g.ok) return g.response;
 
   const body = (await request.json().catch(() => null)) as
-    | { aid?: unknown; note?: unknown; main?: unknown }
+    | { aid?: unknown; note?: unknown; main?: unknown; mode?: unknown; cycle?: unknown }
     | null;
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: g.headers });
 
@@ -98,13 +134,17 @@ export async function PATCH(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: g.headers });
   }
+  const identity = parseIdentity(body.mode, body.cycle);
+  if (!identity) {
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
+  }
 
   const store = await getFavoritesStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
 
-  if (body.main === true) await store.setMain(g.sub, aid);
+  if (body.main === true) await store.setMain(g.sub, aid, identity);
   // Only touch the note when the field is present (distinguishes "clear" from "absent").
-  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX));
+  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX), identity);
 
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }

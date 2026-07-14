@@ -1,3 +1,9 @@
+# Use Ponytail full for all coding work
+
+When writing, modifying, refactoring, fixing, reviewing, or designing code, load and follow the installed `ponytail` skill in `full` mode. Apply its decision ladder only after reading the affected code and tracing the relevant flow: reuse existing project code first, then standard-library or native platform features, then installed dependencies, and write new code only when necessary. Prefer the smallest safe diff and do not add speculative abstractions, scaffolding, or dependencies.
+
+Ponytail must never simplify away explicit requirements, input validation, security, data-loss prevention, error handling, accessibility, bilingual i18n, or the smallest relevant runnable check. More specific instructions elsewhere in this file take precedence.
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 

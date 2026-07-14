@@ -4,6 +4,13 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
 import { getStore } from "@/lib/db";
+import { isGameMode, normalizeCycleId } from "@/types/seasonal";
+import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
+import { getSeasonalStore } from "@/lib/seasonal/storage";
+import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
+import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
+import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
+import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
 
 export async function GET(request: NextRequest) {
   const ip = getClientIp(request);
@@ -28,8 +35,57 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const rawMode = request.nextUrl.searchParams.get("mode");
+  const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
+  if (!isGameMode(mode)) {
+    return NextResponse.json({ error: "Invalid game mode" }, { status: 400, headers: noStore });
+  }
+  const cycleId = normalizeCycleId(request.nextUrl.searchParams.get("cycle"), mode);
+  if (cycleId === null) {
+    return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
+  }
+
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
+
+  if (mode === "seasonal") {
+    if (!isSeasonalRolloutReady()) {
+      return NextResponse.json({ error: "Seasonal profile unavailable" }, { status: 404, headers: noStore });
+    }
+    const result = await resolveSeasonalProfile(
+      { aid, cycleId, force },
+      {
+        loadCycle: loadSeasonalCycleConfig,
+        validatePayload: (payload, cycle) =>
+          validateSeasonalProfile(payload, {
+            enabled: cycle.enabled,
+            confirmedContract: cycle.upstreamContract,
+            cycleId: cycle.cycleId,
+            seasonStartsAt: cycle.startsAt,
+            seasonEndsAt: cycle.endsAt,
+          }),
+        getStore: getSeasonalStore,
+        fetchPayload: ({ aid: seasonalAid }) => fetchSeasonalPayload(seasonalAid),
+        afterCapture: ({ cycle, profile, capture, observedAt }) =>
+          recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt).then(() => undefined),
+      }
+    );
+    return NextResponse.json(
+      result.ok ? { profile: result.profile, capture: result.capture } : { error: result.error },
+      { status: result.ok ? 200 : result.status, headers: noStore }
+    );
+  }
+  if (mode === "pve" || mode === "arena") {
+    try {
+      const stored = await (await getStore(mode))?.stored(aid);
+      return stored
+        ? NextResponse.json(stored, { headers: noStore })
+        : NextResponse.json({ error: "Profile mode has not been scanned yet" }, { status: 404, headers: noStore });
+    } catch (error) {
+      console.error("mode profile load failed", error);
+      return NextResponse.json({ error: "Failed to load player profile" }, { status: 503, headers: noStore });
+    }
+  }
 
   try {
     const { profile, fromCache } = await getPublicProfile(aid, { force });

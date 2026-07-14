@@ -1,4 +1,6 @@
 import type { PlayerSnapshotInput } from "@/lib/ban-db";
+import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
+import { LEGACY_IDENTITY } from "@/types/seasonal";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "duplicate" | "stale";
 
@@ -42,46 +44,13 @@ export interface ProgressionStore {
   nextCandidate(excludeAids?: readonly number[]): Promise<ProgressionCandidate | null>;
 }
 
-const PROGRESSION_SCHEMA = `
-CREATE TABLE IF NOT EXISTS progression_snapshots (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  aid INTEGER NOT NULL,
-  upstream_updated_at INTEGER NOT NULL,
-  captured_at INTEGER NOT NULL,
-  series_id INTEGER NOT NULL DEFAULT 1,
-  nickname TEXT,
-  side TEXT,
-  prestige INTEGER NOT NULL DEFAULT 0,
-  level INTEGER NOT NULL DEFAULT 0,
-  experience INTEGER NOT NULL DEFAULT 0,
-  hours REAL NOT NULL DEFAULT 0,
-  total_raids INTEGER NOT NULL DEFAULT 0,
-  pmc_raids INTEGER NOT NULL DEFAULT 0,
-  scav_raids INTEGER NOT NULL DEFAULT 0,
-  survived INTEGER NOT NULL DEFAULT 0,
-  deaths INTEGER NOT NULL DEFAULT 0,
-  pmc_deaths INTEGER NOT NULL DEFAULT 0,
-  total_kills INTEGER NOT NULL DEFAULT 0,
-  killed_pmc INTEGER NOT NULL DEFAULT 0,
-  run_through INTEGER NOT NULL DEFAULT 0,
-  longest_win_streak INTEGER NOT NULL DEFAULT 0,
-  achv_count INTEGER NOT NULL DEFAULT 0,
-  achievements TEXT NOT NULL,
-  stats_json TEXT NOT NULL,
-  UNIQUE(aid, upstream_updated_at)
-);
-CREATE INDEX IF NOT EXISTS idx_progression_snapshots_aid_time
-  ON progression_snapshots(aid, upstream_updated_at);
-CREATE INDEX IF NOT EXISTS idx_progression_snapshots_capture
-  ON progression_snapshots(captured_at);
-`;
-
 const INSERT_SQL = `
 INSERT INTO progression_snapshots (
-  aid, upstream_updated_at, captured_at, series_id, nickname, side, prestige, level,
+  mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
+  series_id, nickname, side, prestige, level,
   experience, hours, total_raids, pmc_raids, scav_raids, survived, deaths, pmc_deaths,
   total_kills, killed_pmc, run_through, longest_win_streak, achv_count, achievements, stats_json
-) VALUES (${Array.from({ length: 23 }, () => "?").join(", ")})`;
+) VALUES (${Array.from({ length: 27 }, () => "?").join(", ")})`;
 
 const CUMULATIVE_FIELDS = [
   "experience", "hoursPlayed", "totalRaids", "pmcRaids", "scavRaids", "survivedRaids",
@@ -98,7 +67,9 @@ function validate(input: PlayerSnapshotInput) {
 function args(input: PlayerSnapshotInput, seriesId: number): unknown[] {
   const s = input.stats;
   return [
-    input.aid, input.upstreamUpdatedAt, input.capturedAt, seriesId, s.nickname, s.side,
+    LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, input.aid, input.upstreamUpdatedAt,
+    input.upstreamUpdatedAt, input.capturedAt,
+    new Date(input.upstreamUpdatedAt).toISOString().slice(0, 10), seriesId, s.nickname, s.side,
     s.prestige, s.level, s.experience, s.hoursPlayed, s.totalRaids, s.pmcRaids,
     s.scavRaids, s.survivedRaids, s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc,
     s.runThrough, s.longestWinStreak, s.achievementsCount,
@@ -169,7 +140,7 @@ async function getSqliteDb(): Promise<any | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(files.progression);
-    db.exec(PROGRESSION_SCHEMA);
+    initializeSeasonalSchema(db);
     db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
     db.exec(`
       CREATE TABLE IF NOT EXISTS players_db.excluded_players (
@@ -195,8 +166,8 @@ function sqliteStore(db: any): ProgressionStore {
     async recordSnapshot(input) {
       validate(input);
       const previous = toSnapshot(db.prepare(
-        "SELECT * FROM progression_snapshots WHERE aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(input.aid) as SnapshotRow | undefined);
+        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
+      ).get(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, input.aid) as SnapshotRow | undefined);
       if (previous && input.upstreamUpdatedAt === previous.upstreamUpdatedAt) {
         return {
           inserted: false, status: "duplicate", previousUpdatedAt: previous.upstreamUpdatedAt,
@@ -225,13 +196,13 @@ function sqliteStore(db: any): ProgressionStore {
     },
     async latest(aid) {
       return toSnapshot(db.prepare(
-        "SELECT * FROM progression_snapshots WHERE aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(aid) as SnapshotRow | undefined);
+        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
+      ).get(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, aid) as SnapshotRow | undefined);
     },
     async history(aid) {
       const rows = db.prepare(
-        "SELECT * FROM progression_snapshots WHERE aid = ? ORDER BY upstream_updated_at ASC"
-      ).all(aid) as SnapshotRow[];
+        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at ASC"
+      ).all(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, aid) as SnapshotRow[];
       return rows.map((row) => toSnapshot(row)).filter((row): row is ProgressionSnapshot => row != null);
     },
     async nextCandidate(excludeAids = []) {
@@ -247,6 +218,7 @@ function sqliteStore(db: any): ProgressionStore {
                 MAX(s.upstream_updated_at) AS before_updated
            FROM players_db.players p
            LEFT JOIN progression_snapshots s ON s.aid = p.aid
+            AND s.mode = 'regular' AND s.cycle_id = 'persistent'
           WHERE NOT EXISTS (
             SELECT 1 FROM players_db.excluded_players e WHERE e.aid = p.aid
           ) ${exclusion}

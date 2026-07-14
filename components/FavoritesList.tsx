@@ -5,16 +5,17 @@ import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
 import RefreshButton from "@/components/RefreshButton";
-import type { Favorite } from "@/lib/db";
+import type { Favorite, FavoriteIdentity } from "@/lib/db";
+import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 
 interface Props {
-  statsByAid: Map<number, ParsedPlayerStats | null>;
+  statsByFavorite: Map<string, ParsedPlayerStats | null>;
   /** True until the first /favorites/stats load resolves. */
   statsLoading: boolean;
 }
 
-export default function FavoritesList({ statsByAid, statsLoading }: Props) {
+export default function FavoritesList({ statsByFavorite, statsLoading }: Props) {
   const { t } = useI18n();
   const { favorites, remove, setNote, setMain } = useFavorites();
 
@@ -24,9 +25,9 @@ export default function FavoritesList({ statsByAid, statsLoading }: Props) {
       <ul className="space-y-3">
         {favorites.map((fav) => (
           <FavoriteRow
-            key={fav.aid}
+            key={favoriteKey(fav)}
             fav={fav}
-            stats={statsByAid.get(fav.aid) ?? null}
+            stats={statsByFavorite.get(favoriteKey(fav)) ?? null}
             statsLoading={statsLoading}
             onRemove={remove}
             onSetNote={setNote}
@@ -49,17 +50,25 @@ function FavoriteRow({
   fav: Favorite;
   stats: ParsedPlayerStats | null;
   statsLoading: boolean;
-  onRemove: (aid: number) => void;
-  onSetNote: (aid: number, note: string | null) => void;
-  onSetMain: (aid: number) => void;
+  onRemove: (aid: number, identity?: FavoriteIdentity) => void;
+  onSetNote: (aid: number, note: string | null, identity?: FavoriteIdentity) => void;
+  onSetMain: (aid: number, identity?: FavoriteIdentity) => void;
 }) {
   const { t } = useI18n();
   const [note, setNoteLocal] = useState(fav.note ?? "");
+  const identity = { mode: fav.mode, cycleId: fav.cycleId };
+  const modeLabel = fav.mode === "regular"
+    ? t("fav.mode.regular")
+    : fav.mode === "pve"
+      ? t("fav.mode.pve")
+      : fav.mode === "arena"
+        ? t("fav.mode.arena")
+        : t("fav.mode.seasonal");
 
   function saveNote() {
     const next = note.trim();
     if (next === (fav.note ?? "")) return; // unchanged
-    onSetNote(fav.aid, next || null);
+    onSetNote(fav.aid, next || null, identity);
   }
 
   const quick = stats
@@ -73,7 +82,7 @@ function FavoriteRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <Link
-            href={`/player/${fav.aid}`}
+            href={favoriteHref(fav)}
             className="font-[var(--heading-font)] font-bold tracking-wide text-[var(--foreground)] hover:text-[var(--accent)] truncate"
           >
             {fav.nickname || `#${fav.aid}`}
@@ -85,12 +94,15 @@ function FavoriteRow({
           )}
         </div>
         <div className="text-xs text-[var(--muted)] mt-1">
-          #{fav.aid} · {quick}
+          #{fav.aid} · {t("fav.identity", {
+            mode: modeLabel,
+            cycle: fav.cycleId,
+          })} · {quick}
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 shrink-0">
-        <RefreshButton aid={fav.aid} />
+        {fav.mode === "regular" && <RefreshButton aid={fav.aid} />}
         <input
           value={note}
           onChange={(e) => setNoteLocal(e.target.value)}
@@ -103,7 +115,7 @@ function FavoriteRow({
         />
         {!fav.isMain && (
           <button
-            onClick={() => onSetMain(fav.aid)}
+            onClick={() => onSetMain(fav.aid, identity)}
             title={t("profile.setMain")}
             className="ghost-button !min-h-10 !px-3 !py-2 text-[10px] whitespace-nowrap"
           >
@@ -111,7 +123,7 @@ function FavoriteRow({
           </button>
         )}
         <button
-          onClick={() => onRemove(fav.aid)}
+          onClick={() => onRemove(fav.aid, identity)}
           title={t("fav.remove")}
           aria-label={t("fav.remove")}
           className="grid h-10 w-10 place-items-center rounded-full border border-[var(--card-border)] text-[var(--muted)] hover:border-[var(--danger)] hover:text-[var(--danger)] text-lg leading-none"

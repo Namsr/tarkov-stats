@@ -15,6 +15,10 @@ services:
         # Берётся из .env (см. .env рядом с этим файлом)
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY}
     restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - tarkov-data:/data
     expose:
       - "3000"            # виден только внутри docker-сети, не на хосте
     # Никаких published `ports:` — это намеренно.
@@ -28,3 +32,6 @@ services:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     depends_on:
       - web
+
+volumes:
+  tarkov-data:

@@ -11,13 +11,19 @@ import FavoriteButton from "@/components/FavoriteButton";
 import RefreshButton from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import type { CrossSectionMode } from "@/lib/db";
 
 interface Props {
   params: Promise<{ aid: string }>;
   searchParams: Promise<{ radarDemo?: string | string[] }>;
 }
 
-export default function PlayerPage({ params, searchParams }: Props) {
+export default function RegularPlayer({
+  params,
+  searchParams,
+  mode = "regular",
+}: Props & { mode?: CrossSectionMode }) {
   const { t } = useI18n();
   const { aid } = use(params);
   const query = use(searchParams);
@@ -25,6 +31,7 @@ export default function PlayerPage({ params, searchParams }: Props) {
   const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
+  const [achievementIds, setAchievementIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -35,22 +42,28 @@ export default function PlayerPage({ params, searchParams }: Props) {
     setError("");
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
-    fetch(`/api/player/profile?aid=${encodeURIComponent(aid)}${isReload() ? "&refresh=1" : ""}`)
+    const requestParams = new URLSearchParams({ aid, mode });
+    if (isReload()) requestParams.set("refresh", "1");
+    fetch(`/api/player/profile?${requestParams}`)
       .then(async (res) => {
         const data = (await res.json()) as {
           error?: string;
           profile?: PlayerProfile;
           stats?: ParsedPlayerStats;
+          achievementIds?: string[];
         };
-        if (!res.ok || !data.profile || !data.stats) {
+        if (!res.ok || !data.stats) {
           throw new Error(data.error ?? t("player.loadError"));
         }
-        return { profile: data.profile, stats: data.stats };
+        return { ...data, stats: data.stats };
       })
       .then((data) => {
         if (cancelled) return;
-        setProfile(data.profile);
+        setProfile(data.profile ?? null);
         setStats(data.stats);
+        setAchievementIds(
+          data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
+        );
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : t("player.loadError"));
@@ -62,7 +75,7 @@ export default function PlayerPage({ params, searchParams }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [aid, t]);
+  }, [aid, mode, t]);
 
   if (loading) {
     return (
@@ -79,9 +92,10 @@ export default function PlayerPage({ params, searchParams }: Props) {
     );
   }
 
-  if (error || !stats || !profile) {
+  if (error || !stats) {
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
+        <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
         <p className="text-[var(--danger)] text-lg text-center max-w-md">
           {error || t("player.unknownError")}
         </p>
@@ -125,8 +139,7 @@ export default function PlayerPage({ params, searchParams }: Props) {
     { label: t("player.experience"), value: stats.experience.toLocaleString() },
   ];
 
-  const skills: SkillEntry[] = profile.skills?.Common ?? [];
-  const ownedAchievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+  const skills: SkillEntry[] = profile?.skills?.Common ?? [];
 
   return (
     <main className="page-frame">
@@ -147,9 +160,16 @@ export default function PlayerPage({ params, searchParams }: Props) {
               {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <RefreshButton aid={Number(aid)} />
-            <FavoriteButton aid={Number(aid)} nickname={stats.nickname} />
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <RefreshButton aid={Number(aid)} mode={mode} />
+              <FavoriteButton
+                aid={Number(aid)}
+                nickname={stats.nickname}
+                identity={{ mode, cycleId: "persistent" }}
+              />
+            </div>
+            <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
           </div>
         </div>
 
@@ -161,8 +181,8 @@ export default function PlayerPage({ params, searchParams }: Props) {
       </section>
 
       <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
-        <PlayerRadarComparison aid={Number(aid)} stats={stats} demo={radarDemo} />
-        <CheaterScore stats={stats} ownedAchievementIds={ownedAchievementIds} />
+        <PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} demo={radarDemo} />
+        <CheaterScore stats={stats} ownedAchievementIds={achievementIds} mode={mode} />
       </div>
 
       <div className="mt-5 space-y-5">
@@ -213,12 +233,12 @@ export default function PlayerPage({ params, searchParams }: Props) {
           </section>
 
           <aside>
-            <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
+            <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode={mode} />
           </aside>
         </div>
       ) : (
         <div className="mt-5 ml-auto max-w-[360px]">
-          <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={ownedAchievementIds} />
+          <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode={mode} />
         </div>
       )}
     </main>

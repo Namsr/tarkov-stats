@@ -6,17 +6,19 @@ const isDev = process.env.NODE_ENV === "development";
 // рендерить всё динамически). 'unsafe-inline' нужен для inline-бутстрапа Next и
 // inline-стилей; внешние источники минимальны:
 //   challenges.cloudflare.com — Turnstile (скрипт + iframe + XHR)
+//   static.cloudflareinsights.com — Web Analytics beacon для DNS-only доменов
+//   cloudflareinsights.com — приём метрик ручного Web Analytics beacon
 //   lh3.googleusercontent.com — аватар залогиненного через Google пользователя
 // Браузер ходит на upstream (tarkov.dev) только через наши /api/* роуты, поэтому
 // в connect-src его НЕТ — нужен лишь 'self'. В dev добавляем 'unsafe-eval'
 // (React refresh) и ws: (HMR).
 const csp = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com${isDev ? " 'unsafe-eval'" : ""}`,
+  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data: https://lh3.googleusercontent.com",
   "font-src 'self'",
-  `connect-src 'self' https://challenges.cloudflare.com${isDev ? " ws:" : ""}`,
+  `connect-src 'self' https://challenges.cloudflare.com https://cloudflareinsights.com${isDev ? " ws:" : ""}`,
   "frame-src https://challenges.cloudflare.com",
   "worker-src 'self' blob:",
   "object-src 'none'",

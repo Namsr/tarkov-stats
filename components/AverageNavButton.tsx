@@ -12,7 +12,7 @@ import { useI18n } from "@/lib/i18n/context";
 export default function AverageNavButton() {
   const pathname = usePathname();
   const { t } = useI18n();
-  const active = pathname === "/average";
+  const active = pathname === "/average" || pathname === "/average/regular";
 
   const base = "tactical-nav-link";
   const className = active
@@ -20,7 +20,7 @@ export default function AverageNavButton() {
     : base;
 
   return (
-    <Link href={active ? "/" : "/average"} className={className}>
+    <Link href={active ? "/" : "/average/regular"} className={className}>
       {t("nav.average")}
     </Link>
   );

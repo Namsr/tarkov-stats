@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
+import type { FavoriteIdentity } from "@/lib/db";
 
 // Keep in sync with MAX_FAVORITES in lib/db.ts (only used for the message text).
 const MAX_FAVORITES = 50;
@@ -12,9 +13,11 @@ const MAX_FAVORITES = 50;
 export default function FavoriteButton({
   aid,
   nickname,
+  identity,
 }: {
   aid: number;
   nickname?: string | null;
+  identity?: FavoriteIdentity;
 }) {
   const { t } = useI18n();
   const { enabled, has, toggle } = useFavorites();
@@ -41,10 +44,10 @@ export default function FavoriteButton({
     );
   }
 
-  const active = has(aid);
+  const active = has(aid, identity);
 
   async function onClick() {
-    const result = await toggle(aid, nickname);
+    const result = await toggle(aid, nickname, identity);
     if (result === "limit") {
       setMsg(t("fav.limit", { max: MAX_FAVORITES }));
       setTimeout(() => setMsg(""), 3000);

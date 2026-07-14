@@ -15,6 +15,8 @@ import {
 } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY } from "@/lib/metrics";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import type { CrossSectionMode } from "@/lib/db";
 
 type RangeDimension = "hours" | "pmc_raids";
 
@@ -115,7 +117,7 @@ function selectedSlice(bin: HistBin, range: RangeBounds, axisMax: number) {
   };
 }
 
-export default function AveragePage() {
+export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionMode }) {
   const { t } = useI18n();
   const [dimension, setDimension] = useState<RangeDimension>("hours");
   const [selection, setSelection] = useState<RangeBounds | null>(null);
@@ -146,7 +148,7 @@ export default function AveragePage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ dimension, metric: yMetric });
+    const params = new URLSearchParams({ dimension, metric: yMetric, mode });
     if (requestedRange) {
       params.set("min", String(requestedRange.min));
       params.set("max", String(requestedRange.max));
@@ -186,7 +188,7 @@ export default function AveragePage() {
       });
 
     return () => controller.abort();
-  }, [dimension, requestedRange, t, yMetric]);
+  }, [dimension, mode, requestedRange, t, yMetric]);
 
   function openBreakdown() {
     setShowAch(true);
@@ -322,6 +324,7 @@ export default function AveragePage() {
             {t("average.sampleGrows")}
           </p>
         </div>
+        <ProfileModeSwitch current={mode} page="average" />
       </section>
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
@@ -551,7 +554,12 @@ export default function AveragePage() {
         </section>
       )}
 
-      <AchievementBreakdown open={showAch} onToggle={() => setShowAch((open) => !open)} />
+      <AchievementBreakdown
+        key={mode}
+        mode={mode}
+        open={showAch}
+        onToggle={() => setShowAch((open) => !open)}
+      />
     </main>
   );
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { ParsedPlayerStats } from "@/types/tarkov";
 import { rangeForHours } from "@/lib/playtime-brackets";
+import type { CrossSectionMode } from "@/lib/db";
 import {
   scoreCheater,
   type Baseline,
@@ -43,9 +44,11 @@ interface AchPayload {
 export default function CheaterScore({
   stats,
   ownedAchievementIds,
+  mode = "regular",
 }: {
   stats: ParsedPlayerStats;
   ownedAchievementIds: string[];
+  mode?: CrossSectionMode;
 }) {
   const { t } = useI18n();
   const [result, setResult] = useState<CheaterScoreResult | null>(null);
@@ -60,13 +63,14 @@ export default function CheaterScore({
     const ownedIds = ownedKey ? ownedKey.split(",") : [];
     const params = new URLSearchParams();
     params.set("minHours", String(bracket.min));
+    params.set("mode", mode);
     if (bracket.max != null) params.set("maxHours", String(bracket.max));
 
     Promise.all([
       fetch(`/api/baseline?${params.toString()}`)
         .then((r) => (r.ok ? (r.json() as Promise<Baseline>) : null))
         .catch(() => null),
-      fetch(`/api/average/achievements`)
+      fetch(`/api/average/achievements?mode=${mode}`)
         .then((r) => (r.ok ? (r.json() as Promise<AchPayload>) : null))
         .catch(() => null),
     ]).then(([baseline, achPayload]) => {
@@ -91,7 +95,7 @@ export default function CheaterScore({
     return () => {
       cancelled = true;
     };
-  }, [stats, bracket.min, bracket.max, ownedKey]);
+  }, [stats, bracket.min, bracket.max, mode, ownedKey]);
 
   if (loading || !result) {
     return <div className="h-64 skeleton rounded-xl" />;

@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { getAchievements } from "@/lib/tarkov-api";
+import { isGameMode } from "@/types/seasonal";
+import type { CrossSectionMode } from "@/lib/db";
 
 // One row per achievement: how it looks in OUR sample (owners, prevalence,
 // typical unlock hours ± std) merged with tarkov.dev metadata (name, rarity,
@@ -38,11 +40,11 @@ interface BaselineRow {
 // request (getAchievements has its own 6h success-cache), so a transient
 // GraphQL failure degrades a single response instead of poisoning a memoized
 // payload with id-as-name / 0% for the whole TTL.
-let memo: { total: number; rows: BaselineRow[]; ts: number } | null = null;
+const memo = new Map<CrossSectionMode, { total: number; rows: BaselineRow[]; ts: number }>();
 const MEMO_TTL_MS = 60 * 1000;
 
-async function loadBaseline(): Promise<{ total: number; rows: BaselineRow[] }> {
-  const store = await getStore();
+async function loadBaseline(mode: CrossSectionMode): Promise<{ total: number; rows: BaselineRow[] }> {
+  const store = await getStore(mode);
   if (!store) return { total: 0, rows: [] };
 
   const baseline = await store.achievementBaseline();
@@ -60,17 +62,23 @@ async function loadBaseline(): Promise<{ total: number; rows: BaselineRow[] }> {
   return { total, rows };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
+    if (!isGameMode(rawMode) || rawMode === "seasonal") {
+      return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+    }
     const now = Date.now();
-    if (!memo || now - memo.ts >= MEMO_TTL_MS) {
-      memo = { ...(await loadBaseline()), ts: now };
+    let cached = memo.get(rawMode);
+    if (!cached || now - cached.ts >= MEMO_TTL_MS) {
+      cached = { ...(await loadBaseline(rawMode)), ts: now };
+      memo.set(rawMode, cached);
     }
 
     // Cheap (own 6h cache); failure falls back to id-as-name and recovers next request.
     const meta = await getAchievements().catch(() => new Map());
 
-    const achievements: AchievementRow[] = memo.rows.map((r) => {
+    const achievements: AchievementRow[] = cached.rows.map((r) => {
       const m = meta.get(r.id);
       return {
         id: r.id,
@@ -86,7 +94,7 @@ export async function GET() {
       };
     });
 
-    const payload: Payload = { total: memo.total, achievements };
+    const payload: Payload = { total: cached.total, achievements };
     return NextResponse.json(payload, {
       headers: { "Cache-Control": "public, max-age=300" },
     });

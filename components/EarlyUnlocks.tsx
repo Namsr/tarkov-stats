@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { EVENT_ACHIEVEMENT_IDS } from "@/lib/cheater-score";
+import type { CrossSectionMode } from "@/lib/db";
 
 interface AchievementRow {
   id: string;
@@ -53,9 +54,11 @@ function fmtHours(h: number): string {
 export default function EarlyUnlocks({
   playerHours,
   ownedIds,
+  mode = "regular",
 }: {
   playerHours: number;
   ownedIds: string[];
+  mode?: CrossSectionMode;
 }) {
   const { t } = useI18n();
   const [unlocks, setUnlocks] = useState<EarlyUnlock[] | null>(null);
@@ -69,7 +72,7 @@ export default function EarlyUnlocks({
       };
     }
     const owned = new Set(ownedIds);
-    fetch("/api/average/achievements")
+    fetch(`/api/average/achievements?mode=${mode}`)
       .then((res) => (res.ok ? (res.json() as Promise<Payload>) : null))
       .then((data) => {
         if (cancelled || !data || data.total < MIN_SAMPLE) {
@@ -104,7 +107,7 @@ export default function EarlyUnlocks({
     return () => {
       cancelled = true;
     };
-  }, [playerHours, ownedIds]);
+  }, [mode, playerHours, ownedIds]);
 
   // Hide entirely until we have something noteworthy to show.
   if (!unlocks || unlocks.length === 0) return null;

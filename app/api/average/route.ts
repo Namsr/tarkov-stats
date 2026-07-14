@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getStore, type BucketAgg, type RangeDimension } from "@/lib/db";
 import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY } from "@/lib/metrics";
+import { isGameMode } from "@/types/seasonal";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -33,6 +34,10 @@ function binCount(value: string | null): number {
 
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
+  const rawMode = params.get("mode") ?? "regular";
+  if (!isGameMode(rawMode) || rawMode === "seasonal") {
+    return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+  }
   const dimension = parseDimension(params.get("dimension"));
   if (!dimension) {
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
@@ -55,7 +60,7 @@ export async function GET(request: NextRequest) {
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
-  const store = await getStore();
+  const store = await getStore(rawMode);
   if (!store) {
     return NextResponse.json({
       total: 0,

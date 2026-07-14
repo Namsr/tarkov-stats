@@ -8,7 +8,8 @@ import {
   useMemo,
   useState,
 } from "react";
-import type { Favorite } from "@/lib/db";
+import type { Favorite, FavoriteIdentity } from "@/lib/db";
+import { LEGACY_IDENTITY } from "@/types/seasonal";
 
 export type ToggleResult = "added" | "removed" | "limit" | "noop";
 export type FavoritesAuthStatus =
@@ -25,18 +26,32 @@ interface FavoritesValue {
   /** Distinguishes a signed-out session from a failed session check. */
   authStatus: FavoritesAuthStatus;
   favorites: Favorite[];
-  has: (aid: number) => boolean;
+  has: (aid: number, identity?: FavoriteIdentity) => boolean;
   /** Toggle a pin; returns what happened so callers can surface the limit. */
-  toggle: (aid: number, nickname?: string | null) => Promise<ToggleResult>;
-  remove: (aid: number) => Promise<void>;
-  setNote: (aid: number, note: string | null) => Promise<void>;
-  setMain: (aid: number) => Promise<void>;
+  toggle: (aid: number, nickname?: string | null, identity?: FavoriteIdentity) => Promise<ToggleResult>;
+  remove: (aid: number, identity?: FavoriteIdentity) => Promise<void>;
+  setNote: (aid: number, note: string | null, identity?: FavoriteIdentity) => Promise<void>;
+  setMain: (aid: number, identity?: FavoriteIdentity) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
 const FavoritesContext = createContext<FavoritesValue | null>(null);
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
+
+function target(identity?: FavoriteIdentity): FavoriteIdentity {
+  return identity ?? LEGACY_IDENTITY;
+}
+
+function matches(favorite: Favorite, aid: number, identity?: FavoriteIdentity): boolean {
+  const id = target(identity);
+  return favorite.aid === aid && favorite.mode === id.mode && favorite.cycleId === id.cycleId;
+}
+
+function identityParams(aid: number, identity?: FavoriteIdentity): string {
+  const id = target(identity);
+  return new URLSearchParams({ aid: String(aid), mode: id.mode, cycle: id.cycleId }).toString();
+}
 
 export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
@@ -48,7 +63,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     setAuthStatus("loading");
     try {
-      const res = await fetch("/api/favorites");
+      const res = await fetch("/api/favorites?all=1");
       if (!res.ok) {
         // 401 → not signed in: the feature is simply disabled, never an error.
         setEnabled(false);
@@ -74,16 +89,20 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
-  const has = useCallback((aid: number) => favorites.some((f) => f.aid === aid), [favorites]);
+  const has = useCallback(
+    (aid: number, identity?: FavoriteIdentity) => favorites.some((favorite) => matches(favorite, aid, identity)),
+    [favorites]
+  );
 
   const toggle = useCallback<FavoritesValue["toggle"]>(
-    async (aid, nickname) => {
+    async (aid, nickname, identity) => {
       if (!enabled) return "noop";
+      const id = target(identity);
 
-      if (favorites.some((f) => f.aid === aid)) {
-        setFavorites((prev) => prev.filter((f) => f.aid !== aid)); // optimistic
+      if (favorites.some((favorite) => matches(favorite, aid, id))) {
+        setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id))); // optimistic
         try {
-          await fetch(`/api/favorites?aid=${aid}`, { method: "DELETE" });
+          await fetch(`/api/favorites?${identityParams(aid, id)}`, { method: "DELETE" });
         } catch {
           refresh();
         }
@@ -91,6 +110,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       }
 
       const optimistic: Favorite = {
+        ...id,
         aid,
         nickname: nickname ?? null,
         note: null,
@@ -102,10 +122,10 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
         const res = await fetch("/api/favorites", {
           method: "POST",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ aid, nickname }),
+          body: JSON.stringify({ aid, nickname, mode: id.mode, cycle: id.cycleId }),
         });
         if (!res.ok) {
-          setFavorites((prev) => prev.filter((f) => f.aid !== aid)); // roll back
+          setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id))); // roll back
           if (res.status === 409) {
             const d = (await res.json().catch(() => ({}))) as { error?: string };
             if (d.error === "limit") return "limit";
@@ -122,10 +142,11 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   );
 
   const remove = useCallback(
-    async (aid: number) => {
-      setFavorites((prev) => prev.filter((f) => f.aid !== aid));
+    async (aid: number, identity?: FavoriteIdentity) => {
+      const id = target(identity);
+      setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id)));
       try {
-        await fetch(`/api/favorites?aid=${aid}`, { method: "DELETE" });
+        await fetch(`/api/favorites?${identityParams(aid, id)}`, { method: "DELETE" });
       } catch {
         refresh();
       }
@@ -134,13 +155,14 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   );
 
   const setNote = useCallback(
-    async (aid: number, note: string | null) => {
-      setFavorites((prev) => prev.map((f) => (f.aid === aid ? { ...f, note } : f)));
+    async (aid: number, note: string | null, identity?: FavoriteIdentity) => {
+      const id = target(identity);
+      setFavorites((prev) => prev.map((favorite) => matches(favorite, aid, id) ? { ...favorite, note } : favorite));
       try {
         await fetch("/api/favorites", {
           method: "PATCH",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ aid, note: note ?? "" }),
+          body: JSON.stringify({ aid, note: note ?? "", mode: id.mode, cycle: id.cycleId }),
         });
       } catch {
         refresh();
@@ -150,13 +172,14 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   );
 
   const setMain = useCallback(
-    async (aid: number) => {
-      setFavorites((prev) => prev.map((f) => ({ ...f, isMain: f.aid === aid })));
+    async (aid: number, identity?: FavoriteIdentity) => {
+      const id = target(identity);
+      setFavorites((prev) => prev.map((favorite) => ({ ...favorite, isMain: matches(favorite, aid, id) })));
       try {
         await fetch("/api/favorites", {
           method: "PATCH",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ aid, main: true }),
+          body: JSON.stringify({ aid, main: true, mode: id.mode, cycle: id.cycleId }),
         });
       } catch {
         refresh();

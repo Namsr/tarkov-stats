@@ -59,7 +59,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     setError("");
     setNotFound(false);
     setResults([]);
-    router.push(`/player/${aid}`);
+    router.push(`/player/regular/${aid}`);
   }
 
   return (
@@ -115,7 +115,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
               <button
                 key={player.aid}
                 type="button"
-                onClick={() => router.push(`/player/${player.aid}`)}
+                onClick={() => router.push(`/player/regular/${player.aid}`)}
                 className="flex w-full items-center justify-between rounded-lg px-3 py-3 text-left text-sm hover:bg-[var(--input-bg)] hover:text-[var(--accent)]"
               >
                 <span>{player.name}</span>

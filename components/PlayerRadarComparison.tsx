@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import type { CrossSectionMode } from "@/lib/db";
 
 type Dimension = "hours" | "pmc_raids";
 type MetricKey =
@@ -58,6 +59,7 @@ interface NormalizedCohort {
 interface Props {
   aid: number;
   stats: ParsedPlayerStats;
+  mode?: CrossSectionMode;
   demo?: boolean;
 }
 
@@ -228,7 +230,7 @@ function reasonKey(reason: string, dimension: Dimension): string {
     : "radar.unavailable.insufficientRaids";
 }
 
-export default function PlayerRadarComparison({ aid, stats, demo = false }: Props) {
+export default function PlayerRadarComparison({ aid, stats, mode = "regular", demo = false }: Props) {
   const { t } = useI18n();
   const { authStatus, favorites } = useFavorites();
   const [dimension, setDimension] = useState<Dimension>("hours");
@@ -254,6 +256,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
       dimension,
       center: String(center),
       excludeAid: String(aid),
+      mode,
     });
     setCohortLoading(true);
     setCohortError("");
@@ -273,11 +276,11 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
         if (!controller.signal.aborted) setCohortLoading(false);
       });
     return () => controller.abort();
-  }, [aid, center, demo, dimension, t]);
+  }, [aid, center, demo, dimension, mode, t]);
 
   const eligibleFavorites = useMemo(
-    () => favorites.filter((favorite) => favorite.aid !== aid),
-    [aid, favorites]
+    () => favorites.filter((favorite) => favorite.mode === mode && favorite.aid !== aid),
+    [aid, favorites, mode]
   );
   const defaultFavoriteAid =
     eligibleFavorites.find((favorite) => favorite.isMain)?.aid ?? eligibleFavorites[0]?.aid ?? null;
@@ -293,7 +296,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
     setFavoriteLoading(true);
     setFavoriteError("");
     setFavoriteStats(null);
-    fetch(`/api/player/profile?aid=${encodeURIComponent(effectiveFavoriteAid)}`, {
+    fetch(`/api/player/profile?aid=${encodeURIComponent(effectiveFavoriteAid)}&mode=${mode}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -313,7 +316,7 @@ export default function PlayerRadarComparison({ aid, stats, demo = false }: Prop
         if (!controller.signal.aborted) setFavoriteLoading(false);
       });
     return () => controller.abort();
-  }, [authStatus, demo, effectiveFavoriteAid, showFavorite, t]);
+  }, [authStatus, demo, effectiveFavoriteAid, mode, showFavorite, t]);
 
   const cohort = demo
     ? demoCohort(dimension, center)

@@ -1,10 +1,11 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n/context";
+import type { GameMode } from "@/types/seasonal";
 
 /** tarkov.dev profile URL (regular mode) for an account id. */
-function tarkovDevUrl(aid: number): string {
-  return `https://tarkov.dev/players/regular/${aid}`;
+function tarkovDevUrl(aid: number, mode: GameMode): string {
+  return `https://tarkov.dev/players/${mode}/${aid}`;
 }
 
 /**
@@ -16,15 +17,17 @@ function tarkovDevUrl(aid: number): string {
  */
 export default function RefreshButton({
   aid,
+  mode = "regular",
   className = "",
 }: {
   aid: number;
+  mode?: GameMode;
   className?: string;
 }) {
   const { t } = useI18n();
   return (
     <a
-      href={tarkovDevUrl(aid)}
+      href={tarkovDevUrl(aid, mode)}
       target="_blank"
       rel="noopener noreferrer"
       title={t("player.refreshHint")}

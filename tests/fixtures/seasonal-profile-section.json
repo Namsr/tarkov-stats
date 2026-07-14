@@ -1,0 +1,44 @@
+{
+  "aid": 730002,
+  "seasonal": {
+    "cycleId": "season-2026-01",
+    "profile": {
+      "updated": 1783587600000,
+      "info": {
+        "nickname": "SectionScout",
+        "experience": 84000
+      },
+      "skills": {
+        "Common": [
+          { "Id": "Search", "LastAccess": 1783570000 }
+        ]
+      },
+      "achievements": {
+        "newest": 1783587000,
+        "older": 1783560000
+      },
+      "pmcStats": {
+        "eft": {
+          "overAllCounters": {
+            "Items": [
+              { "Key": ["Sessions", "Pmc"], "Value": 4 },
+              { "Key": ["ExitStatus", "Survived", "Pmc"], "Value": 2 },
+              { "Key": ["Deaths"], "Value": 2 },
+              { "Key": ["Kills"], "Value": 9 },
+              { "Key": ["KilledPmc"], "Value": 1 }
+            ]
+          }
+        }
+      },
+      "scavStats": {
+        "eft": {
+          "overAllCounters": {
+            "Items": [
+              { "Key": ["Sessions", "Scav"], "Value": 0 }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

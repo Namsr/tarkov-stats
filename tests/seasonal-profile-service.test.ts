@@ -1,0 +1,101 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
+// @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import { resolveSeasonalProfile } from "../lib/seasonal/profile-service.ts";
+import { createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
+import { LEGACY_IDENTITY, normalizeCycleId } from "../types/seasonal.ts";
+import { loadSeasonalCycleConfig } from "../lib/seasonal/config.ts";
+import { validateSeasonalProfile } from "../lib/seasonal-upstream.ts";
+
+const env = {
+  SEASONAL_ENABLED: "true",
+  SEASONAL_CYCLE_ID: "season-2026-01",
+  SEASONAL_STARTS_AT: "2026-07-01T00:00:00Z",
+  SEASONAL_ENDS_AT: "2026-08-01T00:00:00Z",
+  SEASONAL_UPSTREAM_CONTRACT: "game_mode",
+};
+
+async function fixture(): Promise<unknown> {
+  return JSON.parse(await readFile(new URL("./fixtures/seasonal-game-mode.json", import.meta.url), "utf8"));
+}
+
+const cycleDependencies = {
+  loadCycle: () => loadSeasonalCycleConfig(env),
+  validatePayload: (payload: unknown, cycle: ReturnType<typeof loadSeasonalCycleConfig>) =>
+    validateSeasonalProfile(payload, {
+      enabled: cycle!.enabled,
+      confirmedContract: cycle!.upstreamContract,
+      cycleId: cycle!.cycleId,
+      seasonStartsAt: cycle!.startsAt,
+      seasonEndsAt: cycle!.endsAt,
+    }),
+};
+
+test("legacy profile identity remains regular/persistent when mode and cycle are omitted", () => {
+  assert.deepEqual(LEGACY_IDENTITY, { mode: "regular", cycleId: "persistent" });
+  assert.equal(normalizeCycleId(null, "regular"), "persistent");
+  assert.equal(normalizeCycleId(null, "seasonal"), null);
+});
+
+test("Seasonal profile fails closed without a confirmed network adapter", async () => {
+  const result = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false },
+    { ...cycleDependencies, getStore: async () => null }
+  );
+  assert.deepEqual(result, {
+    ok: false,
+    status: 503,
+    error: "Seasonal upstream endpoint is not configured",
+  });
+});
+
+test("canonical Seasonal pipeline upserts and deduplicates capture by profile timestamp", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const dependencies = {
+    ...cycleDependencies,
+    fetchPayload: async () => fixture(),
+    getStore: async () => store,
+    now: () => 1_783_600_000_000,
+  };
+
+  const first = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false },
+    dependencies
+  );
+  const duplicate = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    dependencies
+  );
+
+  assert.equal(first.ok && first.capture.status, "baseline");
+  assert.equal(duplicate.ok && duplicate.capture.status, "duplicate");
+  assert.equal((await store.snapshotHistory({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).length, 1);
+});
+
+test("canonical Seasonal pipeline rejects an upstream aid mismatch before persistence", async () => {
+  let writes = 0;
+  const result = await resolveSeasonalProfile(
+    { aid: 999, cycleId: "season-2026-01", force: false },
+    {
+      ...cycleDependencies,
+      fetchPayload: async () => fixture(),
+      getStore: async () => {
+        writes += 1;
+        return null;
+      },
+    }
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.status, 502);
+  assert.equal(writes, 0);
+});

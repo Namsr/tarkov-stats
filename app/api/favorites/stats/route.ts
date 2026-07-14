@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   // ?refresh=1 (per-account «Обновить» / перезагрузка страницы) обходит 5-мин кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
 
-  const favorites = await favStore.list(user.sub);
+  const favorites = await favStore.list(user.sub, null);
   const noStore = { ...headers, "Cache-Control": "no-store" };
   if (favorites.length === 0) return NextResponse.json({ favorites: [] }, { headers: noStore });
 
@@ -39,6 +39,15 @@ export async function GET(request: NextRequest) {
   // public profile fetch is in-process cached, so repeat loads are cheap).
   const enriched: FavoriteWithStats[] = [];
   for (const fav of favorites) {
+    if (fav.mode === "pve" || fav.mode === "arena") {
+      const stored = await (await getStore(fav.mode))?.stored(fav.aid).catch(() => null);
+      enriched.push({ ...fav, stats: stored?.stats ?? null });
+      continue;
+    }
+    if (fav.mode !== "regular") {
+      enriched.push({ ...fav, stats: null });
+      continue;
+    }
     try {
       const { profile, fromCache } = await getPublicProfile(fav.aid, { force });
       if (!profile) {
@@ -54,7 +63,12 @@ export async function GET(request: NextRequest) {
           await playerStore.upsert(fav.aid, stats, ids).catch(() => {});
         }
         if (stats.nickname && stats.nickname !== fav.nickname) {
-          await favStore.updateNickname(user.sub, fav.aid, stats.nickname).catch(() => {});
+          await favStore.updateNickname(
+            user.sub,
+            fav.aid,
+            stats.nickname,
+            { mode: fav.mode, cycleId: fav.cycleId }
+          ).catch(() => {});
           fav.nickname = stats.nickname;
         }
       }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStore, type RadarMetric, type RangeDimension } from "@/lib/db";
+import { isGameMode } from "@/types/seasonal";
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -34,6 +35,10 @@ function boundsAtThirtyPercent(dimension: RangeDimension, center: number) {
 
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
+  const rawMode = params.get("mode") ?? "regular";
+  if (!isGameMode(rawMode) || rawMode === "seasonal") {
+    return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+  }
   const dimension = parseDimension(params.get("dimension"));
   const centerValue = params.get("center");
   const center = Number(centerValue);
@@ -52,7 +57,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "excludeAid must be a positive integer" }, { status: 400 });
   }
 
-  const store = await getStore();
+  const store = await getStore(rawMode);
   if (!store) {
     const noActivity = center === 0;
     return NextResponse.json({

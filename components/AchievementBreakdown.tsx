@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import type { CrossSectionMode } from "@/lib/db";
 
 // Mirrors the /api/average/achievements row shape. Defined locally so this
 // client component never imports the server-only route module.
@@ -52,9 +53,11 @@ function rarityClass(rarity: string): string {
 export default function AchievementBreakdown({
   open,
   onToggle,
+  mode = "regular",
 }: {
   open: boolean;
   onToggle: () => void;
+  mode?: CrossSectionMode;
 }) {
   const { t } = useI18n();
   const [data, setData] = useState<Payload | null>(null);
@@ -76,7 +79,7 @@ export default function AchievementBreakdown({
         setError("");
       }
     });
-    fetch("/api/average/achievements")
+    fetch(`/api/average/achievements?mode=${mode}`)
       .then(async (res) => {
         const j = (await res.json()) as Payload & { error?: string };
         if (!res.ok) throw new Error(j.error ?? t("achv.error"));
@@ -88,7 +91,7 @@ export default function AchievementBreakdown({
     return () => {
       cancelled = true;
     };
-  }, [open, data, t]);
+  }, [open, data, mode, t]);
 
   const rows = useMemo(() => {
     if (!data) return [];

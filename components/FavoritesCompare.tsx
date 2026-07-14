@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import type { Favorite } from "@/lib/db";
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
 
 interface Props {
   favorites: Favorite[];
-  statsByAid: Map<number, ParsedPlayerStats | null>;
+  statsByFavorite: Map<string, ParsedPlayerStats | null>;
 }
 
 interface MetricDef {
@@ -36,12 +37,13 @@ function fmt(v: number, dec: number): string {
   return v.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
-export default function FavoritesCompare({ favorites, statsByAid }: Props) {
+export default function FavoritesCompare({ favorites, statsByFavorite }: Props) {
   const { t } = useI18n();
 
   // Only accounts whose public profile actually loaded can be compared.
   const cols = favorites
-    .map((f) => ({ fav: f, stats: statsByAid.get(f.aid) ?? null }))
+    .filter((favorite) => favorite.mode === "regular")
+    .map((favorite) => ({ fav: favorite, stats: statsByFavorite.get(favoriteKey(favorite)) ?? null }))
     .filter((c): c is { fav: Favorite; stats: ParsedPlayerStats } => c.stats !== null);
 
   if (cols.length < 2) {
@@ -58,10 +60,10 @@ export default function FavoritesCompare({ favorites, statsByAid }: Props) {
             </th>
             {cols.map((c) => (
               <th
-                key={c.fav.aid}
+                key={favoriteKey(c.fav)}
                 className="py-3 px-3 text-right text-xs uppercase tracking-wider text-[var(--accent)]"
               >
-                <Link href={`/player/${c.fav.aid}`} className="hover:underline">
+                <Link href={favoriteHref(c.fav)} className="hover:underline">
                   {c.stats.nickname}
                 </Link>
               </th>
@@ -84,7 +86,7 @@ export default function FavoritesCompare({ favorites, statsByAid }: Props) {
                   const isBest = !allEqual && v === best;
                   return (
                     <td
-                      key={c.fav.aid}
+                      key={favoriteKey(c.fav)}
                       className={`py-3 px-3 text-right font-medium ${
                         isBest ? "text-[var(--success)]" : "text-[var(--muted-strong)]"
                       }`}

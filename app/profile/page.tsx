@@ -9,15 +9,21 @@ import FavoritesCompare from "@/components/FavoritesCompare";
 import StatCard from "@/components/StatCard";
 import { isReload } from "@/lib/is-reload";
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
 
 interface FavStatsResponse {
-  favorites: { aid: number; stats: ParsedPlayerStats | null }[];
+  favorites: {
+    mode: "regular" | "pve" | "arena" | "seasonal";
+    cycleId: string;
+    aid: number;
+    stats: ParsedPlayerStats | null;
+  }[];
 }
 
 export default function ProfilePage() {
   const { t } = useI18n();
   const { enabled, loading, favorites } = useFavorites();
-  const [statsByAid, setStatsByAid] = useState<Map<number, ParsedPlayerStats | null>>(new Map());
+  const [statsByFavorite, setStatsByFavorite] = useState<Map<string, ParsedPlayerStats | null>>(new Map());
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState("");
 
@@ -29,9 +35,9 @@ export default function ProfilePage() {
       const res = await fetch(`/api/favorites/stats${force ? "?refresh=1" : ""}`);
       if (!res.ok) throw new Error();
       const data = (await res.json()) as FavStatsResponse;
-      const map = new Map<number, ParsedPlayerStats | null>();
-      for (const f of data.favorites) map.set(f.aid, f.stats);
-      setStatsByAid(map);
+      const map = new Map<string, ParsedPlayerStats | null>();
+      for (const favorite of data.favorites) map.set(favoriteKey(favorite), favorite.stats);
+      setStatsByFavorite(map);
     } catch {
       setStatsError(t("profile.loadError"));
     } finally {
@@ -86,7 +92,7 @@ export default function ProfilePage() {
   }
 
   const main = favorites.find((f) => f.isMain);
-  const mainStats = main ? statsByAid.get(main.aid) ?? null : null;
+  const mainStats = main ? statsByFavorite.get(favoriteKey(main)) ?? null : null;
 
   return (
     <main className="page-frame max-w-5xl space-y-10">
@@ -120,7 +126,7 @@ export default function ProfilePage() {
                   {t("profile.mainHeading")}
                 </h2>
                 <Link
-                  href={`/player/${main.aid}`}
+                  href={favoriteHref(main)}
                   className="ghost-button !min-h-9 !px-3 !py-2 text-xs text-[var(--accent)]"
                 >
                   {t("profile.open")}
@@ -146,7 +152,7 @@ export default function ProfilePage() {
             </section>
           )}
 
-          <FavoritesList statsByAid={statsByAid} statsLoading={statsLoading} />
+          <FavoritesList statsByFavorite={statsByFavorite} statsLoading={statsLoading} />
 
           <section className="data-panel p-5 sm:p-6 space-y-4">
             <div>
@@ -155,7 +161,7 @@ export default function ProfilePage() {
               </h2>
               <p className="text-sm text-[var(--muted)] mt-2">{t("profile.compareHint")}</p>
             </div>
-            <FavoritesCompare favorites={favorites} statsByAid={statsByAid} />
+            <FavoritesCompare favorites={favorites} statsByFavorite={statsByFavorite} />
           </section>
         </>
       )}
