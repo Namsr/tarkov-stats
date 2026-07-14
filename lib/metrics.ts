@@ -27,6 +27,7 @@ export const Y_METRICS: YMetric[] = [
   { key: "survival_rate", label: "Avg survival", agg: "avg", column: "survival_rate", unit: "%", decimals: 1 },
   { key: "kills_per_raid", label: "Avg kills/raid", agg: "avg", column: "kills_per_raid", decimals: 2 },
   { key: "total_raids", label: "Avg raids", agg: "avg", column: "total_raids", decimals: 0 },
+  { key: "pmc_raids", label: "Avg PMC raids", agg: "avg", column: "pmc_raids", decimals: 0 },
   { key: "total_kills", label: "Avg kills", agg: "avg", column: "total_kills", decimals: 0 },
   { key: "killed_pmc", label: "Avg PMC kills", agg: "avg", column: "killed_pmc", decimals: 0 },
   { key: "deaths", label: "Avg deaths", agg: "avg", column: "deaths", decimals: 0 },

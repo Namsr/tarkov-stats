@@ -229,7 +229,11 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
   const maxValue = Math.max(1, ...bins.map(valueOf));
   const dimensionUnit = t(dimension === "hours" ? "unit.h" : "average.unitRaids");
   const focusMetrics = METRICS.slice(0, 4);
-  const detailMetrics = METRICS.slice(4);
+  const detailMetrics = METRICS.slice(4).map((metric) =>
+    dimension === "pmc_raids" && metric.key === "total_raids"
+      ? { ...metric, key: "pmc_raids" }
+      : metric,
+  );
 
   function boundaryPosition(value: number, edge: "low" | "high"): number {
     if (bins.length === 0 || value <= bins[0].lo) return 0;
