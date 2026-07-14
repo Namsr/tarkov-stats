@@ -46,8 +46,8 @@ Set-Location "D:\1703n\tarkov dev 2"
 npm.cmd run build
 Remove-Item "$env:TEMP\tarkovstats-deploy.tar.gz" -ErrorAction SilentlyContinue
 tar -czf "$env:TEMP\tarkovstats-deploy.tar.gz" --exclude=.git --exclude=node_modules --exclude=.next --exclude=".env*" --exclude=.codex-local --exclude=backups --exclude=data --exclude="*.db*" .
-scp -i C:\Users\1703n\codex "$env:TEMP\tarkovstats-deploy.tar.gz" root@130.49.153.15:/tmp/tarkovstats-deploy.tar.gz
-ssh -i C:\Users\1703n\codex root@130.49.153.15
+scp -i C:\Users\1703n\codex -o IdentitiesOnly=yes "$env:TEMP\tarkovstats-deploy.tar.gz" root@130.49.153.15:/tmp/tarkovstats-deploy.tar.gz
+ssh -i C:\Users\1703n\codex -o IdentitiesOnly=yes root@130.49.153.15
 ```
 
 If Windows OpenSSH rejects the private key because the Codex sandbox group has
