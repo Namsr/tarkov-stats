@@ -192,7 +192,7 @@ export default function RegularPlayer({
             )}
           </div>
           <div className="flex flex-wrap items-start gap-3">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-start gap-2">
               <div className="flex max-w-56 flex-col items-start gap-1">
                 <RefreshButton aid={Number(aid)} mode={mode} stale={profileIsStale} />
                 {profileIsStale && (
