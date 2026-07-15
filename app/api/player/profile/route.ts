@@ -85,7 +85,12 @@ export async function GET(request: NextRequest) {
     try {
       const store = await getStore(mode);
       const stored = await store?.stored(aid);
-      if (stored) return NextResponse.json(stored, { headers: noStore });
+      if (stored && !force) {
+        return NextResponse.json(
+          { ...stored, profileUpdatedAt: Number(stored.stats.profileUpdatedAt) || null },
+          { headers: noStore }
+        );
+      }
 
       const { profile } = await getPublicProfile(aid, { force, mode });
       if (!profile) {
@@ -94,21 +99,21 @@ export async function GET(request: NextRequest) {
           { status: 404, headers: noStore }
         );
       }
-      if (mode === "pve" && pveProfileDecision(profile).state !== "store") {
-        return NextResponse.json(
-          { error: "PVE profile is outside the scan activity window" },
-          { status: 404, headers: noStore }
-        );
-      }
-
       const levels = mode === "pve" ? await getPlayerLevels().catch(() => []) : [];
       const stats = mode === "arena"
         ? parseArenaProfileStats(profile)
         : parseProfileStats(profile, levels);
+      stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
-      if (!store) throw new Error("player store unavailable");
-      await store.upsert(aid, stats, achievementIds);
-      return NextResponse.json({ profile, stats }, { headers: noStore });
+      const shouldStore = mode === "arena" || pveProfileDecision(profile).state === "store";
+      if (shouldStore) {
+        if (!store) throw new Error("player store unavailable");
+        await store.upsert(aid, stats, achievementIds);
+      }
+      return NextResponse.json(
+        { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
+        { headers: noStore }
+      );
     } catch (error) {
       console.error("mode profile load failed", error);
       return NextResponse.json({ error: "Failed to load player profile" }, { status: 503, headers: noStore });
@@ -146,7 +151,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ profile, stats }, { headers: noStore });
+    return NextResponse.json(
+      { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
+      { headers: noStore }
+    );
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch player profile" },

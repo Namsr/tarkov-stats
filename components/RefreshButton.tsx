@@ -18,10 +18,12 @@ function tarkovDevUrl(aid: number, mode: GameMode): string {
 export default function RefreshButton({
   aid,
   mode = "regular",
+  stale = false,
   className = "",
 }: {
   aid: number;
   mode?: GameMode;
+  stale?: boolean;
   className?: string;
 }) {
   const { t } = useI18n();
@@ -30,8 +32,8 @@ export default function RefreshButton({
       href={tarkovDevUrl(aid, mode)}
       target="_blank"
       rel="noopener noreferrer"
-      title={t("player.refreshHint")}
-      className={`ghost-button flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
+      title={t(stale ? "player.refreshStaleHint" : "player.refreshHint")}
+      className={`${stale ? "tactical-button" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
     >
       <span aria-hidden>⟳</span>
       <span className="hidden sm:inline">{t("player.refresh")}</span>

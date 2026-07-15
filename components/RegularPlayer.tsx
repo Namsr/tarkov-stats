@@ -14,6 +14,8 @@ import { isReload } from "@/lib/is-reload";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import type { CrossSectionMode } from "@/lib/db";
 
+const PROFILE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
+
 interface Props {
   params: Promise<{ aid: string }>;
   searchParams: Promise<{ radarDemo?: string | string[] }>;
@@ -32,6 +34,8 @@ export default function RegularPlayer({
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
   const [achievementIds, setAchievementIds] = useState<string[]>([]);
+  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(null);
+  const [profileIsStale, setProfileIsStale] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -40,6 +44,8 @@ export default function RegularPlayer({
     // Reset the route-level request state whenever the account changes.
     setLoading(true);
     setError("");
+    setProfileUpdatedAt(null);
+    setProfileIsStale(false);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const requestParams = new URLSearchParams({ aid, mode });
@@ -51,6 +57,7 @@ export default function RegularPlayer({
           profile?: PlayerProfile;
           stats?: ParsedPlayerStats;
           achievementIds?: string[];
+          profileUpdatedAt?: number | null;
         };
         if (!res.ok || !data.stats) {
           throw new Error(data.error ?? t("player.loadError"));
@@ -64,6 +71,9 @@ export default function RegularPlayer({
         setAchievementIds(
           data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
         );
+        const updatedAt = data.profileUpdatedAt ?? null;
+        setProfileUpdatedAt(updatedAt);
+        setProfileIsStale(updatedAt !== null && Date.now() - updatedAt > PROFILE_STALE_MS);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : t("player.loadError"));
@@ -149,7 +159,6 @@ export default function RegularPlayer({
   ];
 
   const skills: SkillEntry[] = profile?.skills?.Common ?? [];
-
   return (
     <main className="page-frame">
       <Link
@@ -170,10 +179,21 @@ export default function RegularPlayer({
                 {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
               </div>
             )}
+            {profileUpdatedAt !== null && (
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                {t("player.profileUpdated", {
+                  date: new Intl.DateTimeFormat(undefined, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                    timeZone: "Europe/Moscow",
+                  }).format(profileUpdatedAt),
+                })}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-start gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <RefreshButton aid={Number(aid)} mode={mode} />
+              <RefreshButton aid={Number(aid)} mode={mode} stale={profileIsStale} />
               <FavoriteButton
                 aid={Number(aid)}
                 nickname={stats.nickname}
