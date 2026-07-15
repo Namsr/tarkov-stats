@@ -33,7 +33,7 @@ export default function RefreshButton({
       target="_blank"
       rel="noopener noreferrer"
       title={t(stale ? "player.refreshStaleHint" : "player.refreshHint")}
-      className={`${stale ? "tactical-button" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
+      className={`${stale ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
     >
       <span aria-hidden>⟳</span>
       <span className="hidden sm:inline">{t("player.refresh")}</span>
