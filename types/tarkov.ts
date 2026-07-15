@@ -25,6 +25,11 @@ export interface PlayerProfile {
   scavStats?: RaidStats;
   achievements?: Record<string, number>;
   skills?: SkillData;
+  stat?: {
+    arenaOverAllCounters?: ArenaOverallCounters;
+    totalInGameTime?: number;
+    [key: string]: unknown;
+  };
   /** Unix ms timestamp of when tarkov.dev last refreshed this cached profile. */
   updated?: number;
   // Legacy/optional top-level fallbacks (not present in real payload).
@@ -34,6 +39,51 @@ export interface PlayerProfile {
   registrationDate?: number;
   lastActiveDate?: number;
   [key: string]: unknown;
+}
+
+export type ArenaModeKey = "teamFight" | "lastHero" | "checkpoint" | "blastGang";
+
+export interface ArenaCounterGroup {
+  Counters?: Record<string, unknown> | ArenaCounterItem[] | { Items?: ArenaCounterItem[] };
+  [key: string]: unknown;
+}
+
+export interface ArenaCounterItem {
+  Key: string | string[];
+  Value: number;
+}
+
+export interface ArenaOverallCounters {
+  UnrankedOverall?: ArenaCounterGroup;
+  UnrankedTeamFight?: ArenaCounterGroup;
+  UnrankedLastHero?: ArenaCounterGroup;
+  UnrankedCheckPoint?: ArenaCounterGroup;
+  UnrankedBlastGang?: ArenaCounterGroup;
+  [key: string]: unknown;
+}
+
+export interface ArenaModeStats {
+  key: ArenaModeKey;
+  kills: number;
+  deaths: number;
+  kdRatio: number;
+  maxKillStreak: number;
+  roundMvp: number;
+  matchMvp: number;
+  maxWinStreak: number;
+}
+
+export interface ArenaStats {
+  currentKillStreak: number;
+  maxKillStreak: number;
+  maxWinStreak: number;
+  bestArp: number;
+  currentLossStreak: number;
+  maxLossStreak: number;
+  totalKills: number;
+  totalDeaths: number;
+  kdRatio: number;
+  modes: ArenaModeStats[];
 }
 
 export interface RaidStats {
@@ -113,5 +163,6 @@ export interface ParsedPlayerStats {
   lastActiveDate: number;
   avgLifespan: number;
   totalLootValue: number;
+  arena?: ArenaStats;
   [key: string]: unknown;
 }

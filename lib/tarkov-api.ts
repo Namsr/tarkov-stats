@@ -1,4 +1,12 @@
-import { PlayerSearchResult, PlayerProfile, ParsedPlayerStats } from "@/types/tarkov";
+import type {
+  PlayerSearchResult,
+  PlayerProfile,
+  ParsedPlayerStats,
+  ArenaCounterItem,
+  ArenaCounterGroup,
+  ArenaModeKey,
+  ArenaModeStats,
+} from "@/types/tarkov";
 
 /** Captcha-gated live service (nickname search + live account fetch). */
 const PLAYER_API_BASE = "https://player.tarkov.dev";
@@ -196,6 +204,129 @@ const round = (n: number, d = 2) => {
   const f = 10 ** d;
   return Math.round(n * f) / f;
 };
+
+export const PVE_SKILL_CUTOFF_SECONDS = Date.parse("2025-11-15T00:00:00+03:00") / 1000;
+export type PveProfileDecision =
+  | { state: "store"; lastSkillAccess: number }
+  | { state: "skipped_before_cutoff"; lastSkillAccess: number }
+  | { state: "skipped_missing_skill_date"; lastSkillAccess: null };
+
+export function pveProfileDecision(profile: PlayerProfile): PveProfileDecision {
+  const accesses = (profile.skills?.Common ?? [])
+    .filter((skill) => Number(skill.Progress) > 0)
+    .map((skill) => Number(skill.LastAccess))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (accesses.length === 0) {
+    return { state: "skipped_missing_skill_date", lastSkillAccess: null };
+  }
+  const lastSkillAccess = Math.max(...accesses);
+  return {
+    state: lastSkillAccess >= PVE_SKILL_CUTOFF_SECONDS ? "store" : "skipped_before_cutoff",
+    lastSkillAccess,
+  };
+}
+
+function arenaCounter(group: ArenaCounterGroup | undefined, key: string): number {
+  const counters = group?.Counters;
+  if (!counters) return 0;
+  const fromItems = (items: ArenaCounterItem[]) => {
+    const item = items.find(
+      ({ Key }) => Key === key || (Array.isArray(Key) && Key.length === 1 && Key[0] === key)
+    );
+    const value = Number(item?.Value);
+    return Number.isFinite(value) ? value : 0;
+  };
+  if (Array.isArray(counters)) return fromItems(counters);
+  if (typeof counters !== "object") return 0;
+  const items = (counters as { Items?: unknown }).Items;
+  if (Array.isArray(items)) return fromItems(items as ArenaCounterItem[]);
+  const value = Number((counters as Record<string, unknown>)[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+const ARENA_MODES: readonly [ArenaModeKey, string][] = [
+  ["teamFight", "UnrankedTeamFight"],
+  ["lastHero", "UnrankedLastHero"],
+  ["checkpoint", "UnrankedCheckPoint"],
+  ["blastGang", "UnrankedBlastGang"],
+];
+
+/** Parses Arena's separate counter tree into the shared stored-stat envelope. */
+export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStats {
+  const counters = profile.stat?.arenaOverAllCounters;
+  const modes: ArenaModeStats[] = ARENA_MODES.map(([key, upstreamKey]) => {
+    const group = counters?.[upstreamKey] as ArenaCounterGroup | undefined;
+    const kills = arenaCounter(group, "Kills");
+    const deaths = arenaCounter(group, "Deaths");
+    return {
+      key,
+      kills,
+      deaths,
+      kdRatio: round(deaths > 0 ? kills / deaths : kills),
+      maxKillStreak: arenaCounter(group, "MaxKillsWithoutDeaths"),
+      roundMvp: arenaCounter(group, "RoundMvpCount"),
+      matchMvp: arenaCounter(group, "MatchMvpCount"),
+      maxWinStreak: arenaCounter(group, "LongestWinStreak"),
+    };
+  });
+  const totalKills = modes.reduce((sum, mode) => sum + mode.kills, 0);
+  const totalDeaths = modes.reduce((sum, mode) => sum + mode.deaths, 0);
+  const overall = counters?.UnrankedOverall;
+  const totalInGameTime = Number(profile.stat?.totalInGameTime);
+  const hoursPlayed = round(
+    Number.isFinite(totalInGameTime) && totalInGameTime > 0 ? totalInGameTime / 3600 : 0,
+    1
+  );
+  const arena = {
+    currentKillStreak: arenaCounter(overall, "KillsWithoutDeaths"),
+    maxKillStreak: arenaCounter(overall, "MaxKillsWithoutDeaths"),
+    maxWinStreak: arenaCounter(overall, "LongestWinStreak"),
+    bestArp: arenaCounter(overall, "BestArp"),
+    currentLossStreak: arenaCounter(overall, "LoseStreak"),
+    maxLossStreak: arenaCounter(overall, "LongestLoseStreak"),
+    totalKills,
+    totalDeaths,
+    kdRatio: round(totalDeaths > 0 ? totalKills / totalDeaths : totalKills),
+    modes,
+  };
+
+  return {
+    nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
+    level: 0,
+    prestige: profile.info?.prestigeLevel ?? 0,
+    experience: profile.info?.experience ?? profile.experience ?? 0,
+    side: profile.info?.side ?? "Unknown",
+    totalRaids: 0,
+    pmcRaids: 0,
+    scavRaids: 0,
+    survivedRaids: 0,
+    survivalRate: 0,
+    totalKills,
+    killedPmc: 0,
+    killsPerRaid: 0,
+    kdRatio: arena.kdRatio,
+    pmcKdRatio: 0,
+    deaths: totalDeaths,
+    pmcDeaths: 0,
+    runThrough: 0,
+    pmcSurvived: 0,
+    pmcSurvivalRate: 0,
+    pmcKills: 0,
+    pmcKillsPerRaid: 0,
+    pmcExitKilled: 0,
+    pmcExitLeft: 0,
+    pmcExitTransit: 0,
+    pmcExitMia: 0,
+    hoursPlayed,
+    longestWinStreak: arena.maxWinStreak,
+    achievementsCount: 0,
+    registrationDate: profile.info?.registrationDate ?? 0,
+    lastActiveDate: profile.info?.lastActiveDate ?? 0,
+    avgLifespan: 0,
+    totalLootValue: 0,
+    arena,
+  };
+}
 
 /**
  * Parses the real public profile payload into flat stats.

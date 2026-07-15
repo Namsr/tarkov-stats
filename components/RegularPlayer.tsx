@@ -106,12 +106,21 @@ export default function RegularPlayer({
     );
   }
 
-  const coreStats: { label: string; value: string | number; suffix?: string }[] = [
-    { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
-    { label: t("player.pmcKd"), value: stats.pmcKdRatio },
-    { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
-    { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
-  ];
+  const arena = stats.arena;
+  const coreStats: { label: string; value: string | number; suffix?: string }[] =
+    mode === "arena"
+      ? [
+          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+          { label: t("arena.totalKills"), value: arena?.totalKills.toLocaleString() ?? "—" },
+          { label: t("arena.totalDeaths"), value: arena?.totalDeaths.toLocaleString() ?? "—" },
+          { label: t("arena.kdRatio"), value: arena?.kdRatio ?? "—" },
+        ]
+      : [
+          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+          { label: t("player.pmcKd"), value: stats.pmcKdRatio },
+          { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
+          { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
+        ];
 
   const raidStats: { label: string; value: string | number; suffix?: string }[] = [
     { label: t("player.totalRaids"), value: stats.totalRaids },
@@ -155,10 +164,12 @@ export default function RegularPlayer({
           <div className="min-w-0">
             <p className="page-kicker">#{aid}</p>
             <h1 className="page-title break-words">{stats.nickname}</h1>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
-              <span>{t("player.sideLabel", { side: stats.side })}</span>
-              {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
-            </div>
+            {mode !== "arena" && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
+                <span>{t("player.sideLabel", { side: stats.side })}</span>
+                {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-start gap-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -180,12 +191,68 @@ export default function RegularPlayer({
         </div>
       </section>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
+      {mode === "arena" ? (
+        <div className="mt-5 space-y-5">
+          <section>
+            <h2 className="section-heading mb-3">{t("arena.overall")}</h2>
+            <div className="data-ledger">
+              {[
+                { label: t("arena.currentKillStreak"), value: arena?.currentKillStreak ?? "—" },
+                { label: t("arena.maxKillStreak"), value: arena?.maxKillStreak ?? "—" },
+                { label: t("arena.maxWinStreak"), value: arena?.maxWinStreak ?? "—" },
+                { label: t("arena.bestArp"), value: arena?.bestArp ?? "—" },
+                { label: t("arena.currentLossStreak"), value: arena?.currentLossStreak ?? "—" },
+                { label: t("arena.maxLossStreak"), value: arena?.maxLossStreak ?? "—" },
+              ].map((item) => (
+                <StatCard key={item.label} {...item} />
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h2 className="section-heading mb-3">{t("arena.byMode")}</h2>
+            <div className="data-panel overflow-x-auto">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--card-border)] text-left text-[var(--muted)]">
+                    <th scope="col" className="px-4 py-3 font-medium">{t("arena.mode")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.totalKills")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.totalDeaths")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.kdRatio")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.maxKillStreak")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.roundMvp")}</th>
+                    <th scope="col" className="px-3 py-3 text-right font-medium">{t("arena.matchMvp")}</th>
+                    <th scope="col" className="px-4 py-3 text-right font-medium">{t("arena.maxWinStreak")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(arena?.modes ?? []).map((row) => (
+                    <tr key={row.key} className="border-b border-[var(--card-border)] last:border-0">
+                      <th scope="row" className="px-4 py-3 text-left font-medium text-[var(--foreground)]">
+                        {t("arena.mode." + row.key)}
+                      </th>
+                      {[row.kills, row.deaths, row.kdRatio, row.maxKillStreak, row.roundMvp, row.matchMvp, row.maxWinStreak].map(
+                        (value, index) => (
+                          <td key={index} className="px-3 py-3 text-right tabular-nums text-[var(--muted-strong)] last:pr-4">
+                            {value}
+                          </td>
+                        ),
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <>
+          <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
         <PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} demo={radarDemo} />
         <CheaterScore stats={stats} ownedAchievementIds={achievementIds} mode={mode} />
       </div>
 
-      <div className="mt-5 space-y-5">
+          <div className="mt-5 space-y-5">
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="section-heading">{t("player.raidStats")}</h2>
@@ -208,7 +275,7 @@ export default function RegularPlayer({
         </section>
       </div>
 
-      {skills.length > 0 ? (
+          {skills.length > 0 ? (
         <div className="page-grid mt-5">
           <section className="data-panel p-5">
             <h2 className="section-heading text-base mb-4">{t("player.skills")}</h2>
@@ -236,10 +303,12 @@ export default function RegularPlayer({
             <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode={mode} />
           </aside>
         </div>
-      ) : (
+          ) : (
         <div className="mt-5 ml-auto max-w-[360px]">
           <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode={mode} />
         </div>
+          )}
+        </>
       )}
     </main>
   );
