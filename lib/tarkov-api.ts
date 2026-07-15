@@ -56,18 +56,24 @@ export async function getPlayerProfile(
 // (риск бана IP VPS / амплификации) и частоту записи одинаковых строк в БД.
 // Кэшируем и 404 (null) — защита от перебора несуществующих id.
 type CachedProfile = { profile: PlayerProfile | null; ts: number };
-const profileCache = new Map<number, CachedProfile>();
+export type PublicProfileMode = "regular" | "pve" | "arena";
+const PUBLIC_PROFILE_PATH: Record<PublicProfileMode, string> = {
+  regular: "profile",
+  pve: "pve",
+  arena: "arena",
+};
+const profileCache = new Map<string, CachedProfile>();
 const PROFILE_TTL_MS = 5 * 60 * 1000; // 5 минут
 const PROFILE_CACHE_MAX = 2000;
 
-function cacheProfile(aid: number, profile: PlayerProfile | null, ts: number) {
+function cacheProfile(key: string, profile: PlayerProfile | null, ts: number) {
   if (profileCache.size > PROFILE_CACHE_MAX) {
     for (const [k, v] of profileCache) {
       if (ts - v.ts >= PROFILE_TTL_MS) profileCache.delete(k);
     }
     if (profileCache.size > PROFILE_CACHE_MAX) profileCache.clear();
   }
-  profileCache.set(aid, { profile, ts });
+  profileCache.set(key, { profile, ts });
 }
 
 export interface PublicProfileResult {
@@ -84,29 +90,40 @@ export interface PublicProfileResult {
  */
 export async function getPublicProfile(
   aid: number,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; mode?: PublicProfileMode } = {}
 ): Promise<PublicProfileResult> {
   const now = Date.now();
+  const mode = opts.mode ?? "regular";
+  const cacheKey = `${mode}:${aid}`;
   // force обходит in-process кэш: всё равно идём в upstream и перезаписываем кэш
   // свежим ответом (fromCache=false → вызывающий сделает upsert в БД).
   if (!opts.force) {
-    const hit = profileCache.get(aid);
+    const hit = profileCache.get(cacheKey);
     if (hit && now - hit.ts < PROFILE_TTL_MS) {
       return { profile: hit.profile, fromCache: true };
     }
   }
 
-  const url = `${PUBLIC_PROFILE_BASE}/profile/${aid}.json`;
+  const url = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
   const res = await fetch(url);
   if (res.status === 404) {
-    cacheProfile(aid, null, now);
+    cacheProfile(cacheKey, null, now);
     return { profile: null, fromCache: false };
   }
   if (!res.ok) {
     throw new Error(`Public profile fetch failed: ${res.status}`);
   }
   const profile = (await res.json()) as PlayerProfile;
-  cacheProfile(aid, profile, now);
+  if (Number(profile.aid) !== aid || !profile.info) {
+    throw new Error("Public profile identity mismatch");
+  }
+  if (mode === "arena" && !profile.stat?.arenaOverAllCounters) {
+    throw new Error("Public Arena profile schema mismatch");
+  }
+  if (mode === "pve" && (!profile.pmcStats?.eft || !Array.isArray(profile.skills?.Common))) {
+    throw new Error("Public PVE profile schema mismatch");
+  }
+  cacheProfile(cacheKey, profile, now);
   return { profile, fromCache: false };
 }
 

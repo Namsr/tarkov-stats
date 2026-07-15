@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { parsePlayerId } from "@/lib/player-id";
+import { parsePlayerInput } from "@/lib/player-id";
 import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchResult } from "@/types/tarkov";
 
@@ -21,8 +21,8 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     const clean = query.trim();
     if (!clean) return;
 
-    const aid = parsePlayerId(clean);
-    if (aid === null) {
+    const player = parsePlayerInput(clean);
+    if (player === null) {
       if (!NICKNAME_RE.test(clean)) {
         setError(t("search.error"));
         setNotFound(false);
@@ -59,7 +59,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     setError("");
     setNotFound(false);
     setResults([]);
-    router.push(`/player/regular/${aid}`);
+    router.push(`/player/${player.mode}/${player.aid}`);
   }
 
   return (

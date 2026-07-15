@@ -11,7 +11,7 @@ const javascript = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const tested = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
-const { parseArenaProfileStats, PVE_SKILL_CUTOFF_SECONDS, pveProfileDecision } = tested;
+const { getPublicProfile, parseArenaProfileStats, PVE_SKILL_CUTOFF_SECONDS, pveProfileDecision } = tested;
 
 const base = { aid: 1, info: { nickname: "Test", side: "Savage", experience: 0 } };
 
@@ -50,4 +50,27 @@ test("PVE cutoff includes the boundary and uses the latest progressed skill", ()
   assert.equal(pveProfileDecision(profile([[1, PVE_SKILL_CUTOFF_SECONDS]])).state, "store");
   assert.equal(pveProfileDecision(profile([[1, PVE_SKILL_CUTOFF_SECONDS - 1]])).state, "skipped_before_cutoff");
   assert.equal(pveProfileDecision(profile([[0, PVE_SKILL_CUTOFF_SECONDS + 1], [1, 0]])).state, "skipped_missing_skill_date");
+});
+
+test("public profile fetch uses the mode-specific static cache path", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    const modeShape = url.includes("/arena/")
+      ? { stat: { arenaOverAllCounters: {} } }
+      : { pmcStats: { eft: { overAllCounters: { Items: [] }, totalInGameTime: 0 } }, skills: { Common: [] } };
+    return new Response(JSON.stringify({ ...base, aid: 5869253, ...modeShape }), { status: 200 });
+  };
+  try {
+    await getPublicProfile(5869253, { force: true, mode: "pve" });
+    await getPublicProfile(5869253, { force: true, mode: "arena" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(urls, [
+    "https://players.tarkov.dev/pve/5869253.json",
+    "https://players.tarkov.dev/arena/5869253.json",
+  ]);
 });

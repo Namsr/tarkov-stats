@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPublicProfile, parseProfileStats, getPlayerLevels } from "@/lib/tarkov-api";
+import {
+  getPublicProfile,
+  getPlayerLevels,
+  parseArenaProfileStats,
+  parseProfileStats,
+  pveProfileDecision,
+} from "@/lib/tarkov-api";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
@@ -77,10 +83,32 @@ export async function GET(request: NextRequest) {
   }
   if (mode === "pve" || mode === "arena") {
     try {
-      const stored = await (await getStore(mode))?.stored(aid);
-      return stored
-        ? NextResponse.json(stored, { headers: noStore })
-        : NextResponse.json({ error: "Profile mode has not been scanned yet" }, { status: 404, headers: noStore });
+      const store = await getStore(mode);
+      const stored = await store?.stored(aid);
+      if (stored) return NextResponse.json(stored, { headers: noStore });
+
+      const { profile } = await getPublicProfile(aid, { force, mode });
+      if (!profile) {
+        return NextResponse.json(
+          { error: "Profile mode is not available in the public cache" },
+          { status: 404, headers: noStore }
+        );
+      }
+      if (mode === "pve" && pveProfileDecision(profile).state !== "store") {
+        return NextResponse.json(
+          { error: "PVE profile is outside the scan activity window" },
+          { status: 404, headers: noStore }
+        );
+      }
+
+      const levels = mode === "pve" ? await getPlayerLevels().catch(() => []) : [];
+      const stats = mode === "arena"
+        ? parseArenaProfileStats(profile)
+        : parseProfileStats(profile, levels);
+      const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+      if (!store) throw new Error("player store unavailable");
+      await store.upsert(aid, stats, achievementIds);
+      return NextResponse.json({ profile, stats }, { headers: noStore });
     } catch (error) {
       console.error("mode profile load failed", error);
       return NextResponse.json({ error: "Failed to load player profile" }, { status: 503, headers: noStore });
