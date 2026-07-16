@@ -228,15 +228,19 @@ export type PveProfileDecision =
   | { state: "skipped_before_cutoff"; lastSkillAccess: number }
   | { state: "skipped_missing_skill_date"; lastSkillAccess: null };
 
-export function pveProfileDecision(profile: PlayerProfile): PveProfileDecision {
+export function lastSkillAccessSeconds(profile: PlayerProfile): number | null {
   const accesses = (profile.skills?.Common ?? [])
     .filter((skill) => Number(skill.Progress) > 0)
     .map((skill) => Number(skill.LastAccess))
     .filter((value) => Number.isFinite(value) && value > 0);
-  if (accesses.length === 0) {
+  return accesses.length > 0 ? Math.max(...accesses) : null;
+}
+
+export function pveProfileDecision(profile: PlayerProfile): PveProfileDecision {
+  const lastSkillAccess = lastSkillAccessSeconds(profile);
+  if (lastSkillAccess === null) {
     return { state: "skipped_missing_skill_date", lastSkillAccess: null };
   }
-  const lastSkillAccess = Math.max(...accesses);
   return {
     state: lastSkillAccess >= PVE_SKILL_CUTOFF_SECONDS ? "store" : "skipped_before_cutoff",
     lastSkillAccess,
@@ -447,6 +451,7 @@ export function parseProfileStats(
     achievementsCount,
     registrationDate: profile.info?.registrationDate ?? 0,
     lastActiveDate: profile.info?.lastActiveDate ?? 0,
+    lastPlayedAt: (lastSkillAccessSeconds(profile) ?? 0) * 1000,
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
   };

@@ -11,7 +11,7 @@ const javascript = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const tested = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
-const { getPublicProfile, parseArenaProfileStats, PVE_SKILL_CUTOFF_SECONDS, pveProfileDecision } = tested;
+const { getPublicProfile, lastSkillAccessSeconds, parseArenaProfileStats, PVE_SKILL_CUTOFF_SECONDS, pveProfileDecision } = tested;
 
 const base = { aid: 1, info: { nickname: "Test", side: "Savage", experience: 0 } };
 
@@ -50,6 +50,7 @@ test("PVE cutoff includes the boundary and uses the latest progressed skill", ()
   assert.equal(pveProfileDecision(profile([[1, PVE_SKILL_CUTOFF_SECONDS]])).state, "store");
   assert.equal(pveProfileDecision(profile([[1, PVE_SKILL_CUTOFF_SECONDS - 1]])).state, "skipped_before_cutoff");
   assert.equal(pveProfileDecision(profile([[0, PVE_SKILL_CUTOFF_SECONDS + 1], [1, 0]])).state, "skipped_missing_skill_date");
+  assert.equal(lastSkillAccessSeconds(profile([[1, 10], [2, 20], [0, 30]])), 20);
 });
 
 test("public profile fetch uses the mode-specific static cache path", async () => {

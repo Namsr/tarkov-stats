@@ -161,6 +161,8 @@ export interface ParsedPlayerStats {
   achievementsCount: number;
   registrationDate: number;
   lastActiveDate: number;
+  /** Latest progressed skill access, as a Unix ms timestamp. */
+  lastPlayedAt?: number;
   avgLifespan: number;
   totalLootValue: number;
   arena?: ArenaStats;

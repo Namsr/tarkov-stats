@@ -159,6 +159,12 @@ export default function RegularPlayer({
   ];
 
   const skills: SkillEntry[] = profile?.skills?.Common ?? [];
+  const lastPlayedAt = Number(stats.lastPlayedAt) || null;
+  const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Europe/Moscow",
+  });
   return (
     <main className="page-frame">
       <Link
@@ -182,12 +188,13 @@ export default function RegularPlayer({
             {profileUpdatedAt !== null && (
               <p className="mt-2 text-sm text-[var(--muted)]">
                 {t("player.profileUpdated", {
-                  date: new Intl.DateTimeFormat(undefined, {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    timeZone: "Europe/Moscow",
-                  }).format(profileUpdatedAt),
+                  date: dateTimeFormatter.format(profileUpdatedAt),
                 })}
+              </p>
+            )}
+            {lastPlayedAt !== null && (
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                {t("player.lastPlayed", { date: dateTimeFormatter.format(lastPlayedAt) })}
               </p>
             )}
           </div>
