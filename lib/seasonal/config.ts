@@ -54,6 +54,11 @@ export function isSeasonalRolloutReady(env: Environment = process.env): boolean 
   }
 }
 
+export function isCommunityReviewEnabled(env: Environment = process.env): boolean {
+  return env.COMMUNITY_REVIEW_ENABLED === "true" &&
+    (env.HELPER_COOKIE_SECRET?.trim().length ?? 0) >= 32;
+}
+
 export function isCommunityHelperEnabled(env: Environment = process.env): boolean {
   return isSeasonalRolloutReady(env) &&
     env.COMMUNITY_HELPER_ENABLED === "true" &&

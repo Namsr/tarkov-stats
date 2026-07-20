@@ -8,6 +8,7 @@ import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
+import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
@@ -213,6 +214,7 @@ export default function RegularPlayer({
                 nickname={stats.nickname}
                 identity={{ mode, cycleId: "persistent" }}
               />
+              <CheaterReportButton aid={Number(aid)} mode={mode} cycle="persistent" />
             </div>
             <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
           </div>

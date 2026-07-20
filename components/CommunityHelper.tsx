@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import CommunityBanReview from "@/components/CommunityBanReview";
 import type { ScanTaskRecord } from "@/types/seasonal";
 
 interface HelperStatus {
@@ -12,7 +13,7 @@ interface HelperStatus {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-export default function CommunityHelper() {
+export default function CommunityHelper({ seasonalEnabled, reviewEnabled }: { seasonalEnabled: boolean; reviewEnabled: boolean }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [limit, setLimit] = useState(3);
@@ -101,6 +102,7 @@ export default function CommunityHelper() {
       </button>
       {expanded && (
         <div className="community-helper__body">
+          {seasonalEnabled && <>
           <p>{t("helper.description")}</p>
           {!status && (
             <>
@@ -150,6 +152,8 @@ export default function CommunityHelper() {
           )}
           {error && <p className="text-sm text-[var(--danger)]" role="alert">{error}</p>}
           <p className="community-helper__privacy">{t("helper.privacy")}</p>
+          </>}
+          {reviewEnabled && <CommunityBanReview />}
         </div>
       )}
     </section>
