@@ -96,7 +96,7 @@ export default function CommunityHelper({ seasonalEnabled, reviewEnabled }: { se
       <button type="button" className="community-helper__toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         <span>
           <span className="section-kicker">{t("helper.kicker")}</span>
-          <strong>{t("helper.title")}</strong>
+          <strong>{t(seasonalEnabled && !reviewEnabled ? "helper.title" : "review.helperTitle")}</strong>
         </span>
         <span aria-hidden="true">{expanded ? "−" : "+"}</span>
       </button>
