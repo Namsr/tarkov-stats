@@ -4,8 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const DEFAULT_URL = "https://players.tarkov.dev/profile/index.json";
-const DEFAULT_UA =
-  "Mozilla/5.0 (compatible; TarkovStatsComparator/0.1; +https://tarkovstats.ru)";
+const DEFAULT_UA = "TarkovStats/0.1 (+https://tarkovstats.ru)";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 
 function hasArg(name) {
@@ -79,7 +78,7 @@ CREATE TABLE player_index_next (
 async function requestIndex(url, db, force) {
   const headers = {
     accept: "application/json",
-    "user-agent": process.env.PLAYER_INDEX_USER_AGENT || DEFAULT_UA,
+    "user-agent": DEFAULT_UA,
   };
 
   if (!force) {

@@ -17,8 +17,12 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
+import type { PlayerProfile } from "@/types/tarkov";
+import { createRequestTiming } from "@/lib/observability/request-timing";
+import { findProfileSummary } from "@/lib/profile-summary";
 
 export async function GET(request: NextRequest) {
+  const timing = createRequestTiming();
   const ip = getClientIp(request);
 
   // Строгий лимит: роут делает upstream-fetch к tarkov.dev и пишет строку в БД
@@ -27,6 +31,7 @@ export async function GET(request: NextRequest) {
   // Профиль не кэшируем у браузера/CDN — иначе «Обновить»/F5 показывал бы старое.
   const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {
+    timing.finish({ operation: "player_profile", outcome: "rate_limited", status: 429 });
     return NextResponse.json(
       { error: "Rate limit exceeded" },
       { status: 429, headers: noStore }
@@ -35,6 +40,7 @@ export async function GET(request: NextRequest) {
 
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
   if (aid === null) {
+    timing.finish({ operation: "player_profile", outcome: "invalid", status: 400 });
     return NextResponse.json(
       { error: "Invalid account ID. Paste a numeric id or a tarkov.dev profile link." },
       { status: 400, headers: noStore }
@@ -44,10 +50,12 @@ export async function GET(request: NextRequest) {
   const rawMode = request.nextUrl.searchParams.get("mode");
   const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
   if (!isGameMode(mode)) {
+    timing.finish({ operation: "player_profile", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400, headers: noStore });
   }
   const cycleId = normalizeCycleId(request.nextUrl.searchParams.get("cycle"), mode);
   if (cycleId === null) {
+    timing.finish({ operation: "player_profile", mode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
   }
 
@@ -56,8 +64,10 @@ export async function GET(request: NextRequest) {
 
   if (mode === "seasonal") {
     if (!isSeasonalRolloutReady()) {
+      timing.finish({ operation: "player_profile", mode, outcome: "unavailable", status: 404 });
       return NextResponse.json({ error: "Seasonal profile unavailable" }, { status: 404, headers: noStore });
     }
+    const seasonalStarted = timing.now();
     const result = await resolveSeasonalProfile(
       { aid, cycleId, force },
       {
@@ -76,89 +86,278 @@ export async function GET(request: NextRequest) {
           recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt).then(() => undefined),
       }
     );
-    return NextResponse.json(
+    const response = NextResponse.json(
       result.ok ? { profile: result.profile, capture: result.capture } : { error: result.error },
       { status: result.ok ? 200 : result.status, headers: noStore }
     );
+    timing.finish({
+      operation: "player_profile",
+      mode,
+      outcome: result.ok ? "success" : result.status === 404 ? "not_found" : "error",
+      status: result.ok ? 200 : result.status,
+      force,
+      source: "upstream",
+      seasonalMs: timing.elapsedMs(seasonalStarted),
+    });
+    return response;
   }
   if (mode === "pve" || mode === "arena") {
+    let storeOpenMs: number | undefined;
+    let storeReadMs: number | undefined;
+    let storeWriteMs: number | undefined;
+    let profileMs: number | undefined;
+    let levelsMs: number | undefined;
+    let parseMs: number | undefined;
+    let profileStarted: number | undefined;
+    let storage: "sqlite" | "unavailable" = "unavailable";
+    let source: "upstream" | "cache" = "upstream";
+    let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
     try {
+      const storeOpenStarted = timing.now();
       const store = await getStore(mode);
-      const stored = await store?.stored(aid);
-      if (stored && !force) {
-        return NextResponse.json(
-          { ...stored, profileUpdatedAt: Number(stored.stats.profileUpdatedAt) || null },
+      storeOpenMs = timing.elapsedMs(storeOpenStarted);
+      const storeReadStarted = store ? timing.now() : undefined;
+      const stored = store ? await store.stored(aid) : undefined;
+      if (storeReadStarted !== undefined) storeReadMs = timing.elapsedMs(storeReadStarted);
+      storage = store ? "sqlite" : "unavailable";
+      const storedResponse = (snapshot: NonNullable<typeof stored>) => {
+        const response = NextResponse.json(
+          { ...snapshot, profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null },
           { headers: noStore }
         );
+        timing.finish({
+          operation: "player_profile",
+          mode,
+          outcome: "success",
+          status: 200,
+          force,
+          source: "stored",
+          cache: force ? "bypass" : "hit",
+          storage,
+          storeOpenMs,
+          storeReadMs,
+          profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
+        });
+        return response;
+      };
+      if (stored && !force) {
+        return storedResponse(stored);
       }
 
-      const { profile } = await getPublicProfile(aid, { force, mode });
+      let profile: PlayerProfile | null;
+      profileStarted = timing.now();
+      try {
+        const result = await getPublicProfile(aid, { force, mode });
+        profile = result.profile;
+        source = result.fromCache ? "cache" : "upstream";
+        cache = force ? "bypass" : result.fromCache ? "hit" : "miss";
+      } catch (error) {
+        if (stored) return storedResponse(stored);
+        profileMs = timing.elapsedMs(profileStarted);
+        throw error;
+      }
+      profileMs = timing.elapsedMs(profileStarted);
       if (!profile) {
-        return NextResponse.json(
-          { error: "Profile mode is not available in the public cache" },
+        if (stored) return storedResponse(stored);
+        const profileSummary = await findProfileSummary(aid, mode, async (candidateMode, candidateAid) => {
+          const candidateStore = await getStore(candidateMode);
+          return candidateStore?.profileSummary(candidateAid) ?? null;
+        });
+        const response = NextResponse.json(
+          {
+            code: "mode_profile_unavailable",
+            error: "Profile mode is not available in the public cache",
+            ...(profileSummary ? { profileSummary } : {}),
+          },
           { status: 404, headers: noStore }
         );
+        timing.finish({
+          operation: "player_profile",
+          mode,
+          outcome: "not_found",
+          status: 404,
+          force,
+          source,
+          cache,
+          storage,
+          storeOpenMs,
+          storeReadMs,
+          profileMs,
+        });
+        return response;
       }
+      const levelsStarted = timing.now();
       const levels = mode === "pve" ? await getPlayerLevels().catch(() => []) : [];
+      levelsMs = mode === "pve" ? timing.elapsedMs(levelsStarted) : undefined;
+      const parseStarted = timing.now();
       const stats = mode === "arena"
         ? parseArenaProfileStats(profile)
         : parseProfileStats(profile, levels);
+      parseMs = timing.elapsedMs(parseStarted);
       stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
       const shouldStore = mode === "arena" || pveProfileDecision(profile).state === "store";
       if (shouldStore) {
         if (!store) throw new Error("player store unavailable");
-        await store.upsert(aid, stats, achievementIds);
+        const storeWriteStarted = timing.now();
+        try {
+          await store.upsert(aid, stats, achievementIds);
+        } finally {
+          storeWriteMs = timing.elapsedMs(storeWriteStarted);
+        }
       }
-      return NextResponse.json(
+      const response = NextResponse.json(
         { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
         { headers: noStore }
       );
+      timing.finish({
+        operation: "player_profile",
+        mode,
+        outcome: "success",
+        status: 200,
+        force,
+        source,
+        cache,
+        storage,
+        storeOpenMs,
+        storeReadMs,
+        storeWriteMs,
+        profileMs,
+        levelsMs,
+        parseMs,
+      });
+      return response;
     } catch (error) {
       console.error("mode profile load failed", error);
-      return NextResponse.json({ error: "Failed to load player profile" }, { status: 503, headers: noStore });
+      const response = NextResponse.json({ error: "Failed to load player profile" }, { status: 503, headers: noStore });
+      timing.finish({
+        operation: "player_profile",
+        mode,
+        outcome: "error",
+        status: 503,
+        force,
+        source,
+        cache,
+        storage,
+        storeOpenMs,
+        storeReadMs,
+        storeWriteMs,
+        profileMs,
+        levelsMs,
+        parseMs,
+      });
+      return response;
     }
   }
 
+  let profileMs: number | undefined;
+  let levelsMs: number | undefined;
+  let parseMs: number | undefined;
+  let profileStarted: number | undefined;
+  let storeOpenMs: number | undefined;
+  let storeWriteMs: number | undefined;
+  let storage: "sqlite" | "unavailable" | undefined;
+  let source: "upstream" | "cache" = "upstream";
+  let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
   try {
+    profileStarted = timing.now();
     const { profile, fromCache } = await getPublicProfile(aid, { force });
+    profileMs = timing.elapsedMs(profileStarted);
+    source = fromCache ? "cache" : "upstream";
+    cache = force ? "bypass" : fromCache ? "hit" : "miss";
     if (!profile) {
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           error:
             "Profile not found. It may be private, or hasn't been viewed on tarkov.dev yet — open it there once to cache it, then retry.",
         },
         { status: 404, headers: noStore }
       );
+      timing.finish({
+        operation: "player_profile",
+        mode,
+        outcome: "not_found",
+        status: 404,
+        force,
+        source,
+        cache,
+        profileMs,
+      });
+      return response;
     }
 
+    const levelsStarted = timing.now();
     const levels = await getPlayerLevels().catch(() => []);
+    levelsMs = timing.elapsedMs(levelsStarted);
+    const parseStarted = timing.now();
     const stats = parseProfileStats(profile, levels);
+    parseMs = timing.elapsedMs(parseStarted);
 
     // Пишем в БД только при свежем upstream-ответе (не из нашего кэша) — снижаем
     // дисковую нагрузку и повторные upsert одного и того же профиля.
     if (!fromCache) {
+      const storeOpenStarted = timing.now();
       const store = await getStore();
+      storeOpenMs = timing.elapsedMs(storeOpenStarted);
+      storage = store ? "sqlite" : "unavailable";
       if (store) {
         const achievementIds = profile.achievements
           ? Object.keys(profile.achievements)
           : [];
+        const storeWriteStarted = timing.now();
         try {
           await store.upsert(aid, stats, achievementIds);
         } catch (e) {
           console.error("player store failed", e);
+        } finally {
+          storeWriteMs = timing.elapsedMs(storeWriteStarted);
         }
       }
     }
 
-    return NextResponse.json(
+    const response = NextResponse.json(
       { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
       { headers: noStore }
     );
+    timing.finish({
+      operation: "player_profile",
+      mode,
+      outcome: "success",
+      status: 200,
+      force,
+      source,
+      cache,
+      storage,
+      profileMs,
+      levelsMs,
+      parseMs,
+      storeOpenMs,
+      storeWriteMs,
+    });
+    return response;
   } catch {
-    return NextResponse.json(
+    if (profileMs === undefined && profileStarted !== undefined) {
+      profileMs = timing.elapsedMs(profileStarted);
+    }
+    const response = NextResponse.json(
       { error: "Failed to fetch player profile" },
       { status: 502, headers: noStore }
     );
+    timing.finish({
+      operation: "player_profile",
+      mode,
+      outcome: "error",
+      status: 502,
+      force,
+      source,
+      cache,
+      storage,
+      profileMs,
+      levelsMs,
+      parseMs,
+      storeOpenMs,
+      storeWriteMs,
+    });
+    return response;
   }
 }

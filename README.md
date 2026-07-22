@@ -29,6 +29,79 @@ Production runs on a VPS as Docker containers behind Caddy (TLS + reverse
 proxy): see `docker-compose.vps.yml` + `Caddyfile`. A home/Cloudflare-Tunnel
 variant is documented in [SELFHOST.md](SELFHOST.md).
 
+### VPS runbook
+
+- SSH target: `$env:TARKOVSTATS_SSH_USER@$env:TARKOVSTATS_VPS`
+- Local key: `$env:TARKOVSTATS_SSH_KEY`
+- Project directory on the VPS: `/opt/tarkovstats`
+- Compose file: `/opt/tarkovstats/docker-compose.vps.yml`
+- Production traffic is DNS-only and goes directly to Caddy; deploying the app
+  does not require enabling Cloudflare Proxy.
+
+From PowerShell in the local project, first verify the build and create an
+archive without secrets, generated files, databases, or backups:
+
+```powershell
+$env:TARKOVSTATS_PROJECT_DIR = "C:\path\to\tarkov-stats"
+$env:TARKOVSTATS_SSH_KEY = "C:\path\to\private-key"
+$env:TARKOVSTATS_SSH_USER = "root"
+$env:TARKOVSTATS_VPS = "vps.example.com"
+$deployTarget = "$($env:TARKOVSTATS_SSH_USER)@$($env:TARKOVSTATS_VPS)"
+
+Set-Location $env:TARKOVSTATS_PROJECT_DIR
+npm.cmd run build
+Remove-Item "$env:TEMP\tarkovstats-deploy.tar.gz" -ErrorAction SilentlyContinue
+tar -czf "$env:TEMP\tarkovstats-deploy.tar.gz" --exclude=.git --exclude=node_modules --exclude=.next --exclude=".env*" --exclude=.codex-local --exclude=backups --exclude=data --exclude="*.db*" .
+scp -i "$env:TARKOVSTATS_SSH_KEY" -o IdentitiesOnly=yes "$env:TEMP\tarkovstats-deploy.tar.gz" "${deployTarget}:/tmp/tarkovstats-deploy.tar.gz"
+ssh -i "$env:TARKOVSTATS_SSH_KEY" -o IdentitiesOnly=yes $deployTarget
+```
+
+If Windows OpenSSH rejects the private key because the Codex sandbox group has
+access to it, remove that ACL entry in the same elevated PowerShell session
+before `scp`/`ssh`:
+
+```powershell
+$env:TARKOVSTATS_KEY_ACL_PRINCIPAL = "$env:COMPUTERNAME\CodexSandboxUsers"
+icacls "$env:TARKOVSTATS_SSH_KEY" /remove "$env:TARKOVSTATS_KEY_ACL_PRINCIPAL"
+```
+
+On the VPS, keep the currently running image as a one-step rollback, unpack the
+new source, build it while the old container keeps serving traffic, and only
+then replace the web container:
+
+```bash
+cd /opt/tarkovstats
+docker image tag tarkovstats-web:latest tarkovstats-web:pre-deploy
+tar -xzf /tmp/tarkovstats-deploy.tar.gz -C /opt/tarkovstats
+docker compose -f docker-compose.vps.yml build web
+docker compose -f docker-compose.vps.yml up -d --no-deps web
+docker compose -f docker-compose.vps.yml ps
+docker logs --since 5m --tail 100 tarkovstats-web-1
+curl -fsSI https://tarkovstats.ru
+curl -fsSI https://tarkovstats.online
+rm -f /tmp/tarkovstats-deploy.tar.gz
+```
+
+The archive deliberately does not contain `.env`, `.env.private`, or database
+files, so the VPS copies and the named Docker volume remain intact. Extraction
+overwrites added/changed files but does not remove a source file deleted
+locally; remove such a file explicitly on the VPS before the build. If
+`Caddyfile` or the Compose configuration changed, validate/recreate the full
+stack instead of using `--no-deps web`.
+
+Rollback the web image without rebuilding:
+
+```bash
+cd /opt/tarkovstats
+docker image tag tarkovstats-web:pre-deploy tarkovstats-web:latest
+docker compose -f docker-compose.vps.yml up -d --no-deps --force-recreate web
+docker compose -f docker-compose.vps.yml ps
+```
+
+For a small targeted change, copying only the changed files to the same paths
+under `/opt/tarkovstats` is acceptable; still run the build, replacement, and
+smoke checks above.
+
 Nickname search uses a local SQLite copy of the public tarkov.dev player index.
 Populate it after deployment, then run the same command daily from cron or a
 systemd timer:
@@ -50,7 +123,6 @@ Environment variables (in `.env`, see `.env.selfhost.example`):
 | `PUBLIC_BASE_URL` | yes behind a proxy | Pins the OAuth redirect URI (e.g. `https://tarkovstats.ru`) |
 | `TRUSTED_IP_HEADER` | no (default `x-real-ip`) | Header set by Caddy from its verified client IP (keep `x-real-ip` for both DNS-only and Cloudflare-proxied traffic) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | Turnstile sitekey (build-time) |
-| `PLAYER_INDEX_USER_AGENT` | no | User-Agent used by the nickname-index sync script |
 
 ## Architecture
 
@@ -82,4 +154,6 @@ Runtime data uses three SQLite files in the same `/data` Docker volume:
 |-----|---------|
 | `players.tarkov.dev/profile/index.json` | Public nickname to account-ID index for local search |
 | `players.tarkov.dev/profile/{aid}.json` | Cached public player profile by account ID |
-| `api.tarkov.dev/graphql` | Game data (player level XP thresholds) |
+| `json.tarkov.dev/regular/items` | Player level XP thresholds |
+| `json.tarkov.dev/regular/tasks` | Achievement metadata |
+| `json.tarkov.dev/regular/tasks_en` | English achievement names |

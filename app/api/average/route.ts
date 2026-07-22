@@ -3,6 +3,7 @@ import { getStore, type BucketAgg, type RangeDimension } from "@/lib/db";
 import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
+import { createRequestTiming, startTimingPhase } from "@/lib/observability/request-timing";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -33,13 +34,16 @@ function binCount(value: string | null): number {
 }
 
 export async function GET(request: NextRequest) {
+  const timing = createRequestTiming();
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
+    timing.finish({ operation: "average", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
   }
   const dimension = parseDimension(params.get("dimension"));
   if (!dimension) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
   }
 
@@ -49,20 +53,30 @@ export async function GET(request: NextRequest) {
   const parsedMin = parseNonNegative(params.get(usesNewRange ? "min" : "minHours"));
   const parsedMax = parseNonNegative(params.get(usesNewRange ? "max" : "maxHours"));
   if (!parsedMin.valid || !parsedMax.valid) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json(
       { error: "Range values must be finite and non-negative" },
       { status: 400 },
     );
   }
   if (parsedMin.value != null && parsedMax.value != null && parsedMin.value > parsedMax.value) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Range minimum cannot exceed maximum" }, { status: 400 });
   }
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
-  const store = await getStore(rawMode);
+  const storeOpenStarted = timing.now();
+  const store = await getStore(rawMode).catch((error) => {
+    timing.finish({
+      operation: "average", mode: rawMode, outcome: "error", status: 500,
+      storage: "unavailable", storeOpenMs: timing.elapsedMs(storeOpenStarted),
+    });
+    throw error;
+  });
+  const storeOpenMs = timing.elapsedMs(storeOpenStarted);
   if (!store) {
-    return NextResponse.json({
+    const response = NextResponse.json({
       total: 0,
       averages: null,
       brackets: [],
@@ -72,40 +86,71 @@ export async function GET(request: NextRequest) {
       dimension,
       metric: metric.key || DEFAULT_Y,
     });
+    timing.finish({
+      operation: "average", mode: rawMode, outcome: "unavailable", status: 200,
+      storage: "unavailable", storeOpenMs,
+    });
+    return response;
   }
 
+  let averagesMs: number | undefined;
+  let bucketAggregateMs: number | undefined;
+  let rangeBoundsMs: number | undefined;
   try {
-    const [averages, buckets, bounds] = await Promise.all([
-      store.averages({
-        dimension,
-        min: parsedMin.value,
-        max: parsedMax.value,
-        maxInclusive: usesNewRange,
-      }),
-      store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null),
-      store.rangeBounds(dimension),
-    ]);
-    const total = buckets.reduce((sum, bucket) => sum + bucket.n, 0);
-    const histogram = buildNumericHistogram(buckets, maxBins).map((bin) => ({
+    const averages = startTimingPhase(timing.now, () => store.averages({
+      dimension,
+      min: parsedMin.value,
+      max: parsedMax.value,
+      maxInclusive: usesNewRange,
+    }));
+    const buckets = startTimingPhase(
+      timing.now,
+      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null),
+    );
+    const bounds = startTimingPhase(timing.now, () => store.rangeBounds(dimension));
+    await Promise.resolve();
+    const averagesSynchronous = averages.isSettled();
+    const bucketsSynchronous = buckets.isSettled();
+    const boundsSynchronous = bounds.isSettled();
+    const [averageResult, bucketResult, boundsResult] = await Promise.all([
+      averages.promise,
+      buckets.promise,
+      bounds.promise,
+    ]).finally(() => {
+      if (averages.isSettled()) averagesMs = averages.durationMs(averagesSynchronous);
+      if (buckets.isSettled()) bucketAggregateMs = buckets.durationMs(bucketsSynchronous);
+      if (bounds.isSettled()) rangeBoundsMs = bounds.durationMs(boundsSynchronous);
+    });
+    const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
+    const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
       ...bin,
       avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
     }));
 
-    return NextResponse.json(
+    const response = NextResponse.json(
       {
         total,
-        averages,
-        brackets: legacyBrackets(buckets),
-        buckets,
+        averages: averageResult,
+        brackets: legacyBrackets(bucketResult),
+        buckets: bucketResult,
         histogram,
-        bounds,
+        bounds: boundsResult,
         dimension,
         metric: metric.key,
       },
       { headers: { "Cache-Control": "public, max-age=60" } },
     );
+    timing.finish({
+      operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", storeOpenMs,
+      averagesMs, bucketAggregateMs, rangeBoundsMs,
+    });
+    return response;
   } catch (error) {
     console.error("average stats failed", error);
+    timing.finish({
+      operation: "average", mode: rawMode, outcome: "error", status: 500, storage: "sqlite", storeOpenMs,
+      averagesMs, bucketAggregateMs, rangeBoundsMs,
+    });
     return NextResponse.json({ error: "Failed to compute averages" }, { status: 500 });
   }
 }

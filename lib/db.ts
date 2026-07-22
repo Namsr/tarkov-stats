@@ -5,6 +5,7 @@ import { LEGACY_IDENTITY, type ProfileIdentity } from "@/types/seasonal";
 import { initializeFavoritesSchema } from "@/lib/favorites-schema";
 import { seasonalCandidateOrderParameters } from "@/lib/seasonal/scanner";
 import type { GameMode } from "@/types/seasonal";
+import type { ProfileSummary } from "@/lib/profile-summary";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -566,6 +567,7 @@ export interface BaselineResult {
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
   stored(aid: number): Promise<{ stats: ParsedPlayerStats; achievementIds: string[] } | null>;
+  profileSummary(aid: number): Promise<ProfileSummary | null>;
   averages(range: StatRange): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
@@ -623,6 +625,17 @@ function parseStoredPlayer(
   } catch {
     return null;
   }
+}
+
+function parseProfileSummary(
+  row: { nickname?: unknown; side?: unknown; prestige?: unknown } | null | undefined,
+): ProfileSummary | null {
+  if (typeof row?.nickname !== "string" || row.nickname.trim() === "") return null;
+  const summary: ProfileSummary = { nickname: row.nickname };
+  if (typeof row.side === "string" && row.side.trim() !== "") summary.side = row.side;
+  const prestige = Number(row.prestige);
+  if (row.prestige != null && Number.isFinite(prestige)) summary.prestige = prestige;
+  return summary;
 }
 
 export interface DeterministicPlayerIndexCursor {
@@ -692,6 +705,12 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           "SELECT stats_json, achievements FROM players WHERE aid = ?"
         )).bind(aid).first() as { stats_json?: string; achievements?: string } | null;
         return parseStoredPlayer(row);
+      },
+      async profileSummary(aid) {
+        const row = await db.prepare(q(
+          "SELECT nickname, side, prestige FROM players WHERE aid = ?"
+        )).bind(aid).first() as { nickname?: unknown; side?: unknown; prestige?: unknown } | null;
+        return parseProfileSummary(row);
       },
       async averages(range) {
         const { where, params } = statRangeClause(range);
@@ -916,6 +935,12 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           "SELECT stats_json, achievements FROM players WHERE aid = ?"
         ).get(aid) as { stats_json?: string; achievements?: string } | undefined;
         return parseStoredPlayer(row);
+      },
+      async profileSummary(aid) {
+        const row = db.prepare(
+          "SELECT nickname, side, prestige FROM players WHERE aid = ?"
+        ).get(aid) as { nickname?: unknown; side?: unknown; prestige?: unknown } | undefined;
+        return parseProfileSummary(row);
       },
       async averages(range) {
         const { where, params } = statRangeClause(range);

@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     },
   },
   globalIgnores([
+    ".claude/**",
     ".next/**",
     ".open-next/**",
     ".wrangler/**",

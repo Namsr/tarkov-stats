@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import SeasonalProgressionChart, { type RiskMarker } from "@/components/SeasonalProgressionChart";
 import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
+import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton from "@/components/RefreshButton";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import { useI18n } from "@/lib/i18n/context";
@@ -204,6 +205,7 @@ export default function SeasonalPlayer({
                 nickname={profile.nickname}
                 identity={{ mode: "seasonal", cycleId }}
               />
+              <CheaterReportButton aid={aid} mode="seasonal" cycle={cycleId} />
             </div>
             <ProfileModeSwitch current="seasonal" page="player" aid={aid} />
           </div>

@@ -19,24 +19,29 @@ export default function RefreshButton({
   aid,
   mode = "regular",
   stale = false,
+  missing = false,
   className = "",
 }: {
   aid: number;
   mode?: GameMode;
   stale?: boolean;
+  missing?: boolean;
   className?: string;
 }) {
   const { t } = useI18n();
+  const prominent = stale || missing;
   return (
     <a
       href={tarkovDevUrl(aid, mode)}
       target="_blank"
       rel="noopener noreferrer"
-      title={t(stale ? "player.refreshStaleHint" : "player.refreshHint")}
-      className={`${stale ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
+      title={t(missing ? "player.refreshMissingHint" : stale ? "player.refreshStaleHint" : "player.refreshHint")}
+      className={`${prominent ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
     >
       <span aria-hidden>⟳</span>
-      <span className="hidden sm:inline">{t("player.refresh")}</span>
+      <span className={missing ? "" : "hidden sm:inline"}>
+        {t(missing ? "player.refreshCache" : "player.refresh")}
+      </span>
     </a>
   );
 }

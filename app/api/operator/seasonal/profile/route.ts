@@ -3,7 +3,7 @@ import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { getSeasonalOperatorStore } from "@/lib/seasonal/operator";
-import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
+import { getPlayerLevels, getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { getStore } from "@/lib/db";
 import { recordLinkedPvpLifecycle, recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
 
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       if (String((profile as { aid?: unknown }).aid) !== String(lease.aid)) {
         return Response.json({ error: "PvP profile account mismatch" }, { status: 409, headers });
       }
-      const stats = parseProfileStats(profile);
+      const stats = parseProfileStats(profile, await getPlayerLevels());
       const publicStore = await getStore();
       if (publicStore) {
         await publicStore.upsert(lease.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);

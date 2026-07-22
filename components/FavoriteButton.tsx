@@ -32,7 +32,7 @@ export default function FavoriteButton({
           disabled
           aria-disabled="true"
           title={t("fav.authRequired")}
-          className="ghost-button flex gap-1.5 !text-sm !normal-case !tracking-normal opacity-60 cursor-not-allowed"
+          className="ghost-button flex !min-h-12 gap-1.5 whitespace-nowrap !text-sm !normal-case !tracking-normal opacity-60 cursor-not-allowed"
         >
           <span aria-hidden>☆</span>
           <span className="hidden sm:inline">{t("fav.add")}</span>
@@ -61,7 +61,7 @@ export default function FavoriteButton({
         title={active ? t("fav.inFavorites") : t("fav.add")}
         aria-pressed={active}
         aria-label={active ? t("fav.remove") : t("fav.add")}
-          className={`ghost-button flex gap-1.5 !text-sm !normal-case !tracking-normal ${
+          className={`ghost-button flex !min-h-12 gap-1.5 whitespace-nowrap !text-sm !normal-case !tracking-normal ${
             active
             ? "!border-[var(--accent)] !text-[var(--accent)] bg-[var(--accent)]/10"
             : ""

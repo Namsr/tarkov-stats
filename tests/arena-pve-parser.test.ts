@@ -7,6 +7,7 @@ import ts from "typescript";
 import type { PlayerProfile } from "../types/tarkov.ts";
 
 const source = await readFile(new URL("../lib/tarkov-api.ts", import.meta.url), "utf8");
+const profileRouteSource = await readFile(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
 const javascript = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -74,4 +75,9 @@ test("public profile fetch uses the mode-specific static cache path", async () =
     "https://players.tarkov.dev/pve/5869253.json",
     "https://players.tarkov.dev/arena/5869253.json",
   ]);
+});
+
+test("mode profile refresh falls back to the last stored snapshot", () => {
+  assert.match(profileRouteSource, /catch \(error\) \{\s*if \(stored\) return storedResponse\(stored\)/);
+  assert.match(profileRouteSource, /if \(!profile\) \{\s*if \(stored\) return storedResponse\(stored\)/);
 });

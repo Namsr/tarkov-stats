@@ -8,7 +8,7 @@ import { HELPER_COOKIE, helperCookieOptions, parseHelperTaskId, signHelperSessio
 import { getHelperStore } from "./helper-storage";
 import { getSeasonalStore } from "./storage";
 import { fetchSeasonalPayload } from "./fetch";
-import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
+import { getPlayerLevels, getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { getStore } from "@/lib/db";
 import { finalizeSeasonalTaskLifecycle, recordLinkedPvpLifecycle, recordSeasonalCaptureLifecycle } from "./scanner";
 
@@ -71,7 +71,7 @@ export async function verifyTask(request: NextRequest) {
       if (String((profile as { aid?: unknown }).aid) !== String(task.aid)) {
         return helperError("PvP profile account mismatch", 409);
       }
-      const stats = parseProfileStats(profile);
+      const stats = parseProfileStats(profile, await getPlayerLevels());
       const publicStore = await getStore();
       if (publicStore) {
         await publicStore.upsert(task.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);

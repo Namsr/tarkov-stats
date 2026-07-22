@@ -1,11 +1,10 @@
 "use client";
 
 import AuthErrorBanner from "@/components/AuthErrorBanner";
-import CommunityHelper from "@/components/CommunityHelper";
 import SearchBar from "@/components/SearchBar";
 import { useI18n } from "@/lib/i18n/context";
 
-export default function HomePage({ helperEnabled }: { helperEnabled: boolean }) {
+export default function HomePage() {
   const { t } = useI18n();
   return (
     <main className="home-hero">
@@ -15,7 +14,6 @@ export default function HomePage({ helperEnabled }: { helperEnabled: boolean }) 
         <h1 className="home-command__title">TARKOV <span>STATS</span></h1>
         <p className="home-command__description">{t("home.description")}</p>
         <SearchBar autoFocus />
-        {helperEnabled && <CommunityHelper />}
       </div>
     </main>
   );

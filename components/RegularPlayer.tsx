@@ -8,6 +8,7 @@ import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
+import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
@@ -19,6 +20,55 @@ const PROFILE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
 interface Props {
   params: Promise<{ aid: string }>;
   searchParams: Promise<{ radarDemo?: string | string[] }>;
+}
+
+interface ProfileSummary {
+  nickname: string;
+  side?: string;
+  prestige?: number;
+}
+
+function ProfileActions({
+  aid,
+  mode,
+  nickname,
+  stale = false,
+  missing = false,
+}: {
+  aid: number;
+  mode: CrossSectionMode;
+  nickname?: string;
+  stale?: boolean;
+  missing?: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">
+      <div className="flex flex-wrap items-start gap-2 sm:justify-end">
+        <div className="flex flex-col items-start gap-1">
+          <RefreshButton
+            aid={aid}
+            mode={mode}
+            stale={stale}
+            missing={missing}
+            className="!min-h-12 whitespace-nowrap"
+          />
+          {stale && (
+            <p className="max-w-56 text-xs font-medium leading-snug text-[var(--danger)]">
+              {t("player.refreshStaleMessage")}
+            </p>
+          )}
+        </div>
+        <FavoriteButton
+          aid={aid}
+          nickname={nickname}
+          identity={{ mode, cycleId: "persistent" }}
+        />
+        <CheaterReportButton aid={aid} mode={mode} cycle="persistent" />
+      </div>
+      <ProfileModeSwitch current={mode} page="player" aid={aid} />
+    </div>
+  );
 }
 
 export default function RegularPlayer({
@@ -36,6 +86,8 @@ export default function RegularPlayer({
   const [achievementIds, setAchievementIds] = useState<string[]>([]);
   const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(null);
   const [profileIsStale, setProfileIsStale] = useState(false);
+  const [modeUnavailable, setModeUnavailable] = useState(false);
+  const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -46,6 +98,8 @@ export default function RegularPlayer({
     setError("");
     setProfileUpdatedAt(null);
     setProfileIsStale(false);
+    setModeUnavailable(false);
+    setProfileSummary(null);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const requestParams = new URLSearchParams({ aid, mode });
@@ -53,19 +107,29 @@ export default function RegularPlayer({
     fetch(`/api/player/profile?${requestParams}`)
       .then(async (res) => {
         const data = (await res.json()) as {
+          code?: string;
           error?: string;
           profile?: PlayerProfile;
           stats?: ParsedPlayerStats;
           achievementIds?: string[];
           profileUpdatedAt?: number | null;
+          profileSummary?: ProfileSummary;
         };
         if (!res.ok || !data.stats) {
+          const unavailable = data.code === "mode_profile_unavailable";
+          if (unavailable) {
+            if (!cancelled) {
+              setModeUnavailable(true);
+              setProfileSummary(data.profileSummary ?? null);
+            }
+            return null;
+          }
           throw new Error(data.error ?? t("player.loadError"));
         }
         return { ...data, stats: data.stats };
       })
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || !data) return;
         setProfile(data.profile ?? null);
         setStats(data.stats);
         setAchievementIds(
@@ -98,6 +162,54 @@ export default function RegularPlayer({
             ))}
           </div>
         </div>
+      </main>
+    );
+  }
+
+  if (modeUnavailable) {
+    const unavailableStats = mode === "arena"
+      ? [t("player.hoursPlayed"), t("arena.totalKills"), t("arena.totalDeaths"), t("arena.kdRatio")]
+      : [t("player.hoursPlayed"), t("player.pmcKd"), t("player.survivalRate"), t("player.killsPerRaid")];
+    return (
+      <main className="page-frame">
+        <Link
+          href="/"
+          className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-8 inline-block"
+        >
+          {t("common.back")}
+        </Link>
+
+        <section className="surface p-5 sm:p-7">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <p className="page-kicker">#{aid}</p>
+              {profileSummary?.nickname && <h1 className="page-title break-words">{profileSummary.nickname}</h1>}
+              {mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
+                  {profileSummary?.side && <span>{t("player.sideLabel", { side: profileSummary.side })}</span>}
+                  {Number(profileSummary?.prestige) > 0 && (
+                    <span>{t("player.prestigeLabel", { n: Number(profileSummary?.prestige) })}</span>
+                  )}
+                </div>
+              )}
+            </div>
+            <ProfileActions
+              aid={Number(aid)}
+              mode={mode}
+              nickname={profileSummary?.nickname}
+              missing
+            />
+          </div>
+
+          <div className="detail-grid mt-7">
+            {unavailableStats.map((label) => <StatCard key={label} label={label} value="?" />)}
+          </div>
+        </section>
+
+        <section className="data-panel mt-5 flex flex-col items-center gap-4 p-6 text-center">
+          <p className="max-w-2xl text-[var(--danger)]">{t("player.modeUnavailable")}</p>
+          <RefreshButton aid={Number(aid)} mode={mode} missing />
+        </section>
       </main>
     );
   }
@@ -198,24 +310,12 @@ export default function RegularPlayer({
               </p>
             )}
           </div>
-          <div className="flex flex-wrap items-start gap-3">
-            <div className="flex flex-wrap items-start gap-2">
-              <div className="flex max-w-56 flex-col items-start gap-1">
-                <RefreshButton aid={Number(aid)} mode={mode} stale={profileIsStale} />
-                {profileIsStale && (
-                  <p className="text-xs font-medium leading-snug text-[var(--danger)]">
-                    {t("player.refreshStaleMessage")}
-                  </p>
-                )}
-              </div>
-              <FavoriteButton
-                aid={Number(aid)}
-                nickname={stats.nickname}
-                identity={{ mode, cycleId: "persistent" }}
-              />
-            </div>
-            <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
-          </div>
+          <ProfileActions
+            aid={Number(aid)}
+            mode={mode}
+            nickname={stats.nickname}
+            stale={profileIsStale}
+          />
         </div>
 
         <div className="detail-grid mt-7">
