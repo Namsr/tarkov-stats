@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStore, type RadarMetric, type RangeDimension } from "@/lib/db";
+import {
+  getStore,
+  parseAverageStatistic,
+  type RadarMetric,
+  type RangeDimension,
+} from "@/lib/db";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
@@ -41,6 +46,11 @@ export async function GET(request: NextRequest) {
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+  }
+  const statistic = parseAverageStatistic(params.get("statistic"));
+  if (!statistic) {
+    timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
   const dimension = parseDimension(params.get("dimension"));
   const centerValue = params.get("center");
@@ -84,6 +94,7 @@ export async function GET(request: NextRequest) {
       quality: "unavailable",
       reason: noActivity ? "no_activity" : "above_coverage",
       averages: emptyAverages(),
+      statistic,
     });
     timing.finish({
       operation: "average_cohort", mode: rawMode, outcome: "unavailable", status: 200,
@@ -95,10 +106,10 @@ export async function GET(request: NextRequest) {
   let cohortMs: number | undefined;
   try {
     const cohortStarted = timing.now();
-    const cohort = await store.cohort(dimension, center, excludeAid).finally(() => {
+    const cohort = await store.cohort(dimension, center, excludeAid, statistic).finally(() => {
       cohortMs = timing.elapsedMs(cohortStarted);
     });
-    const response = NextResponse.json(cohort, {
+    const response = NextResponse.json({ ...cohort, statistic }, {
       headers: { "Cache-Control": "public, max-age=60" },
     });
     timing.finish({

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStore, type BucketAgg, type RangeDimension } from "@/lib/db";
+import {
+  getStore,
+  parseAverageStatistic,
+  type BucketAgg,
+  type RangeDimension,
+} from "@/lib/db";
 import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
@@ -40,6 +45,11 @@ export async function GET(request: NextRequest) {
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
     timing.finish({ operation: "average", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+  }
+  const statistic = parseAverageStatistic(params.get("statistic"));
+  if (!statistic) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
   const dimension = parseDimension(params.get("dimension"));
   if (!dimension) {
@@ -85,6 +95,7 @@ export async function GET(request: NextRequest) {
       bounds: { min: 0, max: dimension === "hours" ? 5000 : 1000 },
       dimension,
       metric: metric.key || DEFAULT_Y,
+      statistic,
     });
     timing.finish({
       operation: "average", mode: rawMode, outcome: "unavailable", status: 200,
@@ -97,12 +108,15 @@ export async function GET(request: NextRequest) {
   let bucketAggregateMs: number | undefined;
   let rangeBoundsMs: number | undefined;
   try {
-    const averages = startTimingPhase(timing.now, () => store.averages({
-      dimension,
-      min: parsedMin.value,
-      max: parsedMax.value,
-      maxInclusive: usesNewRange,
-    }));
+    const averages = startTimingPhase(timing.now, () => store.averages(
+      {
+        dimension,
+        min: parsedMin.value,
+        max: parsedMax.value,
+        maxInclusive: usesNewRange,
+      },
+      statistic,
+    ));
     const buckets = startTimingPhase(
       timing.now,
       () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null),
@@ -137,6 +151,7 @@ export async function GET(request: NextRequest) {
         bounds: boundsResult,
         dimension,
         metric: metric.key,
+        statistic,
       },
       { headers: { "Cache-Control": "public, max-age=60" } },
     );

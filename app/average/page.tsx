@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
 import MetricPicker from "@/components/MetricPicker";
 import RangeSlider from "@/components/RangeSlider";
@@ -16,7 +17,7 @@ import {
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY } from "@/lib/metrics";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
-import type { CrossSectionMode } from "@/lib/db";
+import type { AverageStatistic, CrossSectionMode } from "@/lib/db";
 
 type RangeDimension = "hours" | "pmc_raids";
 
@@ -31,6 +32,7 @@ interface RangeBounds {
 }
 
 interface AverageResponse {
+  statistic: AverageStatistic;
   total: number;
   averages: AverageRow | null;
   brackets?: BracketAgg[];
@@ -117,8 +119,13 @@ function selectedSlice(bin: HistBin, range: RangeBounds, axisMax: number) {
   };
 }
 
-export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionMode }) {
+function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   const { t } = useI18n();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const statistic: AverageStatistic =
+    searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
   const [dimension, setDimension] = useState<RangeDimension>("hours");
   const [selection, setSelection] = useState<RangeBounds | null>(null);
   const [requestedRange, setRequestedRange] = useState<RangeBounds | null>(null);
@@ -148,7 +155,7 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ dimension, metric: yMetric, mode });
+    const params = new URLSearchParams({ dimension, metric: yMetric, mode, statistic });
     if (requestedRange) {
       params.set("min", String(requestedRange.min));
       params.set("max", String(requestedRange.max));
@@ -188,7 +195,16 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
       });
 
     return () => controller.abort();
-  }, [dimension, mode, requestedRange, t, yMetric]);
+  }, [dimension, mode, requestedRange, statistic, t, yMetric]);
+
+  function changeStatistic(next: AverageStatistic) {
+    if (next === statistic) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "median") params.set("statistic", next);
+    else params.delete("statistic");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
 
   function openBreakdown() {
     setShowAch(true);
@@ -207,7 +223,8 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
     setData(null);
   }
 
-  const averages = data?.averages ?? null;
+  const portraitData = data?.statistic === statistic ? data : null;
+  const averages = portraitData?.averages ?? null;
   const sampleN = averages?.n ?? 0;
   const total = data?.total ?? 0;
   const yDef = resolveY(data?.metric ?? yMetric);
@@ -228,6 +245,9 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
     isCount ? bin.n : bin.n > 0 ? bin.sum / bin.n : 0;
   const maxValue = Math.max(1, ...bins.map(valueOf));
   const dimensionUnit = t(dimension === "hours" ? "unit.h" : "average.unitRaids");
+  const statisticLabel = t(
+    statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
+  );
   const focusMetrics = METRICS.slice(0, 4);
   const detailMetrics = METRICS.slice(4).map((metric) =>
     dimension === "pmc_raids" && metric.key === "total_raids"
@@ -285,7 +305,7 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
   function renderMetric(metric: (typeof METRICS)[number]) {
     const card = (
       <StatCard
-        label={`${t("common.avg")} ${t("metric." + metric.key)}`}
+        label={`${statisticLabel} · ${t("metric." + metric.key)}`}
         value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
         suffix={metric.suffix}
       />
@@ -320,6 +340,37 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
       <p className="page-kicker mt-7">{t("average.summary")}</p>
       <h1 className="page-title">{t("nav.average")}</h1>
 
+      <div className="mt-5">
+        <span className="mb-2 block text-xs text-[var(--muted)]">
+          {t("average.statistic.label")}
+        </span>
+        <div
+          className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
+          role="group"
+          aria-label={t("average.statistic.label")}
+        >
+          {(["trimmed_mean", "median"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => changeStatistic(option)}
+              aria-pressed={statistic === option}
+              className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
+                statistic === option
+                  ? "bg-[var(--accent)] text-[var(--background)]"
+                  : "text-[var(--muted)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              {t(
+                option === "median"
+                  ? "average.statistic.median"
+                  : "average.statistic.trimmedMean",
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <section className="summary-strip surface">
         <div className="summary-strip__copy">
           <div className="section-kicker">{t("average.accountsScanned")}</div>
@@ -333,7 +384,7 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
 
-      {!data ? (
+      {!portraitData ? (
         <div className="detail-grid mt-5">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="h-28 rounded-xl skeleton" />
@@ -343,10 +394,16 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
         <p className="mt-5 text-[var(--muted)]">{t("average.emptyRange")}</p>
       ) : (
         <section className="mt-5">
-          <h2 className="section-heading mb-3">{t("average.summary")}</h2>
+          <h2 className="section-heading mb-3">
+            {t("average.summaryMethod", { method: statisticLabel })}
+          </h2>
           <div className="detail-grid">{focusMetrics.map(renderMetric)}</div>
           <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
-            {t("average.robustNote")}
+            {t(
+              statistic === "median"
+                ? "average.medianNote"
+                : "average.trimmedMeanNote",
+            )}
           </p>
         </section>
       )}
@@ -551,7 +608,7 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
         </div>
       </section>
 
-      {data && sampleN > 0 && (
+      {portraitData && sampleN > 0 && (
         <section className="mt-10">
           <h2 className="section-heading mb-3">{t("average.fullMetrics")}</h2>
           <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>
@@ -565,5 +622,13 @@ export default function AveragePage({ mode = "regular" }: { mode?: CrossSectionM
         onToggle={() => setShowAch((open) => !open)}
       />
     </main>
+  );
+}
+
+export default function AveragePage(props: { mode?: CrossSectionMode }) {
+  return (
+    <Suspense fallback={<main className="page-frame" />}>
+      <AveragePageContent {...props} />
+    </Suspense>
   );
 }

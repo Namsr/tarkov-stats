@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
 import type { ParsedPlayerStats } from "@/types/tarkov";
-import type { CrossSectionMode } from "@/lib/db";
+import type { AverageStatistic, CrossSectionMode } from "@/lib/db";
 
 type Dimension = "hours" | "pmc_raids";
 type MetricKey =
@@ -23,6 +24,7 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  statistic?: AverageStatistic;
   dimension?: Dimension;
   center?: number;
   targetN?: number;
@@ -43,7 +45,7 @@ interface CohortResponse {
 }
 
 interface NormalizedCohort {
-  sourceAid: number | null;
+  requestId: string;
   dimension: Dimension;
   center: number;
   targetN: number;
@@ -154,7 +156,9 @@ function normalizeResponse(
   input: CohortResponse,
   dimension: Dimension,
   center: number,
-  sourceAid: number
+  sourceAid: number,
+  mode: CrossSectionMode,
+  statistic: AverageStatistic
 ): NormalizedCohort {
   const n = Number(input.n ?? 0);
   const averages = {} as NormalizedCohort["averages"];
@@ -175,7 +179,7 @@ function normalizeResponse(
   }
 
   return {
-    sourceAid,
+    requestId: `${sourceAid}:${mode}:${dimension}:${center}:${input.statistic ?? statistic}`,
     dimension: input.dimension === "pmc_raids" ? "pmc_raids" : dimension,
     center: Number(input.center ?? center),
     targetN: Number(input.targetN ?? input.target ?? 20),
@@ -189,13 +193,17 @@ function normalizeResponse(
   };
 }
 
-function demoCohort(dimension: Dimension, center: number): NormalizedCohort {
+function demoCohort(
+  dimension: Dimension,
+  center: number,
+  statistic: AverageStatistic
+): NormalizedCohort {
   const percent = 15;
   const rawMin = center * (1 - percent / 100);
   const rawMax = center * (1 + percent / 100);
   const round = dimension === "hours" ? 10 : 1;
   return {
-    sourceAid: null,
+    requestId: `demo:${dimension}:${center}:${statistic}`,
     dimension,
     center,
     targetN: 20,
@@ -232,6 +240,11 @@ function reasonKey(reason: string, dimension: Dimension): string {
 
 export default function PlayerRadarComparison({ aid, stats, mode = "regular", demo = false }: Props) {
   const { t } = useI18n();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const statistic: AverageStatistic =
+    searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
   const { authStatus, favorites } = useFavorites();
   const [dimension, setDimension] = useState<Dimension>("hours");
   const [remoteCohort, setRemoteCohort] = useState<NormalizedCohort | null>(null);
@@ -257,6 +270,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       center: String(center),
       excludeAid: String(aid),
       mode,
+      statistic,
     });
     setCohortLoading(true);
     setCohortError("");
@@ -264,7 +278,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       .then(async (response) => {
         const payload = (await response.json()) as CohortResponse;
         if (!response.ok) throw new Error(t("radar.error.cohort"));
-        return normalizeResponse(payload, dimension, center, aid);
+        return normalizeResponse(payload, dimension, center, aid, mode, statistic);
       })
       .then((payload) => setRemoteCohort(payload))
       .catch((error: unknown) => {
@@ -276,7 +290,16 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!controller.signal.aborted) setCohortLoading(false);
       });
     return () => controller.abort();
-  }, [aid, center, demo, dimension, mode, t]);
+  }, [aid, center, demo, dimension, mode, statistic, t]);
+
+  function changeStatistic(next: AverageStatistic) {
+    if (next === statistic) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "median") params.set("statistic", next);
+    else params.delete("statistic");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
 
   const eligibleFavorites = useMemo(
     () => favorites.filter((favorite) => favorite.mode === mode && favorite.aid !== aid),
@@ -319,10 +342,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   }, [authStatus, demo, effectiveFavoriteAid, mode, showFavorite, t]);
 
   const cohort = demo
-    ? demoCohort(dimension, center)
-    : remoteCohort?.sourceAid === aid &&
-        remoteCohort.dimension === dimension &&
-        remoteCohort.center === center
+    ? demoCohort(dimension, center, statistic)
+    : remoteCohort?.requestId === `${aid}:${mode}:${dimension}:${center}:${statistic}`
       ? remoteCohort
       : null;
   const playerValues = demo ? DEMO_PLAYER : valuesFromStats(stats);
@@ -354,6 +375,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const favoriteRatios = ratiosFor(favoriteValues);
   const playerRatios = ratiosFor(playerValues);
   const rings = [25, 50, 75, 100];
+  const baselineLabel = t(
+    statistic === "median" ? "radar.series.median" : "radar.series.trimmedMean",
+  );
 
   // Keep the cohort average at 50% on every axis. The smooth logarithmic
   // scale leaves room for both weaker and extreme values without a hard cap.
@@ -393,7 +417,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
 
   const ratioText = (value: number, average: number | null) =>
     average && average > 0
-      ? t("radar.ratio", { value: (value / average).toFixed(2) })
+      ? t(statistic === "median" ? "radar.ratio.median" : "radar.ratio.trimmedMean", {
+          value: (value / average).toFixed(2),
+        })
       : t("radar.notAvailable");
 
   const favoriteDisabledReason = demo
@@ -500,28 +526,61 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               </span>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-500">{t("radar.description")}</p>
+          <p className="mt-1 text-sm text-gray-500">
+            {t(
+              statistic === "median"
+                ? "radar.description.median"
+                : "radar.description.trimmedMean",
+            )}
+          </p>
         </div>
-        <div
-          className="inline-flex self-start rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-          role="group"
-          aria-label={t("radar.dimension.label")}
-        >
-          {(["hours", "pmc_raids"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setDimension(value)}
-              aria-pressed={dimension === value}
-              className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
-                dimension === value
-                  ? "bg-[var(--accent)] text-[var(--background)]"
-                  : "text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              {t(value === "hours" ? "radar.dimension.hours" : "radar.dimension.raids")}
-            </button>
-          ))}
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <div
+            className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
+            role="group"
+            aria-label={t("average.statistic.label")}
+          >
+            {(["trimmed_mean", "median"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => changeStatistic(value)}
+                aria-pressed={statistic === value}
+                className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
+                  statistic === value
+                    ? "bg-[var(--accent)] text-[var(--background)]"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                {t(
+                  value === "median"
+                    ? "average.statistic.median"
+                    : "average.statistic.trimmedMean",
+                )}
+              </button>
+            ))}
+          </div>
+          <div
+            className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
+            role="group"
+            aria-label={t("radar.dimension.label")}
+          >
+            {(["hours", "pmc_raids"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDimension(value)}
+                aria-pressed={dimension === value}
+                className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
+                  dimension === value
+                    ? "bg-[var(--accent)] text-[var(--background)]"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                {t(value === "hours" ? "radar.dimension.hours" : "radar.dimension.raids")}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -562,7 +621,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               )}
               {showAverage && (
                 <div>
-                  {t("radar.series.average")}: {formatValue(active.metric, active.average.value)}
+                  {baselineLabel}: {formatValue(active.metric, active.average.value)}
                 </div>
               )}
               {showFavorite && !favoriteDisabled && favoriteValues && (
@@ -579,10 +638,16 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           viewBox="0 0 720 470"
           className="block h-auto w-full"
           role="img"
-          aria-label={t("radar.svgTitle")}
+          aria-label={t("radar.svgTitle", { method: baselineLabel })}
           aria-describedby="player-radar-desc"
         >
-          <desc id="player-radar-desc">{t("radar.svgDescription")}</desc>
+          <desc id="player-radar-desc">
+            {t(
+              statistic === "median"
+                ? "radar.svgDescription.median"
+                : "radar.svgDescription.trimmedMean",
+            )}
+          </desc>
           {rings.map((ratio) => (
             <g key={ratio} aria-hidden="true">
               <polygon
@@ -706,7 +771,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             className="h-4 w-4 accent-gray-500"
           />
           <span className="h-2.5 w-2.5 rounded-full" style={{ background: SERIES.average.color }} />
-          <span className="text-sm text-gray-300">{t("radar.series.average")}</span>
+          <span className="text-sm text-gray-300">{baselineLabel}</span>
         </label>
         <div className="group relative rounded">
           <label
@@ -780,12 +845,12 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
 
       <div className="absolute left-0 top-0 h-px w-px overflow-hidden [clip-path:inset(50%)]">
         <table>
-          <caption>{t("radar.table.caption")}</caption>
+          <caption>{t("radar.table.caption", { method: baselineLabel })}</caption>
           <thead>
             <tr>
               <th>{t("radar.table.metric")}</th>
               <th>{t("radar.series.player")}</th>
-              <th>{t("radar.series.average")}</th>
+              <th>{baselineLabel}</th>
               <th>{t("radar.series.favorite")}</th>
             </tr>
           </thead>

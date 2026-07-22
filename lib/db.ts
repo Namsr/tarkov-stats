@@ -139,6 +139,13 @@ export const AVG_COLS = [
 ];
 
 export type RangeDimension = "hours" | "pmc_raids";
+export type AverageStatistic = "trimmed_mean" | "median";
+
+export function parseAverageStatistic(value: string | null): AverageStatistic | null {
+  if (value == null || value === "trimmed_mean") return "trimmed_mean";
+  if (value === "median") return "median";
+  return null;
+}
 
 const RANGE_COLUMNS: Record<RangeDimension, "hours" | "pmc_raids"> = {
   hours: "hours",
@@ -262,12 +269,26 @@ function countSql(where: string): string {
   return `SELECT COUNT(*) AS n FROM players ${where}`;
 }
 
-// Среднее одной метрики по диапазону. trim=true усредняет "середину" после
-// сортировки (LIMIT/OFFSET отрезают хвосты). column берётся из белого списка
-// AVG_COLS; имя колонки нельзя биндить параметром, поэтому валидируем и инлайним.
-function metricAvgSql(column: string, where: string, trim: boolean): string {
+// One statistic for one metric in a range. The trimmed mean preserves the
+// existing LIMIT/OFFSET behavior; median ranks the populated values per metric.
+function metricStatisticSql(
+  column: string,
+  where: string,
+  statistic: AverageStatistic,
+  trim: boolean,
+): string {
   if (!/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
+  }
+  if (statistic === "median") {
+    return (
+      `WITH ranked AS (` +
+      `SELECT ${column} AS v, ROW_NUMBER() OVER (ORDER BY ${column}) AS rn, ` +
+      `COUNT(*) OVER () AS n FROM players ${where}` +
+      `${where ? " AND" : " WHERE"} ${column} IS NOT NULL` +
+      `) SELECT AVG(v) AS a FROM ranked ` +
+      `WHERE rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))`
+    );
   }
   if (!trim) return `SELECT AVG(${column}) AS a FROM players ${where}`;
   return (
@@ -277,7 +298,7 @@ function metricAvgSql(column: string, where: string, trim: boolean): string {
 }
 
 // Self-contained trimmed mean for a single playtime range. Unlike
-// metricAvgSql(), this query derives n inside the same statement, which keeps
+// metricStatisticSql(), this query derives n inside the same statement, which keeps
 // the trim window consistent even while the background importer is adding
 // players. It is used for the final, already-pooled histogram bins.
 function histogramAvgSql(column: string, where: string): string {
@@ -568,7 +589,7 @@ export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
   stored(aid: number): Promise<{ stats: ParsedPlayerStats; achievementIds: string[] } | null>;
   profileSummary(aid: number): Promise<ProfileSummary | null>;
-  averages(range: StatRange): Promise<AverageRow | null>;
+  averages(range: StatRange, statistic?: AverageStatistic): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
    * SUM of that column per bracket so a per-bracket average can be computed.
@@ -579,7 +600,12 @@ export interface PlayerStore {
   /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
   rangeBounds(dimension: RangeDimension): Promise<RangeBounds>;
   /** Adaptive comparison group around one player's playtime or PMC raid count. */
-  cohort(dimension: RangeDimension, center: number, excludeAid: number): Promise<CohortResult>;
+  cohort(
+    dimension: RangeDimension,
+    center: number,
+    excludeAid: number,
+    statistic?: AverageStatistic,
+  ): Promise<CohortResult>;
   /**
    * Trimmed mean of one metric for each final display range. The range count is
    * derived inside each SQL statement so concurrent imports cannot skew which
@@ -712,7 +738,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         )).bind(aid).first() as { nickname?: unknown; side?: unknown; prestige?: unknown } | null;
         return parseProfileSummary(row);
       },
-      async averages(range) {
+      async averages(range, statistic = "trimmed_mean") {
         const { where, params } = statRangeClause(range);
         const cnt = (await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null;
         const n = Number(cnt?.n ?? 0);
@@ -720,8 +746,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         const { trim, off, lim } = trimWindow(n);
         const pairs = await Promise.all(
           AVG_COLS.map(async (c) => {
-            const p = trim ? [...params, lim, off] : params;
-            const r = (await db.prepare(metricAvgSql(c, where, trim)).bind(...p).first()) as
+            const p = statistic === "trimmed_mean" && trim ? [...params, lim, off] : params;
+            const r = (await db.prepare(metricStatisticSql(c, where, statistic, trim)).bind(...p).first()) as
               | { a: number | null }
               | null;
             return [c, r?.a ?? null] as const;
@@ -751,7 +777,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         }
         return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
       },
-      async cohort(dimension, center, excludeAid) {
+      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean") {
         if (center <= 0) {
           return unavailableCohort(
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
@@ -808,8 +834,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
             return;
           }
           const { trim, off, lim } = trimWindow(count);
-          const queryParams = trim ? [...params, lim, off] : params;
-          const row = (await db.prepare(metricAvgSql(metric, metricWhere, trim))
+          const queryParams = statistic === "trimmed_mean" && trim ? [...params, lim, off] : params;
+          const row = (await db.prepare(metricStatisticSql(metric, metricWhere, statistic, trim))
             .bind(...queryParams)
             .first()) as { a: number | null } | null;
           averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
@@ -942,7 +968,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         ).get(aid) as { nickname?: unknown; side?: unknown; prestige?: unknown } | undefined;
         return parseProfileSummary(row);
       },
-      async averages(range) {
+      async averages(range, statistic = "trimmed_mean") {
         const { where, params } = statRangeClause(range);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
         const n = Number(cnt?.n ?? 0);
@@ -950,8 +976,10 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const { trim, off, lim } = trimWindow(n);
         const row: AverageRow = { n };
         for (const c of AVG_COLS) {
-          const stmt = db.prepare(metricAvgSql(c, where, trim));
-          const r = (trim ? stmt.get(...params, lim, off) : stmt.get(...params)) as
+          const stmt = db.prepare(metricStatisticSql(c, where, statistic, trim));
+          const r = (statistic === "trimmed_mean" && trim
+            ? stmt.get(...params, lim, off)
+            : stmt.get(...params)) as
             | { a: number | null }
             | undefined;
           row[c] = r?.a == null ? null : Number(r.a);
@@ -978,7 +1006,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         }
         return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
       },
-      async cohort(dimension, center, excludeAid) {
+      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean") {
         if (center <= 0) {
           return unavailableCohort(
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
@@ -1034,8 +1062,10 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
             continue;
           }
           const { trim, off, lim } = trimWindow(count);
-          const stmt = db.prepare(metricAvgSql(metric, metricWhere, trim));
-          const row = (trim ? stmt.get(...params, lim, off) : stmt.get(...params)) as
+          const stmt = db.prepare(metricStatisticSql(metric, metricWhere, statistic, trim));
+          const row = (statistic === "trimmed_mean" && trim
+            ? stmt.get(...params, lim, off)
+            : stmt.get(...params)) as
             | { a: number | null }
             | undefined;
           averages[metric] = { value: row?.a == null ? null : Number(row.a), count };

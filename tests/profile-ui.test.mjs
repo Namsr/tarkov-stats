@@ -57,3 +57,27 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("components/CommunityHelper.tsx");
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
+
+test("average statistic switch keeps URL state and masks stale portrait values", async () => {
+  const source = await readFile("app/average/page.tsx", "utf8");
+
+  assert.match(source, /searchParams\.get\("statistic"\) === "median"/);
+  assert.match(source, /new URLSearchParams\(searchParams\.toString\(\)\)/);
+  assert.match(source, /params\.delete\("statistic"\)/);
+  assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
+  assert.match(source, /new URLSearchParams\(\{ dimension, metric: yMetric, mode, statistic \}\)/);
+  assert.match(source, /data\?\.statistic === statistic/);
+  assert.match(source, /aria-pressed=\{statistic === option\}/);
+});
+
+test("radar statistic switch identifies requests by method", async () => {
+  const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+
+  assert.match(source, /searchParams\.get\("statistic"\) === "median"/);
+  assert.match(source, /statistic,\s*\}\);/);
+  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{/);
+  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}`/);
+  assert.match(source, /params\.delete\("statistic"\)/);
+  assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
+  assert.match(source, /aria-pressed=\{statistic === value\}/);
+});
