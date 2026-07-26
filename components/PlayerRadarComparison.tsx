@@ -346,10 +346,12 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
     : remoteCohort?.requestId === `${aid}:${mode}:${dimension}:${center}:${statistic}`
       ? remoteCohort
       : null;
-  const playerValues = demo ? DEMO_PLAYER : valuesFromStats(stats);
+  const playerStatsKnown = demo || mode !== "regular" || stats.pvpStatsKnown !== false;
+  const favoriteStatsKnown = demo || mode !== "regular" || favoriteStats?.pvpStatsKnown !== false;
+  const playerValues = demo ? DEMO_PLAYER : playerStatsKnown ? valuesFromStats(stats) : null;
   const favoriteValues = demo
     ? DEMO_FAVORITE
-    : favoriteStats
+    : favoriteStats && favoriteStatsKnown
       ? valuesFromStats(favoriteStats)
       : null;
 
@@ -604,6 +606,12 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         ) : null}
       </div>
 
+      {!playerStatsKnown && (
+        <p className="mt-2 text-sm text-[var(--danger)]" role="status">
+          {t("radar.incompletePvp.player")}
+        </p>
+      )}
+
       <div className="relative mx-auto mt-2 max-w-4xl">
         {active && (
           <div
@@ -613,7 +621,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           >
             <div className="font-medium text-gray-200">{t(active.metric.labelKey)}</div>
             <div className="mt-1 space-y-1 text-gray-400">
-              {showPlayer && (
+              {showPlayer && playerValues && (
                 <div>
                   {t("radar.series.player")}: {formatValue(active.metric, playerValues[active.metric.key])}{" "}
                   ({ratioText(playerValues[active.metric.key], active.average.value)})
@@ -690,7 +698,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             favoriteRatios,
             showFavorite && !favoriteDisabled && Boolean(favoriteValues)
           )}
-          {renderSeries("player", playerRatios, showPlayer)}
+          {renderSeries("player", playerRatios, showPlayer && Boolean(playerValues))}
 
           {METRICS.map((metric, index) => {
             const label = point(index, RADIUS + 55);
@@ -753,11 +761,13 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       </div>
 
       <div className="grid gap-2 border-t border-[var(--card-border)] pt-3 sm:grid-cols-3">
-        <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded px-3 py-2 hover:bg-[var(--input-bg)]">
+        <label className={`flex min-h-11 items-center gap-3 rounded px-3 py-2 ${playerStatsKnown ? "cursor-pointer hover:bg-[var(--input-bg)]" : "cursor-not-allowed opacity-55"}`}>
           <input
             type="checkbox"
-            checked={showPlayer}
+            checked={showPlayer && playerStatsKnown}
             onChange={(event) => setShowPlayer(event.target.checked)}
+            disabled={!playerStatsKnown}
+            aria-disabled={!playerStatsKnown}
             className="h-4 w-4 accent-[var(--accent)]"
           />
           <span className="h-2.5 w-2.5 rounded-full" style={{ background: SERIES.player.color }} />
@@ -838,6 +848,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               <span className="text-gray-500">{t("radar.favorite.loading")}</span>
             ) : favoriteError ? (
               <span className="text-[var(--danger)]">{favoriteError}</span>
+            ) : favoriteStats && !favoriteStatsKnown ? (
+              <span className="text-[var(--danger)]">{t("radar.incompletePvp.favorite")}</span>
             ) : null}
           </div>
         </div>
@@ -858,7 +870,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             {axes.map((axis) => (
               <tr key={axis.metric.key}>
                 <th>{t(axis.metric.labelKey)}</th>
-                <td>{formatValue(axis.metric, playerValues[axis.metric.key])}</td>
+                <td>{formatValue(axis.metric, playerValues?.[axis.metric.key] ?? null)}</td>
                 <td>{formatValue(axis.metric, axis.average.value)}</td>
                 <td>
                   {formatValue(axis.metric, favoriteValues?.[axis.metric.key] ?? null)}

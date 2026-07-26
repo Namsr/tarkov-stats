@@ -12,7 +12,14 @@ const javascript = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const tested = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
-const { getPublicProfile, lastSkillAccessSeconds, parseArenaProfileStats, PVE_SKILL_CUTOFF_SECONDS, pveProfileDecision } = tested;
+const {
+  getPublicProfile,
+  lastSkillAccessSeconds,
+  parseArenaProfileStats,
+  parseProfileStats,
+  PVE_SKILL_CUTOFF_SECONDS,
+  pveProfileDecision,
+} = tested;
 
 const base = { aid: 1, info: { nickname: "Test", side: "Savage", experience: 0 } };
 
@@ -75,6 +82,37 @@ test("public profile fetch uses the mode-specific static cache path", async () =
     "https://players.tarkov.dev/pve/5869253.json",
     "https://players.tarkov.dev/arena/5869253.json",
   ]);
+});
+
+test("regular forced fetch cache-busts upstream and rejects an older profile version", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async (input) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({ ...base, aid: 5869254, updated: 1_700_000_000_000 }), { status: 200 });
+  };
+  try {
+    await assert.rejects(
+      getPublicProfile(5869254, {
+        force: true,
+        mode: "regular",
+        expectedUpdatedAt: 1_800_000_000_000,
+      }),
+      /older than/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(requestedUrl, "https://players.tarkov.dev/profile/5869254.json?v=1800000000000");
+});
+
+test("explicit zero PMC kills is known while a missing counter remains unknown", () => {
+  const profile = (items) => ({
+    ...base,
+    pmcStats: { eft: { totalInGameTime: 0, overAllCounters: { Items: items } } },
+  });
+  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 0 }])).pvpStatsKnown, true);
+  assert.equal(parseProfileStats(profile([])).pvpStatsKnown, false);
 });
 
 test("mode profile refresh falls back to the last stored snapshot", () => {

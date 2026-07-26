@@ -35,6 +35,7 @@ interface AverageResponse {
   statistic: AverageStatistic;
   total: number;
   averages: AverageRow | null;
+  metricCounts?: Record<string, number>;
   brackets?: BracketAgg[];
   buckets?: BucketAgg[];
   histogram?: HistBin[];

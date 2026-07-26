@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS players (
   longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
-  achievements TEXT, fetched_at INTEGER NOT NULL
+  achievements TEXT, profile_updated_at INTEGER DEFAULT 0,
+  pvp_stats_known INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS mode_players (
   longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
-  achievements TEXT, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
+  achievements TEXT, profile_updated_at INTEGER DEFAULT 0,
+  pvp_stats_known INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
   PRIMARY KEY (mode, aid)
 );
 CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
@@ -93,31 +95,37 @@ const COLS = [
   "total_kills", "killed_pmc", "run_through", "longest_win_streak",
   "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
   "pmc_survival_rate", "pmc_kills_per_raid",
-  "achv_count", "achievements", "fetched_at",
+  "achv_count", "achievements", "profile_updated_at", "pvp_stats_known", "fetched_at",
 ];
 const UPSERT_SQL =
-  `INSERT INTO players (${COLS.join(", ")}) VALUES (${COLS.map(() => "?").join(", ")}) ` +
+  `INSERT INTO players (${COLS.join(", ")}) SELECT ${COLS.map(() => "?").join(", ")} ` +
+  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
-  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
+  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
+  ` WHERE excluded.profile_updated_at >= players.profile_updated_at`;
 const SQLITE_UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) ` +
   `SELECT ${COLS.map(() => "?").join(", ")} ` +
   `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
-  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ");
+  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
+  ` WHERE excluded.profile_updated_at >= players.profile_updated_at`;
 const MODE_UPSERT_SQL =
   `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
-  `VALUES (?, ${COLS.map(() => "?").join(", ")}, ?) ` +
+  `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
+  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(mode, aid) DO UPDATE SET ` +
   [...COLS.filter((c) => c !== "aid"), "stats_json"]
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+    .map((c) => `${c} = excluded.${c}`).join(", ") +
+  ` WHERE excluded.profile_updated_at >= mode_players.profile_updated_at`;
 const SQLITE_MODE_UPSERT_SQL =
   `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
   `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
   `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(mode, aid) DO UPDATE SET ` +
   [...COLS.filter((c) => c !== "aid"), "stats_json"]
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+    .map((c) => `${c} = excluded.${c}`).join(", ") +
+  ` WHERE excluded.profile_updated_at >= mode_players.profile_updated_at`;
 
 export type CrossSectionMode = Exclude<GameMode, "seasonal">;
 type PlayerTable = "players" | "pve_players" | "arena_players";
@@ -155,22 +163,49 @@ const RANGE_COLUMNS: Record<RangeDimension, "hours" | "pmc_raids"> = {
 function rangeColumn(dimension: RangeDimension): "hours" | "pmc_raids" {
   return RANGE_COLUMNS[dimension];
 }
+
+const PVP_METRICS = new Set(["pmc_kd_ratio", "killed_pmc"]);
+
+function appendCondition(where: string, condition: string): string {
+  return where ? `${where} AND ${condition}` : `WHERE ${condition}`;
+}
+
+function freshAverageWhere(mode: CrossSectionMode, where: string): string {
+  const days = Number(process.env.AVERAGE_PROFILE_MAX_AGE_DAYS);
+  if (mode !== "regular" || !Number.isFinite(days) || days <= 0) return where;
+  const cutoff = Math.floor(Date.now() - days * 86_400_000);
+  return appendCondition(where, `profile_updated_at >= ${cutoff}`);
+}
+
+function eligibleMetricWhere(
+  mode: CrossSectionMode,
+  metric: string,
+  where: string,
+): string {
+  if (metric && !/^[a-z_]+$/.test(metric)) {
+    throw new Error(`invalid metric column: ${metric}`);
+  }
+  const populated = metric ? appendCondition(where, `${metric} IS NOT NULL`) : where;
+  return mode === "regular" && PVP_METRICS.has(metric)
+    ? appendCondition(populated, "pvp_stats_known = 1")
+    : populated;
+}
 // Per-playtime-bracket aggregate: player count plus, optionally, the SUM of a
 // chosen metric column (so the caller can derive a weighted average per bracket
 // when adjacent brackets are merged). `column` is whitelisted by the caller and
 // re-checked here — column names cannot be bound parameters, so it is inlined.
-function aggSql(column: string | null): string {
+function aggSql(column: string | null, where = ""): string {
   if (column != null && !/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
   }
   const sumExpr = column ? `COALESCE(SUM(${column}), 0)` : "0";
   return (
     `SELECT bracket_key, COUNT(*) AS n, ${sumExpr} AS s ` +
-    `FROM players GROUP BY bracket_key ORDER BY MIN(hours)`
+    `FROM players ${where} GROUP BY bracket_key ORDER BY MIN(hours)`
   );
 }
 
-function bucketAggSql(dimension: RangeDimension, column: string | null): string {
+function bucketAggSql(dimension: RangeDimension, column: string | null, where = ""): string {
   if (column != null && !/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
   }
@@ -190,7 +225,7 @@ function bucketAggSql(dimension: RangeDimension, column: string | null): string 
   const sumExpr = column ? `COALESCE(SUM(${column}), 0)` : "0";
   return (
     `SELECT ${loExpr} AS lo, ${hiExpr} AS hi, COUNT(*) AS n, ${sumExpr} AS s ` +
-    `FROM players GROUP BY ${loExpr}, ${hiExpr} ORDER BY lo`
+    `FROM players ${where} GROUP BY ${loExpr}, ${hiExpr} ORDER BY lo`
   );
 }
 
@@ -331,8 +366,11 @@ function trimWindow(n: number): { trim: boolean; off: number; lim: number } {
 }
 
 function emptyAverageRow(): AverageRow {
-  const row: AverageRow = { n: 0 };
-  for (const c of AVG_COLS) row[c] = null;
+  const row: AverageRow = { n: 0, metricCounts: {} };
+  for (const c of AVG_COLS) {
+    row[c] = null;
+    row.metricCounts[c] = 0;
+  }
   return row;
 }
 
@@ -420,13 +458,14 @@ function cohortBounds(dimension: RangeDimension, center: number, percent: number
 
 function cohortCountSql(
   dimension: RangeDimension,
-  ranges: { percent: CohortPercent; bounds: CohortBounds }[]
+  ranges: { percent: CohortPercent; bounds: CohortBounds }[],
+  where: string,
 ): string {
   const column = rangeColumn(dimension);
   const counts = ranges.map(
     ({ percent }) => `SUM(CASE WHEN ${column} >= ? AND ${column} <= ? THEN 1 ELSE 0 END) AS n${percent}`
   ).join(", ");
-  return `SELECT MAX(${column}) AS max_value, ${counts} FROM players WHERE ${column} > 0 AND aid != ?`;
+  return `SELECT MAX(${column}) AS max_value, ${counts} FROM players ${where}`;
 }
 
 function uniqueCohortRanges(dimension: RangeDimension, center: number) {
@@ -440,9 +479,15 @@ function uniqueCohortRanges(dimension: RangeDimension, center: number) {
   });
 }
 
-function populatedMetricClause(metric: string, where: string): string {
-  if (metric !== "pmc_survival_rate") return where;
-  return where ? `${where} AND pmc_survival_rate > 0` : "WHERE pmc_survival_rate > 0";
+function populatedMetricClause(
+  mode: CrossSectionMode,
+  metric: string,
+  where: string,
+): string {
+  const eligible = eligibleMetricWhere(mode, metric, where);
+  return metric === "pmc_survival_rate"
+    ? appendCondition(eligible, "pmc_survival_rate > 0")
+    : eligible;
 }
 
 function emptyCohortMetrics(): Record<RadarMetric, CohortMetric> {
@@ -479,13 +524,15 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
     s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc, s.runThrough, s.longestWinStreak,
     s.kdRatio, s.pmcKdRatio, s.survivalRate, s.killsPerRaid,
     s.pmcSurvivalRate, s.pmcKillsPerRaid, s.achievementsCount,
-    JSON.stringify(achievementIds), now,
+    JSON.stringify(achievementIds), Number(s.profileUpdatedAt) || 0,
+    s.pvpStatsKnown === true ? 1 : 0, now,
   ];
 }
 
 export interface AverageRow {
   n: number;
-  [metric: string]: number | null;
+  metricCounts: Record<string, number>;
+  [metric: string]: number | null | Record<string, number>;
 }
 export interface StatRange {
   dimension: RangeDimension;
@@ -702,6 +749,9 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
   if (!rawDb) return null;
   try {
     const table = tableFor(mode);
+    const hasPlayerIndex = mode === "regular" && Boolean(await rawDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
+    ).first());
     const q = (sql: string) => scopePlayerSql(sql, table);
     const db = {
       prepare: (sql: string) => rawDb.prepare(q(sql)),
@@ -719,10 +769,25 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           }
         }
         if (mode === "regular") {
-          await db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now)).run();
+          const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
+          const player = db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now), aid);
+          if (hasPlayerIndex) {
+            const index = rawDb.prepare(`INSERT INTO player_index
+              (aid, nickname, nickname_lower, synced_at)
+              SELECT ?, ?, ?, ? WHERE EXISTS (
+                SELECT 1 FROM players WHERE aid = ? AND profile_updated_at = ?
+              ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
+              ON CONFLICT(aid) DO UPDATE SET nickname = excluded.nickname,
+                nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
+              .bind(aid, stats.nickname, normalizeNickname(stats.nickname), now,
+                aid, profileUpdatedAt, aid);
+            await rawDb.batch([player, index]);
+          } else {
+            await player.run();
+          }
         } else {
           await rawDb.prepare(MODE_UPSERT_SQL)
-            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats)).run();
+            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid).run();
         }
       },
       async stored(aid) {
@@ -739,38 +804,49 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         return parseProfileSummary(row);
       },
       async averages(range, statistic = "trimmed_mean") {
-        const { where, params } = statRangeClause(range);
+        const { where: rangeWhere, params } = statRangeClause(range);
+        const where = freshAverageWhere(mode, rangeWhere);
         const cnt = (await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
-        const { trim, off, lim } = trimWindow(n);
         const pairs = await Promise.all(
           AVG_COLS.map(async (c) => {
+            const metricWhere = eligibleMetricWhere(mode, c, where);
+            const count = metricWhere === where
+              ? n
+              : Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0);
+            const { trim, off, lim } = trimWindow(count);
             const p = statistic === "trimmed_mean" && trim ? [...params, lim, off] : params;
-            const r = (await db.prepare(metricStatisticSql(c, where, statistic, trim)).bind(...p).first()) as
+            const r = (await db.prepare(metricStatisticSql(c, metricWhere, statistic, trim)).bind(...p).first()) as
               | { a: number | null }
               | null;
-            return [c, r?.a ?? null] as const;
+            return [c, r?.a ?? null, count] as const;
           })
         );
-        const row: AverageRow = { n };
-        for (const [c, v] of pairs) row[c] = v == null ? null : Number(v);
+        const row: AverageRow = { n, metricCounts: {} };
+        for (const [c, v, count] of pairs) {
+          row[c] = v == null ? null : Number(v);
+          row.metricCounts[c] = count;
+        }
         return row;
       },
       async bracketAggregate(column) {
-        const { results } = await db.prepare(aggSql(column)).all();
+        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+        const { results } = await db.prepare(aggSql(column, where)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
       },
       async bucketAggregate(dimension, column) {
-        const { results } = await db.prepare(bucketAggSql(dimension, column)).all();
+        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+        const { results } = await db.prepare(bucketAggSql(dimension, column, where)).all();
         return toBucketAggs(
           (results ?? []) as { lo: number; hi: number | null; n: number; s: number }[]
         );
       },
       async rangeBounds(dimension) {
         const column = rangeColumn(dimension);
+        const where = freshAverageWhere(mode, "");
         const row = (await db.prepare(
-          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players`
+          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
         ).first()) as { lo: number | null; hi: number | null } | null;
         if (row?.lo == null || row.hi == null) {
           return { min: 0, max: dimension === "hours" ? 5000 : 1000 };
@@ -785,7 +861,11 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         }
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countRow = (await db.prepare(cohortCountSql(dimension, ranges))
+        const countWhere = freshAverageWhere(
+          mode,
+          `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
+        );
+        const countRow = (await db.prepare(cohortCountSql(dimension, ranges, countWhere))
           .bind(...countParams, excludeAid)
           .first()) as Record<string, number | null> | null;
         const countFor = (bounds: CohortBounds) => {
@@ -818,11 +898,12 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           excludeAid,
           requirePositive: true,
         };
-        const { where, params } = statRangeClause(groupRange);
+        const { where: groupWhere, params } = statRangeClause(groupRange);
+        const where = freshAverageWhere(mode, groupWhere);
         const averages = emptyCohortMetrics();
         await Promise.all(RADAR_COLS.map(async (metric) => {
-          const metricWhere = populatedMetricClause(metric, where);
-          const count = metric === "pmc_survival_rate"
+          const metricWhere = populatedMetricClause(mode, metric, where);
+          const count = metricWhere !== where
             ? Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0)
             : countFor(selected.bounds);
           // The cohort itself is already guaranteed to contain at least 20 players.
@@ -855,7 +936,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
       async histogramAverages(column, ranges) {
         if (ranges.length === 0) return [];
         const statements = ranges.map((range) => {
-          const { where, params } = legacyHoursRangeClause(range.lo, range.hi);
+          const { where: rangeWhere, params } = legacyHoursRangeClause(range.lo, range.hi);
+          const where = eligibleMetricWhere(mode, column, freshAverageWhere(mode, rangeWhere));
           return db.prepare(histogramAvgSql(column, where)).bind(...params);
         });
         const results = await db.batch(statements);
@@ -916,13 +998,24 @@ async function getSqliteDb(): Promise<any | null> {
       // Lightweight migration for DBs created before the PMC score columns existed.
       // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
       // them here; a duplicate-column error on already-migrated DBs is expected.
-      for (const col of ["pmc_survival_rate", "pmc_kills_per_raid"]) {
+      for (const [table, col, type] of [
+        ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
+        ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
+        ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
+        ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+        ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
+        ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+      ]) {
         try {
-          sqliteDb.exec(`ALTER TABLE players ADD COLUMN ${col} REAL DEFAULT 0`);
+          sqliteDb.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
         } catch {
           /* column already exists */
         }
       }
+      sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
+        WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
+      sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
+        WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
     }
     return sqliteDb;
   } catch (e) {
@@ -936,6 +1029,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
   if (!rawDb) return null;
   try {
     const table = tableFor(mode);
+    const hasPlayerIndex = mode === "regular" && Boolean(rawDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
+    ).get());
     const q = (sql: string) => scopePlayerSql(sql, table);
     const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
@@ -949,7 +1045,26 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           }
         }
         if (mode === "regular") {
-          db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+          rawDb.exec("BEGIN IMMEDIATE");
+          try {
+            const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
+            db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+            if (hasPlayerIndex) {
+              rawDb.prepare(`INSERT INTO player_index
+                (aid, nickname, nickname_lower, synced_at)
+                SELECT ?, ?, ?, ? WHERE EXISTS (
+                  SELECT 1 FROM players WHERE aid = ? AND profile_updated_at = ?
+                ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
+                ON CONFLICT(aid) DO UPDATE SET nickname = excluded.nickname,
+                  nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
+                .run(aid, stats.nickname, normalizeNickname(stats.nickname), now,
+                  aid, profileUpdatedAt, aid);
+            }
+            rawDb.exec("COMMIT");
+          } catch (error) {
+            rawDb.exec("ROLLBACK");
+            throw error;
+          }
         } else {
           rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
             .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
@@ -969,37 +1084,46 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         return parseProfileSummary(row);
       },
       async averages(range, statistic = "trimmed_mean") {
-        const { where, params } = statRangeClause(range);
+        const { where: rangeWhere, params } = statRangeClause(range);
+        const where = freshAverageWhere(mode, rangeWhere);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
-        const { trim, off, lim } = trimWindow(n);
-        const row: AverageRow = { n };
+        const row: AverageRow = { n, metricCounts: {} };
         for (const c of AVG_COLS) {
-          const stmt = db.prepare(metricStatisticSql(c, where, statistic, trim));
+          const metricWhere = eligibleMetricWhere(mode, c, where);
+          const count = metricWhere === where
+            ? n
+            : Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0);
+          const { trim, off, lim } = trimWindow(count);
+          const stmt = db.prepare(metricStatisticSql(c, metricWhere, statistic, trim));
           const r = (statistic === "trimmed_mean" && trim
             ? stmt.get(...params, lim, off)
             : stmt.get(...params)) as
             | { a: number | null }
             | undefined;
           row[c] = r?.a == null ? null : Number(r.a);
+          row.metricCounts[c] = count;
         }
         return row;
       },
       async bracketAggregate(column) {
-        const rows = db.prepare(aggSql(column)).all() as { bracket_key: string; n: number; s: number }[];
+        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+        const rows = db.prepare(aggSql(column, where)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
       },
       async bucketAggregate(dimension, column) {
-        const rows = db.prepare(bucketAggSql(dimension, column)).all() as {
+        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+        const rows = db.prepare(bucketAggSql(dimension, column, where)).all() as {
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);
       },
       async rangeBounds(dimension) {
         const column = rangeColumn(dimension);
+        const where = freshAverageWhere(mode, "");
         const row = db.prepare(
-          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players`
+          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
         ).get() as { lo: number | null; hi: number | null } | undefined;
         if (row?.lo == null || row.hi == null) {
           return { min: 0, max: dimension === "hours" ? 5000 : 1000 };
@@ -1014,7 +1138,11 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         }
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countRow = db.prepare(cohortCountSql(dimension, ranges))
+        const countWhere = freshAverageWhere(
+          mode,
+          `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
+        );
+        const countRow = db.prepare(cohortCountSql(dimension, ranges, countWhere))
           .get(...countParams, excludeAid) as Record<string, number | null> | undefined;
         const countFor = (bounds: CohortBounds) => {
           const match = ranges.find((entry) =>
@@ -1046,11 +1174,12 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           excludeAid,
           requirePositive: true,
         };
-        const { where, params } = statRangeClause(groupRange);
+        const { where: groupWhere, params } = statRangeClause(groupRange);
+        const where = freshAverageWhere(mode, groupWhere);
         const averages = emptyCohortMetrics();
         for (const metric of RADAR_COLS) {
-          const metricWhere = populatedMetricClause(metric, where);
-          const count = metric === "pmc_survival_rate"
+          const metricWhere = populatedMetricClause(mode, metric, where);
+          const count = metricWhere !== where
             ? Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0)
             : countFor(selected.bounds);
           // The cohort itself is already guaranteed to contain at least 20 players.
@@ -1084,7 +1213,8 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       },
       async histogramAverages(column, ranges) {
         return ranges.map((range) => {
-          const { where, params } = legacyHoursRangeClause(range.lo, range.hi);
+          const { where: rangeWhere, params } = legacyHoursRangeClause(range.lo, range.hi);
+          const where = eligibleMetricWhere(mode, column, freshAverageWhere(mode, rangeWhere));
           const row = db.prepare(histogramAvgSql(column, where)).get(...params) as
             | { a: number | null }
             | undefined;

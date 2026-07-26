@@ -15,7 +15,7 @@ test("missing mode keeps the profile shell without mounting data sections", asyn
   assert.match(unavailableUi, /profileSummary\?\.nickname/);
   assert.match(unavailableUi, /<StatCard key=\{label\} label=\{label\} value="\?" \/>/);
   assert.match(unavailableUi, /<ProfileModeSwitch|<ProfileActions/);
-  assert.match(unavailableUi, /<RefreshButton aid=\{Number\(aid\)\} mode=\{mode\} missing \/>/);
+  assert.match(unavailableUi, /key=\{`\$\{aid\}:\$\{mode\}`\}[\s\S]*?onCheck=\{refreshProfile\}/);
 
   const labelLists = unavailableUi.match(/\? \[(.*?)\]\s*: \[(.*?)\];/s);
   assert.ok(labelLists);
@@ -80,4 +80,41 @@ test("radar statistic switch identifies requests by method", async () => {
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
   assert.match(source, /aria-pressed=\{statistic === value\}/);
+});
+
+test("profile refresh checks automatically after returning without requiring F5", async () => {
+  const button = await readFile("components/RefreshButton.tsx", "utf8");
+  const profile = await readFile("components/RegularPlayer.tsx", "utf8");
+
+  assert.match(button, /window\.addEventListener\("focus", handleFocus\)/);
+  assert.match(button, /awaitingReturn\.current = true/);
+  assert.match(button, /if \(!onCheck\) return/);
+  assert.match(button, /if \(!onCheck \|\| checking\.current\) return/);
+  assert.match(button, /player\.refreshCheckAgain/);
+  assert.match(button, /onCheck && status !== "idle"/);
+  assert.match(button, /aria-live="polite"/);
+  assert.match(profile, /new URLSearchParams\(\{ aid, mode, refresh: "1" \}\)/);
+  assert.match(profile, /setStats\(data\.stats\)/);
+  assert.match(profile, /JSON\.stringify\(data\.stats\) !== JSON\.stringify\(previousStats\)/);
+  assert.match(profile, /requestGeneration\.current \+= 1/);
+  assert.match(profile, /if \(generation !== requestGeneration\.current\) return "unchanged"/);
+  assert.match(profile, /if \(refreshPromise\.current === request\) refreshPromise\.current = null/);
+  assert.ok((profile.match(/key=\{`\$\{aid\}:\$\{mode\}`\}/g) ?? []).length >= 2);
+  assert.equal((profile.match(/player\.profileUpdated/g) ?? []).length, 1);
+});
+
+test("unknown regular PvP stats are not rendered or scored as zero", async () => {
+  const profile = await readFile("components/RegularPlayer.tsx", "utf8");
+  const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+  const score = await readFile("components/CheaterScore.tsx", "utf8");
+
+  assert.match(profile, /mode !== "regular" \|\| stats\.pvpStatsKnown !== false/);
+  assert.match(profile, /pvpStatsKnown \? stats\.pmcKdRatio : t\("common\.notAvailable"\)/);
+  assert.match(profile, /pvpStatsKnown \? stats\.killedPmc\.toLocaleString\(\) : t\("common\.notAvailable"\)/);
+  assert.match(radar, /playerStatsKnown \? valuesFromStats\(stats\) : null/);
+  assert.match(radar, /favoriteStats && favoriteStatsKnown/);
+  assert.match(radar, /radar\.incompletePvp\.player/);
+  assert.match(radar, /radar\.incompletePvp\.favorite/);
+  assert.match(score, /if \(!pvpStatsKnown\)/);
+  assert.match(score, /cheater\.incompletePvp/);
 });

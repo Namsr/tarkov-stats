@@ -138,6 +138,8 @@ export interface ParsedPlayerStats {
   survivalRate: number;
   totalKills: number;
   killedPmc: number;
+  /** True when the exact PMC ["KilledPmc"] counter exists upstream (zero is valid). */
+  pvpStatsKnown?: boolean;
   killsPerRaid: number;
   kdRatio: number;
   pmcKdRatio: number;
@@ -161,6 +163,8 @@ export interface ParsedPlayerStats {
   achievementsCount: number;
   registrationDate: number;
   lastActiveDate: number;
+  /** Upstream profile version, as a Unix ms timestamp. */
+  profileUpdatedAt?: number;
   /** Latest progressed skill access, as a Unix ms timestamp. */
   lastPlayedAt?: number;
   avgLifespan: number;

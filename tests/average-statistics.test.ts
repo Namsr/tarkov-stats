@@ -30,6 +30,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 
 const { getStore } = await import("../lib/db.ts");
+const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
@@ -72,8 +73,15 @@ const range = (min, max, excludeAid) => ({
 
 test("SQLite median handles empty, odd, even, repeated, missing, and singleton values", async () => {
   reset();
-  assert.deepEqual(await store.averages(range(0, 999), "median"), {
+  const empty = await store.averages(range(0, 999), "median");
+  assert.deepEqual(empty, {
     n: 0,
+    metricCounts: Object.fromEntries([
+      "hours", "total_raids", "pmc_raids", "scav_raids", "survival_rate",
+      "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "deaths",
+      "killed_pmc", "run_through", "longest_win_streak", "achv_count",
+      "level", "prestige", "pmc_survival_rate",
+    ].map((metric) => [metric, 0])),
     hours: null,
     total_raids: null,
     pmc_raids: null,
@@ -109,7 +117,9 @@ test("SQLite median handles empty, odd, even, repeated, missing, and singleton v
   add(2, { hours: 30, totalRaids: 5 });
   add(3, { hours: 30, totalRaids: null });
   add(4, { hours: 30, totalRaids: 9 });
-  assert.equal((await store.averages(range(30, 30), "median")).total_raids, 5);
+  const missing = await store.averages(range(30, 30), "median");
+  assert.equal(missing.total_raids, 5);
+  assert.equal(missing.metricCounts.total_raids, 3);
 });
 
 test("trimmed mean keeps the 19/20 boundary and range/exclusion filters", async () => {
@@ -149,6 +159,64 @@ test("cohort median preserves target/expansion, excludes the open aid, and filte
   assert.equal(cohort.n, 20);
   assert.equal(cohort.averages.kd_ratio.value, 10.5);
   assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+});
+
+test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {
+  reset();
+  add(1, { value: 0 });
+  add(2, { value: 2 });
+  add(3, { value: 100 });
+  db.exec(`UPDATE players SET pvp_stats_known = 1 WHERE aid IN (1, 2)`);
+
+  const average = await store.averages(range(0, 999), "median");
+  assert.equal(average.n, 3);
+  assert.equal(average.metricCounts.pmc_kd_ratio, 2);
+  assert.equal(average.pmc_kd_ratio, 1);
+});
+
+test("regular average bounds and rows honor the configured freshness window", async () => {
+  reset();
+  add(1, { hours: 100, value: 1 });
+  add(2, { hours: 9000, value: 9000 });
+  const now = Date.now();
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1").run(now);
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 2").run(now - 100 * 86_400_000);
+  process.env.AVERAGE_PROFILE_MAX_AGE_DAYS = "90";
+  try {
+    assert.deepEqual(await store.rangeBounds("hours"), { min: 100, max: 100 });
+    assert.equal((await store.averages(range(0, 9999), "median")).n, 1);
+    assert.equal((await store.bucketAggregate("hours", null)).reduce((n, bucket) => n + bucket.n, 0), 1);
+  } finally {
+    delete process.env.AVERAGE_PROFILE_MAX_AGE_DAYS;
+  }
+});
+
+test("an older upstream profile cannot overwrite a newer player or search index row", async () => {
+  reset();
+  const profile = (nickname, updated, killedPmc) => ({
+    aid: 77,
+    updated,
+    info: { nickname, side: "Usec", experience: 0 },
+    pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [
+      { Key: ["Sessions", "Pmc"], Value: 10 },
+      { Key: ["Deaths"], Value: 2 },
+      { Key: ["KilledPmc"], Value: killedPmc },
+    ] } } },
+  });
+  const newest = profile("Newest", 1_800_000_000_000, 8);
+  const older = profile("Older", 1_700_000_000_000, 0);
+  await store.upsert(77, parseProfileStats(newest), []);
+  await store.upsert(77, parseProfileStats(older), []);
+
+  assert.deepEqual(
+    { ...db.prepare(`SELECT nickname, killed_pmc, profile_updated_at, pvp_stats_known
+      FROM players WHERE aid = 77`).get() },
+    { nickname: "Newest", killed_pmc: 8, profile_updated_at: newest.updated, pvp_stats_known: 1 },
+  );
+  assert.equal(
+    db.prepare("SELECT nickname FROM player_index WHERE aid = 77").get().nickname,
+    "Newest",
+  );
 });
 
 test("average and cohort API contracts default, echo median, and reject unknown statistics", async () => {

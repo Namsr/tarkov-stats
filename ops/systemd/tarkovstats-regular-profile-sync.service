@@ -1,0 +1,14 @@
+[Unit]
+Description=TarkovStats tracked regular profile sync
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+ConditionPathExists=/opt/tarkovstats/docker-compose.vps.yml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats
+# Rollout must remove the legacy daily importer first; never run both writers.
+ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
+ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -f docker-compose.vps.yml exec -T web node --experimental-sqlite scripts/sync-regular-profiles.mjs
+TimeoutStartSec=12h

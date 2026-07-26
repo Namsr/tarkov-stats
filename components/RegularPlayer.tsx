@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
@@ -9,7 +9,7 @@ import CheaterScore from "@/components/CheaterScore";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
-import RefreshButton from "@/components/RefreshButton";
+import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
@@ -34,12 +34,14 @@ function ProfileActions({
   nickname,
   stale = false,
   missing = false,
+  onCheck,
 }: {
   aid: number;
   mode: CrossSectionMode;
   nickname?: string;
   stale?: boolean;
   missing?: boolean;
+  onCheck: () => Promise<RefreshCheckResult>;
 }) {
   const { t } = useI18n();
   return (
@@ -47,10 +49,12 @@ function ProfileActions({
       <div className="flex flex-wrap items-start gap-2 sm:justify-end">
         <div className="flex flex-col items-start gap-1">
           <RefreshButton
+            key={`${aid}:${mode}`}
             aid={aid}
             mode={mode}
             stale={stale}
             missing={missing}
+            onCheck={onCheck}
             className="!min-h-12 whitespace-nowrap"
           />
           {stale && (
@@ -90,9 +94,13 @@ export default function RegularPlayer({
   const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
+  const requestGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    requestGeneration.current += 1;
+    refreshPromise.current = null;
     // Reset the route-level request state whenever the account changes.
     setLoading(true);
     setError("");
@@ -151,6 +159,58 @@ export default function RegularPlayer({
     };
   }, [aid, mode, t]);
 
+  const refreshProfile = useCallback(() => {
+    if (refreshPromise.current) return refreshPromise.current;
+
+    const generation = requestGeneration.current;
+    const previousStats = stats;
+    const previousUpdatedAt = profileUpdatedAt;
+    const requestParams = new URLSearchParams({ aid, mode, refresh: "1" });
+    const request = fetch(`/api/player/profile?${requestParams}`)
+      .then(async (res): Promise<RefreshCheckResult> => {
+        const data = (await res.json()) as {
+          code?: string;
+          error?: string;
+          profile?: PlayerProfile;
+          stats?: ParsedPlayerStats;
+          achievementIds?: string[];
+          profileUpdatedAt?: number | null;
+          profileSummary?: ProfileSummary;
+        };
+        if (generation !== requestGeneration.current) return "unchanged";
+        if (!res.ok || !data.stats) {
+          if (data.code === "mode_profile_unavailable") {
+            setModeUnavailable(true);
+            setProfileSummary(data.profileSummary ?? null);
+            return "unchanged";
+          }
+          throw new Error(data.error ?? t("player.loadError"));
+        }
+
+        const updatedAt = data.profileUpdatedAt ?? data.stats.profileUpdatedAt ?? null;
+        const changed =
+          !previousStats ||
+          updatedAt !== previousUpdatedAt ||
+          JSON.stringify(data.stats) !== JSON.stringify(previousStats);
+        setProfile(data.profile ?? null);
+        setStats(data.stats);
+        setAchievementIds(
+          data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
+        );
+        setProfileUpdatedAt(updatedAt);
+        setProfileIsStale(updatedAt !== null && Date.now() - updatedAt > PROFILE_STALE_MS);
+        setModeUnavailable(false);
+        setProfileSummary(null);
+        setError("");
+        return changed ? "updated" : "unchanged";
+      })
+      .finally(() => {
+        if (refreshPromise.current === request) refreshPromise.current = null;
+      });
+    refreshPromise.current = request;
+    return request;
+  }, [aid, mode, profileUpdatedAt, stats, t]);
+
   if (loading) {
     return (
       <main className="flex-1 px-4 py-8 max-w-7xl mx-auto w-full">
@@ -198,6 +258,7 @@ export default function RegularPlayer({
               mode={mode}
               nickname={profileSummary?.nickname}
               missing
+              onCheck={refreshProfile}
             />
           </div>
 
@@ -208,7 +269,13 @@ export default function RegularPlayer({
 
         <section className="data-panel mt-5 flex flex-col items-center gap-4 p-6 text-center">
           <p className="max-w-2xl text-[var(--danger)]">{t("player.modeUnavailable")}</p>
-          <RefreshButton aid={Number(aid)} mode={mode} missing />
+          <RefreshButton
+            key={`${aid}:${mode}`}
+            aid={Number(aid)}
+            mode={mode}
+            missing
+            onCheck={refreshProfile}
+          />
         </section>
       </main>
     );
@@ -229,6 +296,7 @@ export default function RegularPlayer({
   }
 
   const arena = stats.arena;
+  const pvpStatsKnown = mode !== "regular" || stats.pvpStatsKnown !== false;
   const coreStats: { label: string; value: string | number; suffix?: string }[] =
     mode === "arena"
       ? [
@@ -239,7 +307,7 @@ export default function RegularPlayer({
         ]
       : [
           { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
-          { label: t("player.pmcKd"), value: stats.pmcKdRatio },
+          { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
           { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
           { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
         ];
@@ -250,7 +318,7 @@ export default function RegularPlayer({
     { label: t("player.scavRaids"), value: stats.scavRaids },
     { label: t("player.kdAll"), value: stats.kdRatio },
     { label: t("player.totalKills"), value: stats.totalKills.toLocaleString() },
-    { label: t("player.pmcKills"), value: stats.killedPmc.toLocaleString() },
+    { label: t("player.pmcKills"), value: pvpStatsKnown ? stats.killedPmc.toLocaleString() : t("common.notAvailable") },
     { label: t("player.deaths"), value: stats.deaths.toLocaleString() },
     { label: t("player.runThroughs"), value: stats.runThrough },
     { label: t("player.outcome.killed"), value: stats.pmcExitKilled },
@@ -315,6 +383,7 @@ export default function RegularPlayer({
             mode={mode}
             nickname={stats.nickname}
             stale={profileIsStale}
+            onCheck={refreshProfile}
           />
         </div>
 

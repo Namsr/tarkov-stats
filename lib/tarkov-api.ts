@@ -94,6 +94,27 @@ export interface PublicProfileResult {
   fromCache: boolean;
 }
 
+export class PublicProfileVersionConflictError extends Error {
+  readonly code = "public_profile_version_conflict";
+  readonly expectedUpdatedAt: number;
+  readonly actualUpdatedAt: number | null;
+
+  constructor(
+    expectedUpdatedAt: number,
+    actualUpdatedAt: number | null,
+  ) {
+    super(`Public profile version ${actualUpdatedAt ?? "missing"} is older than ${expectedUpdatedAt}`);
+    this.expectedUpdatedAt = expectedUpdatedAt;
+    this.actualUpdatedAt = actualUpdatedAt;
+  }
+}
+
+function profileUpdatedAt(value: unknown): number | null {
+  const timestamp = Number(value);
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) return null;
+  return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+}
+
 /**
  * Captcha-free profile fetch by account id from the public static cache.
  * `profile` is null when not cached upstream (404). `fromCache` says whether the
@@ -103,7 +124,7 @@ export interface PublicProfileResult {
  */
 export async function getPublicProfile(
   aid: number,
-  opts: { force?: boolean; mode?: PublicProfileMode } = {}
+  opts: { force?: boolean; mode?: PublicProfileMode; expectedUpdatedAt?: number } = {}
 ): Promise<PublicProfileResult> {
   const now = Date.now();
   const mode = opts.mode ?? "regular";
@@ -117,7 +138,12 @@ export async function getPublicProfile(
     }
   }
 
-  const url = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
+  const canonicalUrl = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
+  const expectedUpdatedAt = mode === "regular"
+    ? profileUpdatedAt(opts.expectedUpdatedAt)
+    : null;
+  const cacheBust = expectedUpdatedAt ?? now;
+  const url = opts.force && mode === "regular" ? `${canonicalUrl}?v=${cacheBust}` : canonicalUrl;
   const res = await fetchTarkovJson(url, { cache: "no-store" });
   if (res.status === 404) {
     cacheProfile(cacheKey, null, now);
@@ -135,6 +161,16 @@ export async function getPublicProfile(
   }
   if (mode === "pve" && (!profile.pmcStats?.eft || !Array.isArray(profile.skills?.Common))) {
     throw new Error("Public PVE profile schema mismatch");
+  }
+  const actualUpdatedAt = profileUpdatedAt(profile.updated);
+  if (
+    expectedUpdatedAt !== null &&
+    (actualUpdatedAt === null || actualUpdatedAt < expectedUpdatedAt)
+  ) {
+    throw new PublicProfileVersionConflictError(
+      expectedUpdatedAt,
+      actualUpdatedAt,
+    );
   }
   cacheProfile(cacheKey, profile, now);
   return { profile, fromCache: false };
@@ -410,6 +446,17 @@ function getCounterValue(
   return Number.isFinite(v) ? v : 0;
 }
 
+function hasCounter(
+  items: { Key: string[]; Value: number }[],
+  ...keys: string[]
+): boolean {
+  return items.some(
+    (item) =>
+      item.Key.length === keys.length &&
+      keys.every((key, index) => item.Key[index] === key)
+  );
+}
+
 const round = (n: number, d = 2) => {
   const f = 10 ** d;
   return Math.round(n * f) / f;
@@ -517,6 +564,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     survivalRate: 0,
     totalKills,
     killedPmc: 0,
+    pvpStatsKnown: false,
     killsPerRaid: 0,
     kdRatio: arena.kdRatio,
     pmcKdRatio: 0,
@@ -536,6 +584,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     achievementsCount: 0,
     registrationDate: profile.info?.registrationDate ?? 0,
     lastActiveDate: profile.info?.lastActiveDate ?? 0,
+    profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     avgLifespan: 0,
     totalLootValue: 0,
     arena,
@@ -625,6 +674,7 @@ export function parseProfileStats(
     survivalRate: round(survivalRate, 1),
     totalKills,
     killedPmc,
+    pvpStatsKnown: hasCounter(pmcCounters, "KilledPmc"),
     killsPerRaid: round(killsPerRaid),
     kdRatio: round(kdRatio),
     pmcKdRatio: round(pmcKdRatio),
@@ -644,6 +694,7 @@ export function parseProfileStats(
     achievementsCount,
     registrationDate: profile.info?.registrationDate ?? 0,
     lastActiveDate: profile.info?.lastActiveDate ?? 0,
+    profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     lastPlayedAt: (lastSkillAccessSeconds(profile) ?? 0) * 1000,
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,

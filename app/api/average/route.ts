@@ -89,6 +89,7 @@ export async function GET(request: NextRequest) {
     const response = NextResponse.json({
       total: 0,
       averages: null,
+      metricCounts: {},
       brackets: [],
       buckets: [],
       histogram: [],
@@ -136,6 +137,7 @@ export async function GET(request: NextRequest) {
       if (bounds.isSettled()) rangeBoundsMs = bounds.durationMs(boundsSynchronous);
     });
     const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
+    const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };
     const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
       ...bin,
       avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
@@ -144,7 +146,8 @@ export async function GET(request: NextRequest) {
     const response = NextResponse.json(
       {
         total,
-        averages: averageResult,
+        averages: averageResult ? averageValues : null,
+        metricCounts,
         brackets: legacyBrackets(bucketResult),
         buckets: bucketResult,
         histogram,

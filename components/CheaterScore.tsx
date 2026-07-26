@@ -53,13 +53,20 @@ export default function CheaterScore({
   const { t } = useI18n();
   const [result, setResult] = useState<CheaterScoreResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const pvpStatsKnown = mode !== "regular" || stats.pvpStatsKnown !== false;
 
   const bracket = rangeForHours(stats.hoursPlayed);
   // Stable dep: the effect refetches only when the owned-achievement set changes.
   const ownedKey = ownedAchievementIds.join(",");
 
   useEffect(() => {
+    if (!pvpStatsKnown) {
+      setResult(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
+    setLoading(true);
     const ownedIds = ownedKey ? ownedKey.split(",") : [];
     const params = new URLSearchParams();
     params.set("minHours", String(bracket.min));
@@ -95,7 +102,18 @@ export default function CheaterScore({
     return () => {
       cancelled = true;
     };
-  }, [stats, bracket.min, bracket.max, mode, ownedKey]);
+  }, [stats, bracket.min, bracket.max, mode, ownedKey, pvpStatsKnown]);
+
+  if (!pvpStatsKnown) {
+    return (
+      <div className="data-panel p-5">
+        <span className="section-kicker">{t("cheater.heading")}</span>
+        <p className="mt-4 text-sm text-[var(--muted)]" role="status">
+          {t("cheater.incompletePvp")}
+        </p>
+      </div>
+    );
+  }
 
   if (loading || !result) {
     return <div className="h-64 skeleton rounded-xl" />;
