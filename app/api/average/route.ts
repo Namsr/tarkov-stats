@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getStore,
+  parseAveragePeriod,
   parseAverageStatistic,
   type BucketAgg,
   type RangeDimension,
@@ -51,6 +52,11 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
+  const period = parseAveragePeriod(params.get("period"));
+  if (!period || (rawMode !== "regular" && period !== "all")) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid period" }, { status: 400 });
+  }
   const dimension = parseDimension(params.get("dimension"));
   if (!dimension) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
@@ -97,6 +103,7 @@ export async function GET(request: NextRequest) {
       dimension,
       metric: metric.key || DEFAULT_Y,
       statistic,
+      period,
     });
     timing.finish({
       operation: "average", mode: rawMode, outcome: "unavailable", status: 200,
@@ -117,12 +124,13 @@ export async function GET(request: NextRequest) {
         maxInclusive: usesNewRange,
       },
       statistic,
+      period,
     ));
     const buckets = startTimingPhase(
       timing.now,
-      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null),
+      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period),
     );
-    const bounds = startTimingPhase(timing.now, () => store.rangeBounds(dimension));
+    const bounds = startTimingPhase(timing.now, () => store.rangeBounds(dimension, period));
     await Promise.resolve();
     const averagesSynchronous = averages.isSettled();
     const bucketsSynchronous = buckets.isSettled();
@@ -155,6 +163,7 @@ export async function GET(request: NextRequest) {
         dimension,
         metric: metric.key,
         statistic,
+        period,
       },
       { headers: { "Cache-Control": "public, max-age=60" } },
     );

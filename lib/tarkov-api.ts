@@ -78,6 +78,7 @@ const PUBLIC_PROFILE_PATH: Record<PublicProfileMode, string> = {
 const profileCache = new Map<string, CachedProfile>();
 const PROFILE_TTL_MS = 5 * 60 * 1000; // 5 минут
 const PROFILE_CACHE_MAX = 2000;
+const PROFILE_VERSION_TOLERANCE_MS = 1000;
 
 function cacheProfile(key: string, profile: PlayerProfile | null, ts: number) {
   if (profileCache.size > PROFILE_CACHE_MAX) {
@@ -165,12 +166,20 @@ export async function getPublicProfile(
   const actualUpdatedAt = profileUpdatedAt(profile.updated);
   if (
     expectedUpdatedAt !== null &&
-    (actualUpdatedAt === null || actualUpdatedAt < expectedUpdatedAt)
+    (
+      actualUpdatedAt === null ||
+      actualUpdatedAt < expectedUpdatedAt - PROFILE_VERSION_TOLERANCE_MS
+    )
   ) {
     throw new PublicProfileVersionConflictError(
       expectedUpdatedAt,
       actualUpdatedAt,
     );
+  }
+  if (expectedUpdatedAt !== null) {
+    // updated.json is authoritative for sub-second serialization skew. Persist
+    // its version so the completed queue item is not rediscovered every day.
+    profile.updated = Math.max(actualUpdatedAt ?? expectedUpdatedAt, expectedUpdatedAt);
   }
   cacheProfile(cacheKey, profile, now);
   return { profile, fromCache: false };

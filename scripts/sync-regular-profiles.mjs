@@ -3,7 +3,11 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
-import { createTimestampObjectParser, normalizeUpdatedAt } from "./regular-profile-sync-core.mjs";
+import {
+  createTimestampObjectParser,
+  normalizeUpdatedAt,
+  summarizeCoverage,
+} from "./regular-profile-sync-core.mjs";
 
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
@@ -67,15 +71,13 @@ async function main() {
     FROM players p LEFT JOIN excluded_players e ON e.aid = p.aid
     WHERE e.aid IS NULL
   `).get();
-  const coverageTotal = Number(coverage.total);
-  const covered = Number(coverage.covered) || 0;
+  const coverageSummary = summarizeCoverage(coverage.total, coverage.covered);
   const trackedNonExcludedInFeed = feed.trackedInFeed - feed.excluded;
   const summary = {
     ...feed,
     ...processed,
-    missingFromFeed: Math.max(0, coverageTotal - trackedNonExcludedInFeed),
-    covered,
-    coveragePercent: coverageTotal > 0 ? Number(((covered / coverageTotal) * 100).toFixed(2)) : 100,
+    missingFromFeed: Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
+    ...coverageSummary,
     statuses,
     stopped: stopping,
   };

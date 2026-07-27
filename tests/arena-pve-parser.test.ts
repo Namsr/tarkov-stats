@@ -106,6 +106,31 @@ test("regular forced fetch cache-busts upstream and rejects an older profile ver
   assert.equal(requestedUrl, "https://players.tarkov.dev/profile/5869254.json?v=1800000000000");
 });
 
+test("regular profile version accepts one-second feed skew but rejects anything older", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const aid = Number(String(input).match(/profile\/(\d+)\.json/)?.[1]);
+    const updated = aid === 5869255 ? 1_800_000_000_000 - 1000 : 1_800_000_000_000 - 1001;
+    return new Response(JSON.stringify({ ...base, aid, updated }), { status: 200 });
+  };
+  try {
+    const accepted = await getPublicProfile(5869255, {
+      force: true,
+      expectedUpdatedAt: 1_800_000_000_000,
+    });
+    assert.equal(accepted.profile.updated, 1_800_000_000_000);
+    await assert.rejects(
+      getPublicProfile(5869256, {
+        force: true,
+        expectedUpdatedAt: 1_800_000_000_000,
+      }),
+      /older than/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("explicit zero PMC kills is known while a missing counter remains unknown", () => {
   const profile = (items) => ({
     ...base,

@@ -31,6 +31,7 @@ process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 
 const { getStore } = await import("../lib/db.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
@@ -174,20 +175,31 @@ test("regular PvP averages include explicit zeroes and exclude only unknown coun
   assert.equal(average.pmc_kd_ratio, 1);
 });
 
-test("regular average bounds and rows honor the configured freshness window", async () => {
+test("regular 90d period filters every average distribution and cohort query", async () => {
   reset();
   add(1, { hours: 100, value: 1 });
-  add(2, { hours: 9000, value: 9000 });
+  add(2, { hours: 9000, raids: 900, value: 9000 });
   const now = Date.now();
   db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1").run(now);
   db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 2").run(now - 100 * 86_400_000);
-  process.env.AVERAGE_PROFILE_MAX_AGE_DAYS = "90";
-  try {
-    assert.deepEqual(await store.rangeBounds("hours"), { min: 100, max: 100 });
-    assert.equal((await store.averages(range(0, 9999), "median")).n, 1);
-    assert.equal((await store.bucketAggregate("hours", null)).reduce((n, bucket) => n + bucket.n, 0), 1);
-  } finally {
-    delete process.env.AVERAGE_PROFILE_MAX_AGE_DAYS;
+  assert.deepEqual(await store.rangeBounds("hours", "90d"), { min: 100, max: 100 });
+  assert.deepEqual(await store.rangeBounds("pmc_raids", "90d"), { min: 100, max: 100 });
+  assert.equal((await store.averages(range(0, 9999), "median", "all")).n, 2);
+  assert.equal((await store.averages(range(0, 9999), "median", "90d")).n, 1);
+  assert.equal((await store.bucketAggregate("hours", null, "90d")).reduce((n, bucket) => n + bucket.n, 0), 1);
+  assert.equal((await store.bucketAggregate("pmc_raids", null, "90d")).reduce((n, bucket) => n + bucket.n, 0), 1);
+  assert.equal((await store.bracketAggregate(null, "90d")).reduce((n, bracket) => n + bracket.n, 0), 1);
+  assert.deepEqual(await store.histogramAverages("total_raids", [{ lo: 0, hi: null }], "90d"), [1]);
+
+  reset();
+  for (let aid = 1; aid <= 40; aid += 1) {
+    add(aid, { hours: 100, raids: 100, value: aid <= 20 ? aid : aid + 79 });
+    db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = ?")
+      .run(aid <= 20 ? now : now - 100 * 86_400_000, aid);
+  }
+  for (const dimension of ["hours", "pmc_raids"]) {
+    assert.equal((await store.cohort(dimension, 100, 999, "median", "all")).averages.kd_ratio.value, 60);
+    assert.equal((await store.cohort(dimension, 100, 999, "median", "90d")).averages.kd_ratio.value, 10.5);
   }
 });
 
@@ -219,23 +231,71 @@ test("an older upstream profile cannot overwrite a newer player or search index 
   );
 });
 
+test("tracked sync stores the feed version when profile JSON differs by milliseconds", async () => {
+  reset();
+  const expectedUpdatedAt = 1_800_000_000_000;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const aid = Number(String(input).match(/profile\/(\d+)\.json/)?.[1]);
+    return new Response(JSON.stringify({
+      aid,
+      updated: expectedUpdatedAt - (aid === 700 ? 73 : 1001),
+      info: { nickname: `p${aid}`, side: "Usec", experience: 0 },
+      pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [
+        { Key: ["Sessions", "Pmc"], Value: 10 },
+        { Key: ["Deaths"], Value: 2 },
+        { Key: ["KilledPmc"], Value: 4 },
+      ] } } },
+    }), { status: 200 });
+  };
+  try {
+    const resolved = await resolveTrackedProfilePayload({ aid: 700, expectedUpdatedAt });
+    assert.equal(resolved.state, "profile");
+    assert.equal(resolved.payload.profile.updated, expectedUpdatedAt);
+    await store.upsert(700, parseProfileStats(resolved.payload.profile), []);
+    assert.equal(
+      db.prepare("SELECT profile_updated_at FROM players WHERE aid = 700").get().profile_updated_at,
+      expectedUpdatedAt,
+    );
+    await assert.rejects(
+      resolveTrackedProfilePayload({ aid: 701, expectedUpdatedAt }),
+      /older than/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("average and cohort API contracts default, echo median, and reject unknown statistics", async () => {
   reset();
   add(1, { hours: 100, totalRaids: 1 });
   add(2, { hours: 100, totalRaids: 2 });
   add(3, { hours: 100, totalRaids: 100 });
+  db.prepare("UPDATE players SET profile_updated_at = ?").run(Date.now());
 
   const defaultResponse = await getAverage(new NextRequest("http://local/api/average"));
   assert.equal(defaultResponse.status, 200);
-  assert.equal((await defaultResponse.json()).statistic, "trimmed_mean");
+  assert.deepEqual(
+    (({ statistic, period }) => ({ statistic, period }))(await defaultResponse.json()),
+    { statistic: "trimmed_mean", period: "all" },
+  );
 
-  const medianResponse = await getAverage(new NextRequest("http://local/api/average?statistic=median"));
+  const medianResponse = await getAverage(new NextRequest(
+    "http://local/api/average?statistic=median&period=90d",
+  ));
   const medianBody = await medianResponse.json();
   assert.equal(medianBody.statistic, "median");
+  assert.equal(medianBody.period, "90d");
   assert.equal(medianBody.averages.total_raids, 2);
 
   assert.equal((await getAverage(new NextRequest(
     "http://local/api/average?statistic=mean",
+  ))).status, 400);
+  assert.equal((await getAverage(new NextRequest(
+    "http://local/api/average?period=recent",
+  ))).status, 400);
+  assert.equal((await getAverage(new NextRequest(
+    "http://local/api/average?mode=pve&period=90d",
   ))).status, 400);
 
   reset();
@@ -247,14 +307,26 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   const defaultCohort = await getCohort(new NextRequest(
     "http://local/api/average/cohort?center=0&excludeAid=1",
   ));
-  assert.equal((await defaultCohort.json()).statistic, "trimmed_mean");
+  assert.deepEqual(
+    (({ statistic, period }) => ({ statistic, period }))(await defaultCohort.json()),
+    { statistic: "trimmed_mean", period: "all" },
+  );
 
   const unavailable = await getCohort(new NextRequest(
-    "http://local/api/average/cohort?center=0&excludeAid=1&statistic=median",
+    "http://local/api/average/cohort?center=0&excludeAid=1&statistic=median&period=90d",
   ));
   assert.equal(unavailable.status, 200);
-  assert.equal((await unavailable.json()).statistic, "median");
+  assert.deepEqual(
+    (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
+    { statistic: "median", period: "90d" },
+  );
   assert.equal((await getCohort(new NextRequest(
     "http://local/api/average/cohort?center=1&excludeAid=1&statistic=mean",
+  ))).status, 400);
+  assert.equal((await getCohort(new NextRequest(
+    "http://local/api/average/cohort?center=1&excludeAid=1&period=recent",
+  ))).status, 400);
+  assert.equal((await getCohort(new NextRequest(
+    "http://local/api/average/cohort?mode=arena&center=1&excludeAid=1&period=90d",
   ))).status, 400);
 });

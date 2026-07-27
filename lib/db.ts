@@ -148,10 +148,17 @@ export const AVG_COLS = [
 
 export type RangeDimension = "hours" | "pmc_raids";
 export type AverageStatistic = "trimmed_mean" | "median";
+export type AveragePeriod = "all" | "90d";
 
 export function parseAverageStatistic(value: string | null): AverageStatistic | null {
   if (value == null || value === "trimmed_mean") return "trimmed_mean";
   if (value === "median") return "median";
+  return null;
+}
+
+export function parseAveragePeriod(value: string | null): AveragePeriod | null {
+  if (value == null || value === "all") return "all";
+  if (value === "90d") return "90d";
   return null;
 }
 
@@ -170,10 +177,13 @@ function appendCondition(where: string, condition: string): string {
   return where ? `${where} AND ${condition}` : `WHERE ${condition}`;
 }
 
-function freshAverageWhere(mode: CrossSectionMode, where: string): string {
-  const days = Number(process.env.AVERAGE_PROFILE_MAX_AGE_DAYS);
-  if (mode !== "regular" || !Number.isFinite(days) || days <= 0) return where;
-  const cutoff = Math.floor(Date.now() - days * 86_400_000);
+function averagePeriodWhere(
+  mode: CrossSectionMode,
+  period: AveragePeriod,
+  where: string,
+): string {
+  if (mode !== "regular" || period === "all") return where;
+  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
   return appendCondition(where, `profile_updated_at >= ${cutoff}`);
 }
 
@@ -636,29 +646,42 @@ export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
   stored(aid: number): Promise<{ stats: ParsedPlayerStats; achievementIds: string[] } | null>;
   profileSummary(aid: number): Promise<ProfileSummary | null>;
-  averages(range: StatRange, statistic?: AverageStatistic): Promise<AverageRow | null>;
+  averages(
+    range: StatRange,
+    statistic?: AverageStatistic,
+    period?: AveragePeriod,
+  ): Promise<AverageRow | null>;
   /**
    * Player count per playtime bracket. When `column` is given, also returns the
    * SUM of that column per bracket so a per-bracket average can be computed.
    */
-  bracketAggregate(column: string | null): Promise<BracketAgg[]>;
+  bracketAggregate(column: string | null, period?: AveragePeriod): Promise<BracketAgg[]>;
   /** Full distribution for the chosen range dimension. */
-  bucketAggregate(dimension: RangeDimension, column: string | null): Promise<BucketAgg[]>;
+  bucketAggregate(
+    dimension: RangeDimension,
+    column: string | null,
+    period?: AveragePeriod,
+  ): Promise<BucketAgg[]>;
   /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
-  rangeBounds(dimension: RangeDimension): Promise<RangeBounds>;
+  rangeBounds(dimension: RangeDimension, period?: AveragePeriod): Promise<RangeBounds>;
   /** Adaptive comparison group around one player's playtime or PMC raid count. */
   cohort(
     dimension: RangeDimension,
     center: number,
     excludeAid: number,
     statistic?: AverageStatistic,
+    period?: AveragePeriod,
   ): Promise<CohortResult>;
   /**
    * Trimmed mean of one metric for each final display range. The range count is
    * derived inside each SQL statement so concurrent imports cannot skew which
    * rows are trimmed.
    */
-  histogramAverages(column: string, ranges: readonly HistogramRange[]): Promise<(number | null)[]>;
+  histogramAverages(
+    column: string,
+    ranges: readonly HistogramRange[],
+    period?: AveragePeriod,
+  ): Promise<(number | null)[]>;
   /**
    * Per-achievement playtime baseline over the whole sample: owner count plus
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
@@ -803,9 +826,9 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         )).bind(aid).first() as { nickname?: unknown; side?: unknown; prestige?: unknown } | null;
         return parseProfileSummary(row);
       },
-      async averages(range, statistic = "trimmed_mean") {
+      async averages(range, statistic = "trimmed_mean", period = "all") {
         const { where: rangeWhere, params } = statRangeClause(range);
-        const where = freshAverageWhere(mode, rangeWhere);
+        const where = averagePeriodWhere(mode, period, rangeWhere);
         const cnt = (await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
@@ -830,21 +853,21 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         }
         return row;
       },
-      async bracketAggregate(column) {
-        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+      async bracketAggregate(column, period = "all") {
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
         const { results } = await db.prepare(aggSql(column, where)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
       },
-      async bucketAggregate(dimension, column) {
-        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+      async bucketAggregate(dimension, column, period = "all") {
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
         const { results } = await db.prepare(bucketAggSql(dimension, column, where)).all();
         return toBucketAggs(
           (results ?? []) as { lo: number; hi: number | null; n: number; s: number }[]
         );
       },
-      async rangeBounds(dimension) {
+      async rangeBounds(dimension, period = "all") {
         const column = rangeColumn(dimension);
-        const where = freshAverageWhere(mode, "");
+        const where = averagePeriodWhere(mode, period, "");
         const row = (await db.prepare(
           `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
         ).first()) as { lo: number | null; hi: number | null } | null;
@@ -853,7 +876,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         }
         return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
       },
-      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean") {
+      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean", period = "all") {
         if (center <= 0) {
           return unavailableCohort(
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
@@ -861,8 +884,9 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         }
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countWhere = freshAverageWhere(
+        const countWhere = averagePeriodWhere(
           mode,
+          period,
           `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
         );
         const countRow = (await db.prepare(cohortCountSql(dimension, ranges, countWhere))
@@ -899,7 +923,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           requirePositive: true,
         };
         const { where: groupWhere, params } = statRangeClause(groupRange);
-        const where = freshAverageWhere(mode, groupWhere);
+        const where = averagePeriodWhere(mode, period, groupWhere);
         const averages = emptyCohortMetrics();
         await Promise.all(RADAR_COLS.map(async (metric) => {
           const metricWhere = populatedMetricClause(mode, metric, where);
@@ -933,11 +957,15 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           averages,
         };
       },
-      async histogramAverages(column, ranges) {
+      async histogramAverages(column, ranges, period = "all") {
         if (ranges.length === 0) return [];
         const statements = ranges.map((range) => {
           const { where: rangeWhere, params } = legacyHoursRangeClause(range.lo, range.hi);
-          const where = eligibleMetricWhere(mode, column, freshAverageWhere(mode, rangeWhere));
+          const where = eligibleMetricWhere(
+            mode,
+            column,
+            averagePeriodWhere(mode, period, rangeWhere),
+          );
           return db.prepare(histogramAvgSql(column, where)).bind(...params);
         });
         const results = await db.batch(statements);
@@ -1083,9 +1111,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         ).get(aid) as { nickname?: unknown; side?: unknown; prestige?: unknown } | undefined;
         return parseProfileSummary(row);
       },
-      async averages(range, statistic = "trimmed_mean") {
+      async averages(range, statistic = "trimmed_mean", period = "all") {
         const { where: rangeWhere, params } = statRangeClause(range);
-        const where = freshAverageWhere(mode, rangeWhere);
+        const where = averagePeriodWhere(mode, period, rangeWhere);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
@@ -1107,21 +1135,21 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         }
         return row;
       },
-      async bracketAggregate(column) {
-        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+      async bracketAggregate(column, period = "all") {
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
         const rows = db.prepare(aggSql(column, where)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
       },
-      async bucketAggregate(dimension, column) {
-        const where = eligibleMetricWhere(mode, column ?? "", freshAverageWhere(mode, ""));
+      async bucketAggregate(dimension, column, period = "all") {
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
         const rows = db.prepare(bucketAggSql(dimension, column, where)).all() as {
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);
       },
-      async rangeBounds(dimension) {
+      async rangeBounds(dimension, period = "all") {
         const column = rangeColumn(dimension);
-        const where = freshAverageWhere(mode, "");
+        const where = averagePeriodWhere(mode, period, "");
         const row = db.prepare(
           `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
         ).get() as { lo: number | null; hi: number | null } | undefined;
@@ -1130,7 +1158,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         }
         return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
       },
-      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean") {
+      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean", period = "all") {
         if (center <= 0) {
           return unavailableCohort(
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
@@ -1138,8 +1166,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         }
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countWhere = freshAverageWhere(
+        const countWhere = averagePeriodWhere(
           mode,
+          period,
           `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
         );
         const countRow = db.prepare(cohortCountSql(dimension, ranges, countWhere))
@@ -1175,7 +1204,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           requirePositive: true,
         };
         const { where: groupWhere, params } = statRangeClause(groupRange);
-        const where = freshAverageWhere(mode, groupWhere);
+        const where = averagePeriodWhere(mode, period, groupWhere);
         const averages = emptyCohortMetrics();
         for (const metric of RADAR_COLS) {
           const metricWhere = populatedMetricClause(mode, metric, where);
@@ -1211,10 +1240,14 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           averages,
         };
       },
-      async histogramAverages(column, ranges) {
+      async histogramAverages(column, ranges, period = "all") {
         return ranges.map((range) => {
           const { where: rangeWhere, params } = legacyHoursRangeClause(range.lo, range.hi);
-          const where = eligibleMetricWhere(mode, column, freshAverageWhere(mode, rangeWhere));
+          const where = eligibleMetricWhere(
+            mode,
+            column,
+            averagePeriodWhere(mode, period, rangeWhere),
+          );
           const row = db.prepare(histogramAvgSql(column, where)).get(...params) as
             | { a: number | null }
             | undefined;

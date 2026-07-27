@@ -17,7 +17,7 @@ import {
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY } from "@/lib/metrics";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
-import type { AverageStatistic, CrossSectionMode } from "@/lib/db";
+import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
 
 type RangeDimension = "hours" | "pmc_raids";
 
@@ -32,6 +32,7 @@ interface RangeBounds {
 }
 
 interface AverageResponse {
+  period: AveragePeriod;
   statistic: AverageStatistic;
   total: number;
   averages: AverageRow | null;
@@ -127,6 +128,8 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   const searchParams = useSearchParams();
   const statistic: AverageStatistic =
     searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
+  const period: AveragePeriod =
+    mode === "regular" && searchParams.get("period") === "90d" ? "90d" : "all";
   const [dimension, setDimension] = useState<RangeDimension>("hours");
   const [selection, setSelection] = useState<RangeBounds | null>(null);
   const [requestedRange, setRequestedRange] = useState<RangeBounds | null>(null);
@@ -156,7 +159,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ dimension, metric: yMetric, mode, statistic });
+    const params = new URLSearchParams({ dimension, metric: yMetric, mode, statistic, period });
     if (requestedRange) {
       params.set("min", String(requestedRange.min));
       params.set("max", String(requestedRange.max));
@@ -176,6 +179,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
         return json;
       })
       .then((json) => {
+        if (controller.signal.aborted) return;
         setData(json);
         setSelection((current) => {
           if (current) return current;
@@ -196,13 +200,25 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
       });
 
     return () => controller.abort();
-  }, [dimension, mode, requestedRange, statistic, t, yMetric]);
+  }, [dimension, mode, period, requestedRange, statistic, t, yMetric]);
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
     const params = new URLSearchParams(searchParams.toString());
     if (next === "median") params.set("statistic", next);
     else params.delete("statistic");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  function changePeriod(next: AveragePeriod) {
+    if (next === period) return;
+    setSelection(null);
+    setRequestedRange(null);
+    setData(null);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "90d") params.set("period", next);
+    else params.delete("period");
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -224,21 +240,22 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
     setData(null);
   }
 
-  const portraitData = data?.statistic === statistic ? data : null;
-  const averages = portraitData?.averages ?? null;
+  const currentData =
+    data?.statistic === statistic && data.period === period ? data : null;
+  const averages = currentData?.averages ?? null;
   const sampleN = averages?.n ?? 0;
-  const total = data?.total ?? 0;
-  const yDef = resolveY(data?.metric ?? yMetric);
+  const total = currentData?.total ?? 0;
+  const yDef = resolveY(currentData?.metric ?? yMetric);
   const isCount = yDef.agg === "count";
   const fitBins =
     chartWidth > 0
       ? Math.max(1, Math.floor((chartWidth + BAR_GAP_PX) / (BAR_MIN_PX + BAR_GAP_PX)))
       : undefined;
-  const bins = data?.buckets?.length
-    ? buildNumericHistogram(data.buckets, fitBins)
-    : buildHistogram(data?.brackets ?? [], fitBins);
-  const bounds = validBounds(data?.bounds)
-    ? { min: Math.floor(data.bounds.min), max: Math.ceil(data.bounds.max) }
+  const bins = currentData?.buckets?.length
+    ? buildNumericHistogram(currentData.buckets, fitBins)
+    : buildHistogram(currentData?.brackets ?? [], fitBins);
+  const bounds = validBounds(currentData?.bounds)
+    ? { min: Math.floor(currentData.bounds.min), max: Math.ceil(currentData.bounds.max) }
     : inferBounds(bins, FALLBACK_BOUNDS[dimension]);
   const visibleSelection = selection ?? bounds;
   const minRangeSpan = Math.min(MIN_RANGE_SPAN, bounds.max - bounds.min);
@@ -372,6 +389,38 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
         </div>
       </div>
 
+      {mode === "regular" && (
+        <div className="mt-5">
+          <span className="mb-2 block text-xs text-[var(--muted)]">
+            {t("average.period.label")}
+          </span>
+          <div
+            className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
+            role="group"
+            aria-label={t("average.period.label")}
+          >
+            {(["all", "90d"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => changePeriod(option)}
+                aria-pressed={period === option}
+                className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
+                  period === option
+                    ? "bg-[var(--accent)] text-[var(--background)]"
+                    : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {t(option === "90d" ? "average.period.last90Days" : "average.period.all")}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 max-w-3xl text-xs leading-relaxed text-[var(--muted)]">
+            {t("average.period.note")}
+          </p>
+        </div>
+      )}
+
       <section className="summary-strip surface">
         <div className="summary-strip__copy">
           <div className="section-kicker">{t("average.accountsScanned")}</div>
@@ -385,7 +434,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
 
-      {!portraitData ? (
+      {!currentData ? (
         <div className="detail-grid mt-5">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="h-28 rounded-xl skeleton" />
@@ -451,7 +500,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
               </div>
             </div>
             <MetricPicker value={yMetric} onChange={setYMetric} />
-            {data && (
+            {currentData && (
               <span className="text-xs text-[var(--muted)]">
                 {t("average.basedOn", { n: sampleN.toLocaleString() })}
               </span>
@@ -469,7 +518,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
             {t(dimension === "hours" ? "average.byPlaytime" : "average.byPmcRaids")}
           </div>
 
-          {!data ? (
+          {!currentData ? (
             <div className="h-60 rounded skeleton" />
           ) : bins.length === 0 ? (
             <p className="text-sm text-[var(--muted)]">{t("average.noDataYet")}</p>
@@ -548,7 +597,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
               high={visibleSelection.max}
               lowLabel={t("average.rangeMinAria")}
               highLabel={t("average.rangeMaxAria")}
-              disabled={!data || bounds.max <= bounds.min}
+              disabled={!currentData || bounds.max <= bounds.min}
               minSpan={minRangeSpan}
               minVisualGap={chartWidth > 0 ? 20 / chartWidth : 0}
               toPosition={(value, edge) =>
@@ -609,7 +658,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
         </div>
       </section>
 
-      {portraitData && sampleN > 0 && (
+      {currentData && sampleN > 0 && (
         <section className="mt-10">
           <h2 className="section-heading mb-3">{t("average.fullMetrics")}</h2>
           <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>

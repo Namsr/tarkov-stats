@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
 import type { ParsedPlayerStats } from "@/types/tarkov";
-import type { AverageStatistic, CrossSectionMode } from "@/lib/db";
+import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
 
 type Dimension = "hours" | "pmc_raids";
 type MetricKey =
@@ -24,6 +24,7 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  period?: AveragePeriod;
   statistic?: AverageStatistic;
   dimension?: Dimension;
   center?: number;
@@ -158,7 +159,8 @@ function normalizeResponse(
   center: number,
   sourceAid: number,
   mode: CrossSectionMode,
-  statistic: AverageStatistic
+  statistic: AverageStatistic,
+  period: AveragePeriod
 ): NormalizedCohort {
   const n = Number(input.n ?? 0);
   const averages = {} as NormalizedCohort["averages"];
@@ -179,7 +181,7 @@ function normalizeResponse(
   }
 
   return {
-    requestId: `${sourceAid}:${mode}:${dimension}:${center}:${input.statistic ?? statistic}`,
+    requestId: `${sourceAid}:${mode}:${dimension}:${center}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: input.dimension === "pmc_raids" ? "pmc_raids" : dimension,
     center: Number(input.center ?? center),
     targetN: Number(input.targetN ?? input.target ?? 20),
@@ -196,14 +198,15 @@ function normalizeResponse(
 function demoCohort(
   dimension: Dimension,
   center: number,
-  statistic: AverageStatistic
+  statistic: AverageStatistic,
+  period: AveragePeriod
 ): NormalizedCohort {
   const percent = 15;
   const rawMin = center * (1 - percent / 100);
   const rawMax = center * (1 + percent / 100);
   const round = dimension === "hours" ? 10 : 1;
   return {
-    requestId: `demo:${dimension}:${center}:${statistic}`,
+    requestId: `demo:${dimension}:${center}:${statistic}:${period}`,
     dimension,
     center,
     targetN: 20,
@@ -245,6 +248,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const searchParams = useSearchParams();
   const statistic: AverageStatistic =
     searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
+  const period: AveragePeriod =
+    mode === "regular" && searchParams.get("period") === "90d" ? "90d" : "all";
   const { authStatus, favorites } = useFavorites();
   const [dimension, setDimension] = useState<Dimension>("hours");
   const [remoteCohort, setRemoteCohort] = useState<NormalizedCohort | null>(null);
@@ -271,6 +276,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       excludeAid: String(aid),
       mode,
       statistic,
+      period,
     });
     setCohortLoading(true);
     setCohortError("");
@@ -278,7 +284,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       .then(async (response) => {
         const payload = (await response.json()) as CohortResponse;
         if (!response.ok) throw new Error(t("radar.error.cohort"));
-        return normalizeResponse(payload, dimension, center, aid, mode, statistic);
+        return normalizeResponse(payload, dimension, center, aid, mode, statistic, period);
       })
       .then((payload) => setRemoteCohort(payload))
       .catch((error: unknown) => {
@@ -290,13 +296,22 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!controller.signal.aborted) setCohortLoading(false);
       });
     return () => controller.abort();
-  }, [aid, center, demo, dimension, mode, statistic, t]);
+  }, [aid, center, demo, dimension, mode, period, statistic, t]);
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
     const params = new URLSearchParams(searchParams.toString());
     if (next === "median") params.set("statistic", next);
     else params.delete("statistic");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  function changePeriod(next: AveragePeriod) {
+    if (next === period) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "90d") params.set("period", next);
+    else params.delete("period");
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
@@ -342,8 +357,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   }, [authStatus, demo, effectiveFavoriteAid, mode, showFavorite, t]);
 
   const cohort = demo
-    ? demoCohort(dimension, center, statistic)
-    : remoteCohort?.requestId === `${aid}:${mode}:${dimension}:${center}:${statistic}`
+    ? demoCohort(dimension, center, statistic, period)
+    : remoteCohort?.requestId === `${aid}:${mode}:${dimension}:${center}:${statistic}:${period}`
       ? remoteCohort
       : null;
   const playerStatsKnown = demo || mode !== "regular" || stats.pvpStatsKnown !== false;
@@ -562,6 +577,34 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               </button>
             ))}
           </div>
+          {mode === "regular" && (
+            <div className="max-w-sm sm:text-right">
+              <div
+                className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
+                role="group"
+                aria-label={t("average.period.label")}
+              >
+                {(["all", "90d"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => changePeriod(value)}
+                    aria-pressed={period === value}
+                    className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
+                      period === value
+                        ? "bg-[var(--accent)] text-[var(--background)]"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    {t(value === "90d" ? "average.period.last90Days" : "average.period.all")}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                {t("average.period.note")}
+              </p>
+            </div>
+          )}
           <div
             className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
             role="group"

@@ -103,3 +103,13 @@ export function normalizeUpdatedAt(value) {
   if (!Number.isSafeInteger(number) || number <= 0) return null;
   return number < 1_000_000_000_000 ? number * 1000 : number;
 }
+
+export function summarizeCoverage(totalValue, coveredValue) {
+  const coverageTotal = Math.max(0, Number(totalValue) || 0);
+  const covered = Math.min(coverageTotal, Math.max(0, Number(coveredValue) || 0));
+  const unresolved = coverageTotal - covered;
+  const coveragePercent = coverageTotal === 0 || unresolved === 0
+    ? 100
+    : Math.min(99.9999, Number(((covered / coverageTotal) * 100).toFixed(4)));
+  return { coverageTotal, covered, unresolved, coveragePercent };
+}

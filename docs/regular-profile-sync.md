@@ -70,21 +70,19 @@ Regular profiles, `missingFromFeed`, eligible versions, completed refreshes,
 only after it has a positive `profile_updated_at`; profiles absent from
 `updated.json` stay in the denominator.
 
-Keep `AVERAGE_PROFILE_MAX_AGE_DAYS` disabled during the initial refresh. After
-the latest completed summary reports `coveragePercent >= 95`, enable the
-90-day average window and recreate the web service:
+The average APIs default to the complete dataset. Once the latest completed
+summary reports `coveragePercent >= 95`, clients may explicitly request the
+90-day Regular sample:
 
 ```sh
 journalctl -u tarkovstats-regular-profile-sync.service --no-pager \
   | grep ' SUMMARY ' | tail -1
-# in the production env file
-AVERAGE_PROFILE_MAX_AGE_DAYS=90
-docker compose -f docker-compose.vps.yml up -d --force-recreate web
+curl 'https://tarkovstats.ru/api/average?period=90d'
 ```
 
-Do not enable the cutoff before that threshold: doing so would calculate the
-average from a temporarily incomplete sample. Check the next `/api/average`
-response and its sample sizes after the restart.
+`period=all` (or an omitted parameter) keeps the full-history sample.
+`period=90d` is available only for Regular averages and comparison cohorts;
+PvE and Arena remain full-history. No environment switch or restart is needed.
 
 ## Configuration
 

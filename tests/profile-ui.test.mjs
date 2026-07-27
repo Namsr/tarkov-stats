@@ -65,21 +65,46 @@ test("average statistic switch keeps URL state and masks stale portrait values",
   assert.match(source, /new URLSearchParams\(searchParams\.toString\(\)\)/);
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
-  assert.match(source, /new URLSearchParams\(\{ dimension, metric: yMetric, mode, statistic \}\)/);
-  assert.match(source, /data\?\.statistic === statistic/);
+  assert.match(source, /new URLSearchParams\(\{ dimension, metric: yMetric, mode, statistic, period \}\)/);
+  assert.match(source, /\.then\(\(json\) => \{\s*if \(controller\.signal\.aborted\) return;\s*setData\(json\)/);
+  assert.match(source, /data\?\.statistic === statistic && data\.period === period/);
   assert.match(source, /aria-pressed=\{statistic === option\}/);
+});
+
+test("regular average period switch keeps URL state and masks stale responses", async () => {
+  const source = await readFile("app/average/page.tsx", "utf8");
+
+  assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
+  assert.match(source, /params\.set\("period", next\)/);
+  assert.match(source, /params\.delete\("period"\)/);
+  assert.match(source, /setSelection\(null\);\s*setRequestedRange\(null\);\s*setData\(null\);/);
+  assert.match(source, /new URLSearchParams\(\{ dimension, metric: yMetric, mode, statistic, period \}\)/);
+  assert.match(source, /data\?\.statistic === statistic && data\.period === period/);
+  assert.match(source, /mode === "regular" && \(/);
+  assert.match(source, /aria-pressed=\{period === option\}/);
 });
 
 test("radar statistic switch identifies requests by method", async () => {
   const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
 
   assert.match(source, /searchParams\.get\("statistic"\) === "median"/);
-  assert.match(source, /statistic,\s*\}\);/);
+  assert.match(source, /statistic,\s*period,\s*\}\);/);
   assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{/);
-  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}`/);
+  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}:/);
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
   assert.match(source, /aria-pressed=\{statistic === value\}/);
+});
+
+test("regular radar period switch identifies requests by freshness", async () => {
+  const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+
+  assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
+  assert.match(source, /period,\s*\}\);/);
+  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
+  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}:\$\{period\}`/);
+  assert.match(source, /params\.delete\("period"\)/);
+  assert.match(source, /aria-pressed=\{period === value\}/);
 });
 
 test("profile refresh checks automatically after returning without requiring F5", async () => {

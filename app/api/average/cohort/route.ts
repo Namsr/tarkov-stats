@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getStore,
+  parseAveragePeriod,
   parseAverageStatistic,
   type RadarMetric,
   type RangeDimension,
@@ -52,6 +53,11 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
+  const period = parseAveragePeriod(params.get("period"));
+  if (!period || (rawMode !== "regular" && period !== "all")) {
+    timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid period" }, { status: 400 });
+  }
   const dimension = parseDimension(params.get("dimension"));
   const centerValue = params.get("center");
   const center = Number(centerValue);
@@ -95,6 +101,7 @@ export async function GET(request: NextRequest) {
       reason: noActivity ? "no_activity" : "above_coverage",
       averages: emptyAverages(),
       statistic,
+      period,
     });
     timing.finish({
       operation: "average_cohort", mode: rawMode, outcome: "unavailable", status: 200,
@@ -106,10 +113,16 @@ export async function GET(request: NextRequest) {
   let cohortMs: number | undefined;
   try {
     const cohortStarted = timing.now();
-    const cohort = await store.cohort(dimension, center, excludeAid, statistic).finally(() => {
+    const cohort = await store.cohort(
+      dimension,
+      center,
+      excludeAid,
+      statistic,
+      period,
+    ).finally(() => {
       cohortMs = timing.elapsedMs(cohortStarted);
     });
-    const response = NextResponse.json({ ...cohort, statistic }, {
+    const response = NextResponse.json({ ...cohort, statistic, period }, {
       headers: { "Cache-Control": "public, max-age=60" },
     });
     timing.finish({
