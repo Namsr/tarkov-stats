@@ -444,7 +444,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       ? t(statistic === "median" ? "radar.ratio.median" : "radar.ratio.trimmedMean", {
           value: (value / average).toFixed(2),
         })
-      : t("radar.notAvailable");
+      : t("radar.baselineUnavailable");
 
   const favoriteDisabledReason = demo
     ? ""
@@ -537,6 +537,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   };
 
   const active = activeAxis === null ? null : axes[activeAxis];
+  const activeBaseline = active?.available ? active.average.value : null;
 
   return (
     <section className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 sm:p-6">
@@ -674,18 +675,21 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               {showPlayer && playerValues && (
                 <div>
                   {t("radar.series.player")}: {formatValue(active.metric, playerValues[active.metric.key])}{" "}
-                  ({ratioText(playerValues[active.metric.key], active.average.value)})
+                  ({ratioText(playerValues[active.metric.key], activeBaseline)})
                 </div>
               )}
               {showAverage && (
                 <div>
-                  {baselineLabel}: {formatValue(active.metric, active.average.value)}
+                  {baselineLabel}:{" "}
+                  {active.available
+                    ? formatValue(active.metric, active.average.value)
+                    : t("radar.baselineUnavailable")}
                 </div>
               )}
               {showFavorite && !favoriteDisabled && favoriteValues && (
                 <div>
                   {t("radar.series.favorite")}: {formatValue(active.metric, favoriteValues[active.metric.key])}{" "}
-                  ({ratioText(favoriteValues[active.metric.key], active.average.value)})
+                  ({ratioText(favoriteValues[active.metric.key], activeBaseline)})
                 </div>
               )}
             </div>
@@ -776,7 +780,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
                     fontSize="10"
                     aria-hidden="true"
                   >
-                    {t("radar.notAvailable")}
+                    {t("radar.baselineUnavailable")}
                   </text>
                 )}
                 <circle
@@ -921,7 +925,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               <tr key={axis.metric.key}>
                 <th>{t(axis.metric.labelKey)}</th>
                 <td>{formatValue(axis.metric, playerValues?.[axis.metric.key] ?? null)}</td>
-                <td>{formatValue(axis.metric, axis.average.value)}</td>
+                <td>
+                  {axis.available
+                    ? formatValue(axis.metric, axis.average.value)
+                    : t("radar.baselineUnavailable")}
+                </td>
                 <td>
                   {formatValue(axis.metric, favoriteValues?.[axis.metric.key] ?? null)}
                 </td>

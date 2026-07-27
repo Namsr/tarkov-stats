@@ -154,6 +154,7 @@ test("cohort median preserves target/expansion, excludes the open aid, and filte
       survival: aid === 10 ? 40 : aid === 11 ? 60 : 0,
     });
   }
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
   const cohort = await store.cohort("hours", 100, 999, "median");
   assert.equal(cohort.quality, "sufficient");
   assert.equal(cohort.percent, 15);
@@ -200,12 +201,92 @@ test("regular 90d period filters every average distribution and cohort query", a
   reset();
   for (let aid = 1; aid <= 40; aid += 1) {
     add(aid, { hours: 100, raids: 100, value: aid <= 20 ? aid : aid + 79 });
-    db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = ?")
+    db.prepare("UPDATE players SET profile_updated_at = ?, pvp_stats_known = 1 WHERE aid = ?")
       .run(aid <= 20 ? now : now - 100 * 86_400_000, aid);
   }
   for (const dimension of ["hours", "pmc_raids"]) {
-    assert.equal((await store.cohort(dimension, 100, 999, "median", "all")).averages.kd_ratio.value, 60);
-    assert.equal((await store.cohort(dimension, 100, 999, "median", "90d")).averages.kd_ratio.value, 10.5);
+    const all = await store.cohort(dimension, 100, 999, "median", "all");
+    const recent = await store.cohort(dimension, 100, 999, "median", "90d");
+    assert.deepEqual(
+      { percent: all.percent, bounds: all.bounds },
+      { percent: recent.percent, bounds: recent.bounds },
+    );
+    assert.equal(all.n, 40);
+    assert.equal(recent.n, 20);
+    assert.equal(all.averages.kd_ratio.value, 60);
+    assert.equal(recent.averages.kd_ratio.value, 10.5);
+  }
+});
+
+test("regular cohort uses one fresh bracket and includes older known profiles only in all-time values", async () => {
+  reset();
+  const now = Date.now();
+  for (let aid = 1; aid <= 43; aid += 1) {
+    const inTenPercent = aid <= 21;
+    add(aid, { hours: inTenPercent ? 100 : 85, value: aid });
+    const known = aid <= 19 || aid >= 22;
+    const fresh = aid <= 39;
+    db.prepare(
+      "UPDATE players SET pvp_stats_known = ?, profile_updated_at = ? WHERE aid = ?"
+    ).run(known ? 1 : 0, fresh ? now : now - 100 * 86_400_000, aid);
+  }
+
+  const all = await store.cohort("hours", 100, 999, "median", "all");
+  const recent = await store.cohort("hours", 100, 999, "median", "90d");
+  assert.equal(all.quality, "sufficient");
+  assert.equal(recent.quality, "sufficient");
+  assert.deepEqual(
+    { percent: all.percent, bounds: all.bounds },
+    { percent: 15, bounds: recent.bounds },
+  );
+  assert.equal(recent.percent, 15);
+  assert.deepEqual(recent.bounds, { min: 85, max: 115 });
+  assert.equal(all.n, 41);
+  assert.equal(recent.n, 37);
+  assert.deepEqual(all.averages.pmc_kd_ratio, { value: 23, count: 41 });
+  assert.deepEqual(recent.averages.pmc_kd_ratio, { value: 19, count: 37 });
+});
+
+test("regular 90d cohort reuses one cutoff at the exact freshness boundary", async () => {
+  reset();
+  const now = 2_000_000_000_000;
+  const boundary = now - 90 * 86_400_000;
+  for (let aid = 1; aid <= 20; aid += 1) {
+    add(aid, { hours: 100, value: aid });
+    db.prepare(
+      "UPDATE players SET pvp_stats_known = 1, profile_updated_at = ? WHERE aid = ?"
+    ).run(boundary, aid);
+  }
+
+  const originalNow = Date.now;
+  let calls = 0;
+  Date.now = () => now + calls++ * 1_000;
+  try {
+    const cohort = await store.cohort("hours", 100, 999, "median", "90d");
+    assert.equal(cohort.quality, "sufficient");
+    assert.equal(cohort.n, 20);
+    assert.equal(calls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("regular cohort stays unavailable for both periods when the fresh sample misses the target", async () => {
+  reset();
+  const now = Date.now();
+  for (let aid = 1; aid <= 39; aid += 1) {
+    add(aid, { hours: 100, value: aid });
+    db.prepare(
+      "UPDATE players SET pvp_stats_known = 1, profile_updated_at = ? WHERE aid = ?"
+    ).run(aid <= 19 ? now : now - 100 * 86_400_000, aid);
+  }
+
+  for (const period of ["all", "90d"]) {
+    const cohort = await store.cohort("hours", 100, 999, "median", period);
+    assert.equal(cohort.quality, "unavailable");
+    assert.equal(cohort.percent, 30);
+    assert.deepEqual(cohort.bounds, { min: 70, max: 130 });
+    assert.equal(cohort.n, 19);
   }
 });
 

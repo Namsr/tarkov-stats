@@ -181,10 +181,11 @@ function averagePeriodWhere(
   mode: CrossSectionMode,
   period: AveragePeriod,
   where: string,
+  cutoff?: number,
 ): string {
   if (mode !== "regular" || period === "all") return where;
-  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
-  return appendCondition(where, `profile_updated_at >= ${cutoff}`);
+  const resolvedCutoff = cutoff ?? Math.floor(Date.now() - 90 * 86_400_000);
+  return appendCondition(where, `profile_updated_at >= ${resolvedCutoff}`);
 }
 
 function eligibleMetricWhere(
@@ -498,6 +499,19 @@ function populatedMetricClause(
   return metric === "pmc_survival_rate"
     ? appendCondition(eligible, "pmc_survival_rate > 0")
     : eligible;
+}
+
+function cohortEligibilityWhere(mode: CrossSectionMode, where: string): string {
+  return mode === "regular"
+    ? appendCondition(where, "pvp_stats_known = 1")
+    : where;
+}
+
+function cohortSelectionPeriod(
+  mode: CrossSectionMode,
+  period: AveragePeriod,
+): AveragePeriod {
+  return mode === "regular" ? "90d" : period;
 }
 
 function emptyCohortMetrics(): Record<RadarMetric, CohortMetric> {
@@ -882,13 +896,17 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
           );
         }
+        const cutoff = mode === "regular"
+          ? Math.floor(Date.now() - 90 * 86_400_000)
+          : undefined;
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countWhere = averagePeriodWhere(
+        const countWhere = cohortEligibilityWhere(mode, averagePeriodWhere(
           mode,
-          period,
+          cohortSelectionPeriod(mode, period),
           `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
-        );
+          cutoff,
+        ));
         const countRow = (await db.prepare(cohortCountSql(dimension, ranges, countWhere))
           .bind(...countParams, excludeAid)
           .first()) as Record<string, number | null> | null;
@@ -923,13 +941,27 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           requirePositive: true,
         };
         const { where: groupWhere, params } = statRangeClause(groupRange);
-        const where = averagePeriodWhere(mode, period, groupWhere);
+        const where = cohortEligibilityWhere(
+          mode,
+          averagePeriodWhere(mode, period, groupWhere, cutoff),
+        );
+        const cohortN = Number(
+          ((await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null)?.n ?? 0
+        );
+        if (cohortN < COHORT_TARGET) {
+          const reason: CohortUnavailableReason = dimension === "hours"
+            ? "insufficient_similar_hours"
+            : "insufficient_similar_raids";
+          return unavailableCohort(
+            dimension, center, selected.percent, selected.bounds, cohortN, reason
+          );
+        }
         const averages = emptyCohortMetrics();
         await Promise.all(RADAR_COLS.map(async (metric) => {
           const metricWhere = populatedMetricClause(mode, metric, where);
           const count = metricWhere !== where
             ? Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0)
-            : countFor(selected.bounds);
+            : cohortN;
           // The cohort itself is already guaranteed to contain at least 20 players.
           // PMC survival is a backfilled field, so average the confirmed values that
           // exist instead of hiding the axis until 20 profiles have been refreshed.
@@ -951,7 +983,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           target: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
-          n: countFor(selected.bounds),
+          n: cohortN,
           quality: "sufficient",
           reason: null,
           averages,
@@ -1167,13 +1199,17 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
             dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
           );
         }
+        const cutoff = mode === "regular"
+          ? Math.floor(Date.now() - 90 * 86_400_000)
+          : undefined;
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countWhere = averagePeriodWhere(
+        const countWhere = cohortEligibilityWhere(mode, averagePeriodWhere(
           mode,
-          period,
+          cohortSelectionPeriod(mode, period),
           `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
-        );
+          cutoff,
+        ));
         const countRow = db.prepare(cohortCountSql(dimension, ranges, countWhere))
           .get(...countParams, excludeAid) as Record<string, number | null> | undefined;
         const countFor = (bounds: CohortBounds) => {
@@ -1207,13 +1243,27 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           requirePositive: true,
         };
         const { where: groupWhere, params } = statRangeClause(groupRange);
-        const where = averagePeriodWhere(mode, period, groupWhere);
+        const where = cohortEligibilityWhere(
+          mode,
+          averagePeriodWhere(mode, period, groupWhere, cutoff),
+        );
+        const cohortN = Number(
+          (db.prepare(countSql(where)).get(...params) as { n: number } | undefined)?.n ?? 0
+        );
+        if (cohortN < COHORT_TARGET) {
+          const reason: CohortUnavailableReason = dimension === "hours"
+            ? "insufficient_similar_hours"
+            : "insufficient_similar_raids";
+          return unavailableCohort(
+            dimension, center, selected.percent, selected.bounds, cohortN, reason
+          );
+        }
         const averages = emptyCohortMetrics();
         for (const metric of RADAR_COLS) {
           const metricWhere = populatedMetricClause(mode, metric, where);
           const count = metricWhere !== where
             ? Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0)
-            : countFor(selected.bounds);
+            : cohortN;
           // The cohort itself is already guaranteed to contain at least 20 players.
           // PMC survival is a backfilled field, so average the confirmed values that
           // exist instead of hiding the axis until 20 profiles have been refreshed.
@@ -1237,7 +1287,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           target: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
-          n: countFor(selected.bounds),
+          n: cohortN,
           quality: "sufficient",
           reason: null,
           averages,

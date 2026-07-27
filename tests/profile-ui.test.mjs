@@ -112,6 +112,17 @@ test("regular radar period switch identifies requests by freshness", async () =>
   assert.match(source, /aria-pressed=\{period === value\}/);
 });
 
+test("radar keeps raw player values independent from baseline availability", async () => {
+  const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+
+  assert.match(source, /const activeBaseline = active\?\.available \? active\.average\.value : null/);
+  assert.match(source, /formatValue\(active\.metric, playerValues\[active\.metric\.key\]\)/);
+  assert.match(source, /ratioText\(playerValues\[active\.metric\.key\], activeBaseline\)/);
+  assert.match(source, /active\.available[\s\S]*?radar\.baselineUnavailable/);
+  assert.match(source, /axis\.available[\s\S]*?formatValue\(axis\.metric, axis\.average\.value\)[\s\S]*?radar\.baselineUnavailable/);
+  assert.match(source, /\{t\("radar\.baselineUnavailable"\)\}/);
+});
+
 test("profile refresh checks automatically after returning without requiring F5", async () => {
   const button = await readFile("components/RefreshButton.tsx", "utf8");
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
