@@ -1040,6 +1040,9 @@ async function getSqliteDb(): Promise<any | null> {
           /* column already exists */
         }
       }
+      sqliteDb.exec(
+        "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
+      );
       sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
         WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1

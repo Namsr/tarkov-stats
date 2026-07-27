@@ -248,8 +248,10 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const searchParams = useSearchParams();
   const statistic: AverageStatistic =
     searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
-  const period: AveragePeriod =
+  const urlPeriod: AveragePeriod =
     mode === "regular" && searchParams.get("period") === "90d" ? "90d" : "all";
+  const [selectedPeriod, setSelectedPeriod] = useState<AveragePeriod>(urlPeriod);
+  const period = mode === "regular" ? selectedPeriod : "all";
   const { authStatus, favorites } = useFavorites();
   const [dimension, setDimension] = useState<Dimension>("hours");
   const [remoteCohort, setRemoteCohort] = useState<NormalizedCohort | null>(null);
@@ -264,6 +266,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const [favoriteError, setFavoriteError] = useState("");
   const [activeAxis, setActiveAxis] = useState<number | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ left: 8, top: 8 });
+
+  useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
 
   const center = dimension === "hours" ? stats.hoursPlayed : stats.pmcRaids;
 
@@ -286,7 +290,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!response.ok) throw new Error(t("radar.error.cohort"));
         return normalizeResponse(payload, dimension, center, aid, mode, statistic, period);
       })
-      .then((payload) => setRemoteCohort(payload))
+      .then((payload) => {
+        if (!controller.signal.aborted) setRemoteCohort(payload);
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setRemoteCohort(null);
@@ -309,6 +315,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
 
   function changePeriod(next: AveragePeriod) {
     if (next === period) return;
+    setSelectedPeriod(next);
     const params = new URLSearchParams(searchParams.toString());
     if (next === "90d") params.set("period", next);
     else params.delete("period");

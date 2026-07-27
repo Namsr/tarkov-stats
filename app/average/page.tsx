@@ -128,8 +128,10 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   const searchParams = useSearchParams();
   const statistic: AverageStatistic =
     searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
-  const period: AveragePeriod =
+  const urlPeriod: AveragePeriod =
     mode === "regular" && searchParams.get("period") === "90d" ? "90d" : "all";
+  const [selectedPeriod, setSelectedPeriod] = useState<AveragePeriod>(urlPeriod);
+  const period = mode === "regular" ? selectedPeriod : "all";
   const [dimension, setDimension] = useState<RangeDimension>("hours");
   const [selection, setSelection] = useState<RangeBounds | null>(null);
   const [requestedRange, setRequestedRange] = useState<RangeBounds | null>(null);
@@ -140,6 +142,8 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   const [showAch, setShowAch] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
+
+  useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
 
   useEffect(() => {
     const element = chartRef.current;
@@ -181,15 +185,6 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
       .then((json) => {
         if (controller.signal.aborted) return;
         setData(json);
-        setSelection((current) => {
-          if (current) return current;
-          const rawBins = json.buckets?.length
-            ? buildNumericHistogram(json.buckets)
-            : buildHistogram(json.brackets ?? []);
-          return validBounds(json.bounds)
-            ? { min: Math.floor(json.bounds.min), max: Math.ceil(json.bounds.max) }
-            : inferBounds(rawBins, FALLBACK_BOUNDS[dimension]);
-        });
       })
       .catch((fetchError: unknown) => {
         if (fetchError instanceof Error && fetchError.name === "AbortError") return;
@@ -213,6 +208,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
 
   function changePeriod(next: AveragePeriod) {
     if (next === period) return;
+    setSelectedPeriod(next);
     setSelection(null);
     setRequestedRange(null);
     setData(null);

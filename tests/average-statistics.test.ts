@@ -180,6 +180,12 @@ test("regular 90d period filters every average distribution and cohort query", a
   add(1, { hours: 100, value: 1 });
   add(2, { hours: 9000, raids: 900, value: 9000 });
   const now = Date.now();
+  assert.match(
+    String(db.prepare(
+      "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM players WHERE profile_updated_at >= ?"
+    ).get(now - 90 * 86_400_000).detail),
+    /idx_players_profile_updated_at/,
+  );
   db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1").run(now);
   db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 2").run(now - 100 * 86_400_000);
   assert.deepEqual(await store.rangeBounds("hours", "90d"), { min: 100, max: 100 });
@@ -284,9 +290,22 @@ test("average and cohort API contracts default, echo median, and reject unknown 
     "http://local/api/average?statistic=median&period=90d",
   ));
   const medianBody = await medianResponse.json();
+  assert.equal(medianResponse.headers.get("cache-control"), "public, max-age=60");
+  assert.equal(medianResponse.headers.get("x-average-cache"), "miss");
   assert.equal(medianBody.statistic, "median");
   assert.equal(medianBody.period, "90d");
   assert.equal(medianBody.averages.total_raids, 2);
+  db.prepare("UPDATE players SET total_raids = 200 WHERE aid = 2").run();
+  const cachedMedian = await getAverage(new NextRequest(
+    "http://local/api/average?statistic=median&period=90d",
+  ));
+  assert.equal(cachedMedian.headers.get("x-average-cache"), "hit");
+  assert.equal((await cachedMedian.json()).averages.total_raids, 2);
+  const rangedMedian = await getAverage(new NextRequest(
+    "http://local/api/average?dimension=hours&min=100&max=100&statistic=median&period=90d",
+  ));
+  assert.equal(rangedMedian.headers.get("x-average-cache"), "bypass");
+  assert.equal((await rangedMedian.json()).averages.total_raids, 100);
 
   assert.equal((await getAverage(new NextRequest(
     "http://local/api/average?statistic=mean",
@@ -316,6 +335,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
     "http://local/api/average/cohort?center=0&excludeAid=1&statistic=median&period=90d",
   ));
   assert.equal(unavailable.status, 200);
+  assert.equal(unavailable.headers.get("cache-control"), "public, max-age=60");
   assert.deepEqual(
     (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
     { statistic: "median", period: "90d" },

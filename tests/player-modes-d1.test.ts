@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const migration = readFileSync("scripts/player-modes-d1.sql", "utf8");
 const profileVersionMigration = readFileSync("scripts/profile-version-d1.sql", "utf8");
+const profileUpdatedIndexMigration = readFileSync("scripts/profile-updated-index-d1.sql", "utf8");
 
 test("PVE and Arena rows remain isolated for the same account", () => {
   const db = new DatabaseSync(":memory:");
@@ -43,6 +44,7 @@ test("profile-version migration preserves explicit positive PvP data and leaves 
     VALUES ('pve', 1, 'zero', 0, 1, '{}'), ('arena', 2, 'positive', 3, 1, '{}')`);
 
   db.exec(profileVersionMigration);
+  db.exec(profileUpdatedIndexMigration);
 
   assert.deepEqual(
     db.prepare("SELECT aid, profile_updated_at, pvp_stats_known FROM players ORDER BY aid")
@@ -51,6 +53,12 @@ test("profile-version migration preserves explicit positive PvP data and leaves 
       { aid: 1, profile_updated_at: 0, pvp_stats_known: 0 },
       { aid: 2, profile_updated_at: 0, pvp_stats_known: 1 },
     ],
+  );
+  assert.match(
+    String(db.prepare(
+      "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM players WHERE profile_updated_at >= ?"
+    ).get(1)?.detail),
+    /idx_players_profile_updated_at/,
   );
   assert.deepEqual(
     db.prepare("SELECT aid, profile_updated_at, pvp_stats_known FROM mode_players ORDER BY aid")

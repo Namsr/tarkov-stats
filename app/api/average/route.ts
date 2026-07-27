@@ -11,6 +11,30 @@ import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming, startTimingPhase } from "@/lib/observability/request-timing";
 
+const AVERAGE_CACHE_TTL_MS = 15 * 60_000;
+const AVERAGE_CACHE_MAX = 64;
+const averageCache = new Map<string, { body: unknown; expiresAt: number }>();
+const CACHE_CONTROL = "public, max-age=60";
+
+function cachedAverage(key: string): unknown | null {
+  const entry = averageCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    averageCache.delete(key);
+    return null;
+  }
+  averageCache.delete(key);
+  averageCache.set(key, entry);
+  return entry.body;
+}
+
+function cacheAverage(key: string, body: unknown) {
+  if (averageCache.size >= AVERAGE_CACHE_MAX) {
+    averageCache.delete(averageCache.keys().next().value!);
+  }
+  averageCache.set(key, { body, expiresAt: Date.now() + AVERAGE_CACHE_TTL_MS });
+}
+
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
   const number = Number(value);
@@ -82,6 +106,19 @@ export async function GET(request: NextRequest) {
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
+  const cacheKey = rawMode === "regular" &&
+    !["min", "max", "minHours", "maxHours"].some((key) => params.has(key))
+    ? [dimension, metric.key, maxBins, statistic, period].join(":")
+    : null;
+  const cached = cacheKey ? cachedAverage(cacheKey) : null;
+  if (cached) {
+    timing.finish({
+      operation: "average", mode: rawMode, outcome: "success", status: 200, memo: "hit",
+    });
+    return NextResponse.json(cached, {
+      headers: { "Cache-Control": CACHE_CONTROL, "X-Average-Cache": "hit" },
+    });
+  }
   const storeOpenStarted = timing.now();
   const store = await getStore(rawMode).catch((error) => {
     timing.finish({
@@ -151,25 +188,29 @@ export async function GET(request: NextRequest) {
       avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
     }));
 
-    const response = NextResponse.json(
-      {
-        total,
-        averages: averageResult ? averageValues : null,
-        metricCounts,
-        brackets: legacyBrackets(bucketResult),
-        buckets: bucketResult,
-        histogram,
-        bounds: boundsResult,
-        dimension,
-        metric: metric.key,
-        statistic,
-        period,
+    const body = {
+      total,
+      averages: averageResult ? averageValues : null,
+      metricCounts,
+      brackets: legacyBrackets(bucketResult),
+      buckets: bucketResult,
+      histogram,
+      bounds: boundsResult,
+      dimension,
+      metric: metric.key,
+      statistic,
+      period,
+    };
+    if (cacheKey) cacheAverage(cacheKey, body);
+    const response = NextResponse.json(body, {
+      headers: {
+        "Cache-Control": CACHE_CONTROL,
+        "X-Average-Cache": cacheKey ? "miss" : "bypass",
       },
-      { headers: { "Cache-Control": "public, max-age=60" } },
-    );
+    });
     timing.finish({
       operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", storeOpenMs,
-      averagesMs, bucketAggregateMs, rangeBoundsMs,
+      averagesMs, bucketAggregateMs, rangeBoundsMs, memo: cacheKey ? "miss" : undefined,
     });
     return response;
   } catch (error) {

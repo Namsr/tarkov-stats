@@ -75,10 +75,12 @@ test("regular average period switch keeps URL state and masks stale responses", 
   const source = await readFile("app/average/page.tsx", "utf8");
 
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
+  assert.match(source, /const \[selectedPeriod, setSelectedPeriod\] = useState<AveragePeriod>\(urlPeriod\)/);
   assert.match(source, /params\.set\("period", next\)/);
   assert.match(source, /params\.delete\("period"\)/);
-  assert.match(source, /setSelection\(null\);\s*setRequestedRange\(null\);\s*setData\(null\);/);
+  assert.match(source, /setSelectedPeriod\(next\);\s*setSelection\(null\);\s*setRequestedRange\(null\);\s*setData\(null\);/);
   assert.match(source, /new URLSearchParams\(\{ dimension, metric: yMetric, mode, statistic, period \}\)/);
+  assert.doesNotMatch(source, /setSelection\(\(current\)/);
   assert.match(source, /data\?\.statistic === statistic && data\.period === period/);
   assert.match(source, /mode === "regular" && \(/);
   assert.match(source, /aria-pressed=\{period === option\}/);
@@ -100,6 +102,9 @@ test("regular radar period switch identifies requests by freshness", async () =>
   const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
 
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
+  assert.match(source, /const \[selectedPeriod, setSelectedPeriod\] = useState<AveragePeriod>\(urlPeriod\)/);
+  assert.match(source, /setSelectedPeriod\(next\)/);
+  assert.match(source, /if \(!controller\.signal\.aborted\) setRemoteCohort\(payload\)/);
   assert.match(source, /period,\s*\}\);/);
   assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
   assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}:\$\{period\}`/);
