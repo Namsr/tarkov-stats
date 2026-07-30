@@ -13,9 +13,17 @@ interface HelperStatus {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-export default function CommunityHelper({ seasonalEnabled, reviewEnabled }: { seasonalEnabled: boolean; reviewEnabled: boolean }) {
+export default function CommunityHelper({
+  seasonalEnabled,
+  reviewEnabled,
+  defaultExpanded = false,
+}: {
+  seasonalEnabled: boolean;
+  reviewEnabled: boolean;
+  defaultExpanded?: boolean;
+}) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [limit, setLimit] = useState(3);
   const [status, setStatus] = useState<HelperStatus | null>(null);
   const [starting, setStarting] = useState(false);

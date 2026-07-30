@@ -1,9 +1,9 @@
 [Unit]
-Description=Weekly TarkovStats player nickname index sync
+Description=Daily TarkovStats player nickname index sync
 
 [Timer]
-OnCalendar=Sun *-*-* 01:30:00
-RandomizedDelaySec=20m
+OnCalendar=*-*-* 00:00:00 Europe/Moscow
+AccuracySec=1s
 Persistent=true
 Unit=tarkovstats-player-index-sync.service
 

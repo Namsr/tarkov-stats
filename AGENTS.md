@@ -1,6 +1,8 @@
-# Use Ponytail full for all coding work
+# Use Ponytail full in coding subagents only
 
-When writing, modifying, refactoring, fixing, reviewing, or designing code, load and follow the installed `ponytail` skill in `full` mode. Apply its decision ladder only after reading the affected code and tracing the relevant flow: reuse existing project code first, then standard-library or native platform features, then installed dependencies, and write new code only when necessary. Prefer the smallest safe diff and do not add speculative abstractions, scaffolding, or dependencies.
+The main orchestrator must not load or invoke `ponytail`; it should scope work, delegate, and synthesize results without the Ponytail persona. Every subagent writing, modifying, refactoring, fixing, reviewing, or designing code must use the installed `ponytail` skill in `full` mode. The global `SubagentStart` hook injects it automatically.
+
+Coding subagents must apply Ponytail's decision ladder only after reading the affected code and tracing the relevant flow: reuse existing project code first, then standard-library or native platform features, then installed dependencies, and write new code only when necessary. Prefer the smallest safe diff and do not add speculative abstractions, scaffolding, or dependencies.
 
 Ponytail must never simplify away explicit requirements, input validation, security, data-loss prevention, error handling, accessibility, bilingual i18n, or the smallest relevant runnable check. More specific instructions elsewhere in this file take precedence.
 

@@ -85,9 +85,10 @@ export interface ProgressionIntervalRecord extends ProfileIdentity {
 
 export type ProgressionKind = "cumulative" | "tempo" | "form";
 export type CohortDimension = "hours" | "pmc_raids";
+export type ProgressionMode = "regular" | "seasonal";
 
 export interface DailyAggregateRecord {
-  mode: "seasonal";
+  mode: ProgressionMode;
   cycleId: CycleId;
   localDate: string;
   kind: ProgressionKind;
@@ -148,14 +149,17 @@ export interface HelperSessionRecord {
 
 export interface CaptureSnapshotResult {
   inserted: boolean;
-  status: "baseline" | "progression" | "reset" | "duplicate" | "stale";
+  status: "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale";
   snapshot: ProgressionSnapshotRecord | null;
   interval: ProgressionIntervalRecord | null;
 }
 
 export interface ProgressionPoint {
   date: string;
-  seasonDay: number;
+  pmcRaids: number;
+  /** Inclusive PMC-raid range for aggregate points; absent for exact player snapshots. */
+  raidMin?: number;
+  raidMax?: number;
   value: number;
   /** Present for player history so renderers can break the line across wipes. */
   seriesId: number | null;
@@ -195,6 +199,13 @@ export interface SeasonalAverageSeries {
   freshnessAt: number | null;
 }
 
+export interface ProgressionAverageResponse {
+  mode: "regular";
+  cycleId: "persistent";
+  axis: "pmc_raids";
+  series: Record<ProgressionKind, SeasonalAverageSeries>;
+}
+
 export interface SeasonalAverageResponse {
   mode: "seasonal";
   cycleId: CycleId;
@@ -205,14 +216,20 @@ export interface SeasonalAverageResponse {
 export interface ProgressionSeriesResponse {
   identity: ProfileIdentity;
   kind: ProgressionKind;
-  dimension: CohortDimension;
+  axis: "pmc_raids";
   player: ProgressionPoint[];
   nearby: ProgressionPoint[];
   overall: ProgressionPoint[];
-  actualRange: { min: number; max: number | null } | null;
   n: number;
   confidence: number;
   freshnessAt: number | null;
+  history: {
+    snapshotCount: number;
+    intervalCount: number;
+    ready: boolean;
+    firstObservedAt: number | null;
+    lastObservedAt: number | null;
+  };
 }
 
 export interface SeasonalStore {

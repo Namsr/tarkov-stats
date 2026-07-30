@@ -32,7 +32,9 @@
       "Bash(npm run *)",
       "Bash(gh --version)",
       "Bash(gh auth *)",
-      "Bash(git --version)"
+      "Bash(git --version)",
+      "Skill(update-config)",
+      "Skill(claude-api)"
     ]
   }
 }

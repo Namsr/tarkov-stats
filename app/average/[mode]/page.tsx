@@ -16,6 +16,10 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   await connection();
   const { mode } = await params;
   if (!isGameMode(mode)) return <ModeUnavailable />;
+  if (mode === "regular") {
+    const levels = await getPlayerLevels().catch(() => []);
+    return <LegacyAveragePage mode={mode} levelBands={cumulativeLevelBands(levels)} />;
+  }
   if (mode !== "seasonal") return <LegacyAveragePage mode={mode} />;
   const cycle = loadSeasonalCycleConfig();
   const requestedCycle = (await searchParams).cycle;

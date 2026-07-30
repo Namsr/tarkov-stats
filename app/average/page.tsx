@@ -4,8 +4,10 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
-import MetricPicker from "@/components/MetricPicker";
 import RangeSlider from "@/components/RangeSlider";
+import RegularAverageProgression from "@/components/RegularAverageProgression";
+import CompactDetails from "@/components/CompactDetails";
+import SegmentedRadio from "@/components/SegmentedRadio";
 import StatCard from "@/components/StatCard";
 import {
   buildHistogram,
@@ -15,9 +17,10 @@ import {
   type HistBin,
 } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
-import { DEFAULT_Y, formatValue, resolveY } from "@/lib/metrics";
+import { DEFAULT_Y, formatValue, resolveY, Y_METRICS } from "@/lib/metrics";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
+import type { LevelBand } from "@/lib/seasonal/ui";
 
 type RangeDimension = "hours" | "pmc_raids";
 
@@ -121,7 +124,13 @@ function selectedSlice(bin: HistBin, range: RangeBounds, axisMax: number) {
   };
 }
 
-function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
+function AveragePageContent({
+  mode = "regular",
+  levelBands = [],
+}: {
+  mode?: CrossSectionMode;
+  levelBands?: LevelBand[];
+}) {
   const { t } = useI18n();
   const pathname = usePathname();
   const router = useRouter();
@@ -237,7 +246,13 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   }
 
   const currentData =
-    data?.statistic === statistic && data.period === period ? data : null;
+    data?.statistic === statistic &&
+    data.period === period &&
+    data.dimension === dimension &&
+    data.metric === yMetric
+      ? data
+      : null;
+  const terminalError = Boolean(error) && !loading && currentData === null;
   const averages = currentData?.averages ?? null;
   const sampleN = averages?.n ?? 0;
   const total = currentData?.total ?? 0;
@@ -319,7 +334,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   function renderMetric(metric: (typeof METRICS)[number]) {
     const card = (
       <StatCard
-        label={`${statisticLabel} · ${t("metric." + metric.key)}`}
+        label={t("metric." + metric.key)}
         value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
         suffix={metric.suffix}
       />
@@ -354,68 +369,55 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
       <p className="page-kicker mt-7">{t("average.summary")}</p>
       <h1 className="page-title">{t("nav.average")}</h1>
 
-      <div className="mt-5">
-        <span className="mb-2 block text-xs text-[var(--muted)]">
-          {t("average.statistic.label")}
-        </span>
-        <div
-          className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-          role="group"
-          aria-label={t("average.statistic.label")}
-        >
-          {(["trimmed_mean", "median"] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => changeStatistic(option)}
-              aria-pressed={statistic === option}
-              className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
-                statistic === option
-                  ? "bg-[var(--accent)] text-[var(--background)]"
-                  : "text-[var(--muted)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              {t(
-                option === "median"
-                  ? "average.statistic.median"
-                  : "average.statistic.trimmedMean",
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {mode === "regular" && (
-        <div className="mt-5">
-          <span className="mb-2 block text-xs text-[var(--muted)]">
-            {t("average.period.label")}
-          </span>
-          <div
-            className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-            role="group"
-            aria-label={t("average.period.label")}
-          >
-            {(["all", "90d"] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => changePeriod(option)}
-                aria-pressed={period === option}
-                className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
-                  period === option
-                    ? "bg-[var(--accent)] text-[var(--background)]"
-                    : "text-[var(--muted)] hover:text-[var(--foreground)]"
-                }`}
-              >
-                {t(option === "90d" ? "average.period.last90Days" : "average.period.all")}
-              </button>
-            ))}
+      <section className="average-settings data-panel" aria-label={t("average.settings")}>
+        <div className="average-settings__top">
+          <div className="average-settings__groups">
+            <SegmentedRadio
+              name="average-statistic"
+              legend={t("average.statistic.label")}
+              value={statistic}
+              options={[
+                { value: "trimmed_mean", label: t("average.statistic.trimmedMean") },
+                { value: "median", label: t("average.statistic.median") },
+              ]}
+              onChange={changeStatistic}
+            />
+            {mode === "regular" && (
+              <SegmentedRadio
+                name="average-period"
+                legend={t("average.period.label")}
+                value={period}
+                options={[
+                  { value: "all", label: t("average.period.all") },
+                  { value: "90d", label: t("average.period.last90Days") },
+                ]}
+                onChange={changePeriod}
+              />
+            )}
           </div>
-          <p className="mt-2 max-w-3xl text-xs leading-relaxed text-[var(--muted)]">
-            {t("average.period.note")}
-          </p>
+          <div className="average-settings__mode">
+            <span>{t("mode.selectorAria")}</span>
+            <ProfileModeSwitch current={mode} page="average" />
+          </div>
         </div>
-      )}
+        <CompactDetails summary={t("average.calculation.help")}>
+          <div className="grid gap-3">
+            <p>
+              <strong className="block text-[var(--foreground)]">
+                {t("average.statistic.trimmedMean")}
+              </strong>
+              {t("average.trimmedMeanNote")}
+            </p>
+            <p>
+              <strong className="block text-[var(--foreground)]">
+                {t("average.statistic.median")}
+              </strong>
+              {t("average.medianNote")}
+            </p>
+            {mode === "regular" && <p>{t("average.period.note")}</p>}
+          </div>
+        </CompactDetails>
+      </section>
 
       <section className="summary-strip surface">
         <div className="summary-strip__copy">
@@ -425,12 +427,11 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
             {t("average.sampleGrows")}
           </p>
         </div>
-        <ProfileModeSwitch current={mode} page="average" />
       </section>
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
 
-      {!currentData ? (
+      {terminalError ? null : !currentData ? (
         <div className="detail-grid mt-5">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="h-28 rounded-xl skeleton" />
@@ -444,18 +445,11 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
             {t("average.summaryMethod", { method: statisticLabel })}
           </h2>
           <div className="detail-grid">{focusMetrics.map(renderMetric)}</div>
-          <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
-            {t(
-              statistic === "median"
-                ? "average.medianNote"
-                : "average.trimmedMeanNote",
-            )}
-          </p>
         </section>
       )}
 
       <section className="mt-10">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mb-4">
           <div>
             <h2 className="section-heading">
               {t(
@@ -472,39 +466,41 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
               )}
             </p>
           </div>
-          <div className="flex flex-col gap-3 sm:items-end">
-            <div>
-              <span className="mb-2 block text-xs text-[var(--muted)]">
-                {t("average.dimensionLabel")}
-              </span>
-              <div className="inline-flex rounded-full border border-[var(--card-border)] bg-[var(--input-bg)] p-1">
-                {(["hours", "pmc_raids"] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => changeDimension(option)}
-                    aria-pressed={dimension === option}
-                    className={`min-h-10 rounded-full px-4 text-sm transition-colors ${
-                      dimension === option
-                        ? "bg-[var(--accent)] text-[var(--background)]"
-                        : "text-[var(--muted)] hover:text-[var(--foreground)]"
-                    }`}
-                  >
-                    {t(option === "hours" ? "average.dimensionHours" : "average.dimensionPmcRaids")}
-                  </button>
+          <div className="average-chart-toolbar">
+            <SegmentedRadio
+              name="average-dimension"
+              legend={t("average.dimensionLabel")}
+              value={dimension}
+              options={[
+                { value: "hours", label: t("average.dimensionHours") },
+                { value: "pmc_raids", label: t("average.dimensionPmcRaids") },
+              ]}
+              onChange={changeDimension}
+            />
+            <label className="native-select">
+              <span>{t("average.metricLabel")}</span>
+              <select value={yMetric} onChange={(event) => setYMetric(event.target.value)}>
+                {Y_METRICS.map((metric) => (
+                  <option key={metric.key} value={metric.key}>
+                    {metric.agg === "avg"
+                      ? `${t("common.avg")} ${t("metric." + metric.key)}`
+                      : t("metric." + metric.key)}
+                  </option>
                 ))}
-              </div>
-            </div>
-            <MetricPicker value={yMetric} onChange={setYMetric} />
-            {currentData && (
-              <span className="text-xs text-[var(--muted)]">
-                {t("average.basedOn", { n: sampleN.toLocaleString() })}
-              </span>
-            )}
+              </select>
+            </label>
+            <span className="sample-status" aria-live="polite">
+              {currentData
+                ? t("average.basedOn", { n: sampleN.toLocaleString() })
+                : loading
+                  ? t("common.loading")
+                  : null}
+            </span>
           </div>
         </div>
 
-        <div ref={chartRef} className="chart-panel data-panel">
+        {!terminalError && (
+          <div ref={chartRef} className="chart-panel data-panel">
           <div className="mb-4 text-xs text-[var(--muted)]">
             <span className="font-semibold text-[var(--accent)]">
               {yDef.agg === "avg"
@@ -651,12 +647,22 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
               </label>
             </div>
           </div>
-        </div>
+          </div>
+        )}
       </section>
+
+      {mode === "regular" && levelBands.length > 0 && (
+        <RegularAverageProgression levelBands={levelBands} />
+      )}
 
       {currentData && sampleN > 0 && (
         <section className="mt-10">
-          <h2 className="section-heading mb-3">{t("average.fullMetrics")}</h2>
+          <h2 className="section-heading mb-3">
+            {t("average.fullMetricsMethod", {
+              title: t("average.fullMetrics"),
+              method: statisticLabel,
+            })}
+          </h2>
           <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>
         </section>
       )}
@@ -671,7 +677,7 @@ function AveragePageContent({ mode = "regular" }: { mode?: CrossSectionMode }) {
   );
 }
 
-export default function AveragePage(props: { mode?: CrossSectionMode }) {
+export default function AveragePage(props: { mode?: CrossSectionMode; levelBands?: LevelBand[] }) {
   return (
     <Suspense fallback={<main className="page-frame" />}>
       <AveragePageContent {...props} />

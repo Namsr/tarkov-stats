@@ -1,8 +1,9 @@
 import type { PlayerSnapshotInput } from "@/lib/ban-db";
 import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
+import { materializeRegularProgression } from "@/lib/regular-progression";
 import { LEGACY_IDENTITY } from "@/types/seasonal";
 
-export type SnapshotStatus = "baseline" | "progression" | "reset" | "duplicate" | "stale";
+export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale";
 
 export interface ProgressionDelta {
   elapsedMs: number;
@@ -85,6 +86,9 @@ interface SnapshotRow {
   series_id: number;
   achievements: string;
   stats_json: string;
+  profile_updated_at?: number;
+  local_date?: string;
+  nickname?: string;
 }
 
 function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
@@ -141,6 +145,7 @@ async function getSqliteDb(): Promise<any | null> {
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(files.progression);
     initializeSeasonalSchema(db);
+    materializeRegularProgression(db);
     db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
     db.exec(`
       CREATE TABLE IF NOT EXISTS players_db.excluded_players (
@@ -182,12 +187,25 @@ function sqliteStore(db: any): ProgressionStore {
       }
 
       const comparison = previous ? compare(previous, input) : null;
-      const isReset = Boolean(comparison?.resetFields.length);
+      const isReset = Boolean(
+        comparison?.resetFields.includes("experience") &&
+        comparison.resetFields.includes("pmcRaids")
+      );
+      const isAnomaly = Boolean(comparison?.resetFields.length) && !isReset;
       const seriesId = previous ? previous.seriesId + (isReset ? 1 : 0) : 1;
-      db.prepare(INSERT_SQL).run(...args(input, seriesId));
+      db.exec("SAVEPOINT record_regular_snapshot");
+      try {
+        db.prepare(INSERT_SQL).run(...args(input, seriesId));
+        materializeRegularProgression(db, input.aid);
+        db.exec("RELEASE record_regular_snapshot");
+      } catch (error) {
+        db.exec("ROLLBACK TO record_regular_snapshot");
+        db.exec("RELEASE record_regular_snapshot");
+        throw error;
+      }
       return {
         inserted: true,
-        status: previous ? (isReset ? "reset" : "progression") : "baseline",
+        status: previous ? (isReset ? "reset" : isAnomaly ? "schema_anomaly" : "progression") : "baseline",
         previousUpdatedAt: previous?.upstreamUpdatedAt ?? null,
         currentUpdatedAt: input.upstreamUpdatedAt,
         delta: comparison?.delta ?? null,

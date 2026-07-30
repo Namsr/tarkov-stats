@@ -16,6 +16,25 @@ export interface ChartBounds {
   maxValue: number;
 }
 
+export function raidTicks(minRaid: number, maxRaid: number, maxTicks = 8): number[] {
+  const start = Math.max(10, Math.ceil(minRaid / 10) * 10);
+  const end = Math.floor(maxRaid / 10) * 10;
+  if (end < start) return [];
+  const count = Math.floor((end - start) / 10) + 1;
+  const step = Math.max(10, Math.ceil(count / maxTicks) * 10);
+  return Array.from({ length: Math.floor((end - start) / step) + 1 }, (_, index) => start + index * step);
+}
+
+export function populationWithinPlayerRaidRange<T extends { pmcRaids: number }>(
+  points: readonly T[],
+  player: readonly T[],
+  averageOnly = false,
+): readonly T[] {
+  if (averageOnly || player.length === 0) return points;
+  const maxRaid = Math.ceil(Math.max(...player.map((point) => point.pmcRaids)) / 10) * 10;
+  return points.filter((point) => point.pmcRaids >= 10 && point.pmcRaids <= maxRaid);
+}
+
 export function chartBounds(series: readonly (readonly ChartDatum[])[], include = 0): ChartBounds {
   const points = series.flat();
   const days = points.map((point) => point.seasonDay).filter(Number.isFinite);
@@ -74,11 +93,33 @@ export function levelAtExperience(experience: number, bands: readonly LevelBand[
   return level;
 }
 
-export function xpPerDay(points: readonly ChartDatum[]): number | null {
+export function spacedLevelLabels(
+  bands: readonly LevelBand[],
+  minValue: number,
+  maxValue: number,
+  height: number,
+  minGap = 17,
+): LevelBand[] {
+  if (!(maxValue > minValue) || height <= 0 || minGap < 0) return [];
+  const y = (band: LevelBand) =>
+    height - ((band.experience - minValue) / (maxValue - minValue)) * height;
+  const kept: LevelBand[] = [];
+  for (const band of [...bands].sort((left, right) =>
+    right.level - left.level || right.experience - left.experience
+  )) {
+    if (kept.every((existing) => Math.abs(y(band) - y(existing)) >= minGap)) kept.push(band);
+  }
+  return kept;
+}
+
+export function xpPerDay(points: readonly ({ value: number } & ({ seasonDay: number } | { date: string }))[]): number | null {
   if (points.length < 2) return null;
-  const sorted = [...points].sort((a, b) => a.seasonDay - b.seasonDay);
+  const day = (point: { seasonDay: number } | { date: string }) => "seasonDay" in point
+    ? point.seasonDay
+    : Date.parse(`${point.date}T00:00:00Z`) / 86_400_000;
+  const sorted = [...points].sort((a, b) => day(a) - day(b));
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
-  const days = last.seasonDay - first.seasonDay;
+  const days = day(last) - day(first);
   return days > 0 ? (last.value - first.value) / days : null;
 }

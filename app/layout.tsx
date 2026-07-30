@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
+import SiteFooter from "@/components/SiteFooter";
+import SkipLink from "@/components/SkipLink";
 import FaqWidget from "@/components/FaqWidget";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
@@ -54,8 +56,12 @@ export default async function RootLayout({
       >
         <LanguageProvider initialLang={lang}>
           <FavoritesProvider>
+            <SkipLink />
             <SiteHeader />
-            {children}
+            <div id="main-content" className="site-main" tabIndex={-1}>
+              {children}
+            </div>
+            <SiteFooter />
             <FaqWidget />
           </FavoritesProvider>
         </LanguageProvider>

@@ -1,5 +1,5 @@
 [Unit]
-Description=TarkovStats weekly player nickname index sync
+Description=TarkovStats daily player nickname index sync
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
@@ -9,5 +9,6 @@ ConditionPathExists=/opt/tarkovstats/docker-compose.vps.yml
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
-ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -f docker-compose.vps.yml exec -T web node --experimental-sqlite scripts/sync-player-index.mjs
-TimeoutStartSec=2h
+# This daily run waits for the shared writer lock instead of being skipped.
+ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/bin/docker compose -f docker-compose.vps.yml exec -T web node --experimental-sqlite scripts/sync-player-index.mjs
+TimeoutStartSec=14h

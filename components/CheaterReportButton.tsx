@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
@@ -12,6 +12,7 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
   const [reported, setReported] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const authHintId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -52,21 +53,40 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
   }
 
   const label = reported ? t("report.already") : t("report.action");
+  const button = (
+    <button
+      type="button"
+      onClick={() => void submit()}
+      disabled={disabled}
+      aria-disabled={disabled}
+      aria-describedby={signedOut ? authHintId : undefined}
+      title={signedOut ? undefined : label}
+      className="ghost-button profile-action__button !text-sm !normal-case !tracking-normal disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span>{submitting ? t("common.loading") : label}</span>{" "}
+      <span className="report-count">({count})</span>
+    </button>
+  );
+
   return (
-    <div className="relative flex shrink-0 flex-col items-start gap-1 group">
-      <button
-        type="button"
-        onClick={() => void submit()}
-        disabled={disabled}
-        aria-disabled={disabled}
-        title={signedOut ? t("report.authRequired") : label}
-        className="ghost-button !min-h-12 whitespace-nowrap !text-sm !normal-case !tracking-normal disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {submitting ? t("common.loading") : label}
-      </button>
-      <p className="text-xs text-[var(--muted)]">{t("report.count", { n: count })}</p>
-      {signedOut && <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 whitespace-nowrap rounded border border-[var(--card-border)] bg-[var(--card-bg)] px-2 py-1 text-xs text-gray-300 opacity-0 transition-opacity group-hover:opacity-100">{t("report.authRequired")}</span>}
-      {error && <span className="absolute right-0 top-full mt-1 whitespace-nowrap text-xs text-[var(--danger)]" role="alert">{error}</span>}
+    <div className="profile-action">
+      {signedOut ? (
+        <span
+          className="disabled-control-hint"
+          tabIndex={0}
+          role="group"
+          aria-disabled="true"
+          aria-label={label}
+          aria-describedby={authHintId}
+        >
+          {button}
+          <span id={authHintId} role="tooltip" className="disabled-control-tooltip">
+            {t("report.authRequired")}
+          </span>
+        </span>
+      ) : button}
+      <span className="sr-only">{t("report.count", { n: count })}</span>
+      {error && <span className="profile-action__status text-[var(--danger)]" role="alert">{error}</span>}
     </div>
   );
 }

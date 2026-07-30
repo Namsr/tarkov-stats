@@ -1,18 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n/context";
+import { handleActiveLinkClick } from "@/lib/active-link";
 
-/**
- * Header link to the Average Player Statistics page that doubles as a toggle:
- * when you're already on /average it highlights and links back to "/", so a
- * second click leaves the page.
- */
-export default function AverageNavButton() {
+/** Header link to the canonical Average Player Statistics page. */
+export default function AverageNavButton({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { t } = useI18n();
-  const active = pathname === "/average" || pathname === "/average/regular";
+  const active = pathname.startsWith("/average");
 
   const base = "tactical-nav-link";
   const className = active
@@ -20,7 +18,15 @@ export default function AverageNavButton() {
     : base;
 
   return (
-    <Link href={active ? "/" : "/average/regular"} className={className}>
+    <Link
+      href="/average/regular"
+      className={className}
+      aria-current={active ? "page" : undefined}
+      onClick={(event) => {
+        onNavigate?.();
+        handleActiveLinkClick(event, active, router);
+      }}
+    >
       {t("nav.average")}
     </Link>
   );

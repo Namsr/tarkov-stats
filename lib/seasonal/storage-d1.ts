@@ -162,7 +162,12 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
             confidence: Number(intervalRow.confidence), scoreVersion: Number(intervalRow.score_version),
           };
       }
-      return { inserted: true, status: interval ? (interval.status === "valid" ? "progression" : "reset") : "baseline", snapshot, interval } as CaptureSnapshotResult;
+      return {
+        inserted: true,
+        status: interval ? (interval.status === "valid" ? "progression" : interval.status) : "baseline",
+        snapshot,
+        interval,
+      } as CaptureSnapshotResult;
     },
 
     async latestSnapshot(identity) {

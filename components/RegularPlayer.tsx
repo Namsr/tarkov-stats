@@ -6,6 +6,7 @@ import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import CheaterScore from "@/components/CheaterScore";
+import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
@@ -13,6 +14,8 @@ import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButt
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import ProfileHeader from "@/components/ProfileHeader";
+import ProfileSectionNav from "@/components/ProfileSectionNav";
 import type { CrossSectionMode } from "@/lib/db";
 
 const PROFILE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -45,9 +48,8 @@ function ProfileActions({
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">
-      <div className="flex flex-wrap items-start gap-2 sm:justify-end">
-        <div className="flex flex-col items-start gap-1">
+    <div className="profile-actions-grid">
+        <div className="profile-action-stack">
           <RefreshButton
             key={`${aid}:${mode}`}
             aid={aid}
@@ -55,7 +57,7 @@ function ProfileActions({
             stale={stale}
             missing={missing}
             onCheck={onCheck}
-            className="!min-h-12 whitespace-nowrap"
+            className="whitespace-nowrap"
           />
           {stale && (
             <p className="max-w-56 text-xs font-medium leading-snug text-[var(--danger)]">
@@ -69,8 +71,6 @@ function ProfileActions({
           identity={{ mode, cycleId: "persistent" }}
         />
         <CheaterReportButton aid={aid} mode={mode} cycle="persistent" />
-      </div>
-      <ProfileModeSwitch current={mode} page="player" aid={aid} />
     </div>
   );
 }
@@ -94,6 +94,7 @@ export default function RegularPlayer({
   const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
 
@@ -108,6 +109,7 @@ export default function RegularPlayer({
     setProfileIsStale(false);
     setModeUnavailable(false);
     setProfileSummary(null);
+    setProgressionRisk(null);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const requestParams = new URLSearchParams({ aid, mode });
@@ -239,20 +241,20 @@ export default function RegularPlayer({
           {t("common.back")}
         </Link>
 
-        <section className="surface p-5 sm:p-7">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <p className="page-kicker">#{aid}</p>
-              {profileSummary?.nickname && <h1 className="page-title break-words">{profileSummary.nickname}</h1>}
-              {mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) && (
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
-                  {profileSummary?.side && <span>{t("player.sideLabel", { side: profileSummary.side })}</span>}
-                  {Number(profileSummary?.prestige) > 0 && (
-                    <span>{t("player.prestigeLabel", { n: Number(profileSummary?.prestige) })}</span>
-                  )}
-                </div>
+        <ProfileHeader
+          aid={Number(aid)}
+          mode={mode}
+          kicker={`#${aid}`}
+          title={profileSummary?.nickname}
+          meta={mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) ? (
+            <div className="profile-header__meta">
+              {profileSummary?.side && <span>{t("player.sideLabel", { side: profileSummary.side })}</span>}
+              {Number(profileSummary?.prestige) > 0 && (
+                <span>{t("player.prestigeLabel", { n: Number(profileSummary?.prestige) })}</span>
               )}
             </div>
+          ) : undefined}
+          actions={
             <ProfileActions
               aid={Number(aid)}
               mode={mode}
@@ -260,12 +262,12 @@ export default function RegularPlayer({
               missing
               onCheck={refreshProfile}
             />
-          </div>
-
+          }
+        >
           <div className="detail-grid mt-7">
             {unavailableStats.map((label) => <StatCard key={label} label={label} value="?" />)}
           </div>
-        </section>
+        </ProfileHeader>
 
         <section className="data-panel mt-5 flex flex-col items-center gap-4 p-6 text-center">
           <p className="max-w-2xl text-[var(--danger)]">{t("player.modeUnavailable")}</p>
@@ -345,6 +347,24 @@ export default function RegularPlayer({
     timeStyle: "short",
     timeZone: "Europe/Moscow",
   });
+  const sectionLinks = mode === "arena"
+    ? [
+        { id: "overview", label: t("profile.section.overview") },
+        { id: "overall", label: t("profile.section.overall") },
+        { id: "statistics", label: t("profile.section.statistics") },
+      ]
+    : [
+        { id: "overview", label: t("profile.section.overview") },
+        ...(mode === "regular"
+          ? [{ id: "progression", label: t("profile.section.progression") }]
+          : []),
+        { id: "risk", label: t("profile.section.risk") },
+        { id: "comparison", label: t("profile.section.comparison") },
+        { id: "statistics", label: t("profile.section.statistics") },
+        ...(skills.length > 0
+          ? [{ id: "skills", label: t("profile.section.skills") }]
+          : []),
+      ];
   return (
     <main className="page-frame">
       <Link
@@ -354,30 +374,34 @@ export default function RegularPlayer({
         {t("common.back")}
       </Link>
 
-      <section className="surface p-5 sm:p-7">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <p className="page-kicker">#{aid}</p>
-            <h1 className="page-title break-words">{stats.nickname}</h1>
-            {mode !== "arena" && (
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[var(--muted)] mt-3">
-                <span>{t("player.sideLabel", { side: stats.side })}</span>
-                {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
-              </div>
+      <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks} />
+
+      <ProfileHeader
+        aid={Number(aid)}
+        mode={mode}
+        kicker={`#${aid}`}
+        title={stats.nickname}
+        meta={
+          <div className="profile-header__meta">
+            {mode !== "arena" && <span>{t("player.sideLabel", { side: stats.side })}</span>}
+            {mode !== "arena" && stats.prestige > 0 && (
+              <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
             )}
             {profileUpdatedAt !== null && (
-              <p className="mt-2 text-sm text-[var(--muted)]">
+              <span>
                 {t("player.profileUpdated", {
                   date: dateTimeFormatter.format(profileUpdatedAt),
                 })}
-              </p>
+              </span>
             )}
             {lastPlayedAt !== null && (
-              <p className="mt-2 text-sm text-[var(--muted)]">
+              <span>
                 {t("player.lastPlayed", { date: dateTimeFormatter.format(lastPlayedAt) })}
-              </p>
+              </span>
             )}
           </div>
+        }
+        actions={
           <ProfileActions
             aid={Number(aid)}
             mode={mode}
@@ -385,18 +409,18 @@ export default function RegularPlayer({
             stale={profileIsStale}
             onCheck={refreshProfile}
           />
-        </div>
-
+        }
+      >
         <div className="detail-grid mt-7">
           {coreStats.map((item) => (
             <StatCard key={item.label} {...item} />
           ))}
         </div>
-      </section>
+      </ProfileHeader>
 
       {mode === "arena" ? (
         <div className="mt-5 space-y-5">
-          <section>
+          <section id="overall" tabIndex={-1} className="profile-anchor-section">
             <h2 className="section-heading mb-3">{t("arena.overall")}</h2>
             <div className="data-ledger">
               {[
@@ -412,7 +436,7 @@ export default function RegularPlayer({
             </div>
           </section>
 
-          <section>
+          <section id="statistics" tabIndex={-1} className="profile-anchor-section">
             <h2 className="section-heading mb-3">{t("arena.byMode")}</h2>
             <div className="data-panel overflow-x-auto">
               <table className="w-full min-w-[760px] text-sm">
@@ -450,12 +474,34 @@ export default function RegularPlayer({
         </div>
       ) : (
         <>
-          <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
-        <PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} demo={radarDemo} />
-        <CheaterScore stats={stats} ownedAchievementIds={achievementIds} mode={mode} />
-      </div>
+          {mode === "regular" && (
+            <div id="progression" tabIndex={-1} className="profile-anchor-section">
+              <ProgressionPanel
+                aid={Number(aid)}
+                hours={stats.hoursPlayed}
+                pmcRaids={stats.pmcRaids}
+                mode="regular"
+                cycleId="persistent"
+                onRiskChange={setProgressionRisk}
+              />
+            </div>
+          )}
 
-          <div className="mt-5 space-y-5">
+          <section id="risk" tabIndex={-1} className="profile-anchor-section mt-5">
+            <h2 className="section-heading mb-3">{t("cheater.heading")}</h2>
+            <CheaterScore
+              stats={stats}
+              ownedAchievementIds={achievementIds}
+              mode={mode}
+              progressionRisk={mode === "regular" ? progressionRisk : null}
+            />
+          </section>
+
+          <section id="comparison" tabIndex={-1} className="profile-anchor-section mt-5">
+            <PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} demo={radarDemo} />
+          </section>
+
+          <div id="statistics" tabIndex={-1} className="profile-anchor-section mt-5 space-y-5">
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="section-heading">{t("player.raidStats")}</h2>
@@ -479,7 +525,7 @@ export default function RegularPlayer({
       </div>
 
           {skills.length > 0 ? (
-        <div className="page-grid mt-5">
+        <div id="skills" tabIndex={-1} className="profile-anchor-section page-grid mt-5">
           <section className="data-panel p-5">
             <h2 className="section-heading text-base mb-4">{t("player.skills")}</h2>
             <div className="grid grid-cols-2 gap-x-3 gap-y-1 max-h-80 overflow-y-auto pr-1">

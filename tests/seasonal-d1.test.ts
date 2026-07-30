@@ -143,6 +143,11 @@ test("daily materialization populates Tempo/Form scores and physical aggregate r
   assert.ok(scores.every((row) => row.tempo_score != null && row.form_score != null));
   const kinds = db.prepare("SELECT DISTINCT kind FROM daily_aggregates ORDER BY kind").all().map((row: unknown) => String((row as { kind: string }).kind));
   assert.deepEqual(kinds, ["cumulative", "form", "tempo"]);
+  assert.deepEqual(
+    db.prepare("SELECT DISTINCT dimension, bucket_min, bucket_max, n FROM daily_aggregates ORDER BY dimension")
+      .all().map((row: Record<string, unknown>) => ({ ...row })),
+    [{ dimension: "pmc_raids", bucket_min: 0, bucket_max: 10, n: 2 }],
+  );
 });
 
 test("SQLite Tempo includes any changed cumulative counter while Form requires PMC raids", async () => {

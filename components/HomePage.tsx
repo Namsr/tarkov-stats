@@ -3,6 +3,7 @@
 import AuthErrorBanner from "@/components/AuthErrorBanner";
 import SearchBar from "@/components/SearchBar";
 import { useI18n } from "@/lib/i18n/context";
+import { PROJECT_LINKS } from "@/lib/support";
 
 export default function HomePage() {
   const { t } = useI18n();
@@ -15,6 +16,12 @@ export default function HomePage() {
         <p className="home-command__description">{t("home.description")}</p>
         <SearchBar autoFocus />
       </div>
+      <p className="home-command__owner">
+        {t("home.independent")}{" "}
+        <a href={PROJECT_LINKS.twitch} target="_blank" rel="noopener noreferrer">
+          Namsr
+        </a>
+      </p>
     </main>
   );
 }

@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS player_profiles (
 );
 CREATE INDEX IF NOT EXISTS idx_player_profiles_cycle_access
   ON player_profiles(mode, cycle_id, last_access_at);
+CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
+  ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
 CREATE TABLE IF NOT EXISTS progression_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL DEFAULT 'regular',
@@ -99,6 +101,8 @@ CREATE INDEX IF NOT EXISTS idx_progression_snapshots_identity_time
   ON progression_snapshots(mode, cycle_id, aid, profile_updated_at);
 CREATE INDEX IF NOT EXISTS idx_progression_snapshots_cycle_date
   ON progression_snapshots(mode, cycle_id, local_date);
+CREATE INDEX IF NOT EXISTS idx_progression_snapshots_cycle_raids_latest
+  ON progression_snapshots(mode, cycle_id, pmc_raids, aid, profile_updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS progression_intervals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL,
@@ -125,6 +129,8 @@ CREATE TABLE IF NOT EXISTS progression_intervals (
 );
 CREATE INDEX IF NOT EXISTS idx_progression_intervals_cycle_date
   ON progression_intervals(mode, cycle_id, local_date);
+CREATE INDEX IF NOT EXISTS idx_progression_intervals_cycle_valid_end
+  ON progression_intervals(mode, cycle_id, status, to_snapshot_id, aid, ended_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS daily_aggregates (
   mode TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -454,7 +460,14 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         }
         db.prepare(`UPDATE player_profiles SET snapshot_count = snapshot_count + 1 WHERE ${identityWhere}`).run(...identity);
         db.exec("COMMIT");
-        return { inserted: true, status: previous ? (negative ? "reset" : "progression") : "baseline", snapshot, interval } as CaptureSnapshotResult;
+        return {
+          inserted: true,
+          status: previous
+            ? intervalStatus === "reset" ? "reset" : intervalStatus === "schema_anomaly" ? "schema_anomaly" : "progression"
+            : "baseline",
+          snapshot,
+          interval,
+        } as CaptureSnapshotResult;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;

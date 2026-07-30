@@ -11,6 +11,7 @@ import {
   type RiskTier,
   type CheaterScoreResult,
 } from "@/lib/cheater-score";
+import type { ProgressionRiskPayload } from "@/components/ProgressionPanel";
 
 const TIER_COLOR: Record<RiskTier, string> = {
   low: "#4caf50",
@@ -41,14 +42,32 @@ interface AchPayload {
   achievements: { id: string; owners: number; samplePct: number; meanHours: number; earlyHours: number }[];
 }
 
+const PROGRESSION_REASONS = new Set([
+  "pmc_kills_per_raid",
+  "pvp_kd",
+  "survival_rate",
+  "xp_per_pmc_raid",
+  "all_kills_per_pmc_raid",
+  "pmc_raids_per_day",
+]);
+
+function tierFor(score: number): RiskTier {
+  if (score < 20) return "low";
+  if (score < 45) return "medium";
+  if (score < 70) return "high";
+  return "severe";
+}
+
 export default function CheaterScore({
   stats,
   ownedAchievementIds,
   mode = "regular",
+  progressionRisk,
 }: {
   stats: ParsedPlayerStats;
   ownedAchievementIds: string[];
   mode?: CrossSectionMode;
+  progressionRisk?: ProgressionRiskPayload | null;
 }) {
   const { t } = useI18n();
   const [result, setResult] = useState<CheaterScoreResult | null>(null);
@@ -107,8 +126,7 @@ export default function CheaterScore({
   if (!pvpStatsKnown) {
     return (
       <div className="data-panel p-5">
-        <span className="section-kicker">{t("cheater.heading")}</span>
-        <p className="mt-4 text-sm text-[var(--muted)]" role="status">
+        <p className="text-sm text-[var(--muted)]" role="status">
           {t("cheater.incompletePvp")}
         </p>
       </div>
@@ -119,14 +137,15 @@ export default function CheaterScore({
     return <div className="h-64 skeleton rounded-xl" />;
   }
 
-  const color = TIER_COLOR[result.tier];
-  const tip = needle(result.score);
+  const score = progressionRisk ? Math.round(progressionRisk.combined) : result.score;
+  const tier = progressionRisk ? tierFor(score) : result.tier;
+  const color = TIER_COLOR[tier];
+  const tip = needle(score);
   const shown = result.factors.filter((f) => f.points >= 1);
 
   return (
     <div className="data-panel p-5">
-      <div className="flex items-center justify-between mb-1">
-        <span className="section-kicker">{t("cheater.heading")}</span>
+      <div className="mb-1 flex justify-end">
         <span className="text-[var(--muted)] text-xs cursor-help" title={t("cheater.disclaimer")} aria-label={t("cheater.disclaimer")}>
           ⓘ
         </span>
@@ -140,7 +159,7 @@ export default function CheaterScore({
         <circle cx={160} cy={160} r={11} fill={color} />
         <circle cx={160} cy={160} r={5} style={{ fill: "var(--card-bg)" }} />
         <text x={160} y={130} textAnchor="middle" fontSize={56} fontWeight={700} style={{ fill: "var(--foreground)" }}>
-          {result.score}
+          {score}
         </text>
       </svg>
 
@@ -149,14 +168,43 @@ export default function CheaterScore({
           className="inline-block px-3 py-0.5 rounded text-sm font-bold"
           style={{ color, border: `1px solid ${color}66`, background: `${color}14` }}
         >
-          {t("cheater.tier." + result.tier)}
+          {t("cheater.tier." + tier)}
         </span>
         <div className="text-[11px] text-gray-500 mt-1">
-          {result.score} {t("cheater.outOf")}
+          {score} {t("cheater.outOf")}
         </div>
       </div>
 
-      {shown.length > 0 && (
+      {progressionRisk ? (
+        <>
+          <p className="mt-3 text-center text-xs text-[var(--muted)]">
+            {t("seasonal.risk.contributions", {
+              static: progressionRisk.staticContribution.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+              progression: progressionRisk.progressionContribution.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+            })}
+          </p>
+          <p className="mt-1 text-center text-xs text-[var(--muted)]">
+            {t("progression.riskConfidence", {
+              tier: t("seasonal.confidence." + progressionRisk.confidence.tier),
+              n: Math.round(progressionRisk.confidence.value * 100),
+            })}
+          </p>
+          {(progressionRisk.staticReasons.length > 0 || progressionRisk.reasons.length > 0) && (
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              {progressionRisk.staticReasons.map((reason) => (
+                <span key={`static-${reason}`} className="seasonal-risk__reason">
+                  {t("seasonal.risk.static")}: {t("metric." + reason)}
+                </span>
+              ))}
+              {progressionRisk.reasons.map((reason) => (
+                <span key={reason} className="seasonal-risk__reason">
+                  {t("seasonal.riskReason." + (PROGRESSION_REASONS.has(reason) ? reason : "anomaly"))}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      ) : shown.length > 0 && (
         <div className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-[11px] text-gray-400">
           {shown.map((f) => (
             <span key={f.key} className="whitespace-nowrap">
@@ -172,6 +220,11 @@ export default function CheaterScore({
           ? t("cheater.basedOn", { n: result.sampleN.toLocaleString() })
           : t("cheater.preliminary")}
       </p>
+      {progressionRisk && (
+        <p className="text-[10px] text-gray-600 mt-1 text-center">
+          {t("seasonal.risk.noAutoExclusion")}
+        </p>
+      )}
     </div>
   );
 }

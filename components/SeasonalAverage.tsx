@@ -41,14 +41,21 @@ export default function SeasonalAverage({ cycleId, levelBands }: { cycleId: stri
   return (
     <main className="page-frame">
       <Link href="/" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
-      <div className="mt-7 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+      <div className="mt-7">
         <div>
           <p className="page-kicker">{t("seasonal.averageKicker", { cycle: cycleId })}</p>
           <h1 className="page-title">{t("seasonal.averageTitle")}</h1>
           <p className="mt-4 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">{t("seasonal.averageDescription")}</p>
         </div>
-        <ProfileModeSwitch current="seasonal" page="average" />
       </div>
+      <section className="average-settings data-panel" aria-label={t("average.settings")}>
+        <div className="average-settings__top">
+          <div className="average-settings__mode md:col-start-2">
+            <span>{t("mode.selectorAria")}</span>
+            <ProfileModeSwitch current="seasonal" page="average" />
+          </div>
+        </div>
+      </section>
       {loading && <p className="mt-5 text-sm text-[var(--muted)]">{t("common.loading")}</p>}
       {error && <p className="mt-5 text-sm text-[var(--muted)]">{error}</p>}
       {population && (

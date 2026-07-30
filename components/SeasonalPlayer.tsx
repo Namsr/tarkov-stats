@@ -7,7 +7,9 @@ import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton from "@/components/RefreshButton";
-import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import ProfileHeader from "@/components/ProfileHeader";
+import ProfileSectionNav from "@/components/ProfileSectionNav";
+import SegmentedRadio from "@/components/SegmentedRadio";
 import { useI18n } from "@/lib/i18n/context";
 import { levelAtExperience, xpPerDay, type LevelBand } from "@/lib/seasonal/ui";
 import type {
@@ -191,14 +193,27 @@ export default function SeasonalPlayer({
   return (
     <main className="page-frame">
       <Link href="/" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
-      <section className="surface mt-7 p-5 sm:p-7">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <p className="page-kicker">{t("seasonal.profileKicker", { cycle: cycleId, aid })}</p>
-            <h1 className="page-title break-words">{profile.nickname}</h1>
+      <ProfileSectionNav
+        label={t("profile.sectionNav")}
+        items={[
+          { id: "overview", label: t("profile.section.overview") },
+          { id: "progression", label: t("profile.section.progression") },
+          { id: "risk", label: t("profile.section.risk") },
+          { id: "statistics", label: t("profile.section.statistics") },
+        ]}
+      />
+      <ProfileHeader
+        aid={aid}
+        mode="seasonal"
+        kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
+        title={profile.nickname}
+        meta={
+          <div className="profile-header__meta">
+            <span>{t("seasonal.lastUpdated")}: {new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })}</span>
           </div>
-          <div className="flex flex-wrap items-start gap-3">
-            <div className="flex flex-wrap items-center gap-2">
+        }
+        actions={
+          <div className="profile-actions-grid">
               <RefreshButton aid={aid} mode="seasonal" />
               <FavoriteButton
                 aid={aid}
@@ -206,10 +221,9 @@ export default function SeasonalPlayer({
                 identity={{ mode: "seasonal", cycleId }}
               />
               <CheaterReportButton aid={aid} mode="seasonal" cycle={cycleId} />
-            </div>
-            <ProfileModeSwitch current="seasonal" page="player" aid={aid} />
           </div>
-        </div>
+        }
+      >
         <div className="detail-grid mt-7">
           <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
           <StatCard label={t("player.level")} value={level || "—"} />
@@ -220,19 +234,19 @@ export default function SeasonalPlayer({
           <StatCard label={t("player.hoursPlayed")} value={number(profile.lifetimePvpHours)} suffix={t("unit.h")} />
           <StatCard label={t("seasonal.lastUpdated")} value={new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })} />
         </div>
-      </section>
+      </ProfileHeader>
 
-      <div className="seasonal-controls">
-        <div>
-          <span className="section-kicker">{t("seasonal.compareBy")}</span>
-          <div className="seasonal-segmented">
-            {(["hours", "pmc_raids"] as const).map((value) => (
-              <button type="button" key={value} onClick={() => setDimension(value)} aria-pressed={dimension === value} className={dimension === value ? "is-active" : ""}>
-                {t(value === "hours" ? "average.dimensionHours" : "average.dimensionPmcRaids")}
-              </button>
-            ))}
-          </div>
-        </div>
+      <div id="progression" tabIndex={-1} className="profile-anchor-section seasonal-controls">
+        <SegmentedRadio
+          name={`seasonal-dimension-${aid}`}
+          legend={t("seasonal.compareBy")}
+          value={dimension}
+          options={[
+            { value: "hours", label: t("average.dimensionHours") },
+            { value: "pmc_raids", label: t("average.dimensionPmcRaids") },
+          ]}
+          onChange={setDimension}
+        />
         {progressionLoading && <span className="text-sm text-[var(--muted)]">{t("common.loading")}</span>}
       </div>
 
@@ -247,7 +261,7 @@ export default function SeasonalPlayer({
         <SeasonalProgressionChart data={series.form} title={t("seasonal.chart.form")} riskMarkers={markers} />
       )}
 
-      <section className="seasonal-risk data-panel">
+      <section id="risk" tabIndex={-1} className="profile-anchor-section seasonal-risk data-panel">
         <div>
           <p className="section-kicker">{t("seasonal.risk.kicker")}</p>
           <h2 className="section-heading">{t("cheater.heading")}</h2>
@@ -286,7 +300,7 @@ export default function SeasonalPlayer({
         <p className="mt-4 text-xs leading-relaxed text-[var(--muted)]">{t("cheater.disclaimer")} {t("seasonal.risk.noAutoExclusion")}</p>
       </section>
 
-      <section className="mt-5">
+      <section id="statistics" tabIndex={-1} className="profile-anchor-section mt-5">
         <h2 className="section-heading mb-3">{t("seasonal.longTerm")}</h2>
         <div className="data-ledger">
           <StatCard label={t("seasonal.metric.xpPerDay")} value={number(longTerm?.xpPerDay ?? localXpPerDay, 0)} />

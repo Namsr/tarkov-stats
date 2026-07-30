@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useId, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
+import CompactDetails from "@/components/CompactDetails";
+import SegmentedRadio from "@/components/SegmentedRadio";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
 
@@ -106,9 +108,9 @@ const METRICS: MetricDefinition[] = [
 ];
 
 const SERIES = {
-  average: { color: "#8b949e", dash: "8 6", fillOpacity: 0.08 },
-  favorite: { color: "#ef5350", dash: undefined, fillOpacity: 0.12 },
-  player: { color: "#d8a84e", dash: undefined, fillOpacity: 0.16 },
+  average: { color: "var(--muted)", dash: "8 6", fillOpacity: 0, marker: "square" },
+  favorite: { color: "var(--muted-strong)", dash: "2 6", fillOpacity: 0, marker: "diamond" },
+  player: { color: "var(--foreground)", dash: undefined, fillOpacity: 0.04, marker: "circle" },
 } as const;
 
 const DEMO_AVERAGES: Record<MetricKey, number> = {
@@ -243,6 +245,9 @@ function reasonKey(reason: string, dimension: Dimension): string {
 
 export default function PlayerRadarComparison({ aid, stats, mode = "regular", demo = false }: Props) {
   const { t } = useI18n();
+  const descriptionId = useId();
+  const tooltipId = useId();
+  const favoriteHintId = useId();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -261,7 +266,10 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const [showAverage, setShowAverage] = useState(true);
   const [showFavorite, setShowFavorite] = useState(demo);
   const [selectedAid, setSelectedAid] = useState<number | null>(null);
-  const [favoriteStats, setFavoriteStats] = useState<ParsedPlayerStats | null>(null);
+  const [favoriteProfile, setFavoriteProfile] = useState<{
+    requestId: string;
+    stats: ParsedPlayerStats;
+  } | null>(null);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   const [favoriteError, setFavoriteError] = useState("");
   const [activeAxis, setActiveAxis] = useState<number | null>(null);
@@ -332,15 +340,25 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const effectiveFavoriteAid = eligibleFavorites.some((favorite) => favorite.aid === selectedAid)
     ? selectedAid
     : defaultFavoriteAid;
+  const favoriteRequestId =
+    effectiveFavoriteAid == null ? null : `${mode}:${effectiveFavoriteAid}`;
+  const favoriteStats =
+    favoriteProfile?.requestId === favoriteRequestId ? favoriteProfile.stats : null;
 
   useEffect(() => {
-    if (demo || !showFavorite || authStatus !== "authenticated" || !effectiveFavoriteAid) {
+    if (
+      demo ||
+      !showFavorite ||
+      authStatus !== "authenticated" ||
+      !effectiveFavoriteAid ||
+      !favoriteRequestId
+    ) {
       return;
     }
     const controller = new AbortController();
     setFavoriteLoading(true);
     setFavoriteError("");
-    setFavoriteStats(null);
+    setFavoriteProfile(null);
     fetch(`/api/player/profile?aid=${encodeURIComponent(effectiveFavoriteAid)}&mode=${mode}`, {
       signal: controller.signal,
     })
@@ -351,7 +369,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         }
         return payload.stats;
       })
-      .then((payload) => setFavoriteStats(payload))
+      .then((payload) => {
+        if (!controller.signal.aborted) {
+          setFavoriteProfile({ requestId: favoriteRequestId, stats: payload });
+        }
+      })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setFavoriteError(error instanceof Error ? error.message : t("radar.error.favorite"));
@@ -361,7 +383,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!controller.signal.aborted) setFavoriteLoading(false);
       });
     return () => controller.abort();
-  }, [authStatus, demo, effectiveFavoriteAid, mode, showFavorite, t]);
+  }, [authStatus, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t]);
 
   const cohort = demo
     ? demoCohort(dimension, center, statistic, period)
@@ -506,16 +528,31 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         {seriesPoints.map((value, index) =>
           value ? (
             <g key={METRICS[index].key}>
-              <circle
-                cx={value.x}
-                cy={value.y}
-                r="5"
-                fill={style.color}
-                stroke="var(--card-bg)"
-                strokeWidth="2"
-                vectorEffect="non-scaling-stroke"
-                pointerEvents="none"
-              />
+              {style.marker === "circle" ? (
+                <circle
+                  cx={value.x}
+                  cy={value.y}
+                  r="5"
+                  fill={style.color}
+                  stroke="var(--card-bg)"
+                  strokeWidth="2"
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents="none"
+                />
+              ) : (
+                <rect
+                  x={value.x - 5}
+                  y={value.y - 5}
+                  width="10"
+                  height="10"
+                  fill={style.color}
+                  stroke="var(--card-bg)"
+                  strokeWidth="2"
+                  transform={style.marker === "diamond" ? `rotate(45 ${value.x} ${value.y})` : undefined}
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents="none"
+                />
+              )}
               <circle
                 cx={value.x}
                 cy={value.y}
@@ -540,110 +577,70 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const activeBaseline = active?.available ? active.average.value : null;
 
   return (
-    <section className="bg-[var(--card-bg)] border border-[var(--card-border)] rounded-lg p-4 sm:p-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-bold text-[var(--accent)]">{t("radar.title")}</h2>
-            {demo && (
-              <span className="rounded border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-0.5 text-xs text-[var(--accent)]">
-                {t("radar.demoBadge")}
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-sm text-gray-500">
+    <section className="radar-panel data-panel">
+      <header className="radar-panel__header">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="section-heading">{t("radar.title")}</h2>
+          {demo && (
+            <span className="rounded border border-[var(--card-border)] px-2 py-0.5 text-xs text-[var(--muted-strong)]">
+              {t("radar.demoBadge")}
+            </span>
+          )}
+        </div>
+        <CompactDetails summary={t("radar.helpSummary")}>
+          <p>
             {t(
               statistic === "median"
                 ? "radar.description.median"
                 : "radar.description.trimmedMean",
             )}
           </p>
-        </div>
-        <div className="flex flex-col items-start gap-2 sm:items-end">
-          <div
-            className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-            role="group"
-            aria-label={t("average.statistic.label")}
-          >
-            {(["trimmed_mean", "median"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => changeStatistic(value)}
-                aria-pressed={statistic === value}
-                className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
-                  statistic === value
-                    ? "bg-[var(--accent)] text-[var(--background)]"
-                    : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                {t(
-                  value === "median"
-                    ? "average.statistic.median"
-                    : "average.statistic.trimmedMean",
-                )}
-              </button>
-            ))}
-          </div>
-          {mode === "regular" && (
-            <div className="max-w-sm sm:text-right">
-              <div
-                className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-                role="group"
-                aria-label={t("average.period.label")}
-              >
-                {(["all", "90d"] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => changePeriod(value)}
-                    aria-pressed={period === value}
-                    className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
-                      period === value
-                        ? "bg-[var(--accent)] text-[var(--background)]"
-                        : "text-gray-400 hover:text-gray-200"
-                    }`}
-                  >
-                    {t(value === "90d" ? "average.period.last90Days" : "average.period.all")}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                {t("average.period.note")}
-              </p>
-            </div>
-          )}
-          <div
-            className="inline-flex rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] p-1"
-            role="group"
-            aria-label={t("radar.dimension.label")}
-          >
-            {(["hours", "pmc_raids"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDimension(value)}
-                aria-pressed={dimension === value}
-                className={`rounded px-3 py-2 text-sm transition-colors motion-reduce:transition-none ${
-                  dimension === value
-                    ? "bg-[var(--accent)] text-[var(--background)]"
-                    : "text-gray-400 hover:text-gray-200"
-                }`}
-              >
-                {t(value === "hours" ? "radar.dimension.hours" : "radar.dimension.raids")}
-              </button>
-            ))}
-          </div>
-        </div>
+          {mode === "regular" && <p>{t("average.period.note")}</p>}
+        </CompactDetails>
+      </header>
+
+      <div className="radar-toolbar">
+        <SegmentedRadio
+          name={`radar-statistic-${aid}`}
+          legend={t("average.statistic.label")}
+          value={statistic}
+          options={[
+            { value: "trimmed_mean", label: t("average.statistic.trimmedMean") },
+            { value: "median", label: t("average.statistic.median") },
+          ]}
+          onChange={changeStatistic}
+        />
+        {mode === "regular" && (
+          <SegmentedRadio
+            name={`radar-period-${aid}`}
+            legend={t("average.period.label")}
+            value={period}
+            options={[
+              { value: "all", label: t("average.period.all") },
+              { value: "90d", label: t("average.period.last90Days") },
+            ]}
+            onChange={changePeriod}
+          />
+        )}
+        <SegmentedRadio
+          name={`radar-dimension-${aid}`}
+          legend={t("radar.dimension.label")}
+          value={dimension}
+          options={[
+            { value: "hours", label: t("radar.dimension.hours") },
+            { value: "pmc_raids", label: t("radar.dimension.raids") },
+          ]}
+          onChange={setDimension}
+        />
       </div>
 
-      <div className="mt-4 min-h-6 text-sm" aria-live="polite">
+      <div className="radar-status sample-status" aria-live="polite">
         {cohortLoading && !demo ? (
-          <span className="text-gray-500">{t("radar.cohort.loading")}</span>
+          <span className="text-[var(--muted)]">{t("radar.cohort.loading")}</span>
         ) : cohortError ? (
           <span className="text-[var(--danger)]">{cohortError}</span>
         ) : cohort?.quality === "sufficient" ? (
-          <span className="text-gray-400">
+          <span className="text-[var(--muted-strong)]">
             {t("radar.cohort.summary", {
               min: cohort.min.toLocaleString(),
               max: cohort.max.toLocaleString(),
@@ -653,7 +650,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             })}
           </span>
         ) : cohort ? (
-          <span className="text-gray-500">{t(reasonKey(cohort.reason, dimension))}</span>
+          <span className="text-[var(--muted)]">{t(reasonKey(cohort.reason, dimension))}</span>
         ) : null}
       </div>
 
@@ -663,15 +660,18 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         </p>
       )}
 
-      <div className="relative mx-auto mt-2 max-w-4xl">
+      <div className="radar-visual">
+      <div className="radar-chart">
         {active && (
           <div
-            className="pointer-events-none absolute z-10 w-64 max-w-[calc(100%_-_1rem)] rounded border border-[var(--card-border)] bg-[var(--background)]/95 p-3 text-xs shadow-xl"
+            id={tooltipId}
+            className="pointer-events-none absolute z-10 w-64 max-w-[calc(100%_-_1rem)] rounded border border-[var(--card-border)] bg-[var(--card-bg)] p-3 text-xs"
             role="tooltip"
+            aria-live="polite"
             style={tooltipPosition}
           >
-            <div className="font-medium text-gray-200">{t(active.metric.labelKey)}</div>
-            <div className="mt-1 space-y-1 text-gray-400">
+            <div className="font-medium text-[var(--foreground)]">{t(active.metric.labelKey)}</div>
+            <div className="mt-1 space-y-1 text-[var(--muted-strong)]">
               {showPlayer && playerValues && (
                 <div>
                   {t("radar.series.player")}: {formatValue(active.metric, playerValues[active.metric.key])}{" "}
@@ -701,9 +701,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           className="block h-auto w-full"
           role="img"
           aria-label={t("radar.svgTitle", { method: baselineLabel })}
-          aria-describedby="player-radar-desc"
+          aria-describedby={`${descriptionId}${active ? ` ${tooltipId}` : ""}`}
         >
-          <desc id="player-radar-desc">
+          <desc id={descriptionId}>
             {t(
               statistic === "median"
                 ? "radar.svgDescription.median"
@@ -722,7 +722,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               <text
                 x={CX + 7}
                 y={CY - (ratio / 100) * RADIUS + 13}
-                fill="#6b7280"
+                fill="var(--muted)"
                 fontSize="11"
               >
                 {t("radar.ring", { value: ratio })}
@@ -764,7 +764,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
                   y={label.y}
                   textAnchor="middle"
                   dominantBaseline="middle"
-                  fill={axes[index].available ? "var(--foreground)" : "#6b7280"}
+                  fill={axes[index].available ? "var(--foreground)" : "var(--muted)"}
                   fontSize="13"
                   fontWeight="600"
                   aria-hidden="true"
@@ -776,7 +776,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
                     x={label.x}
                     y={label.y + 17}
                     textAnchor="middle"
-                    fill="#6b7280"
+                    fill="var(--muted)"
                     fontSize="10"
                     aria-hidden="true"
                   >
@@ -786,7 +786,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
                 <circle
                   cx={hit.x}
                   cy={hit.y}
-                  r="26"
+                  r="50"
                   fill="transparent"
                   tabIndex={0}
                   role="button"
@@ -814,7 +814,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         </svg>
       </div>
 
-      <div className="grid gap-2 border-t border-[var(--card-border)] pt-3 sm:grid-cols-3">
+      <aside className="radar-options">
+      <div className="grid gap-2">
         <label className={`flex min-h-11 items-center gap-3 rounded px-3 py-2 ${playerStatsKnown ? "cursor-pointer hover:bg-[var(--input-bg)]" : "cursor-not-allowed opacity-55"}`}>
           <input
             type="checkbox"
@@ -824,20 +825,27 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             aria-disabled={!playerStatsKnown}
             className="h-4 w-4 accent-[var(--accent)]"
           />
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: SERIES.player.color }} />
-          <span className="text-sm text-gray-300">{t("radar.series.player")}</span>
+          <span className="radar-key radar-key--player" aria-hidden />
+          <span className="text-sm text-[var(--muted-strong)]">{t("radar.series.player")}</span>
         </label>
         <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded px-3 py-2 hover:bg-[var(--input-bg)]">
           <input
             type="checkbox"
             checked={showAverage}
             onChange={(event) => setShowAverage(event.target.checked)}
-            className="h-4 w-4 accent-gray-500"
+            className="h-4 w-4 accent-[var(--foreground)]"
           />
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: SERIES.average.color }} />
-          <span className="text-sm text-gray-300">{baselineLabel}</span>
+          <span className="radar-key radar-key--average" aria-hidden />
+          <span className="text-sm text-[var(--muted-strong)]">{baselineLabel}</span>
         </label>
-        <div className="group relative rounded">
+        <div
+          className={favoriteDisabled ? "disabled-control-hint" : "relative rounded"}
+          tabIndex={favoriteDisabled ? 0 : undefined}
+          role={favoriteDisabled ? "group" : undefined}
+          aria-disabled={favoriteDisabled || undefined}
+          aria-label={favoriteDisabled ? t("radar.series.favorite") : undefined}
+          aria-describedby={favoriteDisabled ? favoriteHintId : undefined}
+        >
           <label
             className={`flex min-h-11 items-center gap-3 rounded px-3 py-2 ${
               favoriteDisabled
@@ -851,21 +859,14 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               onChange={(event) => setShowFavorite(event.target.checked)}
               disabled={favoriteDisabled}
               aria-disabled={favoriteDisabled}
-              aria-describedby={favoriteDisabled ? "radar-favorite-disabled" : undefined}
-              className="h-4 w-4 accent-red-500"
+              aria-describedby={favoriteDisabled ? favoriteHintId : undefined}
+              className="h-4 w-4 accent-[var(--foreground)]"
             />
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: SERIES.favorite.color }} />
-            <span className="text-sm text-gray-300">{t("radar.series.favorite")}</span>
+            <span className="radar-key radar-key--favorite" aria-hidden />
+            <span className="text-sm text-[var(--muted-strong)]">{t("radar.series.favorite")}</span>
           </label>
           {favoriteDisabled && (
-            <div tabIndex={0} className="absolute inset-0 cursor-not-allowed outline-none" aria-describedby="radar-favorite-disabled" />
-          )}
-          {favoriteDisabled && (
-            <span
-              id="radar-favorite-disabled"
-              role="tooltip"
-              className="pointer-events-none absolute bottom-full right-0 z-20 mb-1 whitespace-nowrap rounded border border-[var(--card-border)] bg-[var(--background)] px-2 py-1 text-xs text-gray-300 opacity-0 transition-opacity motion-reduce:transition-none group-hover:opacity-100 group-focus-within:opacity-100"
-            >
+            <span id={favoriteHintId} role="tooltip" className="disabled-control-tooltip">
               {favoriteDisabledReason}
             </span>
           )}
@@ -873,13 +874,13 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
       </div>
 
       {showFavorite && !favoriteDisabled && (
-        <div className="mt-3 border-t border-[var(--card-border)] pt-4">
-          <label className="flex flex-col gap-2 text-sm text-gray-400 sm:flex-row sm:items-center">
+        <div className="border-t border-[var(--card-border)] pt-4">
+          <label className="flex flex-col gap-2 text-sm text-[var(--muted)]">
             <span>{t("radar.favorite.select")}</span>
             {demo ? (
               <select
                 defaultValue="demo"
-                className="min-h-11 rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 text-gray-200"
+                className="min-h-11 rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 text-[var(--foreground)]"
               >
                 <option value="demo">{selectedFavoriteName}</option>
               </select>
@@ -887,7 +888,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
               <select
                 value={effectiveFavoriteAid ?? ""}
                 onChange={(event) => setSelectedAid(Number(event.target.value))}
-                className="min-h-11 rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 text-gray-200 focus:border-[var(--accent)] focus:outline-none"
+                className="min-h-11 rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
               >
                 {eligibleFavorites.map((favorite) => (
                   <option key={favorite.aid} value={favorite.aid}>
@@ -899,7 +900,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           </label>
           <div className="mt-2 min-h-5 text-xs" aria-live="polite">
             {favoriteLoading ? (
-              <span className="text-gray-500">{t("radar.favorite.loading")}</span>
+              <span className="text-[var(--muted)]">{t("radar.favorite.loading")}</span>
             ) : favoriteError ? (
               <span className="text-[var(--danger)]">{favoriteError}</span>
             ) : favoriteStats && !favoriteStatsKnown ? (
@@ -908,6 +909,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           </div>
         </div>
       )}
+      </aside>
+      </div>
 
       <div className="absolute left-0 top-0 h-px w-px overflow-hidden [clip-path:inset(50%)]">
         <table>

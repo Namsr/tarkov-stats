@@ -1,4 +1,4 @@
-import type { IntervalStatus, SeasonalCounters } from "@/types/seasonal";
+import type { IntervalStatus, ProgressionMode, SeasonalCounters } from "@/types/seasonal";
 import {
   DAY_MS,
   buildSequentialIntervals,
@@ -27,7 +27,7 @@ export type ProgressionRiskReason =
  * non-banned profiles. `localDate` is the Moscow date persisted with the interval.
  */
 export interface ProgressionDetailIntervalRow {
-  mode: "seasonal";
+  mode: ProgressionMode;
   cycleId: string;
   aid: number;
   localDate: string;
@@ -78,6 +78,7 @@ export interface SeasonalProgressionDetails {
 }
 
 export interface BuildSeasonalProgressionDetailsInput {
+  mode?: ProgressionMode;
   cycleId: string;
   aid: number;
   /** Must be calculated by trusted server code; it is never accepted from a client request. */
@@ -200,7 +201,7 @@ export function buildSeasonalProgressionDetails(
     throw new TypeError("trustedStaticScore must be finite");
   }
   const eligible = input.intervals
-    .filter((row) => row.mode === "seasonal" && row.cycleId === input.cycleId && row.status === "valid")
+    .filter((row) => row.mode === (input.mode ?? "seasonal") && row.cycleId === input.cycleId && row.status === "valid")
     .map((row) => ({ row, metrics: metricsFor(row) }))
     .filter((entry): entry is { row: ProgressionDetailIntervalRow; metrics: IntervalMetrics } => entry.metrics !== null);
 

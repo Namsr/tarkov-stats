@@ -58,7 +58,7 @@ export default function RefreshButton({
   const statusKey = status === "idle" ? null : `player.refreshStatus.${status}`;
 
   return (
-    <div className="flex max-w-64 flex-col items-start gap-1.5">
+    <div className="profile-action">
       <a
         href={tarkovDevUrl(aid, mode)}
         target="_blank"
@@ -69,12 +69,9 @@ export default function RefreshButton({
           awaitingReturn.current = true;
           setStatus("waiting");
         }}
-        className={`${prominent ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} flex gap-1.5 !text-sm !normal-case !tracking-normal ${className}`}
+        className={`${prominent ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} profile-action__button !text-sm !normal-case !tracking-normal ${className}`}
       >
-        <span aria-hidden>⟳</span>
-        <span className={missing ? "" : "hidden sm:inline"}>
-          {t(missing ? "player.refreshCache" : "player.refresh")}
-        </span>
+        {t(missing ? "player.refreshCache" : "player.refresh")}
       </a>
       {onCheck && statusKey && (
         <p
@@ -89,7 +86,7 @@ export default function RefreshButton({
           type="button"
           onClick={() => void check()}
           disabled={status === "checking"}
-          className="text-xs text-[var(--accent)] underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-60"
+          className="min-h-11 text-xs text-[var(--accent)] underline-offset-2 hover:underline disabled:cursor-wait disabled:opacity-60"
         >
           {t("player.refreshCheckAgain")}
         </button>

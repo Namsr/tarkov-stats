@@ -39,8 +39,9 @@ export async function getSeasonalAverageQuery(): Promise<
         if (!cycle) return null;
         const [population, distributionResult, ...dailyResults] = await Promise.all([
           d1.prepare(SEASONAL_POPULATION_SQL).bind(...seasonalPopulationArgs(cycleId, now)).first() as Promise<SeasonalPopulationRow | null>,
-          d1.prepare(LIFETIME_BAND_DISTRIBUTION_SQL).bind(cycleId).all(),
-          ...KINDS.map((kind) => d1.prepare(progressionDailySql(kind)).bind(cycleId, "hours", cycleId).all()),
+          d1.prepare(LIFETIME_BAND_DISTRIBUTION_SQL).bind("seasonal", cycleId).all(),
+          ...KINDS.map((kind) => d1.prepare(progressionDailySql(kind))
+            .bind("seasonal", cycleId, "seasonal", cycleId, -1).all()),
         ]);
         const distribution = lifetimeBandDistribution(
           d1Rows(distributionResult) as unknown as LifetimeBandCountRow[]
@@ -80,12 +81,13 @@ export async function getSeasonalAverageQuery(): Promise<
       const population = database.prepare(SEASONAL_POPULATION_SQL)
         .get(...seasonalPopulationArgs(cycleId, now)) as SeasonalPopulationRow | undefined;
       const distribution = lifetimeBandDistribution(
-        database.prepare(LIFETIME_BAND_DISTRIBUTION_SQL).all(cycleId) as LifetimeBandCountRow[]
+        database.prepare(LIFETIME_BAND_DISTRIBUTION_SQL).all("seasonal", cycleId) as LifetimeBandCountRow[]
       );
       const series = Object.fromEntries(KINDS.map((kind) => [
         kind,
         buildSeasonalAverageSeries(
-          database.prepare(progressionDailySql(kind)).all(cycleId, "hours", cycleId) as DailyRow[],
+          database.prepare(progressionDailySql(kind))
+            .all("seasonal", cycleId, "seasonal", cycleId, -1) as DailyRow[],
           Number(cycle.starts_at),
           kind,
           distribution,

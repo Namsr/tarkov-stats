@@ -32,7 +32,7 @@ export default function AuthButton() {
   }
 
   if (loading) {
-    return <div className="h-10 w-24 skeleton rounded-full" aria-hidden />;
+    return <div className="h-11 w-24 skeleton rounded-full" aria-hidden />;
   }
 
   if (!user) {
@@ -57,7 +57,7 @@ export default function AuthButton() {
         href={onProfile ? "/" : "/profile"}
         title={t("nav.profile")}
         aria-current={onProfile ? "page" : undefined}
-        className="flex items-center gap-2 hover:opacity-80 transition-opacity min-w-0"
+        className="flex min-h-11 min-w-0 items-center gap-2 transition-opacity hover:opacity-80"
       >
         {user.picture ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -91,7 +91,7 @@ export default function AuthButton() {
       <button
         onClick={logout}
         disabled={loggingOut}
-        className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition-colors disabled:opacity-50"
+        className="min-h-11 text-xs text-[var(--muted)] transition-colors hover:text-[var(--danger)] disabled:opacity-50"
       >
         {loggingOut ? "..." : t("auth.logout")}
       </button>

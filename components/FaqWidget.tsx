@@ -1,20 +1,27 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 
 const LINK = "text-[var(--accent)] hover:underline";
+type DialogState = "closed" | "open" | "closing";
 
 /** Global FAQ control with a safe, non-overlapping dialog on every route. */
 export default function FaqWidget() {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [dialogState, setDialogState] = useState<DialogState>("closed");
   const [openQ, setOpenQ] = useState<number | null>(null);
+  const open = dialogState === "open";
+
+  function closeFaq() {
+    setDialogState((state) => (state === "open" ? "closing" : state));
+  }
 
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") setDialogState("closing");
     }
     document.addEventListener("keydown", onKey);
     return () => {
@@ -55,11 +62,11 @@ export default function FaqWidget() {
       q: t("faq.q5"),
       a: (
         <>
-          {t("faq.a5.before")}{" "}
-          <a className={LINK} href="https://github.com/Namsr/tarkov-stats" target="_blank" rel="noopener noreferrer">
-            GitHub
-          </a>
-          {t("faq.a5.after")}
+          {t("faq.a5.short")}{" "}
+          <Link className={LINK} href="/about" onClick={closeFaq}>
+            {t("nav.about")}
+          </Link>
+          .
         </>
       ),
     },
@@ -69,10 +76,11 @@ export default function FaqWidget() {
       q: t("faq.q8"),
       a: (
         <>
-          {t("faq.a8.text")}{" "}
-          <a className={LINK} href="https://new.donatepay.ru/@namsr" target="_blank" rel="noopener noreferrer">
-            DonatePay
-          </a>
+          {t("faq.a8.short")}{" "}
+          <Link className={LINK} href="/support" onClick={closeFaq}>
+            {t("nav.support")}
+          </Link>
+          .
         </>
       ),
     },
@@ -80,18 +88,10 @@ export default function FaqWidget() {
       q: t("faq.q9"),
       a: (
         <>
-          {t("faq.a9.text")}{" "}
-          <a className={LINK} href="mailto:namsrr@protonmail.com">
-            namsrr@protonmail.com
-          </a>{", "}
-          {t("faq.a9.discord")}{" "}
-          <a className={LINK} href="https://discord.gg/aKqG9JgC2X" target="_blank" rel="noopener noreferrer">
-            Discord
-          </a>{", "}
-          {t("faq.a9.stream")}{" "}
-          <a className={LINK} href="https://www.twitch.tv/namsr__" target="_blank" rel="noopener noreferrer">
-            twitch.tv/namsr__
-          </a>
+          {t("faq.a9.short")}{" "}
+          <Link className={LINK} href="/community" onClick={closeFaq}>
+            {t("nav.community")}
+          </Link>
           .
         </>
       ),
@@ -100,8 +100,16 @@ export default function FaqWidget() {
 
   return (
     <>
-      {open && (
-        <div className="faq-backdrop" onMouseDown={() => setOpen(false)}>
+      {dialogState !== "closed" && (
+        <div
+          className={`faq-backdrop${dialogState === "closing" ? " is-closing" : ""}`}
+          onMouseDown={closeFaq}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget && dialogState === "closing") {
+              setDialogState("closed");
+            }
+          }}
+        >
           <div
             role="dialog"
             aria-modal="true"
@@ -114,7 +122,7 @@ export default function FaqWidget() {
               {t("faq.title")}
               </h2>
               <button
-                onClick={() => setOpen(false)}
+                onClick={closeFaq}
                 aria-label={t("common.close")}
                 className="grid h-10 w-10 place-items-center rounded-full border border-[var(--card-border)] text-xl text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--foreground)]"
               >
@@ -129,14 +137,24 @@ export default function FaqWidget() {
                     <button
                       onClick={() => setOpenQ(on ? null : i)}
                       aria-expanded={on}
+                      aria-controls={`faq-answer-${i}`}
                       className="w-full flex items-start gap-3 text-left px-5 py-4 text-sm text-[var(--muted-strong)] hover:text-[var(--foreground)] transition-colors"
                     >
                       <span className={`text-[var(--accent)] mt-0.5 transition-transform ${on ? "rotate-90" : ""}`}>▸</span>
                       <span className="flex-1">{item.q}</span>
                     </button>
-                    {on && (
-                      <div className="px-5 pb-4 pl-10 text-sm text-[var(--muted)] leading-relaxed">{item.a}</div>
-                    )}
+                    <div
+                      id={`faq-answer-${i}`}
+                      aria-hidden={!on}
+                      inert={!on}
+                      className={`faq-answer${on ? " is-open" : ""}`}
+                    >
+                      <div className="faq-answer__clip">
+                        <div className="faq-answer__content px-5 pb-4 pl-10 text-sm text-[var(--muted)] leading-relaxed">
+                          {item.a}
+                        </div>
+                      </div>
+                    </div>
                   </li>
                 );
               })}
@@ -146,7 +164,7 @@ export default function FaqWidget() {
       )}
 
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setDialogState((state) => (state === "closed" ? "open" : "closing"))}
         aria-label={t("faq.ariaOpen")}
         aria-expanded={open}
         className="faq-trigger"

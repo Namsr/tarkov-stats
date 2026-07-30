@@ -104,6 +104,18 @@ export function normalizeUpdatedAt(value) {
   return number < 1_000_000_000_000 ? number * 1000 : number;
 }
 
+export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, watermark, overlapMs) {
+  if (savedUpdatedAt !== undefined) {
+    return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
+  }
+  if (watermark === null) return null;
+  return feedUpdatedAt >= Math.max(0, watermark - overlapMs) ? "new" : null;
+}
+
+export function feedCacheSlot(now = Date.now()) {
+  return Math.floor(now / (15 * 60_000));
+}
+
 export function summarizeCoverage(totalValue, coveredValue) {
   const coverageTotal = Math.max(0, Number(totalValue) || 0);
   const covered = Math.min(coverageTotal, Math.max(0, Number(coveredValue) || 0));

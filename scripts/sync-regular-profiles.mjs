@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import {
+  classifyFeedEntry,
   createTimestampObjectParser,
+  feedCacheSlot,
   normalizeUpdatedAt,
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
@@ -21,6 +23,7 @@ const config = {
   maxRetries: envInteger("REGULAR_PROFILE_SYNC_MAX_RETRIES", 3, 0, 10),
   requestTimeoutMs: envInteger("REGULAR_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
   leaseMs: envInteger("REGULAR_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
+  overlapMs: envInteger("REGULAR_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
 };
 
 const runId = randomUUID();
@@ -47,6 +50,7 @@ main().catch((error) => {
 });
 
 async function main() {
+  const startedAt = Date.now();
   validateConfig();
   initSchema();
   acquireLease();
@@ -57,6 +61,7 @@ async function main() {
     db: config.dbPath,
     updatedUrl: config.updatedUrl,
     requestsPerSecond: config.requestsPerSecond,
+    overlapMs: config.overlapMs,
   });
 
   const feed = await loadFeed();
@@ -72,19 +77,19 @@ async function main() {
     WHERE e.aid IS NULL
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.covered);
-  const trackedNonExcludedInFeed = feed.trackedInFeed - feed.excluded;
+  const trackedNonExcludedInFeed = feed.trackedInFeed - feed.trackedExcluded;
+  const backlog = Number(statuses.pending ?? 0) + Number(statuses.error ?? 0);
   const summary = {
     ...feed,
     ...processed,
+    backlog,
     missingFromFeed: Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
     ...coverageSummary,
     statuses,
     stopped: stopping,
+    durationMs: Date.now() - startedAt,
   };
-  db.prepare(
-    "INSERT INTO regular_profile_sync_meta (key, value) VALUES ('last_summary', ?) " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(JSON.stringify({ at: Date.now(), ...summary }));
+  saveRunMeta(summary);
   log("SUMMARY", summary);
 }
 
@@ -153,26 +158,41 @@ function heartbeat() {
 async function loadFeed() {
   const tracked = new Map();
   const excluded = new Set();
-  for (const row of db.prepare(`
-    SELECT p.aid, p.profile_updated_at, e.aid AS excluded_aid
-    FROM players p LEFT JOIN excluded_players e ON e.aid = p.aid
-  `).all()) {
+  for (const row of db.prepare("SELECT aid, profile_updated_at FROM players").all()) {
     const aid = Number(row.aid);
     tracked.set(aid, Number(row.profile_updated_at) || 0);
-    if (row.excluded_aid != null) excluded.add(aid);
   }
+  for (const row of db.prepare("SELECT aid FROM excluded_players").all()) excluded.add(Number(row.aid));
+
+  const watermarkRow = db.prepare(
+    "SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_watermark'"
+  ).get();
+  const savedWatermark = normalizeUpdatedAt(watermarkRow?.value);
+  const bootstrapping = savedWatermark === null;
 
   const counters = {
-    regularPlayers: tracked.size - excluded.size,
+    regularPlayers: [...tracked.keys()].reduce((total, aid) => total + (excluded.has(aid) ? 0 : 1), 0),
     sourceEntries: 0,
     invalidEntries: 0,
     trackedInFeed: 0,
+    unknownInFeed: 0,
     excluded: 0,
+    trackedExcluded: 0,
     upToDate: 0,
+    oldUnknownIgnored: 0,
+    bootstrapUnknownIgnored: 0,
     eligible: 0,
+    newProfiles: 0,
+    updatedProfiles: 0,
     queuedVersions: 0,
+    queuedNewProfiles: 0,
+    queuedUpdatedProfiles: 0,
+    bootstrapping,
+    previousWatermark: savedWatermark,
+    maxFeedUpdatedAt: 0,
+    polledAt: 0,
   };
-  const pendingVersions = [];
+  const pendingVersions = new Map();
   const upsert = db.prepare(`
     INSERT INTO regular_profile_sync_queue
       (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
@@ -200,16 +220,36 @@ async function loadFeed() {
       counters.invalidEntries += 1;
       return;
     }
+    counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, feedUpdatedAt);
     const savedUpdatedAt = tracked.get(aid);
-    if (savedUpdatedAt === undefined) return;
-    counters.trackedInFeed += 1;
+    if (savedUpdatedAt === undefined) counters.unknownInFeed += 1;
+    else counters.trackedInFeed += 1;
     if (excluded.has(aid)) {
       counters.excluded += 1;
-    } else if (feedUpdatedAt <= savedUpdatedAt) {
+      if (savedUpdatedAt !== undefined) counters.trackedExcluded += 1;
+      return;
+    }
+    const kind = classifyFeedEntry(
+      savedUpdatedAt,
+      feedUpdatedAt,
+      savedWatermark,
+      config.overlapMs
+    );
+    if (kind === null && savedUpdatedAt !== undefined) {
       counters.upToDate += 1;
-    } else {
-      counters.eligible += 1;
-      pendingVersions.push([aid, feedUpdatedAt]);
+      return;
+    }
+    if (kind === null) {
+      if (bootstrapping) counters.bootstrapUnknownIgnored += 1;
+      else counters.oldUnknownIgnored += 1;
+      return;
+    }
+    counters.eligible += 1;
+    if (kind === "new") counters.newProfiles += 1;
+    else counters.updatedProfiles += 1;
+    const pending = pendingVersions.get(aid);
+    if (!pending || feedUpdatedAt > pending.feedUpdatedAt) {
+      pendingVersions.set(aid, { feedUpdatedAt, kind });
     }
   });
 
@@ -219,14 +259,29 @@ async function loadFeed() {
     parser.append(decoder.decode(value, { stream: true }));
   }
   parser.finish(decoder.decode());
+  counters.polledAt = Date.now();
 
   db.exec("BEGIN IMMEDIATE");
   try {
     const queuedAt = Date.now();
-    for (const [aid, feedUpdatedAt] of pendingVersions) {
+    for (const [aid, pending] of pendingVersions) {
+      const { feedUpdatedAt, kind } = pending;
       const result = upsert.run(aid, feedUpdatedAt, queuedAt);
       counters.queuedVersions += Number(result.changes);
+      if (Number(result.changes) === 1) {
+        if (kind === "new") counters.queuedNewProfiles += 1;
+        else counters.queuedUpdatedProfiles += 1;
+      }
     }
+    if (counters.maxFeedUpdatedAt > 0) {
+      const watermark = Math.max(savedWatermark ?? 0, counters.maxFeedUpdatedAt);
+      setMeta("feed_watermark", String(watermark));
+      counters.watermark = watermark;
+    } else {
+      counters.watermark = savedWatermark;
+    }
+    setMeta("last_poll_at", String(counters.polledAt));
+    setMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -235,8 +290,7 @@ async function loadFeed() {
 
   db.prepare(`
     DELETE FROM regular_profile_sync_queue
-    WHERE NOT EXISTS (SELECT 1 FROM players p WHERE p.aid = regular_profile_sync_queue.aid)
-       OR EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_profile_sync_queue.aid)
+    WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_profile_sync_queue.aid)
   `).run();
   db.prepare(`
     UPDATE regular_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL,
@@ -254,12 +308,15 @@ async function loadFeed() {
 async function processQueue() {
   const counters = { attempted: 0, completed: 0, notFound: 0, errors: 0 };
   const next = db.prepare(`
-    SELECT q.aid, q.feed_updated_at
-    FROM regular_profile_sync_queue q
-    JOIN players p ON p.aid = q.aid
-    LEFT JOIN excluded_players e ON e.aid = q.aid
-    WHERE e.aid IS NULL AND q.status IN ('pending', 'error')
-      AND q.feed_updated_at > p.profile_updated_at
+    SELECT q.aid, q.feed_updated_at FROM regular_profile_sync_queue q
+    WHERE q.status IN ('pending', 'error')
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
+      AND (
+        NOT EXISTS (SELECT 1 FROM players p WHERE p.aid = q.aid)
+        OR q.feed_updated_at > COALESCE(
+          (SELECT p.profile_updated_at FROM players p WHERE p.aid = q.aid), 0
+        )
+      )
       AND COALESCE(q.last_run_id, '') <> ?
     ORDER BY q.aid LIMIT 1
   `);
@@ -379,9 +436,37 @@ async function requestWithRetry(url, init) {
 
 function feedUrlForRun() {
   const url = new URL(config.updatedUrl);
-  // Stable for the whole UTC day: bypass a stale CDN object without defeating retry caches.
-  url.searchParams.set("v", new Date().toISOString().slice(0, 10));
+  // Stable within each poll window: retries share a CDN object, the next run does not.
+  url.searchParams.set("v", String(feedCacheSlot()));
   return url.href;
+}
+
+function setMeta(key, value) {
+  db.prepare(
+    "INSERT INTO regular_profile_sync_meta (key, value) VALUES (?, ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(key, value);
+}
+
+function saveRunMeta(summary) {
+  const values = {
+    last_poll_at: summary.polledAt,
+    last_feed_max_updated_at: summary.maxFeedUpdatedAt,
+    last_backlog: summary.backlog,
+    last_new_profiles: summary.queuedNewProfiles,
+    last_updated_profiles: summary.queuedUpdatedProfiles,
+    last_errors: summary.errors,
+    last_duration_ms: summary.durationMs,
+    last_summary: JSON.stringify({ at: Date.now(), ...summary }),
+  };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const [key, value] of Object.entries(values)) setMeta(key, String(value));
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 async function rateLimit() {

@@ -1,5 +1,5 @@
 [Unit]
-Description=TarkovStats tracked regular profile sync
+Description=TarkovStats regular profile feed sync
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
