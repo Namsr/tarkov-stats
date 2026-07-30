@@ -23,7 +23,7 @@ services:
     #   /data (volume) — players.db; /tmp и /app/.next/cache (ISR) — tmpfs.
     tmpfs:
       - /tmp
-      - /app/.next/cache
+      - /app/.next/cache:uid=1001,gid=1001,mode=0700
     mem_limit: 1024m
     pids_limit: 256
     volumes:
