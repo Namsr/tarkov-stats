@@ -70,6 +70,7 @@ async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCac
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   let memoStatus: "hit" | "miss" | undefined;
   let baselineMs: number | undefined;
   let storeOpenMs: number | undefined;

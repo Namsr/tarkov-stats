@@ -13,6 +13,7 @@ function num(v: string | null): number | null {
 // z-scores behind the cheating-risk score. Reads our DB only (no upstream fetch).
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
     timing.finish({ operation: "baseline", outcome: "invalid", status: 400 });

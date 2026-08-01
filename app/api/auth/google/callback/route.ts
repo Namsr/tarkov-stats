@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import {
   exchangeCode,
   fetchGoogleUser,
@@ -10,6 +10,7 @@ import {
   sessionCookieOptions,
   SESSION_COOKIE,
 } from "@/lib/auth/session";
+import { recordAuthSignIn } from "@/lib/admin/request-events";
 
 const STATE_COOKIE = "oauth_state";
 
@@ -40,6 +41,7 @@ export async function GET(request: NextRequest) {
     const accessToken = await exchangeCode(code, callbackUrl(base));
     const user = await fetchGoogleUser(accessToken);
     const token = await encryptSession(user);
+    after(() => recordAuthSignIn(user.sub));
 
     const res = NextResponse.redirect(home);
     res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());

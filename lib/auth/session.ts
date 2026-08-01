@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
+import { authSecretKey } from "@/lib/auth/secret";
 
 /** Minimal user identity stored inside the signed session cookie. */
 export interface SessionUser {
@@ -33,13 +34,7 @@ export function sessionCookieOptions(maxAge: number = SESSION_MAX_AGE): CookieOp
 }
 
 function getKey(): Uint8Array {
-  const secret = process.env.AUTH_SECRET;
-  if (!secret) {
-    throw new Error(
-      "AUTH_SECRET is not set. Generate one with: openssl rand -base64 32"
-    );
-  }
-  return new TextEncoder().encode(secret);
+  return authSecretKey(process.env.AUTH_SECRET, process.env.NODE_ENV);
 }
 
 /** Sign the user identity into a compact JWT used as the session value. */

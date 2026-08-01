@@ -191,6 +191,7 @@ test("D1 operator resumes, leases, and records outcomes in one cycle", async () 
     );`);
   const d1 = new FakeD1(sqlite);
   const queue = createD1SeasonalStore(d1);
+  await queue.upsertProfile(profile(7, 9, 1, 1), 9);
   await queue.enqueueTask({ mode: "seasonal", cycleId: "s1", aid: 7, kind: "profile", priority: 1, now: 10 });
   const operator = createD1SeasonalOperatorStore(d1);
   const run = await operator.beginOrResumeRun("s1", "runner", 10);
@@ -212,6 +213,13 @@ test("D1 operator resumes, leases, and records outcomes in one cycle", async () 
     .map((row: Record<string, unknown>) => ({ ...row })), [
     { attempt: 1, outcome: "completed" }, { attempt: 2, outcome: "skipped" },
   ]);
+
+  await queue.enqueueTask({ mode: "seasonal", cycleId: "s1", aid: 7, kind: "ban_check", priority: 1, now: 15 });
+  const banClaim = await operator.claimNext(run.id, "runner", 15) as { task: { id: number } };
+  await operator.confirmBanned({ runId: run.id, taskId: banClaim.task.id, owner: "runner",
+    aid: 7, cycleId: "s1", now: 16 });
+  assert.deepEqual({ ...sqlite.prepare(`SELECT source, confirmed_at FROM upstream_ban_confirmations
+    WHERE aid = 7`).get() }, { source: "seasonal_upstream", confirmed_at: 16 });
 });
 
 test("D1 scanner lifecycle builds panel eligibility and completes linked-PvP follow-up", async () => {

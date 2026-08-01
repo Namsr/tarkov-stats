@@ -39,6 +39,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/regular-profile-sync-core.mjs ./scripts/regular-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs ./scripts/sync-regular-profiles.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/lib/brackets.ts ./lib/brackets.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/cheater-score.ts ./lib/cheater-score.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/admin/moderation-db.ts ./lib/admin/moderation-db.ts
 
 # Каталог для локальной БД игроков (node:sqlite). Делаем его владельцем nextjs,
 # чтобы примонтированный сюда docker-volume унаследовал права на запись.
@@ -52,6 +56,7 @@ ENV HOSTNAME="0.0.0.0"
 ENV SQLITE_PATH="/data/players.db"
 ENV BANS_SQLITE_PATH="/data/bans.db"
 ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
+ENV ADMIN_ANALYTICS_SQLITE_PATH="/data/admin-analytics.db"
 
 # --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
 CMD ["node", "--experimental-sqlite", "server.js"]

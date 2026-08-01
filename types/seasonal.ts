@@ -149,7 +149,7 @@ export interface HelperSessionRecord {
 
 export interface CaptureSnapshotResult {
   inserted: boolean;
-  status: "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale";
+  status: "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
   snapshot: ProgressionSnapshotRecord | null;
   interval: ProgressionIntervalRecord | null;
 }

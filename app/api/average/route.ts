@@ -65,6 +65,7 @@ function binCount(value: string | null): number {
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (!isGameMode(rawMode) || rawMode === "seasonal") {

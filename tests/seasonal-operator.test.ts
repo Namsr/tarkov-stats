@@ -149,6 +149,10 @@ test("ban confirmation is bound to the active ban-check lease", async () => {
   const { task } = operator.claimNext(run.id, "runner-a", 1_000);
   assert.throws(() => operator.confirmBanned({ runId: run.id, taskId: task.id, owner: "other", aid: 62, cycleId: "cycle-a" }));
   operator.confirmBanned({ runId: run.id, taskId: task.id, owner: "runner-a", aid: 62, cycleId: "cycle-a", now: 2_000 });
+  assert.deepEqual({ ...db.prepare(`SELECT aid, mode, cycle_id, source, confirmed_at
+    FROM upstream_ban_confirmations WHERE aid = 62`).get() }, {
+    aid: 62, mode: "seasonal", cycle_id: "cycle-a", source: "seasonal_upstream", confirmed_at: 2_000,
+  });
   assert.equal(db.prepare("SELECT confirmed_banned AS banned FROM player_profiles WHERE aid = 62").get().banned, 1);
 });
 

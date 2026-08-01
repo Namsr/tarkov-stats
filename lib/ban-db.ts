@@ -30,12 +30,15 @@ export interface BannedAccount {
 export interface BanStore {
   isBanned(aid: number): Promise<boolean>;
   get(aid: number): Promise<BannedAccount | null>;
+  sources(aid: number): Promise<string[]>;
   /**
    * This is intentionally an explicit operation: callers must decide that the
    * upstream result is sufficiently conclusive before removing the player.
    */
   confirmBanned(input: PlayerSnapshotInput, meta?: BanConfirmationMeta): Promise<void>;
 }
+
+export const UNKNOWN_BAN_SOURCE = "legacy_unknown";
 
 export function makePlayerSnapshot(
   aid: number,
@@ -159,7 +162,6 @@ async function getSqliteBanDb(): Promise<any | null> {
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(files.bans);
     db.exec("PRAGMA foreign_keys = ON");
-    db.exec(BAN_SCHEMA);
     sqliteDb = db;
     return db;
   } catch (error) {
@@ -184,7 +186,8 @@ async function cloudflareBindings(): Promise<{ bans: any; players: any } | null>
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sqliteStore(db: any): BanStore {
+export function createSqliteBanStore(db: any): BanStore {
+  db.exec(BAN_SCHEMA);
   return {
     async isBanned(aid) {
       return Boolean(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = ?").get(aid));
@@ -192,11 +195,17 @@ function sqliteStore(db: any): BanStore {
     async get(aid) {
       return toAccount(db.prepare("SELECT * FROM banned_accounts WHERE aid = ?").get(aid));
     },
+    async sources(aid) {
+      return (db.prepare(`SELECT source FROM banned_accounts WHERE aid = ?
+        UNION SELECT source FROM ban_confirmations WHERE aid = ?`)
+        .all(aid, aid) as { source: string | null }[])
+        .map((row) => row.source == null ? UNKNOWN_BAN_SOURCE : String(row.source));
+    },
     async confirmBanned(input, meta = {}) {
       const files = paths();
       const fs = await import("node:fs");
       const confirmedAt = meta.confirmedAt ?? Date.now();
-      const source = meta.source ?? null;
+      const source = meta.source ?? UNKNOWN_BAN_SOURCE;
       const rawStatus = meta.rawStatus ?? null;
       const reason = meta.reason ?? null;
       const attached = db.prepare("PRAGMA database_list").all() as { name: string }[];
@@ -300,9 +309,15 @@ function d1Store(bans: any, players: any): BanStore {
     async get(aid) {
       return toAccount(await bans.prepare("SELECT * FROM banned_accounts WHERE aid = ?").bind(aid).first());
     },
+    async sources(aid) {
+      const result = await bans.prepare(`SELECT source FROM banned_accounts WHERE aid = ?
+        UNION SELECT source FROM ban_confirmations WHERE aid = ?`).bind(aid, aid).all();
+      return ((result.results ?? []) as { source: string | null }[])
+        .map((row) => row.source == null ? UNKNOWN_BAN_SOURCE : String(row.source));
+    },
     async confirmBanned(input, meta = {}) {
       const confirmedAt = meta.confirmedAt ?? Date.now();
-      const source = meta.source ?? null;
+      const source = meta.source ?? UNKNOWN_BAN_SOURCE;
       const rawStatus = meta.rawStatus ?? null;
       const reason = meta.reason ?? null;
       await bans.batch([
@@ -342,13 +357,18 @@ export async function getBanStore(): Promise<BanStore | null> {
     }
   }
   const db = await getSqliteBanDb();
-  return db ? sqliteStore(db) : null;
+  return db ? createSqliteBanStore(db) : null;
 }
 
 /** False when no ban backend is configured, allowing D1 deployments to degrade safely. */
 export async function isAidBanned(aid: number): Promise<boolean> {
   const store = await getBanStore();
   return store ? store.isBanned(aid) : false;
+}
+
+export async function getBanConfirmationSources(aid: number): Promise<string[]> {
+  const store = await getBanStore();
+  return store ? store.sources(aid) : [];
 }
 
 export async function confirmBanned(

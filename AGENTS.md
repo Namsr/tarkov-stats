@@ -21,3 +21,7 @@ All user-visible strings (text, placeholders, button labels, titles/aria-labels,
 3. Shared/cross-file labels already exist — reuse them: `metric.*` (stat names), `common.*`, `nav.*`, `range.all`, `unit.h`. Don't duplicate.
 
 `t()` falls back `ru → en → key`, so a missing translation degrades to English, never crashes. `npm run i18n:check` (also runs on `prebuild`) fails the build if a used `t()` key is undefined or the en/ru key sets diverge — so a one-language feature can't reach prod.
+
+# Tarkov upstream APIs are JSON-only
+
+Never add or call a Tarkov GraphQL endpoint. All server-side Tarkov requests must use the existing `fetchTarkovJson()` helper from `lib/tarkov-api.ts`, which attaches the project's identifying `User-Agent`. Keep `tests/tarkov-json-api.test.mjs` passing so new call sites cannot bypass this rule.

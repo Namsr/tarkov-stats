@@ -26,6 +26,15 @@ export default function ProfilePage() {
   const [statsByFavorite, setStatsByFavorite] = useState<Map<string, ParsedPlayerStats | null>>(new Map());
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((response) => response.json() as Promise<{ isAdmin?: boolean }>)
+      .then((data) => setIsAdmin(data.isAdmin === true))
+      .catch(() => setIsAdmin(false));
+  }, [enabled]);
 
   // force=true (страница открыта через перезагрузку) обходит 5-мин кэш upstream,
   // чтобы подтянуть то, что игрок только что обновил на tarkov.dev.
@@ -96,7 +105,8 @@ export default function ProfilePage() {
 
   return (
     <main className="page-frame max-w-5xl space-y-10">
-      <div>
+      <div className="flex flex-wrap items-end justify-between gap-5">
+        <div>
         <Link
           href="/"
           className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-7 inline-block"
@@ -105,6 +115,8 @@ export default function ProfilePage() {
         </Link>
         <p className="page-kicker">{t("nav.profile")}</p>
         <h1 className="page-title">{t("profile.title")}</h1>
+        </div>
+        {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}

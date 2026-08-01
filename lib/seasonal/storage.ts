@@ -29,6 +29,11 @@ const COUNTER_COLUMNS = [
 ] as const;
 
 export const SEASONAL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS excluded_players (
+  aid INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS season_cycles (
   mode TEXT NOT NULL CHECK (mode = 'seasonal'),
   cycle_id TEXT NOT NULL,
@@ -64,6 +69,26 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_cycle_access
   ON player_profiles(mode, cycle_id, last_access_at);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
+CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
+  aid INTEGER NOT NULL,
+  mode TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  confirmed_at INTEGER NOT NULL,
+  PRIMARY KEY (aid, mode, cycle_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_upstream_ban_confirmations_aid
+  ON upstream_ban_confirmations(aid);
+INSERT OR IGNORE INTO upstream_ban_confirmations
+  (aid, mode, cycle_id, source, confirmed_at)
+SELECT p.aid, p.mode, p.cycle_id, 'legacy_unknown',
+  MAX(p.profile_updated_at, p.last_seen_at)
+FROM player_profiles p
+WHERE p.confirmed_banned = 1
+  AND NOT EXISTS (
+    SELECT 1 FROM excluded_players e
+    WHERE e.aid = p.aid AND e.reason = 'admin_manual'
+  );
 CREATE TABLE IF NOT EXISTS progression_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mode TEXT NOT NULL DEFAULT 'regular',
@@ -390,8 +415,9 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
       db.prepare(`
         INSERT INTO player_profiles (
           mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
-          ${COUNTER_COLUMNS.join(", ")}, first_seen_at, last_seen_at
-        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")})
+          ${COUNTER_COLUMNS.join(", ")}, first_seen_at, last_seen_at, confirmed_banned
+        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")},
+          EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
         ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
           nickname = excluded.nickname,
           profile_updated_at = MAX(player_profiles.profile_updated_at, excluded.profile_updated_at),
@@ -404,14 +430,21 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           pmc_deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
           pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
           killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
-          last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at)
+          last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
+          confirmed_banned = CASE
+            WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
+            ELSE player_profiles.confirmed_banned END
       `).run(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
-        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt);
+        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt,
+        profile.aid);
       return toProfile(db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(profile.mode, profile.cycleId, profile.aid));
     },
     async captureSnapshot(profile, capturedAt = Date.now()) {
       validateProfile(profile);
       const identity = [profile.mode, profile.cycleId, profile.aid];
+      if (db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").get(profile.aid)) {
+        return { inserted: false, status: "banned", snapshot: null, interval: null } as CaptureSnapshotResult;
+      }
       db.exec("BEGIN IMMEDIATE");
       try {
         const previous = toSnapshot(db.prepare(`SELECT * FROM progression_snapshots WHERE ${identityWhere} ORDER BY profile_updated_at DESC LIMIT 1`).get(...identity));

@@ -3,7 +3,7 @@ import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
 import { materializeRegularProgression } from "@/lib/regular-progression";
 import { LEGACY_IDENTITY } from "@/types/seasonal";
 
-export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale";
+export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
 
 export interface ProgressionDelta {
   elapsedMs: number;
@@ -170,6 +170,12 @@ function sqliteStore(db: any): ProgressionStore {
   return {
     async recordSnapshot(input) {
       validate(input);
+      if (db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").get(input.aid)) {
+        return {
+          inserted: false, status: "banned", previousUpdatedAt: null,
+          currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],
+        };
+      }
       const previous = toSnapshot(db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
       ).get(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, input.aid) as SnapshotRow | undefined);

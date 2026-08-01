@@ -2,6 +2,12 @@
 -- Apply with: wrangler d1 execute <DB_NAME> --remote --file=scripts/seasonal-storage-d1.sql
 -- Favorites are migrated separately by scripts/favorites-d1.sql.
 
+CREATE TABLE IF NOT EXISTS excluded_players (
+  aid INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS season_cycles (
   mode TEXT NOT NULL CHECK (mode = 'seasonal'), cycle_id TEXT NOT NULL,
   starts_at INTEGER NOT NULL, ends_at INTEGER, enabled INTEGER NOT NULL DEFAULT 0,
@@ -23,6 +29,24 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_cycle_access
   ON player_profiles(mode, cycle_id, last_access_at);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
+
+CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
+  aid INTEGER NOT NULL, mode TEXT NOT NULL, cycle_id TEXT NOT NULL,
+  source TEXT NOT NULL, confirmed_at INTEGER NOT NULL,
+  PRIMARY KEY (aid, mode, cycle_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_upstream_ban_confirmations_aid
+  ON upstream_ban_confirmations(aid);
+INSERT OR IGNORE INTO upstream_ban_confirmations
+  (aid, mode, cycle_id, source, confirmed_at)
+SELECT p.aid, p.mode, p.cycle_id, 'legacy_unknown',
+  MAX(p.profile_updated_at, p.last_seen_at)
+FROM player_profiles p
+WHERE p.confirmed_banned = 1
+  AND NOT EXISTS (
+    SELECT 1 FROM excluded_players e
+    WHERE e.aid = p.aid AND e.reason = 'admin_manual'
+  );
 
 CREATE TABLE IF NOT EXISTS progression_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT, mode TEXT NOT NULL DEFAULT 'regular',

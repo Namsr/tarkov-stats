@@ -21,10 +21,17 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
     activeLease,
 
     async confirmBanned(input: { runId: number; taskId: number; owner: string; aid: number; cycleId: string; now?: number }) {
-      const lease = await activeLease(input);
+      const now = input.now ?? Date.now();
+      const lease = await activeLease({ ...input, now });
       if (!lease || lease.kind !== "ban_check" || lease.aid !== input.aid || lease.cycleId !== input.cycleId) throw new Error("active ban-check lease not found");
       const results = await db.batch([
         db.prepare("UPDATE player_profiles SET confirmed_banned = 1 WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?").bind(input.cycleId, input.aid),
+        db.prepare(`INSERT INTO upstream_ban_confirmations
+          (aid, mode, cycle_id, source, confirmed_at)
+          VALUES (?, 'seasonal', ?, 'seasonal_upstream', ?)
+          ON CONFLICT(aid, mode, cycle_id, source) DO UPDATE SET
+            confirmed_at = MAX(upstream_ban_confirmations.confirmed_at, excluded.confirmed_at)`)
+          .bind(input.aid, input.cycleId, now),
         db.prepare("UPDATE scan_members SET active = 0 WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?").bind(input.cycleId, input.aid),
       ]);
       if (d1Changes(results[0]) !== 1) throw new Error("Seasonal profile not found");

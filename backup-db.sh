@@ -11,10 +11,10 @@ VOL=$(docker volume inspect -f '{{.Mountpoint}}' tarkovstats_players_data)
 # Подчистка возможных хвостов от прерванного прогона.
 find "$VOL" -name '*-backup.db' -delete 2>/dev/null || true
 
-docker exec tarkovstats-web-1 node --experimental-sqlite -e 'const fs=require("node:fs");const{DatabaseSync}=require("node:sqlite");for(const n of ["players","bans","progression","community-reports"]){const src=`/data/${n}.db`;if(!fs.existsSync(src))continue;const d=new DatabaseSync(src);d.exec(`VACUUM INTO '"'"'/data/${n}-backup.db'"'"'`);d.close();}'
+docker exec tarkovstats-web-1 node --experimental-sqlite -e 'const fs=require("node:fs");const{DatabaseSync}=require("node:sqlite");for(const n of ["players","bans","progression","community-reports","admin-analytics"]){const src=`/data/${n}.db`;if(!fs.existsSync(src))continue;const d=new DatabaseSync(src);d.exec(`VACUUM INTO '"'"'/data/${n}-backup.db'"'"'`);d.close();}'
 
 BACKED_UP=""
-for NAME in players bans progression community-reports; do
+for NAME in players bans progression community-reports admin-analytics; do
   SNAPSHOT="$VOL/$NAME-backup.db"
   if [ -f "$SNAPSHOT" ]; then
     gzip -c "$SNAPSHOT" > "$DIR/$NAME-$TS.db.gz"
@@ -24,7 +24,7 @@ done
 find "$VOL" -name '*-backup.db' -delete
 
 # Ротация: бэкапы старше 14 дней удаляем (find -delete, без rm).
-for NAME in players bans progression community-reports; do
+for NAME in players bans progression community-reports admin-analytics; do
   find "$DIR" -name "$NAME-*.db.gz" -mtime +14 -delete
 done
 echo "backup done:$BACKED_UP"

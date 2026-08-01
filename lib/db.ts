@@ -183,9 +183,13 @@ function averagePeriodWhere(
   where: string,
   cutoff?: number,
 ): string {
-  if (mode !== "regular" || period === "all") return where;
+  const active = appendCondition(
+    where,
+    "NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)"
+  );
+  if (mode !== "regular" || period === "all") return active;
   const resolvedCutoff = cutoff ?? Math.floor(Date.now() - 90 * 86_400_000);
-  return appendCondition(where, `profile_updated_at >= ${resolvedCutoff}`);
+  return appendCondition(active, `profile_updated_at >= ${resolvedCutoff}`);
 }
 
 function eligibleMetricWhere(
@@ -264,7 +268,8 @@ const ACH_BASELINE_SQL =
   `WITH expanded AS (` +
   `SELECT je.value AS ach_id, p.hours AS hours ` +
   `FROM players AS p, json_each(p.achievements) AS je ` +
-  `WHERE p.achievements IS NOT NULL AND p.achievements != ''` +
+  `WHERE p.achievements IS NOT NULL AND p.achievements != '' ` +
+  `AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = p.aid)` +
   `), ranked AS (` +
   `SELECT ach_id, hours, ` +
   `COUNT(*) OVER (PARTITION BY ach_id) AS owners, ` +
@@ -406,7 +411,10 @@ function baselineSql(where: string): string {
       `AVG(CASE WHEN ${c} > 0 THEN ${c} * ${c} END) AS sq_${c}`
     );
   }).join(", ");
-  return `SELECT COUNT(*) AS n, ${cols} FROM players ${where}`;
+  return `SELECT COUNT(*) AS n, ${cols} FROM players ${appendCondition(
+    where,
+    "NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)"
+  )}`;
 }
 
 function toBaseline(row: Record<string, number> | null | undefined): BaselineResult {
@@ -1007,7 +1015,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         });
       },
       async achievementBaseline() {
-        const totalRow = (await db.prepare("SELECT COUNT(*) AS n FROM players").first()) as { n: number } | null;
+        const totalRow = (await db.prepare(`SELECT COUNT(*) AS n FROM players
+          WHERE NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).first()) as { n: number } | null;
         const { results } = await db.prepare(ACH_BASELINE_SQL).all();
         return {
           total: Number(totalRow?.n ?? 0),
@@ -1308,7 +1317,8 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         });
       },
       async achievementBaseline() {
-        const totalRow = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
+        const totalRow = db.prepare(`SELECT COUNT(*) AS n FROM players
+          WHERE NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).get() as { n: number };
         const rows = db.prepare(ACH_BASELINE_SQL).all() as {
           ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number;
         }[];
@@ -1355,10 +1365,13 @@ function pushUniqueIndexResults(
 
 const INDEX_READY_SQL = "SELECT value FROM player_index_meta WHERE key = 'synced_at'";
 const INDEX_EXACT_SQL =
-  "SELECT aid, nickname AS name FROM player_index WHERE nickname_lower = ? ORDER BY aid LIMIT ?";
+  "SELECT aid, nickname AS name FROM player_index WHERE nickname_lower = ? " +
+  "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = player_index.aid) " +
+  "ORDER BY aid LIMIT ?";
 const INDEX_PREFIX_SQL =
   "SELECT aid, nickname AS name FROM player_index " +
   "WHERE nickname_lower >= ? AND nickname_lower < ? " +
+  "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = player_index.aid) " +
   "ORDER BY nickname_lower, aid LIMIT ?";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1446,6 +1459,7 @@ export async function getDeterministicPlayerIndexPage(
       ((i.aid * ? + ?) & 2147483647) AS order_key,
       CASE WHEN p.hours IS NOT NULL AND p.hours >= 0 THEN p.hours ELSE NULL END AS trusted_hours
     FROM player_index i LEFT JOIN players p ON p.aid = i.aid
+    WHERE NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)
   ) SELECT aid, name, order_key, trusted_hours FROM ordered
     WHERE order_key > ? OR (order_key = ? AND aid > ?)
     ORDER BY order_key, aid LIMIT ?`;
@@ -1478,8 +1492,11 @@ export async function getTrustedPublicHours(aid: number): Promise<number | null>
   if (!Number.isSafeInteger(aid) || aid <= 0) return null;
   const d1 = await getD1();
   const row = d1
-    ? await d1.prepare("SELECT hours FROM players WHERE aid = ? AND hours >= 0").bind(aid).first()
-    : (await getSqliteDb())?.prepare("SELECT hours FROM players WHERE aid = ? AND hours >= 0").get(aid);
+    ? await d1.prepare(`SELECT hours FROM players WHERE aid = ? AND hours >= 0
+        AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`)
+      .bind(aid).first()
+    : (await getSqliteDb())?.prepare(`SELECT hours FROM players WHERE aid = ? AND hours >= 0
+        AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).get(aid);
   if (!row || !Number.isFinite(Number((row as { hours?: unknown }).hours))) return null;
   return Number((row as { hours: unknown }).hours);
 }

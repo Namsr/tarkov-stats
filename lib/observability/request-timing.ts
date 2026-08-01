@@ -1,4 +1,6 @@
 import type { GameMode } from "@/types/seasonal";
+// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
+import { recordRequestEvent } from "../admin/request-events.ts";
 
 type Mode = GameMode;
 type Outcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
@@ -42,6 +44,13 @@ type Options = {
   now?: () => number;
   sampleRate?: number;
   nodeEnv?: string;
+};
+
+type RequestContext = {
+  aid?: number;
+  nickname?: string | null;
+  host?: string | null;
+  cycleId?: string | null;
 };
 
 const defaultNow = () => performance.now();
@@ -92,15 +101,35 @@ export function createRequestTiming(options: Options = {}) {
   const sampled = sampleRate > 0 && (sampleRate >= 1 || (options.random ?? Math.random)() < sampleRate);
   const startedAt = now();
   let finished = false;
+  let context: RequestContext = {};
 
   return {
     now,
+    setRequestContext(input: RequestContext) {
+      context = { ...context, ...input };
+    },
     elapsedMs(started: number) {
       return roundedMs(now() - started);
     },
     finish(input: RequestTimingInput) {
-      if (!sampled || finished) return;
+      if (finished) return;
       finished = true;
+      const totalMs = roundedMs(input.totalMs ?? now() - startedAt);
+      void recordRequestEvent({
+        operation: input.operation,
+        aid: context.aid,
+        nickname: context.nickname,
+        host: context.host,
+        mode: input.mode,
+        cycleId: context.cycleId,
+        outcome: input.outcome,
+        status: input.status,
+        force: input.force,
+        source: input.source,
+        cache: input.cache,
+        latencyMs: totalMs,
+      });
+      if (!sampled) return;
       const event = {
         event: "request_timing_v1",
         entry: "api",
@@ -113,7 +142,7 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.cache === undefined ? {} : { cache: input.cache }),
         ...(input.storage === undefined ? {} : { storage: input.storage }),
         ...(input.memo === undefined ? {} : { memo: input.memo }),
-        total_ms: roundedMs(input.totalMs ?? now() - startedAt),
+        total_ms: totalMs,
         ...(input.profileMs === undefined ? {} : { profile_ms: roundedMs(input.profileMs) }),
         ...(input.seasonalMs === undefined ? {} : { seasonal_ms: roundedMs(input.seasonalMs) }),
         ...(input.levelsMs === undefined ? {} : { levels_ms: roundedMs(input.levelsMs) }),

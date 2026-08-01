@@ -66,18 +66,32 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
     },
 
     confirmBanned(input: { runId: number; taskId: number; owner: string; aid: number; cycleId: string; now?: number }) {
-      const lease = this.activeLease(input);
-      if (!lease || lease.kind !== "ban_check" || lease.aid !== input.aid || lease.cycleId !== input.cycleId) {
-        throw new Error("active ban-check lease not found");
+      const now = input.now ?? Date.now();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const lease = this.activeLease({ ...input, now });
+        if (!lease || lease.kind !== "ban_check" || lease.aid !== input.aid || lease.cycleId !== input.cycleId) {
+          throw new Error("active ban-check lease not found");
+        }
+        const result = db.prepare(`
+          UPDATE player_profiles SET confirmed_banned = 1
+          WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?
+        `).run(input.cycleId, input.aid);
+        if (Number(result.changes) !== 1) throw new Error("Seasonal profile not found");
+        db.prepare(`INSERT INTO upstream_ban_confirmations
+          (aid, mode, cycle_id, source, confirmed_at)
+          VALUES (?, 'seasonal', ?, 'seasonal_upstream', ?)
+          ON CONFLICT(aid, mode, cycle_id, source) DO UPDATE SET
+            confirmed_at = MAX(upstream_ban_confirmations.confirmed_at, excluded.confirmed_at)`)
+          .run(input.aid, input.cycleId, now);
+        db.prepare(`UPDATE scan_members SET active = 0
+          WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?`)
+          .run(input.cycleId, input.aid);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
       }
-      const result = db.prepare(`
-        UPDATE player_profiles SET confirmed_banned = 1
-        WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?
-      `).run(input.cycleId, input.aid);
-      if (Number(result.changes) !== 1) throw new Error("Seasonal profile not found");
-      db.prepare(`UPDATE scan_members SET active = 0
-        WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?`)
-        .run(input.cycleId, input.aid);
     },
 
     beginOrResumeRun(cycleId: string, owner: string, now = Date.now()) {

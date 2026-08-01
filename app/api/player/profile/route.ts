@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import {
   getPublicProfile,
   getPlayerLevels,
@@ -22,6 +22,7 @@ import { createRequestTiming } from "@/lib/observability/request-timing";
 import { findProfileSummary } from "@/lib/profile-summary";
 import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
+import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
@@ -61,6 +62,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
   }
 
+  timing.setRequestContext({
+    aid,
+    cycleId,
+    host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),
+  });
+
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
 
@@ -88,6 +95,11 @@ export async function GET(request: NextRequest) {
           recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt).then(() => undefined),
       }
     );
+    if (result.ok) {
+      after(() => evaluateAndStoreSeasonalRisk(result.profile).catch((error) => {
+        console.error("seasonal admin risk evaluation failed", error);
+      }));
+    }
     const response = NextResponse.json(
       result.ok ? { profile: result.profile, capture: result.capture } : { error: result.error },
       { status: result.ok ? 200 : result.status, headers: noStore }
@@ -123,6 +135,10 @@ export async function GET(request: NextRequest) {
       if (storeReadStarted !== undefined) storeReadMs = timing.elapsedMs(storeReadStarted);
       storage = store ? "sqlite" : "unavailable";
       const storedResponse = (snapshot: NonNullable<typeof stored>) => {
+        after(() => evaluateAndStoreRisk({ aid, mode, cycleId, ...snapshot }).catch((error) => {
+          console.error("stored admin risk evaluation failed", error);
+        }));
+        timing.setRequestContext({ nickname: snapshot.stats.nickname });
         const response = NextResponse.json(
           { ...snapshot, profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null },
           { headers: noStore }
@@ -198,6 +214,9 @@ export async function GET(request: NextRequest) {
       parseMs = timing.elapsedMs(parseStarted);
       stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+      after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
+        console.error("mode admin risk evaluation failed", error);
+      }));
       const shouldStore = mode === "arena" || pveProfileDecision(profile).state === "store";
       if (shouldStore) {
         if (!store) throw new Error("player store unavailable");
@@ -212,6 +231,7 @@ export async function GET(request: NextRequest) {
         { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
         { headers: noStore }
       );
+      timing.setRequestContext({ nickname: stats.nickname });
       timing.finish({
         operation: "player_profile",
         mode,
@@ -296,6 +316,9 @@ export async function GET(request: NextRequest) {
     parseMs = timing.elapsedMs(parseStarted);
 
     const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+    after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
+      console.error("regular admin risk evaluation failed", error);
+    }));
     let store: Awaited<ReturnType<typeof getStore>> = null;
     if (!fromCache) {
       const storeOpenStarted = timing.now();
@@ -319,6 +342,7 @@ export async function GET(request: NextRequest) {
       { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
       { headers: noStore }
     );
+    timing.setRequestContext({ nickname: stats.nickname });
     timing.finish({
       operation: "player_profile",
       mode,

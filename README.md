@@ -121,8 +121,28 @@ Environment variables (in `.env`, see `.env.selfhost.example`):
 | `AUTH_SECRET` | yes (for sign-in) | Signs the session JWT (`openssl rand -base64 32`) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | yes (for sign-in) | Google OAuth client |
 | `PUBLIC_BASE_URL` | yes behind a proxy | Pins the OAuth redirect URI (e.g. `https://tarkovstats.ru`) |
+| `ADMIN_GOOGLE_SUB` | yes (for `/admin`) | Stable Google `sub` of the single administrator; never use email |
+| `ADMIN_ANALYTICS_SQLITE_PATH` | no (default `/data/admin-analytics.db`) | Admin analytics, risk reviews, and audit SQLite file |
+| `ANALYTICS_HASH_SECRET` | yes (for auth aggregates) | HMAC secret that anonymizes Google subjects (`openssl rand -hex 32`) |
+| `CLOUDFLARE_ACCOUNT_ID` | yes (for traffic analytics) | Cloudflare account containing both production domains |
+| `CLOUDFLARE_ANALYTICS_API_TOKEN` | yes (for traffic analytics) | Read-only Account Analytics token |
 | `TRUSTED_IP_HEADER` | no (default `x-real-ip`) | Header set by Caddy from its verified client IP (keep `x-real-ip` for both DNS-only and Cloudflare-proxied traffic) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | Turnstile sitekey (build-time) |
+
+### Admin setup and first deployment
+
+1. Sign in once and open `/api/auth/me`; copy your own `user.sub` into `ADMIN_GOOGLE_SUB` (not the email address).
+2. Generate `ANALYTICS_HASH_SECRET`, create a Cloudflare token with read-only Account Analytics access, and fill the five admin variables in `.env`.
+3. Back up the currently deployed databases before replacing `web`, then deploy and backfill risk evaluations from the existing snapshots:
+
+```bash
+cd /opt/tarkovstats
+./backup-db.sh
+docker compose -f docker-compose.vps.yml up -d --no-deps --force-recreate web
+docker compose -f docker-compose.vps.yml exec web node --experimental-strip-types --experimental-sqlite scripts/backfill-admin-risk.mjs
+```
+
+The backfill prints JSON with the number of scored profiles. Historical Cloudflare traffic is available immediately; account-request and sign-in aggregates begin accumulating only after this release.
 
 ## Architecture
 
@@ -140,13 +160,15 @@ over time. The first observation is a baseline; progression is calculated only
 between later observations. Confirmed banned accounts are excluded from the
 ordinary-player baseline and retained separately for aggregate research.
 
-Runtime data uses three SQLite files in the same `/data` Docker volume:
+Runtime data uses five SQLite files in the same `/data` Docker volume:
 
 - `players.db`: latest ordinary player rows used by the average-player pages;
 - `progression.db`: historical snapshots of non-banned accounts;
-- `bans.db`: banned accounts and their historical snapshots.
+- `bans.db`: banned accounts and their historical snapshots;
+- `community-reports.db`: deduplicated community suspicious-account reports;
+- `admin-analytics.db`: request/auth aggregates, risk evaluations, reviews, and the admin audit log.
 
-`backup-db.sh` creates online-consistent compressed backups of all three files.
+`backup-db.sh` creates online-consistent compressed backups of all five files and retains them for 14 days.
 
 ## External APIs
 

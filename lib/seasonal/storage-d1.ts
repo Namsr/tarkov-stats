@@ -43,8 +43,9 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         INSERT INTO player_profiles (
           mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
           experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-          first_seen_at, last_seen_at
-        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")})
+          first_seen_at, last_seen_at, confirmed_banned
+        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")},
+          EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
         ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
           nickname = excluded.nickname,
           profile_updated_at = MAX(player_profiles.profile_updated_at, excluded.profile_updated_at),
@@ -57,9 +58,13 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
           pmc_deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
           pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
           killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
-          last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at)
+          last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
+          confirmed_banned = CASE
+            WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
+            ELSE player_profiles.confirmed_banned END
       `).bind(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
-        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt).run();
+        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt,
+        profile.aid).run();
       const row = await db.prepare(`SELECT * FROM player_profiles WHERE ${IDENTITY}`)
         .bind(profile.mode, profile.cycleId, profile.aid).first() as Record<string, unknown> | null;
       if (!row) throw new Error("Seasonal profile upsert failed");
@@ -69,6 +74,9 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
     async captureSnapshot(profile, capturedAt = Date.now()) {
       validateProfile(profile);
       const identity = [profile.mode, profile.cycleId, profile.aid] as const;
+      if (await db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").bind(profile.aid).first()) {
+        return { inserted: false, status: "banned", snapshot: null, interval: null } as CaptureSnapshotResult;
+      }
       const previousRow = await db.prepare(`SELECT * FROM progression_snapshots WHERE ${IDENTITY} ORDER BY profile_updated_at DESC LIMIT 1`)
         .bind(...identity).first() as Record<string, unknown> | null;
       const previous = toSnapshot(previousRow ?? undefined);

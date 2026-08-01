@@ -35,7 +35,9 @@ export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: numb
   db.exec("SAVEPOINT materialize_regular_progression");
   try {
   const rows = db.prepare(`SELECT * FROM progression_snapshots
-    WHERE mode = 'regular' AND cycle_id = 'persistent' ${onlyAid == null ? "" : "AND aid = ?"}
+    WHERE mode = 'regular' AND cycle_id = 'persistent'
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = progression_snapshots.aid)
+      ${onlyAid == null ? "" : "AND aid = ?"}
     ORDER BY aid, profile_updated_at, id`).all(...(onlyAid == null ? [] : [onlyAid])) as SnapshotRow[];
   const byAid = new Map<number, SnapshotRow[]>();
   for (const row of rows) byAid.set(Number(row.aid), [...(byAid.get(Number(row.aid)) ?? []), row]);
