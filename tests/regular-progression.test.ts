@@ -81,6 +81,9 @@ test("general progression request accepts regular/persistent and rejects crossed
   assert.equal(parseProgressionRequest(new URLSearchParams(
     "mode=regular&cycle=s1&aid=42&kind=tempo",
   ), null), null);
+  assert.equal(parseProgressionRequest(new URLSearchParams(
+    "mode=regular&cycle=persistent&aid=42&kind=tempo&revision=123",
+  ), null), null);
 });
 
 function stats(experience: number, pmcRaids: number) {

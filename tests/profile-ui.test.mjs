@@ -244,6 +244,9 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(profile, /<section id="risk"[\s\S]*?<h2 className="section-heading mb-3">\{t\("cheater\.heading"\)\}<\/h2>[\s\S]*?<CheaterScore/);
   assert.doesNotMatch(score, /section-kicker">\{t\("cheater\.heading"\)\}/);
   assert.match(profile, /<ProgressionPanel[\s\S]*?mode="regular"[\s\S]*?cycleId="persistent"/);
+  assert.match(profile, /<ProgressionPanel[\s\S]*?profileUpdatedAt=\{profileUpdatedAt\}/);
+  assert.match(profile, /refreshRevision=\{progressionRefreshRevision\}/);
+  assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
   assert.match(profile, /progressionRisk=\{mode === "regular" \? progressionRisk : null\}/);
 
   assert.match(panel, /fetch\(`\/api\/progression\?\$\{params\}`/);
@@ -256,6 +259,9 @@ test("regular PvP progression precedes the single risk card and radar", async ()
     assert.ok(panel.includes(parameter), `missing progression parameter: ${parameter}`);
   }
   assert.doesNotMatch(panel, /dimension|center: String/);
+  assert.match(panel, /profileUpdatedAt\?: number \| null/);
+  assert.match(panel, /\[aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]/);
+  assert.doesNotMatch(panel, /params\.(?:set|append)\("revision"/);
   assert.match(panel, /\["cumulative", "tempo", "form"\]/);
   assert.match(panel, /role="status"/);
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);
@@ -299,7 +305,7 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
-test("progression uses a five-hour shared bundle cache keyed without kind", async () => {
+test("progression uses a revision-aware five-hour shared bundle cache keyed without kind", async () => {
   const cache = await readFile("lib/seasonal/progression-cache.ts", "utf8");
   const flight = await readFile("lib/seasonal/progression-flight.ts", "utf8");
   const database = await readFile("lib/seasonal/progression-db.ts", "utf8");
@@ -308,17 +314,21 @@ test("progression uses a five-hour shared bundle cache keyed without kind", asyn
 
   assert.match(cache, /unstable_cache\(/);
   assert.match(cache, /PROGRESSION_CACHE_TTL_SECONDS = 18_000/);
-  assert.match(cache, /\["progression-bundle-v2"\]/);
-  assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,/);
+  assert.match(cache, /\["progression-bundle-v3"\]/);
+  assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,\s*_revision: number \| null,/);
   assert.doesNotMatch(cache, /kind: ProgressionKind/);
   assert.match(cache, /throw new UncacheableProgressionResult\("unavailable"\)/);
   assert.match(cache, /throw new UncacheableProgressionResult\("not-found"\)/);
   assert.match(cache, /public, max-age=60, s-maxage=18000, stale-while-revalidate=300/);
-  assert.match(cache, /singleFlight\(\s*inFlightProgressionBundles,\s*progressionFlightKey\(mode, cycleId, aid\)/);
+  assert.match(cache, /getLatestProgressionRevision\(\{ mode, cycleId, aid \}\)/);
+  assert.match(cache, /`\$\{progressionFlightKey\(mode, cycleId, aid\)\}\\0\$\{revision \?\? "none"\}`/);
+  assert.match(cache, /loadProgressionBundle\(mode, cycleId, aid, revision\)/);
   assert.match(flight, /load\(\)\.finally/);
   assert.match(flight, /inFlight\.delete\(key\)/);
 
   assert.match(database, /getProgressionBundleQuery/);
+  assert.match(database, /getLatestProgressionRevision/);
+  assert.match(database, /SELECT MAX\(profile_updated_at\) revision FROM progression_snapshots/);
   assert.match(database, /PROGRESSION_KINDS\.map/);
   assert.match(database, /mergeProgressionBundle/);
   assert.equal(
@@ -329,11 +339,13 @@ test("progression uses a five-hour shared bundle cache keyed without kind", asyn
   for (const route of [general, legacy]) {
     assert.match(route, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);
     assert.match(route, /result\.bundle\[input\.kind\]/);
-    assert.match(route, /"Cache-Control": PROGRESSION_CACHE_CONTROL/);
     assert.match(route, /function errorResponse\(error: string, status: number\)/);
     assert.match(route, /\{ status, headers: \{ "Cache-Control": "no-store" \} \}/);
     assert.doesNotMatch(route, /NextResponse\.json\(\{ error:/);
   }
+  assert.match(general, /input\.mode === "regular"[\s\S]*?"private, no-store"[\s\S]*?: PROGRESSION_CACHE_CONTROL/);
+  assert.match(legacy, /"Cache-Control": PROGRESSION_CACHE_CONTROL/);
+  assert.doesNotMatch(general, /searchParams[\s\S]*?revision/);
 });
 
 test("regular average mounts median raid progression and cumulative tooltips include XP level", async () => {

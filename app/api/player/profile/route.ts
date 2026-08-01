@@ -20,6 +20,8 @@ import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
 import type { PlayerProfile } from "@/types/tarkov";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { findProfileSummary } from "@/lib/profile-summary";
+import { makePlayerSnapshot } from "@/lib/ban-db";
+import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
@@ -293,26 +295,24 @@ export async function GET(request: NextRequest) {
     const stats = parseProfileStats(profile, levels);
     parseMs = timing.elapsedMs(parseStarted);
 
-    // Пишем в БД только при свежем upstream-ответе (не из нашего кэша) — снижаем
-    // дисковую нагрузку и повторные upsert одного и того же профиля.
+    const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+    let store: Awaited<ReturnType<typeof getStore>> = null;
     if (!fromCache) {
       const storeOpenStarted = timing.now();
-      const store = await getStore();
+      store = await getStore();
       storeOpenMs = timing.elapsedMs(storeOpenStarted);
       storage = store ? "sqlite" : "unavailable";
-      if (store) {
-        const achievementIds = profile.achievements
-          ? Object.keys(profile.achievements)
-          : [];
-        const storeWriteStarted = timing.now();
-        try {
-          await store.upsert(aid, stats, achievementIds);
-        } catch (e) {
-          console.error("player store failed", e);
-        } finally {
-          storeWriteMs = timing.elapsedMs(storeWriteStarted);
-        }
-      }
+    }
+    const storeWriteStarted = !fromCache ? timing.now() : undefined;
+    try {
+      await persistRegularProfileSnapshot(
+        makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
+        { upsertPlayer: !fromCache, playerStore: store },
+      );
+    } catch (error) {
+      console.error("player store failed", error);
+    } finally {
+      if (storeWriteStarted !== undefined) storeWriteMs = timing.elapsedMs(storeWriteStarted);
     }
 
     const response = NextResponse.json(

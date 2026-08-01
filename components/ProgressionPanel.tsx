@@ -77,6 +77,8 @@ export default function ProgressionPanel({
   mode = "regular",
   cycleId = "persistent",
   levelBands = [],
+  profileUpdatedAt,
+  refreshRevision = 0,
 }: {
   aid: number;
   hours: number;
@@ -85,6 +87,8 @@ export default function ProgressionPanel({
   mode?: "regular" | "seasonal";
   cycleId?: string;
   levelBands?: LevelBand[];
+  profileUpdatedAt?: number | null;
+  refreshRevision?: number;
 }) {
   const { t } = useI18n();
   const [series, setSeries] = useState<Partial<Record<ProgressionKind, ProgressionResponse>>>({});
@@ -129,7 +133,7 @@ export default function ProgressionPanel({
     });
 
     return () => controller.abort();
-  }, [aid, cycleId, mode, onRiskChange, t]);
+  }, [aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
 
   const loading = successfulRequests === 0 && completedRequests < PROGRESSION_KINDS.length;
   const error = successfulRequests === 0 && completedRequests === PROGRESSION_KINDS.length;

@@ -95,6 +95,7 @@ export default function RegularPlayer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
+  const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
 
@@ -204,6 +205,7 @@ export default function RegularPlayer({
         setModeUnavailable(false);
         setProfileSummary(null);
         setError("");
+        setProgressionRefreshRevision((current) => current + 1);
         return changed ? "updated" : "unchanged";
       })
       .finally(() => {
@@ -482,6 +484,8 @@ export default function RegularPlayer({
                 pmcRaids={stats.pmcRaids}
                 mode="regular"
                 cycleId="persistent"
+                profileUpdatedAt={profileUpdatedAt}
+                refreshRevision={progressionRefreshRevision}
                 onRiskChange={setProgressionRisk}
               />
             </div>

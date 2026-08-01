@@ -34,6 +34,16 @@ type ProgressionQueryResult = (ProgressionSeriesResponse & SeasonalProgressionDe
 type ProgressionIdentity = Omit<ProgressionRequest, "kind">;
 export type ProgressionBundle = Record<ProgressionKind, Exclude<ProgressionQueryResult, null>>;
 
+async function getSqliteProgressionDatabase() {
+  if (!database) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sqlite = (await import("node:sqlite" as string)) as any;
+    database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+    initializeSeasonalSchema(database);
+  }
+  return database;
+}
+
 interface DetailDbRow extends Record<string, unknown> {
   aid: number;
   local_date: string;
@@ -245,25 +255,20 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
         );
       };
     }
-    if (!database) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sqlite = (await import("node:sqlite" as string)) as any;
-      database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-      initializeSeasonalSchema(database);
-    }
-    if (configuredCycle) upsertSqliteSeasonCycle(database, configuredCycle);
+    const sqliteDb = await getSqliteProgressionDatabase();
+    if (configuredCycle) upsertSqliteSeasonCycle(sqliteDb, configuredCycle);
     return async (input) => {
-      const series = queryProgressionSeriesBundle(database, input);
+      const series = queryProgressionSeriesBundle(sqliteDb, input);
       if (!series) return null;
       const mode = input.mode;
-      const profile = database.prepare(STATIC_PROFILE_SQL).get(mode, input.cycleId, input.aid) as StaticProfileRow | undefined;
+      const profile = sqliteDb.prepare(STATIC_PROFILE_SQL).get(mode, input.cycleId, input.aid) as StaticProfileRow | undefined;
       if (!profile) return null;
-      const intervals = database.prepare(DETAIL_INTERVAL_SQL)
+      const intervals = sqliteDb.prepare(DETAIL_INTERVAL_SQL)
         .all(mode, input.cycleId, input.aid, mode, input.cycleId) as DetailDbRow[];
-      const history = database.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
+      const history = sqliteDb.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
         MAX(profile_updated_at) last_observed_at FROM progression_snapshots
         WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(mode, input.cycleId, input.aid) as Record<string, unknown>;
-      const validIntervals = database.prepare(`SELECT COUNT(*) intervals FROM progression_intervals
+      const validIntervals = sqliteDb.prepare(`SELECT COUNT(*) intervals FROM progression_intervals
         WHERE mode = ? AND cycle_id = ? AND aid = ? AND status = 'valid'
           AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0 OR pmc_survived != 0
             OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0)`)
@@ -278,6 +283,26 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
     };
   } catch (error) {
     console.warn("progression query: sqlite unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
+export async function getLatestProgressionRevision(input: ProgressionIdentity): Promise<number | null> {
+  try {
+    const d1 = await getSeasonalD1();
+    const row = d1
+      ? input.mode === "regular"
+        ? null
+        : await d1.prepare(`SELECT MAX(profile_updated_at) revision FROM progression_snapshots
+            WHERE mode = ? AND cycle_id = ? AND aid = ?`)
+          .bind(input.mode, input.cycleId, input.aid).first() as Record<string, unknown> | null
+      : await getSqliteProgressionDatabase().then((db) => db.prepare(
+          `SELECT MAX(profile_updated_at) revision FROM progression_snapshots
+           WHERE mode = ? AND cycle_id = ? AND aid = ?`,
+        ).get(input.mode, input.cycleId, input.aid) as Record<string, unknown> | undefined);
+    return row?.revision == null ? null : Number(row.revision);
+  } catch (error) {
+    console.warn("progression revision unavailable: " + (error as Error).message);
     return null;
   }
 }
@@ -298,13 +323,7 @@ export async function getProgressionQuery(): Promise<((input: ProgressionRequest
 export async function getRegularProgressionAverage(): Promise<ProgressionAverageResponse | null> {
   try {
     if (await getSeasonalD1()) return null;
-    if (!database) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sqlite = (await import("node:sqlite" as string)) as any;
-      database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-      initializeSeasonalSchema(database);
-    }
-    return queryRegularProgressionAverage(database);
+    return queryRegularProgressionAverage(await getSqliteProgressionDatabase());
   } catch (error) {
     console.warn("regular progression average unavailable: " + (error as Error).message);
     return null;

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import {
@@ -8,11 +9,13 @@ import {
   createTimestampObjectParser,
   feedCacheSlot,
   normalizeUpdatedAt,
+  snapshotTargetVersion,
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
 
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
+  progressionDbPath: process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
   updatedUrl: process.env.REGULAR_PROFILE_UPDATED_URL || "https://players.tarkov.dev/profile/updated.json",
   endpoint: new URL(
     "/api/operator/profile-refresh/sync",
@@ -52,6 +55,7 @@ main().catch((error) => {
 async function main() {
   const startedAt = Date.now();
   validateConfig();
+  attachProgressionDb();
   initSchema();
   acquireLease();
   leaseHeld = true;
@@ -59,6 +63,7 @@ async function main() {
   log("START", {
     runId,
     db: config.dbPath,
+    progressionDb: config.progressionDbPath,
     updatedUrl: config.updatedUrl,
     requestsPerSecond: config.requestsPerSecond,
     overlapMs: config.overlapMs,
@@ -71,12 +76,30 @@ async function main() {
       .all().map((row) => [String(row.status), Number(row.n)])
   );
   const coverage = db.prepare(`
+    WITH latest AS (
+      SELECT aid, MAX(profile_updated_at) AS snapshot_updated_at
+      FROM progression_sync.progression_snapshots
+      WHERE mode = 'regular' AND cycle_id = 'persistent'
+      GROUP BY aid
+    ), targets AS (
+      SELECT p.aid, latest.snapshot_updated_at,
+        MAX(COALESCE(p.profile_updated_at, 0), COALESCE(q.feed_updated_at, 0)) AS target_updated_at
+      FROM players p
+      LEFT JOIN excluded_players e ON e.aid = p.aid
+      LEFT JOIN latest ON latest.aid = p.aid
+      LEFT JOIN regular_profile_sync_queue q ON q.aid = p.aid
+      WHERE e.aid IS NULL
+    )
     SELECT COUNT(*) AS total,
-      SUM(CASE WHEN p.profile_updated_at > 0 THEN 1 ELSE 0 END) AS covered
-    FROM players p LEFT JOIN excluded_players e ON e.aid = p.aid
-    WHERE e.aid IS NULL
+      SUM(CASE WHEN snapshot_updated_at IS NULL THEN 1 ELSE 0 END) AS missing,
+      SUM(CASE WHEN snapshot_updated_at IS NOT NULL AND snapshot_updated_at < target_updated_at THEN 1 ELSE 0 END) AS lagging,
+      SUM(CASE WHEN snapshot_updated_at IS NOT NULL AND snapshot_updated_at >= target_updated_at THEN 1 ELSE 0 END) AS current
+    FROM targets
   `).get();
-  const coverageSummary = summarizeCoverage(coverage.total, coverage.covered);
+  const snapshotMissing = Number(coverage.missing) || 0;
+  const snapshotLagging = Number(coverage.lagging) || 0;
+  const snapshotCurrent = Number(coverage.current) || 0;
+  const coverageSummary = summarizeCoverage(coverage.total, snapshotCurrent);
   const trackedNonExcludedInFeed = feed.trackedInFeed - feed.trackedExcluded;
   const backlog = Number(statuses.pending ?? 0) + Number(statuses.error ?? 0);
   const summary = {
@@ -84,6 +107,9 @@ async function main() {
     ...processed,
     backlog,
     missingFromFeed: Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
+    snapshotMissing,
+    snapshotLagging,
+    snapshotCurrent,
     ...coverageSummary,
     statuses,
     stopped: stopping,
@@ -91,6 +117,24 @@ async function main() {
   };
   saveRunMeta(summary);
   log("SUMMARY", summary);
+}
+
+function attachProgressionDb() {
+  if (!existsSync(config.progressionDbPath)) {
+    throw new Error(`progression database not found at ${config.progressionDbPath}; set PROGRESSION_SQLITE_PATH`);
+  }
+  db.prepare("ATTACH DATABASE ? AS progression_sync").run(config.progressionDbPath);
+  const table = db.prepare(`
+    SELECT 1 FROM progression_sync.sqlite_schema
+    WHERE type = 'table' AND name = 'progression_snapshots'
+  `).get();
+  if (!table) throw new Error("progression_snapshots is missing; initialize the progression schema before running sync");
+  const columns = new Set(
+    db.prepare("PRAGMA progression_sync.table_info(progression_snapshots)").all().map((row) => String(row.name))
+  );
+  for (const column of ["aid", "mode", "cycle_id", "profile_updated_at"]) {
+    if (!columns.has(column)) throw new Error(`progression_snapshots.${column} is missing; apply the progression migration first`);
+  }
 }
 
 function validateConfig() {
@@ -158,9 +202,17 @@ function heartbeat() {
 async function loadFeed() {
   const tracked = new Map();
   const excluded = new Set();
-  for (const row of db.prepare("SELECT aid, profile_updated_at FROM players").all()) {
+  for (const row of db.prepare(`
+    SELECT p.aid, p.profile_updated_at,
+      (SELECT MAX(s.profile_updated_at) FROM progression_sync.progression_snapshots s
+       WHERE s.mode = 'regular' AND s.cycle_id = 'persistent' AND s.aid = p.aid) AS snapshot_updated_at
+    FROM players p
+  `).all()) {
     const aid = Number(row.aid);
-    tracked.set(aid, Number(row.profile_updated_at) || 0);
+    tracked.set(aid, {
+      playerUpdatedAt: Number(row.profile_updated_at) || 0,
+      snapshotUpdatedAt: row.snapshot_updated_at == null ? null : Number(row.snapshot_updated_at),
+    });
   }
   for (const row of db.prepare("SELECT aid FROM excluded_players").all()) excluded.add(Number(row.aid));
 
@@ -193,14 +245,19 @@ async function loadFeed() {
     polledAt: 0,
   };
   const pendingVersions = new Map();
-  const upsert = db.prepare(`
+  const insertQueue = db.prepare(`
     INSERT INTO regular_profile_sync_queue
       (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
     VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)
-    ON CONFLICT(aid) DO UPDATE SET
-      feed_updated_at = excluded.feed_updated_at, status = 'pending', attempts = 0,
-      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = excluded.updated_at
-    WHERE excluded.feed_updated_at > regular_profile_sync_queue.feed_updated_at
+  `);
+  const replaceQueueTarget = db.prepare(`
+    UPDATE regular_profile_sync_queue SET feed_updated_at = ?, status = 'pending', attempts = 0,
+      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ?
+  `);
+  const reopenCompleted = db.prepare(`
+    UPDATE regular_profile_sync_queue SET status = 'pending', attempts = 0,
+      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ?
+    WHERE aid = ? AND status = 'completed'
   `);
 
   const response = await requestWithRetry(feedUrlForRun(), {
@@ -221,21 +278,24 @@ async function loadFeed() {
       return;
     }
     counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, feedUpdatedAt);
-    const savedUpdatedAt = tracked.get(aid);
-    if (savedUpdatedAt === undefined) counters.unknownInFeed += 1;
+    const trackedProfile = tracked.get(aid);
+    if (trackedProfile === undefined) counters.unknownInFeed += 1;
     else counters.trackedInFeed += 1;
     if (excluded.has(aid)) {
       counters.excluded += 1;
-      if (savedUpdatedAt !== undefined) counters.trackedExcluded += 1;
+      if (trackedProfile !== undefined) counters.trackedExcluded += 1;
       return;
     }
+    if (trackedProfile !== undefined) {
+      trackedProfile.feedUpdatedAt = Math.max(trackedProfile.feedUpdatedAt ?? 0, feedUpdatedAt);
+    }
     const kind = classifyFeedEntry(
-      savedUpdatedAt,
+      trackedProfile === undefined ? undefined : (trackedProfile.snapshotUpdatedAt ?? 0),
       feedUpdatedAt,
       savedWatermark,
       config.overlapMs
     );
-    if (kind === null && savedUpdatedAt !== undefined) {
+    if (kind === null && trackedProfile !== undefined) {
       counters.upToDate += 1;
       return;
     }
@@ -264,11 +324,42 @@ async function loadFeed() {
   db.exec("BEGIN IMMEDIATE");
   try {
     const queuedAt = Date.now();
+    for (const [aid, profile] of tracked) {
+      if (excluded.has(aid)) continue;
+      const target = snapshotTargetVersion(
+        profile.playerUpdatedAt,
+        profile.feedUpdatedAt,
+        profile.snapshotUpdatedAt
+      );
+      if (target > (profile.snapshotUpdatedAt ?? 0)) {
+        const pending = pendingVersions.get(aid);
+        pendingVersions.set(aid, {
+          feedUpdatedAt: Math.max(target, pending?.feedUpdatedAt ?? 0),
+          kind: pending?.kind ?? "updated",
+          snapshotUpdatedAt: profile.snapshotUpdatedAt,
+        });
+      }
+    }
+    const queuedRows = new Map(
+      db.prepare("SELECT aid, feed_updated_at, status FROM regular_profile_sync_queue").all()
+        .map((row) => [Number(row.aid), row])
+    );
     for (const [aid, pending] of pendingVersions) {
       const { feedUpdatedAt, kind } = pending;
-      const result = upsert.run(aid, feedUpdatedAt, queuedAt);
-      counters.queuedVersions += Number(result.changes);
-      if (Number(result.changes) === 1) {
+      const queued = queuedRows.get(aid);
+      let changed = 0;
+      if (!queued) {
+        changed = Number(insertQueue.run(aid, feedUpdatedAt, queuedAt).changes);
+      } else if (feedUpdatedAt > Number(queued.feed_updated_at)) {
+        changed = Number(replaceQueueTarget.run(feedUpdatedAt, queuedAt, aid).changes);
+      } else if (
+        queued.status === "completed" &&
+        (pending.snapshotUpdatedAt ?? latestSnapshotVersion(aid)) < Number(queued.feed_updated_at)
+      ) {
+        changed = Number(reopenCompleted.run(queuedAt, aid).changes);
+      }
+      counters.queuedVersions += changed;
+      if (changed === 1) {
         if (kind === "new") counters.queuedNewProfiles += 1;
         else counters.queuedUpdatedProfiles += 1;
       }
@@ -296,9 +387,10 @@ async function loadFeed() {
     UPDATE regular_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL,
       updated_at = ?
     WHERE EXISTS (
-      SELECT 1 FROM players p
-      WHERE p.aid = regular_profile_sync_queue.aid
-        AND p.profile_updated_at >= regular_profile_sync_queue.feed_updated_at
+      SELECT 1 FROM progression_sync.progression_snapshots s
+      WHERE s.mode = 'regular' AND s.cycle_id = 'persistent'
+        AND s.aid = regular_profile_sync_queue.aid
+        AND s.profile_updated_at >= regular_profile_sync_queue.feed_updated_at
     )
   `).run(Date.now());
   heartbeat();
@@ -311,11 +403,10 @@ async function processQueue() {
     SELECT q.aid, q.feed_updated_at FROM regular_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
-      AND (
-        NOT EXISTS (SELECT 1 FROM players p WHERE p.aid = q.aid)
-        OR q.feed_updated_at > COALESCE(
-          (SELECT p.profile_updated_at FROM players p WHERE p.aid = q.aid), 0
-        )
+      AND NOT EXISTS (
+        SELECT 1 FROM progression_sync.progression_snapshots s
+        WHERE s.mode = 'regular' AND s.cycle_id = 'persistent' AND s.aid = q.aid
+          AND s.profile_updated_at >= q.feed_updated_at
       )
       AND COALESCE(q.last_run_id, '') <> ?
     ORDER BY q.aid LIMIT 1
@@ -390,6 +481,9 @@ async function syncProfile(aid, expectedUpdatedAt) {
         if (storedUpdatedAt === null || storedUpdatedAt < expectedUpdatedAt) {
           throw retryableError("sync endpoint stored an older profile version", response.status);
         }
+        if (latestSnapshotVersion(aid) < expectedUpdatedAt) {
+          throw retryableError("sync endpoint did not store the progression snapshot", response.status);
+        }
         return { kind: "completed", attempts: attempt, status: response.status };
       }
       const detail = (await response.text().catch(() => "")).slice(0, 300);
@@ -410,6 +504,15 @@ async function syncProfile(aid, expectedUpdatedAt) {
   error.attempts = config.maxRetries + 1;
   error.status = lastError?.status ?? null;
   throw error;
+}
+
+function latestSnapshotVersion(aid) {
+  const row = db.prepare(`
+    SELECT MAX(profile_updated_at) AS updated_at
+    FROM progression_sync.progression_snapshots
+    WHERE mode = 'regular' AND cycle_id = 'persistent' AND aid = ?
+  `).get(aid);
+  return Number(row?.updated_at) || 0;
 }
 
 async function requestWithRetry(url, init) {

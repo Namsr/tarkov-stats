@@ -116,6 +116,12 @@ export function feedCacheSlot(now = Date.now()) {
   return Math.floor(now / (15 * 60_000));
 }
 
+export function snapshotTargetVersion(playerUpdatedAt, feedUpdatedAt, snapshotUpdatedAt) {
+  const target = Math.max(Number(playerUpdatedAt) || 0, Number(feedUpdatedAt) || 0);
+  if (target > 0) return target;
+  return snapshotUpdatedAt == null ? 1 : 0;
+}
+
 export function summarizeCoverage(totalValue, coveredValue) {
   const coverageTotal = Math.max(0, Number(totalValue) || 0);
   const covered = Math.min(coverageTotal, Math.max(0, Number(coveredValue) || 0));

@@ -5,6 +5,8 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { getPublicProfile, parseProfileStats, getPlayerLevels } from "@/lib/tarkov-api";
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { makePlayerSnapshot } from "@/lib/ban-db";
+import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 
 export interface FavoriteWithStats extends Favorite {
   /** Parsed stats, or null when the profile isn't cached upstream / failed. */
@@ -55,13 +57,17 @@ export async function GET(request: NextRequest) {
         continue;
       }
       const stats = parseProfileStats(profile, levels);
-      // Only on a fresh upstream hit: grow the /average sample and refresh the
-      // stored nickname snapshot if it drifted.
+      const ids = profile.achievements ? Object.keys(profile.achievements) : [];
+      try {
+        await persistRegularProfileSnapshot(
+          makePlayerSnapshot(fav.aid, stats, ids, Number(stats.profileUpdatedAt)),
+          { upsertPlayer: !fromCache, playerStore },
+        );
+      } catch {
+        // A missing upstream version must not hide otherwise valid profile stats.
+      }
+      // Only on a fresh upstream hit: refresh the stored nickname snapshot if it drifted.
       if (!fromCache) {
-        if (playerStore) {
-          const ids = profile.achievements ? Object.keys(profile.achievements) : [];
-          await playerStore.upsert(fav.aid, stats, ids).catch(() => {});
-        }
         if (stats.nickname && stats.nickname !== fav.nickname) {
           await favStore.updateNickname(
             user.sub,

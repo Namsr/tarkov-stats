@@ -1,5 +1,6 @@
 import { unstable_cache } from "next/cache";
 import {
+  getLatestProgressionRevision,
   getProgressionBundleQuery,
   type ProgressionBundle,
 } from "@/lib/seasonal/progression-db";
@@ -29,28 +30,31 @@ const loadProgressionBundle = unstable_cache(
     mode: ProgressionMode,
     cycleId: string,
     aid: number,
+    _revision: number | null,
   ): Promise<CachedProgressionBundle> => {
+    void _revision;
     const query = await getProgressionBundleQuery();
     if (!query) throw new UncacheableProgressionResult("unavailable");
     const bundle = await query({ mode, cycleId, aid });
     if (!bundle) throw new UncacheableProgressionResult("not-found");
     return { status: "ready", bundle };
   },
-  ["progression-bundle-v2"],
+  ["progression-bundle-v3"],
   { revalidate: PROGRESSION_CACHE_TTL_SECONDS },
 );
 
 const inFlightProgressionBundles = new Map<string, Promise<CachedProgressionBundle>>();
 
-export function getCachedProgressionBundle(
+export async function getCachedProgressionBundle(
   mode: ProgressionMode,
   cycleId: string,
   aid: number,
 ): Promise<CachedProgressionBundle> {
+  const revision = await getLatestProgressionRevision({ mode, cycleId, aid });
   return singleFlight(
     inFlightProgressionBundles,
-    progressionFlightKey(mode, cycleId, aid),
-    () => loadProgressionBundle(mode, cycleId, aid).catch((error: unknown) => {
+    `${progressionFlightKey(mode, cycleId, aid)}\0${revision ?? "none"}`,
+    () => loadProgressionBundle(mode, cycleId, aid, revision).catch((error: unknown) => {
       if (error instanceof UncacheableProgressionResult) {
         return { status: error.status };
       }

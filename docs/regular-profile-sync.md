@@ -2,8 +2,11 @@
 
 The VPS polls `profile/updated.json` at `:05`, `:20`, `:35`, and `:50` each
 hour. The feed is parsed as a stream and is never stored as a raw file.
-Tracked AIDs are queued when their feed version is newer than
-`players.profile_updated_at`.
+Every run reconciles all tracked, non-excluded AIDs against the newest
+`regular/persistent` progression snapshot, including profiles absent from the
+current feed. The required version is the maximum of `players.profile_updated_at`
+and the current feed version. A legacy player with neither a version nor a
+snapshot receives a minimal positive target so the full profile can be fetched.
 
 The first successful poll also stores a durable feed watermark. Unknown AIDs
 are deliberately ignored during that bootstrap poll, so an existing feed
@@ -17,6 +20,8 @@ can create a newly admitted profile. A restart resumes `pending` and `error`
 rows. HTTP 404 is retained as `not_found`; it never confirms a ban and never
 deletes the player. A later, newer feed version reopens that AID for retry.
 `excluded_players` rows are neither queued nor processed.
+Queue completion is based on the stored progression snapshot version, never on
+the flattened `players` row alone.
 
 Successful refreshes update `players`, the `player_index` nickname, and the
 `regular/persistent` progression snapshot through the authenticated operator
@@ -33,6 +38,9 @@ authenticated `/api/operator/profile-refresh/sync` endpoint, and both sync
 scripts. The operator route and its server-only helpers must be present in the
 private deployment bundle. The web container receives the same
 `PROFILE_REFRESH_SECRET` used by the job.
+The collector also opens `PROGRESSION_SQLITE_PATH` (falling back to
+`PROGRESSION_DB_PATH` and then `/data/progression.db`) and fails clearly if the
+database or `progression_snapshots` schema is missing.
 
 Stop and remove the legacy importer before backing up or enabling either
 writer:
@@ -65,9 +73,9 @@ ls -lh "$backup_dir/players.db" "$backup_dir/progression.db"
 
 Start the deployed web service once before the collector so its idempotent
 SQLite initialization applies the current schema. Then run one manual feed
-poll. This bootstrap refreshes newer versions for profiles already in
-`players`, stores the watermark, and does not admit the historical unknown
-population:
+poll. This bootstrap reconciles missing or lagging snapshots for every profile
+already in `players`, stores the watermark, and does not admit the historical
+unknown population:
 
 ```sh
 sudo systemctl start tarkovstats-regular-profile-sync.service
@@ -125,9 +133,10 @@ Acceptance checks:
   quarter-hour feed slots.
 
 The `SUMMARY` log also includes coverage across all tracked, non-excluded
-Regular profiles, `missingFromFeed`, queue statuses, and whether the run was
-the initial bootstrap. Profiles absent from `updated.json` remain in the
-coverage denominator.
+Regular profiles, `snapshotMissing`, `snapshotLagging`, `snapshotCurrent`,
+`missingFromFeed`, queue statuses, and whether the run was the initial
+bootstrap. Profiles absent from `updated.json` remain in the coverage
+denominator.
 
 The average APIs still default to the complete dataset. Once
 `coveragePercent >= 95`, clients may explicitly request the 90-day Regular
@@ -148,6 +157,7 @@ REGULAR_PROFILE_SYNC_LEASE_MS=1800000
 REGULAR_PROFILE_SYNC_OVERLAP_MS=3600000
 REGULAR_PROFILE_UPDATED_URL=https://players.tarkov.dev/profile/updated.json
 REGULAR_PROFILE_SYNC_BASE_URL=http://127.0.0.1:3000
+PROGRESSION_SQLITE_PATH=/data/progression.db
 ```
 
 The feed URL receives a cache key stable for one 15-minute UTC slot. Retries

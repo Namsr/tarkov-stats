@@ -29,7 +29,11 @@ export async function GET(request: NextRequest) {
       return errorResponse("Progression profile not found", 404);
     }
     return NextResponse.json(result.bundle[input.kind], {
-      headers: { "Cache-Control": PROGRESSION_CACHE_CONTROL },
+      headers: {
+        "Cache-Control": input.mode === "regular"
+          ? "private, no-store"
+          : PROGRESSION_CACHE_CONTROL,
+      },
     });
   } catch (error) {
     console.error("progression query failed", error);
