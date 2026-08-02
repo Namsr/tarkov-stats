@@ -856,7 +856,10 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-account summary:hover { background: color-mix(in srgb, var(--foreground) 4%, transparent); }
 .admin-account summary > span { min-width: 0; font-size: .78rem; }
 .admin-account summary strong, .admin-account summary small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.admin-account summary small { margin-top: 5px; color: var(--muted); font-size: .67rem; }
+.admin-account summary small { margin-top: 5px; color: var(--muted); font-size: .67rem; overflow: visible; white-space: normal; }
+.admin-account__profile-link { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
+.admin-account__mode-links { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 5px; }
+.admin-account__mode-link { color: var(--muted-strong); text-decoration: underline; text-underline-offset: 2px; }
 .admin-signals { display: flex; flex-wrap: wrap; gap: 5px; }
 .admin-badge { border: 1px solid var(--card-border); border-radius: 999px; padding: 4px 7px; color: var(--muted-strong); font-size: .61rem; font-weight: 700; }
 .admin-account-details { display: grid; grid-template-columns: minmax(250px, .7fr) minmax(400px, 1.3fr); gap: 24px; border-top: 1px dashed var(--card-border); background: color-mix(in srgb, var(--input-bg) 65%, transparent); padding: 18px; }

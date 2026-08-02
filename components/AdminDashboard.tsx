@@ -7,6 +7,7 @@ import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
+import { GAME_MODES, type GameMode } from "@/types/seasonal";
 
 type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
@@ -23,6 +24,9 @@ const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health"];
 const periods: AdminPeriod[] = ["24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
+
+function isProfileMode(value: string): value is GameMode { return GAME_MODES.includes(value as GameMode); }
+function profileHref(aid: number, mode: GameMode): string { return `/player/${mode}/${aid}`; }
 
 function finite(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
 function formatNumber(value: number): string { return new Intl.NumberFormat().format(value); }
@@ -169,7 +173,11 @@ function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts |
 function AccountRow({ account, suspicious, lang, t, reload }: { account: Account; suspicious: boolean; lang: string; t: T; reload: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const moderation = moderationFor(account);
-  return <details className="admin-account" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong>{account.nickname || `#${account.aid}`}</strong><small>AID {account.aid} · {account.modes?.map((mode) => t("admin.mode." + mode)).join(", ") || t("common.notAvailable")}</small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.last")}>{new Date(account.lastRequestedAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} · {t("admin.risk." + moderation.risk.tier)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} />}</div></details>;
+  const accountModes = Array.from(new Set((account.modes ?? []).filter(isProfileMode)));
+  const defaultMode: GameMode = accountModes.includes("regular") ? "regular" : accountModes[0] ?? "regular";
+  const profileModes = accountModes.length ? accountModes : [defaultMode];
+  const profileLabel = (mode: GameMode) => t("admin.account.openProfile", { mode: t("admin.mode." + mode) });
+  return <details className="admin-account" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong><Link className="admin-account__profile-link" href={profileHref(account.aid, defaultMode)} prefetch={false} aria-label={profileLabel(defaultMode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{account.nickname || `#${account.aid}`}</Link></strong><small><span>AID {account.aid}</span><span aria-hidden="true"> / </span><span className="admin-account__mode-links" aria-label={t("admin.account.profileModes")}>{profileModes.map((mode) => <Link className="admin-account__mode-link" key={mode} href={profileHref(account.aid, mode)} prefetch={false} aria-label={profileLabel(mode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{t("admin.mode." + mode)}</Link>)}</span></small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.last")}>{new Date(account.lastRequestedAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}<div><dt>{t("admin.account.profileUpdated")}</dt><dd>{formatDate(moderation?.risk?.profileUpdatedAt ?? null, lang, t)}</dd></div>{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} / {t("admin.risk." + moderation.risk.tier)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} />}</div></details>;
 }
 
 function moderationFor(account: Account): AccountModeration | undefined {
