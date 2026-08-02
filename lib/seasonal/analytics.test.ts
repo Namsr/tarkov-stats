@@ -92,7 +92,7 @@ test("marks an isolated negative cumulative delta as a schema anomaly", () => {
   assert.equal(intervals[0].confidence, 0);
 });
 
-test("Tempo requires any cumulative change while Form requires a new PMC raid", () => {
+test("Tempo and Form require a valid interval with a new PMC raid", () => {
   const intervals = buildSequentialIntervals([
     snapshot(1, {}),
     snapshot(2, { scavRaids: 1 }),
@@ -102,7 +102,7 @@ test("Tempo requires any cumulative change while Form requires a new PMC raid", 
   assert.deepEqual(
     intervals.map(({ hasTempo, hasForm }) => ({ hasTempo, hasForm })),
     [
-      { hasTempo: true, hasForm: false },
+      { hasTempo: false, hasForm: false },
       { hasTempo: true, hasForm: true },
       { hasTempo: false, hasForm: false },
     ]

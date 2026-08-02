@@ -138,10 +138,25 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
           ON m.mode = t.mode AND m.cycle_id = t.cycle_id AND m.aid = t.aid AND m.active = 1
           WHERE t.mode = 'seasonal' AND t.cycle_id = ? AND m.aid IS NULL AND t.kind <> 'ban_check'
           AND t.state IN ('queued', 'leased') ORDER BY t.priority, t.available_at, t.id LIMIT 100`).bind(cycleId),
+        db.prepare(`SELECT
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND
+            (tempo_score IS NULL OR form_score IS NULL OR score_sample_n IS NULL) THEN 1 ELSE 0 END) AS unprocessed_raid_intervals,
+          MAX(ended_at) AS last_interval_at
+          FROM progression_intervals WHERE mode = 'seasonal' AND cycle_id = ?`).bind(cycleId),
+        db.prepare(`SELECT generation, materialized_at FROM progression_materializations
+          WHERE mode = 'seasonal' AND cycle_id = ?`).bind(cycleId),
       ]);
       const run = d1Rows(results[0])[0];
+      const progression = d1Rows(results[7])[0] ?? {};
+      const materialization = d1Rows(results[8])[0] ?? {};
       return { run: run ? mapRun(run) : null,
         coverage: { panel: Number(d1Rows(results[1])[0]?.n ?? 0), captured: Number(d1Rows(results[2])[0]?.n ?? 0) },
+        progression: {
+          unprocessedRaidIntervals: Number(progression.unprocessed_raid_intervals ?? 0),
+          lastIntervalAt: progression.last_interval_at == null ? null : Number(progression.last_interval_at),
+          generation: Number(materialization.generation ?? 0),
+          materializedAt: materialization.materialized_at == null ? null : Number(materialization.materialized_at),
+        },
         stale: d1Rows(results[3]), errors: d1Rows(results[4]), banQueue: d1Rows(results[5]), community: d1Rows(results[6]) };
     },
   };

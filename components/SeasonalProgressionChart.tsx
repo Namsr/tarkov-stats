@@ -49,6 +49,22 @@ function axisPoints(points: readonly ProgressionPoint[]) {
   return points.map((point) => ({ ...point, seasonDay: coordinate(point) }));
 }
 
+function lineSegments(points: readonly ProgressionPoint[]): ProgressionPoint[][] {
+  const segments: ProgressionPoint[][] = [];
+  for (const point of points) {
+    const current = segments.at(-1);
+    if (current && current.length > 0 && current.at(-1)!.seriesId !== point.seriesId &&
+      (current.at(-1)!.seriesId != null || point.seriesId != null)) {
+      segments.push([point]);
+    } else if (current) {
+      current.push(point);
+    } else {
+      segments.push([point]);
+    }
+  }
+  return segments;
+}
+
 function areaPath(points: readonly ProgressionPoint[], bounds: ReturnType<typeof chartBounds>) {
   const upper = points.filter((point) => point.p75 != null).map((point) => ({ seasonDay: coordinate(point), value: point.p75! }));
   const lower = points.filter((point) => point.p25 != null).map((point) => ({ seasonDay: coordinate(point), value: point.p25! })).reverse();
@@ -193,14 +209,17 @@ export default function SeasonalProgressionChart({
             )}
             {shown.map((key) => (
               <g key={key}>
-                <path
-                  d={chartPath(axisPoints(displayedPointsFor(key)), bounds, plotWidth, plotHeight)}
-                  transform={`translate(${PAD.left} ${PAD.top})`}
-                  fill="none"
-                  stroke={COLORS[key]}
-                  strokeWidth={key === "player" ? 3 : 2}
-                  vectorEffect="non-scaling-stroke"
-                />
+                {lineSegments(displayedPointsFor(key)).map((segment, segmentIndex) => (
+                  <path
+                    key={`${key}-segment-${segmentIndex}`}
+                    d={chartPath(axisPoints(segment), bounds, plotWidth, plotHeight)}
+                    transform={`translate(${PAD.left} ${PAD.top})`}
+                    fill="none"
+                    stroke={COLORS[key]}
+                    strokeWidth={key === "player" ? 3 : 2}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
                 {displayedPointsFor(key).map((point) => {
                   const marker = key === "player" ? markerByDate.get(point.date) : undefined;
                   const pointX = coordinate(point);
@@ -210,28 +229,49 @@ export default function SeasonalProgressionChart({
                         level: levelAtExperience(point.value, levelBands),
                       })
                     : fmt(point.value, data.kind);
-                  const tooltip = point.raidMin != null && point.raidMax != null
-                    ? t("progression.pointTipRange", {
-                        series: t((mode === "regular" ? "progression.series." : "seasonal.series.") + key),
-                        date: moscowDate(point.date),
-                        min: point.raidMin,
-                        max: point.raidMax,
-                        value,
-                        n: point.n,
-                      })
-                    : t("progression.pointTip", {
-                        series: t((mode === "regular" ? "progression.series." : "seasonal.series.") + key),
-                        date: moscowDate(point.date),
-                        raids: pointX,
-                        value,
-                        n: point.n,
-                      });
+                  const series = t((mode === "regular" ? "progression.series." : "seasonal.series.") + key);
+                  const periodStart = point.periodStartAt == null
+                    ? null
+                    : moscowDate(new Date(point.periodStartAt).toISOString().slice(0, 10));
+                  const period = periodStart ? `${periodStart} → ${moscowDate(point.date)}` : moscowDate(point.date);
+                  const scoreTooltipValues = {
+                    series,
+                    period,
+                    min: point.raidMin ?? pointX,
+                    max: point.raidMax ?? pointX,
+                    deltaXp: point.deltaExperience == null ? "—" : Math.round(point.deltaExperience).toLocaleString(),
+                    deltaRaids: point.deltaPmcRaids == null ? "—" : point.deltaPmcRaids,
+                    days: point.elapsedDays == null ? "—" : point.elapsedDays.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+                    value,
+                    sampleN: point.sampleN ?? point.n,
+                    status: t(point.preliminary ? "progression.preliminary" : "progression.stable"),
+                  };
+                  const tooltip = data.kind !== "cumulative"
+                    ? point.raidMin != null && point.raidMax != null
+                      ? t("progression.scorePointTipRange", scoreTooltipValues)
+                      : t("progression.scorePointTip", scoreTooltipValues)
+                    : point.raidMin != null && point.raidMax != null
+                      ? t("progression.pointTipRange", {
+                          series,
+                          date: moscowDate(point.date),
+                          min: point.raidMin,
+                          max: point.raidMax,
+                          value,
+                          n: point.n,
+                        })
+                      : t("progression.pointTip", {
+                          series,
+                          date: moscowDate(point.date),
+                          raids: pointX,
+                          value,
+                          n: point.n,
+                        });
                   const label = marker
                     ? `${tooltip} · ${t("seasonal.riskMarker", { score: Math.round(marker.score) })}`
                     : tooltip;
                   return (
                     <circle
-                      key={`${key}-${point.date}-${pointX}`}
+                      key={`${key}-${point.pointId}`}
                       cx={x(pointX)}
                       cy={y(point.value)}
                       r={marker ? 5 : key === "player" ? 3 : 2}

@@ -2,6 +2,7 @@ import type { IntervalStatus, SeasonalCounters } from "@/types/seasonal";
 
 export const ANALYTICS_SCORE_VERSION = 1;
 export const DAY_MS = 86_400_000;
+export const SCORE_PRELIMINARY_SAMPLE_N = 30;
 
 const COUNTER_KEYS = [
   "experience",
@@ -108,6 +109,14 @@ export interface CombinedRiskResult {
   confidence: ConfidenceResult;
   reasons: IntervalAnomalyResult["reasons"];
   scoreVersion: number;
+}
+
+/** A scoreable interval must contain new PMC raids; Scav-only changes stay history-only. */
+export function isRaidProgressionInterval(
+  status: IntervalStatus | string,
+  pmcRaids: number,
+): boolean {
+  return status === "valid" && Number.isFinite(pmcRaids) && pmcRaids > 0;
 }
 
 const TEMPO_WEIGHTS: Record<keyof TempoPercentiles, number> = {
@@ -265,8 +274,8 @@ export function buildSequentialIntervals(
       changedFields,
       negativeFields,
       metrics,
-      hasTempo: status === "valid" && changedFields.length > 0,
-      hasForm: status === "valid" && changes.pmcRaids > 0,
+      hasTempo: isRaidProgressionInterval(status, changes.pmcRaids),
+      hasForm: isRaidProgressionInterval(status, changes.pmcRaids),
       confidence: status === "valid" ? intervalConfidence(elapsedDays) : 0,
       scoreVersion: ANALYTICS_SCORE_VERSION,
     });

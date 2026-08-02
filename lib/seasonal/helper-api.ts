@@ -11,6 +11,7 @@ import { fetchSeasonalPayload } from "./fetch";
 import { getPlayerLevels, getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { getStore } from "@/lib/db";
 import { finalizeSeasonalTaskLifecycle, recordLinkedPvpLifecycle, recordSeasonalCaptureLifecycle } from "./scanner";
+import { refreshProgressionAfterCapture } from "./daily-aggregates";
 
 const noStore = { "Cache-Control": "no-store" };
 
@@ -110,6 +111,9 @@ export async function verifyTask(request: NextRequest) {
   await context.seasonal.upsertProfile(validated.profile);
   const capture = await context.seasonal.captureSnapshot(validated.profile);
   await recordSeasonalCaptureLifecycle(context.cycle, validated.profile, capture, "task");
+  if (capture.interval) {
+    await refreshProgressionAfterCapture("seasonal", context.cycle.cycleId, validated.profile.counters.pmcRaids);
+  }
   if (!await context.store.finish(task.id, context.helperId, "completed")) return helperError("Invalid lease", 409);
   await finalizeSeasonalTaskLifecycle(context.cycle, task.id).catch((error) =>
     console.error("Seasonal profile follow-up failed", error));

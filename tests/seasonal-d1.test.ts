@@ -7,13 +7,15 @@ import { DatabaseSync } from "node:sqlite";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1SeasonalStore, upsertD1SeasonCycle } from "../lib/seasonal/storage-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
-import { initializeSeasonalSchema, SEASONAL_SCHEMA, createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
+import { initializeSeasonalSchema, SEASONAL_SCHEMA, createSqliteSeasonalStore, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
-import { refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates } from "../lib/seasonal/daily-aggregates.ts";
+import { refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreIntervals } from "../lib/seasonal/daily-aggregates.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1ScannerLifecycle } from "../lib/seasonal/scanner-d1.ts";
+// @ts-ignore -- direct Node TypeScript tests require explicit extensions.
+import { queryProgressionSeries } from "../lib/seasonal/progression.ts";
 
 class FakeStatement {
   args: unknown[] = [];
@@ -59,7 +61,7 @@ test("D1 migration creates every Seasonal backend table", () => {
   db.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8"));
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name));
   for (const name of ["season_cycles", "player_profiles", "progression_snapshots", "progression_intervals",
-    "daily_aggregates", "scan_cohorts", "scan_candidates", "scan_discovery_state", "scan_daily_requeues",
+    "daily_aggregates", "progression_materializations", "scan_cohorts", "scan_candidates", "scan_discovery_state", "scan_daily_requeues",
     "scan_members", "scan_tasks", "scan_runs", "scan_task_outcomes", "helper_sessions"]) {
     assert.ok(tables.has(name), `missing ${name}`);
   }
@@ -150,7 +152,7 @@ test("daily materialization populates Tempo/Form scores and physical aggregate r
   );
 });
 
-test("SQLite Tempo includes any changed cumulative counter while Form requires PMC raids", async () => {
+test("SQLite Tempo and Form require a PMC-raid interval", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createSqliteSeasonalStore(db);
   const first = profile(5, Date.parse("2026-07-01T12:00:00Z"), 100, 1);
@@ -162,10 +164,93 @@ test("SQLite Tempo includes any changed cumulative counter while Form requires P
   db.prepare("UPDATE player_profiles SET progression_eligible = 1 WHERE aid = 5").run();
   refreshSqliteSeasonalAggregates(db, "s1");
   assert.deepEqual({ ...db.prepare("SELECT tempo_score, form_score FROM progression_intervals").get() },
-    { tempo_score: 50, form_score: null });
+    { tempo_score: null, form_score: null });
 });
 
-test("D1 Tempo includes any changed cumulative counter while Form requires PMC raids", async () => {
+test("score sample size follows the shared PMC-raid predicate", () => {
+  const base = {
+    local_date: "2026-07-02", ended_at: 2, elapsed_days: 1, status: "valid",
+    experience: 100, pmc_raids: 1, scav_raids: 0, pmc_survived: 1, pmc_deaths: 1,
+    pmc_kills: 2, killed_pmc: 1, confidence: 1, lifetime_pvp_hours: 100, dimension_raids: 1,
+  };
+  const updates = scoreIntervals([
+    { ...base, id: 1, aid: 1 },
+    { ...base, id: 2, aid: 2, pmc_raids: 0, experience: 100 },
+  ]);
+  assert.deepEqual(updates.map(({ tempo, form, sampleN }) => ({ tempo: tempo != null, form: form != null, sampleN })), [
+    { tempo: true, form: true, sampleN: 1 },
+    { tempo: false, form: false, sampleN: null },
+  ]);
+});
+
+test("four snapshots with one PMC-raid interval create one Tempo and one Form point", async () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createSqliteSeasonalStore(db);
+  const first = profile(15, Date.parse("2026-07-01T12:00:00Z"), 0, 0);
+  const second = profile(15, Date.parse("2026-07-02T12:00:00Z"), 1, 1);
+  const third = profile(15, Date.parse("2026-07-03T12:00:00Z"), 1, 1);
+  const fourth = profile(15, Date.parse("2026-07-04T12:00:00Z"), 1, 1);
+  for (const current of [first, second, third, fourth]) {
+    await store.upsertProfile(current);
+    await store.captureSnapshot(current);
+  }
+  refreshSqliteSeasonalAggregates(db, "s1");
+  const scores = { ...db.prepare(`SELECT
+    SUM(tempo_score IS NOT NULL) AS tempo_points,
+    SUM(form_score IS NOT NULL) AS form_points,
+    SUM(pmc_raids > 0 AND tempo_score IS NULL) AS missing_raid_scores
+    FROM progression_intervals`).get() as Record<string, number> };
+  assert.deepEqual(scores, { tempo_points: 1, form_points: 1, missing_raid_scores: 0 });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_intervals WHERE pmc_raids = 0 AND tempo_score IS NULL AND form_score IS NULL").get().n, 2);
+});
+
+test("score API points include the sample and interval metadata", async () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createSqliteSeasonalStore(db);
+  upsertSqliteSeasonCycle(db, { mode: "seasonal", cycleId: "s1", startsAt: 1, endsAt: null, enabled: true, upstreamContract: "game_mode" });
+  for (const current of [
+    profile(16, Date.parse("2026-07-01T12:00:00Z"), 0, 0),
+    profile(16, Date.parse("2026-07-02T12:00:00Z"), 100, 1),
+  ]) {
+    await store.upsertProfile(current);
+    await store.captureSnapshot(current);
+  }
+  refreshSqliteSeasonalAggregates(db, "s1");
+  const result = queryProgressionSeries(db, { mode: "seasonal", cycleId: "s1", aid: 16, kind: "tempo" });
+  assert.ok(result);
+  assert.equal(result.player.length, 1);
+  assert.equal(result.player[0].sampleN, 1);
+  assert.equal(result.player[0].preliminary, true);
+  assert.equal(result.player[0].deltaPmcRaids, 1);
+  assert.equal(result.player[0].deltaExperience, 100);
+  assert.equal(result.player[0].periodStartAt, Date.parse("2026-07-01T12:00:00Z"));
+});
+
+test("incremental and full SQLite materialization agree and advance the generation", async () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createSqliteSeasonalStore(db);
+  for (const aid of [21, 22]) {
+    const first = profile(aid, Date.parse("2026-07-01T12:00:00Z"), 0, 0);
+    const second = profile(aid, Date.parse("2026-07-02T12:00:00Z"), 1, 1);
+    await store.upsertProfile(first); await store.captureSnapshot(first);
+    await store.upsertProfile(second); await store.captureSnapshot(second);
+  }
+  const initial = refreshSqliteSeasonalAggregates(db, "s1");
+  const next = profile(21, Date.parse("2026-07-03T12:00:00Z"), 2, 2);
+  await store.upsertProfile(next); await store.captureSnapshot(next);
+  const incremental = refreshSqliteSeasonalAggregates(db, "s1", 10);
+  const partialRows = db.prepare(`SELECT aid, tempo_score, form_score, score_sample_n
+    FROM progression_intervals ORDER BY aid, id`).all().map((row: Record<string, unknown>) => ({ ...row }));
+  const full = refreshSqliteSeasonalAggregates(db, "s1");
+  const fullRows = db.prepare(`SELECT aid, tempo_score, form_score, score_sample_n
+    FROM progression_intervals ORDER BY aid, id`).all().map((row: Record<string, unknown>) => ({ ...row }));
+  assert.equal(initial.generation, 1);
+  assert.equal(incremental.generation, 2);
+  assert.equal(full.generation, 3);
+  assert.deepEqual(partialRows, fullRows);
+});
+
+test("D1 Tempo and Form require a PMC-raid interval", async () => {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8"));
   const d1 = new FakeD1(sqlite);
@@ -179,7 +264,7 @@ test("D1 Tempo includes any changed cumulative counter while Form requires PMC r
   sqlite.prepare("UPDATE player_profiles SET progression_eligible = 1 WHERE aid = 6").run();
   await refreshD1SeasonalAggregates(d1, "s1");
   assert.deepEqual({ ...sqlite.prepare("SELECT tempo_score, form_score FROM progression_intervals").get() },
-    { tempo_score: 50, form_score: null });
+    { tempo_score: null, form_score: null });
 });
 
 test("D1 operator resumes, leases, and records outcomes in one cycle", async () => {

@@ -2,6 +2,8 @@
 import { refreshSqliteProgressionAggregates } from "./seasonal/daily-aggregates.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
+// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
+import { isRaidProgressionInterval } from "./seasonal/analytics.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SqliteDatabase = any;
@@ -71,7 +73,7 @@ export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: numb
       snapshot_count = excluded.snapshot_count, progression_eligible = excluded.progression_eligible`);
     for (const [aid, history] of byAid) {
       let seriesId = 1;
-      let changedIntervals = 0;
+      let raidIntervals = 0;
       let previous: { row: SnapshotRow; counters: Counters | null; valid: boolean } | null = null;
       for (const row of history) {
         const parsed = parse(row);
@@ -86,7 +88,7 @@ export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: numb
           const status = !parsed.valid || !previous.valid || (negative && !reset) ? "schema_anomaly" : reset ? "reset" : "valid";
           if (status !== "valid") seriesId += 1;
           const elapsedDays = (updatedAt - Number(previous.row.profile_updated_at || previous.row.upstream_updated_at)) / DAY_MS;
-          if (status === "valid" && Object.values(changes).some((value) => value !== 0)) changedIntervals += 1;
+          if (isRaidProgressionInterval(status, changes.pmcRaids)) raidIntervals += 1;
           insertInterval.run(aid, previous.row.id, row.id, updatedAt, date, elapsedDays, status,
             ...KEYS.map((key) => changes[key]), status === "valid" && elapsedDays > 0 ? Math.min(1, 1 / elapsedDays) : 0);
           intervalCount += 1;
@@ -100,7 +102,7 @@ export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: numb
       if (parsed.counters) upsertProfile.run(aid, parsed.nickname,
         Number(latest.profile_updated_at || latest.upstream_updated_at), Number(latest.captured_at),
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
-        Number(history[0].captured_at), Number(latest.captured_at), history.length, changedIntervals >= 2 ? 1 : 0);
+        Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0);
     }
     refreshSqliteProgressionAggregates(db, "regular", "persistent");
     db.exec("RELEASE materialize_regular_progression");

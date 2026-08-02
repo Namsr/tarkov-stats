@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { expandNearbyCohort, quantile, trimmedMean } from "./analytics.ts";
+import { expandNearbyCohort, quantile, SCORE_PRELIMINARY_SAMPLE_N, trimmedMean } from "./analytics.ts";
 import type {
   ProgressionKind,
   ProgressionAverageResponse,
@@ -50,7 +50,9 @@ export function parseProgressionRequest(
 
 export interface DailyRow {
   aid: number;
+  point_id?: number;
   local_date: string;
+  observed_at?: number;
   value: number;
   pmc_raids: number;
   raid_bucket: number;
@@ -58,6 +60,11 @@ export interface DailyRow {
   freshness_at: number;
   confidence: number;
   series_id: number;
+  score_sample_n?: number | null;
+  period_start_at?: number | null;
+  elapsed_days?: number | null;
+  delta_experience?: number | null;
+  delta_pmc_raids?: number | null;
 }
 
 export interface LifetimeBandCountRow {
@@ -173,9 +180,12 @@ export function progressionDailySql(kind: ProgressionKind): string {
   if (kind === "cumulative") {
     return `
       WITH ranked AS (
-        SELECT s.aid, s.local_date, s.experience AS value, s.pmc_raids,
+        SELECT s.aid, s.id AS point_id, s.local_date, s.profile_updated_at AS observed_at,
+               s.experience AS value, s.pmc_raids,
                ((s.pmc_raids - 1) / 10 + 1) * 10 AS raid_bucket, s.series_id,
-               s.profile_updated_at AS freshness_at, 1.0 AS confidence,
+               s.profile_updated_at AS freshness_at, 1.0 AS confidence, NULL AS score_sample_n,
+               NULL AS period_start_at, NULL AS elapsed_days,
+               NULL AS delta_experience, NULL AS delta_pmc_raids,
                ROW_NUMBER() OVER (
                  PARTITION BY s.aid, ((s.pmc_raids - 1) / 10 + 1)
                  ORDER BY s.profile_updated_at DESC, s.id DESC
@@ -183,9 +193,10 @@ export function progressionDailySql(kind: ProgressionKind): string {
         FROM progression_snapshots s
         WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0
       )
-      SELECT r.aid, r.local_date, r.value, r.pmc_raids, r.raid_bucket,
+      SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
              p.lifetime_pvp_hours AS lifetime_hours,
-             r.freshness_at, r.confidence, r.series_id
+             r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
+             r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids
       FROM ranked r
       JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
         AND p.confirmed_banned = 0
@@ -195,21 +206,26 @@ export function progressionDailySql(kind: ProgressionKind): string {
   const score = kind === "tempo" ? "tempo_score" : "form_score";
   return `
     WITH ranked AS (
-      SELECT i.aid, i.local_date, i.${score} AS value, i.ended_at AS freshness_at,
+      SELECT i.aid, i.id AS point_id, i.local_date, i.ended_at AS observed_at,
+             i.${score} AS value, i.ended_at AS freshness_at,
              i.confidence, s.pmc_raids,
              ((s.pmc_raids - 1) / 10 + 1) * 10 AS raid_bucket, s.series_id,
+             i.score_sample_n, from_s.profile_updated_at AS period_start_at,
+             i.elapsed_days, i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,
              ROW_NUMBER() OVER (
                PARTITION BY i.aid, ((s.pmc_raids - 1) / 10 + 1)
                ORDER BY i.ended_at DESC, i.id DESC
              ) AS rank
       FROM progression_intervals i
       JOIN progression_snapshots s ON s.id = i.to_snapshot_id
+      JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
       WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'
-        AND i.${score} IS NOT NULL AND s.pmc_raids > 0
+        AND i.${score} IS NOT NULL AND i.pmc_raids > 0 AND s.pmc_raids > 0
     )
-    SELECT r.aid, r.local_date, r.value, r.pmc_raids, r.raid_bucket,
+    SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
            p.lifetime_pvp_hours AS lifetime_hours,
-           r.freshness_at, r.confidence, r.series_id
+           r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
+           r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids
     FROM ranked r
     JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
       AND p.confirmed_banned = 0
@@ -267,31 +283,68 @@ function sampleConfidence(rows: DailyRow[]): number {
   return source * Math.min(1, rows.length / 30);
 }
 
-function progressionPoint(
-  date: string,
-  pmcRaids: number,
-  value: number,
-  values: number[],
-  n: number,
-  confidence: number,
-  seriesId: number | null,
-  raidRange?: { min: number; max: number },
-): ProgressionPoint {
+function pointConfidence(row: DailyRow): number {
+  const sampleN = row.score_sample_n;
+  return Number(row.confidence) * (sampleN == null ? 1 : Math.min(1, Math.max(0, Number(sampleN)) / 30));
+}
+
+function fallbackPointId(prefix: string, row: DailyRow): string {
+  return `${prefix}:${row.point_id ?? `${row.series_id}:${row.pmc_raids}:${row.freshness_at}`}`;
+}
+
+function progressionPoint({
+  pointId,
+  date,
+  observedAt,
+  pmcRaids,
+  value,
+  values,
+  n,
+  confidence,
+  seriesId,
+  sampleN,
+  raidRange,
+  interval,
+}: {
+  pointId: string;
+  date: string;
+  observedAt: number | null;
+  pmcRaids: number;
+  value: number;
+  values: number[];
+  n: number;
+  confidence: number;
+  seriesId: number | null;
+  sampleN: number | null;
+  raidRange?: { min: number; max: number };
+  interval?: DailyRow;
+}): ProgressionPoint {
   return {
+    pointId,
     date,
+    observedAt,
     pmcRaids,
     ...(raidRange ? { raidMin: raidRange.min, raidMax: raidRange.max } : {}),
+    ...(interval ? {
+      periodStartAt: interval.period_start_at ?? null,
+      elapsedDays: interval.elapsed_days ?? null,
+      deltaExperience: interval.delta_experience ?? null,
+      deltaPmcRaids: interval.delta_pmc_raids ?? null,
+    } : {}),
     value,
     seriesId,
     p25: quantile(values, 0.25),
     p75: quantile(values, 0.75),
     n,
+    sampleN,
+    preliminary: sampleN != null && sampleN < SCORE_PRELIMINARY_SAMPLE_N,
     confidence,
   };
 }
 
 function overallPoints(
   rows: DailyRow[],
+  scored = false,
 ): ProgressionPoint[] {
   const rowsByBucket = new Map<number, DailyRow[]>();
   for (const row of rows) {
@@ -320,18 +373,21 @@ function overallPoints(
     const value = quantile(values, 0.5);
     if (value == null) continue;
     const confidence = members.reduce((sum, row) => sum + row.confidence, 0) / members.length
-      * Math.min(1, members.length / PROGRESSION_TARGET_SAMPLE);
+      * Math.min(1, members.length / (scored ? SCORE_PRELIMINARY_SAMPLE_N : PROGRESSION_TARGET_SAMPLE));
     const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
-    points.push(progressionPoint(
-      latest.local_date,
-      end,
+    points.push(progressionPoint({
+      pointId: fallbackPointId("overall", latest),
+      date: latest.local_date,
+      observedAt: latest.observed_at ?? latest.freshness_at,
+      pmcRaids: end,
       value,
       values,
-      values.length,
+      n: values.length,
       confidence,
-      null,
-      { min: start - PROGRESSION_BASE_RAID_STEP + 1, max: end },
-    ));
+      seriesId: null,
+      sampleN: scored ? values.length : null,
+      raidRange: { min: start - PROGRESSION_BASE_RAID_STEP + 1, max: end },
+    }));
   }
   return points;
 }
@@ -344,7 +400,7 @@ export function buildSeasonalAverageSeries(
 ): SeasonalAverageSeries {
   void _distribution;
   const rows = sourceRows.filter((row) => Number.isFinite(row.value));
-  const overall = overallPoints(rows);
+  const overall = overallPoints(rows, kind !== "cumulative");
   const latest = overall.at(-1);
   return {
     kind,
@@ -377,12 +433,31 @@ export function buildProgressionSeries(
 ): ProgressionSeriesResponse {
   const rows = sourceRows.filter((row) => Number.isFinite(row.value));
   let latestN = 0;
-  const playerRows = rows.filter((row) => row.aid === input.aid).sort((left, right) =>
+  const playerRowsByCoordinate = new Map<string, DailyRow>();
+  for (const row of rows.filter((candidate) => candidate.aid === input.aid)) {
+    const key = `${row.series_id}:${row.pmc_raids}`;
+    const current = playerRowsByCoordinate.get(key);
+    if (!current || row.freshness_at > current.freshness_at ||
+      (row.freshness_at === current.freshness_at && Number(row.point_id ?? 0) > Number(current.point_id ?? 0))) {
+      playerRowsByCoordinate.set(key, row);
+    }
+  }
+  const playerRows = [...playerRowsByCoordinate.values()].sort((left, right) =>
     left.series_id - right.series_id || left.freshness_at - right.freshness_at
   );
-  const player = playerRows.map((row) => progressionPoint(
-    row.local_date, row.pmc_raids, row.value, [], 1, row.confidence, Number(row.series_id)
-  ));
+  const player = playerRows.map((row) => progressionPoint({
+    pointId: fallbackPointId(`${input.kind}:player`, row),
+    date: row.local_date,
+    observedAt: row.observed_at ?? row.freshness_at,
+    pmcRaids: row.pmc_raids,
+    value: row.value,
+    values: [],
+    n: 1,
+    confidence: input.kind === "cumulative" ? row.confidence : pointConfidence(row),
+    seriesId: Number(row.series_id),
+    sampleN: input.kind === "cumulative" ? null : (row.score_sample_n ?? null),
+    interval: input.kind === "cumulative" ? undefined : row,
+  }));
   const playerHours = playerRows.find((row) => row.lifetime_hours != null)?.lifetime_hours;
   const buckets = [...new Set(playerRows.map((row) => row.raid_bucket))].sort((a, b) => a - b);
   const nearby = playerHours == null ? [] : buckets.flatMap((bucket) => {
@@ -399,18 +474,21 @@ export function buildProgressionSeries(
     latestN = cohort.members.length;
     const members = cohort.members.map((member) => member.value);
     const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
-    return [progressionPoint(
-      latest.local_date,
-      bucket,
+    return [progressionPoint({
+      pointId: fallbackPointId(`nearby:${bucket}`, latest),
+      date: latest.local_date,
+      observedAt: latest.observed_at ?? latest.freshness_at,
+      pmcRaids: bucket,
       value,
       values,
-      values.length,
-      sampleConfidence(members),
-      null,
-      { min: bucket - PROGRESSION_BASE_RAID_STEP + 1, max: bucket },
-    )];
+      n: values.length,
+      confidence: sampleConfidence(members),
+      seriesId: null,
+    sampleN: input.kind === "cumulative" ? null : values.length,
+      raidRange: { min: bucket - PROGRESSION_BASE_RAID_STEP + 1, max: bucket },
+    })];
   });
-  const overall = overallPoints(rows);
+  const overall = overallPoints(rows, input.kind !== "cumulative");
   const freshnessAt = rows.length ? Math.max(...rows.map((row) => row.freshness_at)) : null;
   const confidences = nearby.map((entry) => entry.confidence);
   const firstObservedAt = playerRows.length ? Math.min(...playerRows.map((row) => Number(row.freshness_at))) : null;
@@ -420,7 +498,16 @@ export function buildProgressionSeries(
     axis: "pmc_raids", player, nearby, overall, n: latestN,
     confidence: confidences.length ? confidences[confidences.length - 1] : 0, freshnessAt,
     history: {
-      snapshotCount: 0, intervalCount: 0, ready: false, firstObservedAt, lastObservedAt,
+      snapshotCount: 0,
+      allIntervalCount: 0,
+      changedIntervalCount: 0,
+      raidIntervalCount: 0,
+      tempoPointCount: 0,
+      formPointCount: 0,
+      intervalCount: 0,
+      ready: false,
+      firstObservedAt,
+      lastObservedAt,
     },
   };
 }

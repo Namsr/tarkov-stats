@@ -281,7 +281,8 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /raidTicks\(bounds\.minDay, bounds\.maxDay\)/);
   assert.match(chart, /axisPoints\(displayedPointsFor\(key\)\)/);
   assert.match(chart, /areaPath\(displayedPointsFor\("nearby"\), bounds\)/);
-  assert.match(chart, /chartPath\(axisPoints\(displayedPointsFor\(key\)\), bounds/);
+  assert.match(chart, /lineSegments\(displayedPointsFor\(key\)\)/);
+  assert.match(chart, /chartPath\(axisPoints\(segment\), bounds/);
   assert.match(chart, /\{displayedPointsFor\(key\)\.map\(\(point\) =>/);
   assert.match(chart, /moscowDate\(point\.date\)/);
   assert.match(chart, /point\.raidMin != null && point\.raidMax != null/);
@@ -314,12 +315,12 @@ test("progression uses a revision-aware five-hour shared bundle cache keyed with
 
   assert.match(cache, /unstable_cache\(/);
   assert.match(cache, /PROGRESSION_CACHE_TTL_SECONDS = 18_000/);
-  assert.match(cache, /\["progression-bundle-v3"\]/);
+  assert.match(cache, /\["progression-bundle-v4"\]/);
   assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,\s*_revision: number \| null,/);
   assert.doesNotMatch(cache, /kind: ProgressionKind/);
   assert.match(cache, /throw new UncacheableProgressionResult\("unavailable"\)/);
   assert.match(cache, /throw new UncacheableProgressionResult\("not-found"\)/);
-  assert.match(cache, /public, max-age=60, s-maxage=18000, stale-while-revalidate=300/);
+  assert.match(cache, /public, max-age=60, s-maxage=60, stale-while-revalidate=30/);
   assert.match(cache, /getLatestProgressionRevision\(\{ mode, cycleId, aid \}\)/);
   assert.match(cache, /`\$\{progressionFlightKey\(mode, cycleId, aid\)\}\\0\$\{revision \?\? "none"\}`/);
   assert.match(cache, /loadProgressionBundle\(mode, cycleId, aid, revision\)/);
@@ -328,7 +329,7 @@ test("progression uses a revision-aware five-hour shared bundle cache keyed with
 
   assert.match(database, /getProgressionBundleQuery/);
   assert.match(database, /getLatestProgressionRevision/);
-  assert.match(database, /SELECT MAX\(profile_updated_at\) revision FROM progression_snapshots/);
+  assert.match(database, /SELECT generation AS revision FROM progression_materializations/);
   assert.match(database, /PROGRESSION_KINDS\.map/);
   assert.match(database, /mergeProgressionBundle/);
   assert.equal(

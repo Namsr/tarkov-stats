@@ -79,6 +79,7 @@ export interface ProgressionIntervalRecord extends ProfileIdentity {
   changes: SeasonalCounters;
   tempoScore: number | null;
   formScore: number | null;
+  scoreSampleN: number | null;
   confidence: number;
   scoreVersion: number;
 }
@@ -155,17 +156,29 @@ export interface CaptureSnapshotResult {
 }
 
 export interface ProgressionPoint {
+  /** Stable source identity used by chart renderers. */
+  pointId: string;
   date: string;
+  observedAt: number | null;
   pmcRaids: number;
   /** Inclusive PMC-raid range for aggregate points; absent for exact player snapshots. */
   raidMin?: number;
   raidMax?: number;
+  /** Optional interval details used by score tooltips. */
+  periodStartAt?: number | null;
+  elapsedDays?: number | null;
+  deltaExperience?: number | null;
+  deltaPmcRaids?: number | null;
   value: number;
   /** Present for player history so renderers can break the line across wipes. */
   seriesId: number | null;
   p25: number | null;
   p75: number | null;
   n: number;
+  /** Score cohort size; null for cumulative points. */
+  sampleN: number | null;
+  /** True when a score is based on fewer than the stable cohort threshold. */
+  preliminary: boolean;
   confidence: number;
 }
 
@@ -225,6 +238,12 @@ export interface ProgressionSeriesResponse {
   freshnessAt: number | null;
   history: {
     snapshotCount: number;
+    allIntervalCount: number;
+    changedIntervalCount: number;
+    raidIntervalCount: number;
+    tempoPointCount: number;
+    formPointCount: number;
+    /** Backward-compatible alias for changedIntervalCount. */
     intervalCount: number;
     ready: boolean;
     firstObservedAt: number | null;

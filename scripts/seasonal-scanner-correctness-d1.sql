@@ -10,9 +10,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_task_outcomes_task_attempt
 UPDATE player_profiles SET progression_eligible = CASE WHEN confirmed_banned = 0 AND (
   SELECT COUNT(*) FROM progression_intervals interval
   WHERE interval.mode = player_profiles.mode AND interval.cycle_id = player_profiles.cycle_id
-    AND interval.aid = player_profiles.aid AND interval.status = 'valid' AND (
-      interval.experience <> 0 OR interval.pmc_raids <> 0 OR interval.scav_raids <> 0 OR
-      interval.pmc_survived <> 0 OR interval.pmc_deaths <> 0 OR interval.pmc_kills <> 0 OR
-      interval.killed_pmc <> 0
-    )
+    AND interval.aid = player_profiles.aid AND interval.status = 'valid' AND interval.pmc_raids > 0
 ) >= 2 THEN 1 ELSE 0 END WHERE mode = 'seasonal';

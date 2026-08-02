@@ -167,6 +167,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
             status: String(intervalRow.status) as ProgressionIntervalRecord["status"], changes: rowCounters(intervalRow),
             tempoScore: intervalRow.tempo_score == null ? null : Number(intervalRow.tempo_score),
             formScore: intervalRow.form_score == null ? null : Number(intervalRow.form_score),
+            scoreSampleN: intervalRow.score_sample_n == null ? null : Number(intervalRow.score_sample_n),
             confidence: Number(intervalRow.confidence), scoreVersion: Number(intervalRow.score_version),
           };
       }

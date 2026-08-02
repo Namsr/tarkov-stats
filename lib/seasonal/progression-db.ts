@@ -192,12 +192,22 @@ async function details(input: ProgressionRequest, intervals: DetailDbRow[], prof
 
 function progressionHistory(
   row: Record<string, unknown> | null | undefined,
-  intervalCount: number,
+  counts: Record<string, unknown> | null | undefined,
 ): ProgressionSeriesResponse["history"] {
+  const allIntervalCount = Number(counts?.all_intervals ?? 0);
+  const changedIntervalCount = Number(counts?.changed_intervals ?? 0);
+  const raidIntervalCount = Number(counts?.raid_intervals ?? 0);
+  const tempoPointCount = Number(counts?.tempo_points ?? 0);
+  const formPointCount = Number(counts?.form_points ?? 0);
   return {
     snapshotCount: Number(row?.snapshots ?? 0),
-    intervalCount,
-    ready: intervalCount >= 2,
+    allIntervalCount,
+    changedIntervalCount,
+    raidIntervalCount,
+    tempoPointCount,
+    formPointCount,
+    intervalCount: changedIntervalCount,
+    ready: raidIntervalCount >= 2,
     firstObservedAt: row?.first_observed_at == null ? null : Number(row.first_observed_at),
     lastObservedAt: row?.last_observed_at == null ? null : Number(row.last_observed_at),
   };
@@ -225,7 +235,7 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
         const cycle = await d1.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
           .bind(input.cycleId).first() as { starts_at: number } | null;
         if (!cycle) return null;
-        const [results, intervalResult, profile, history, validIntervals] = await Promise.all([
+        const [results, intervalResult, profile, history, intervalCounts] = await Promise.all([
           Promise.all(PROGRESSION_KINDS.map((kind) => d1.prepare(progressionDailySql(kind))
             .bind("seasonal", input.cycleId, "seasonal", input.cycleId, input.aid).all())),
           d1.prepare(DETAIL_INTERVAL_SQL).bind("seasonal", input.cycleId, input.aid, "seasonal", input.cycleId).all(),
@@ -233,10 +243,14 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
           d1.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
             MAX(profile_updated_at) last_observed_at FROM progression_snapshots
             WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?`).bind(input.cycleId, input.aid).first(),
-          d1.prepare(`SELECT COUNT(*) intervals FROM progression_intervals
-            WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ? AND status = 'valid'
-              AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0 OR pmc_survived != 0
-                OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0)`).bind(input.cycleId, input.aid).first(),
+          d1.prepare(`SELECT COUNT(*) all_intervals,
+              SUM(CASE WHEN status = 'valid' AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0
+                OR pmc_survived != 0 OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0) THEN 1 ELSE 0 END) changed_intervals,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 THEN 1 ELSE 0 END) raid_intervals,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND tempo_score IS NOT NULL THEN 1 ELSE 0 END) tempo_points,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
+            FROM progression_intervals WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?`)
+            .bind(input.cycleId, input.aid).first(),
         ]);
         if (!profile) return null;
         const series = Object.fromEntries(PROGRESSION_KINDS.map((kind, index) => [
@@ -246,11 +260,10 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
             { ...input, kind },
           ),
         ])) as Record<ProgressionKind, ProgressionSeriesResponse>;
-        const intervalCount = Number((validIntervals as Record<string, unknown> | null)?.intervals ?? 0);
         const detailInput = { ...input, kind: "cumulative" as const };
         return mergeProgressionBundle(
           series,
-          progressionHistory(history as Record<string, unknown> | null, intervalCount),
+          progressionHistory(history as Record<string, unknown> | null, intervalCounts as Record<string, unknown> | null),
           await details(detailInput, d1Rows(intervalResult) as unknown as DetailDbRow[], profile),
         );
       };
@@ -268,16 +281,18 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
       const history = sqliteDb.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
         MAX(profile_updated_at) last_observed_at FROM progression_snapshots
         WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(mode, input.cycleId, input.aid) as Record<string, unknown>;
-      const validIntervals = sqliteDb.prepare(`SELECT COUNT(*) intervals FROM progression_intervals
-        WHERE mode = ? AND cycle_id = ? AND aid = ? AND status = 'valid'
-          AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0 OR pmc_survived != 0
-            OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0)`)
-        .get(mode, input.cycleId, input.aid) as { intervals: number };
-      const intervalCount = Number(validIntervals.intervals);
+      const intervalCounts = sqliteDb.prepare(`SELECT COUNT(*) all_intervals,
+          SUM(CASE WHEN status = 'valid' AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0
+            OR pmc_survived != 0 OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0) THEN 1 ELSE 0 END) changed_intervals,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 THEN 1 ELSE 0 END) raid_intervals,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND tempo_score IS NOT NULL THEN 1 ELSE 0 END) tempo_points,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
+        FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
+        .get(mode, input.cycleId, input.aid) as Record<string, unknown>;
       const detailInput = { ...input, kind: "cumulative" as const };
       return mergeProgressionBundle(
         series,
-        progressionHistory(history, intervalCount),
+        progressionHistory(history, intervalCounts),
         await details(detailInput, intervals, profile),
       );
     };
@@ -293,14 +308,14 @@ export async function getLatestProgressionRevision(input: ProgressionIdentity): 
     const row = d1
       ? input.mode === "regular"
         ? null
-        : await d1.prepare(`SELECT MAX(profile_updated_at) revision FROM progression_snapshots
-            WHERE mode = ? AND cycle_id = ? AND aid = ?`)
-          .bind(input.mode, input.cycleId, input.aid).first() as Record<string, unknown> | null
+        : await d1.prepare(`SELECT generation AS revision FROM progression_materializations
+            WHERE mode = ? AND cycle_id = ?`)
+          .bind(input.mode, input.cycleId).first() as Record<string, unknown> | null
       : await getSqliteProgressionDatabase().then((db) => db.prepare(
-          `SELECT MAX(profile_updated_at) revision FROM progression_snapshots
-           WHERE mode = ? AND cycle_id = ? AND aid = ?`,
-        ).get(input.mode, input.cycleId, input.aid) as Record<string, unknown> | undefined);
-    return row?.revision == null ? null : Number(row.revision);
+          `SELECT generation AS revision FROM progression_materializations
+           WHERE mode = ? AND cycle_id = ?`,
+        ).get(input.mode, input.cycleId) as Record<string, unknown> | undefined);
+    return row?.revision == null ? 0 : Number(row.revision);
   } catch (error) {
     console.warn("progression revision unavailable: " + (error as Error).message);
     return null;

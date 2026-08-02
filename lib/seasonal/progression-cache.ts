@@ -12,7 +12,7 @@ import type { ProgressionMode } from "@/types/seasonal";
 
 export const PROGRESSION_CACHE_TTL_SECONDS = 18_000;
 export const PROGRESSION_CACHE_CONTROL =
-  "public, max-age=60, s-maxage=18000, stale-while-revalidate=300";
+  "public, max-age=60, s-maxage=60, stale-while-revalidate=30";
 
 export type CachedProgressionBundle =
   | { status: "ready"; bundle: ProgressionBundle }
@@ -39,7 +39,7 @@ const loadProgressionBundle = unstable_cache(
     if (!bundle) throw new UncacheableProgressionResult("not-found");
     return { status: "ready", bundle };
   },
-  ["progression-bundle-v3"],
+  ["progression-bundle-v4"],
   { revalidate: PROGRESSION_CACHE_TTL_SECONDS },
 );
 

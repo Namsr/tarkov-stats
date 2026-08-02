@@ -245,6 +245,13 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
           AND t.kind <> 'ban_check' AND t.state IN ('queued', 'leased')
         ORDER BY t.priority, t.available_at, t.id LIMIT 100
       `).all(cycleId);
+      const progression = db.prepare(`SELECT
+        SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND
+          (tempo_score IS NULL OR form_score IS NULL OR score_sample_n IS NULL) THEN 1 ELSE 0 END) AS unprocessed_raid_intervals,
+        MAX(ended_at) AS last_interval_at
+        FROM progression_intervals WHERE mode = 'seasonal' AND cycle_id = ?`).get(cycleId) as Record<string, unknown>;
+      const materialization = db.prepare(`SELECT generation, materialized_at
+        FROM progression_materializations WHERE mode = 'seasonal' AND cycle_id = ?`).get(cycleId) as Record<string, unknown> | undefined;
       return {
         run: run ? mapRun(run) : null,
         coverage: {
@@ -252,6 +259,12 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
           captured: scalar(`SELECT COUNT(DISTINCT s.aid) AS n FROM progression_snapshots s JOIN scan_members m
             ON m.mode = s.mode AND m.cycle_id = s.cycle_id AND m.aid = s.aid AND m.active = 1
             WHERE s.mode = 'seasonal' AND s.cycle_id = ?`, cycleId),
+        },
+        progression: {
+          unprocessedRaidIntervals: Number(progression.unprocessed_raid_intervals ?? 0),
+          lastIntervalAt: progression.last_interval_at == null ? null : Number(progression.last_interval_at),
+          generation: Number(materialization?.generation ?? 0),
+          materializedAt: materialization?.materialized_at == null ? null : Number(materialization.materialized_at),
         },
         stale,
         community,

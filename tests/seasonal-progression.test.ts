@@ -174,7 +174,9 @@ test("400-raid adaptive population range uses the median and ignores a 2061-2070
   });
   assert.equal(result.overall.length, 1);
   assert.deepEqual(result.overall[0], {
+    pointId: "overall:1:2451:200",
     date: "2026-07-26",
+    observedAt: 200,
     pmcRaids: 2_460,
     raidMin: 2_061,
     raidMax: 2_460,
@@ -183,6 +185,8 @@ test("400-raid adaptive population range uses the median and ignores a 2061-2070
     p25: 11_000_000,
     p75: 11_000_000,
     n: 200,
+    sampleN: null,
+    preliminary: false,
     confidence: 1,
   });
 });
@@ -220,7 +224,7 @@ test("adaptive ranges dedupe by AID, keep boundaries disjoint, and omit tails be
   assert.equal(result.overall[0].value, 100);
 });
 
-test("a 100-profile max-width tail is emitted with confidence scaled to the 200 target", () => {
+test("a 100-profile score tail reaches full confidence at the 30-profile threshold", () => {
   const rows = Array.from({ length: 100 }, (_, index) => {
     const bucket = (index % 40 + 1) * 10;
     return {
@@ -244,7 +248,7 @@ test("a 100-profile max-width tail is emitted with confidence scaled to the 200 
     { min: 1, max: 400, n: 100 },
   );
   assert.equal(result.overall[0].value, 50.5);
-  assert.equal(result.overall[0].confidence, 0.5);
+  assert.equal(result.overall[0].confidence, 1);
 });
 
 test("Seasonal population portrait uses the latest eligible non-banned profiles", () => {
@@ -281,4 +285,50 @@ test("player reset series ids reach progression points", () => {
     mode: "seasonal", cycleId: "s1", aid: 1, kind: "cumulative",
   });
   assert.deepEqual(result.player.map((point) => point.seriesId), [1, 2]);
+});
+
+test("score points expose stable ids, interval details, and preliminary confidence", () => {
+  const rows = [
+    {
+      aid: 1, point_id: 42, local_date: "2026-01-02", observed_at: 200, value: 62,
+      pmc_raids: 5, raid_bucket: 10, lifetime_hours: 10, freshness_at: 200, confidence: 0.9,
+      series_id: 1, score_sample_n: 15, period_start_at: 100, elapsed_days: 0.5,
+      delta_experience: 1200, delta_pmc_raids: 1,
+    },
+  ];
+  const result = buildProgressionSeries(rows, {
+    mode: "seasonal", cycleId: "s1", aid: 1, kind: "tempo",
+  });
+  assert.equal(result.player.length, 1);
+  assert.deepEqual(result.player[0], {
+    pointId: "tempo:player:42",
+    date: "2026-01-02",
+    observedAt: 200,
+    pmcRaids: 5,
+    value: 62,
+    seriesId: 1,
+    p25: null,
+    p75: null,
+    n: 1,
+    sampleN: 15,
+    preliminary: true,
+    confidence: 0.45,
+    periodStartAt: 100,
+    elapsedDays: 0.5,
+    deltaExperience: 1200,
+    deltaPmcRaids: 1,
+  });
+});
+
+test("player coordinates are unique inside a reset series", () => {
+  const rows = [
+    { aid: 1, point_id: 1, local_date: "2026-01-01", observed_at: 100, value: 50, pmc_raids: 10, raid_bucket: 10, lifetime_hours: 10, freshness_at: 100, confidence: 1, series_id: 1, score_sample_n: 30 },
+    { aid: 1, point_id: 2, local_date: "2026-01-02", observed_at: 200, value: 55, pmc_raids: 10, raid_bucket: 10, lifetime_hours: 10, freshness_at: 200, confidence: 1, series_id: 1, score_sample_n: 30 },
+    { aid: 1, point_id: 3, local_date: "2026-01-03", observed_at: 300, value: 45, pmc_raids: 10, raid_bucket: 10, lifetime_hours: 10, freshness_at: 300, confidence: 1, series_id: 2, score_sample_n: 30 },
+  ];
+  const result = buildProgressionSeries(rows, {
+    mode: "seasonal", cycleId: "s1", aid: 1, kind: "form",
+  });
+  assert.deepEqual(result.player.map((point) => `${point.seriesId}:${point.pmcRaids}`), ["1:10", "2:10"]);
+  assert.equal(result.player[0].pointId, "form:player:2");
 });

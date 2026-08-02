@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS progression_intervals (
   experience INTEGER NOT NULL, pmc_raids INTEGER NOT NULL, scav_raids INTEGER NOT NULL,
   pmc_survived INTEGER NOT NULL, pmc_deaths INTEGER NOT NULL, pmc_kills INTEGER NOT NULL,
   killed_pmc INTEGER NOT NULL, tempo_score REAL, form_score REAL,
+  score_sample_n INTEGER,
   confidence REAL NOT NULL DEFAULT 0, score_version INTEGER NOT NULL DEFAULT 1,
   UNIQUE(mode, cycle_id, aid, from_snapshot_id, to_snapshot_id)
 );
@@ -96,6 +97,11 @@ CREATE TABLE IF NOT EXISTS daily_aggregates (
   n INTEGER NOT NULL, confidence REAL NOT NULL, freshness_at INTEGER NOT NULL,
   score_version INTEGER NOT NULL,
   PRIMARY KEY (mode, cycle_id, local_date, kind, dimension, bucket_min)
+);
+CREATE TABLE IF NOT EXISTS progression_materializations (
+  mode TEXT NOT NULL, cycle_id TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+  materialized_at INTEGER NOT NULL DEFAULT 0, score_version INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (mode, cycle_id)
 );
 
 CREATE TABLE IF NOT EXISTS scan_cohorts (
