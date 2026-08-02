@@ -144,6 +144,33 @@ test("regular backfill is idempotent, classifies counters, and unlocks after two
   assert.equal(cycleLookups, 1, "the bundle must resolve its cycle only once for all three kinds");
 });
 
+test("regular capture materialization refreshes only the affected raid bucket", () => {
+  const db = new DatabaseSync(":memory:");
+  materializeRegularProgression(db);
+  const insert = db.prepare(`INSERT INTO progression_snapshots (
+    mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, stats_json
+  ) VALUES ('regular', 'persistent', ?, ?, ?, ?, 'x', ?)`);
+  insert.run(1, day, day, day, stats(100, 1));
+  insert.run(1, 2 * day, 2 * day, 2 * day, stats(200, 2));
+  insert.run(2, day, day, day, stats(100, 11));
+  insert.run(2, 2 * day, 2 * day, 2 * day, stats(200, 12));
+  materializeRegularProgression(db);
+  const before = db.prepare(`SELECT local_date, kind, bucket_min, mean, n, confidence
+    FROM daily_aggregates WHERE bucket_min = 10 ORDER BY local_date, kind`).all();
+  const generationBefore = db.prepare(`SELECT generation FROM progression_materializations
+    WHERE mode = 'regular' AND cycle_id = 'persistent'`).get().generation;
+
+  insert.run(1, 3 * day, 3 * day, 3 * day, stats(300, 3));
+  materializeRegularProgression(db, 1, { targetBucket: 10 });
+
+  const after = db.prepare(`SELECT local_date, kind, bucket_min, mean, n, confidence
+    FROM daily_aggregates WHERE bucket_min = 10 ORDER BY local_date, kind`).all();
+  const generationAfter = db.prepare(`SELECT generation FROM progression_materializations
+    WHERE mode = 'regular' AND cycle_id = 'persistent'`).get().generation;
+  assert.equal(generationAfter, generationBefore + 1);
+  assert.deepEqual(after, before);
+});
+
 test("regular reset starts a new series and remains distinct from an anomaly", () => {
   const db = new DatabaseSync(":memory:");
   materializeRegularProgression(db);

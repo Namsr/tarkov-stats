@@ -62,8 +62,8 @@ export async function POST(request: Request) {
     await store.upsertProfile(validated.profile);
     const capture = await store.captureSnapshot(validated.profile);
     await recordSeasonalCaptureLifecycle(cycle, validated.profile, capture, "task");
-    if (capture.interval) {
-      await refreshProgressionAfterCapture("seasonal", cycle.cycleId, validated.profile.counters.pmcRaids);
+    if (capture.inserted) {
+      await refreshProgressionAfterCapture("seasonal", cycle.cycleId, validated.profile.counters.pmcRaids, { force: true });
     }
     return Response.json({ state: capture.status }, { headers });
   } catch (error) {

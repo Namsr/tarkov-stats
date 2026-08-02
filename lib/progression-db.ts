@@ -1,6 +1,7 @@
 import type { PlayerSnapshotInput } from "@/lib/ban-db";
 import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
 import { materializeRegularProgression } from "@/lib/regular-progression";
+import { raidBucket } from "@/lib/seasonal/progression";
 import { LEGACY_IDENTITY } from "@/types/seasonal";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
@@ -202,7 +203,8 @@ function sqliteStore(db: any): ProgressionStore {
       db.exec("SAVEPOINT record_regular_snapshot");
       try {
         db.prepare(INSERT_SQL).run(...args(input, seriesId));
-        materializeRegularProgression(db, input.aid);
+        const targetBucket = raidBucket(input.stats.pmcRaids);
+        materializeRegularProgression(db, input.aid, { targetBucket });
         db.exec("RELEASE record_regular_snapshot");
       } catch (error) {
         db.exec("ROLLBACK TO record_regular_snapshot");

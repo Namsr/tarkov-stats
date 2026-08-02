@@ -27,4 +27,12 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
 
   const helperApi = await readFile("lib/seasonal/helper-api.ts", "utf8");
   assert.match(helperApi, /isCommunityHelperEnabled\(\)/);
+  for (const source of [
+    await readFile("app/api/player/profile/route.ts", "utf8"),
+    await readFile("app/api/operator/seasonal/profile/route.ts", "utf8"),
+    helperApi,
+  ]) {
+    assert.match(source, /if \(capture\.inserted\)/);
+    assert.match(source, /refreshProgressionAfterCapture\([\s\S]*\{ force: true \}\)/);
+  }
 });

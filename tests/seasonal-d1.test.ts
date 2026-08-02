@@ -36,13 +36,20 @@ class FakeD1 {
   constructor(db: DatabaseSync) { this.db = db; }
   prepare(sql: string) { return new FakeStatement(this.db, sql); }
   async batch(statements: FakeStatement[]) {
-    const results = [];
-    for (const statement of statements) {
-      const trimmed = (statement as unknown as { sql: string }).sql;
-      results.push(/^\s*(SELECT|WITH\s+ranked\s+AS\s*\(\s*SELECT)/i.test(trimmed)
-        ? await statement.all() : await statement.run());
+    this.db.exec("BEGIN");
+    try {
+      const results = [];
+      for (const statement of statements) {
+        const trimmed = (statement as unknown as { sql: string }).sql;
+        results.push(/^\s*(SELECT|WITH\s+ranked\s+AS\s*\(\s*SELECT)/i.test(trimmed)
+          ? await statement.all() : await statement.run());
+      }
+      this.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
-    return results;
   }
 }
 
@@ -152,6 +159,14 @@ test("daily materialization populates Tempo/Form scores and physical aggregate r
   );
 });
 
+test("baseline materialization advances the revision without creating score points", () => {
+  const db = new DatabaseSync(":memory:");
+  const result = refreshSqliteSeasonalAggregates(db, "s1", 0);
+  assert.equal(result.generation, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_intervals").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM daily_aggregates").get().n, 0);
+});
+
 test("SQLite Tempo and Form require a PMC-raid interval", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createSqliteSeasonalStore(db);
@@ -248,6 +263,50 @@ test("incremental and full SQLite materialization agree and advance the generati
   assert.equal(incremental.generation, 2);
   assert.equal(full.generation, 3);
   assert.deepEqual(partialRows, fullRows);
+});
+
+test("incremental and full D1 materialization agree and advance the generation", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(SEASONAL_SCHEMA);
+  const d1 = new FakeD1(sqlite);
+  const store = createD1SeasonalStore(d1);
+  for (const aid of [31, 32]) {
+    const first = profile(aid, Date.parse("2026-07-01T12:00:00Z"), 0, 0);
+    const second = profile(aid, Date.parse("2026-07-02T12:00:00Z"), 1, 1);
+    await store.upsertProfile(first); await store.captureSnapshot(first);
+    await store.upsertProfile(second); await store.captureSnapshot(second);
+  }
+  const initial = await refreshD1SeasonalAggregates(d1, "s1");
+  const next = profile(31, Date.parse("2026-07-03T12:00:00Z"), 2, 2);
+  await store.upsertProfile(next); await store.captureSnapshot(next);
+  const incremental = await refreshD1SeasonalAggregates(d1, "s1", 10);
+  const partialRows = sqlite.prepare(`SELECT aid, tempo_score, form_score, score_sample_n
+    FROM progression_intervals ORDER BY aid, id`).all().map((row: Record<string, unknown>) => ({ ...row }));
+  const full = await refreshD1SeasonalAggregates(d1, "s1");
+  const fullRows = sqlite.prepare(`SELECT aid, tempo_score, form_score, score_sample_n
+    FROM progression_intervals ORDER BY aid, id`).all().map((row: Record<string, unknown>) => ({ ...row }));
+  assert.equal(initial.generation, 1);
+  assert.equal(incremental.generation, 2);
+  assert.equal(full.generation, 3);
+  assert.deepEqual(partialRows, fullRows);
+});
+
+test("D1 materialization rolls back all derived writes when one statement fails", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(SEASONAL_SCHEMA);
+  const d1 = new FakeD1(sqlite);
+  const store = createD1SeasonalStore(d1);
+  const first = profile(33, Date.parse("2026-07-01T12:00:00Z"), 0, 0);
+  const second = profile(33, Date.parse("2026-07-02T12:00:00Z"), 1, 1);
+  await store.upsertProfile(first); await store.captureSnapshot(first);
+  await store.upsertProfile(second); await store.captureSnapshot(second);
+  sqlite.exec(`CREATE TRIGGER fail_d1_aggregates BEFORE INSERT ON daily_aggregates
+    BEGIN SELECT RAISE(ABORT, 'd1 aggregate failure'); END`);
+  await assert.rejects(refreshD1SeasonalAggregates(d1, "s1"), /d1 aggregate failure/);
+  assert.deepEqual({ ...sqlite.prepare(`SELECT tempo_score, form_score, score_sample_n
+    FROM progression_intervals`).get() }, { tempo_score: null, form_score: null, score_sample_n: null });
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM daily_aggregates").get().n, 0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM progression_materializations").get().n, 0);
 });
 
 test("D1 Tempo and Form require a PMC-raid interval", async () => {

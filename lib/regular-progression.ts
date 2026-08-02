@@ -13,6 +13,11 @@ interface SnapshotRow {
   nickname: string | null; stats_json: string;
 }
 
+export interface RegularMaterializationOptions {
+  /** Rebuild only the affected 10-raid bucket after a new snapshot. */
+  targetBucket?: number;
+}
+
 const KEYS = ["experience", "pmcRaids", "scavRaids", "pmcSurvived", "pmcDeaths", "pmcKills", "killedPmc"] as const;
 const DAY_MS = 86_400_000;
 
@@ -32,7 +37,11 @@ function parse(row: SnapshotRow): { counters: Counters | null; valid: boolean; n
 }
 
 /** Idempotently upgrades legacy regular snapshots into the shared progression model. */
-export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: number): { snapshots: number; intervals: number } {
+export function materializeRegularProgression(
+  db: SqliteDatabase,
+  onlyAid?: number,
+  options: RegularMaterializationOptions = {},
+): { snapshots: number; intervals: number } {
   initializeSeasonalSchema(db);
   db.exec("SAVEPOINT materialize_regular_progression");
   try {
@@ -104,7 +113,7 @@ export function materializeRegularProgression(db: SqliteDatabase, onlyAid?: numb
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
         Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0);
     }
-    refreshSqliteProgressionAggregates(db, "regular", "persistent");
+    refreshSqliteProgressionAggregates(db, "regular", "persistent", options.targetBucket);
     db.exec("RELEASE materialize_regular_progression");
     return { snapshots: rows.length, intervals: intervalCount };
   } catch (error) {

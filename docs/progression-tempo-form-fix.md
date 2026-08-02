@@ -52,6 +52,12 @@ status = valid
 ## Миграция и backfill
 
 1. Сделать резервную копию SQLite/D1.
+   Для D1 перед миграцией сохраните полный remote-export:
+
+   ```text
+   wrangler d1 export <database-name> --remote --output=./progression-before-backfill.sql
+   ```
+
 2. Для старого D1 применить один раз `scripts/seasonal-progression-revision-d1.sql`.
    Свежая схема уже содержит новые поля.
 3. Для SQLite запустить:
@@ -66,6 +72,17 @@ status = valid
    берётся последняя включённая запись из `season_cycles`.
 4. Для D1 после smoke-проверки вызвать операторский run до завершения: его финальный
    шаг использует тот же полный `refreshSeasonalDailyAggregates`.
+
+5. Выполнить production smoke-check для SQLite:
+
+   ```text
+   npm run smoke:progression -- <path-to-progression.db> [active-season-cycle]
+   ```
+
+   Smoke-check проверяет `quick_check`, наличие совместимой схемы, отсутствие
+   необработанных рейдовых интервалов/лишних score у нерейдовых интервалов и наличие
+   ревизии materialization. Для D1 те же инварианты выполняются запросами ниже через
+   `wrangler d1 execute <database-name> --remote`.
 
 Проверить после запуска:
 
@@ -85,6 +102,11 @@ WHERE (status <> 'valid' OR pmc_raids <= 0)
 рейдовые интервалы, задержка materialization и расхождение `generation` между
 записью и публичным кэшем; первые значения доступны в `progression` ответа
 `/api/operator/seasonal/status`.
+
+D1 materialization выполняется одной `D1Database.batch()`-транзакцией: очистка,
+пересчёт score, daily aggregates и увеличение generation либо применяются вместе,
+либо откатываются целиком. Лимит batch учитывается при планировании размера
+активной выборки (до 1 000 statements на free tier, до 10 000 на paid tier).
 
 ## Проверки
 

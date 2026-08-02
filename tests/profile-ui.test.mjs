@@ -372,6 +372,9 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(chart, /spacedLevelLabels\(/);
   assert.match(chart, /progression\.xpLevelValue/);
   assert.match(chart, /aria-label=\{label\}/);
+  assert.match(chart, /function moscowTimestamp\(timestamp: number\)/);
+  assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt\)/);
+  assert.doesNotMatch(chart, /point\.periodStartAt[\s\S]*toISOString\(\)\.slice/);
   assert.match(route, /getRegularProgressionAverage\(\)/);
   assert.match(route, /"Cache-Control": "public, max-age=60"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);

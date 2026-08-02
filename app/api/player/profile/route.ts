@@ -94,8 +94,8 @@ export async function GET(request: NextRequest) {
         fetchPayload: ({ aid: seasonalAid }) => fetchSeasonalPayload(seasonalAid),
         afterCapture: async ({ cycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt);
-          if (capture.interval) {
-            await refreshProgressionAfterCapture("seasonal", cycle.cycleId, profile.counters.pmcRaids);
+          if (capture.inserted) {
+            await refreshProgressionAfterCapture("seasonal", cycle.cycleId, profile.counters.pmcRaids, { force: true });
           }
         },
       }

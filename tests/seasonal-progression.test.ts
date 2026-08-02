@@ -174,7 +174,7 @@ test("400-raid adaptive population range uses the median and ignores a 2061-2070
   });
   assert.equal(result.overall.length, 1);
   assert.deepEqual(result.overall[0], {
-    pointId: "overall:1:2451:200",
+    pointId: "cumulative:overall:2061-2460",
     date: "2026-07-26",
     observedAt: 200,
     pmcRaids: 2_460,
@@ -318,6 +318,33 @@ test("score points expose stable ids, interval details, and preliminary confiden
     deltaExperience: 1200,
     deltaPmcRaids: 1,
   });
+});
+
+test("aggregate point ids stay stable when the freshest cohort member changes", () => {
+  const rows = Array.from({ length: 100 }, (_, index) => ({
+    aid: index + 1,
+    point_id: index + 1,
+    local_date: "2026-01-01",
+    observed_at: index + 1,
+    value: 100,
+    pmc_raids: 5,
+    raid_bucket: 10,
+    lifetime_hours: 100,
+    freshness_at: index + 1,
+    confidence: 1,
+    series_id: 1,
+  }));
+  const first = buildProgressionSeries(rows, {
+    mode: "seasonal", cycleId: "s1", aid: 999, kind: "tempo",
+  });
+  const changed = rows.map((row, index) => index === 0
+    ? { ...row, point_id: 9_999, freshness_at: 9_999 }
+    : row);
+  const second = buildProgressionSeries(changed, {
+    mode: "seasonal", cycleId: "s1", aid: 999, kind: "tempo",
+  });
+  assert.equal(first.overall[0].pointId, "tempo:overall:1-400");
+  assert.equal(second.overall[0].pointId, first.overall[0].pointId);
 });
 
 test("player coordinates are unique inside a reset series", () => {

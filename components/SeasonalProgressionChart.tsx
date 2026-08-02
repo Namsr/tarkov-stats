@@ -41,6 +41,12 @@ function moscowDate(date: string): string {
   });
 }
 
+function moscowTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleDateString(undefined, {
+    timeZone: "Europe/Moscow",
+  });
+}
+
 function coordinate(point: ProgressionPoint): number {
   return point.pmcRaids;
 }
@@ -230,9 +236,7 @@ export default function SeasonalProgressionChart({
                       })
                     : fmt(point.value, data.kind);
                   const series = t((mode === "regular" ? "progression.series." : "seasonal.series.") + key);
-                  const periodStart = point.periodStartAt == null
-                    ? null
-                    : moscowDate(new Date(point.periodStartAt).toISOString().slice(0, 10));
+                  const periodStart = point.periodStartAt == null ? null : moscowTimestamp(point.periodStartAt);
                   const period = periodStart ? `${periodStart} → ${moscowDate(point.date)}` : moscowDate(point.date);
                   const scoreTooltipValues = {
                     series,

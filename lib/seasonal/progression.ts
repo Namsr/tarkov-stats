@@ -292,6 +292,10 @@ function fallbackPointId(prefix: string, row: DailyRow): string {
   return `${prefix}:${row.point_id ?? `${row.series_id}:${row.pmc_raids}:${row.freshness_at}`}`;
 }
 
+function aggregatePointId(prefix: string, min: number, max: number): string {
+  return `${prefix}:${min}-${max}`;
+}
+
 function progressionPoint({
   pointId,
   date,
@@ -345,6 +349,7 @@ function progressionPoint({
 function overallPoints(
   rows: DailyRow[],
   scored = false,
+  pointPrefix = "overall",
 ): ProgressionPoint[] {
   const rowsByBucket = new Map<number, DailyRow[]>();
   for (const row of rows) {
@@ -375,8 +380,9 @@ function overallPoints(
     const confidence = members.reduce((sum, row) => sum + row.confidence, 0) / members.length
       * Math.min(1, members.length / (scored ? SCORE_PRELIMINARY_SAMPLE_N : PROGRESSION_TARGET_SAMPLE));
     const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
+    const raidMin = start - PROGRESSION_BASE_RAID_STEP + 1;
     points.push(progressionPoint({
-      pointId: fallbackPointId("overall", latest),
+      pointId: aggregatePointId(pointPrefix, raidMin, end),
       date: latest.local_date,
       observedAt: latest.observed_at ?? latest.freshness_at,
       pmcRaids: end,
@@ -386,7 +392,7 @@ function overallPoints(
       confidence,
       seriesId: null,
       sampleN: scored ? values.length : null,
-      raidRange: { min: start - PROGRESSION_BASE_RAID_STEP + 1, max: end },
+      raidRange: { min: raidMin, max: end },
     }));
   }
   return points;
@@ -400,7 +406,7 @@ export function buildSeasonalAverageSeries(
 ): SeasonalAverageSeries {
   void _distribution;
   const rows = sourceRows.filter((row) => Number.isFinite(row.value));
-  const overall = overallPoints(rows, kind !== "cumulative");
+  const overall = overallPoints(rows, kind !== "cumulative", `${kind}:overall`);
   const latest = overall.at(-1);
   return {
     kind,
@@ -474,8 +480,9 @@ export function buildProgressionSeries(
     latestN = cohort.members.length;
     const members = cohort.members.map((member) => member.value);
     const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
+    const raidMin = bucket - PROGRESSION_BASE_RAID_STEP + 1;
     return [progressionPoint({
-      pointId: fallbackPointId(`nearby:${bucket}`, latest),
+      pointId: aggregatePointId(`${input.kind}:nearby`, raidMin, bucket),
       date: latest.local_date,
       observedAt: latest.observed_at ?? latest.freshness_at,
       pmcRaids: bucket,
@@ -484,11 +491,11 @@ export function buildProgressionSeries(
       n: values.length,
       confidence: sampleConfidence(members),
       seriesId: null,
-    sampleN: input.kind === "cumulative" ? null : values.length,
-      raidRange: { min: bucket - PROGRESSION_BASE_RAID_STEP + 1, max: bucket },
+      sampleN: input.kind === "cumulative" ? null : values.length,
+      raidRange: { min: raidMin, max: bucket },
     })];
   });
-  const overall = overallPoints(rows, input.kind !== "cumulative");
+  const overall = overallPoints(rows, input.kind !== "cumulative", `${input.kind}:overall`);
   const freshnessAt = rows.length ? Math.max(...rows.map((row) => row.freshness_at)) : null;
   const confidences = nearby.map((entry) => entry.confidence);
   const firstObservedAt = playerRows.length ? Math.min(...playerRows.map((row) => Number(row.freshness_at))) : null;
