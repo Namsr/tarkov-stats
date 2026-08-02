@@ -37,6 +37,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dashboard, /href=\{profileHref\(account\.aid, mode\)\}/);
   assert.match(dashboard, /onClick=\{\(event\) => event\.stopPropagation\(\)\}/);
   assert.match(dashboard, /onKeyDown=\{\(event\) => event\.stopPropagation\(\)\}/);
+  assert.match(dashboard, /const riskMode = moderation\?\.risk\?\.mode/);
+  assert.match(dashboard, /moderation\.risk\.mode/);
   assert.match(dashboard, /moderation\?\.risk\?\.profileUpdatedAt/);
   assert.match(profile, /isAdmin && <Link href="\/admin"/);
   assert.match(dictionary, /"profile\.admin": "Admin console"/);
