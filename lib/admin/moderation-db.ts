@@ -435,7 +435,7 @@ async function getModerationDb(): Promise<SqliteDatabase> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sqlite = (await import("node:sqlite" as string)) as any;
   sqliteDb = new sqlite.DatabaseSync(file);
-  sqliteDb.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  sqliteDb.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;");
   return sqliteDb;
 }
 

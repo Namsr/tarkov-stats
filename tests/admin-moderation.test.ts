@@ -8,6 +8,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { createSqliteModerationStore, ModerationConflictError } from "../lib/admin/moderation-db.ts";
+import { isValidMutationOrigin } from "../lib/admin/origin.ts";
 import { createSqliteBanStore } from "../lib/ban-db.ts";
 import { createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 import { materializeRegularProgression } from "../lib/regular-progression.ts";
@@ -70,6 +71,27 @@ test("risk, reports, reviews, and bans stay distinct and manual restore retains 
       .map((item) => item.detail), [null, null, null]);
     assert.equal(db.prepare("PRAGMA main.journal_mode").get().journal_mode, "delete");
   } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("admin mutations accept the public origin behind a reverse proxy", () => {
+  const previous = process.env.PUBLIC_BASE_URL;
+  process.env.PUBLIC_BASE_URL = "https://tarkovstats.ru";
+  try {
+    assert.equal(isValidMutationOrigin(new Request("http://web:3000/api/admin/bans", {
+      headers: {
+        origin: "https://tarkovstats.ru",
+        host: "web:3000",
+        "x-forwarded-host": "tarkovstats.ru",
+        "x-forwarded-proto": "https",
+      },
+    })), true);
+    assert.equal(isValidMutationOrigin(new Request("http://web:3000/api/admin/bans", {
+      headers: { origin: "https://evil.example", "x-forwarded-host": "tarkovstats.ru", "x-forwarded-proto": "https" },
+    })), false);
+  } finally {
+    if (previous === undefined) delete process.env.PUBLIC_BASE_URL;
+    else process.env.PUBLIC_BASE_URL = previous;
+  }
 });
 
 test("upstream confirmation prevents administrator ban override and restore", () => {

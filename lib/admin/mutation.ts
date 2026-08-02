@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/admin-auth";
+import { isValidMutationOrigin } from "@/lib/admin/origin";
 
 export const ADMIN_NO_STORE_HEADERS = {
   "Cache-Control": "no-store",
@@ -20,8 +21,7 @@ export async function rejectInvalidAdminMutation(request: Request): Promise<Resp
       { status: 415, headers: ADMIN_NO_STORE_HEADERS }
     );
   }
-  const origin = request.headers.get("origin");
-  if (!origin || origin !== new URL(request.url).origin) {
+  if (!isValidMutationOrigin(request)) {
     return Response.json(
       { error: "Invalid origin" },
       { status: 403, headers: ADMIN_NO_STORE_HEADERS }
