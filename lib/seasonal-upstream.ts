@@ -236,9 +236,16 @@ export function seasonalLastAccess(profile: unknown): number {
     skills.Common.forEach((value, index) => {
       const skill = requiredRecord(value, `profile.skills.Common[${index}]`);
       if (skill.LastAccess !== undefined && skill.LastAccess !== null) {
-        candidates.push(
-          unixMilliseconds(skill.LastAccess, `profile.skills.Common[${index}].LastAccess`)
+        const lastAccess = finiteNumber(
+          skill.LastAccess,
+          `profile.skills.Common[${index}].LastAccess`
         );
+        // EFT uses negative sentinels for skills that have never been accessed.
+        if (lastAccess > 0) {
+          candidates.push(
+            unixMilliseconds(lastAccess, `profile.skills.Common[${index}].LastAccess`)
+          );
+        }
       }
     });
   }

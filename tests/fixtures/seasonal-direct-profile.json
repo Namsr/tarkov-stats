@@ -1,0 +1,73 @@
+{
+  "aid": 730003,
+  "updated": 1785969007540,
+  "info": {
+    "nickname": "SeasonalFixture",
+    "experience": 1527565,
+    "prestigeLevel": 0
+  },
+  "skills": {
+    "Common": [
+      {
+        "Id": "fixture-skill-001",
+        "LastAccess": 1785777502
+      },
+      {
+        "Id": "fixture-skill-002",
+        "LastAccess": 1785967182
+      },
+      {
+        "Id": "fixture-skill-003",
+        "LastAccess": -2147483648
+      }
+    ]
+  },
+  "achievements": {
+    "fixture-achievement-001": 1785778111,
+    "fixture-achievement-002": 1785778968
+  },
+  "pmcStats": {
+    "eft": {
+      "overAllCounters": {
+        "Items": [
+          {
+            "Key": ["Sessions", "Pmc"],
+            "Value": 112
+          },
+          {
+            "Key": ["Kills"],
+            "Value": 351
+          },
+          {
+            "Key": ["Deaths"],
+            "Value": 65
+          },
+          {
+            "Key": ["KilledPmc"],
+            "Value": 79
+          },
+          {
+            "Key": ["ExitStatus", "Survived", "Pmc"],
+            "Value": 41
+          },
+          {
+            "Key": ["LongestWinStreak", "Pmc"],
+            "Value": 6
+          }
+        ]
+      }
+    }
+  },
+  "scavStats": {
+    "eft": {
+      "overAllCounters": {
+        "Items": [
+          {
+            "Key": ["Sessions", "Scav"],
+            "Value": 8
+          }
+        ]
+      }
+    }
+  }
+}

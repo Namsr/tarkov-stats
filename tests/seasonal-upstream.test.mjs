@@ -68,16 +68,25 @@ test("adapts the confirmed Seasonal section of a common profile", async () => {
 });
 
 test("adapts an ordinary raw profile when direct_profile is explicitly confirmed", async () => {
-  const payload = await loadFixture("seasonal-game-mode.json");
-  const raw = { ...payload.profile, aid: payload.aid };
-  const profile = parseSeasonalProfile(raw, {
+  const payload = await loadFixture("seasonal-direct-profile.json");
+  const profile = parseSeasonalProfile(payload, {
     ...baseOptions,
     confirmedContract: "direct_profile",
+    seasonStartsAt: 1_785_800_000_000,
+    seasonEndsAt: null,
   });
 
-  assert.equal(profile.aid, payload.aid);
+  assert.equal(profile.aid, 730003);
   assert.equal(profile.cycleId, baseOptions.cycleId);
-  assert.equal(profile.counters.pmcRaids, 12);
+  assert.equal(profile.profileUpdatedAt, 1_785_969_007_540);
+  assert.equal(profile.lastAccessAt, 1_785_967_182_000);
+  assert.equal(profile.counters.pmcRaids, 112);
+  assert.equal(profile.counters.scavRaids, 8);
+  assert.equal(profile.counters.pmcSurvived, 41);
+  assert.equal(profile.counters.pmcDeaths, 65);
+  assert.equal(profile.counters.pmcKills, 351);
+  assert.equal(profile.counters.killedPmc, 79);
+  assert.equal(profile.staticSignals?.longestWinStreak, 6);
 });
 
 test("LastAccess is the maximum across Common skills and achievement timestamps", () => {
@@ -152,6 +161,10 @@ test("runtime validation rejects malformed counters and timestamps", async () =>
   const invalidTimestamp = structuredClone(payload);
   invalidTimestamp.seasonal.profile.updated = "yesterday";
   assert.equal(validateSeasonalProfile(invalidTimestamp, options).code, "invalid_payload");
+
+  const invalidSkillTimestamp = structuredClone(payload);
+  invalidSkillTimestamp.seasonal.profile.skills.Common[0].LastAccess = "1783587000";
+  assert.equal(validateSeasonalProfile(invalidSkillTimestamp, options).code, "invalid_payload");
 
   const zeroAid = structuredClone(payload);
   zeroAid.aid = 0;
