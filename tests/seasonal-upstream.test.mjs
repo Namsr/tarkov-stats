@@ -67,6 +67,19 @@ test("adapts the confirmed Seasonal section of a common profile", async () => {
   assert.deepEqual(result.ok && result.profile.staticSignals?.achievementIds, ["newest", "older"]);
 });
 
+test("adapts an ordinary raw profile when direct_profile is explicitly confirmed", async () => {
+  const payload = await loadFixture("seasonal-game-mode.json");
+  const raw = { ...payload.profile, aid: payload.aid };
+  const profile = parseSeasonalProfile(raw, {
+    ...baseOptions,
+    confirmedContract: "direct_profile",
+  });
+
+  assert.equal(profile.aid, payload.aid);
+  assert.equal(profile.cycleId, baseOptions.cycleId);
+  assert.equal(profile.counters.pmcRaids, 12);
+});
+
 test("LastAccess is the maximum across Common skills and achievement timestamps", () => {
   assert.equal(
     seasonalLastAccess({

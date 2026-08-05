@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS excluded_players (
 CREATE TABLE IF NOT EXISTS season_cycles (
   mode TEXT NOT NULL CHECK (mode = 'seasonal'), cycle_id TEXT NOT NULL,
   starts_at INTEGER NOT NULL, ends_at INTEGER, enabled INTEGER NOT NULL DEFAULT 0,
-  upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section')),
+  upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section', 'direct_profile')),
   PRIMARY KEY (mode, cycle_id)
 );
 

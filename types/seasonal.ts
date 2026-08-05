@@ -3,6 +3,16 @@ export const GAME_MODES = ["regular", "pve", "arena", "seasonal"] as const;
 export type GameMode = (typeof GAME_MODES)[number];
 export type CycleId = string;
 
+/** The internal mode name stays stable even when Tarkov.dev uses another slug. */
+export const SEASONAL_UPSTREAM_MODE = "pvp-season" as const;
+export type SeasonalCollectionSource = "operator" | "json_feed";
+export type SeasonalUpstreamContract = "game_mode" | "profile_section" | "direct_profile";
+
+/** Maps an internal mode to the slug understood by Tarkov.dev URLs. */
+export function tarkovDevMode(mode: GameMode): string {
+  return mode === "seasonal" ? SEASONAL_UPSTREAM_MODE : mode;
+}
+
 /** Legacy routes and rows without an explicit identity remain regular/persistent. */
 export const LEGACY_IDENTITY = {
   mode: "regular",
@@ -21,7 +31,9 @@ export interface SeasonCycle {
   startsAt: number;
   endsAt: number | null;
   enabled: boolean;
-  upstreamContract: "game_mode" | "profile_section" | null;
+  upstreamContract: SeasonalUpstreamContract | null;
+  /** Optional for backwards-compatible callers; configuration defaults to operator. */
+  collectionSource?: SeasonalCollectionSource;
 }
 
 /** Canonical cumulative fields shared by snapshots, intervals, and formulas. */

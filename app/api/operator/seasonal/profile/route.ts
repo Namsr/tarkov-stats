@@ -18,6 +18,9 @@ export async function POST(request: Request) {
   if (!isSeasonalRolloutReady()) {
     return Response.json({ error: "Seasonal capture unavailable" }, { status: 404, headers });
   }
+  if (loadSeasonalCycleConfig()?.collectionSource === "json_feed") {
+    return Response.json({ error: "Seasonal JSON feed owns collection" }, { status: 404, headers });
+  }
   const body = await request.json().catch(() => null) as
     | { aid?: unknown; cycleId?: unknown; runId?: unknown; taskId?: unknown; owner?: unknown; profile?: unknown }
     | null;

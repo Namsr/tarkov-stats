@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import type { GameMode } from "@/types/seasonal";
+import { tarkovDevMode, type GameMode } from "@/types/seasonal";
 
 /** tarkov.dev profile URL (regular mode) for an account id. */
 function tarkovDevUrl(aid: number, mode: GameMode): string {
-  return `https://tarkov.dev/players/${mode}/${aid}`;
+  return `https://tarkov.dev/players/${tarkovDevMode(mode)}/${aid}`;
 }
 
 export type RefreshCheckResult = "updated" | "unchanged";

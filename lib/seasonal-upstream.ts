@@ -2,10 +2,10 @@ import type {
   CycleId,
   SeasonalCounters,
   SeasonalProfile,
-  SeasonCycle,
+  SeasonalUpstreamContract as SeasonalUpstreamContractType,
 } from "@/types/seasonal";
 
-export type SeasonalUpstreamContract = NonNullable<SeasonCycle["upstreamContract"]>;
+export type SeasonalUpstreamContract = SeasonalUpstreamContractType;
 
 export interface SeasonalAdapterOptions {
   /** Seasonal remains fail-closed until rollout explicitly enables it. */
@@ -129,6 +129,24 @@ function extractProfileSectionContract(payload: UnknownRecord): ExtractedContrac
     aid: positiveAid(payload.aid),
     cycleId: requiredString(seasonal.cycleId, "seasonal.cycleId"),
     profile: requiredRecord(seasonal.profile, "seasonal.profile"),
+  };
+}
+
+/**
+ * The public static cache may expose the ordinary profile object directly.
+ * The cycle is supplied by our confirmed configuration because direct
+ * profiles do not carry a Seasonal wrapper or cycle id.
+ */
+function extractDirectProfileContract(
+  payload: UnknownRecord,
+  cycleId: string,
+): ExtractedContract {
+  const profile = requiredRecord(payload, "profile");
+  const aid = payload.aid ?? profile.aid;
+  return {
+    aid: positiveAid(aid),
+    cycleId,
+    profile,
   };
 }
 
@@ -262,10 +280,11 @@ export function parseSeasonalProfile(
   }
 
   const root = requiredRecord(payload, "payload");
-  const extracted =
-    options.confirmedContract === "game_mode"
-      ? extractGameModeContract(root)
-      : extractProfileSectionContract(root);
+  const extracted = options.confirmedContract === "game_mode"
+    ? extractGameModeContract(root)
+    : options.confirmedContract === "profile_section"
+      ? extractProfileSectionContract(root)
+      : extractDirectProfileContract(root, options.cycleId);
 
   if (extracted.cycleId !== options.cycleId) {
     throw new SeasonalValidationError(

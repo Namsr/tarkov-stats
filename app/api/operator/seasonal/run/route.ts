@@ -21,6 +21,9 @@ export async function POST(request: Request) {
   if (!isSeasonalRolloutReady()) {
     return Response.json({ error: "Seasonal scanner unavailable" }, { status: 404, headers });
   }
+  if (loadSeasonalCycleConfig()?.collectionSource === "json_feed") {
+    return Response.json({ error: "Seasonal JSON feed owns collection" }, { status: 404, headers });
+  }
   let body: Record<string, unknown>;
   try {
     body = await request.json() as Record<string, unknown>;

@@ -10,6 +10,7 @@ import type {
   SeasonalCounters,
   SeasonalProfile,
   SeasonalStore,
+  SeasonCycle,
 } from "@/types/seasonal";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
@@ -40,7 +41,7 @@ CREATE TABLE IF NOT EXISTS season_cycles (
   starts_at INTEGER NOT NULL,
   ends_at INTEGER,
   enabled INTEGER NOT NULL DEFAULT 0,
-  upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section')),
+  upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section', 'direct_profile')),
   PRIMARY KEY (mode, cycle_id)
 );
 CREATE TABLE IF NOT EXISTS player_profiles (
@@ -306,11 +307,40 @@ export function initializeSeasonalSchema(db: SqliteDatabase): void {
   } else {
     db.exec(SEASONAL_SCHEMA);
   }
+  ensureSeasonalContractConstraint(db);
   if (!columns(db, "player_profiles").has("progression_eligible")) {
     db.exec("ALTER TABLE player_profiles ADD COLUMN progression_eligible INTEGER NOT NULL DEFAULT 0");
   }
   if (!columns(db, "progression_intervals").has("score_sample_n")) {
     db.exec("ALTER TABLE progression_intervals ADD COLUMN score_sample_n INTEGER");
+  }
+}
+
+/** Upgrade installations created before the direct raw-profile contract existed. */
+function ensureSeasonalContractConstraint(db: SqliteDatabase): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'season_cycles'").get() as
+    | { sql?: string }
+    | undefined;
+  if (!row?.sql || row.sql.includes("direct_profile")) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("ALTER TABLE season_cycles RENAME TO season_cycles_legacy");
+    db.exec(`CREATE TABLE season_cycles (
+      mode TEXT NOT NULL CHECK (mode = 'seasonal'),
+      cycle_id TEXT NOT NULL,
+      starts_at INTEGER NOT NULL,
+      ends_at INTEGER,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section', 'direct_profile')),
+      PRIMARY KEY (mode, cycle_id)
+    )`);
+    db.exec(`INSERT INTO season_cycles (mode, cycle_id, starts_at, ends_at, enabled, upstream_contract)
+      SELECT mode, cycle_id, starts_at, ends_at, enabled, upstream_contract FROM season_cycles_legacy`);
+    db.exec("DROP TABLE season_cycles_legacy");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
 }
 
@@ -419,7 +449,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
       return row ? {
         mode: "seasonal", cycleId: String(row.cycle_id), startsAt: Number(row.starts_at),
         endsAt: row.ends_at == null ? null : Number(row.ends_at), enabled: Number(row.enabled) === 1,
-        upstreamContract: row.upstream_contract == null ? null : String(row.upstream_contract) as "game_mode" | "profile_section",
+        upstreamContract: row.upstream_contract == null ? null : String(row.upstream_contract) as SeasonCycle["upstreamContract"],
       } : null;
     },
     async upsertProfile(profile, observedAt = Date.now()) {

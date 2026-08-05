@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { isGameMode, tarkovDevMode } from "@/types/seasonal";
 
 interface Candidate { aid: number; mode: string; reportCount: number }
 
@@ -59,7 +60,7 @@ export default function CommunityBanReview() {
           <li key={candidate.aid}>
             <div><strong>#{candidate.aid}</strong><span>{t("review.reports", { n: candidate.reportCount })}</span></div>
             <div className="community-helper__actions">
-              <a href={`https://tarkov.dev/players/${candidate.mode}/${candidate.aid}`} target="_blank" rel="noopener noreferrer" className="ghost-button">{t("review.openProfile")}</a>
+              <a href={`https://tarkov.dev/players/${tarkovDevMode(isGameMode(candidate.mode) ? candidate.mode : "regular")}/${candidate.aid}`} target="_blank" rel="noopener noreferrer" className="ghost-button">{t("review.openProfile")}</a>
               <button type="button" className="ghost-button" disabled={voting !== null} onClick={() => void vote(candidate.aid, "yes")}>{t("review.yes")}</button>
               <button type="button" className="community-helper__skip" disabled={voting !== null} onClick={() => void vote(candidate.aid, "no")}>{t("review.no")}</button>
             </div>

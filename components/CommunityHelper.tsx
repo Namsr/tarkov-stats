@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { tarkovDevMode } from "@/types/seasonal";
 import CommunityBanReview from "@/components/CommunityBanReview";
 import type { ScanTaskRecord } from "@/types/seasonal";
 
@@ -141,7 +142,7 @@ export default function CommunityHelper({
                     </div>
                     <div className="community-helper__actions">
                       <a
-                        href={`https://tarkov.dev/players/${task.kind === "linked_pvp" ? "regular" : "seasonal"}/${task.aid}`}
+                        href={`https://tarkov.dev/players/${tarkovDevMode(task.kind === "linked_pvp" ? "regular" : "seasonal")}/${task.aid}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="ghost-button"

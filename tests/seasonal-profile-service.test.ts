@@ -52,6 +52,25 @@ test("Seasonal profile fails closed without a confirmed network adapter", async 
   });
 });
 
+test("JSON collector may use a valid disabled cycle without exposing public Seasonal", async () => {
+  const disabledDependencies = {
+    ...cycleDependencies,
+    loadCycle: () => loadSeasonalCycleConfig({ ...env, SEASONAL_ENABLED: "false" }),
+    allowDisabledCycle: true,
+    getStore: async () => null,
+  };
+  const denied = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    { ...disabledDependencies, allowDisabledCycle: false },
+  );
+  const allowed = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    disabledDependencies,
+  );
+  assert.equal(!denied.ok && denied.error, "Seasonal profile unavailable");
+  assert.equal(!allowed.ok && allowed.error, "Seasonal upstream endpoint is not configured");
+});
+
 test("canonical Seasonal pipeline upserts and deduplicates capture by profile timestamp", async (t) => {
   let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
   try {

@@ -25,6 +25,11 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     assert.match(await readFile(path, "utf8"), /isSeasonalRolloutReady\(\)/, path);
   }
 
+  const profileSync = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
+  assert.match(profileSync, /isSeasonalCollectorReady\(\)/);
+  assert.match(profileSync, /allowDisabledCycle: true/);
+  assert.match(profileSync, /enabled: true/);
+
   const helperApi = await readFile("lib/seasonal/helper-api.ts", "utf8");
   assert.match(helperApi, /isCommunityHelperEnabled\(\)/);
   for (const source of [

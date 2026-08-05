@@ -2,11 +2,17 @@ import type { SeasonalProfile, SeasonalStore, SeasonCycle } from "../../types/se
 
 export interface SeasonalProfileDependencies {
   loadCycle: () => SeasonCycle | null;
+  allowDisabledCycle?: boolean;
   validatePayload: (
     payload: unknown,
     cycle: SeasonCycle
   ) => { ok: true; profile: SeasonalProfile } | { ok: false; code: string };
-  fetchPayload?: (input: { aid: number; cycleId: string; force: boolean }) => Promise<unknown>;
+  fetchPayload?: (input: {
+    aid: number;
+    cycleId: string;
+    force: boolean;
+    expectedUpdatedAt?: number;
+  }) => Promise<unknown>;
   getStore: () => Promise<SeasonalStore | null>;
   afterCapture?: (input: {
     cycle: SeasonCycle;
@@ -23,7 +29,7 @@ export type SeasonalProfileResult =
       profile: SeasonalProfile;
       capture: { inserted: boolean; status: string };
     }
-  | { ok: false; status: 404 | 502 | 503; error: string };
+  | { ok: false; status: 404 | 409 | 502 | 503; error: string };
 
 /**
  * Canonical Seasonal profile pipeline. The network adapter is deliberately
@@ -31,11 +37,12 @@ export type SeasonalProfileResult =
  * confirmed alongside its payload fixture.
  */
 export async function resolveSeasonalProfile(
-  input: { aid: number; cycleId: string; force: boolean },
+  input: { aid: number; cycleId: string; force: boolean; expectedUpdatedAt?: number },
   dependencies: SeasonalProfileDependencies
 ): Promise<SeasonalProfileResult> {
   const cycle = dependencies.loadCycle();
-  if (!cycle?.enabled || cycle.cycleId !== input.cycleId || !cycle.upstreamContract) {
+  if (!cycle || (!cycle.enabled && !dependencies.allowDisabledCycle) ||
+      cycle.cycleId !== input.cycleId || !cycle.upstreamContract) {
     return { ok: false, status: 503, error: "Seasonal profile unavailable" };
   }
   if (!dependencies.fetchPayload) {
@@ -45,8 +52,10 @@ export async function resolveSeasonalProfile(
   let payload: unknown;
   try {
     payload = await dependencies.fetchPayload(input);
-  } catch {
-    return { ok: false, status: 502, error: "Failed to fetch Seasonal profile" };
+  } catch (error) {
+    const status = typeof error === "object" && error !== null &&
+      Number((error as { status?: unknown }).status) === 404 ? 404 : 502;
+    return { ok: false, status, error: status === 404 ? "Seasonal profile not found" : "Failed to fetch Seasonal profile" };
   }
 
   const validated = dependencies.validatePayload(payload, cycle);
@@ -56,6 +65,13 @@ export async function resolveSeasonalProfile(
   }
   if (validated.profile.aid !== input.aid) {
     return { ok: false, status: 502, error: "Seasonal profile account mismatch" };
+  }
+  if (input.expectedUpdatedAt !== undefined &&
+      (!Number.isSafeInteger(input.expectedUpdatedAt) || input.expectedUpdatedAt <= 0)) {
+    return { ok: false, status: 409, error: "Invalid Seasonal profile version" };
+  }
+  if (input.expectedUpdatedAt !== undefined && validated.profile.profileUpdatedAt < input.expectedUpdatedAt) {
+    return { ok: false, status: 409, error: "Seasonal profile is older than requested version" };
   }
 
   const store = await dependencies.getStore();

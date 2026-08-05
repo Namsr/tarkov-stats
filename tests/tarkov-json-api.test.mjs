@@ -91,14 +91,18 @@ test("shared client always sends the project JSON headers", async () => {
 });
 
 test("server sources contain no GraphQL calls and use the shared project identity", async () => {
-  const [api, seasonal, index] = await Promise.all([
+  const [api, seasonal, index, seasonalProfiles, seasonalIndex] = await Promise.all([
     readFile("lib/tarkov-api.ts", "utf8"),
     readFile("lib/seasonal/fetch.ts", "utf8"),
     readFile("scripts/sync-player-index.mjs", "utf8"),
+    readFile("scripts/sync-seasonal-profiles.mjs", "utf8"),
+    readFile("scripts/sync-seasonal-index.mjs", "utf8"),
   ]);
-  assert.doesNotMatch(api + seasonal, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
+  assert.doesNotMatch(api + seasonal + seasonalProfiles + seasonalIndex, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
   assert.equal((api.match(/\bfetch\s*\(/g) ?? []).length, 1);
   assert.doesNotMatch(seasonal, /\bfetch\s*\(/);
   assert.match(api, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
   assert.match(index, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
+  assert.match(seasonalProfiles, /fetchTarkovJson/);
+  assert.match(seasonalIndex, /fetchTarkovJson/);
 });

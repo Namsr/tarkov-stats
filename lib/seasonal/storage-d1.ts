@@ -33,7 +33,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
       return row ? {
         mode: "seasonal", cycleId: String(row.cycle_id), startsAt: Number(row.starts_at),
         endsAt: row.ends_at == null ? null : Number(row.ends_at), enabled: Number(row.enabled) === 1,
-        upstreamContract: row.upstream_contract == null ? null : String(row.upstream_contract) as "game_mode" | "profile_section",
+        upstreamContract: row.upstream_contract == null ? null : String(row.upstream_contract) as SeasonCycle["upstreamContract"],
       } : null;
     },
 
