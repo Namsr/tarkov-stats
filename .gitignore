@@ -34,7 +34,27 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
-!.env.selfhost.example
+
+# local agent/operator material and deployment runbooks
+/.agents/
+/.claude/
+/.codex-local/
+/AGENTS.md
+/CLAUDE.md
+/DESIGN.md
+/PERFORMANCE_BASELINE.md
+/SELFHOST.md
+/backup-db.sh
+/Caddyfile
+/docker-compose.yml
+/docker-compose.vps.yml
+/docs/
+/ops/
+
+# local runtime data
+/data/*.db
+/data/*.db-*
+/data/*.db.*
 
 # vercel
 .vercel
