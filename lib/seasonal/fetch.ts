@@ -1,5 +1,6 @@
 import { fetchTarkovJson } from "@/lib/tarkov-api";
 import { seasonalCollectionSource, seasonalUpstreamMode } from "@/lib/seasonal/config";
+import { seasonalProfileCacheUrl } from "@/lib/seasonal/profile-cache-key";
 
 export interface SeasonalFetchOptions {
   /** Feed version used to make a CDN/proxy cache key deterministic. */
@@ -32,14 +33,6 @@ export function seasonalProfileUrl(aid: number, template = process.env.SEASONAL_
   }
 }
 
-function addVersionCacheKey(url: string, expectedUpdatedAt: number | undefined): string {
-  if (typeof expectedUpdatedAt !== "number" || !Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt <= 0) return url;
-  const version = Number(expectedUpdatedAt);
-  const parsed = new URL(url);
-  parsed.searchParams.set("v", String(version));
-  return parsed.toString();
-}
-
 /** Fetches one configured Seasonal profile through the project's JSON helper. */
 export async function fetchSeasonalPayload(
   aid: number,
@@ -48,7 +41,7 @@ export async function fetchSeasonalPayload(
   const url = seasonalProfileUrl(aid);
   if (!url) throw new Error("Seasonal upstream endpoint is not configured");
   const request = options.request ?? fetchTarkovJson;
-  const response = await request(addVersionCacheKey(url, options.expectedUpdatedAt), { cache: "no-store" });
+  const response = await request(seasonalProfileCacheUrl(url, options.expectedUpdatedAt), { cache: "no-store" });
   if (!response.ok) throw new SeasonalFetchError(response.status);
   return response.json();
 }

@@ -8,6 +8,7 @@ import {
   seasonalLastAccess,
   validateSeasonalProfile,
 } from "../lib/seasonal-upstream.ts";
+import { seasonalProfileCacheUrl } from "../lib/seasonal/profile-cache-key.ts";
 
 const fixtures = new URL("./fixtures/", import.meta.url);
 const loadFixture = async (name) =>
@@ -19,6 +20,27 @@ const baseOptions = {
   seasonStartsAt: 1_783_000_000_000,
   seasonEndsAt: 1_784_000_000_000,
 };
+
+test("uses a stable fifteen-minute profile cache key when no feed version is known", () => {
+  const url = "https://players.tarkov.dev/pvp-season/730003.json";
+  assert.equal(new URL(seasonalProfileCacheUrl(url, undefined, 0)).searchParams.get("v"), "0");
+  assert.equal(
+    seasonalProfileCacheUrl(url, undefined, 899_999),
+    seasonalProfileCacheUrl(url, undefined, 0),
+  );
+  assert.equal(new URL(seasonalProfileCacheUrl(url, undefined, 900_000)).searchParams.get("v"), "1");
+});
+
+test("uses the exact feed version as the profile cache key", () => {
+  const version = 1_785_969_007_540;
+  const url = seasonalProfileCacheUrl(
+    "https://players.tarkov.dev/pvp-season/730003.json?source=test",
+    version,
+    0,
+  );
+  assert.equal(new URL(url).searchParams.get("source"), "test");
+  assert.equal(new URL(url).searchParams.get("v"), String(version));
+});
 
 test("adapts the confirmed separate gameMode contract", async () => {
   const payload = await loadFixture("seasonal-game-mode.json");
