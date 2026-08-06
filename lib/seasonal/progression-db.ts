@@ -1,5 +1,6 @@
 import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
 import {
+  buildProgressionMetricSeries,
   buildProgressionSeries,
   PROGRESSION_KINDS,
   progressionDailySql,
@@ -8,6 +9,8 @@ import {
   type DailyRow,
   type ProgressionRequest,
 } from "@/lib/seasonal/progression";
+// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
+import { buildSequentialIntervals, DAY_MS } from "@/lib/seasonal/analytics.ts";
 import { d1Rows, getSeasonalD1 } from "@/lib/seasonal/d1";
 import { loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { upsertD1SeasonCycle } from "@/lib/seasonal/storage-d1";
@@ -24,7 +27,11 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import type {
   ProgressionAverageResponse,
   ProgressionKind,
+  ProgressionMetricKey,
+  ProgressionMetricSeries,
   ProgressionSeriesResponse,
+  ProgressionTimelineResponse,
+  SeasonalCounters,
 } from "@/types/seasonal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,6 +106,187 @@ const STATIC_PROFILE_SQL = `SELECT p.nickname, p.experience, p.pmc_raids, p.scav
     ORDER BY latest.profile_updated_at DESC, latest.id DESC LIMIT 1
   ) WHERE p.mode = ? AND p.cycle_id = ? AND p.aid = ?
     AND p.confirmed_banned = 0`;
+
+/** Raw cumulative points and interval endpoints used by the combined timeline. */
+const TIMELINE_SNAPSHOT_SQL = `SELECT s.aid, s.id AS point_id, s.local_date,
+    s.profile_updated_at AS observed_at, s.experience, s.pmc_raids, s.series_id,
+    COALESCE(p.lifetime_pvp_hours, s.hours) AS lifetime_hours
+  FROM progression_snapshots s
+  JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
+    AND p.confirmed_banned = 0
+  WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0
+  ORDER BY s.aid, s.profile_updated_at, s.id`;
+
+const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
+    i.ended_at AS observed_at, i.elapsed_days, i.status,
+    i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,
+    i.scav_raids AS delta_scav_raids, i.pmc_survived AS delta_pmc_survived,
+    i.pmc_deaths AS delta_pmc_deaths, i.pmc_kills AS delta_pmc_kills,
+    i.killed_pmc AS delta_killed_pmc, to_s.pmc_raids, to_s.series_id,
+    from_s.profile_updated_at AS period_start_at,
+    COALESCE(p.lifetime_pvp_hours, to_s.hours) AS lifetime_hours
+  FROM progression_intervals i
+  JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id
+  JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
+  JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
+    AND p.confirmed_banned = 0
+  WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid' AND i.pmc_raids > 0
+  ORDER BY i.aid, i.ended_at, i.id`;
+
+interface TimelineIntervalRow {
+  aid: number;
+  point_id: number;
+  local_date: string;
+  observed_at: number;
+  elapsed_days: number;
+  status: "valid" | "reset" | "schema_anomaly";
+  delta_experience: number;
+  delta_pmc_raids: number;
+  delta_scav_raids: number;
+  delta_pmc_survived: number;
+  delta_pmc_deaths: number;
+  delta_pmc_kills: number;
+  delta_killed_pmc: number;
+  pmc_raids: number;
+  series_id: number;
+  period_start_at: number | null;
+  lifetime_hours: number | null;
+}
+
+const TIMELINE_INTERVAL_METRICS = [
+  "xp_per_day",
+  "pmc_raids_per_day",
+  "pmc_kills_per_day",
+  "non_pmc_kills_per_day",
+  "survival",
+  "pvp_kd",
+  "ai_kd",
+  "pmc_kills_per_raid",
+  "non_pmc_kills_per_raid",
+] as const satisfies readonly Exclude<ProgressionMetricKey, "xp">[];
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function timelineSnapshotRows(rows: readonly Record<string, unknown>[]): DailyRow[] {
+  return rows.flatMap((row) => {
+    const value = finiteNumber(row.experience);
+    const raids = finiteNumber(row.pmc_raids);
+    const aid = finiteNumber(row.aid);
+    const pointId = finiteNumber(row.point_id);
+    const observedAt = finiteNumber(row.observed_at);
+    const seriesId = finiteNumber(row.series_id);
+    if (value == null || raids == null || raids <= 0 || aid == null || pointId == null || observedAt == null || seriesId == null) return [];
+    return [{
+      aid,
+      point_id: pointId,
+      local_date: String(row.local_date ?? ""),
+      observed_at: observedAt,
+      value,
+      pmc_raids: raids,
+      raid_bucket: Math.ceil(raids / 10) * 10,
+      lifetime_hours: row.lifetime_hours == null ? null : finiteNumber(row.lifetime_hours),
+      freshness_at: observedAt,
+      confidence: 1,
+      series_id: seriesId,
+    } satisfies DailyRow];
+  });
+}
+
+function zeroCounters(): SeasonalCounters {
+  return {
+    experience: 0,
+    pmcRaids: 0,
+    scavRaids: 0,
+    pmcSurvived: 0,
+    pmcDeaths: 0,
+    pmcKills: 0,
+    killedPmc: 0,
+  };
+}
+
+function intervalMetricValues(row: TimelineIntervalRow): Record<Exclude<ProgressionMetricKey, "xp">, number | null> | null {
+  const elapsedDays = finiteNumber(row.elapsed_days);
+  if (row.status !== "valid" || elapsedDays == null || elapsedDays <= 0) return null;
+  const changes: SeasonalCounters = {
+    experience: Number(row.delta_experience),
+    pmcRaids: Number(row.delta_pmc_raids),
+    scavRaids: Number(row.delta_scav_raids),
+    pmcSurvived: Number(row.delta_pmc_survived),
+    pmcDeaths: Number(row.delta_pmc_deaths),
+    pmcKills: Number(row.delta_pmc_kills),
+    killedPmc: Number(row.delta_killed_pmc),
+  };
+  if (!Object.values(changes).every(Number.isFinite)) return null;
+  const interval = buildSequentialIntervals([
+    { profileUpdatedAt: 0, counters: zeroCounters() },
+    { profileUpdatedAt: elapsedDays * DAY_MS, counters: changes },
+  ])[0];
+  const metrics = interval?.status === "valid" ? interval.metrics : null;
+  if (!metrics) return null;
+  return {
+    xp_per_day: metrics.xpPerDay,
+    pmc_raids_per_day: metrics.pmcRaidsPerDay,
+    pmc_kills_per_day: metrics.killedPmcPerDay,
+    non_pmc_kills_per_day: metrics.nonPmcKillsPerDay,
+    survival: metrics.survivalRate == null ? null : metrics.survivalRate * 100,
+    pvp_kd: metrics.pvpKd,
+    ai_kd: metrics.aiScavKd,
+    pmc_kills_per_raid: metrics.killedPmcPerRaid,
+    non_pmc_kills_per_raid: metrics.nonPmcKillsPerRaid,
+  };
+}
+
+function timelineMetricRows(
+  rows: readonly Record<string, unknown>[],
+  metric: Exclude<ProgressionMetricKey, "xp">,
+): DailyRow[] {
+  return rows.flatMap((raw) => {
+    const row = raw as unknown as TimelineIntervalRow;
+    const value = intervalMetricValues(row)?.[metric] ?? null;
+    const aid = finiteNumber(row.aid);
+    const pointId = finiteNumber(row.point_id);
+    const observedAt = finiteNumber(row.observed_at);
+    const raids = finiteNumber(row.pmc_raids);
+    const seriesId = finiteNumber(row.series_id);
+    if (value == null || !Number.isFinite(value) || aid == null || pointId == null || observedAt == null || raids == null || raids <= 0 || seriesId == null) return [];
+    return [{
+      aid,
+      point_id: pointId,
+      local_date: String(row.local_date ?? ""),
+      observed_at: observedAt,
+      value,
+      pmc_raids: raids,
+      raid_bucket: Math.ceil(raids / 10) * 10,
+      lifetime_hours: row.lifetime_hours == null ? null : finiteNumber(row.lifetime_hours),
+      freshness_at: observedAt,
+      confidence: Math.max(0, Math.min(1, finiteNumber(row.elapsed_days) == null ? 0 : 1 / Math.max(1, Number(row.elapsed_days)))),
+      series_id: seriesId,
+      score_sample_n: null,
+      period_start_at: row.period_start_at == null ? null : finiteNumber(row.period_start_at),
+      elapsed_days: finiteNumber(row.elapsed_days),
+      delta_experience: finiteNumber(row.delta_experience),
+      delta_pmc_raids: finiteNumber(row.delta_pmc_raids),
+    } satisfies DailyRow];
+  });
+}
+
+function timelineMetricSeries(
+  snapshotRows: readonly Record<string, unknown>[],
+  intervalRows: readonly Record<string, unknown>[],
+  identity: ProgressionIdentity,
+): Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>> {
+  const metrics: Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>> = {};
+  const snapshots = timelineSnapshotRows(snapshotRows);
+  if (snapshots.length) metrics.xp = buildProgressionMetricSeries(snapshots, identity, "xp");
+  for (const metric of TIMELINE_INTERVAL_METRICS) {
+    const source = timelineMetricRows(intervalRows, metric);
+    if (source.length) metrics[metric] = buildProgressionMetricSeries(source, identity, metric);
+  }
+  return metrics;
+}
 
 function detailRows(rows: DetailDbRow[], input: ProgressionRequest): ProgressionDetailIntervalRow[] {
   return rows.map((row) => ({
@@ -224,6 +412,111 @@ function mergeProgressionBundle(
   ])) as ProgressionBundle;
 }
 
+type ProgressionTimelineQuery = (input: ProgressionIdentity) => Promise<ProgressionTimelineResponse | null>;
+
+async function assembleProgressionTimeline(
+  input: ProgressionIdentity,
+  snapshotRows: readonly Record<string, unknown>[],
+  intervalRows: readonly Record<string, unknown>[],
+  detailIntervalRows: readonly DetailDbRow[],
+  profile: StaticProfileRow,
+  historyRow: Record<string, unknown> | null | undefined,
+  intervalCounts: Record<string, unknown> | null | undefined,
+): Promise<ProgressionTimelineResponse> {
+  const metrics = timelineMetricSeries(snapshotRows, intervalRows, input);
+  const history = progressionHistory(historyRow, intervalCounts);
+  const detailInput = { ...input, kind: "cumulative" as const };
+  const sharedDetails = await details(detailInput, [...detailIntervalRows], profile);
+  const series = Object.values(metrics);
+  const targetPoints = series.reduce((count, metric) => count + metric.player.length, 0);
+  const confidence = metrics.xp?.confidence ?? series.at(-1)?.confidence ?? 0;
+  const freshnessValues = series
+    .map((metric) => metric.freshnessAt)
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  return {
+    identity: { mode: input.mode, cycleId: input.cycleId, aid: input.aid },
+    axis: "pmc_raids",
+    metrics,
+    history,
+    risk: sharedDetails.risk,
+    longTerm: sharedDetails.longTerm,
+    n: targetPoints,
+    confidence,
+    freshnessAt: freshnessValues.length ? Math.max(...freshnessValues) : null,
+  };
+}
+
+/** Database-neutral query used by `/api/progression/timeline`. */
+export async function getProgressionTimelineQuery(): Promise<ProgressionTimelineQuery | null> {
+  try {
+    const d1 = await getSeasonalD1();
+    const configuredCycle = loadSeasonalCycleConfig();
+    if (d1) {
+      if (configuredCycle) await upsertD1SeasonCycle(d1, configuredCycle);
+      return async (input) => {
+        if (input.mode === "seasonal") {
+          const cycle = await d1.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
+            .bind(input.cycleId).first() as { starts_at: number } | null;
+          if (!cycle) return null;
+        }
+        const [snapshots, intervals, detailIntervals, profile, history, intervalCounts] = await Promise.all([
+          d1.prepare(TIMELINE_SNAPSHOT_SQL).bind(input.mode, input.cycleId).all(),
+          d1.prepare(TIMELINE_INTERVAL_SQL).bind(input.mode, input.cycleId).all(),
+          d1.prepare(DETAIL_INTERVAL_SQL).bind(input.mode, input.cycleId, input.aid, input.mode, input.cycleId).all(),
+          d1.prepare(STATIC_PROFILE_SQL).bind(input.mode, input.cycleId, input.aid).first() as Promise<StaticProfileRow | null>,
+          d1.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
+              MAX(profile_updated_at) last_observed_at FROM progression_snapshots
+            WHERE mode = ? AND cycle_id = ? AND aid = ?`).bind(input.mode, input.cycleId, input.aid).first(),
+          d1.prepare(`SELECT COUNT(*) all_intervals,
+              SUM(CASE WHEN status = 'valid' AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0
+                OR pmc_survived != 0 OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0) THEN 1 ELSE 0 END) changed_intervals,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 THEN 1 ELSE 0 END) raid_intervals,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND tempo_score IS NOT NULL THEN 1 ELSE 0 END) tempo_points,
+              SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
+            FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
+            .bind(input.mode, input.cycleId, input.aid).first(),
+        ]);
+        if (!profile) return null;
+        return assembleProgressionTimeline(
+          input,
+          d1Rows(snapshots),
+          d1Rows(intervals),
+          d1Rows(detailIntervals) as unknown as DetailDbRow[],
+          profile,
+          history as Record<string, unknown> | null,
+          intervalCounts as Record<string, unknown> | null,
+        );
+      };
+    }
+
+    const sqliteDb = await getSqliteProgressionDatabase();
+    if (configuredCycle) upsertSqliteSeasonCycle(sqliteDb, configuredCycle);
+    return async (input) => {
+      const profile = sqliteDb.prepare(STATIC_PROFILE_SQL).get(input.mode, input.cycleId, input.aid) as StaticProfileRow | undefined;
+      if (!profile) return null;
+      const snapshots = sqliteDb.prepare(TIMELINE_SNAPSHOT_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
+      const intervals = sqliteDb.prepare(TIMELINE_INTERVAL_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
+      const detailIntervals = sqliteDb.prepare(DETAIL_INTERVAL_SQL)
+        .all(input.mode, input.cycleId, input.aid, input.mode, input.cycleId) as DetailDbRow[];
+      const history = sqliteDb.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
+          MAX(profile_updated_at) last_observed_at FROM progression_snapshots
+        WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
+      const intervalCounts = sqliteDb.prepare(`SELECT COUNT(*) all_intervals,
+          SUM(CASE WHEN status = 'valid' AND (experience != 0 OR pmc_raids != 0 OR scav_raids != 0
+            OR pmc_survived != 0 OR pmc_deaths != 0 OR pmc_kills != 0 OR killed_pmc != 0) THEN 1 ELSE 0 END) changed_intervals,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 THEN 1 ELSE 0 END) raid_intervals,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND tempo_score IS NOT NULL THEN 1 ELSE 0 END) tempo_points,
+          SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
+        FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
+        .get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
+      return assembleProgressionTimeline(input, snapshots, intervals, detailIntervals, profile, history, intervalCounts);
+    };
+  } catch (error) {
+    console.warn("progression timeline query unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
 export async function getProgressionBundleQuery(): Promise<((input: ProgressionIdentity) => Promise<ProgressionBundle | null>) | null> {
   try {
     const d1 = await getSeasonalD1();
@@ -306,11 +599,9 @@ export async function getLatestProgressionRevision(input: ProgressionIdentity): 
   try {
     const d1 = await getSeasonalD1();
     const row = d1
-      ? input.mode === "regular"
-        ? null
-        : await d1.prepare(`SELECT generation AS revision FROM progression_materializations
-            WHERE mode = ? AND cycle_id = ?`)
-          .bind(input.mode, input.cycleId).first() as Record<string, unknown> | null
+      ? await d1.prepare(`SELECT generation AS revision FROM progression_materializations
+          WHERE mode = ? AND cycle_id = ?`)
+        .bind(input.mode, input.cycleId).first() as Record<string, unknown> | null
       : await getSqliteProgressionDatabase().then((db) => db.prepare(
           `SELECT generation AS revision FROM progression_materializations
            WHERE mode = ? AND cycle_id = ?`,

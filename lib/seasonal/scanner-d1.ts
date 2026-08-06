@@ -112,8 +112,18 @@ export function createD1ScannerLifecycle(db: D1DatabaseLike) {
       if (Number(profile?.confirmed_banned ?? 0) !== 1) await taskStatement(db, { cycleId: input.cycleId,
         aid: input.aid, kind: input.trustedHours == null ? "linked_pvp" : "profile", priority: 4, now: input.now }).run();
     },
-    async recordLinkedPvp(cycle: SeasonCycle, aid: number, hours: number, now: number) {
+    async recordLinkedPvp(cycle: SeasonCycle, aid: number, enrichment: number | { hours: number; achievementIds?: string[]; profileUpdatedAt?: number | null }, now: number) {
+      const normalized = typeof enrichment === "number" ? { hours: enrichment } : enrichment;
+      const hours = normalized.hours;
       if (!Number.isFinite(hours) || hours < 0) throw new Error("invalid trusted PvP hours");
+      const ids = [...new Set((normalized.achievementIds ?? []).filter((id) => typeof id === "string"))];
+      const achievementIds = JSON.stringify(ids);
+      const achievementCount = ids.length;
+      const profileUpdatedAt = normalized.profileUpdatedAt ?? null;
+      const enrichmentReady = profileUpdatedAt == null
+        ? "(linked_pvp_profile_updated_at IS NULL AND lifetime_pvp_hours IS NULL)"
+        : "(linked_pvp_profile_updated_at IS NULL OR linked_pvp_profile_updated_at <= ?)";
+      const versionParams = profileUpdatedAt == null ? [] : [profileUpdatedAt];
       await db.batch([
         db.prepare(`INSERT INTO scan_candidates
           (mode, cycle_id, aid, lifetime_pvp_hours, lifetime_source, discovered_at, updated_at)
@@ -121,8 +131,19 @@ export function createD1ScannerLifecycle(db: D1DatabaseLike) {
           lifetime_pvp_hours = COALESCE(scan_candidates.lifetime_pvp_hours, excluded.lifetime_pvp_hours),
           lifetime_source = COALESCE(scan_candidates.lifetime_source, excluded.lifetime_source), updated_at = excluded.updated_at`)
           .bind(cycle.cycleId, aid, hours, now, now),
-        db.prepare(`UPDATE player_profiles SET lifetime_pvp_hours = COALESCE(lifetime_pvp_hours, ?)
-          WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ? AND confirmed_banned = 0`).bind(hours, cycle.cycleId, aid),
+        db.prepare(`UPDATE player_profiles SET
+          lifetime_pvp_hours = CASE
+            WHEN ${enrichmentReady} THEN ? ELSE lifetime_pvp_hours END,
+          linked_pvp_achievements = CASE
+            WHEN ${enrichmentReady} THEN ? ELSE linked_pvp_achievements END,
+          linked_pvp_achievement_count = CASE
+            WHEN ${enrichmentReady} THEN ? ELSE linked_pvp_achievement_count END,
+          linked_pvp_profile_updated_at = CASE
+            WHEN ${enrichmentReady} THEN ? ELSE linked_pvp_profile_updated_at END
+          WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ? AND confirmed_banned = 0`)
+          .bind(...versionParams, hours, ...versionParams, achievementIds,
+            ...versionParams, achievementCount, ...versionParams, profileUpdatedAt,
+            cycle.cycleId, aid),
       ]);
       await rebuildPanel(cycle, now);
     },

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
+import { getStore, type PlayerStore } from "@/lib/db";
+import { getSeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
+import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { getAchievements } from "@/lib/tarkov-api";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
@@ -47,7 +49,7 @@ interface BaselineCache {
 // request (getAchievements has its own 6h success-cache), so a transient
 // Reference-data failure degrades a single response instead of poisoning a memoized
 // payload with id-as-name / 0% for the whole TTL.
-const memo = new Map<CrossSectionMode, BaselineCache>();
+const memo = new Map<string, BaselineCache>();
 const MEMO_TTL_MS = 60 * 1000;
 
 async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCache, "ts">> {
@@ -78,21 +80,47 @@ export async function GET(request: NextRequest) {
   let storage: "sqlite" | "unavailable" | undefined;
   try {
     const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
-    if (!isGameMode(rawMode) || rawMode === "seasonal") {
+    if (!isGameMode(rawMode)) {
       timing.finish({ operation: "average_achievements", outcome: "invalid", status: 400 });
       return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
     }
+    const cycleId = rawMode === "seasonal" ? request.nextUrl.searchParams.get("cycle") : null;
+    if (rawMode === "seasonal") {
+      const cycle = loadSeasonalCycleConfig();
+      if (!isSeasonalRolloutReady() || !cycle || cycleId !== cycle.cycleId || request.nextUrl.searchParams.getAll("cycle").length !== 1) {
+        timing.finish({ operation: "average_achievements", mode: rawMode, outcome: "invalid", status: 400 });
+        return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
+      }
+    }
     const now = Date.now();
-    let cached = memo.get(rawMode);
+    const memoKey = rawMode === "seasonal" ? `${rawMode}:${cycleId}` : rawMode;
+    let cached = memo.get(memoKey);
     if (!cached || now - cached.ts >= MEMO_TTL_MS) {
       memoStatus = "miss";
-      const storeOpenStarted = timing.now();
-      const store = await getStore(rawMode);
-      storeOpenMs = timing.elapsedMs(storeOpenStarted);
       const baselineStarted = timing.now();
-      cached = { ...(await loadBaseline(store)), ts: now };
+      if (rawMode === "seasonal") {
+        const baseline = await getSeasonalAchievementBaseline(cycleId!);
+        cached = {
+          total: baseline?.total ?? 0,
+          rows: (baseline?.achievements ?? []).map((a) => ({
+            id: a.ach_id,
+            owners: a.owners,
+            samplePct: baseline && baseline.total > 0 ? (a.owners / baseline.total) * 100 : 0,
+            meanHours: a.meanHours,
+            stdHours: a.stdHours,
+            earlyHours: a.earlyHours,
+          })),
+          ts: now,
+          storage: baseline ? "sqlite" : "unavailable",
+        };
+      } else {
+        const storeOpenStarted = timing.now();
+        const store = await getStore(rawMode);
+        storeOpenMs = timing.elapsedMs(storeOpenStarted);
+        cached = { ...(await loadBaseline(store)), ts: now };
+      }
       baselineMs = timing.elapsedMs(baselineStarted);
-      memo.set(rawMode, cached);
+      memo.set(memoKey, cached);
     } else {
       memoStatus = "hit";
     }

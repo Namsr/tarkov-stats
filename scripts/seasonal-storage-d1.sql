@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   experience INTEGER NOT NULL, pmc_raids INTEGER NOT NULL, scav_raids INTEGER NOT NULL,
   pmc_survived INTEGER NOT NULL, pmc_deaths INTEGER NOT NULL, pmc_kills INTEGER NOT NULL,
   killed_pmc INTEGER NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+  linked_pvp_achievements TEXT NOT NULL DEFAULT '[]', linked_pvp_achievement_count INTEGER,
+  linked_pvp_profile_updated_at INTEGER,
   snapshot_count INTEGER NOT NULL DEFAULT 0, confirmed_banned INTEGER NOT NULL DEFAULT 0,
   progression_eligible INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (mode, cycle_id, aid)
@@ -29,6 +31,8 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_cycle_access
   ON player_profiles(mode, cycle_id, last_access_at);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
+CREATE INDEX IF NOT EXISTS idx_player_profiles_average_freshness
+  ON player_profiles(mode, cycle_id, confirmed_banned, profile_updated_at);
 
 CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
   aid INTEGER NOT NULL, mode TEXT NOT NULL, cycle_id TEXT NOT NULL,
@@ -53,15 +57,15 @@ CREATE TABLE IF NOT EXISTS progression_snapshots (
   cycle_id TEXT NOT NULL DEFAULT 'persistent', aid INTEGER NOT NULL,
   profile_updated_at INTEGER NOT NULL, upstream_updated_at INTEGER NOT NULL,
   captured_at INTEGER NOT NULL, local_date TEXT NOT NULL, series_id INTEGER NOT NULL DEFAULT 1,
-  nickname TEXT, side TEXT, prestige INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0,
-  experience INTEGER NOT NULL DEFAULT 0, hours REAL NOT NULL DEFAULT 0,
-  total_raids INTEGER NOT NULL DEFAULT 0, pmc_raids INTEGER NOT NULL DEFAULT 0,
-  scav_raids INTEGER NOT NULL DEFAULT 0, survived INTEGER NOT NULL DEFAULT 0,
-  pmc_survived INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0,
+  nickname TEXT, side TEXT, prestige INTEGER, level INTEGER,
+  experience INTEGER NOT NULL DEFAULT 0, hours REAL,
+  total_raids INTEGER, pmc_raids INTEGER NOT NULL DEFAULT 0,
+  scav_raids INTEGER NOT NULL DEFAULT 0, survived INTEGER,
+  pmc_survived INTEGER NOT NULL DEFAULT 0, deaths INTEGER,
   pmc_deaths INTEGER NOT NULL DEFAULT 0, pmc_kills INTEGER NOT NULL DEFAULT 0,
-  total_kills INTEGER NOT NULL DEFAULT 0, killed_pmc INTEGER NOT NULL DEFAULT 0,
-  run_through INTEGER NOT NULL DEFAULT 0, longest_win_streak INTEGER NOT NULL DEFAULT 0,
-  achv_count INTEGER NOT NULL DEFAULT 0, achievements TEXT NOT NULL DEFAULT '[]',
+  total_kills INTEGER, killed_pmc INTEGER NOT NULL DEFAULT 0,
+  run_through INTEGER, longest_win_streak INTEGER,
+  achv_count INTEGER, achievements TEXT,
   stats_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(mode, cycle_id, aid, profile_updated_at)
 );

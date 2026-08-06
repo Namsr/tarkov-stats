@@ -1,7 +1,6 @@
 import { connection } from "next/server";
 import LegacyAveragePage from "@/app/average/page";
 import ModeUnavailable from "@/components/ModeUnavailable";
-import SeasonalAverage from "@/components/SeasonalAverage";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
 import { getPlayerLevels } from "@/lib/tarkov-api";
@@ -27,5 +26,5 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
     return <ModeUnavailable seasonal />;
   }
   const levels = await getPlayerLevels().catch(() => []);
-  return <SeasonalAverage cycleId={cycle.cycleId} levelBands={cumulativeLevelBands(levels)} />;
+  return <LegacyAveragePage mode="seasonal" cycleId={cycle.cycleId} levelBands={cumulativeLevelBands(levels)} />;
 }

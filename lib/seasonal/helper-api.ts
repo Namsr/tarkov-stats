@@ -77,7 +77,11 @@ export async function verifyTask(request: NextRequest) {
       if (publicStore) {
         await publicStore.upsert(task.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);
       }
-      await recordLinkedPvpLifecycle(context.cycle, task.aid, stats.hoursPlayed);
+      await recordLinkedPvpLifecycle(context.cycle, task.aid, {
+        hours: stats.hoursPlayed,
+        achievementIds: profile.achievements ? Object.keys(profile.achievements) : [],
+        profileUpdatedAt: stats.profileUpdatedAt ?? null,
+      });
       if (!await context.store.finish(task.id, context.helperId, "completed")) {
         return helperError("Invalid lease", 409);
       }

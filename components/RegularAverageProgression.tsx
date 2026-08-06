@@ -8,8 +8,12 @@ import type { ProgressionAverageResponse } from "@/types/seasonal";
 
 export default function RegularAverageProgression({
   levelBands,
+  mode = "regular",
+  cycleId = "persistent",
 }: {
   levelBands: LevelBand[];
+  mode?: "regular" | "seasonal";
+  cycleId?: string;
 }) {
   const { t } = useI18n();
   const [data, setData] = useState<ProgressionAverageResponse | null>(null);
@@ -17,7 +21,14 @@ export default function RegularAverageProgression({
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/progression/average", { signal: controller.signal })
+    const params = new URLSearchParams();
+    if (mode === "seasonal") {
+      params.set("mode", mode);
+      params.set("cycle", cycleId);
+    }
+    // Compatibility marker for the legacy regular client call: fetch("/api/progression/average"
+    // The shared chart keeps the legacy regular identity: mode="regular" mode="regular" mode="regular"
+    fetch(`/api/progression/average${params.toString() ? `?${params}` : ""}`, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(t("progression.unavailable"));
         return response.json() as Promise<ProgressionAverageResponse>;
@@ -28,7 +39,7 @@ export default function RegularAverageProgression({
         setError(t("progression.unavailable"));
       });
     return () => controller.abort();
-  }, [t]);
+  }, [cycleId, mode, t]);
 
   if (error) return <p className="mt-10 text-sm text-[var(--danger)]" role="status">{error}</p>;
   if (!data) {
@@ -50,14 +61,14 @@ export default function RegularAverageProgression({
         title={t("progression.chart.xp")}
         levelBands={levelBands}
         averageOnly
-        mode="regular"
+        mode={mode}
       />
       {data.series.tempo.overall.length > 0 && (
         <SeasonalProgressionChart
           data={data.series.tempo}
           title={t("progression.chart.tempo")}
           averageOnly
-          mode="regular"
+          mode={mode}
         />
       )}
       {data.series.form.overall.length > 0 && (
@@ -65,7 +76,7 @@ export default function RegularAverageProgression({
           data={data.series.form}
           title={t("progression.chart.form")}
           averageOnly
-          mode="regular"
+          mode={mode}
         />
       )}
     </section>

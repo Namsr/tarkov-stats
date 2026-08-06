@@ -11,6 +11,7 @@ export interface BucketAgg {
   lo: number;
   hi: number | null;
   n: number;
+  /** Additive metric sum, or statistic*n for a median distribution. */
   sum: number;
 }
 

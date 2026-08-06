@@ -232,7 +232,7 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
 test("regular PvP progression precedes the single risk card and radar", async () => {
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
-  const chart = await readFile("components/SeasonalProgressionChart.tsx", "utf8");
+  const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
   const score = await readFile("components/CheaterScore.tsx", "utf8");
   const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
 
@@ -249,44 +249,63 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
   assert.match(profile, /progressionRisk=\{mode === "regular" \? progressionRisk : null\}/);
 
-  assert.match(panel, /fetch\(`\/api\/progression\?\$\{params\}`/);
+  assert.match(panel, /fetch\(`\/api\/progression\/timeline\?\$\{params\}`/);
   for (const parameter of [
     "mode,",
     "cycle: cycleId",
     "aid: String(aid)",
-    "kind,",
   ]) {
     assert.ok(panel.includes(parameter), `missing progression parameter: ${parameter}`);
   }
   assert.doesNotMatch(panel, /dimension|center: String/);
-  assert.match(panel, /profileUpdatedAt\?: number \| null/);
+  assert.match(panel, /ProgressionTimelineChart/);
+  assert.match(panel, /ProgressionTimelineResponse/);
+  assert.match(panel, /setData\(result\)/);
+  assert.match(panel, /Object\.values\(data\.metrics\)/);
   assert.match(panel, /\[aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]/);
   assert.doesNotMatch(panel, /params\.(?:set|append)\("revision"/);
-  assert.match(panel, /\["cumulative", "tempo", "form"\]/);
   assert.match(panel, /role="status"/);
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);
   assert.match(panel, /result\.history\?\.ready && validRisk\(result\.risk\) \? result\.risk : null/);
-  assert.doesNotMatch(panel, /kind === "cumulative"[\s\S]*?onRiskChange/);
-  assert.doesNotMatch(panel, /Promise\.all/);
-  assert.match(panel, /setSeries\(\(current\) => \(\{ \.\.\.current, \[kind\]: result \}\)\)/);
-  assert.match(panel, /loadKind\("cumulative"\)\.finally[\s\S]*?loadKind\("tempo"\)[\s\S]*?loadKind\("form"\)/);
-  assert.match(panel, /successfulRequests === 0 && completedRequests < PROGRESSION_KINDS\.length/);
-  assert.match(panel, /successfulRequests === 0 && completedRequests === PROGRESSION_KINDS\.length/);
   assert.match(panel, /if \(controller\.signal\.aborted\) return/);
-  assert.match(panel, /hasCumulative && series\.cumulative/);
-  assert.match(panel, /hasTempo && series\.tempo/);
-  assert.match(panel, /hasForm && series\.form/);
-  assert.doesNotMatch(panel, /history\?\.ready && series\./);
-  assert.match(chart, /point\.pmcRaids/);
-  assert.match(chart, /raidTicks\(bounds\.minDay, bounds\.maxDay\)/);
-  assert.match(chart, /axisPoints\(displayedPointsFor\(key\)\)/);
-  assert.match(chart, /areaPath\(displayedPointsFor\("nearby"\), bounds\)/);
-  assert.match(chart, /lineSegments\(displayedPointsFor\(key\)\)/);
-  assert.match(chart, /chartPath\(axisPoints\(segment\), bounds/);
-  assert.match(chart, /\{displayedPointsFor\(key\)\.map\(\(point\) =>/);
-  assert.match(chart, /moscowDate\(point\.date\)/);
-  assert.match(chart, /point\.raidMin != null && point\.raidMax != null/);
-  assert.match(chart, /progression\.pointTipRange/);
+  assert.match(chart, /progressionRaidDomain/);
+  assert.match(chart, /progressionValueDomain/);
+  assert.match(chart, /progressionLineSegments/);
+  assert.match(chart, /clipPath/);
+  assert.match(chart, /data-metric=\{metric\.key\}/);
+  assert.match(chart, /aria-pressed=\{active\}/);
+  assert.match(chart, /previewMetric/);
+  assert.match(chart, /const \[compareOverall, setCompareOverall\] = useState\(true\)/);
+  assert.match(chart, /focusPlayer/);
+  assert.match(chart, /progressionRaidDomain\(allPoints, playerPoints, focusPlayer\)/);
+  assert.match(chart, /animatedRaidDomainRef = useRef\(raidDomain\)/);
+  assert.match(chart, /requestAnimationFrame\(step\)/);
+  assert.match(chart, /cancelAnimationFrame\(frame\)/);
+  assert.match(chart, /prefers-reduced-motion/);
+  assert.match(chart, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
+  const focusBackground = chart.match(/<rect[\s\S]*?className="progression-timeline__focus-background"[\s\S]*?\/>/)?.[0] ?? "";
+  assert.match(focusBackground, /aria-hidden="true"/);
+  assert.match(focusBackground, /pointerEvents="all"/);
+  assert.match(focusBackground, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
+  const lineHitArea = chart.match(/<path[\s\S]*?className="progression-timeline__hit-area"[\s\S]*?\/>/)?.[0] ?? "";
+  assert.ok(lineHitArea, "line hit area should remain a sibling of the focus background");
+  assert.doesNotMatch(lineHitArea, /onClick|setFocusPlayer/);
+  const point = chart.match(/<circle[\s\S]*?className=\{`progression-timeline__point[\s\S]*?\/>/)?.[0] ?? "";
+  assert.ok(point, "point interaction should remain independent from the focus background");
+  assert.doesNotMatch(point, /onClick|setFocusPlayer/);
+  assert.match(chart, /progression-timeline__focus-hint/);
+  assert.doesNotMatch(chart, /progression-timeline__focus-toggle/);
+  assert.doesNotMatch(chart, /progression\.timeline\.focus\.(?:player|all)/);
+  assert.match(chart, /progressionPointsInRaidDomain\(sourcePoints\.nearby, animatedRaidDomain\)/);
+  assert.match(chart, /progressionPointsInRaidDomain\(items, animatedRaidDomain\)/);
+  assert.match(chart, /tooltip(?:Anchor|Position|Overlay)/i);
+  assert.match(chart, /role="(?:status|tooltip)"/);
+  assert.match(chart, /aria-live="polite"/);
+  assert.doesNotMatch(chart, /className="progression-timeline__tooltip"/);
+  assert.doesNotMatch(chart, /<title>\{label\}<\/title>/);
+  assert.match(chart, /onPointerEnter/);
+  assert.match(chart, /progression-timeline__hit-area/);
+  assert.match(chart, /progression\.timeline\.tooltip\.range/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
   assert.match(dictionary, /"progression\.series\.overall": "Медианный игрок PvP"/);
   assert.match(dictionary, /"progression\.pointTipRange":/);
@@ -306,7 +325,7 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
-test("progression uses a revision-aware five-hour shared bundle cache keyed without kind", async () => {
+test("progression uses revision-aware five-hour bundle and timeline caches", async () => {
   const cache = await readFile("lib/seasonal/progression-cache.ts", "utf8");
   const flight = await readFile("lib/seasonal/progression-flight.ts", "utf8");
   const database = await readFile("lib/seasonal/progression-db.ts", "utf8");
@@ -316,6 +335,7 @@ test("progression uses a revision-aware five-hour shared bundle cache keyed with
   assert.match(cache, /unstable_cache\(/);
   assert.match(cache, /PROGRESSION_CACHE_TTL_SECONDS = 18_000/);
   assert.match(cache, /\["progression-bundle-v4"\]/);
+  assert.match(cache, /\["progression-timeline-v1"\]/);
   assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,\s*_revision: number \| null,/);
   assert.doesNotMatch(cache, /kind: ProgressionKind/);
   assert.match(cache, /throw new UncacheableProgressionResult\("unavailable"\)/);
@@ -324,6 +344,9 @@ test("progression uses a revision-aware five-hour shared bundle cache keyed with
   assert.match(cache, /getLatestProgressionRevision\(\{ mode, cycleId, aid \}\)/);
   assert.match(cache, /`\$\{progressionFlightKey\(mode, cycleId, aid\)\}\\0\$\{revision \?\? "none"\}`/);
   assert.match(cache, /loadProgressionBundle\(mode, cycleId, aid, revision\)/);
+  assert.match(cache, /getCachedProgressionTimeline/);
+  assert.match(cache, /loadProgressionTimeline\(mode, cycleId, aid, revision\)/);
+  assert.match(cache, /\\0timeline\\0/);
   assert.match(flight, /load\(\)\.finally/);
   assert.match(flight, /inFlight\.delete\(key\)/);
 
@@ -334,8 +357,8 @@ test("progression uses a revision-aware five-hour shared bundle cache keyed with
   assert.match(database, /mergeProgressionBundle/);
   assert.equal(
     (database.match(/await details\(/g) ?? []).length,
-    2,
-    "shared details should run once in each storage implementation, not once per kind",
+    3,
+    "shared details should run once per legacy storage implementation and once for the combined timeline",
   );
   for (const route of [general, legacy]) {
     assert.match(route, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);

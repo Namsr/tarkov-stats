@@ -1,14 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import SeasonalProgressionChart from "@/components/SeasonalProgressionChart";
+import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
 import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
 import type { LevelBand } from "@/lib/seasonal/ui";
-import type {
-  ProgressionKind,
-  ProgressionSeriesResponse,
-} from "@/types/seasonal";
+import type { ProgressionTimelineResponse } from "@/types/seasonal";
 
 export interface ProgressionRiskPayload {
   combined: number;
@@ -20,42 +17,6 @@ export interface ProgressionRiskPayload {
   staticReasons: string[];
   reasons: string[];
 }
-
-interface LongTermPayload {
-  xpPerDay: number | null;
-  raidsPerDay: number | null;
-  pmcKillsPerDay: number | null;
-  pmcKillsPerRaid: number | null;
-  nonPmcKillsPerDay: number | null;
-  nonPmcKillsPerRaid: number | null;
-  survivalRate: number | null;
-  pvpKd: number | null;
-  aiKd: number | null;
-  overallPmcKd: number | null;
-  intervals: number;
-  coveredRaids: number;
-}
-
-interface HistoryPayload {
-  snapshotCount: number;
-  allIntervalCount?: number;
-  changedIntervalCount?: number;
-  raidIntervalCount?: number;
-  tempoPointCount?: number;
-  formPointCount?: number;
-  intervalCount: number;
-  ready: boolean;
-  firstObservedAt: number | null;
-  lastObservedAt: number | null;
-}
-
-type ProgressionResponse = ProgressionSeriesResponse & {
-  risk?: ProgressionRiskPayload;
-  longTerm?: LongTermPayload;
-  history?: HistoryPayload;
-};
-
-const PROGRESSION_KINDS = ["cumulative", "tempo", "form"] as const satisfies readonly ProgressionKind[];
 
 function number(value: number | null | undefined, digits = 1): string {
   return value == null || !Number.isFinite(value)
@@ -81,7 +42,6 @@ export default function ProgressionPanel({
   onRiskChange,
   mode = "regular",
   cycleId = "persistent",
-  levelBands = [],
   profileUpdatedAt,
   refreshRevision = 0,
 }: {
@@ -96,60 +56,48 @@ export default function ProgressionPanel({
   refreshRevision?: number;
 }) {
   const { t } = useI18n();
-  const [series, setSeries] = useState<Partial<Record<ProgressionKind, ProgressionResponse>>>({});
-  const [completedRequests, setCompletedRequests] = useState(0);
-  const [successfulRequests, setSuccessfulRequests] = useState(0);
+  const [data, setData] = useState<ProgressionTimelineResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
-    setCompletedRequests(0);
-    setSuccessfulRequests(0);
-    setSeries({});
+    setLoading(true);
+    setError(false);
+    setData(null);
     onRiskChange?.(null);
 
-    const loadKind = async (kind: ProgressionKind) => {
+    const loadTimeline = async () => {
       try {
         const params = new URLSearchParams({
           mode,
           cycle: cycleId,
           aid: String(aid),
-          kind,
         });
-        const response = await fetch(`/api/progression?${params}`, { signal: controller.signal });
+        const response = await fetch(`/api/progression/timeline?${params}`, { signal: controller.signal });
         if (!response.ok) throw new Error(t("progression.unavailable"));
-        const result = (await response.json()) as ProgressionResponse;
+        const result = (await response.json()) as ProgressionTimelineResponse;
         if (controller.signal.aborted) return;
-        setSeries((current) => ({ ...current, [kind]: result }));
-        setSuccessfulRequests((current) => current + 1);
+        setData(result);
         onRiskChange?.(result.history?.ready && validRisk(result.risk) ? result.risk : null);
       } catch (caught: unknown) {
         if (caught instanceof Error && caught.name === "AbortError") return;
+        if (!controller.signal.aborted) setError(true);
       } finally {
-        if (!controller.signal.aborted) {
-          setCompletedRequests((current) => current + 1);
-        }
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
 
-    void loadKind("cumulative").finally(() => {
-      if (controller.signal.aborted) return;
-      void loadKind("tempo");
-      void loadKind("form");
-    });
+    void loadTimeline();
 
     return () => controller.abort();
   }, [aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
 
-  const loading = successfulRequests === 0 && completedRequests < PROGRESSION_KINDS.length;
-  const error = successfulRequests === 0 && completedRequests === PROGRESSION_KINDS.length;
-  const details = series.cumulative ?? series.tempo ?? series.form;
-  const longTerm = details?.longTerm;
-  const history = details?.history;
-  const hasPoints = (data: ProgressionSeriesResponse | undefined) =>
-    Boolean(data && (data.player.length || data.nearby.length || data.overall.length));
-  const hasCumulative = hasPoints(series.cumulative);
-  const hasTempo = hasPoints(series.tempo);
-  const hasForm = hasPoints(series.form);
+  const history = data?.history;
+  const longTerm = data?.longTerm;
+  const hasPoints = Boolean(data && Object.values(data.metrics).some((metric) =>
+    metric && (metric.player.length || metric.nearby.length || metric.overall.length),
+  ));
 
   return (
     <section className="mt-5" aria-labelledby="progression-heading">
@@ -162,9 +110,7 @@ export default function ProgressionPanel({
 
       {loading && (
         <div className="mt-4 grid gap-4" role="status" aria-label={t("common.loading")}>
-          {Array.from({ length: 3 }).map((_, index) => (
-            <div key={index} className="h-72 skeleton rounded-xl" />
-          ))}
+          <div className="h-72 skeleton rounded-xl" />
         </div>
       )}
 
@@ -176,32 +122,16 @@ export default function ProgressionPanel({
 
       {!loading && !error && (
         <>
-          {history && !history.ready && !hasCumulative && !hasTempo && !hasForm && (
+          {history && !history.ready && !hasPoints && (
             <div className="data-panel mt-4 p-5" role="status">
               <p className="text-sm text-[var(--muted)]">{t("progression.collecting")}</p>
             </div>
           )}
 
-          {hasCumulative && series.cumulative && (
-            <SeasonalProgressionChart
-              data={series.cumulative}
-              title={t(mode === "regular" ? "progression.chart.xp" : "seasonal.chart.xp")}
-              levelBands={levelBands}
-              mode={mode}
-            />
-          )}
-          {hasTempo && series.tempo && (
-            <SeasonalProgressionChart
-              data={series.tempo}
-              title={t(mode === "regular" ? "progression.chart.tempo" : "seasonal.chart.tempo")}
-              mode={mode}
-            />
-          )}
-          {hasForm && series.form && (
-            <SeasonalProgressionChart
-              data={series.form}
-              title={t(mode === "regular" ? "progression.chart.form" : "seasonal.chart.form")}
-              mode={mode}
+          {data && (hasPoints || history?.ready) && (
+            <ProgressionTimelineChart
+              data={data}
+              title={t("progression.timeline.title")}
             />
           )}
 

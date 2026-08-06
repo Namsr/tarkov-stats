@@ -234,17 +234,47 @@ export function createSqliteScannerLifecycle(db: SqliteDatabase) {
         kind: input.trustedHours == null ? "linked_pvp" : "profile", priority: 4, now: input.now,
       });
     },
-    recordLinkedPvp(cycle: SeasonCycle, aid: number, hours: number, now: number) {
+    recordLinkedPvp(cycle: SeasonCycle, aid: number, enrichment: number | { hours: number; achievementIds?: string[]; profileUpdatedAt?: number | null }, now: number) {
+      const normalized = typeof enrichment === "number" ? { hours: enrichment } : enrichment;
+      const hours = normalized.hours;
       if (!Number.isFinite(hours) || hours < 0) throw new Error("invalid trusted PvP hours");
+      const ids = [...new Set((normalized.achievementIds ?? []).filter((id) => typeof id === "string"))];
+      const achievementIds = JSON.stringify(ids);
+      const achievementCount = ids.length;
       db.prepare(`INSERT INTO scan_candidates
         (mode, cycle_id, aid, lifetime_pvp_hours, lifetime_source, discovered_at, updated_at)
         VALUES ('seasonal', ?, ?, ?, 'linked_pvp', ?, ?) ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
         lifetime_pvp_hours = COALESCE(scan_candidates.lifetime_pvp_hours, excluded.lifetime_pvp_hours),
         lifetime_source = COALESCE(scan_candidates.lifetime_source, excluded.lifetime_source),
         updated_at = excluded.updated_at`).run(cycle.cycleId, aid, hours, now, now);
-      db.prepare(`UPDATE player_profiles SET lifetime_pvp_hours = COALESCE(lifetime_pvp_hours, ?)
+      const profileUpdatedAt = normalized.profileUpdatedAt ?? null;
+      db.prepare(`UPDATE player_profiles SET
+          lifetime_pvp_hours = CASE
+            WHEN ${normalized.profileUpdatedAt == null
+              ? "(linked_pvp_profile_updated_at IS NULL AND lifetime_pvp_hours IS NULL)"
+              : "(linked_pvp_profile_updated_at IS NULL OR linked_pvp_profile_updated_at <= ?)"}
+              THEN ? ELSE lifetime_pvp_hours END,
+          linked_pvp_achievements = CASE
+            WHEN ${normalized.profileUpdatedAt == null
+              ? "(linked_pvp_profile_updated_at IS NULL AND lifetime_pvp_hours IS NULL)"
+              : "(linked_pvp_profile_updated_at IS NULL OR linked_pvp_profile_updated_at <= ?)"}
+              THEN ? ELSE linked_pvp_achievements END,
+          linked_pvp_achievement_count = CASE
+            WHEN ${normalized.profileUpdatedAt == null
+              ? "(linked_pvp_profile_updated_at IS NULL AND lifetime_pvp_hours IS NULL)"
+              : "(linked_pvp_profile_updated_at IS NULL OR linked_pvp_profile_updated_at <= ?)"}
+              THEN ? ELSE linked_pvp_achievement_count END,
+          linked_pvp_profile_updated_at = CASE
+            WHEN ${normalized.profileUpdatedAt == null
+              ? "(linked_pvp_profile_updated_at IS NULL AND lifetime_pvp_hours IS NULL)"
+              : "(linked_pvp_profile_updated_at IS NULL OR linked_pvp_profile_updated_at <= ?)"}
+              THEN ? ELSE linked_pvp_profile_updated_at END
         WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ? AND confirmed_banned = 0`)
-        .run(hours, cycle.cycleId, aid);
+        .run(...(profileUpdatedAt == null ? [] : [profileUpdatedAt]), hours,
+          ...(profileUpdatedAt == null ? [] : [profileUpdatedAt]), achievementIds,
+          ...(profileUpdatedAt == null ? [] : [profileUpdatedAt]), achievementCount,
+          ...(profileUpdatedAt == null ? [] : [profileUpdatedAt]), profileUpdatedAt,
+          cycle.cycleId, aid);
       rebuildPanel(cycle, now);
     },
     recordCapture(cycle: SeasonCycle, profile: SeasonalProfile, capture: CaptureSnapshotResult, trustedHours: number | null, now: number) {
@@ -427,9 +457,14 @@ export async function recordSeasonalCaptureLifecycle(
   return { supported: true };
 }
 
-export async function recordLinkedPvpLifecycle(cycle: SeasonCycle, aid: number, hours: number, now = Date.now()) {
+export async function recordLinkedPvpLifecycle(
+  cycle: SeasonCycle,
+  aid: number,
+  enrichment: number | { hours: number; achievementIds?: string[]; profileUpdatedAt?: number | null },
+  now = Date.now(),
+) {
   const lifecycle = await getLifecycle(cycle);
-  await lifecycle.recordLinkedPvp(cycle, aid, hours, now);
+  await lifecycle.recordLinkedPvp(cycle, aid, enrichment, now);
   return { supported: true };
 }
 

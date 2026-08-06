@@ -5,6 +5,8 @@ import type {
   ProgressionAverageResponse,
   ProgressionPoint,
   ProgressionMode,
+  ProgressionMetricKey,
+  ProgressionMetricSeries,
   ProgressionSeriesResponse,
   SeasonalAverageSeries,
   SeasonalPopulationSummary,
@@ -18,6 +20,12 @@ export interface ProgressionRequest {
   cycleId: string;
   aid: number;
   kind: ProgressionKind;
+}
+
+export interface ProgressionTimelineRequest {
+  mode: ProgressionMode;
+  cycleId: string;
+  aid: number;
 }
 
 export const PROGRESSION_KINDS = ["cumulative", "tempo", "form"] as const satisfies readonly ProgressionKind[];
@@ -46,6 +54,24 @@ export function parseProgressionRequest(
   if (!KINDS.has(kind)) return null;
   if ((mode === "regular") !== (cycleId === "persistent")) return null;
   return { mode, cycleId, aid, kind };
+}
+
+/** Strict identity validation for the combined timeline endpoint. */
+export function parseProgressionTimelineRequest(
+  params: URLSearchParams,
+): ProgressionTimelineRequest | null {
+  const allowed = new Set(["mode", "cycle", "aid"]);
+  if ([...params.keys()].some((key) => !allowed.has(key))) return null;
+  if ([...allowed].some((key) => params.getAll(key).length !== 1)) return null;
+  const mode = params.get("mode");
+  const cycle = params.get("cycle")?.trim() ?? "";
+  const cycleId = /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(cycle) ? cycle : null;
+  const aidText = params.get("aid") ?? "";
+  const aid = Number(aidText);
+  if ((mode !== "regular" && mode !== "seasonal") || !cycleId ||
+    !/^[1-9]\d*$/.test(aidText) || !Number.isSafeInteger(aid)) return null;
+  if ((mode === "regular") !== (cycleId === "persistent")) return null;
+  return { mode, cycleId, aid };
 }
 
 export interface DailyRow {
@@ -516,5 +542,38 @@ export function buildProgressionSeries(
       firstObservedAt,
       lastObservedAt,
     },
+  };
+}
+
+/**
+ * Builds one selectable metric using the existing cohort/point machinery. The
+ * source rows are already normalized to one value per interval/snapshot; the
+ * only distinction is whether their values are cumulative snapshots (XP) or
+ * interval rates/ratios.
+ */
+export function buildProgressionMetricSeries(
+  sourceRows: DailyRow[],
+  identity: Omit<ProgressionRequest, "kind">,
+  metric: ProgressionMetricKey,
+): ProgressionMetricSeries {
+  const cumulative = metric === "xp";
+  const base = buildProgressionSeries(sourceRows, {
+    ...identity,
+    kind: cumulative ? "cumulative" : "tempo",
+  });
+  const sourcePrefix = cumulative ? "cumulative:" : "tempo:";
+  const rename = (points: ProgressionPoint[]) => points.map((point) => ({
+    ...point,
+    pointId: point.pointId.startsWith(sourcePrefix)
+      ? `${metric}:${point.pointId.slice(sourcePrefix.length)}`
+      : `${metric}:${point.pointId}`,
+  }));
+  return {
+    player: rename(base.player),
+    nearby: rename(base.nearby),
+    overall: rename(base.overall),
+    n: base.n,
+    confidence: base.confidence,
+    freshnessAt: base.freshnessAt,
   };
 }

@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   killed_pmc INTEGER NOT NULL,
   first_seen_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
+  linked_pvp_achievements TEXT NOT NULL DEFAULT '[]',
+  linked_pvp_achievement_count INTEGER,
+  linked_pvp_profile_updated_at INTEGER,
   snapshot_count INTEGER NOT NULL DEFAULT 0,
   progression_eligible INTEGER NOT NULL DEFAULT 0,
   confirmed_banned INTEGER NOT NULL DEFAULT 0,
@@ -70,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_cycle_access
   ON player_profiles(mode, cycle_id, last_access_at);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
+CREATE INDEX IF NOT EXISTS idx_player_profiles_average_freshness
+  ON player_profiles(mode, cycle_id, confirmed_banned, profile_updated_at);
 CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
   aid INTEGER NOT NULL,
   mode TEXT NOT NULL,
@@ -102,24 +107,24 @@ CREATE TABLE IF NOT EXISTS progression_snapshots (
   series_id INTEGER NOT NULL DEFAULT 1,
   nickname TEXT,
   side TEXT,
-  prestige INTEGER NOT NULL DEFAULT 0,
-  level INTEGER NOT NULL DEFAULT 0,
+  prestige INTEGER,
+  level INTEGER,
   experience INTEGER NOT NULL DEFAULT 0,
-  hours REAL NOT NULL DEFAULT 0,
-  total_raids INTEGER NOT NULL DEFAULT 0,
+  hours REAL,
+  total_raids INTEGER,
   pmc_raids INTEGER NOT NULL DEFAULT 0,
   scav_raids INTEGER NOT NULL DEFAULT 0,
-  survived INTEGER NOT NULL DEFAULT 0,
+  survived INTEGER,
   pmc_survived INTEGER NOT NULL DEFAULT 0,
-  deaths INTEGER NOT NULL DEFAULT 0,
+  deaths INTEGER,
   pmc_deaths INTEGER NOT NULL DEFAULT 0,
   pmc_kills INTEGER NOT NULL DEFAULT 0,
-  total_kills INTEGER NOT NULL DEFAULT 0,
+  total_kills INTEGER,
   killed_pmc INTEGER NOT NULL DEFAULT 0,
-  run_through INTEGER NOT NULL DEFAULT 0,
-  longest_win_streak INTEGER NOT NULL DEFAULT 0,
-  achv_count INTEGER NOT NULL DEFAULT 0,
-  achievements TEXT NOT NULL DEFAULT '[]',
+  run_through INTEGER,
+  longest_win_streak INTEGER,
+  achv_count INTEGER,
+  achievements TEXT,
   stats_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(mode, cycle_id, aid, profile_updated_at)
 );
@@ -308,11 +313,111 @@ export function initializeSeasonalSchema(db: SqliteDatabase): void {
     db.exec(SEASONAL_SCHEMA);
   }
   ensureSeasonalContractConstraint(db);
+  ensureNullablePortraitColumns(db);
   if (!columns(db, "player_profiles").has("progression_eligible")) {
     db.exec("ALTER TABLE player_profiles ADD COLUMN progression_eligible INTEGER NOT NULL DEFAULT 0");
   }
+  if (!columns(db, "player_profiles").has("linked_pvp_achievements")) {
+    db.exec("ALTER TABLE player_profiles ADD COLUMN linked_pvp_achievements TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!columns(db, "player_profiles").has("linked_pvp_profile_updated_at")) {
+    db.exec("ALTER TABLE player_profiles ADD COLUMN linked_pvp_profile_updated_at INTEGER");
+  }
+  if (!columns(db, "player_profiles").has("linked_pvp_achievement_count")) {
+    db.exec("ALTER TABLE player_profiles ADD COLUMN linked_pvp_achievement_count INTEGER");
+    db.exec(`UPDATE player_profiles SET linked_pvp_achievement_count = CASE
+      WHEN linked_pvp_profile_updated_at IS NOT NULL AND json_valid(linked_pvp_achievements)
+        THEN json_array_length(linked_pvp_achievements) ELSE NULL END`);
+  }
   if (!columns(db, "progression_intervals").has("score_sample_n")) {
     db.exec("ALTER TABLE progression_intervals ADD COLUMN score_sample_n INTEGER");
+  }
+}
+
+/**
+ * Older Seasonal deployments created the portrait columns as NOT NULL with
+ * zero defaults. Rebuild that table once so a missing upstream counter can be
+ * represented as NULL; progression ids and interval references are retained.
+ */
+function ensureNullablePortraitColumns(db: SqliteDatabase): void {
+  const info = db.prepare("PRAGMA table_info(progression_snapshots)").all() as {
+    name: string;
+    notnull: number;
+  }[];
+  const portrait = new Set([
+    "prestige", "level", "hours", "total_raids", "survived", "deaths", "total_kills",
+    "run_through", "longest_win_streak", "achv_count", "achievements",
+  ]);
+  if (!info.length || !info.some((column) => portrait.has(column.name) && Number(column.notnull) === 1)) return;
+
+  const columnsToCopy = [
+    "id", "mode", "cycle_id", "aid", "profile_updated_at", "upstream_updated_at", "captured_at",
+    "local_date", "series_id", "nickname", "side", "prestige", "level", "experience", "hours",
+    "total_raids", "pmc_raids", "scav_raids", "survived", "pmc_survived", "deaths", "pmc_deaths",
+    "pmc_kills", "total_kills", "killed_pmc", "run_through", "longest_win_streak", "achv_count",
+    "achievements", "stats_json",
+  ];
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_progression_snapshots_identity_time;
+      DROP INDEX IF EXISTS idx_progression_snapshots_cycle_date;
+      DROP INDEX IF EXISTS idx_progression_snapshots_cycle_raids_latest;
+      ALTER TABLE progression_snapshots RENAME TO progression_snapshots_legacy;
+      CREATE TABLE progression_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL DEFAULT 'regular',
+        cycle_id TEXT NOT NULL DEFAULT 'persistent',
+        aid INTEGER NOT NULL,
+        profile_updated_at INTEGER NOT NULL,
+        upstream_updated_at INTEGER NOT NULL,
+        captured_at INTEGER NOT NULL,
+        local_date TEXT NOT NULL,
+        series_id INTEGER NOT NULL DEFAULT 1,
+        nickname TEXT,
+        side TEXT,
+        prestige INTEGER,
+        level INTEGER,
+        experience INTEGER NOT NULL DEFAULT 0,
+        hours REAL,
+        total_raids INTEGER,
+        pmc_raids INTEGER NOT NULL DEFAULT 0,
+        scav_raids INTEGER NOT NULL DEFAULT 0,
+        survived INTEGER,
+        pmc_survived INTEGER NOT NULL DEFAULT 0,
+        deaths INTEGER,
+        pmc_deaths INTEGER NOT NULL DEFAULT 0,
+        pmc_kills INTEGER NOT NULL DEFAULT 0,
+        total_kills INTEGER,
+        killed_pmc INTEGER NOT NULL DEFAULT 0,
+        run_through INTEGER,
+        longest_win_streak INTEGER,
+        achv_count INTEGER,
+        achievements TEXT,
+        stats_json TEXT NOT NULL DEFAULT '{}',
+        UNIQUE(mode, cycle_id, aid, profile_updated_at)
+      );
+      INSERT INTO progression_snapshots (${columnsToCopy.join(", ")})
+        SELECT ${columnsToCopy.join(", ")} FROM progression_snapshots_legacy;
+      DROP TABLE progression_snapshots_legacy;
+      CREATE INDEX idx_progression_snapshots_identity_time
+        ON progression_snapshots(mode, cycle_id, aid, profile_updated_at);
+      CREATE INDEX idx_progression_snapshots_cycle_date
+        ON progression_snapshots(mode, cycle_id, local_date);
+      CREATE INDEX idx_progression_snapshots_cycle_raids_latest
+        ON progression_snapshots(mode, cycle_id, pmc_raids, aid, profile_updated_at DESC, id DESC);
+      UPDATE progression_snapshots SET
+        prestige = NULLIF(prestige, 0), level = NULLIF(level, 0), hours = NULLIF(hours, 0),
+        total_raids = NULLIF(total_raids, 0), survived = NULLIF(survived, 0), deaths = NULLIF(deaths, 0),
+        total_kills = NULLIF(total_kills, 0), run_through = NULLIF(run_through, 0),
+        longest_win_streak = NULLIF(longest_win_streak, 0), achv_count = NULLIF(achv_count, 0),
+        achievements = CASE WHEN achievements IS NULL OR achievements IN ('', '[]') THEN NULL ELSE achievements END
+        WHERE mode = 'seasonal';
+    `);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
 }
 
@@ -390,11 +495,26 @@ export function toSnapshot(row: Record<string, unknown> | undefined): Progressio
 }
 
 export function toProfile(row: Record<string, unknown>): PlayerProfileRecord {
+  let achievementIds: string[] = [];
+  try {
+    const parsed = JSON.parse(String(row.linked_pvp_achievements ?? "[]"));
+    if (Array.isArray(parsed)) achievementIds = parsed.filter((value): value is string => typeof value === "string");
+  } catch {
+    achievementIds = [];
+  }
   return {
     mode: String(row.mode) as ProfileIdentity["mode"], cycleId: String(row.cycle_id), aid: Number(row.aid),
     nickname: String(row.nickname), profileUpdatedAt: Number(row.profile_updated_at),
     lastAccessAt: Number(row.last_access_at), lifetimePvpHours: row.lifetime_pvp_hours == null ? null : Number(row.lifetime_pvp_hours),
     counters: rowCounters(row), firstSeenAt: Number(row.first_seen_at), lastSeenAt: Number(row.last_seen_at),
+    pvpEnrichment: {
+      lifetimeHours: row.lifetime_pvp_hours == null ? null : Number(row.lifetime_pvp_hours),
+      achievementIds,
+      achievementCount: row.linked_pvp_achievement_count == null
+        ? (row.linked_pvp_profile_updated_at == null ? null : achievementIds.length)
+        : Number(row.linked_pvp_achievement_count),
+      profileUpdatedAt: row.linked_pvp_profile_updated_at == null ? null : Number(row.linked_pvp_profile_updated_at),
+    },
     snapshotCount: Number(row.snapshot_count), confirmedBanned: Number(row.confirmed_banned) === 1,
   };
 }
@@ -491,6 +611,20 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
       try {
         const previous = toSnapshot(db.prepare(`SELECT * FROM progression_snapshots WHERE ${identityWhere} ORDER BY profile_updated_at DESC LIMIT 1`).get(...identity));
         if (previous && profile.profileUpdatedAt <= previous.profileUpdatedAt) {
+          // A replayed JSON payload is also the idempotent portrait backfill
+          // path: refresh only Seasonal-derived fields on the existing row and
+          // never create a second progression point.
+          if (profile.profileUpdatedAt === previous.profileUpdatedAt && profile.seasonalStats !== undefined) {
+            const stats = profile.seasonalStats;
+            db.prepare(`UPDATE progression_snapshots SET
+              total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
+              level = ?, prestige = ?, longest_win_streak = ?, achv_count = ?, achievements = ?
+              WHERE ${identityWhere} AND profile_updated_at = ?`).run(
+              stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
+              stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
+              stats.achievementsCount, null, ...identity, profile.profileUpdatedAt,
+            );
+          }
           db.exec("COMMIT");
           return { inserted: false, status: profile.profileUpdatedAt === previous.profileUpdatedAt ? "duplicate" : "stale", snapshot: null, interval: null };
         }
@@ -507,14 +641,31 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           longestWinStreak: 0,
           achievementIds: [],
         };
+        const hasStaticSignals = profile.staticSignals !== undefined;
+        const seasonalStats = profile.seasonalStats;
         const inserted = db.prepare(`INSERT INTO progression_snapshots (
           mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
-          experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-          prestige, longest_win_streak, achievements
-        ) VALUES (${Array.from({ length: 18 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
+          experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
+          pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements
+        ) VALUES (${Array.from({ length: 25 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
           profile.profileUpdatedAt, capturedAt, moscowDate(profile.profileUpdatedAt), seriesId,
-          ...counterArgs(profile.counters), staticSignals.prestige, staticSignals.longestWinStreak,
-          JSON.stringify(staticSignals.achievementIds));
+          profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
+          profile.counters.scavRaids, seasonalStats?.survivedRaids ?? null, profile.counters.pmcSurvived,
+          seasonalStats?.deaths ?? null, profile.counters.pmcDeaths, profile.counters.pmcKills,
+          seasonalStats?.totalKills ?? null, profile.counters.killedPmc, seasonalStats?.runThrough ?? null,
+          seasonalStats?.level ?? null,
+          seasonalStats !== undefined
+            ? seasonalStats.prestige
+            : hasStaticSignals ? staticSignals.prestige : null,
+          seasonalStats !== undefined
+            ? seasonalStats.longestWinStreak
+            : hasStaticSignals ? staticSignals.longestWinStreak : null,
+          seasonalStats !== undefined
+            ? seasonalStats.achievementsCount
+            : hasStaticSignals ? staticSignals.achievementIds.length : null,
+          seasonalStats !== undefined
+            ? null
+            : hasStaticSignals ? JSON.stringify(staticSignals.achievementIds) : null);
         const snapshot = toSnapshot(db.prepare("SELECT * FROM progression_snapshots WHERE id = ?").get(Number(inserted.lastInsertRowid)))!;
         let interval: ProgressionIntervalRecord | null = null;
         if (previous && changes) {

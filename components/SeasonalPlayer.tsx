@@ -2,22 +2,20 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import SeasonalProgressionChart, { type RiskMarker } from "@/components/SeasonalProgressionChart";
+import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
 import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton from "@/components/RefreshButton";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
-import SegmentedRadio from "@/components/SegmentedRadio";
 import { useI18n } from "@/lib/i18n/context";
 import { levelAtExperience, xpPerDay, type LevelBand } from "@/lib/seasonal/ui";
 import type {
-  CohortDimension,
-  ProgressionKind,
-  ProgressionSeriesResponse,
+  ProgressionTimelineResponse,
   SeasonalProfile,
 } from "@/types/seasonal";
+import type { ProgressionRiskMarker } from "@/lib/seasonal/progression-details";
 
 interface RiskPayload {
   combined: number;
@@ -28,28 +26,8 @@ interface RiskPayload {
   progressionContribution: number;
   staticReasons: string[];
   reasons: string[];
-  markers: RiskMarker[];
+  markers: ProgressionRiskMarker[];
 }
-
-interface LongTermPayload {
-  xpPerDay: number | null;
-  raidsPerDay: number | null;
-  pmcKillsPerDay: number | null;
-  pmcKillsPerRaid: number | null;
-  nonPmcKillsPerDay: number | null;
-  nonPmcKillsPerRaid: number | null;
-  survivalRate: number | null;
-  pvpKd: number | null;
-  aiKd: number | null;
-  overallPmcKd: number | null;
-  intervals: number;
-  coveredRaids: number;
-}
-
-type ExtendedProgression = ProgressionSeriesResponse & {
-  risk?: RiskPayload;
-  longTerm?: LongTermPayload;
-};
 
 function number(value: number | null | undefined, digits = 1): string {
   return value == null || !Number.isFinite(value)
@@ -94,8 +72,7 @@ export default function SeasonalPlayer({
 }) {
   const { t } = useI18n();
   const [profile, setProfile] = useState<SeasonalProfile | null>(null);
-  const [dimension, setDimension] = useState<CohortDimension>("hours");
-  const [series, setSeries] = useState<Partial<Record<ProgressionKind, ExtendedProgression>>>({});
+  const [timeline, setTimeline] = useState<ProgressionTimelineResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [progressionLoading, setProgressionLoading] = useState(false);
   const [error, setError] = useState("");
@@ -123,48 +100,35 @@ export default function SeasonalPlayer({
     return () => controller.abort();
   }, [aid, cycleId, t]);
 
-  const center = profile
-    ? dimension === "hours"
-      ? profile.lifetimePvpHours ?? 0
-      : profile.counters.pmcRaids
-    : null;
-
   useEffect(() => {
-    if (center == null) return;
     const controller = new AbortController();
     setProgressionLoading(true);
     setProgressionError("");
-    Promise.all(
-      (["cumulative", "tempo", "form"] as const).map(async (kind) => {
-        const params = new URLSearchParams({
-          cycle: cycleId,
-          aid: String(aid),
-          kind,
-          dimension,
-          center: String(center),
-        });
-        const response = await fetch(`/api/seasonal/progression?${params}`, { signal: controller.signal });
+    setTimeline(null);
+    const params = new URLSearchParams({ mode: "seasonal", cycle: cycleId, aid: String(aid) });
+    fetch(`/api/progression/timeline?${params}`, { signal: controller.signal })
+      .then(async (response) => {
         if (!response.ok) throw new Error(t("seasonal.progressionUnavailable"));
-        return [kind, (await response.json()) as ExtendedProgression] as const;
-      }),
-    )
-      .then((entries) => setSeries(Object.fromEntries(entries)))
+        return (await response.json()) as ProgressionTimelineResponse;
+      })
+      .then(setTimeline)
       .catch((caught: unknown) => {
         if (caught instanceof Error && caught.name === "AbortError") return;
-        setSeries({});
+        setTimeline(null);
         setProgressionError(t("seasonal.progressionUnavailable"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setProgressionLoading(false);
       });
     return () => controller.abort();
-  }, [aid, center, cycleId, dimension, t]);
+  }, [aid, cycleId, t]);
 
   const risk = useMemo(() => {
-    const candidate = series.tempo?.risk ?? series.form?.risk ?? series.cumulative?.risk;
+    const candidate = timeline?.risk;
     return validRisk(candidate) ? candidate : null;
-  }, [series]);
-  const longTerm = series.tempo?.longTerm ?? series.form?.longTerm ?? series.cumulative?.longTerm;
+  }, [timeline]);
+  const longTerm = timeline?.longTerm;
+  const history = timeline?.history;
   const markers = risk?.markers ?? [];
 
   if (loading) {
@@ -188,7 +152,7 @@ export default function SeasonalPlayer({
   const survival = profile.counters.pmcRaids > 0
     ? (profile.counters.pmcSurvived / profile.counters.pmcRaids) * 100
     : 0;
-  const localXpPerDay = series.cumulative ? xpPerDay(series.cumulative.player) : null;
+  const localXpPerDay = timeline?.metrics.xp ? xpPerDay(timeline.metrics.xp.player) : null;
 
   return (
     <main className="page-frame">
@@ -237,28 +201,30 @@ export default function SeasonalPlayer({
       </ProfileHeader>
 
       <div id="progression" tabIndex={-1} className="profile-anchor-section seasonal-controls">
-        <SegmentedRadio
-          name={`seasonal-dimension-${aid}`}
-          legend={t("seasonal.compareBy")}
-          value={dimension}
-          options={[
-            { value: "hours", label: t("average.dimensionHours") },
-            { value: "pmc_raids", label: t("average.dimensionPmcRaids") },
-          ]}
-          onChange={setDimension}
-        />
         {progressionLoading && <span className="text-sm text-[var(--muted)]">{t("common.loading")}</span>}
       </div>
 
       {progressionError && <p className="mt-5 text-sm text-[var(--muted)]">{progressionError}</p>}
-      {series.cumulative && (
-        <SeasonalProgressionChart data={series.cumulative} title={t("seasonal.chart.xp")} levelBands={levelBands} />
-      )}
-      {series.tempo && (
-        <SeasonalProgressionChart data={series.tempo} title={t("seasonal.chart.tempo")} riskMarkers={markers} />
-      )}
-      {series.form && (
-        <SeasonalProgressionChart data={series.form} title={t("seasonal.chart.form")} riskMarkers={markers} />
+      {timeline && <ProgressionTimelineChart data={timeline} title={t("progression.timeline.title")} riskMarkers={markers} />}
+
+      {history && (
+        <div className="seasonal-chart__meta mt-4">
+          <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
+          <span>{t("progression.baselineSnapshot", { n: history.snapshotCount > 0 ? 1 : 0 })}</span>
+          <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
+          <span>{t("progression.intervals", { n: history.intervalCount })}</span>
+          <span>{t("progression.allIntervals", { n: history.allIntervalCount })}</span>
+          <span>{t("progression.changedIntervals", { n: history.changedIntervalCount })}</span>
+          <span>{t("progression.raidIntervals", { n: history.raidIntervalCount })}</span>
+          <span>{t("progression.tempoPoints", { n: history.tempoPointCount })}</span>
+          <span>{t("progression.formPoints", { n: history.formPointCount })}</span>
+          {history.firstObservedAt && (
+            <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
+          )}
+          {history.lastObservedAt && (
+            <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
+          )}
+        </div>
       )}
 
       <section id="risk" tabIndex={-1} className="profile-anchor-section seasonal-risk data-panel">
@@ -313,7 +279,7 @@ export default function SeasonalPlayer({
           <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
           <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />
           <StatCard label={t("seasonal.metric.overallPmcKd")} value={number(longTerm?.overallPmcKd)} />
-          <StatCard label={t("seasonal.metric.intervals")} value={longTerm?.intervals ?? series.tempo?.player.length ?? "—"} />
+          <StatCard label={t("seasonal.metric.intervals")} value={longTerm?.intervals ?? history?.intervalCount ?? "—"} />
           <StatCard label={t("seasonal.metric.coveredRaids")} value={longTerm?.coveredRaids ?? "—"} />
         </div>
       </section>

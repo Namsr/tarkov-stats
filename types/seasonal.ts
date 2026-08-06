@@ -47,6 +47,32 @@ export interface SeasonalCounters {
   killedPmc: number;
 }
 
+/** Wipe-scoped portrait fields parsed from the Seasonal profile only. */
+export interface SeasonalStats {
+  totalRaids: number | null;
+  survivedRaids: number | null;
+  totalKills: number | null;
+  deaths: number | null;
+  runThrough: number | null;
+  survivalRate: number | null;
+  kdRatio: number | null;
+  pmcKdRatio: number | null;
+  killsPerRaid: number | null;
+  pmcSurvivalRate: number | null;
+  level: number | null;
+  prestige: number | null;
+  longestWinStreak: number | null;
+  achievementsCount: number | null;
+}
+
+/** Explicitly allow-listed account-wide values copied from the regular PvP store. */
+export interface SeasonalPvpEnrichment {
+  lifetimeHours: number | null;
+  achievementIds: string[];
+  achievementCount: number | null;
+  profileUpdatedAt: number | null;
+}
+
 /** Runtime-validated representation produced by either supported upstream shape. */
 export interface SeasonalProfile extends ProfileIdentity {
   nickname: string;
@@ -54,6 +80,8 @@ export interface SeasonalProfile extends ProfileIdentity {
   lastAccessAt: number;
   lifetimePvpHours: number | null;
   counters: SeasonalCounters;
+  seasonalStats?: SeasonalStats;
+  pvpEnrichment?: SeasonalPvpEnrichment;
   /** Optional single-profile signals consumed by the existing static risk model. */
   staticSignals?: {
     prestige: number;
@@ -225,8 +253,8 @@ export interface SeasonalAverageSeries {
 }
 
 export interface ProgressionAverageResponse {
-  mode: "regular";
-  cycleId: "persistent";
+  mode: "regular" | "seasonal";
+  cycleId: CycleId;
   axis: "pmc_raids";
   series: Record<ProgressionKind, SeasonalAverageSeries>;
 }
@@ -261,6 +289,54 @@ export interface ProgressionSeriesResponse {
     firstObservedAt: number | null;
     lastObservedAt: number | null;
   };
+}
+
+/** Individual lines available in the profile progression timeline. */
+export type ProgressionMetricKey =
+  | "xp"
+  | "xp_per_day"
+  | "pmc_raids_per_day"
+  | "pmc_kills_per_day"
+  | "non_pmc_kills_per_day"
+  | "survival"
+  | "pvp_kd"
+  | "ai_kd"
+  | "pmc_kills_per_raid"
+  | "non_pmc_kills_per_raid";
+
+export const PROGRESSION_METRIC_KEYS = [
+  "xp",
+  "xp_per_day",
+  "pmc_raids_per_day",
+  "pmc_kills_per_day",
+  "non_pmc_kills_per_day",
+  "survival",
+  "pvp_kd",
+  "ai_kd",
+  "pmc_kills_per_raid",
+  "non_pmc_kills_per_raid",
+] as const satisfies readonly ProgressionMetricKey[];
+
+export interface ProgressionMetricSeries {
+  player: ProgressionPoint[];
+  nearby: ProgressionPoint[];
+  overall: ProgressionPoint[];
+  n: number;
+  confidence: number;
+  freshnessAt: number | null;
+}
+
+/** One request payload for all selectable profile progression metrics. */
+export interface ProgressionTimelineResponse {
+  identity: ProfileIdentity;
+  axis: "pmc_raids";
+  metrics: Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>>;
+  history: ProgressionSeriesResponse["history"];
+  risk: import("@/lib/seasonal/progression-details").SeasonalRiskPayload;
+  longTerm: import("@/lib/seasonal/progression-details").SeasonalLongTermPayload;
+  n: number;
+  confidence: number;
+  freshnessAt: number | null;
 }
 
 export interface SeasonalStore {

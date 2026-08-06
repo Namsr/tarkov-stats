@@ -47,7 +47,11 @@ export async function POST(request: Request) {
       if (publicStore) {
         await publicStore.upsert(lease.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);
       }
-      await recordLinkedPvpLifecycle(cycle, lease.aid, stats.hoursPlayed);
+      await recordLinkedPvpLifecycle(cycle, lease.aid, {
+        hours: stats.hoursPlayed,
+        achievementIds: profile.achievements ? Object.keys(profile.achievements) : [],
+        profileUpdatedAt: stats.profileUpdatedAt ?? null,
+      });
       return Response.json({ state: "linked_pvp" }, { headers });
     }
     const validated = validateSeasonalProfile(body.profile, {

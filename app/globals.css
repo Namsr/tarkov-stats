@@ -607,6 +607,222 @@ select:focus-visible {
 .seasonal-chart__empty { min-height: 180px; display: grid; place-items: center; color: var(--muted); font-size: .9rem; }
 .seasonal-chart__meta { display: flex; flex-wrap: wrap; gap: 7px 16px; border-top: 1px solid var(--card-border); padding-top: 12px; color: var(--muted); font-size: .69rem; }
 
+.progression-timeline {
+  --timeline-xp: #f2a65a;
+  --timeline-xp-day: #e07a5f;
+  --timeline-raids-day: #81b29a;
+  --timeline-pmc-kills-day: #3d85c6;
+  --timeline-non-pmc-kills-day: #9b5de5;
+  --timeline-pmc-kills-raid: #f15bb5;
+  --timeline-non-pmc-kills-raid: #00a6d6;
+  --timeline-survival: #77cf89;
+  --timeline-pvp-kd: #e9c46a;
+  --timeline-ai-kd: #8d99ae;
+  min-width: 0;
+  margin-top: 16px;
+  padding: 18px;
+}
+
+.progression-timeline__head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.progression-timeline__toggles {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.progression-timeline__metric-group,
+.progression-timeline__comparison {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.progression-timeline__metric-group {
+  align-items: stretch;
+  gap: 4px;
+}
+
+.progression-timeline__metric-group > span,
+.progression-timeline__comparison > span {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  color: var(--muted);
+  padding: 7px 4px 7px 0;
+  font-size: .67rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.progression-timeline__toggle {
+  --timeline-metric-color: var(--foreground);
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 7px 13px;
+  font-size: .75rem;
+  line-height: 1.2;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, opacity 160ms ease, filter 160ms ease;
+}
+
+.progression-timeline__toggle > span {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--timeline-metric-color);
+  opacity: .42;
+}
+
+.progression-timeline__toggle:hover,
+.progression-timeline__toggle:focus-visible,
+.progression-timeline__toggle.is-active,
+.progression-timeline__toggle[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--timeline-metric-color) 62%, var(--card-border));
+  background: color-mix(in srgb, var(--timeline-metric-color) 10%, var(--input-bg));
+  color: var(--foreground);
+}
+
+.progression-timeline__toggle.is-active > span,
+.progression-timeline__toggle[aria-pressed="true"] > span { opacity: 1; }
+
+.progression-timeline__toggle.is-preview,
+.progression-timeline__toggle[data-preview="true"] {
+  border-color: color-mix(in srgb, var(--timeline-metric-color) 62%, var(--card-border));
+  color: var(--foreground);
+}
+
+.progression-timeline__toggle.is-dimmed,
+.progression-timeline__comparison.is-dimmed,
+.progression-timeline__axis.is-dimmed { opacity: .2; filter: blur(1px); }
+
+.progression-timeline__toggle[data-metric="xp"],
+.progression-timeline__line--metric-xp { --timeline-metric-color: var(--timeline-xp); }
+.progression-timeline__toggle[data-metric="xpPerDay"],
+.progression-timeline__toggle[data-metric="xp_per_day"],
+.progression-timeline__line--metric-xp-per-day { --timeline-metric-color: var(--timeline-xp-day); }
+.progression-timeline__toggle[data-metric="raidsPerDay"],
+.progression-timeline__toggle[data-metric="raids_per_day"],
+.progression-timeline__toggle[data-metric="pmcRaidsPerDay"],
+.progression-timeline__toggle[data-metric="pmc_raids_per_day"],
+.progression-timeline__line--metric-raids-per-day,
+.progression-timeline__line--metric-pmc-raids-per-day { --timeline-metric-color: var(--timeline-raids-day); }
+.progression-timeline__toggle[data-metric="pmcKillsPerDay"],
+.progression-timeline__toggle[data-metric="pmc_kills_per_day"],
+.progression-timeline__line--metric-pmc-kills-per-day { --timeline-metric-color: var(--timeline-pmc-kills-day); }
+.progression-timeline__toggle[data-metric="nonPmcKillsPerDay"],
+.progression-timeline__toggle[data-metric="non_pmc_kills_per_day"],
+.progression-timeline__line--metric-non-pmc-kills-per-day { --timeline-metric-color: var(--timeline-non-pmc-kills-day); }
+.progression-timeline__toggle[data-metric="pmcKillsPerRaid"],
+.progression-timeline__toggle[data-metric="pmc_kills_per_raid"],
+.progression-timeline__line--metric-pmc-kills-per-raid { --timeline-metric-color: var(--timeline-pmc-kills-raid); }
+.progression-timeline__toggle[data-metric="nonPmcKillsPerRaid"],
+.progression-timeline__toggle[data-metric="non_pmc_kills_per_raid"],
+.progression-timeline__line--metric-non-pmc-kills-per-raid { --timeline-metric-color: var(--timeline-non-pmc-kills-raid); }
+.progression-timeline__toggle[data-metric="survival"],
+.progression-timeline__line--metric-survival { --timeline-metric-color: var(--timeline-survival); }
+.progression-timeline__toggle[data-metric="pvpKd"],
+.progression-timeline__toggle[data-metric="pvp_kd"],
+.progression-timeline__line--metric-pvp-kd { --timeline-metric-color: var(--timeline-pvp-kd); }
+.progression-timeline__toggle[data-metric="aiKd"],
+.progression-timeline__toggle[data-metric="ai_kd"],
+.progression-timeline__line--metric-ai-kd { --timeline-metric-color: var(--timeline-ai-kd); }
+
+.progression-timeline__comparison {
+  margin-top: 2px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 10px;
+}
+
+.progression-timeline__comparison button {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 7px 12px;
+  font-size: .72rem;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, opacity 160ms ease, filter 160ms ease;
+}
+
+.progression-timeline__comparison button:hover,
+.progression-timeline__comparison button:focus-visible,
+.progression-timeline__comparison button.is-active,
+.progression-timeline__comparison button[aria-pressed="true"] {
+  border-color: var(--card-border);
+  background: var(--input-bg);
+  color: var(--foreground);
+}
+
+.progression-timeline__focus-hint { margin: 12px 0 0; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+.progression-timeline__scroll { margin-top: 14px; overflow: hidden; overscroll-behavior-inline: contain; }
+.progression-timeline__scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.progression-timeline__chart-frame { position: relative; width: 100%; min-width: 0; height: 330px; }
+.progression-timeline__svg { display: block; width: 100%; min-width: 0; height: 330px; aspect-ratio: auto; overflow: visible; cursor: pointer; }
+.progression-timeline__svg.is-focused { cursor: pointer; }
+.progression-timeline__focus-background { cursor: pointer; }
+.progression-timeline__point { cursor: pointer; }
+.progression-timeline__grid,
+.progression-timeline__axis,
+.progression-timeline__axis-label,
+.progression-timeline__axis-line { pointer-events: none; }
+.progression-timeline__grid { stroke: var(--card-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.progression-timeline__axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.progression-timeline__metric--dim .progression-timeline__axis,
+.progression-timeline__metric--dim .progression-timeline__axis-label,
+.progression-timeline__metric--dim .progression-timeline__axis-line { opacity: .2; filter: blur(1px); }
+.progression-timeline__axis--right { text-anchor: start; }
+.progression-timeline__line { --timeline-metric-color: currentColor; fill: none; stroke: var(--timeline-metric-color); stroke-width: 2; vector-effect: non-scaling-stroke; transition: opacity 160ms ease, filter 160ms ease, stroke-width 160ms ease; }
+.progression-timeline__line--player { stroke-width: 3; }
+.progression-timeline__line--nearby { stroke-dasharray: 7 5; }
+.progression-timeline__line--overall { stroke-dasharray: 2 5; }
+.progression-timeline__line--dim { opacity: .18; filter: blur(1px); }
+.progression-timeline__line--highlight { stroke-width: 3.5; filter: drop-shadow(0 0 3px currentColor); }
+.progression-timeline__hit-area { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: crosshair; }
+.progression-timeline__point { --timeline-metric-color: currentColor; fill: var(--timeline-metric-color); transition: opacity 160ms ease, filter 160ms ease, r 160ms ease; }
+.progression-timeline__point--dim { opacity: .18; filter: blur(1px); }
+.progression-timeline__point--highlight { filter: drop-shadow(0 0 3px currentColor); }
+.progression-timeline__focus { fill: color-mix(in srgb, var(--accent) 7%, transparent); stroke: color-mix(in srgb, var(--accent) 42%, transparent); stroke-dasharray: 4 4; pointer-events: none; }
+.progression-timeline__empty { min-height: 180px; display: grid; place-items: center; color: var(--muted); font-size: .9rem; }
+.progression-timeline__meta { display: flex; flex-wrap: wrap; gap: 7px 16px; border-top: 1px solid var(--card-border); padding-top: 12px; color: var(--muted); font-size: .69rem; }
+.progression-timeline__tooltipOverlay {
+  position: absolute;
+  z-index: 4;
+  width: max-content;
+  max-width: min(320px, calc(100% - 24px));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--card-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--accent));
+  box-shadow: 0 10px 24px color-mix(in srgb, #000 35%, transparent);
+  color: var(--foreground);
+  padding: 9px 11px;
+  font-size: .72rem;
+  line-height: 1.45;
+  white-space: pre-line;
+  pointer-events: none;
+  animation: progression-timeline-tooltip-in 140ms ease-out;
+}
+
+@keyframes progression-timeline-tooltip-in {
+  from { opacity: 0; scale: .96; }
+  to { opacity: 1; scale: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progression-timeline__tooltipOverlay { animation: none; }
+}
+
 .seasonal-risk { margin-top: 20px; padding: 20px; }
 .seasonal-risk__scores { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 16px; }
 .seasonal-risk__reason,
@@ -949,6 +1165,11 @@ a.help-card:hover { border-color: var(--foreground); }
   .metric-card { padding: 14px; }
   .seasonal-chart__head { align-items: stretch; flex-direction: column; }
   .seasonal-chart__toggles { justify-content: flex-start; }
+  .progression-timeline__head { align-items: stretch; flex-direction: column; }
+  .progression-timeline__metric-group,
+  .progression-timeline__comparison { align-items: stretch; }
+  .progression-timeline__metric-group > span,
+  .progression-timeline__comparison > span { min-height: 34px; }
   .seasonal-risk__scores { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .community-helper__tasks li { align-items: stretch; flex-direction: column; }
   .community-helper__actions { justify-content: flex-start; }
@@ -988,6 +1209,12 @@ a.help-card:hover { border-color: var(--foreground); }
   .seasonal-segmented button { flex: 1; padding-inline: 8px; }
   .seasonal-chart { padding: 13px; }
   .seasonal-chart__toggles button { min-height: 34px; padding-inline: 9px; }
+  .progression-timeline { padding: 13px; }
+  .progression-timeline__toggles { gap: 8px; }
+  .progression-timeline__metric-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .progression-timeline__metric-group > span { grid-column: 1 / -1; }
+  .progression-timeline__toggle,
+  .progression-timeline__comparison button { min-height: 34px; padding-inline: 9px; }
   .seasonal-risk__scores { grid-template-columns: 1fr; }
   .community-helper__actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
   .community-helper__actions .ghost-button { text-align: center; }
@@ -1007,6 +1234,10 @@ a.help-card:hover { border-color: var(--foreground); }
   .faq-dialog,
   .faq-answer,
   .faq-answer__content { animation-duration: .01ms; transition-duration: .01ms; }
+  .progression-timeline__toggle,
+  .progression-timeline__comparison button,
+  .progression-timeline__line,
+  .progression-timeline__point { transition-duration: .01ms; }
 }
 
 @keyframes skeleton-shimmer {

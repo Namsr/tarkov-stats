@@ -1,9 +1,17 @@
 import type {
   CycleId,
   SeasonalCounters,
+  SeasonalStats,
   SeasonalProfile,
   SeasonalUpstreamContract as SeasonalUpstreamContractType,
 } from "@/types/seasonal";
+// Relative import keeps this parser usable by the strip-types test runner and
+// by the Next server bundle without relying on tsconfig path aliases. The
+// explicit extension is required by Node's strip-types ESM loader; Next's
+// bundler supports it, while TypeScript's bundler resolver reports a false
+// positive for this cross-runtime import.
+// @ts-expect-error Node strip-types requires the explicit .ts extension here.
+import { expToLevel, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
 
 export type SeasonalUpstreamContract = SeasonalUpstreamContractType;
 
@@ -176,6 +184,17 @@ function counterValue(items: UnknownRecord[], ...keys: string[]): number {
   return nonNegativeInteger(item.Value, `counter ${keys.join("/")}`);
 }
 
+/** Derived portrait counters stay NULL when the upstream omits that counter. */
+function optionalCounterValue(items: UnknownRecord[], ...keys: string[]): number | null {
+  const item = items.find(
+    (candidate) =>
+      Array.isArray(candidate.Key) &&
+      candidate.Key.length === keys.length &&
+      candidate.Key.every((key, index) => key === keys[index])
+  );
+  return item ? nonNegativeInteger(item.Value, `counter ${keys.join("/")}`) : null;
+}
+
 function parseCounters(profile: UnknownRecord): SeasonalCounters {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
@@ -191,6 +210,63 @@ function parseCounters(profile: UnknownRecord): SeasonalCounters {
     killedPmc: counterValue(pmc, "KilledPmc"),
   };
   return counters;
+}
+
+function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters): SeasonalStats {
+  const info = requiredRecord(profile.info, "profile.info");
+  const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
+  const scav = counterItems(profile.scavStats, "profile.scavStats");
+  const totalRaids = counters.pmcRaids + counters.scavRaids;
+  const pmcSurvived = optionalCounterValue(pmc, "ExitStatus", "Survived", "Pmc");
+  const scavSurvived = optionalCounterValue(scav, "ExitStatus", "Survived", "Scav");
+  const scavKills = optionalCounterValue(scav, "Kills");
+  const scavDeaths = optionalCounterValue(scav, "Deaths");
+  const pmcKills = optionalCounterValue(pmc, "Kills");
+  const pmcDeaths = optionalCounterValue(pmc, "Deaths");
+  const killedPmc = optionalCounterValue(pmc, "KilledPmc");
+  const totalKills = pmcKills == null || (scavKills == null && counters.scavRaids > 0)
+    ? null
+    : pmcKills + (scavKills ?? 0);
+  const deaths = pmcDeaths == null || (scavDeaths == null && counters.scavRaids > 0)
+    ? null
+    : pmcDeaths + (scavDeaths ?? 0);
+  const survivedRaids = pmcSurvived == null || (scavSurvived == null && counters.scavRaids > 0)
+    ? null
+    : pmcSurvived + (scavSurvived ?? 0);
+  const survivalRate = survivedRaids == null || totalRaids <= 0 ? null : 100 * survivedRaids / totalRaids;
+  const kdRatio = totalKills == null || deaths == null ? null : deaths > 0 ? totalKills / deaths : totalKills;
+  const pmcKdRatio = killedPmc == null || pmcDeaths == null
+    ? null
+    : pmcDeaths > 0 ? killedPmc / pmcDeaths : killedPmc;
+  const killsPerRaid = totalKills == null || totalRaids <= 0 ? null : totalKills / totalRaids;
+  const pmcSurvivalRate = pmcSurvived == null || counters.pmcRaids <= 0
+    ? null
+    : 100 * pmcSurvived / counters.pmcRaids;
+  const pmcRunThrough = optionalCounterValue(pmc, "ExitStatus", "Runner", "Pmc");
+  const scavRunThrough = optionalCounterValue(scav, "ExitStatus", "Runner", "Scav");
+  const runThrough = pmcRunThrough == null || (scavRunThrough == null && counters.scavRaids > 0)
+    ? null
+    : pmcRunThrough + (scavRunThrough ?? 0);
+  return {
+    totalRaids,
+    survivedRaids,
+    totalKills,
+    deaths,
+    runThrough,
+    survivalRate,
+    kdRatio,
+    pmcKdRatio,
+    killsPerRaid,
+    pmcSurvivalRate,
+    // Level is derived from the shared Seasonal XP table at the ingestion
+    // boundary; it is never copied from the regular PvP profile.
+    level: expToLevel(counters.experience, [...PLAYER_LEVELS_V2026_07_22]),
+    prestige: info.prestigeLevel === undefined ? null : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
+    longestWinStreak: optionalCounterValue(pmc, "LongestWinStreak", "Pmc"),
+    achievementsCount: profile.achievements === undefined
+      ? null
+      : Object.keys(requiredRecord(profile.achievements, "profile.achievements")).length,
+  };
 }
 
 function parseStaticSignals(profile: UnknownRecord) {
@@ -301,6 +377,7 @@ export function parseSeasonalProfile(
   }
 
   const counters = parseCounters(extracted.profile);
+  const seasonalStats = parseSeasonalStats(extracted.profile, counters);
   if (counters.pmcRaids + counters.scavRaids === 0) {
     throw new SeasonalValidationError(
       "no_completed_raids",
@@ -333,7 +410,7 @@ export function parseSeasonalProfile(
     );
   }
 
-  return {
+  const result: SeasonalProfile = {
     mode: "seasonal",
     cycleId: options.cycleId,
     aid: extracted.aid,
@@ -344,6 +421,14 @@ export function parseSeasonalProfile(
     counters,
     staticSignals: parseStaticSignals(extracted.profile),
   };
+  // Keep the legacy validator's enumerable payload stable for existing callers;
+  // the richer portrait is still available to the storage boundary.
+  Object.defineProperty(result, "seasonalStats", { value: seasonalStats, enumerable: false });
+  Object.defineProperty(result, "pvpEnrichment", {
+    value: { lifetimeHours: lifetimePvpHours, achievementIds: [], achievementCount: null, profileUpdatedAt: null },
+    enumerable: false,
+  });
+  return result;
 }
 
 export function validateSeasonalProfile(

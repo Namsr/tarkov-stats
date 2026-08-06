@@ -81,6 +81,19 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         .bind(...identity).first() as Record<string, unknown> | null;
       const previous = toSnapshot(previousRow ?? undefined);
       if (previous && profile.profileUpdatedAt <= previous.profileUpdatedAt) {
+        // Replaying the same Seasonal JSON enriches the existing portrait but
+        // remains progression-idempotent: no duplicate snapshot or interval.
+        if (profile.profileUpdatedAt === previous.profileUpdatedAt && profile.seasonalStats !== undefined) {
+          const stats = profile.seasonalStats;
+          await db.prepare(`UPDATE progression_snapshots SET
+            total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
+            level = ?, prestige = ?, longest_win_streak = ?, achv_count = ?, achievements = ?
+            WHERE ${IDENTITY} AND profile_updated_at = ?`).bind(
+            stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
+            stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
+            stats.achievementsCount, null, ...identity, profile.profileUpdatedAt,
+          ).run();
+        }
         return { inserted: false, status: profile.profileUpdatedAt === previous.profileUpdatedAt ? "duplicate" : "stale", snapshot: null, interval: null };
       }
 
@@ -91,26 +104,46 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         longestWinStreak: 0,
         achievementIds: [],
       };
+      const hasStaticSignals = profile.staticSignals !== undefined;
+      const seasonalStats = profile.seasonalStats;
+      const snapshotValues = [
+        profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
+        profile.counters.scavRaids, seasonalStats?.survivedRaids ?? null, profile.counters.pmcSurvived,
+        seasonalStats?.deaths ?? null, profile.counters.pmcDeaths, profile.counters.pmcKills,
+        seasonalStats?.totalKills ?? null, profile.counters.killedPmc, seasonalStats?.runThrough ?? null,
+        seasonalStats?.level ?? null,
+        seasonalStats !== undefined
+          ? seasonalStats.prestige
+          : hasStaticSignals ? staticSignals.prestige : null,
+        seasonalStats !== undefined
+          ? seasonalStats.longestWinStreak
+          : hasStaticSignals ? staticSignals.longestWinStreak : null,
+        seasonalStats !== undefined
+          ? seasonalStats.achievementsCount
+          : hasStaticSignals ? staticSignals.achievementIds.length : null,
+        seasonalStats !== undefined
+          ? null
+          : hasStaticSignals ? JSON.stringify(staticSignals.achievementIds) : null,
+      ];
       const statements = [db.prepare(`INSERT INTO progression_snapshots (
         mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
-        experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-        prestige, longest_win_streak, achievements
+        experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
+        pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements
       ) SELECT ?, ?, ?, ?, ?, ?, ?, COALESCE((
           SELECT series_id + CASE WHEN
             ? < experience OR ? < pmc_raids OR ? < scav_raids OR ? < pmc_survived OR
             ? < pmc_deaths OR ? < pmc_kills OR ? < killed_pmc THEN 1 ELSE 0 END
           FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
             AND profile_updated_at < ? ORDER BY profile_updated_at DESC LIMIT 1
-        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
           AND profile_updated_at >= ?
       )
       ON CONFLICT(mode, cycle_id, aid, profile_updated_at) DO NOTHING`).bind(
         ...identity, profile.profileUpdatedAt, profile.profileUpdatedAt, capturedAt, localDate,
-        ...counters, ...identity, profile.profileUpdatedAt, ...counters,
-        staticSignals.prestige, staticSignals.longestWinStreak,
-        JSON.stringify(staticSignals.achievementIds), ...identity, profile.profileUpdatedAt
+        ...counters, ...identity, profile.profileUpdatedAt, ...snapshotValues,
+        ...identity, profile.profileUpdatedAt
       )];
       statements.push(db.prepare(`WITH current AS (
           SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? AND profile_updated_at = ?

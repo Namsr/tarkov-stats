@@ -131,6 +131,8 @@ export async function GET(request: NextRequest) {
   const storeOpenMs = timing.elapsedMs(storeOpenStarted);
   if (!store) {
     const response = NextResponse.json({
+      mode: rawMode,
+      cycleId: "persistent",
       total: 0,
       averages: null,
       metricCounts: {},
@@ -166,7 +168,7 @@ export async function GET(request: NextRequest) {
     ));
     const buckets = startTimingPhase(
       timing.now,
-      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period),
+      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
     );
     const bounds = startTimingPhase(timing.now, () => store.rangeBounds(dimension, period));
     await Promise.resolve();
@@ -190,6 +192,8 @@ export async function GET(request: NextRequest) {
     }));
 
     const body = {
+      mode: rawMode,
+      cycleId: "persistent",
       total,
       averages: averageResult ? averageValues : null,
       metricCounts,

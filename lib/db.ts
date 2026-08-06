@@ -220,7 +220,12 @@ function aggSql(column: string | null, where = ""): string {
   );
 }
 
-function bucketAggSql(dimension: RangeDimension, column: string | null, where = ""): string {
+function bucketAggSql(
+  dimension: RangeDimension,
+  column: string | null,
+  where = "",
+  statistic: AverageStatistic = "trimmed_mean",
+): string {
   if (column != null && !/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
   }
@@ -238,6 +243,23 @@ function bucketAggSql(dimension: RangeDimension, column: string | null, where = 
     : `CASE WHEN ${dimensionColumn} >= 3000 THEN NULL ` +
       `WHEN ${dimensionColumn} < 1000 THEN ${loExpr} + 25 ELSE ${loExpr} + 50 END`;
   const sumExpr = column ? `COALESCE(SUM(${column}), 0)` : "0";
+  if (column && statistic === "median") {
+    return `WITH bucketed AS (
+      SELECT ${loExpr} AS lo, ${hiExpr} AS hi, ${column} AS value
+      FROM players ${where}
+    ), ranked AS (
+      SELECT lo, hi, value,
+        ROW_NUMBER() OVER (PARTITION BY lo, hi ORDER BY value) AS rn,
+        COUNT(*) OVER (PARTITION BY lo, hi) AS bucket_n
+      FROM bucketed
+    ) SELECT lo, hi, MAX(bucket_n) AS n,
+      COALESCE(SUM(CASE WHEN rn IN (
+        CAST((bucket_n + 1) / 2 AS INTEGER), CAST((bucket_n + 2) / 2 AS INTEGER)
+      ) THEN value END) / NULLIF(COUNT(CASE WHEN rn IN (
+        CAST((bucket_n + 1) / 2 AS INTEGER), CAST((bucket_n + 2) / 2 AS INTEGER)
+      ) THEN 1 END), 0) * MAX(bucket_n), 0) AS s
+      FROM ranked GROUP BY lo, hi ORDER BY lo`;
+  }
   return (
     `SELECT ${loExpr} AS lo, ${hiExpr} AS hi, COUNT(*) AS n, ${sumExpr} AS s ` +
     `FROM players ${where} GROUP BY ${loExpr}, ${hiExpr} ORDER BY lo`
@@ -589,6 +611,7 @@ export interface BucketAgg {
   /** null denotes the open-ended top bucket. Other bucket highs are exclusive. */
   hi: number | null;
   n: number;
+  /** Additive metric sum, or statistic*n for a median distribution. */
   sum: number;
 }
 export interface RangeBounds {
@@ -683,6 +706,7 @@ export interface PlayerStore {
     dimension: RangeDimension,
     column: string | null,
     period?: AveragePeriod,
+    statistic?: AverageStatistic,
   ): Promise<BucketAgg[]>;
   /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
   rangeBounds(dimension: RangeDimension, period?: AveragePeriod): Promise<RangeBounds>;
@@ -880,9 +904,9 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         const { results } = await db.prepare(aggSql(column, where)).all();
         return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
       },
-      async bucketAggregate(dimension, column, period = "all") {
+      async bucketAggregate(dimension, column, period = "all", statistic = "trimmed_mean") {
         const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
-        const { results } = await db.prepare(bucketAggSql(dimension, column, where)).all();
+        const { results } = await db.prepare(bucketAggSql(dimension, column, where, statistic)).all();
         return toBucketAggs(
           (results ?? []) as { lo: number; hi: number | null; n: number; s: number }[]
         );
@@ -1184,9 +1208,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const rows = db.prepare(aggSql(column, where)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
       },
-      async bucketAggregate(dimension, column, period = "all") {
+      async bucketAggregate(dimension, column, period = "all", statistic = "trimmed_mean") {
         const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
-        const rows = db.prepare(bucketAggSql(dimension, column, where)).all() as {
+        const rows = db.prepare(bucketAggSql(dimension, column, where, statistic)).all() as {
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);

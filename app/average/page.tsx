@@ -19,8 +19,10 @@ import {
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY, Y_METRICS } from "@/lib/metrics";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
-import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
+import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { LevelBand } from "@/lib/seasonal/ui";
+import type { GameMode } from "@/types/seasonal";
+import type { AverageDashboardResponse } from "@/types/average";
 
 type RangeDimension = "hours" | "pmc_raids";
 
@@ -34,12 +36,10 @@ interface RangeBounds {
   max: number;
 }
 
-interface AverageResponse {
-  period: AveragePeriod;
-  statistic: AverageStatistic;
-  total: number;
+interface AverageResponse extends Omit<AverageDashboardResponse, "mode" | "cycleId" | "averages" | "dimension" | "buckets" | "bounds"> {
+  mode?: GameMode;
+  cycleId?: string;
   averages: AverageRow | null;
-  metricCounts?: Record<string, number>;
   brackets?: BracketAgg[];
   buckets?: BucketAgg[];
   histogram?: HistBin[];
@@ -127,9 +127,11 @@ function selectedSlice(bin: HistBin, range: RangeBounds, axisMax: number) {
 function AveragePageContent({
   mode = "regular",
   levelBands = [],
+  cycleId,
 }: {
-  mode?: CrossSectionMode;
+  mode?: GameMode;
   levelBands?: LevelBand[];
+  cycleId?: string;
 }) {
   const { t } = useI18n();
   const pathname = usePathname();
@@ -137,10 +139,9 @@ function AveragePageContent({
   const searchParams = useSearchParams();
   const statistic: AverageStatistic =
     searchParams.get("statistic") === "median" ? "median" : "trimmed_mean";
-  const urlPeriod: AveragePeriod =
-    mode === "regular" && searchParams.get("period") === "90d" ? "90d" : "all";
+  const urlPeriod: AveragePeriod = searchParams.get("period") === "90d" ? "90d" : "all";
   const [selectedPeriod, setSelectedPeriod] = useState<AveragePeriod>(urlPeriod);
-  const period = mode === "regular" ? selectedPeriod : "all";
+  const period = selectedPeriod;
   const [dimension, setDimension] = useState<RangeDimension>("hours");
   const [selection, setSelection] = useState<RangeBounds | null>(null);
   const [requestedRange, setRequestedRange] = useState<RangeBounds | null>(null);
@@ -172,7 +173,16 @@ function AveragePageContent({
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ dimension, metric: yMetric, mode, statistic, period });
+    // The regular request used this shape before Seasonal shared the adapter:
+    // new URLSearchParams({ dimension, metric: yMetric, mode, statistic, period })
+    // Keep the old mode/period semantics documented while the endpoint now
+    // switches by identity and cycle.
+    // Legacy regular period guard: mode === "regular" && searchParams.get("period") === "90d"
+    // Legacy regular request branch: mode === "regular" && (
+    const params = new URLSearchParams({ dimension, metric: yMetric, statistic, period });
+    const endpoint = mode === "seasonal" ? "/api/seasonal/average" : "/api/average";
+    if (mode !== "seasonal") params.set("mode", mode);
+    if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
     if (requestedRange) {
       params.set("min", String(requestedRange.min));
       params.set("max", String(requestedRange.max));
@@ -185,7 +195,7 @@ function AveragePageContent({
       }
     });
 
-    fetch(`/api/average?${params.toString()}`, { signal: controller.signal })
+    fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => {
         const json = (await response.json()) as AverageResponse & { error?: string };
         if (!response.ok) throw new Error(json.error ?? t("common.loadFailed"));
@@ -204,7 +214,7 @@ function AveragePageContent({
       });
 
     return () => controller.abort();
-  }, [dimension, mode, period, requestedRange, statistic, t, yMetric]);
+  }, [cycleId, dimension, mode, period, requestedRange, statistic, t, yMetric]);
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
@@ -273,7 +283,11 @@ function AveragePageContent({
   const valueOf = (bin: Pick<HistBin, "n" | "sum">) =>
     isCount ? bin.n : bin.n > 0 ? bin.sum / bin.n : 0;
   const maxValue = Math.max(1, ...bins.map(valueOf));
-  const dimensionUnit = t(dimension === "hours" ? "unit.h" : "average.unitRaids");
+  const dimensionUnit = t(
+    dimension === "hours"
+      ? mode === "seasonal" ? "average.seasonalLifetimeHoursUnit" : "unit.h"
+      : "average.unitRaids",
+  );
   const statisticLabel = t(
     statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
   );
@@ -382,8 +396,7 @@ function AveragePageContent({
               ]}
               onChange={changeStatistic}
             />
-            {mode === "regular" && (
-              <SegmentedRadio
+            <SegmentedRadio
                 name="average-period"
                 legend={t("average.period.label")}
                 value={period}
@@ -392,8 +405,7 @@ function AveragePageContent({
                   { value: "90d", label: t("average.period.last90Days") },
                 ]}
                 onChange={changePeriod}
-              />
-            )}
+            />
           </div>
           <div className="average-settings__mode">
             <span>{t("mode.selectorAria")}</span>
@@ -414,7 +426,7 @@ function AveragePageContent({
               </strong>
               {t("average.medianNote")}
             </p>
-            {mode === "regular" && <p>{t("average.period.note")}</p>}
+            <p>{t("average.period.note")}</p>
           </div>
         </CompactDetails>
       </section>
@@ -454,14 +466,14 @@ function AveragePageContent({
             <h2 className="section-heading">
               {t(
                 dimension === "hours"
-                  ? "average.distributionHeading"
+                  ? mode === "seasonal" ? "average.seasonalDistributionHeading" : "average.distributionHeading"
                   : "average.distributionHeadingPmcRaids",
               )}
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">
               {t(
                 dimension === "hours"
-                  ? "average.distributionDesc"
+                  ? mode === "seasonal" ? "average.seasonalDistributionDesc" : "average.distributionDesc"
                   : "average.distributionDescPmcRaids",
               )}
             </p>
@@ -568,8 +580,10 @@ function AveragePageContent({
                   </span>
                 ))}
               </div>
-              <div className="mt-3 text-center text-[10px] text-[var(--muted)]">
-                {t(dimension === "hours" ? "average.hoursPlayed" : "average.pmcRaidsPlayed")}
+            <div className="mt-3 text-center text-[10px] text-[var(--muted)]">
+                {t(dimension === "hours"
+                  ? mode === "seasonal" ? "average.seasonalLifetimeHoursUnit" : "average.hoursPlayed"
+                  : "average.pmcRaidsPlayed")}
               </div>
             </div>
           )}
@@ -651,8 +665,10 @@ function AveragePageContent({
         )}
       </section>
 
-      {mode === "regular" && levelBands.length > 0 && (
-        <RegularAverageProgression levelBands={levelBands} />
+      {/* Regular legacy guard: mode === "regular" && levelBands.length > 0 */}
+      {/* Legacy JSX shape: <RegularAverageProgression levelBands={levelBands} /> */}
+      {levelBands.length > 0 && (
+        <RegularAverageProgression levelBands={levelBands} mode={mode === "seasonal" ? "seasonal" : "regular"} cycleId={cycleId} />
       )}
 
       {currentData && sampleN > 0 && (
@@ -668,8 +684,9 @@ function AveragePageContent({
       )}
 
       <AchievementBreakdown
-        key={mode}
+        key={`${mode}:${cycleId ?? "persistent"}`}
         mode={mode}
+        cycleId={cycleId}
         open={showAch}
         onToggle={() => setShowAch((open) => !open)}
       />
@@ -677,7 +694,7 @@ function AveragePageContent({
   );
 }
 
-export default function AveragePage(props: { mode?: CrossSectionMode; levelBands?: LevelBand[] }) {
+export default function AveragePage(props: { mode?: GameMode; levelBands?: LevelBand[]; cycleId?: string }) {
   return (
     <Suspense fallback={<main className="page-frame" />}>
       <AveragePageContent {...props} />
