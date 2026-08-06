@@ -159,6 +159,13 @@ test("nearby metric cohorts use the trimmed mean and preserve raid coordinates",
   );
 });
 
+test("progression points preserve the resolved level for the chart axis", () => {
+  const series = buildProgressionMetricSeries([
+    row({ point_id: 1, value: 1_000, pmc_raids: 10, level: 26 }),
+  ], identity, "xp");
+  assert.equal(series.player[0].level, 26);
+});
+
 test("interval-derived timeline metrics normalize elapsed days and zero-death K/D", () => {
   const intervals = buildSequentialIntervals([
     { profileUpdatedAt: DAY_MS, counters: counters() },

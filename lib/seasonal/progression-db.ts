@@ -64,6 +64,7 @@ interface DetailDbRow extends Record<string, unknown> {
   pmc_deaths: number;
   pmc_kills: number;
   killed_pmc: number;
+  pmc_killed_pmc: number | null;
 }
 
 interface StaticProfileRow extends Record<string, unknown> {
@@ -75,6 +76,9 @@ interface StaticProfileRow extends Record<string, unknown> {
   pmc_deaths: number;
   pmc_kills: number;
   killed_pmc: number;
+  pmc_killed_pmc: number | null;
+  pmc_kd_ratio: number | null;
+  pvp_stats_known: number | null;
   lifetime_pvp_hours: number | null;
   prestige: number;
   longest_win_streak: number;
@@ -87,8 +91,22 @@ const DETAIL_INTERVAL_SQL = `WITH target_dates AS (
   )
   SELECT i.aid, i.local_date, i.ended_at, i.elapsed_days, i.status,
     i.experience, i.pmc_raids, i.scav_raids, i.pmc_survived, i.pmc_deaths,
-    i.pmc_kills, i.killed_pmc
+    i.pmc_kills, i.killed_pmc,
+    CASE
+      WHEN json_extract(to_s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+        AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+        THEN json_extract(to_s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')
+      WHEN json_extract(to_s.stats_json, '$.pmcKdRatio') IS NOT NULL
+        AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL
+        AND COALESCE(json_extract(to_s.stats_json, '$.pvpStatsKnown'), 1) != 0
+        AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0
+        THEN json_extract(to_s.stats_json, '$.pmcKdRatio') * to_s.pmc_deaths
+          - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths
+      ELSE NULL
+    END AS pmc_killed_pmc
   FROM progression_intervals i
+  JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id
+  JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
   JOIN target_dates d ON d.local_date = i.local_date
   JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
     AND p.confirmed_banned = 0
@@ -96,7 +114,11 @@ const DETAIL_INTERVAL_SQL = `WITH target_dates AS (
   ORDER BY i.local_date, i.aid, i.ended_at`;
 
 const STATIC_PROFILE_SQL = `SELECT p.nickname, p.experience, p.pmc_raids, p.scav_raids,
-  p.pmc_survived, p.pmc_deaths, p.pmc_kills, p.killed_pmc, p.lifetime_pvp_hours,
+  p.pmc_survived, p.pmc_deaths, p.pmc_kills, p.killed_pmc,
+  json_extract(s.stats_json, '$.pmcKilledPmc') AS pmc_killed_pmc,
+  json_extract(s.stats_json, '$.pmcKdRatio') AS pmc_kd_ratio,
+  json_extract(s.stats_json, '$.pvpStatsKnown') AS pvp_stats_known,
+  p.lifetime_pvp_hours,
   COALESCE(s.prestige, 0) AS prestige,
   COALESCE(s.longest_win_streak, 0) AS longest_win_streak,
   COALESCE(s.achievements, '[]') AS achievements
@@ -109,7 +131,8 @@ const STATIC_PROFILE_SQL = `SELECT p.nickname, p.experience, p.pmc_raids, p.scav
 
 /** Raw cumulative points and interval endpoints used by the combined timeline. */
 const TIMELINE_SNAPSHOT_SQL = `SELECT s.aid, s.id AS point_id, s.local_date,
-    s.profile_updated_at AS observed_at, s.experience, s.pmc_raids, s.series_id,
+    s.profile_updated_at AS observed_at, s.experience, s.pmc_raids, s.level,
+    s.pmc_survived, s.pmc_deaths, s.pmc_kills, s.killed_pmc, s.stats_json, s.series_id,
     COALESCE(p.lifetime_pvp_hours, s.hours) AS lifetime_hours
   FROM progression_snapshots s
   JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
@@ -122,7 +145,20 @@ const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
     i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,
     i.scav_raids AS delta_scav_raids, i.pmc_survived AS delta_pmc_survived,
     i.pmc_deaths AS delta_pmc_deaths, i.pmc_kills AS delta_pmc_kills,
-    i.killed_pmc AS delta_killed_pmc, to_s.pmc_raids, to_s.series_id,
+    i.killed_pmc AS delta_killed_pmc,
+    CASE
+      WHEN json_extract(to_s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+        AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+        THEN json_extract(to_s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')
+      WHEN json_extract(to_s.stats_json, '$.pmcKdRatio') IS NOT NULL
+        AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL
+        AND COALESCE(json_extract(to_s.stats_json, '$.pvpStatsKnown'), 1) != 0
+        AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0
+        THEN json_extract(to_s.stats_json, '$.pmcKdRatio') * to_s.pmc_deaths
+          - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths
+      ELSE NULL
+    END AS delta_pmc_killed_pmc,
+    to_s.pmc_raids, to_s.level, to_s.series_id,
     from_s.profile_updated_at AS period_start_at,
     COALESCE(p.lifetime_pvp_hours, to_s.hours) AS lifetime_hours
   FROM progression_intervals i
@@ -147,25 +183,28 @@ interface TimelineIntervalRow {
   delta_pmc_deaths: number;
   delta_pmc_kills: number;
   delta_killed_pmc: number;
+  delta_pmc_killed_pmc: number | null;
   pmc_raids: number;
+  level: number | null;
   series_id: number;
   period_start_at: number | null;
   lifetime_hours: number | null;
 }
 
-const TIMELINE_INTERVAL_METRICS = [
-  "xp_per_day",
-  "pmc_raids_per_day",
-  "pmc_kills_per_day",
-  "non_pmc_kills_per_day",
-  "survival",
-  "pvp_kd",
-  "ai_kd",
-  "pmc_kills_per_raid",
-  "non_pmc_kills_per_raid",
+/** Foreground timeline lines are cumulative profile values, not snapshot rates. */
+const TIMELINE_CUMULATIVE_METRICS = [
+  "survival", "pvp_kd", "ai_kd",
+] as const satisfies readonly Exclude<ProgressionMetricKey, "xp">[];
+
+/** Legacy rate lines remain in the response for old callers; the chart can
+ * omit them because snapshot spacing is not a real active-day series. */
+const TIMELINE_LEGACY_METRICS = [
+  "xp_per_day", "pmc_raids_per_day", "pmc_kills_per_day", "non_pmc_kills_per_day",
+  "pmc_kills_per_raid", "non_pmc_kills_per_raid",
 ] as const satisfies readonly Exclude<ProgressionMetricKey, "xp">[];
 
 function finiteNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -186,6 +225,7 @@ function timelineSnapshotRows(rows: readonly Record<string, unknown>[]): DailyRo
       observed_at: observedAt,
       value,
       pmc_raids: raids,
+      level: row.level == null ? null : finiteNumber(row.level),
       raid_bucket: Math.ceil(raids / 10) * 10,
       lifetime_hours: row.lifetime_hours == null ? null : finiteNumber(row.lifetime_hours),
       freshness_at: observedAt,
@@ -207,7 +247,78 @@ function zeroCounters(): SeasonalCounters {
   };
 }
 
-function intervalMetricValues(row: TimelineIntervalRow): Record<Exclude<ProgressionMetricKey, "xp">, number | null> | null {
+function parseSnapshotStats(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function cumulativeMetricValue(
+  row: Record<string, unknown>,
+  metric: "survival" | "pvp_kd" | "ai_kd",
+): number | null {
+  const raids = finiteNumber(row.pmc_raids);
+  const deaths = finiteNumber(row.pmc_deaths);
+  const pmcKills = finiteNumber(row.pmc_kills);
+  if (raids == null || raids < 0 || deaths == null || deaths < 0 || pmcKills == null || pmcKills < 0) return null;
+  if (metric === "survival") {
+    const survived = finiteNumber(row.pmc_survived);
+    return survived == null || raids <= 0 ? null : Math.max(0, Math.min(100, survived / raids * 100));
+  }
+  const stats = parseSnapshotStats(row.stats_json);
+  const exact = finiteNumber(stats.pmcKilledPmc);
+  const known = stats.pvpStatsKnown !== false;
+  const storedRatio = known ? finiteNumber(stats.pmcKdRatio) : null;
+  // Seasonal rows predate stats_json and already store a PMC-only killed_pmc.
+  const pvpKills = exact != null
+    ? exact
+    : storedRatio != null
+      ? storedRatio * deaths
+      : stats.pvpStatsKnown === undefined
+        ? finiteNumber(row.killed_pmc)
+        : null;
+  if (pvpKills == null || pvpKills < 0) return null;
+  if (metric === "pvp_kd") return deaths > 0 ? pvpKills / deaths : pvpKills;
+  const pveKills = Math.max(0, pmcKills - pvpKills);
+  return deaths > 0 ? pveKills / deaths : pveKills;
+}
+
+function timelineCumulativeMetricRows(
+  rows: readonly Record<string, unknown>[],
+  metric: "survival" | "pvp_kd" | "ai_kd",
+): DailyRow[] {
+  return rows.flatMap((raw) => {
+    const value = cumulativeMetricValue(raw, metric);
+    const aid = finiteNumber(raw.aid);
+    const pointId = finiteNumber(raw.point_id);
+    const observedAt = finiteNumber(raw.observed_at);
+    const raids = finiteNumber(raw.pmc_raids);
+    const seriesId = finiteNumber(raw.series_id);
+    if (value == null || !Number.isFinite(value) || aid == null || pointId == null || observedAt == null || raids == null || raids <= 0 || seriesId == null) return [];
+    return [{
+      aid,
+      point_id: pointId,
+      local_date: String(raw.local_date ?? ""),
+      observed_at: observedAt,
+      value,
+      pmc_raids: raids,
+      raid_bucket: Math.ceil(raids / 10) * 10,
+      lifetime_hours: raw.lifetime_hours == null ? null : finiteNumber(raw.lifetime_hours),
+      freshness_at: observedAt,
+      confidence: 1,
+      series_id: seriesId,
+      level: raw.level == null ? null : finiteNumber(raw.level),
+    } satisfies DailyRow];
+  });
+}
+
+function intervalMetricValues(row: TimelineIntervalRow): Record<typeof TIMELINE_LEGACY_METRICS[number], number | null> | null {
   const elapsedDays = finiteNumber(row.elapsed_days);
   if (row.status !== "valid" || elapsedDays == null || elapsedDays <= 0) return null;
   const changes: SeasonalCounters = {
@@ -218,6 +329,7 @@ function intervalMetricValues(row: TimelineIntervalRow): Record<Exclude<Progress
     pmcDeaths: Number(row.delta_pmc_deaths),
     pmcKills: Number(row.delta_pmc_kills),
     killedPmc: Number(row.delta_killed_pmc),
+    ...(row.delta_pmc_killed_pmc == null ? {} : { pmcKilledPmc: Number(row.delta_pmc_killed_pmc) }),
   };
   if (!Object.values(changes).every(Number.isFinite)) return null;
   const interval = buildSequentialIntervals([
@@ -231,17 +343,14 @@ function intervalMetricValues(row: TimelineIntervalRow): Record<Exclude<Progress
     pmc_raids_per_day: metrics.pmcRaidsPerDay,
     pmc_kills_per_day: metrics.killedPmcPerDay,
     non_pmc_kills_per_day: metrics.nonPmcKillsPerDay,
-    survival: metrics.survivalRate == null ? null : metrics.survivalRate * 100,
-    pvp_kd: metrics.pvpKd,
-    ai_kd: metrics.aiScavKd,
     pmc_kills_per_raid: metrics.killedPmcPerRaid,
     non_pmc_kills_per_raid: metrics.nonPmcKillsPerRaid,
   };
 }
 
-function timelineMetricRows(
+function timelineLegacyMetricRows(
   rows: readonly Record<string, unknown>[],
-  metric: Exclude<ProgressionMetricKey, "xp">,
+  metric: typeof TIMELINE_LEGACY_METRICS[number],
 ): DailyRow[] {
   return rows.flatMap((raw) => {
     const row = raw as unknown as TimelineIntervalRow;
@@ -264,6 +373,7 @@ function timelineMetricRows(
       freshness_at: observedAt,
       confidence: Math.max(0, Math.min(1, finiteNumber(row.elapsed_days) == null ? 0 : 1 / Math.max(1, Number(row.elapsed_days)))),
       series_id: seriesId,
+      level: row.level == null ? null : finiteNumber(row.level),
       score_sample_n: null,
       period_start_at: row.period_start_at == null ? null : finiteNumber(row.period_start_at),
       elapsed_days: finiteNumber(row.elapsed_days),
@@ -281,8 +391,12 @@ function timelineMetricSeries(
   const metrics: Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>> = {};
   const snapshots = timelineSnapshotRows(snapshotRows);
   if (snapshots.length) metrics.xp = buildProgressionMetricSeries(snapshots, identity, "xp");
-  for (const metric of TIMELINE_INTERVAL_METRICS) {
-    const source = timelineMetricRows(intervalRows, metric);
+  for (const metric of TIMELINE_CUMULATIVE_METRICS) {
+    const source = timelineCumulativeMetricRows(snapshotRows, metric);
+    if (source.length) metrics[metric] = buildProgressionMetricSeries(source, identity, metric);
+  }
+  for (const metric of TIMELINE_LEGACY_METRICS) {
+    const source = timelineLegacyMetricRows(intervalRows, metric);
     if (source.length) metrics[metric] = buildProgressionMetricSeries(source, identity, metric);
   }
   return metrics;
@@ -305,6 +419,7 @@ function detailRows(rows: DetailDbRow[], input: ProgressionRequest): Progression
       pmcDeaths: Number(row.pmc_deaths),
       pmcKills: Number(row.pmc_kills),
       killedPmc: Number(row.killed_pmc),
+      ...(row.pmc_killed_pmc == null ? {} : { pmcKilledPmc: Number(row.pmc_killed_pmc) }),
     },
   }));
 }
@@ -326,13 +441,19 @@ async function trustedStaticScore(row: StaticProfileRow): Promise<CheaterScoreRe
   const deaths = Number(row.pmc_deaths);
   const kills = Number(row.pmc_kills);
   const killedPmc = Number(row.killed_pmc);
+  const exactPmcKilledPmc = finiteNumber(row.pmc_killed_pmc);
+  const storedPmcKd = finiteNumber(row.pmc_kd_ratio);
+  const pvpStatsKnown = Number(row.pvp_stats_known) !== 0 || exactPmcKilledPmc != null || storedPmcKd != null;
+  const pvpKills = exactPmcKilledPmc
+    ?? (pvpStatsKnown && storedPmcKd != null ? storedPmcKd * deaths : killedPmc);
   const ratio = (value: number, denominator: number) => denominator === 0 ? value : value / denominator;
   const stats: ParsedPlayerStats = {
     nickname: String(row.nickname), level: 0, prestige: Number(row.prestige), experience: Number(row.experience), side: "PMC",
     totalRaids: raids + Number(row.scav_raids), pmcRaids: raids, scavRaids: Number(row.scav_raids),
     survivedRaids: survived, survivalRate: raids > 0 ? (survived / raids) * 100 : 0,
-    totalKills: kills, killedPmc, killsPerRaid: raids > 0 ? kills / raids : 0, kdRatio: ratio(kills, deaths),
-    pmcKdRatio: ratio(killedPmc, deaths), deaths, pmcDeaths: deaths, runThrough: 0,
+    totalKills: kills, pmcKilledPmc: pvpKills, killedPmc, pvpStatsKnown,
+    killsPerRaid: raids > 0 ? kills / raids : 0, kdRatio: ratio(kills, deaths),
+    pmcKdRatio: ratio(pvpKills, deaths), deaths, pmcDeaths: deaths, runThrough: 0,
     pmcSurvived: survived, pmcSurvivalRate: raids > 0 ? (survived / raids) * 100 : 0,
     pmcKills: kills, pmcKillsPerRaid: raids > 0 ? kills / raids : 0, pmcExitKilled: 0, pmcExitLeft: 0,
     pmcExitTransit: 0, pmcExitMia: 0, hoursPlayed: Number(row.lifetime_pvp_hours ?? 0),

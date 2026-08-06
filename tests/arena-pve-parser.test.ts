@@ -137,6 +137,8 @@ test("explicit zero PMC kills is known while a missing counter remains unknown",
     pmcStats: { eft: { totalInGameTime: 0, overAllCounters: { Items: items } } },
   });
   assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 0 }])).pvpStatsKnown, true);
+  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 7 }])).pmcKilledPmc, 7);
+  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 0 }])).pmcKilledPmc, 0);
   assert.equal(parseProfileStats(profile([])).pvpStatsKnown, false);
 });
 

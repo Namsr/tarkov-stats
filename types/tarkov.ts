@@ -137,6 +137,8 @@ export interface ParsedPlayerStats {
   survivedRaids: number;
   survivalRate: number;
   totalKills: number;
+  /** Exact PMC kills against PMC while playing PMC (not Scav kills). */
+  pmcKilledPmc: number;
   killedPmc: number;
   /** True when the exact PMC ["KilledPmc"] counter exists upstream (zero is valid). */
   pvpStatsKnown?: boolean;

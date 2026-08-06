@@ -169,6 +169,22 @@ function zeroCounters(): SeasonalCounters {
   };
 }
 
+/** Exact PMC-vs-PMC kills are optional for legacy rows. */
+function exactPmcKills(counters: SeasonalCounters): number | null {
+  const value = Number(counters.pmcKilledPmc);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Legacy `killedPmc` was PMC-only in Seasonal rows but includes Scav kills in
+ * older regular rows. Callers that have an exact field always win. */
+export function pvpKillsFor(counters: SeasonalCounters): number {
+  return exactPmcKills(counters) ?? Math.max(0, Number(counters.killedPmc) || 0);
+}
+
+function nonPmcKillsFor(counters: SeasonalCounters): number {
+  return Math.max(0, Number(counters.pmcKills) - pvpKillsFor(counters));
+}
+
 function kd(kills: number, deaths: number): number {
   return deaths === 0 ? kills : kills / deaths;
 }
@@ -177,9 +193,10 @@ export function calculateKd(changes: SeasonalCounters): Pick<
   IntervalMetrics,
   "pvpKd" | "aiScavKd" | "overallPmcKd"
 > {
-  const nonPmcKills = changes.pmcKills - changes.killedPmc;
+  const pvpKills = pvpKillsFor(changes);
+  const nonPmcKills = nonPmcKillsFor(changes);
   return {
-    pvpKd: kd(changes.killedPmc, changes.pmcDeaths),
+    pvpKd: kd(pvpKills, changes.pmcDeaths),
     aiScavKd: kd(nonPmcKills, changes.pmcDeaths),
     overallPmcKd: kd(changes.pmcKills, changes.pmcDeaths),
   };
@@ -234,6 +251,14 @@ export function buildSequentialIntervals(
       if (change !== 0) changedFields.push(key);
       if (change < 0) negativeFields.push(key);
     }
+    const exactFrom = exactPmcKills(from.counters);
+    const exactTo = exactPmcKills(to.counters);
+    if (exactFrom != null && exactTo != null) {
+      const change = exactTo - exactFrom;
+      changes.pmcKilledPmc = change;
+      if (change !== 0) changedFields.push("pmcKilledPmc");
+      if (change < 0) negativeFields.push("pmcKilledPmc");
+    }
 
     // A broad fall of the primary progression counters is a wipe/reset. An isolated
     // negative cumulative field is treated as a schema anomaly; both start a new series.
@@ -248,16 +273,17 @@ export function buildSequentialIntervals(
 
     let metrics: IntervalMetrics | null = null;
     if (status === "valid") {
-      const nonPmcKills = changes.pmcKills - changes.killedPmc;
+      const pvpKills = pvpKillsFor(changes);
+      const nonPmcKills = nonPmcKillsFor(changes);
       const kdValues = calculateKd(changes);
       metrics = {
         xpPerDay: changes.experience / elapsedDays,
         pmcRaidsPerDay: changes.pmcRaids / elapsedDays,
-        killedPmcPerDay: changes.killedPmc / elapsedDays,
+        killedPmcPerDay: pvpKills / elapsedDays,
         nonPmcKillsPerDay: nonPmcKills / elapsedDays,
         survivalRate: changes.pmcRaids > 0 ? changes.pmcSurvived / changes.pmcRaids : null,
         ...kdValues,
-        killedPmcPerRaid: changes.pmcRaids > 0 ? changes.killedPmc / changes.pmcRaids : null,
+        killedPmcPerRaid: changes.pmcRaids > 0 ? pvpKills / changes.pmcRaids : null,
         nonPmcKillsPerRaid: changes.pmcRaids > 0 ? nonPmcKills / changes.pmcRaids : null,
         xpPerPmcRaid: changes.pmcRaids > 0 ? changes.experience / changes.pmcRaids : null,
         allPmcKillsPerRaid: changes.pmcRaids > 0 ? changes.pmcKills / changes.pmcRaids : null,

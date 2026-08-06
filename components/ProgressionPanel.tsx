@@ -158,12 +158,6 @@ export default function ProgressionPanel({
           {history?.ready && <section className="mt-5">
             <h3 className="section-heading mb-3">{t("seasonal.longTerm")}</h3>
             <div className="data-ledger">
-              <StatCard label={t("seasonal.metric.xpPerDay")} value={number(longTerm?.xpPerDay, 0)} />
-              <StatCard label={t("seasonal.metric.raidsPerDay")} value={number(longTerm?.raidsPerDay)} />
-              <StatCard label={t("seasonal.metric.pmcKillsPerDay")} value={number(longTerm?.pmcKillsPerDay)} />
-              <StatCard label={t("seasonal.metric.pmcKillsPerRaid")} value={number(longTerm?.pmcKillsPerRaid)} />
-              <StatCard label={t("seasonal.metric.nonPmcKillsPerDay")} value={number(longTerm?.nonPmcKillsPerDay)} />
-              <StatCard label={t("seasonal.metric.nonPmcKillsPerRaid")} value={number(longTerm?.nonPmcKillsPerRaid)} />
               <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
               <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
               <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />

@@ -268,21 +268,38 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);
   assert.match(panel, /result\.history\?\.ready && validRisk\(result\.risk\) \? result\.risk : null/);
   assert.match(panel, /if \(controller\.signal\.aborted\) return/);
-  assert.match(chart, /progressionRaidDomain/);
-  assert.match(chart, /progressionValueDomain/);
-  assert.match(chart, /progressionLineSegments/);
+  assert.match(chart, /cumulativeLevelBands/);
+  assert.match(chart, /niceXpDomain/);
+  assert.match(chart, /chartPath/);
   assert.match(chart, /clipPath/);
-  assert.match(chart, /data-metric=\{metric\.key\}/);
-  assert.match(chart, /aria-pressed=\{active\}/);
-  assert.match(chart, /previewMetric/);
+  assert.match(chart, /data-metric=\{(?:metric|item)\.key\}/);
+  assert.match(chart, /role="radio"/);
+  assert.match(chart, /aria-checked=\{active\}/);
+  assert.doesNotMatch(chart, /previewMetric/);
   assert.match(chart, /const \[compareOverall, setCompareOverall\] = useState\(true\)/);
   assert.match(chart, /focusPlayer/);
-  assert.match(chart, /progressionRaidDomain\(allPoints, playerPoints, focusPlayer\)/);
-  assert.match(chart, /animatedRaidDomainRef = useRef\(raidDomain\)/);
+  assert.match(chart, /animated(?:Raid)?DomainRef = useRef/);
   assert.match(chart, /requestAnimationFrame\(step\)/);
   assert.match(chart, /cancelAnimationFrame\(frame\)/);
   assert.match(chart, /prefers-reduced-motion/);
+  assert.match(chart, /const MIN_LINE_GAP = \d+/);
+  assert.match(chart, /function interpolatedYAtRaid/);
+  assert.match(chart, /function metricLineShouldBeAboveXp/);
+  assert.match(chart, /function seriesPath/);
+  assert.match(chart, /const \[metricReveal, setMetricReveal\] = useState\(1\)/);
+  assert.match(chart, /metricRevealRaids/);
+  assert.match(chart, /progression-timeline__metric-reveal/);
+  assert.match(chart, /clipPath=\{`url\(#\$\{clipId\}-metric-reveal\)`\}/);
+  assert.match(chart, /metricAboveXp/);
+  assert.match(chart, /rawY <= xpY - MIN_LINE_GAP/);
+  assert.match(chart, /rawY >= xpY \+ MIN_LINE_GAP/);
+  assert.doesNotMatch(chart, /splitLanes|laneHeight|metricLane|xpLane|lane-divider/);
   assert.match(chart, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
+  assert.doesNotMatch(chart, /xp_per_day|pmc_raids_per_day|pmc_kills_per_day|non_pmc_kills_per_day/);
+  assert.doesNotMatch(chart, /pmc_kills_per_raid|non_pmc_kills_per_raid/);
+  for (const metric of ["pvp_kd", "ai_kd", "survival"]) {
+    assert.match(chart, new RegExp(`key: "${metric}"`));
+  }
   const focusBackground = chart.match(/<rect[\s\S]*?className="progression-timeline__focus-background"[\s\S]*?\/>/)?.[0] ?? "";
   assert.match(focusBackground, /aria-hidden="true"/);
   assert.match(focusBackground, /pointerEvents="all"/);
@@ -296,8 +313,6 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /progression-timeline__focus-hint/);
   assert.doesNotMatch(chart, /progression-timeline__focus-toggle/);
   assert.doesNotMatch(chart, /progression\.timeline\.focus\.(?:player|all)/);
-  assert.match(chart, /progressionPointsInRaidDomain\(sourcePoints\.nearby, animatedRaidDomain\)/);
-  assert.match(chart, /progressionPointsInRaidDomain\(items, animatedRaidDomain\)/);
   assert.match(chart, /tooltip(?:Anchor|Position|Overlay)/i);
   assert.match(chart, /role="(?:status|tooltip)"/);
   assert.match(chart, /aria-live="polite"/);
@@ -305,10 +320,40 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.doesNotMatch(chart, /<title>\{label\}<\/title>/);
   assert.match(chart, /onPointerEnter/);
   assert.match(chart, /progression-timeline__hit-area/);
-  assert.match(chart, /progression\.timeline\.tooltip\.range/);
+  assert.match(chart, /progression\.timeline\.tooltip\.interval/);
+  assert.match(chart, /progression\.timeline\.tooltip\.levelDelta/);
+  assert.match(chart, /const includeLevelDelta = selected === null/);
+  const pointTooltip = chart.match(/const tooltipPointText = \([\s\S]*?\n  \};/)?.[0] ?? "";
+  assert.match(pointTooltip, /dateLabel\(point\.date\)/);
+  assert.doesNotMatch(pointTooltip, /tooltip\.pointTitle|tooltip\.date/);
+  assert.match(chart, /const tooltipPointAriaLabel =/);
+  const intervalTooltip = chart.match(/const tooltipIntervalText = \([\s\S]*?\n  \};/)?.[0] ?? "";
+  assert.match(intervalTooltip, /progression\.timeline\.tooltip\.interval/);
+  assert.doesNotMatch(intervalTooltip, /metricLabel|SERIES_LABELS\[series\]/);
+  assert.match(chart, /const tooltipIntervalAriaLabel =/);
+  assert.match(chart, /x=\{PAD\.left - 2\}/);
+  assert.match(chart, /x=\{WIDTH - PAD\.right - 2\}[^>]*textAnchor="end"[^>]*axis-label--metric/);
+  assert.match(chart, /const targetXpDomain = focusPlayer\s*\?\s*progressionValueDomain/);
+  assert.match(chart, /const animatedYDomainsRef = useRef/);
+  assert.match(chart, /progression-timeline__level-tick/);
+  assert.doesNotMatch(chart, /progression-timeline__(?:risk|snapshot)-(?:rail|marker|dot)/);
+  assert.doesNotMatch(chart, /riskMarkers|markerList|markerPoints/);
+  assert.match(chart, /overall: \{ dash: "1 5", opacity: \.5, width: 1\.5/);
+  assert.doesNotMatch(chart, /new Map\(source\.map\(\(marker\) => \[marker\.date/);
+  assert.match(chart, /progression-timeline__area--xp/);
+  assert.match(chart, /progression-timeline__legend/);
+  assert.match(chart, /legend-item--overall \$\{overallLegendState\.highlighted/);
+  assert.match(chart, /onPointerEnter=\{\(\) => setLayerHover\("xp"\)\}/);
+  assert.match(chart, /onPointerEnter=\{\(\) => setSeriesHover\(selectedMetric, "overall"\)\}/);
+  assert.match(chart, /const legendItemState = \(layer: TimelineLayer, series\?: SeriesKey\)/);
+  assert.match(chart, /progression-timeline__axis-label--metric \$\{metricLayerHighlighted/);
+  assert.match(chart, /progression-timeline__axis-guide-item--level \$\{xpLayerHighlighted/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
   assert.match(dictionary, /"progression\.series\.overall": "Медианный игрок PvP"/);
   assert.match(dictionary, /"progression\.pointTipRange":/);
+  assert.match(dictionary, /"progression\.timeline\.metric\.aiKd": "PvE K\/D"/);
+  assert.match(dictionary, /"progression\.timeline\.tooltip\.interval":/);
+  assert.doesNotMatch(dictionary, /"progression\.timeline\.snapshotMarker":/);
   assert.doesNotMatch(`${panel}\n${chart}`, /observationDay|Observation day|День наблюдения/);
   assert.doesNotMatch(panel, /seasonal-risk data-panel/);
 
@@ -323,6 +368,30 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   const legacy = await readFile("app/api/seasonal/progression/route.ts", "utf8");
   assert.match(general, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
+});
+
+test("progression hover states reserve space and never switch to a plus cursor", async () => {
+  const styles = await readFile("app/globals.css", "utf8");
+  const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
+
+  assert.match(styles, /progression-timeline__chart-frame[^}]*height: 360px/);
+  assert.match(styles, /progression-timeline__metric-radio[^}]*min-height: 44px/);
+  assert.doesNotMatch(styles, /progression-timeline__hit-area[^}]*cursor: crosshair/);
+  assert.match(styles, /progression-timeline__line--dim[^}]*opacity/);
+  assert.match(styles, /progression-timeline__line--segment-context[^}]*opacity/);
+  assert.match(styles, /progression-timeline__interval-highlight[^}]*stroke-linecap: round/);
+  assert.match(styles, /progression-timeline__level-grid[^}]*stroke-width: \.75[^}]*stroke-dasharray: none/);
+  assert.match(styles, /progression-timeline__line--overall[^}]*stroke-width: 1\.5/);
+  assert.match(styles, /progression-timeline__point--overall[^}]*opacity: \.58/);
+  assert.match(styles, /progression-timeline__hit-area[^}]*stroke-width: 11/);
+  assert.match(styles, /progression-timeline__point[^}]*pointer-events: all/);
+  assert.match(styles, /progression-timeline__point--dim[^}]*filter: blur/);
+  assert.match(chart, /strokeWidth=\{11\}/);
+  assert.match(chart, /r=\{active \? 7 : seriesKey === "player" \? 5 : 3\.5\}/);
+  assert.match(chart, /prefers-reduced-motion/);
+  assert.match(chart, /const activeInterval = hoveredInterval\?\.layer === layer/);
+  assert.doesNotMatch(chart, /progression-timeline__interval-guide/);
+  assert.match(chart, /progression-timeline__tooltipOverlay--\$\{tooltipPlacement\?\.horizontal/);
 });
 
 test("progression uses revision-aware five-hour bundle and timeline caches", async () => {

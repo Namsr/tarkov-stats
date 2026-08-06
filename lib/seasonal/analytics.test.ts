@@ -120,6 +120,16 @@ test("calculates all three K/D definitions and uses kills when deaths are zero",
   );
 });
 
+test("uses exact PMC-vs-PMC deltas when regular snapshots also contain Scav PMC kills", () => {
+  const intervals = buildSequentialIntervals([
+    snapshot(1, { pmcRaids: 10, pmcDeaths: 4, pmcKills: 20, killedPmc: 12, pmcKilledPmc: 5 }),
+    snapshot(2, { pmcRaids: 12, pmcDeaths: 5, pmcKills: 24, killedPmc: 15, pmcKilledPmc: 7 }),
+  ]);
+  assert.equal(intervals[0].changes.pmcKilledPmc, 2);
+  assert.equal(intervals[0].metrics?.pvpKd, 2);
+  assert.equal(intervals[0].metrics?.aiScavKd, 2);
+});
+
 test("uses average ranks for percentile ties and maps endpoints to 0..100", () => {
   assert.equal(percentileRank(1, [1, 2, 3]), 0);
   assert.equal(percentileRank(2, [1, 2, 3]), 50);

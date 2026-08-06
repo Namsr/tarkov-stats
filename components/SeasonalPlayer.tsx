@@ -10,7 +10,7 @@ import RefreshButton from "@/components/RefreshButton";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import { useI18n } from "@/lib/i18n/context";
-import { levelAtExperience, xpPerDay, type LevelBand } from "@/lib/seasonal/ui";
+import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
 import type {
   ProgressionTimelineResponse,
   SeasonalProfile,
@@ -129,7 +129,6 @@ export default function SeasonalPlayer({
   }, [timeline]);
   const longTerm = timeline?.longTerm;
   const history = timeline?.history;
-  const markers = risk?.markers ?? [];
 
   if (loading) {
     return (
@@ -152,8 +151,6 @@ export default function SeasonalPlayer({
   const survival = profile.counters.pmcRaids > 0
     ? (profile.counters.pmcSurvived / profile.counters.pmcRaids) * 100
     : 0;
-  const localXpPerDay = timeline?.metrics.xp ? xpPerDay(timeline.metrics.xp.player) : null;
-
   return (
     <main className="page-frame">
       <Link href="/" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
@@ -205,7 +202,7 @@ export default function SeasonalPlayer({
       </div>
 
       {progressionError && <p className="mt-5 text-sm text-[var(--muted)]">{progressionError}</p>}
-      {timeline && <ProgressionTimelineChart data={timeline} title={t("progression.timeline.title")} riskMarkers={markers} />}
+      {timeline && <ProgressionTimelineChart data={timeline} title={t("progression.timeline.title")} />}
 
       {history && (
         <div className="seasonal-chart__meta mt-4">
@@ -252,7 +249,7 @@ export default function SeasonalPlayer({
                   {t("seasonal.risk.static")}: {t("metric." + reason)}
                 </span>
               ))}
-              {risk.reasons.map((reason) => (
+              {risk.reasons.filter((reason) => reason !== "pmc_raids_per_day").map((reason) => (
                 <span key={reason} className="seasonal-risk__reason">
                   {t("seasonal.riskReason." + (REASONS.has(reason) ? reason : "anomaly"))}
                 </span>
@@ -269,12 +266,6 @@ export default function SeasonalPlayer({
       <section id="statistics" tabIndex={-1} className="profile-anchor-section mt-5">
         <h2 className="section-heading mb-3">{t("seasonal.longTerm")}</h2>
         <div className="data-ledger">
-          <StatCard label={t("seasonal.metric.xpPerDay")} value={number(longTerm?.xpPerDay ?? localXpPerDay, 0)} />
-          <StatCard label={t("seasonal.metric.raidsPerDay")} value={number(longTerm?.raidsPerDay)} />
-          <StatCard label={t("seasonal.metric.pmcKillsPerDay")} value={number(longTerm?.pmcKillsPerDay)} />
-          <StatCard label={t("seasonal.metric.pmcKillsPerRaid")} value={number(longTerm?.pmcKillsPerRaid)} />
-          <StatCard label={t("seasonal.metric.nonPmcKillsPerDay")} value={number(longTerm?.nonPmcKillsPerDay)} />
-          <StatCard label={t("seasonal.metric.nonPmcKillsPerRaid")} value={number(longTerm?.nonPmcKillsPerRaid)} />
           <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
           <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
           <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />

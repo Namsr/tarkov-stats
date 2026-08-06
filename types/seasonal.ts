@@ -45,6 +45,8 @@ export interface SeasonalCounters {
   pmcDeaths: number;
   pmcKills: number;
   killedPmc: number;
+  /** Exact PMC-vs-PMC kills when the upstream counter is available. */
+  pmcKilledPmc?: number;
 }
 
 /** Wipe-scoped portrait fields parsed from the Seasonal profile only. */
@@ -201,6 +203,8 @@ export interface ProgressionPoint {
   date: string;
   observedAt: number | null;
   pmcRaids: number;
+  /** Character level resolved from cumulative experience at this point. */
+  level?: number | null;
   /** Inclusive PMC-raid range for aggregate points; absent for exact player snapshots. */
   raidMin?: number;
   raidMax?: number;

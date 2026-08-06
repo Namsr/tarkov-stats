@@ -91,6 +91,7 @@ export interface DailyRow {
   elapsed_days?: number | null;
   delta_experience?: number | null;
   delta_pmc_raids?: number | null;
+  level?: number | null;
 }
 
 export interface LifetimeBandCountRow {
@@ -207,7 +208,7 @@ export function progressionDailySql(kind: ProgressionKind): string {
     return `
       WITH ranked AS (
         SELECT s.aid, s.id AS point_id, s.local_date, s.profile_updated_at AS observed_at,
-               s.experience AS value, s.pmc_raids,
+               s.experience AS value, s.pmc_raids, s.level AS level,
                ((s.pmc_raids - 1) / 10 + 1) * 10 AS raid_bucket, s.series_id,
                s.profile_updated_at AS freshness_at, 1.0 AS confidence, NULL AS score_sample_n,
                NULL AS period_start_at, NULL AS elapsed_days,
@@ -222,7 +223,7 @@ export function progressionDailySql(kind: ProgressionKind): string {
       SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
              p.lifetime_pvp_hours AS lifetime_hours,
              r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
-             r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids
+             r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids, r.level
       FROM ranked r
       JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
         AND p.confirmed_banned = 0
@@ -234,7 +235,7 @@ export function progressionDailySql(kind: ProgressionKind): string {
     WITH ranked AS (
       SELECT i.aid, i.id AS point_id, i.local_date, i.ended_at AS observed_at,
              i.${score} AS value, i.ended_at AS freshness_at,
-             i.confidence, s.pmc_raids,
+             i.confidence, s.pmc_raids, s.level AS level,
              ((s.pmc_raids - 1) / 10 + 1) * 10 AS raid_bucket, s.series_id,
              i.score_sample_n, from_s.profile_updated_at AS period_start_at,
              i.elapsed_days, i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,
@@ -251,7 +252,7 @@ export function progressionDailySql(kind: ProgressionKind): string {
     SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
            p.lifetime_pvp_hours AS lifetime_hours,
            r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
-           r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids
+           r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids, r.level
     FROM ranked r
     JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
       AND p.confirmed_banned = 0
@@ -335,6 +336,7 @@ function progressionPoint({
   sampleN,
   raidRange,
   interval,
+  level,
 }: {
   pointId: string;
   date: string;
@@ -348,12 +350,14 @@ function progressionPoint({
   sampleN: number | null;
   raidRange?: { min: number; max: number };
   interval?: DailyRow;
+  level?: number | null;
 }): ProgressionPoint {
   return {
     pointId,
     date,
     observedAt,
     pmcRaids,
+    ...(level == null || !Number.isFinite(level) ? {} : { level: Math.max(0, Math.floor(level)) }),
     ...(raidRange ? { raidMin: raidRange.min, raidMax: raidRange.max } : {}),
     ...(interval ? {
       periodStartAt: interval.period_start_at ?? null,
@@ -405,7 +409,11 @@ function overallPoints(
     if (value == null) continue;
     const confidence = members.reduce((sum, row) => sum + row.confidence, 0) / members.length
       * Math.min(1, members.length / (scored ? SCORE_PRELIMINARY_SAMPLE_N : PROGRESSION_TARGET_SAMPLE));
-    const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
+      const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
+    const levels = members
+      .map((row) => row.level == null ? null : Number(row.level))
+      .filter((value): value is number => value != null && Number.isFinite(value));
+    const level = levels.length ? Math.floor(quantile(levels, 0.5) ?? 0) : null;
     const raidMin = start - PROGRESSION_BASE_RAID_STEP + 1;
     points.push(progressionPoint({
       pointId: aggregatePointId(pointPrefix, raidMin, end),
@@ -419,6 +427,7 @@ function overallPoints(
       seriesId: null,
       sampleN: scored ? values.length : null,
       raidRange: { min: raidMin, max: end },
+      level,
     }));
   }
   return points;
@@ -489,6 +498,7 @@ export function buildProgressionSeries(
     seriesId: Number(row.series_id),
     sampleN: input.kind === "cumulative" ? null : (row.score_sample_n ?? null),
     interval: input.kind === "cumulative" ? undefined : row,
+    level: row.level,
   }));
   const playerHours = playerRows.find((row) => row.lifetime_hours != null)?.lifetime_hours;
   const buckets = [...new Set(playerRows.map((row) => row.raid_bucket))].sort((a, b) => a - b);
@@ -519,6 +529,13 @@ export function buildProgressionSeries(
       seriesId: null,
       sampleN: input.kind === "cumulative" ? null : values.length,
       raidRange: { min: raidMin, max: bucket },
+      level: members
+        .map((row) => row.level == null ? null : Number(row.level))
+        .filter((value): value is number => value != null && Number.isFinite(value)).length
+        ? Math.floor(quantile(members
+          .map((row) => row.level == null ? null : Number(row.level))
+          .filter((value): value is number => value != null && Number.isFinite(value)), 0.5) ?? 0)
+        : null,
     })];
   });
   const overall = overallPoints(rows, input.kind !== "cumulative", `${input.kind}:overall`);
@@ -556,7 +573,7 @@ export function buildProgressionMetricSeries(
   identity: Omit<ProgressionRequest, "kind">,
   metric: ProgressionMetricKey,
 ): ProgressionMetricSeries {
-  const cumulative = metric === "xp";
+  const cumulative = metric === "xp" || metric === "survival" || metric === "pvp_kd" || metric === "ai_kd";
   const base = buildProgressionSeries(sourceRows, {
     ...identity,
     kind: cumulative ? "cumulative" : "tempo",

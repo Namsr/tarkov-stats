@@ -38,6 +38,8 @@ export interface ProgressionDetailIntervalRow {
 }
 
 export interface ProgressionRiskMarker {
+  /** Exact interval endpoint used to bind the marker to a plotted point. */
+  endedAt: number;
   date: string;
   score: number;
   reasons: ProgressionRiskReason[];
@@ -165,7 +167,7 @@ function buildLongTerm(rows: readonly { row: ProgressionDetailIntervalRow; metri
     (sum, entry) => {
       sum.days += entry.row.elapsedDays;
       for (const key of Object.keys(sum.changes) as (keyof SeasonalCounters)[]) {
-        sum.changes[key] += entry.row.changes[key];
+        sum.changes[key] = Number(sum.changes[key] ?? 0) + Number(entry.row.changes[key] ?? 0);
       }
       return sum;
     },
@@ -254,6 +256,7 @@ export function buildSeasonalProgressionDetails(
       markers: scored
         .filter((entry) => entry.anomaly.score > 0)
         .map((entry) => ({
+          endedAt: entry.row.endedAt,
           date: entry.row.localDate,
           score: entry.anomaly.score * 100,
           reasons: uniqueReasons(entry.anomaly),

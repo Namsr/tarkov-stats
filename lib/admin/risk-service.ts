@@ -69,6 +69,7 @@ export async function evaluateAndStoreSeasonalRisk(
     survivedRaids: profile.counters.pmcSurvived,
     survivalRate: raids > 0 ? profile.counters.pmcSurvived / raids * 100 : 0,
     totalKills: kills,
+    pmcKilledPmc: profile.counters.killedPmc,
     killedPmc: profile.counters.killedPmc,
     killsPerRaid: raids > 0 ? kills / raids : 0,
     kdRatio: deaths > 0 ? kills / deaths : kills,

@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, percentileRank, quantile, tempoScore, trimmedMean } from "./analytics.ts";
+import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, percentileRank, pvpKillsFor, quantile, tempoScore, trimmedMean } from "./analytics.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
@@ -17,6 +17,8 @@ interface IntervalRow extends Record<string, unknown> {
   status?: string;
   experience: number; pmc_raids: number; scav_raids: number; pmc_survived: number; pmc_deaths: number;
   pmc_kills: number; killed_pmc: number; confidence: number; score_sample_n: number | null;
+  /** Exact PMC-vs-PMC delta when both endpoint snapshots expose it. */
+  pmc_killed_pmc: number | null;
   lifetime_pvp_hours: number | null; dimension_raids: number;
 }
 
@@ -35,16 +37,22 @@ function intervalMetrics(row: IntervalRow) {
   const days = Number(row.elapsed_days);
   const raids = Number(row.pmc_raids);
   const deaths = Number(row.pmc_deaths);
-  const nonPmc = Number(row.pmc_kills) - Number(row.killed_pmc);
+  const pvpKills = Number.isFinite(Number(row.pmc_killed_pmc))
+    ? Number(row.pmc_killed_pmc)
+    : pvpKillsFor({
+      experience: 0, pmcRaids: 0, scavRaids: 0, pmcSurvived: 0, pmcDeaths: deaths,
+      pmcKills: Number(row.pmc_kills), killedPmc: Number(row.killed_pmc),
+    });
+  const nonPmc = Math.max(0, Number(row.pmc_kills) - pvpKills);
   return {
     xpDay: Number(row.experience) / days,
     raidsDay: raids / days,
-    pvpDay: Number(row.killed_pmc) / days,
+    pvpDay: pvpKills / days,
     nonPmcDay: nonPmc / days,
     survival: raids > 0 ? Number(row.pmc_survived) / raids : 0,
-    pvpKd: divide(Number(row.killed_pmc), deaths),
+    pvpKd: divide(pvpKills, deaths),
     aiKd: divide(nonPmc, deaths),
-    pvpRaid: raids > 0 ? Number(row.killed_pmc) / raids : 0,
+    pvpRaid: raids > 0 ? pvpKills / raids : 0,
     nonPmcRaid: raids > 0 ? nonPmc / raids : 0,
   };
 }
@@ -151,10 +159,26 @@ export function materializeRows(cycleId: string, pointsByKind: Record<Progressio
 }
 
 function intervalSql(targetBucket?: number): string {
-  return `SELECT i.*, p.lifetime_pvp_hours, s.pmc_raids AS dimension_raids
+  return `SELECT i.*, p.lifetime_pvp_hours, s.pmc_raids AS dimension_raids,
+    COALESCE(
+      CASE
+        WHEN json_extract(s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+          AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL
+          THEN json_extract(s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')
+        WHEN json_extract(s.stats_json, '$.pmcKdRatio') IS NOT NULL
+          AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL
+          AND COALESCE(json_extract(s.stats_json, '$.pvpStatsKnown'), 1) != 0
+          AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0
+          THEN json_extract(s.stats_json, '$.pmcKdRatio') * s.pmc_deaths
+            - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths
+        ELSE NULL
+      END,
+      i.killed_pmc
+    ) AS pmc_killed_pmc
     FROM progression_intervals i JOIN player_profiles p
       ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid AND p.confirmed_banned = 0
     JOIN progression_snapshots s ON s.id = i.to_snapshot_id
+    JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
     WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'
       ${targetBucket == null ? "" : "AND ((s.pmc_raids - 1) / 10 + 1) * 10 = ?"}
     ORDER BY s.pmc_raids, i.aid, i.ended_at, i.id`;

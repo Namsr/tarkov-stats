@@ -628,7 +628,11 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           db.exec("COMMIT");
           return { inserted: false, status: profile.profileUpdatedAt === previous.profileUpdatedAt ? "duplicate" : "stale", snapshot: null, interval: null };
         }
-        const changes = previous ? Object.fromEntries(Object.keys(profile.counters).map((key) => [key, profile.counters[key as keyof SeasonalCounters] - previous.counters[key as keyof SeasonalCounters]])) as unknown as SeasonalCounters : null;
+        const changes = previous ? Object.fromEntries(Object.keys(profile.counters).map((key) => {
+          const current = Number(profile.counters[key as keyof SeasonalCounters] ?? 0);
+          const before = Number(previous.counters[key as keyof SeasonalCounters] ?? 0);
+          return [key, current - before];
+        })) as unknown as SeasonalCounters : null;
         const negative = changes ? Object.values(changes).some((value) => value < 0) : false;
         const intervalStatus: ProgressionIntervalRecord["status"] = !changes || !negative
           ? "valid"
