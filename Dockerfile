@@ -43,6 +43,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-profiles.mj
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs ./scripts/sync-seasonal-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/lib/brackets.ts ./lib/brackets.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/cheater-score.ts ./lib/cheater-score.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/admin/moderation-db.ts ./lib/admin/moderation-db.ts
