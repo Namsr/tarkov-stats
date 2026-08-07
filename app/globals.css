@@ -511,8 +511,54 @@ select:focus-visible {
 
 .home-command__title span { color: var(--foreground); }
 .home-command__description { max-width: 610px; margin: 22px 0 0; color: var(--muted); font-size: .95rem; line-height: 1.65; }
-.home-command__owner { width: min(100% - 32px, 840px); margin: 24px auto 0; color: var(--muted-strong); font-size: .8rem; letter-spacing: .08em; text-align: center; text-transform: uppercase; }
-.home-command__owner a { color: var(--foreground); font-weight: 800; text-decoration: underline; text-underline-offset: 4px; }
+.home-socials {
+  width: min(100% - 32px, 840px);
+  margin: 24px auto 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.home-socials__link {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  opacity: .78;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.home-socials__link:hover {
+  opacity: 1;
+  transform: scale(1.04);
+}
+
+.home-socials__link:active { transform: scale(.98); }
+
+.home-socials__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.home-socials__icon {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
+
+.home-socials__link--github .home-socials__icon { border-radius: 50%; }
+
+html:not([data-theme="light"]) .home-socials__link--github .home-socials__icon {
+  background: var(--foreground);
+  padding: 4px;
+}
 
 .search-unit { width: 100%; margin-top: 28px; text-align: left; }
 .search-unit__form { display: flex; gap: 10px; }
@@ -1360,7 +1406,10 @@ a.help-card:hover { border-color: var(--foreground); }
   .progression-timeline__comparison button,
   .progression-timeline__level-tick,
   .progression-timeline__line,
-  .progression-timeline__point { transition-duration: .01ms; }
+  .progression-timeline__point,
+  .home-socials__link { transition-duration: .01ms; }
+  .home-socials__link:hover,
+  .home-socials__link:active { transform: none; }
 }
 
 @keyframes skeleton-shimmer {
