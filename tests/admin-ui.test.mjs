@@ -44,8 +44,12 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"profile\.admin": "Admin console"/);
   assert.match(dictionary, /"admin\.account\.openProfile": "Open \{mode\} profile"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Profile updated \(MSK\)"/);
+  assert.match(dictionary, /"admin\.source\.reported": "Marked suspicious: \{n\}"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Accounts marked suspicious by users"/);
   assert.match(dictionary, /"admin\.account\.openProfile": "Открыть профиль \{mode\}"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Профиль обновлён \(МСК\)"/);
+  assert.match(dictionary, /"admin\.source\.reported": "Отмечен подозрительным: \{n\}"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Аккаунты, отмеченные пользователями как подозрительные"/);
   assert.match(styles, /\.admin-account__mode-link/);
   assert.match(dictionary, /"profile\.admin": "Админ-панель"/);
   assert.match(styles, /@media \(max-width: 420px\)[\s\S]*?\.admin-metrics/);

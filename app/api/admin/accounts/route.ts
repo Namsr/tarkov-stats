@@ -3,11 +3,13 @@ import { requireAdmin } from "@/lib/admin-auth";
 import { getAnalyticsStore } from "@/lib/admin/analytics-db";
 import { ADMIN_NO_STORE_HEADERS, parseAdminDomain, parseAdminPeriod } from "@/lib/admin/types";
 import { isGameMode } from "@/types/seasonal";
-import { getModerationForAids, getSuspiciousAids } from "@/lib/admin/moderation-db";
+import { getCommunityReportsStore } from "@/lib/community-reports-db";
+import { getModerationForAids } from "@/lib/admin/moderation-db";
 
 export const runtime = "nodejs";
 
 const SOURCES = new Set(["upstream", "cache", "stored", "suspicious"]);
+const MAX_SQLITE_AIDS = 900;
 
 function validCursor(cursor: string | null): boolean {
   if (!cursor) return true;
@@ -41,29 +43,79 @@ export async function GET(request: NextRequest) {
   const store = await getAnalyticsStore();
   if (!store) return NextResponse.json({ accounts: [], nextCursor: null, available: false }, { headers: ADMIN_NO_STORE_HEADERS });
   const suspiciousOnly = source === "suspicious";
-  const suspiciousAids = suspiciousOnly ? await getSuspiciousAids().catch(() => null) : undefined;
-  if (suspiciousAids === null) {
+  const reports = suspiciousOnly
+    ? await getCommunityReportsStore().then((reportsStore) => reportsStore?.reviews() ?? []).catch(() => null)
+    : await getCommunityReportsStore().then((reportsStore) => reportsStore?.reviews() ?? []).catch(() => []);
+  if (suspiciousOnly && reports === null) {
     return NextResponse.json({ accounts: [], nextCursor: null, available: false }, { headers: ADMIN_NO_STORE_HEADERS });
   }
-  const page = store.accounts({
-    period, domain, mode, source: suspiciousOnly ? null : source, aids: suspiciousAids,
-    sort, cursor, search, limit,
-  });
-  const moderation = await getModerationForAids(page.accounts.map((account) => account.aid)).catch(() => []);
+
+  const reportRows = reports ?? [];
+  const reportByAid = new Map(reportRows.map((item) => [item.aid, item]));
+  const reportAids = [...reportByAid.keys()];
+  const page = suspiciousOnly
+    ? {
+        accounts: store.accounts({
+          period: "90d", domain: "all", mode, aids: reportAids.slice(0, MAX_SQLITE_AIDS), sort, limit: 100,
+        }).accounts,
+        nextCursor: null,
+      }
+    : store.accounts({
+        period, domain, mode, source, sort, cursor, search, limit,
+      });
+  const moderationAids = [...new Set(suspiciousOnly ? reportAids : page.accounts.map((account) => account.aid))];
+  const moderation: Awaited<ReturnType<typeof getModerationForAids>> = [];
+  for (let offset = 0; offset < moderationAids.length; offset += MAX_SQLITE_AIDS) {
+    const batch = await getModerationForAids(moderationAids.slice(offset, offset + MAX_SQLITE_AIDS)).catch(() => []);
+    moderation.push(...batch);
+  }
   const byAid = new Map(moderation.map((item) => [item.aid, item]));
-  return NextResponse.json({
-    ...page,
-    accounts: page.accounts.map((account) => {
+  const accounts = suspiciousOnly
+    ? reportRows
+      .filter((report) => !mode || report.mode === mode)
+      .map((report) => {
+        const account = page.accounts.find((item) => item.aid === report.aid);
+        const item = byAid.get(report.aid);
+        return {
+          ...(account ?? {
+            aid: report.aid,
+            nickname: null,
+            modes: [report.mode],
+            requestCount: 0,
+            lastRequestedAt: report.lastReportedAt,
+            outcomes: {},
+            refreshCount: 0,
+            sources: [],
+          }),
+          modes: [...new Set([...(account?.modes ?? []), report.mode])],
+          reportedAt: report.lastReportedAt,
+          risk: item?.risk ?? null,
+          reportCount: report.reportCount,
+          confirmedBan: item?.sources.confirmedBan ?? false,
+          review: item?.review ?? { status: "new", note: null, updatedAt: null },
+          canRestoreManualBan: item?.canRestoreManualBan ?? false,
+        };
+      })
+      .filter((account) => !search || account.nickname?.toLocaleLowerCase().includes(search.toLocaleLowerCase()) || String(account.aid) === search)
+      .sort((left, right) => sort === "requests"
+        ? right.reportCount - left.reportCount || right.reportedAt - left.reportedAt || right.aid - left.aid
+        : right.reportedAt - left.reportedAt || right.aid - left.aid)
+      .slice(0, limit)
+    : page.accounts.map((account) => {
       const item = byAid.get(account.aid);
+      const report = reportByAid.get(account.aid);
       return {
         ...account,
         risk: item?.risk ?? null,
-        reportCount: item?.sources.communityReports ?? 0,
+        reportCount: report?.reportCount ?? item?.sources.communityReports ?? 0,
         confirmedBan: item?.sources.confirmedBan ?? false,
         review: item?.review ?? { status: "new", note: null, updatedAt: null },
         canRestoreManualBan: item?.canRestoreManualBan ?? false,
       };
-    }),
+    });
+  return NextResponse.json({
+    nextCursor: page.nextCursor,
+    accounts,
     available: true,
   }, { headers: ADMIN_NO_STORE_HEADERS });
 }

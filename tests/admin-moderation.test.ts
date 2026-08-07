@@ -73,6 +73,19 @@ test("risk, reports, reviews, and bans stay distinct and manual restore retains 
   } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("automatic suspicious accounts can be separated from user-marked accounts", () => {
+  const { directory, db, store } = fixture();
+  try {
+    store.saveRisk({ aid: 42, mode: "regular", cycleId: "persistent", score: 45,
+      tier: "high", factors: [], scoreVersion: 1, profileUpdatedAt: 10, evaluatedAt: 20 });
+    db.prepare(`INSERT INTO reports_db.suspect_reports
+      (user_sub, aid, mode, cycle_id, created_at)
+      VALUES ('another-user', 43, 'regular', 'persistent', 2)`).run();
+    assert.deepEqual(store.automaticSuspiciousAids(), [42]);
+    assert.deepEqual(new Set(store.suspiciousAids()), new Set([42, 43]));
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("admin mutations accept the public origin behind a reverse proxy", () => {
   const previous = process.env.PUBLIC_BASE_URL;
   process.env.PUBLIC_BASE_URL = "https://tarkovstats.ru";

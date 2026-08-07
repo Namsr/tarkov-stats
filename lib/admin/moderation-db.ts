@@ -135,6 +135,8 @@ export interface ModerationStore {
   setReview(input: { aid: number; status: Exclude<AdminReviewStatus, "new">; note?: string | null; now?: number }): void;
   forAids(aids: readonly number[]): AccountModeration[];
   suspiciousSummary(): SuspiciousSummary;
+  /** Accounts flagged by an automatic risk evaluation or a confirmed ban. */
+  automaticSuspiciousAids(): number[];
   suspiciousAids(): number[];
   confirmManualBan(input: { aid: number; reason: string; now?: number }): void;
   restoreManualBan(input: { aid: number; now?: number }): void;
@@ -224,6 +226,24 @@ function banSources(db: SqliteDatabase, aid: number): string[] {
     ).all(aid) as { source: string | null }[]) sources.push(row.source);
   }
   return [...new Set(sources.map((source) => source == null ? UNKNOWN_BAN_SOURCE : String(source)))];
+}
+
+function automaticSuspiciousAids(db: SqliteDatabase): number[] {
+  const aids = new Set<number>();
+  for (const row of db.prepare("SELECT DISTINCT aid FROM risk_evaluations WHERE score >= 20").all() as { aid: number }[]) {
+    aids.add(Number(row.aid));
+  }
+  if (tableExists(db, "bans_db", "banned_accounts")) {
+    for (const row of db.prepare("SELECT aid FROM bans_db.banned_accounts").all() as { aid: number }[]) {
+      aids.add(Number(row.aid));
+    }
+  }
+  if (tableExists(db, "progression_db", "upstream_ban_confirmations")) {
+    for (const row of db.prepare("SELECT DISTINCT aid FROM progression_db.upstream_ban_confirmations").all() as { aid: number }[]) {
+      aids.add(Number(row.aid));
+    }
+  }
+  return [...aids];
 }
 
 export function createSqliteModerationStore(db: SqliteDatabase, options: { attachExternal?: boolean } = {}): ModerationStore {
@@ -332,17 +352,14 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       };
     },
 
+    automaticSuspiciousAids() {
+      return automaticSuspiciousAids(db);
+    },
+
     suspiciousAids() {
-      const aids = new Set<number>();
-      for (const row of db.prepare("SELECT DISTINCT aid FROM risk_evaluations WHERE score >= 20").all() as { aid: number }[]) aids.add(Number(row.aid));
+      const aids = new Set<number>(automaticSuspiciousAids(db));
       if (tableExists(db, "reports_db", "suspect_reports")) {
         for (const row of db.prepare("SELECT DISTINCT aid FROM reports_db.suspect_reports").all() as { aid: number }[]) aids.add(Number(row.aid));
-      }
-      if (tableExists(db, "bans_db", "banned_accounts")) {
-        for (const row of db.prepare("SELECT aid FROM bans_db.banned_accounts").all() as { aid: number }[]) aids.add(Number(row.aid));
-      }
-      if (tableExists(db, "progression_db", "upstream_ban_confirmations")) {
-        for (const row of db.prepare("SELECT DISTINCT aid FROM progression_db.upstream_ban_confirmations").all() as { aid: number }[]) aids.add(Number(row.aid));
       }
       return [...aids];
     },
@@ -450,6 +467,10 @@ export async function getModerationForAids(aids: readonly number[]): Promise<Acc
 
 export async function getSuspiciousSummary(): Promise<SuspiciousSummary> {
   return (await getModerationStore()).suspiciousSummary();
+}
+
+export async function getAutomaticSuspiciousAids(): Promise<number[]> {
+  return (await getModerationStore()).automaticSuspiciousAids();
 }
 
 export async function getSuspiciousAids(): Promise<number[]> {
