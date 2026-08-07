@@ -55,6 +55,34 @@ test("account analytics filters, sorts, and cursor-paginates", () => {
   assert.deepEqual(store.accounts({ period: "24h", domain: "all", aids: [], now }).accounts, []);
 });
 
+test("account analytics exposes and sorts progression snapshot totals", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createAnalyticsStore(db, { progressionDbPath: ":memory:" });
+  db.exec(`
+    CREATE TABLE progression_db.player_profiles (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, snapshot_count INTEGER NOT NULL
+    );
+    CREATE TABLE progression_db.progression_snapshots (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL
+    );
+    INSERT INTO progression_db.player_profiles VALUES
+      ('regular', 42, 3), ('seasonal', 42, 1), ('regular', 7, 1);
+    INSERT INTO progression_db.progression_snapshots VALUES
+      ('regular', 42), ('regular', 42), ('regular', 7), ('seasonal', 42);
+  `);
+  const now = 600 * DAY;
+  for (const event of [
+    { aid: 7, nickname: "Seven", mode: "regular" },
+    { aid: 42, nickname: "Forty Two", mode: "regular" },
+    { aid: 42, nickname: "Forty Two", mode: "seasonal" },
+  ]) store.record({ occurredAt: now - event.aid, operation: "player_profile", outcome: "success", status: 200, latencyMs: 1, ...event });
+
+  const allModes = store.accounts({ period: "24h", domain: "all", sort: "snapshots", now });
+  assert.deepEqual(allModes.accounts.map((row) => [row.aid, row.snapshotCount]), [[42, 4], [7, 1]]);
+  const regular = store.accounts({ period: "24h", domain: "all", mode: "regular", sort: "snapshots", now });
+  assert.deepEqual(regular.accounts.map((row) => [row.aid, row.snapshotCount]), [[42, 3], [7, 1]]);
+});
+
 test("auth aggregates persist only day-level HMAC counts without exact timestamps or raw Google sub", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createAnalyticsStore(db);

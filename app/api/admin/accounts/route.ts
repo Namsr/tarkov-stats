@@ -4,7 +4,7 @@ import { getAnalyticsStore } from "@/lib/admin/analytics-db";
 import { ADMIN_NO_STORE_HEADERS, parseAdminDomain, parseAdminPeriod } from "@/lib/admin/types";
 import { isGameMode } from "@/types/seasonal";
 import { getCommunityReportsStore } from "@/lib/community-reports-db";
-import { getModerationForAids } from "@/lib/admin/moderation-db";
+import { getModerationForAids, getSnapshotCountsForAids } from "@/lib/admin/moderation-db";
 
 export const runtime = "nodejs";
 
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
   const rawLimit = params.get("limit");
   const limit = rawLimit == null ? 50 : Number(rawLimit);
   if (!period || !domain || (mode && !isGameMode(mode)) || (source && !SOURCES.has(source)) ||
-      (sort !== "last" && sort !== "requests") || !validCursor(cursor) || search.length > 64 ||
+      (sort !== "last" && sort !== "requests" && sort !== "snapshots") || !validCursor(cursor) || search.length > 64 ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     return NextResponse.json({ error: "invalid_query" }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   }
@@ -65,9 +65,13 @@ export async function GET(request: NextRequest) {
       });
   const moderationAids = [...new Set(suspiciousOnly ? reportAids : page.accounts.map((account) => account.aid))];
   const moderation: Awaited<ReturnType<typeof getModerationForAids>> = [];
+  const snapshotCounts = new Map<number, number>();
   for (let offset = 0; offset < moderationAids.length; offset += MAX_SQLITE_AIDS) {
-    const batch = await getModerationForAids(moderationAids.slice(offset, offset + MAX_SQLITE_AIDS)).catch(() => []);
+    const aids = moderationAids.slice(offset, offset + MAX_SQLITE_AIDS);
+    const batch = await getModerationForAids(aids).catch(() => []);
     moderation.push(...batch);
+    const counts = await getSnapshotCountsForAids(aids, mode).catch(() => new Map<number, number>());
+    for (const [aid, count] of counts) snapshotCounts.set(aid, count);
   }
   const byAid = new Map(moderation.map((item) => [item.aid, item]));
   const accounts = suspiciousOnly
@@ -86,8 +90,10 @@ export async function GET(request: NextRequest) {
             outcomes: {},
             refreshCount: 0,
             sources: [],
+            snapshotCount: snapshotCounts.get(report.aid) ?? 0,
           }),
           modes: [...new Set([...(account?.modes ?? []), report.mode])],
+          snapshotCount: snapshotCounts.get(report.aid) ?? account?.snapshotCount ?? 0,
           reportedAt: report.lastReportedAt,
           risk: item?.risk ?? null,
           reportCount: report.reportCount,
@@ -99,13 +105,16 @@ export async function GET(request: NextRequest) {
       .filter((account) => !search || account.nickname?.toLocaleLowerCase().includes(search.toLocaleLowerCase()) || String(account.aid) === search)
       .sort((left, right) => sort === "requests"
         ? right.reportCount - left.reportCount || right.reportedAt - left.reportedAt || right.aid - left.aid
-        : right.reportedAt - left.reportedAt || right.aid - left.aid)
+        : sort === "snapshots"
+          ? right.snapshotCount - left.snapshotCount || right.reportedAt - left.reportedAt || right.aid - left.aid
+          : right.reportedAt - left.reportedAt || right.aid - left.aid)
       .slice(0, limit)
     : page.accounts.map((account) => {
       const item = byAid.get(account.aid);
       const report = reportByAid.get(account.aid);
       return {
         ...account,
+        snapshotCount: snapshotCounts.get(account.aid) ?? account.snapshotCount,
         risk: item?.risk ?? null,
         reportCount: report?.reportCount ?? item?.sources.communityReports ?? 0,
         confirmedBan: item?.sources.confirmedBan ?? false,

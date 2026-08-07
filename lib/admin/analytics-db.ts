@@ -46,7 +46,7 @@ export interface AccountListOptions {
   source?: string | null;
   aids?: readonly number[];
   search?: string | null;
-  sort?: "last" | "requests";
+  sort?: "last" | "requests" | "snapshots";
   cursor?: string | null;
   limit?: number;
   now?: number;
@@ -61,6 +61,7 @@ export interface AccountAnalyticsRow {
   outcomes: Record<string, number>;
   refreshCount: number;
   sources: string[];
+  snapshotCount: number;
 }
 
 export interface AnalyticsStore {
@@ -105,6 +106,11 @@ CREATE INDEX IF NOT EXISTS idx_auth_activity_day ON auth_activity_daily(day);
 const RETENTION_MS = 90 * 86_400_000;
 const CLEANUP_INTERVAL_MS = 3_600_000;
 
+interface AnalyticsStoreOptions {
+  /** Optional progression database used to expose profile snapshot totals. */
+  progressionDbPath?: string | null;
+}
+
 function whereFor(period: AdminPeriod, domain: AdminDomain, now: number): { sql: string; args: unknown[] } {
   const args: unknown[] = [now - periodMilliseconds(period), now];
   let sql = "occurred_at >= ? AND occurred_at < ?";
@@ -139,6 +145,68 @@ function decodeCursor(cursor: string | null | undefined): [number, number] | nul
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function tableExists(db: any, schema: string, table: string): boolean {
+  try {
+    return Boolean(db.prepare(
+      `SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(table));
+  } catch {
+    return false;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function tableColumns(db: any, schema: string, table: string): Set<string> {
+  return new Set((db.prepare(`PRAGMA ${schema}.table_info(${table})`).all() as { name: string }[])
+    .map((column) => column.name));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function attachProgressionDatabase(db: any, file: string | null | undefined): void {
+  if (!file) return;
+  try {
+    const attached = db.prepare("PRAGMA database_list").all() as { name: string }[];
+    if (!attached.some((row) => row.name === "progression_db")) {
+      db.prepare("ATTACH DATABASE ? AS progression_db").run(file);
+    }
+  } catch {
+    // Analytics should remain available when progression storage is offline.
+  }
+}
+
+// The two progression tables are intentionally combined with MAX: normal
+// snapshots keep both a materialized counter and the raw rows, while older
+// installations may have only one of them. This avoids double-counting while
+// still making the admin column useful during a rolling schema upgrade.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function snapshotCountExpression(db: any, mode: string | null | undefined): { sql: string; args: unknown[] } {
+  const expressions: string[] = [];
+  const args: unknown[] = [];
+  const modeClause = (alias: string, supportsMode: boolean) => {
+    if (!mode || !supportsMode) return "";
+    args.push(mode);
+    return ` AND ${alias}.mode = ?`;
+  };
+
+  const profileColumns = tableExists(db, "progression_db", "player_profiles")
+    ? tableColumns(db, "progression_db", "player_profiles") : new Set<string>();
+  const snapshotColumns = tableExists(db, "progression_db", "progression_snapshots")
+    ? tableColumns(db, "progression_db", "progression_snapshots") : new Set<string>();
+  if (profileColumns.has("snapshot_count") && profileColumns.has("aid")) {
+    expressions.push(`COALESCE((SELECT SUM(COALESCE(p.snapshot_count, 0))
+      FROM progression_db.player_profiles p
+      WHERE p.aid = request_events.aid${modeClause("p", profileColumns.has("mode"))}), 0)`);
+  }
+  if (snapshotColumns.has("aid")) {
+    expressions.push(`COALESCE((SELECT COUNT(*)
+      FROM progression_db.progression_snapshots s
+      WHERE s.aid = request_events.aid${modeClause("s", snapshotColumns.has("mode"))}), 0)`);
+  }
+  if (!expressions.length) return { sql: "0", args: [] };
+  return { sql: expressions.length === 1 ? expressions[0] : `MAX(${expressions.join(", ")})`, args };
+}
+
 // Older databases stored a millisecond `last_at` beside each daily HMAC. Rebuild
 // once so auth identities cannot be correlated with exact request-event times.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -168,11 +236,12 @@ function removeExactAuthTimestamps(db: any): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createAnalyticsStore(db: any): AnalyticsStore {
+export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {}): AnalyticsStore {
   const journal = db.prepare("PRAGMA main.journal_mode = DELETE").get() as { journal_mode?: unknown } | undefined;
   if (String(journal?.journal_mode ?? "").toLowerCase() === "wal") {
     throw new Error("admin database must use a rollback journal for attached-database atomicity");
   }
+  attachProgressionDatabase(db, options.progressionDbPath);
   db.exec(ADMIN_ANALYTICS_SCHEMA);
   removeExactAuthTimestamps(db);
   return {
@@ -240,7 +309,8 @@ export function createAnalyticsStore(db: any): AnalyticsStore {
       const now = options.now ?? Date.now();
       const base = whereFor(options.period, options.domain, now);
       const conditions = [base.sql, "aid IS NOT NULL", "operation = 'player_profile'"];
-      const args = [...base.args];
+      const snapshotCount = snapshotCountExpression(db, options.mode);
+      const args = [...snapshotCount.args, ...base.args];
       if (options.mode) { conditions.push("mode = ?"); args.push(options.mode); }
       if (options.source) { conditions.push("source = ?"); args.push(options.source); }
       if (options.aids) {
@@ -255,7 +325,9 @@ export function createAnalyticsStore(db: any): AnalyticsStore {
         else { conditions.push("nickname LIKE ? ESCAPE '\\'"); args.push(`%${search.replace(/[\\%_]/g, "\\$&")}%`); }
       }
       const sort = options.sort ?? "last";
-      const valueColumn = sort === "requests" ? "request_count" : "last_requested_at";
+      const valueColumn = sort === "requests"
+        ? "request_count"
+        : sort === "snapshots" ? "snapshot_count" : "last_requested_at";
       const cursor = decodeCursor(options.cursor);
       const limit = Math.min(100, Math.max(1, options.limit ?? 50));
       const having = cursor ? `HAVING ${valueColumn} < ? OR (${valueColumn} = ? AND aid < ?)` : "";
@@ -265,6 +337,7 @@ export function createAnalyticsStore(db: any): AnalyticsStore {
         GROUP_CONCAT(DISTINCT mode) AS modes, COUNT(*) AS request_count, MAX(occurred_at) AS last_requested_at,
         SUM(CASE WHEN force = 1 THEN 1 ELSE 0 END) AS refresh_count,
         GROUP_CONCAT(DISTINCT source) AS sources,
+        ${snapshotCount.sql} AS snapshot_count,
         SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS success_count,
         SUM(CASE WHEN outcome = 'not_found' THEN 1 ELSE 0 END) AS not_found_count,
         SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -278,6 +351,7 @@ export function createAnalyticsStore(db: any): AnalyticsStore {
         modes: row.modes ? String(row.modes).split(",") : [], requestCount: Number(row.request_count),
         lastRequestedAt: Number(row.last_requested_at), refreshCount: Number(row.refresh_count),
         sources: row.sources ? String(row.sources).split(",") : [],
+        snapshotCount: Number(row.snapshot_count ?? 0),
         outcomes: Object.fromEntries([
           ["success", row.success_count], ["not_found", row.not_found_count], ["error", row.error_count],
           ["rate_limited", row.rate_limited_count], ["unavailable", row.unavailable_count],
@@ -287,7 +361,7 @@ export function createAnalyticsStore(db: any): AnalyticsStore {
       return {
         accounts,
         nextCursor: rows.length > limit && last
-          ? encodeCursor(sort === "requests" ? last.requestCount : last.lastRequestedAt, last.aid) : null,
+          ? encodeCursor(sort === "requests" ? last.requestCount : sort === "snapshots" ? last.snapshotCount : last.lastRequestedAt, last.aid) : null,
       };
     },
     cleanup(now = Date.now()) {
@@ -310,7 +384,11 @@ export function getAnalyticsStore(): Promise<AnalyticsStore | null> {
       const sqlite = await import("node:sqlite" as string) as any;
       const db = new sqlite.DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db");
       db.exec("PRAGMA busy_timeout = 5000;");
-      return createAnalyticsStore(db);
+      const fs = await import("node:fs");
+      const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
+      return createAnalyticsStore(db, {
+        progressionDbPath: fs.existsSync(progressionPath) ? progressionPath : null,
+      });
     } catch (error) {
       if (!warned) {
         warned = true;

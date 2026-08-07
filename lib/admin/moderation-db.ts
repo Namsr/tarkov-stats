@@ -134,6 +134,7 @@ export interface ModerationStore {
   saveRisk(input: Omit<StoredRiskEvaluation, "evaluatedAt"> & { evaluatedAt?: number }): void;
   setReview(input: { aid: number; status: Exclude<AdminReviewStatus, "new">; note?: string | null; now?: number }): void;
   forAids(aids: readonly number[]): AccountModeration[];
+  snapshotCounts(aids: readonly number[], mode?: string | null): Map<number, number>;
   suspiciousSummary(): SuspiciousSummary;
   /** Accounts flagged by an automatic risk evaluation or a confirmed ban. */
   automaticSuspiciousAids(): number[];
@@ -146,6 +147,48 @@ function tableExists(db: SqliteDatabase, schema: string, table: string): boolean
   return Boolean(db.prepare(
     `SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`
   ).get(table));
+}
+
+function tableColumns(db: SqliteDatabase, schema: string, table: string): Set<string> {
+  return new Set((db.prepare(`PRAGMA ${schema}.table_info(${table})`).all() as { name: string }[])
+    .map((column) => column.name));
+}
+
+function snapshotCountsForDb(db: SqliteDatabase, aids: readonly number[], mode?: string | null): Map<number, number> {
+  const valid = [...new Set(aids.filter((aid) => Number.isSafeInteger(aid) && aid > 0))];
+  const counts = new Map<number, number>();
+  if (valid.length === 0) return counts;
+  const profileColumns = tableExists(db, "progression_db", "player_profiles")
+    ? tableColumns(db, "progression_db", "player_profiles") : new Set<string>();
+  const snapshotColumns = tableExists(db, "progression_db", "progression_snapshots")
+    ? tableColumns(db, "progression_db", "progression_snapshots") : new Set<string>();
+  const hasProfiles = profileColumns.has("aid") && profileColumns.has("snapshot_count");
+  const hasSnapshots = snapshotColumns.has("aid");
+  if (!hasProfiles && !hasSnapshots) return counts;
+
+  for (let offset = 0; offset < valid.length; offset += 900) {
+    const batch = valid.slice(offset, offset + 900);
+    const placeholders = batch.map(() => "?").join(",");
+    const modeProfile = mode && profileColumns.has("mode") ? " AND mode = ?" : "";
+    const modeSnapshot = mode && snapshotColumns.has("mode") ? " AND mode = ?" : "";
+    const profileModeArgs = mode && profileColumns.has("mode") ? [mode] : [];
+    const snapshotModeArgs = mode && snapshotColumns.has("mode") ? [mode] : [];
+    if (hasProfiles) {
+      const rows = db.prepare(`SELECT aid, COALESCE(SUM(snapshot_count), 0) AS snapshots
+        FROM progression_db.player_profiles
+        WHERE aid IN (${placeholders})${modeProfile}
+        GROUP BY aid`).all(...batch, ...profileModeArgs) as { aid: number; snapshots: number }[];
+      for (const row of rows) counts.set(Number(row.aid), Math.max(counts.get(Number(row.aid)) ?? 0, Number(row.snapshots)));
+    }
+    if (hasSnapshots) {
+      const rows = db.prepare(`SELECT aid, COUNT(*) AS snapshots
+        FROM progression_db.progression_snapshots
+        WHERE aid IN (${placeholders})${modeSnapshot}
+        GROUP BY aid`).all(...batch, ...snapshotModeArgs) as { aid: number; snapshots: number }[];
+      for (const row of rows) counts.set(Number(row.aid), Math.max(counts.get(Number(row.aid)) ?? 0, Number(row.snapshots)));
+    }
+  }
+  return counts;
 }
 
 function attach(db: SqliteDatabase, schema: string, file: string): void {
@@ -340,6 +383,10 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       });
     },
 
+    snapshotCounts(aids, mode = null) {
+      return snapshotCountsForDb(db, aids, mode);
+    },
+
     suspiciousSummary() {
       const rows = this.forAids(this.suspiciousAids());
       return {
@@ -463,6 +510,10 @@ export async function getModerationStore(): Promise<ModerationStore> {
 
 export async function getModerationForAids(aids: readonly number[]): Promise<AccountModeration[]> {
   return (await getModerationStore()).forAids(aids);
+}
+
+export async function getSnapshotCountsForAids(aids: readonly number[], mode?: string | null): Promise<Map<number, number>> {
+  return (await getModerationStore()).snapshotCounts(aids, mode);
 }
 
 export async function getSuspiciousSummary(): Promise<SuspiciousSummary> {

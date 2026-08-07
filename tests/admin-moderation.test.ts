@@ -73,6 +73,24 @@ test("risk, reports, reviews, and bans stay distinct and manual restore retains 
   } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("moderation store returns progression snapshot totals with mode filtering", () => {
+  const { directory, db, store } = fixture();
+  try {
+    db.exec(`
+      ALTER TABLE progression_db.player_profiles ADD COLUMN snapshot_count INTEGER NOT NULL DEFAULT 0;
+      UPDATE progression_db.player_profiles SET snapshot_count = 3 WHERE aid = 42;
+      CREATE TABLE progression_db.progression_snapshots (mode TEXT NOT NULL, aid INTEGER NOT NULL);
+      INSERT INTO progression_db.progression_snapshots VALUES ('regular', 42), ('regular', 42);
+    `);
+    assert.deepEqual([...store.snapshotCounts([42])], [[42, 3]]);
+    assert.deepEqual([...store.snapshotCounts([42], "regular")], [[42, 2]]);
+    assert.deepEqual([...store.snapshotCounts([42], "seasonal")], [[42, 3]]);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("automatic suspicious accounts can be separated from user-marked accounts", () => {
   const { directory, db, store } = fixture();
   try {
