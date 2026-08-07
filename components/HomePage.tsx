@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
 import SearchBar from "@/components/SearchBar";
 import { useI18n } from "@/lib/i18n/context";
@@ -16,12 +17,53 @@ export default function HomePage() {
         <p className="home-command__description">{t("home.description")}</p>
         <SearchBar autoFocus />
       </div>
-      <p className="home-command__owner">
-        {t("home.independent")}{" "}
-        <a href={PROJECT_LINKS.twitch} target="_blank" rel="noopener noreferrer">
-          Namsr
+      <nav className="home-socials" aria-label={t("home.socialLinks")}>
+        <a
+          className="home-socials__link"
+          href={PROJECT_LINKS.twitch}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={t("home.social.twitch")}
+        >
+          <Image
+            className="home-socials__icon"
+            src="/social/twitch.svg"
+            alt=""
+            width={28}
+            height={28}
+          />
         </a>
-      </p>
+        <a
+          className="home-socials__link"
+          href={PROJECT_LINKS.discord}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={t("home.social.discord")}
+        >
+          <Image
+            className="home-socials__icon"
+            src="/social/discord.svg"
+            alt=""
+            width={28}
+            height={28}
+          />
+        </a>
+        <a
+          className="home-socials__link home-socials__link--github"
+          href={PROJECT_LINKS.github}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={t("home.social.github")}
+        >
+          <Image
+            className="home-socials__icon"
+            src="/social/github.svg"
+            alt=""
+            width={28}
+            height={28}
+          />
+        </a>
+      </nav>
     </main>
   );
 }
