@@ -109,6 +109,12 @@ export async function GET(request: NextRequest) {
 
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
+  const profileHeaders = force
+    ? noStore
+    : {
+        ...headers,
+        "Cache-Control": "public, max-age=60, stale-while-revalidate=300",
+      };
 
   if (mode === "seasonal") {
     if (!isSeasonalRolloutReady()) {
@@ -357,10 +363,10 @@ export async function GET(request: NextRequest) {
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
   try {
     profileStarted = timing.now();
-    const { profile, fromCache } = await getPublicProfile(aid, { force });
+    const { profile, fromCache, fromEdgeCache } = await getPublicProfile(aid, { force });
     profileMs = timing.elapsedMs(profileStarted);
-    source = fromCache ? "cache" : "upstream";
-    cache = force ? "bypass" : fromCache ? "hit" : "miss";
+    source = fromCache || fromEdgeCache ? "cache" : "upstream";
+    cache = force ? "bypass" : fromCache || fromEdgeCache ? "hit" : "miss";
     if (!profile) {
       const response = NextResponse.json(
         {
@@ -368,7 +374,7 @@ export async function GET(request: NextRequest) {
             "Profile not found. It may be private, or hasn't been viewed on tarkov.dev yet — open it there once to cache it, then retry.",
           identity: { aid, mode, cycleId },
         },
-        { status: 404, headers: noStore }
+        { status: 404, headers: profileHeaders }
       );
       timing.finish({
         operation: "player_profile",
@@ -435,7 +441,7 @@ export async function GET(request: NextRequest) {
           stats,
         }, publicRiskView),
       },
-      { headers: noStore }
+      { headers: profileHeaders }
     );
     timing.setRequestContext({ nickname: stats.nickname });
     timing.finish({

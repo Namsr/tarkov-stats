@@ -81,6 +81,18 @@ const PROFILE_TTL_MS = 5 * 60 * 1000; // 5 минут
 const PROFILE_CACHE_MAX = 2000;
 const PROFILE_VERSION_TOLERANCE_MS = 1000;
 
+type EdgeProfileCache = {
+  match(request: Request): Promise<Response | undefined>;
+  put(request: Request, response: Response): Promise<void>;
+};
+
+function getEdgeProfileCache(): EdgeProfileCache | null {
+  const storage = (globalThis as typeof globalThis & {
+    caches?: { default?: EdgeProfileCache };
+  }).caches;
+  return storage?.default ?? null;
+}
+
 function cacheProfile(key: string, profile: PlayerProfile | null, ts: number) {
   if (profileCache.size > PROFILE_CACHE_MAX) {
     for (const [k, v] of profileCache) {
@@ -94,6 +106,7 @@ function cacheProfile(key: string, profile: PlayerProfile | null, ts: number) {
 export interface PublicProfileResult {
   profile: PlayerProfile | null;
   fromCache: boolean;
+  fromEdgeCache?: boolean;
 }
 
 export class PublicProfileVersionConflictError extends Error {
@@ -146,14 +159,33 @@ export async function getPublicProfile(
     : null;
   const cacheBust = expectedUpdatedAt ?? now;
   const url = opts.force && mode === "regular" ? `${canonicalUrl}?v=${cacheBust}` : canonicalUrl;
-  const res = await fetchTarkovJson(url, { cache: "no-store" });
+  const edgeCache = opts.force ? null : getEdgeProfileCache();
+  const edgeRequest = edgeCache ? new Request(canonicalUrl) : null;
+  let res: Response | undefined;
+  let fromEdgeCache = false;
+  if (edgeCache && edgeRequest) {
+    try {
+      res = await edgeCache.match(edgeRequest);
+      fromEdgeCache = Boolean(res);
+    } catch {
+      // The Cache API is an optimization. Fall back to the normal fetch path.
+    }
+  }
+  if (!res) {
+    // Normal profile opens can use the platform/edge fetch cache. Explicit
+    // refreshes remain uncached so the user can still request fresh upstream data.
+    res = await fetchTarkovJson(url, {
+      cache: opts.force ? "no-store" : "force-cache",
+    });
+  }
   if (res.status === 404) {
     cacheProfile(cacheKey, null, now);
-    return { profile: null, fromCache: false };
+    return { profile: null, fromCache: false, fromEdgeCache };
   }
   if (!res.ok) {
     throw new Error(`Public profile fetch failed: ${res.status}`);
   }
+  const edgeResponse = !fromEdgeCache && edgeCache && edgeRequest ? res.clone() : null;
   const profile = (await res.json()) as PlayerProfile;
   if (Number(profile.aid) !== aid || !profile.info) {
     throw new Error("Public profile identity mismatch");
@@ -182,8 +214,27 @@ export async function getPublicProfile(
     // its version so the completed queue item is not rediscovered every day.
     profile.updated = Math.max(actualUpdatedAt ?? expectedUpdatedAt, expectedUpdatedAt);
   }
+  if (edgeResponse && edgeCache && edgeRequest) {
+    try {
+      // Do not inherit players.tarkov.dev's 24-hour max-age: normal profile
+      // opens should not serve a stale snapshot longer than our old 5-minute
+      // in-process cache. Explicit refreshes still bypass this entry entirely.
+      const cacheHeaders = new Headers(edgeResponse.headers);
+      cacheHeaders.set("Cache-Control", "public, max-age=300");
+      await edgeCache.put(
+        edgeRequest,
+        new Response(edgeResponse.body, {
+          status: edgeResponse.status,
+          statusText: edgeResponse.statusText,
+          headers: cacheHeaders,
+        }),
+      );
+    } catch {
+      // A cache write failure must never fail a profile response.
+    }
+  }
   cacheProfile(cacheKey, profile, now);
-  return { profile, fromCache: false };
+  return { profile, fromCache: false, fromEdgeCache };
 }
 
 export type PlayerLevel = { level: number; exp: number };
