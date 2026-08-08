@@ -67,7 +67,7 @@ export interface SeasonalStats {
   achievementsCount: number | null;
 }
 
-/** Explicitly allow-listed account-wide values copied from the regular PvP store. */
+/** Explicitly allow-listed account-wide values used for Seasonal comparison. */
 export interface SeasonalPvpEnrichment {
   lifetimeHours: number | null;
   achievementIds: string[];

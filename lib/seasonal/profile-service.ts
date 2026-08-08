@@ -82,7 +82,6 @@ export async function resolveSeasonalProfile(
   const observedAt = dependencies.now?.() ?? Date.now();
   try {
     const storedProfile = await store.upsertProfile(validated.profile, observedAt);
-    // Lifetime PvP hours are the explicitly allow-listed linked enrichment.
     // Keep the validated Seasonal object (including its non-enumerable own
     // achievement/stat payload) and hydrate only this account-wide field from
     // the identity-scoped stored profile. No Seasonal combat counter is copied.

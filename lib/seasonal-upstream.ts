@@ -24,6 +24,7 @@ export interface SeasonalAdapterOptions {
   cycleId: CycleId;
   seasonStartsAt: number;
   seasonEndsAt?: number | null;
+  /** Optional separately linked value; omitted values fall back to upstream account time. */
   lifetimePvpHours?: number | null;
 }
 
@@ -172,6 +173,28 @@ function counterItems(stats: unknown, field: string): UnknownRecord[] {
   return counters.Items.map((item, index) =>
     requiredRecord(item, `${field}.eft.overAllCounters.Items[${index}]`)
   );
+}
+
+/**
+ * The confirmed pvp-season JSON also carries account-wide playtime in seconds.
+ * Use it as a fallback when the separately linked regular-PvP profile has not
+ * been captured yet; an explicitly supplied linked value still takes priority.
+ */
+function totalInGameTimeHours(profile: UnknownRecord): number | null {
+  for (const field of ["pmcStats", "scavStats"] as const) {
+    const stats = requiredRecord(profile[field], `profile.${field}`);
+    const eft = requiredRecord(stats.eft, `profile.${field}.eft`);
+    if (eft.totalInGameTime === undefined || eft.totalInGameTime === null) continue;
+    const seconds = finiteNumber(eft.totalInGameTime, `profile.${field}.eft.totalInGameTime`);
+    if (seconds < 0) {
+      throw new SeasonalValidationError(
+        "invalid_payload",
+        `profile.${field}.eft.totalInGameTime must be non-negative`
+      );
+    }
+    return Math.round((seconds / 3600) * 10) / 10;
+  }
+  return null;
 }
 
 function counterValue(items: UnknownRecord[], ...keys: string[]): number {
@@ -418,7 +441,9 @@ export function parseSeasonalProfile(
   }
 
   const info = requiredRecord(extracted.profile.info, "profile.info");
-  const lifetimePvpHours = options.lifetimePvpHours ?? null;
+  const lifetimePvpHours = options.lifetimePvpHours === undefined
+    ? totalInGameTimeHours(extracted.profile)
+    : options.lifetimePvpHours;
   if (lifetimePvpHours !== null && (!Number.isFinite(lifetimePvpHours) || lifetimePvpHours < 0)) {
     throw new SeasonalValidationError(
       "invalid_payload",

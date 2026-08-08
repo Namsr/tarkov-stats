@@ -124,6 +124,36 @@ test("adapts an ordinary raw profile when direct_profile is explicitly confirmed
   assert.equal(profile.staticSignals?.longestWinStreak, 6);
 });
 
+test("uses account time from the Seasonal JSON when linked PvP hours are missing", async () => {
+  const payload = await loadFixture("seasonal-direct-profile.json");
+  payload.pmcStats.eft.totalInGameTime = 4_836_316;
+  payload.scavStats.eft.totalInGameTime = 4_836_316;
+
+  const profile = parseSeasonalProfile(payload, {
+    ...baseOptions,
+    confirmedContract: "direct_profile",
+    seasonStartsAt: 1_785_800_000_000,
+    seasonEndsAt: null,
+  });
+
+  assert.equal(profile.lifetimePvpHours, 1_343.4);
+});
+
+test("explicit linked PvP hours override the Seasonal account-time fallback", async () => {
+  const payload = await loadFixture("seasonal-direct-profile.json");
+  payload.pmcStats.eft.totalInGameTime = 4_836_316;
+
+  const profile = parseSeasonalProfile(payload, {
+    ...baseOptions,
+    confirmedContract: "direct_profile",
+    seasonStartsAt: 1_785_800_000_000,
+    seasonEndsAt: null,
+    lifetimePvpHours: 640.5,
+  });
+
+  assert.equal(profile.lifetimePvpHours, 640.5);
+});
+
 test("LastAccess is the maximum across Common skills and achievement timestamps", () => {
   assert.equal(
     seasonalLastAccess({
