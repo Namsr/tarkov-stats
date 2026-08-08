@@ -16,8 +16,9 @@ import { loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { upsertD1SeasonCycle } from "@/lib/seasonal/storage-d1";
 import { upsertSqliteSeasonCycle } from "@/lib/seasonal/storage";
 import { scoreCheater, type CheaterScoreResult } from "@/lib/cheater-score";
-import { getStore } from "@/lib/db";
 import { rangeForHours } from "@/lib/playtime-brackets";
+import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline } from "@/lib/seasonal/average-db";
+import { parseSeasonalAchievementUnlocks } from "@/lib/seasonal/storage";
 import {
   buildSeasonalProgressionDetails,
   type ProgressionDetailIntervalRow,
@@ -425,17 +426,10 @@ function detailRows(rows: DetailDbRow[], input: ProgressionRequest): Progression
 }
 
 function achievementIds(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? [...new Set(parsed.filter((item): item is string => typeof item === "string"))]
-      : [];
-  } catch {
-    return [];
-  }
+  return parseSeasonalAchievementUnlocks(value)?.map((achievement) => achievement.id) ?? [];
 }
 
-async function trustedStaticScore(row: StaticProfileRow): Promise<CheaterScoreResult> {
+async function trustedStaticScore(row: StaticProfileRow, cycleId: string): Promise<CheaterScoreResult> {
   const raids = Number(row.pmc_raids);
   const survived = Number(row.pmc_survived);
   const deaths = Number(row.pmc_deaths);
@@ -462,22 +456,30 @@ async function trustedStaticScore(row: StaticProfileRow): Promise<CheaterScoreRe
     avgLifespan: 0, totalLootValue: 0,
   };
   try {
-    const store = await getStore();
-    if (!store) return scoreCheater(stats, null);
     const bracket = rangeForHours(stats.hoursPlayed);
     const [baseline, achievementBaseline] = await Promise.all([
-      store.baseline(bracket.min, bracket.max),
-      store.achievementBaseline(),
+      getSeasonalRiskBaseline(cycleId, bracket.min, bracket.max),
+      getSeasonalAchievementBaseline(cycleId),
     ]);
-    const ownedIds = achievementIds(row.achievements);
-    const achievements = achievementBaseline.total > 0 ? {
+    const unlocks = parseSeasonalAchievementUnlocks(row.achievements) ?? [];
+    const ownedIds = unlocks.map((achievement) => achievement.id);
+    const achievements = achievementBaseline && achievementBaseline.total > 0 ? {
       ownedIds,
+      seasonal: true,
+      playerUnlockDays: Object.fromEntries(unlocks
+        .filter((achievement) => achievement.unlockedAt !== null)
+        .map((achievement) => [
+          achievement.id,
+          (achievement.unlockedAt! - (achievementBaseline.seasonStartsAt ?? 0)) / DAY_MS,
+        ])),
       stats: achievementBaseline.achievements.map((entry) => ({
         id: entry.ach_id,
         owners: entry.owners,
-        samplePct: (entry.owners / achievementBaseline.total) * 100,
+        samplePct: entry.prevalencePct,
         meanHours: entry.meanHours,
         earlyHours: entry.earlyHours,
+        eligibleN: entry.eligibleN,
+        unlockDayP20: entry.timestampOwners < 1 ? null : entry.unlockDayP20,
       })),
     } : null;
     return scoreCheater(stats, baseline, achievements);
@@ -488,7 +490,7 @@ async function trustedStaticScore(row: StaticProfileRow): Promise<CheaterScoreRe
 }
 
 async function details(input: ProgressionRequest, intervals: DetailDbRow[], profile: StaticProfileRow): Promise<SeasonalProgressionDetails> {
-  const staticRisk = await trustedStaticScore(profile);
+  const staticRisk = await trustedStaticScore(profile, input.cycleId);
   return buildSeasonalProgressionDetails({
     mode: input.mode,
     cycleId: input.cycleId,

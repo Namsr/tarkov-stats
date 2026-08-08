@@ -12,7 +12,7 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Changes, d1Rows } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
-import { counterArgs, identityObject, moscowDate, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
+import { counterArgs, identityObject, moscowDate, seasonalAchievementSnapshotValue, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
 
 const IDENTITY = "mode = ? AND cycle_id = ? AND aid = ?";
 
@@ -85,13 +85,16 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         // remains progression-idempotent: no duplicate snapshot or interval.
         if (profile.profileUpdatedAt === previous.profileUpdatedAt && profile.seasonalStats !== undefined) {
           const stats = profile.seasonalStats;
+          const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
           await db.prepare(`UPDATE progression_snapshots SET
             total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
-            level = ?, prestige = ?, longest_win_streak = ?, achv_count = ?, achievements = ?
+            level = ?, prestige = ?, longest_win_streak = ?,
+            achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements)
             WHERE ${IDENTITY} AND profile_updated_at = ?`).bind(
             stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
             stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
-            stats.achievementsCount, null, ...identity, profile.profileUpdatedAt,
+            achievementSnapshot.count, achievementSnapshot.value,
+            ...identity, profile.profileUpdatedAt,
           ).run();
         }
         return { inserted: false, status: profile.profileUpdatedAt === previous.profileUpdatedAt ? "duplicate" : "stale", snapshot: null, interval: null };
@@ -106,6 +109,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
       };
       const hasStaticSignals = profile.staticSignals !== undefined;
       const seasonalStats = profile.seasonalStats;
+      const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
       const snapshotValues = [
         profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
         profile.counters.scavRaids, seasonalStats?.survivedRaids ?? null, profile.counters.pmcSurvived,
@@ -118,12 +122,8 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         seasonalStats !== undefined
           ? seasonalStats.longestWinStreak
           : hasStaticSignals ? staticSignals.longestWinStreak : null,
-        seasonalStats !== undefined
-          ? seasonalStats.achievementsCount
-          : hasStaticSignals ? staticSignals.achievementIds.length : null,
-        seasonalStats !== undefined
-          ? null
-          : hasStaticSignals ? JSON.stringify(staticSignals.achievementIds) : null,
+        achievementSnapshot.count,
+        achievementSnapshot.value,
       ];
       const statements = [db.prepare(`INSERT INTO progression_snapshots (
         mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,

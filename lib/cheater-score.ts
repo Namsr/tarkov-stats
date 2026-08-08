@@ -37,6 +37,10 @@ export interface AchievementStat {
   meanHours: number;
   /** Lower-percentile owner playtime used as the early-owner anchor. */
   earlyHours: number;
+  /** Seasonal denominator used to decide whether prevalence is reliable. */
+  eligibleN?: number;
+  /** Seasonal 20th-percentile unlock day from the current cycle start. */
+  unlockDayP20?: number | null;
 }
 
 export interface AchievementInput {
@@ -44,6 +48,9 @@ export interface AchievementInput {
   ownedIds: string[];
   /** The sample-wide per-achievement baseline. */
   stats: AchievementStat[];
+  /** Seasonal scoring uses unlock timing, not lifetime playtime timing. */
+  seasonal?: boolean;
+  playerUnlockDays?: Record<string, number | null>;
 }
 
 export type RiskTier = "low" | "medium" | "high" | "severe";
@@ -57,6 +64,8 @@ export interface ScoreFactor {
   value: number;
   /** Within-bracket z-score, or null (absolute-only or achievement factor). */
   z: number | null;
+  /** False means the factor was intentionally unavailable, not a measured zero. */
+  available?: boolean;
 }
 
 export interface CheaterScoreResult {
@@ -167,13 +176,41 @@ function tierFor(score: number): RiskTier {
 // whenever a few very-low-hour owners pulled that percentile down. We now score
 // the whole interval from the early-owner anchor to the mean, reaching 1 at or
 // below the early anchor and 0 at the mean. Rarity still scales the result.
-function achievementSub(playerHours: number, ach: AchievementInput | null | undefined): number {
-  if (!ach || !(playerHours > 0)) return 0;
+function achievementSub(
+  playerHours: number,
+  ach: AchievementInput | null | undefined,
+): { value: number; available: boolean } {
+  if (!ach || (!ach.seasonal && !(playerHours > 0))) return { value: 0, available: true };
   const owned = new Set(ach.ownedIds);
   let best = 0;
+  const seasonalOwned = ach.seasonal
+    ? ach.ownedIds.filter((id) => !EVENT_ACHIEVEMENT_IDS.has(id))
+    : [];
+  let reliableSeasonalFactor = false;
   for (const a of ach.stats) {
     if (!owned.has(a.id)) continue;
     if (EVENT_ACHIEVEMENT_IDS.has(a.id)) continue; // event-only — collected, but never scored
+    if (ach.seasonal) {
+      const eligibleN = Number(a.eligibleN ?? 0);
+      const p20 = Number(a.unlockDayP20);
+      const playerDay = ach.playerUnlockDays?.[a.id];
+      if (
+        eligibleN < MIN_SAMPLE ||
+        a.owners < ACH_MIN_OWNERS ||
+        !Number.isFinite(p20) ||
+        p20 <= 0 ||
+        playerDay == null ||
+        !Number.isFinite(playerDay) ||
+        playerDay >= p20 ||
+        a.samplePct >= ACH_RARE_HI
+      ) continue;
+      reliableSeasonalFactor = true;
+      const earliness = clamp01((p20 - playerDay) / Math.max(1, p20));
+      const rarity = clamp01((ACH_RARE_HI - a.samplePct) / ACH_RARE_HI);
+      const contribution = earliness * rarity;
+      if (contribution > best) best = contribution;
+      continue;
+    }
     const meanHours = Number.isFinite(a.meanHours) && a.meanHours > 0 ? a.meanHours : 0;
     if (a.owners < ACH_MIN_OWNERS || a.samplePct >= ACH_RARE_HI || meanHours < ACH_LATE_GAME_HOURS) continue;
     if (playerHours >= meanHours) continue;
@@ -189,7 +226,10 @@ function achievementSub(playerHours: number, ach: AchievementInput | null | unde
     const contribution = earliness * rarity;
     if (contribution > best) best = contribution;
   }
-  return best;
+  return {
+    value: best,
+    available: !ach.seasonal || seasonalOwned.length === 0 || reliableSeasonalFactor,
+  };
 }
 
 export function scoreCheater(
@@ -224,7 +264,13 @@ export function scoreCheater(
 
   // Rare/early achievement factor (independent of the bracket sample).
   const aSub = achievementSub(stats.hoursPlayed, achievements);
-  factors.push({ key: "ach_early", points: ACH_WEIGHT * aSub * 100, value: aSub, z: null });
+  factors.push({
+    key: "ach_early",
+    points: ACH_WEIGHT * aSub.value * 100,
+    value: aSub.value,
+    z: null,
+    available: aSub.available,
+  });
 
   // Independent extreme signals reinforce one another. Add a bounded compound
   // bonus only when at least three signals are already strong, so one flashy stat

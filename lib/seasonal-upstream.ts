@@ -3,6 +3,7 @@ import type {
   SeasonalCounters,
   SeasonalStats,
   SeasonalProfile,
+  SeasonalAchievementUnlock,
   SeasonalUpstreamContract as SeasonalUpstreamContractType,
 } from "@/types/seasonal";
 // Relative import keeps this parser usable by the strip-types test runner and
@@ -212,6 +213,23 @@ function parseCounters(profile: UnknownRecord): SeasonalCounters {
   return counters;
 }
 
+/**
+ * Reads the Seasonal profile's own achievement payload once at the trust
+ * boundary. Missing `achievements` is different from an empty object: the
+ * former is an unknown payload and must be excluded from prevalence
+ * denominators, while the latter is a known player with no achievements.
+ */
+function parseSeasonalAchievements(profile: UnknownRecord): SeasonalAchievementUnlock[] | null {
+  if (profile.achievements === undefined) return null;
+  const achievements = requiredRecord(profile.achievements, "profile.achievements");
+  return Object.entries(achievements)
+    .map(([id, timestamp]) => ({
+      id,
+      unlockedAt: unixMilliseconds(timestamp, `profile.achievements.${id}`),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters): SeasonalStats {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
@@ -247,6 +265,7 @@ function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters):
   const runThrough = pmcRunThrough == null || (scavRunThrough == null && counters.scavRaids > 0)
     ? null
     : pmcRunThrough + (scavRunThrough ?? 0);
+  const seasonalAchievements = parseSeasonalAchievements(profile);
   return {
     totalRaids,
     survivedRaids,
@@ -263,24 +282,20 @@ function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters):
     level: expToLevel(counters.experience, [...PLAYER_LEVELS_V2026_07_22]),
     prestige: info.prestigeLevel === undefined ? null : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
     longestWinStreak: optionalCounterValue(pmc, "LongestWinStreak", "Pmc"),
-    achievementsCount: profile.achievements === undefined
-      ? null
-      : Object.keys(requiredRecord(profile.achievements, "profile.achievements")).length,
+    achievementsCount: seasonalAchievements === null ? null : seasonalAchievements.length,
   };
 }
 
 function parseStaticSignals(profile: UnknownRecord) {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
-  const achievements = profile.achievements === undefined
-    ? {}
-    : requiredRecord(profile.achievements, "profile.achievements");
+  const achievements = parseSeasonalAchievements(profile) ?? [];
   return {
     prestige: info.prestigeLevel === undefined
       ? 0
       : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
     longestWinStreak: counterValue(pmc, "LongestWinStreak", "Pmc"),
-    achievementIds: Object.keys(achievements).sort(),
+    achievementIds: achievements.map((achievement) => achievement.id),
   };
 }
 
@@ -377,6 +392,7 @@ export function parseSeasonalProfile(
   }
 
   const counters = parseCounters(extracted.profile);
+  const seasonalAchievements = parseSeasonalAchievements(extracted.profile);
   const seasonalStats = parseSeasonalStats(extracted.profile, counters);
   if (counters.pmcRaids + counters.scavRaids === 0) {
     throw new SeasonalValidationError(
@@ -424,9 +440,14 @@ export function parseSeasonalProfile(
   // Keep the legacy validator's enumerable payload stable for existing callers;
   // the richer portrait is still available to the storage boundary.
   Object.defineProperty(result, "seasonalStats", { value: seasonalStats, enumerable: false });
+  Object.defineProperty(result, "seasonalAchievements", {
+    value: seasonalAchievements,
+    enumerable: false,
+  });
   Object.defineProperty(result, "pvpEnrichment", {
     value: { lifetimeHours: lifetimePvpHours, achievementIds: [], achievementCount: null, profileUpdatedAt: null },
     enumerable: false,
+    writable: true,
   });
   return result;
 }

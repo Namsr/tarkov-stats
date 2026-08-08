@@ -42,6 +42,16 @@ test("uses the exact feed version as the profile cache key", () => {
   assert.equal(new URL(url).searchParams.get("v"), String(version));
 });
 
+test("explicit profile refresh bypasses the normal fifteen-minute cache slot", () => {
+  const url = seasonalProfileCacheUrl(
+    "https://players.tarkov.dev/pvp-season/730003.json",
+    undefined,
+    1_800_000_000_000,
+    true,
+  );
+  assert.equal(new URL(url).searchParams.get("v"), "1800000000000");
+});
+
 test("adapts the confirmed separate gameMode contract", async () => {
   const payload = await loadFixture("seasonal-game-mode.json");
   const profile = parseSeasonalProfile(payload, {
@@ -73,6 +83,9 @@ test("adapts the confirmed separate gameMode contract", async () => {
       achievementIds: ["first_raid"],
     },
   });
+  assert.deepEqual(profile.seasonalAchievements, [
+    { id: "first_raid", unlockedAt: 1_783_495_000_000 },
+  ]);
 });
 
 test("adapts the confirmed Seasonal section of a common profile", async () => {

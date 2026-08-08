@@ -8,6 +8,7 @@ import type {
   ScanTaskPriority,
   ScanTaskRecord,
   SeasonalCounters,
+  SeasonalAchievementUnlock,
   SeasonalProfile,
   SeasonalStore,
   SeasonCycle,
@@ -411,7 +412,7 @@ function ensureNullablePortraitColumns(db: SqliteDatabase): void {
         total_raids = NULLIF(total_raids, 0), survived = NULLIF(survived, 0), deaths = NULLIF(deaths, 0),
         total_kills = NULLIF(total_kills, 0), run_through = NULLIF(run_through, 0),
         longest_win_streak = NULLIF(longest_win_streak, 0), achv_count = NULLIF(achv_count, 0),
-        achievements = CASE WHEN achievements IS NULL OR achievements IN ('', '[]') THEN NULL ELSE achievements END
+        achievements = CASE WHEN achievements IS NULL OR achievements = '' THEN NULL ELSE achievements END
         WHERE mode = 'seasonal';
     `);
     db.exec("COMMIT");
@@ -485,12 +486,87 @@ export function rowCounters(row: Record<string, unknown>): SeasonalCounters {
   };
 }
 
+/**
+ * Reads both the legacy `string[]` snapshot format and the current
+ * `{id, unlockedAt}[]` format. A malformed/non-array payload is unknown, not
+ * an empty achievement list, so callers can exclude it from a denominator.
+ */
+export function parseSeasonalAchievementUnlocks(
+  value: unknown,
+): SeasonalAchievementUnlock[] | null {
+  if (value == null) return null;
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    if (value.trim() === "") return null;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  const result = new Map<string, SeasonalAchievementUnlock>();
+  for (const item of parsed) {
+    let id: string;
+    let unlockedAt: number | null = null;
+    if (typeof item === "string") {
+      id = item.trim();
+    } else if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+      const row = item as { id?: unknown; unlockedAt?: unknown };
+      id = typeof row.id === "string" ? row.id.trim() : "";
+      if (row.unlockedAt !== null && row.unlockedAt !== undefined) {
+        const timestamp = Number(row.unlockedAt);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+        unlockedAt = Math.trunc(timestamp);
+      }
+    } else {
+      return null;
+    }
+    if (!id) return null;
+    const previous = result.get(id);
+    if (!previous || (previous.unlockedAt === null && unlockedAt !== null)) {
+      result.set(id, { id, unlockedAt });
+    }
+  }
+  return [...result.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function serializeSeasonalAchievementUnlocks(
+  achievements: SeasonalAchievementUnlock[] | null,
+): string | null {
+  return achievements === null ? null : JSON.stringify(achievements);
+}
+
+/** Converts an ingested profile into the snapshot payload without erasing legacy data. */
+export function seasonalAchievementSnapshotValue(profile: SeasonalProfile): {
+  value: string | null;
+  count: number | null;
+} {
+  if (profile.seasonalAchievements !== undefined) {
+    return {
+      value: serializeSeasonalAchievementUnlocks(profile.seasonalAchievements),
+      count: profile.seasonalAchievements?.length ?? null,
+    };
+  }
+  if (profile.staticSignals !== undefined) {
+    // Legacy callers only provide ids. Preserve that representation while the
+    // dual-reader above makes it safe to consume alongside new captures.
+    return {
+      value: JSON.stringify(profile.staticSignals.achievementIds),
+      count: profile.staticSignals.achievementIds.length,
+    };
+  }
+  return { value: null, count: null };
+}
+
 export function toSnapshot(row: Record<string, unknown> | undefined): ProgressionSnapshotRecord | null {
   if (!row) return null;
   return {
     id: Number(row.id), mode: String(row.mode) as ProfileIdentity["mode"], cycleId: String(row.cycle_id),
     aid: Number(row.aid), profileUpdatedAt: Number(row.profile_updated_at), capturedAt: Number(row.captured_at),
     localDate: String(row.local_date), seriesId: Number(row.series_id), counters: rowCounters(row),
+    achievements: parseSeasonalAchievementUnlocks(row.achievements),
   };
 }
 
@@ -616,13 +692,16 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           // never create a second progression point.
           if (profile.profileUpdatedAt === previous.profileUpdatedAt && profile.seasonalStats !== undefined) {
             const stats = profile.seasonalStats;
+            const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
             db.prepare(`UPDATE progression_snapshots SET
               total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
-              level = ?, prestige = ?, longest_win_streak = ?, achv_count = ?, achievements = ?
+              level = ?, prestige = ?, longest_win_streak = ?,
+              achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements)
               WHERE ${identityWhere} AND profile_updated_at = ?`).run(
               stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
               stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
-              stats.achievementsCount, null, ...identity, profile.profileUpdatedAt,
+              achievementSnapshot.count, achievementSnapshot.value,
+              ...identity, profile.profileUpdatedAt,
             );
           }
           db.exec("COMMIT");
@@ -647,6 +726,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         };
         const hasStaticSignals = profile.staticSignals !== undefined;
         const seasonalStats = profile.seasonalStats;
+        const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
         const inserted = db.prepare(`INSERT INTO progression_snapshots (
           mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
           experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
@@ -664,12 +744,8 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           seasonalStats !== undefined
             ? seasonalStats.longestWinStreak
             : hasStaticSignals ? staticSignals.longestWinStreak : null,
-          seasonalStats !== undefined
-            ? seasonalStats.achievementsCount
-            : hasStaticSignals ? staticSignals.achievementIds.length : null,
-          seasonalStats !== undefined
-            ? null
-            : hasStaticSignals ? JSON.stringify(staticSignals.achievementIds) : null);
+          achievementSnapshot.count,
+          achievementSnapshot.value);
         const snapshot = toSnapshot(db.prepare("SELECT * FROM progression_snapshots WHERE id = ?").get(Number(inserted.lastInsertRowid)))!;
         let interval: ProgressionIntervalRecord | null = null;
         if (previous && changes) {

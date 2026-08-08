@@ -2,6 +2,7 @@ import { after, NextRequest, NextResponse } from "next/server";
 import {
   getPublicProfile,
   getPlayerLevels,
+  getAchievements,
   parseArenaProfileStats,
   parseProfileStats,
   pveProfileDecision,
@@ -13,6 +14,7 @@ import { getStore } from "@/lib/db";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
+import { getSeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
@@ -24,6 +26,42 @@ import { findProfileSummary } from "@/lib/profile-summary";
 import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import { getRiskEvaluation } from "@/lib/admin/moderation-db";
+import {
+  buildRegularProfileViewModel,
+  buildSeasonalProfileViewModel,
+  toPublicRiskView,
+} from "@/lib/player-profile-view";
+
+async function enrichSeasonalViewModel(
+  profile: import("@/types/seasonal").SeasonalProfile,
+  viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
+) {
+  const [baseline, metadata] = await Promise.all([
+    getSeasonalAchievementBaseline(profile.cycleId).catch(() => null),
+    getAchievements().catch(() => new Map()),
+  ]);
+  const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
+  const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
+    const meta = metadata.get(achievement.id);
+    const row = baselineById.get(achievement.id);
+    const eligibleN = row?.eligibleN ?? baseline?.eligibleN ?? null;
+    return {
+      ...achievement,
+      name: meta?.nameEn ?? meta?.name ?? achievement.name ?? achievement.id,
+      nameRu: meta?.nameRu ?? achievement.nameRu ?? null,
+      rarity: meta?.rarity ?? achievement.rarity ?? "common",
+      owners: row?.owners ?? null,
+      eligibleN,
+      percentage: row && eligibleN !== null && eligibleN >= 30 ? row.prevalencePct : null,
+    };
+  });
+  return {
+    ...viewModel,
+    seasonalAchievements: achievements,
+    skills: { ...viewModel.skills, achievements },
+  };
+}
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
@@ -75,7 +113,10 @@ export async function GET(request: NextRequest) {
   if (mode === "seasonal") {
     if (!isSeasonalRolloutReady()) {
       timing.finish({ operation: "player_profile", mode, outcome: "unavailable", status: 404 });
-      return NextResponse.json({ error: "Seasonal profile unavailable" }, { status: 404, headers: noStore });
+      return NextResponse.json({
+        identity: { aid, mode, cycleId },
+        error: "Seasonal profile unavailable",
+      }, { status: 404, headers: noStore });
     }
     const seasonalStarted = timing.now();
     const result = await resolveSeasonalProfile(
@@ -91,7 +132,8 @@ export async function GET(request: NextRequest) {
             seasonEndsAt: cycle.endsAt,
           }),
         getStore: getSeasonalStore,
-        fetchPayload: ({ aid: seasonalAid }) => fetchSeasonalPayload(seasonalAid),
+        fetchPayload: ({ aid: seasonalAid, force: shouldForce }) =>
+          fetchSeasonalPayload(seasonalAid, { force: shouldForce }),
         afterCapture: async ({ cycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt);
           if (capture.inserted) {
@@ -105,8 +147,27 @@ export async function GET(request: NextRequest) {
         console.error("seasonal admin risk evaluation failed", error);
       }));
     }
+    const storedRisk = result.ok
+      ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
+      : null;
+    const publicRisk = result.ok
+      ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
+      : null;
     const response = NextResponse.json(
-      result.ok ? { profile: result.profile, capture: result.capture } : { error: result.error },
+      result.ok
+        ? {
+            profile: result.profile,
+            capture: result.capture,
+            identity: { aid, mode, cycleId },
+            risk: publicRisk,
+            viewModel: await enrichSeasonalViewModel(
+              result.profile,
+              buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
+            ),
+          }
+        : result.status === 404
+          ? { identity: { aid, mode, cycleId }, code: "mode_profile_unavailable", error: result.error }
+          : { identity: { aid, mode, cycleId }, error: result.error },
       { status: result.ok ? 200 : result.status, headers: noStore }
     );
     timing.finish({
@@ -145,7 +206,10 @@ export async function GET(request: NextRequest) {
         }));
         timing.setRequestContext({ nickname: snapshot.stats.nickname });
         const response = NextResponse.json(
-          { ...snapshot, profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null },
+          {
+            ...snapshot,
+            profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null,
+          },
           { headers: noStore }
         );
         timing.finish({
@@ -233,7 +297,12 @@ export async function GET(request: NextRequest) {
         }
       }
       const response = NextResponse.json(
-        { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
+        {
+          profile,
+          stats,
+          achievementIds,
+          profileUpdatedAt: Number(profile.updated) || null,
+        },
         { headers: noStore }
       );
       timing.setRequestContext({ nickname: stats.nickname });
@@ -297,6 +366,7 @@ export async function GET(request: NextRequest) {
         {
           error:
             "Profile not found. It may be private, or hasn't been viewed on tarkov.dev yet — open it there once to cache it, then retry.",
+          identity: { aid, mode, cycleId },
         },
         { status: 404, headers: noStore }
       );
@@ -321,9 +391,11 @@ export async function GET(request: NextRequest) {
     parseMs = timing.elapsedMs(parseStarted);
 
     const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
-    after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
-      console.error("regular admin risk evaluation failed", error);
-    }));
+    if (stats.pvpStatsKnown !== false) {
+      after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
+        console.error("regular admin risk evaluation failed", error);
+      }));
+    }
     let store: Awaited<ReturnType<typeof getStore>> = null;
     if (!fromCache) {
       const storeOpenStarted = timing.now();
@@ -343,8 +415,26 @@ export async function GET(request: NextRequest) {
       if (storeWriteStarted !== undefined) storeWriteMs = timing.elapsedMs(storeWriteStarted);
     }
 
+    const publicRisk = stats.pvpStatsKnown === false
+      ? null
+      : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+    const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
     const response = NextResponse.json(
-      { profile, stats, profileUpdatedAt: Number(profile.updated) || null },
+      {
+        profile,
+        stats,
+        achievementIds,
+        profileUpdatedAt: Number(profile.updated) || null,
+        identity: { aid, mode, cycleId },
+        risk: publicRiskView,
+        viewModel: buildRegularProfileViewModel({
+          aid,
+          mode: "regular",
+          cycleId,
+          profile,
+          stats,
+        }, publicRiskView),
+      },
       { headers: noStore }
     );
     timing.setRequestContext({ nickname: stats.nickname });
@@ -369,7 +459,7 @@ export async function GET(request: NextRequest) {
       profileMs = timing.elapsedMs(profileStarted);
     }
     const response = NextResponse.json(
-      { error: "Failed to fetch player profile" },
+      { error: "Failed to fetch player profile", identity: { aid, mode, cycleId } },
       { status: 502, headers: noStore }
     );
     timing.finish({

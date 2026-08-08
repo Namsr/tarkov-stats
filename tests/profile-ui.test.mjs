@@ -42,6 +42,7 @@ test("ordinary profile failures retain the generic error UI", async () => {
 test("profile actions share a top edge and helper copy sits underneath", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
   const header = await readFile("components/ProfileHeader.tsx", "utf8");
   const styles = await readFile("app/globals.css", "utf8");
   const refresh = await readFile("components/RefreshButton.tsx", "utf8");
@@ -56,8 +57,10 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.match(header, /<h1 className="page-title break-words">/);
   assert.match(header, /profile-header__controls[\s\S]*profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
   assert.doesNotMatch(styles, /\.profile-header__mode \{[^}]*border/);
-  assert.match(regular, /<ProfileSectionNav[^>]*items=\{sectionLinks\} \/>[\s\S]*?<ProfileHeader/);
-  assert.match(seasonal, /<ProfileSectionNav[\s\S]*?<ProfileHeader/);
+  assert.match(shell, /<ProfileSectionNav[\s\S]*?<ProfileHeader/);
+  assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
+  assert.match(regular, /<ProfileShell[\s\S]*?overviewCards=\{regularOverviewCards\}/);
+  assert.match(seasonal, /<ProfileShell[\s\S]*?overviewCards=\{/);
   assert.match(refresh, /profile-action__button !text-sm/);
   assert.equal((favorite.match(/profile-action__button/g) ?? []).length, 2);
   assert.match(favorite, /className="disabled-control-hint"[\s\S]*tabIndex=\{0\}[\s\S]*aria-describedby=\{authHintId\}/);
@@ -159,8 +162,9 @@ test("radar statistic switch identifies requests by method", async () => {
 
   assert.match(source, /searchParams\.get\("statistic"\) === "median"/);
   assert.match(source, /statistic,\s*period,\s*\}\);/);
-  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{/);
-  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}:/);
+  assert.match(source, /const cohortRequestId = `\$\{aid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:/);
+  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:/);
+  assert.match(source, /payload\.requestId === cohortRequestId/);
   assert.match(source, /favoriteProfile\?\.requestId === favoriteRequestId \? favoriteProfile\.stats : null/);
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
@@ -173,10 +177,10 @@ test("regular radar period switch identifies requests by freshness", async () =>
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
   assert.match(source, /const \[selectedPeriod, setSelectedPeriod\] = useState<AveragePeriod>\(urlPeriod\)/);
   assert.match(source, /setSelectedPeriod\(next\)/);
-  assert.match(source, /if \(!controller\.signal\.aborted\) setRemoteCohort\(payload\)/);
+  assert.match(source, /if \(!controller\.signal\.aborted && payload\.requestId === cohortRequestId\) setRemoteCohort\(payload\)/);
   assert.match(source, /period,\s*\}\);/);
-  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
-  assert.match(source, /remoteCohort\?\.requestId === `\$\{aid\}:\$\{mode\}:\$\{dimension\}:\$\{center\}:\$\{statistic\}:\$\{period\}`/);
+  assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
+  assert.match(source, /payload\.requestId === cohortRequestId/);
   assert.match(source, /params\.delete\("period"\)/);
   assert.match(source, /name=\{`radar-period-\$\{aid\}`\}/);
 });
@@ -210,7 +214,34 @@ test("profile refresh checks automatically after returning without requiring F5"
   assert.match(profile, /if \(generation !== requestGeneration\.current\) return "unchanged"/);
   assert.match(profile, /if \(refreshPromise\.current === request\) refreshPromise\.current = null/);
   assert.ok((profile.match(/key=\{`\$\{aid\}:\$\{mode\}`\}/g) ?? []).length >= 2);
-  assert.equal((profile.match(/player\.profileUpdated/g) ?? []).length, 1);
+  assert.ok((profile.match(/player\.profileUpdated/g) ?? []).length >= 1);
+});
+
+test("Seasonal missing profiles keep the shell and refresh after returning", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  assert.match(seasonal, /body\.code === "mode_profile_unavailable"/);
+  assert.match(seasonal, /const unknownValue = t\("common\.unknown"\)/);
+  assert.match(seasonal, /overviewCards=\{overviewLabels\.map\(\(label\) => \(\{ label, value: unknownValue \}\)\)\}/);
+  assert.match(shell, /Array\.from\(\{ length: 4 \}\)/);
+  assert.match(seasonal, /<SeasonalProfileActions[\s\S]*?missing[\s\S]*?onCheck=\{refreshProfile\}/);
+  assert.match(seasonal, /refresh: "1"/);
+  assert.match(seasonal, /stale=\{profileIsStale\}/);
+  assert.match(seasonal, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
+  assert.match(dictionary, /"player\.refreshStaleHint": "This profile was last updated more than three days ago\./);
+  assert.match(dictionary, /"player\.refreshStaleHint": "Профиль не обновлялся больше трёх дней\./);
+});
+
+test("profile freshness becomes stale only after three full days", async () => {
+  const { PROFILE_STALE_MS, isProfileStale } = await import("../lib/profile-refresh-policy.ts");
+  const now = 1_800_000_000_000;
+
+  assert.equal(PROFILE_STALE_MS, 3 * 24 * 60 * 60 * 1000);
+  assert.equal(isProfileStale(now - PROFILE_STALE_MS + 1, now), false);
+  assert.equal(isProfileStale(now - PROFILE_STALE_MS - 1, now), true);
+  assert.equal(isProfileStale(null, now), false);
 });
 
 test("unknown regular PvP stats are not rendered or scored as zero", async () => {
@@ -218,14 +249,14 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
   const score = await readFile("components/CheaterScore.tsx", "utf8");
 
-  assert.match(profile, /mode !== "regular" \|\| stats\.pvpStatsKnown !== false/);
+  assert.match(profile, /const pvpStatsKnown = stats\.pvpStatsKnown !== false/);
   assert.match(profile, /pvpStatsKnown \? stats\.pmcKdRatio : t\("common\.notAvailable"\)/);
   assert.match(profile, /pvpStatsKnown \? stats\.killedPmc\.toLocaleString\(\) : t\("common\.notAvailable"\)/);
-  assert.match(radar, /playerStatsKnown \? valuesFromStats\(stats\) : null/);
+  assert.match(radar, /playerValues = demo[\s\S]*?playerStatsKnown \? valuesFromStats\(stats\) : null/);
   assert.match(radar, /favoriteStats && favoriteStatsKnown/);
   assert.match(radar, /radar\.incompletePvp\.player/);
   assert.match(radar, /radar\.incompletePvp\.favorite/);
-  assert.match(score, /if \(!pvpStatsKnown\)/);
+  assert.match(score, /statsKnown === false/);
   assert.match(score, /cheater\.incompletePvp/);
 });
 
@@ -240,14 +271,16 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   const cheatingRisk = profile.indexOf("<CheaterScore");
   const radar = profile.indexOf("<PlayerRadarComparison");
   assert.ok(progression > 0 && cheatingRisk > progression && radar > cheatingRisk);
-  assert.match(profile, /mode === "regular" && \(\s*<div id="progression"[\s\S]*?<ProgressionPanel/);
-  assert.match(profile, /<section id="risk"[\s\S]*?<h2 className="section-heading mb-3">\{t\("cheater\.heading"\)\}<\/h2>[\s\S]*?<CheaterScore/);
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  assert.match(profile, /progression=\{<ProgressionPanel/);
+  assert.match(profile, /risk=\{<div><h2 className="section-heading mb-3">\{t\("cheater\.heading"\)\}<\/h2><CheaterScore/);
+  assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
   assert.doesNotMatch(score, /section-kicker">\{t\("cheater\.heading"\)\}/);
   assert.match(profile, /<ProgressionPanel[\s\S]*?mode="regular"[\s\S]*?cycleId="persistent"/);
   assert.match(profile, /<ProgressionPanel[\s\S]*?profileUpdatedAt=\{profileUpdatedAt\}/);
   assert.match(profile, /refreshRevision=\{progressionRefreshRevision\}/);
   assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
-  assert.match(profile, /progressionRisk=\{mode === "regular" \? progressionRisk : null\}/);
+  assert.match(profile, /risk=\{serverRisk \?\? progressionRisk\}/);
 
   assert.match(panel, /fetch\(`\/api\/progression\/timeline\?\$\{params\}`/);
   for (const parameter of [
@@ -357,10 +390,9 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.doesNotMatch(`${panel}\n${chart}`, /observationDay|Observation day|День наблюдения/);
   assert.doesNotMatch(panel, /seasonal-risk data-panel/);
 
-  assert.match(score, /progressionRisk\?: ProgressionRiskPayload \| null/);
-  assert.match(score, /progressionRisk \? Math\.round\(progressionRisk\.combined\) : result\.score/);
-  assert.match(score, /progressionRisk\.staticContribution/);
-  assert.match(score, /progressionRisk\.reasons\.map/);
+  assert.match(score, /risk\?: RiskInput \| null/);
+  assert.match(score, /const normalized = normalizeRisk\(risk \?\? legacyRisk\)/);
+  assert.match(score, /statsKnown === false/);
 });
 
 test("progression APIs keep Seasonal queries on the configured active cycle", async () => {

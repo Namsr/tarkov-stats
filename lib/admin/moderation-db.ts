@@ -13,6 +13,10 @@ export interface StoredRiskEvaluation {
   scoreVersion: number;
   profileUpdatedAt: number;
   evaluatedAt: number;
+  /** Public evidence context; null for legacy snapshots. */
+  sampleN?: number | null;
+  confidence?: number | null;
+  freshnessAt?: number | null;
 }
 
 export interface AccountModeration {
@@ -48,6 +52,9 @@ CREATE TABLE IF NOT EXISTS risk_evaluations (
   score_version INTEGER NOT NULL,
   profile_updated_at INTEGER NOT NULL,
   evaluated_at INTEGER NOT NULL,
+  sample_n INTEGER,
+  confidence REAL,
+  freshness_at INTEGER,
   PRIMARY KEY (aid, mode, cycle_id)
 );
 CREATE INDEX IF NOT EXISTS idx_risk_evaluations_score_time
@@ -127,11 +134,15 @@ function riskFromRow(row: Record<string, unknown> | undefined): StoredRiskEvalua
     scoreVersion: Number(row.score_version),
     profileUpdatedAt: Number(row.profile_updated_at),
     evaluatedAt: Number(row.evaluated_at),
+    sampleN: row.sample_n == null ? null : Number(row.sample_n),
+    confidence: row.confidence == null ? null : Number(row.confidence),
+    freshnessAt: row.freshness_at == null ? null : Number(row.freshness_at),
   };
 }
 
 export interface ModerationStore {
   saveRisk(input: Omit<StoredRiskEvaluation, "evaluatedAt"> & { evaluatedAt?: number }): void;
+  riskFor(input: { aid: number; mode: GameMode; cycleId: string }): StoredRiskEvaluation | null;
   setReview(input: { aid: number; status: Exclude<AdminReviewStatus, "new">; note?: string | null; now?: number }): void;
   forAids(aids: readonly number[]): AccountModeration[];
   snapshotCounts(aids: readonly number[], mode?: string | null): Map<number, number>;
@@ -292,6 +303,10 @@ function automaticSuspiciousAids(db: SqliteDatabase): number[] {
 export function createSqliteModerationStore(db: SqliteDatabase, options: { attachExternal?: boolean } = {}): ModerationStore {
   ensureRollbackJournal(db);
   db.exec(MODERATION_SCHEMA);
+  const riskColumns = tableColumns(db, "main", "risk_evaluations");
+  if (!riskColumns.has("sample_n")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN sample_n INTEGER");
+  if (!riskColumns.has("confidence")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN confidence REAL");
+  if (!riskColumns.has("freshness_at")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN freshness_at INTEGER");
   db.prepare("UPDATE admin_audit_log SET detail = NULL WHERE detail IS NOT NULL").run();
   if (options.attachExternal !== false) initializeAttachedSchemas(db);
 
@@ -300,15 +315,24 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       validateAid(input.aid);
       const evaluatedAt = input.evaluatedAt ?? Date.now();
       db.prepare(`INSERT INTO risk_evaluations
-        (aid, mode, cycle_id, score, tier, factors_json, score_version, profile_updated_at, evaluated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (aid, mode, cycle_id, score, tier, factors_json, score_version, profile_updated_at, evaluated_at,
+         sample_n, confidence, freshness_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(aid, mode, cycle_id) DO UPDATE SET
           score = excluded.score, tier = excluded.tier, factors_json = excluded.factors_json,
           score_version = excluded.score_version, profile_updated_at = excluded.profile_updated_at,
-          evaluated_at = excluded.evaluated_at
+          evaluated_at = excluded.evaluated_at, sample_n = excluded.sample_n,
+          confidence = excluded.confidence, freshness_at = excluded.freshness_at
         WHERE excluded.profile_updated_at >= risk_evaluations.profile_updated_at`)
         .run(input.aid, input.mode, input.cycleId, input.score, input.tier,
-          JSON.stringify(input.factors), input.scoreVersion, input.profileUpdatedAt, evaluatedAt);
+          JSON.stringify(input.factors), input.scoreVersion, input.profileUpdatedAt, evaluatedAt,
+          input.sampleN ?? null, input.confidence ?? null, input.freshnessAt ?? evaluatedAt);
+    },
+
+    riskFor({ aid, mode, cycleId }) {
+      validateAid(aid);
+      return riskFromRow(db.prepare(`SELECT * FROM risk_evaluations
+        WHERE aid = ? AND mode = ? AND cycle_id = ?`).get(aid, mode, cycleId) as Record<string, unknown> | undefined);
     },
 
     setReview({ aid, status, note, now = Date.now() }) {
@@ -532,4 +556,12 @@ export async function saveRiskEvaluation(
   input: Omit<StoredRiskEvaluation, "evaluatedAt"> & { evaluatedAt?: number }
 ): Promise<void> {
   (await getModerationStore()).saveRisk(input);
+}
+
+export async function getRiskEvaluation(input: {
+  aid: number;
+  mode: GameMode;
+  cycleId: string;
+}): Promise<StoredRiskEvaluation | null> {
+  return (await getModerationStore()).riskFor(input);
 }

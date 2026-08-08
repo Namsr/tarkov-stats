@@ -8,6 +8,7 @@ import {
 } from "@/lib/db";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
+import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
-  if (!isGameMode(rawMode) || rawMode === "seasonal") {
+  if (!isGameMode(rawMode)) {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
   }
@@ -59,6 +60,67 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid period" }, { status: 400 });
   }
+  if (rawMode === "seasonal") {
+    timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json(
+      { error: "Seasonal comparison uses /api/seasonal/cohort" },
+      { status: 400 },
+    );
+  }
+
+  if (rawMode === "regular") {
+    const requestedAid = params.get("aid");
+    const aid = Number(requestedAid);
+    if (!requestedAid || !Number.isSafeInteger(aid) || aid <= 0) {
+      timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
+      return NextResponse.json(
+        { error: "aid is required and must be a positive integer" },
+        { status: 400 },
+      );
+    }
+    try {
+      const profileResult = await getPublicProfile(aid, { mode: "regular" });
+      if (!profileResult.profile) {
+        timing.finish({ operation: "average_cohort", mode: "regular", outcome: "not_found", status: 404 });
+        return NextResponse.json({
+          identity: { aid, mode: "regular", cycleId: "persistent" },
+          code: "profile_unavailable",
+          error: "Profile is not available for comparison",
+        }, { status: 404, headers: { "Cache-Control": "no-store" } });
+      }
+      const stats = parseProfileStats(profileResult.profile, []);
+      const store = await getStore("regular");
+      if (!store) {
+        timing.finish({ operation: "average_cohort", mode: "regular", outcome: "unavailable", status: 503 });
+        return NextResponse.json({
+          identity: { aid, mode: "regular", cycleId: "persistent" },
+          code: "comparison_unavailable",
+          error: "Comparison storage is unavailable",
+        }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      }
+      const cohort = await store.cohort2d(
+        Number(stats.hoursPlayed),
+        Number(stats.pmcRaids),
+        aid,
+        "hours",
+        statistic,
+        period,
+      );
+      timing.finish({ operation: "average_cohort", mode: "regular", outcome: "success", status: 200 });
+      return NextResponse.json({ ...cohort, statistic, period }, {
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    } catch (error) {
+      console.error("regular comparison cohort failed", error);
+      timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "error", status: 503 });
+      return NextResponse.json({
+        identity: { aid, mode: "regular", cycleId: "persistent" },
+        code: "comparison_unavailable",
+        error: "Failed to compute comparison cohort",
+      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
+  }
+
   const dimension = parseDimension(params.get("dimension"));
   const centerValue = params.get("center");
   const center = Number(centerValue);

@@ -75,6 +75,17 @@ export interface SeasonalPvpEnrichment {
   profileUpdatedAt: number | null;
 }
 
+/**
+ * An achievement as captured from the Seasonal upstream profile.
+ *
+ * `unlockedAt: null` is intentional: old snapshots only stored the id and
+ * must remain readable without inventing a date.
+ */
+export interface SeasonalAchievementUnlock {
+  id: string;
+  unlockedAt: number | null;
+}
+
 /** Runtime-validated representation produced by either supported upstream shape. */
 export interface SeasonalProfile extends ProfileIdentity {
   nickname: string;
@@ -82,6 +93,8 @@ export interface SeasonalProfile extends ProfileIdentity {
   lastAccessAt: number;
   lifetimePvpHours: number | null;
   counters: SeasonalCounters;
+  /** null = the upstream payload was present but had no achievement data. */
+  seasonalAchievements?: SeasonalAchievementUnlock[] | null;
   seasonalStats?: SeasonalStats;
   pvpEnrichment?: SeasonalPvpEnrichment;
   /** Optional single-profile signals consumed by the existing static risk model. */
@@ -106,6 +119,8 @@ export interface ProgressionSnapshotRecord extends ProfileIdentity {
   localDate: string;
   seriesId: number;
   counters: SeasonalCounters;
+  /** Dual-read representation of the snapshot's own Seasonal achievements. */
+  achievements: SeasonalAchievementUnlock[] | null;
 }
 
 export type IntervalStatus = "valid" | "reset" | "schema_anomaly";

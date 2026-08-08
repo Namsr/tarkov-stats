@@ -38,9 +38,18 @@ yarn-error.log*
 # local agent/operator material and deployment runbooks
 /.agents/
 /.claude/
+/.codex/
 /.codex-local/
-/AGENTS.md
-/CLAUDE.md
+/.cursor/
+/.windsurf/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+*.instructions.md
+/.cursorrules
+/.windsurfrules
+/.github/copilot-instructions.md
+/.github/instructions/
 /DESIGN.md
 /PERFORMANCE_BASELINE.md
 /SELFHOST.md

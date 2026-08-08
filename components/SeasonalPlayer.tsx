@@ -1,65 +1,142 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
+import { useCallback, useEffect, useRef, useState } from "react";
+import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
+import PlayerRadarComparison from "@/components/PlayerRadarComparison";
+import SeasonalAchievements from "@/components/SeasonalAchievements";
+import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
-import RefreshButton from "@/components/RefreshButton";
-import ProfileHeader from "@/components/ProfileHeader";
-import ProfileSectionNav from "@/components/ProfileSectionNav";
+import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
+import CheaterScore from "@/components/CheaterScore";
 import { useI18n } from "@/lib/i18n/context";
+import { isProfileStale } from "@/lib/profile-refresh-policy";
 import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
-import type {
-  ProgressionTimelineResponse,
-  SeasonalProfile,
-} from "@/types/seasonal";
-import type { ProgressionRiskMarker } from "@/lib/seasonal/progression-details";
+import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
+import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
+import type { PlayerProfileViewModel, ProfileViewAchievement } from "@/types/player-profile-view";
 
-interface RiskPayload {
-  combined: number;
-  static: number | null;
-  progression: number | null;
-  confidence: { value: number; tier: "low" | "medium" | "high" };
-  staticContribution: number;
-  progressionContribution: number;
-  staticReasons: string[];
-  reasons: string[];
-  markers: ProgressionRiskMarker[];
+interface SeasonalProfileResponse {
+  code?: string;
+  error?: string;
+  identity?: { aid?: number; mode?: string; cycleId?: string };
+  profile?: SeasonalProfile;
+  risk?: PublicRiskView | null;
+  viewModel?: PlayerProfileViewModel;
 }
 
-function number(value: number | null | undefined, digits = 1): string {
+function displayNumber(value: number | null | undefined, digits = 1, fallback = ""): string {
   return value == null || !Number.isFinite(value)
-    ? "—"
+    ? fallback
     : value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function validRisk(value: unknown): value is RiskPayload {
-  if (!value || typeof value !== "object") return false;
-  const risk = value as Partial<RiskPayload>;
-  return Number.isFinite(risk.combined) &&
-    (risk.static === null || Number.isFinite(risk.static)) &&
-    (risk.progression === null || Number.isFinite(risk.progression)) &&
-    Boolean(risk.confidence && Number.isFinite(risk.confidence.value)) &&
-    Array.isArray(risk.staticReasons) && Array.isArray(risk.reasons) && Array.isArray(risk.markers);
+function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): SeasonalStats {
+  const existing = profile.seasonalStats;
+  const counters = profile.counters;
+  const totalRaids = existing?.totalRaids ?? counters.pmcRaids + counters.scavRaids;
+  const survivedRaids = existing?.survivedRaids ?? counters.pmcSurvived;
+  const deaths = existing?.deaths ?? counters.pmcDeaths;
+  const pmcKdRatio = existing?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null);
+  const pmcSurvivalRate = existing?.pmcSurvivalRate ?? (counters.pmcRaids > 0 ? (counters.pmcSurvived / counters.pmcRaids) * 100 : null);
+  const level = existing?.level ?? levelAtExperience(counters.experience, levelBands);
+  return {
+    totalRaids,
+    survivedRaids,
+    totalKills: existing?.totalKills ?? counters.pmcKills,
+    deaths,
+    runThrough: existing?.runThrough ?? null,
+    survivalRate: existing?.survivalRate ?? (totalRaids && survivedRaids != null ? (survivedRaids / totalRaids) * 100 : null),
+    kdRatio: existing?.kdRatio ?? (deaths && deaths > 0 && counters.pmcKills != null ? counters.pmcKills / deaths : null),
+    pmcKdRatio,
+    killsPerRaid: existing?.killsPerRaid ?? (counters.pmcRaids > 0 ? counters.pmcKills / counters.pmcRaids : null),
+    pmcSurvivalRate,
+    level,
+    prestige: existing?.prestige ?? profile.staticSignals?.prestige ?? null,
+    longestWinStreak: existing?.longestWinStreak ?? profile.staticSignals?.longestWinStreak ?? null,
+    achievementsCount: existing?.achievementsCount ?? profile.staticSignals?.achievementIds.length ?? null,
+  };
 }
 
-function riskTier(score: number) {
-  if (score < 20) return "low";
-  if (score < 45) return "medium";
-  if (score < 70) return "high";
-  return "severe";
+function achievementsFor(profile: SeasonalProfile): SeasonalAchievementView[] {
+  const raw = (profile as SeasonalProfile & {
+    seasonalAchievements?: unknown;
+    achievements?: unknown;
+  }).seasonalAchievements ?? (profile as SeasonalProfile & { achievements?: unknown }).achievements;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): SeasonalAchievementView[] => {
+    if (typeof item === "string") {
+      return [{ id: item, name: item, rarity: "common", unlockedAt: null, owners: null, eligibleN: null, percentage: null }];
+    }
+    if (!item || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    const id = typeof value.id === "string" ? value.id : null;
+    if (!id) return [];
+    return [{
+      id,
+      name: typeof value.name === "string" ? value.name : id,
+      rarity: typeof value.rarity === "string" ? value.rarity : "common",
+      unlockedAt: typeof value.unlockedAt === "number" ? value.unlockedAt : null,
+      owners: typeof value.owners === "number" ? value.owners : null,
+      eligibleN: typeof value.eligibleN === "number" ? value.eligibleN : null,
+      percentage: typeof value.percentage === "number" ? value.percentage : null,
+    }];
+  });
 }
 
-const REASONS = new Set([
-  "pmc_kills_per_raid",
-  "pvp_kd",
-  "survival_rate",
-  "xp_per_pmc_raid",
-  "all_kills_per_pmc_raid",
-  "pmc_raids_per_day",
-]);
+function achievementsFromViewModel(
+  viewModel: PlayerProfileViewModel | undefined,
+  lang: "en" | "ru",
+): SeasonalAchievementView[] | null {
+  if (!viewModel || viewModel.skills.kind !== "seasonal") return null;
+  return viewModel.skills.achievements.map((achievement: ProfileViewAchievement) => ({
+    id: achievement.id,
+    name: (lang === "ru" ? achievement.nameRu : achievement.name) ?? achievement.id,
+    nameRu: achievement.nameRu,
+    rarity: achievement.rarity ?? "common",
+    unlockedAt: achievement.unlockedAt,
+    owners: achievement.owners,
+    eligibleN: achievement.eligibleN,
+    percentage: achievement.percentage,
+  }));
+}
+
+function SeasonalProfileActions({
+  aid,
+  cycleId,
+  nickname,
+  stale = false,
+  missing = false,
+  onCheck,
+}: {
+  aid: number;
+  cycleId: string;
+  nickname?: string;
+  stale?: boolean;
+  missing?: boolean;
+  onCheck: () => Promise<RefreshCheckResult>;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="profile-actions-grid">
+      <div className="profile-action-stack">
+        <RefreshButton
+          key={`${aid}:seasonal:${cycleId}`}
+          aid={aid}
+          mode="seasonal"
+          stale={stale}
+          missing={missing}
+          onCheck={onCheck}
+          className="whitespace-nowrap"
+        />
+        {stale && <p className="max-w-56 text-xs font-medium leading-snug text-[var(--danger)]">{t("player.refreshStaleMessage")}</p>}
+      </div>
+      <FavoriteButton aid={aid} nickname={nickname} identity={{ mode: "seasonal", cycleId }} />
+      <CheaterReportButton aid={aid} mode="seasonal" cycle={cycleId} />
+    </div>
+  );
+}
 
 export default function SeasonalPlayer({
   aid,
@@ -70,26 +147,66 @@ export default function SeasonalPlayer({
   cycleId: string;
   levelBands: LevelBand[];
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [profile, setProfile] = useState<SeasonalProfile | null>(null);
-  const [timeline, setTimeline] = useState<ProgressionTimelineResponse | null>(null);
+  const [achievements, setAchievements] = useState<SeasonalAchievementView[] | null>(null);
+  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(null);
+  const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [progressionLoading, setProgressionLoading] = useState(false);
   const [error, setError] = useState("");
-  const [progressionError, setProgressionError] = useState("");
+  const [modeUnavailable, setModeUnavailable] = useState(false);
+  const [profileIsStale, setProfileIsStale] = useState(false);
+  const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
+  const [displayNickname, setDisplayNickname] = useState<string | undefined>();
+  const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
+  const requestGeneration = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
+    requestGeneration.current += 1;
+    refreshPromise.current = null;
     setLoading(true);
     setError("");
+    setProfile((current) => {
+      if (current?.nickname) setDisplayNickname(current.nickname);
+      return null;
+    });
+    setAchievements(null);
+    setServerRisk(null);
+    setProgressionRisk(null);
+    setModeUnavailable(false);
+    setProfileIsStale(false);
+    setProgressionRefreshRevision(0);
+
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId });
     fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
-        const body = (await response.json()) as { profile?: SeasonalProfile; error?: string };
-        if (!response.ok || !body.profile) throw new Error(t("seasonal.profileUnavailable"));
+        const body = (await response.json()) as SeasonalProfileResponse;
+        if (!response.ok || !body.profile) {
+          if (body.code === "mode_profile_unavailable") {
+            setModeUnavailable(true);
+            return null;
+          }
+          throw new Error(body.error ?? t("seasonal.profileUnavailable"));
+        }
+        if (
+          body.identity?.aid !== aid ||
+          body.identity?.mode !== "seasonal" ||
+          body.identity?.cycleId !== cycleId
+        ) {
+          throw new Error(t("seasonal.profileUnavailable"));
+        }
+        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(body.profile));
         return body.profile;
       })
-      .then(setProfile)
+      .then((nextProfile) => {
+        if (!nextProfile) return;
+        setProfile(nextProfile);
+        setDisplayNickname(nextProfile.nickname);
+        setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
+        setModeUnavailable(false);
+      })
       .catch((caught: unknown) => {
         if (caught instanceof Error && caught.name === "AbortError") return;
         setError(caught instanceof Error ? caught.message : t("seasonal.profileUnavailable"));
@@ -98,182 +215,132 @@ export default function SeasonalPlayer({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [aid, cycleId, t]);
+  }, [aid, cycleId, lang, t]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setProgressionLoading(true);
-    setProgressionError("");
-    setTimeline(null);
-    const params = new URLSearchParams({ mode: "seasonal", cycle: cycleId, aid: String(aid) });
-    fetch(`/api/progression/timeline?${params}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(t("seasonal.progressionUnavailable"));
-        return (await response.json()) as ProgressionTimelineResponse;
-      })
-      .then(setTimeline)
-      .catch((caught: unknown) => {
-        if (caught instanceof Error && caught.name === "AbortError") return;
-        setTimeline(null);
-        setProgressionError(t("seasonal.progressionUnavailable"));
+  const refreshProfile = useCallback(() => {
+    if (refreshPromise.current) return refreshPromise.current;
+    const generation = requestGeneration.current;
+    const previousProfile = profile;
+    const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId, refresh: "1" });
+    const request = fetch(`/api/player/profile?${params}`, { cache: "no-store" })
+      .then(async (response): Promise<RefreshCheckResult> => {
+        const body = (await response.json()) as SeasonalProfileResponse;
+        if (generation !== requestGeneration.current) return "unchanged";
+        if (!response.ok || !body.profile) {
+          if (body.code === "mode_profile_unavailable") {
+            setModeUnavailable(true);
+            setError("");
+            return "unchanged";
+          }
+          throw new Error(body.error ?? t("seasonal.profileUnavailable"));
+        }
+        if (
+          body.identity?.aid !== aid ||
+          body.identity?.mode !== "seasonal" ||
+          body.identity?.cycleId !== cycleId
+        ) {
+          throw new Error(t("seasonal.profileUnavailable"));
+        }
+        const nextProfile = body.profile;
+        const changed = !previousProfile || previousProfile.profileUpdatedAt !== nextProfile.profileUpdatedAt || JSON.stringify(previousProfile) !== JSON.stringify(nextProfile);
+        setProfile(nextProfile);
+        setDisplayNickname(nextProfile.nickname);
+        setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(nextProfile));
+        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        setModeUnavailable(false);
+        setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
+        setError("");
+        setProgressionRefreshRevision((current) => current + 1);
+        return changed ? "updated" : "unchanged";
       })
       .finally(() => {
-        if (!controller.signal.aborted) setProgressionLoading(false);
+        if (refreshPromise.current === request) refreshPromise.current = null;
       });
-    return () => controller.abort();
-  }, [aid, cycleId, t]);
+    refreshPromise.current = request;
+    return request;
+  }, [aid, cycleId, lang, profile, t]);
 
-  const risk = useMemo(() => {
-    const candidate = timeline?.risk;
-    return validRisk(candidate) ? candidate : null;
-  }, [timeline]);
-  const longTerm = timeline?.longTerm;
-  const history = timeline?.history;
+  if (loading) return <ProfileShellLoading mode="seasonal" aid={aid} title={displayNickname} />;
 
-  if (loading) {
+  const unknownValue = t("common.unknown");
+  const overviewLabels = [t("player.hoursPlayed"), t("player.pmcKd"), t("seasonal.pmcSurvival"), t("player.pmcRaids")];
+  const emptySlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
+
+  if (modeUnavailable || error || !profile) {
     return (
-      <main className="page-frame space-y-5">
-        <div className="h-36 rounded-xl skeleton" />
-        <div className="h-80 rounded-xl skeleton" />
-      </main>
-    );
-  }
-  if (!profile || error) {
-    return (
-      <main className="page-frame">
-        <p className="text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</p>
-        <Link href="/" className="mt-4 inline-block text-[var(--accent)] hover:underline">{t("common.back")}</Link>
-      </main>
-    );
-  }
-
-  const level = levelAtExperience(profile.counters.experience, levelBands);
-  const survival = profile.counters.pmcRaids > 0
-    ? (profile.counters.pmcSurvived / profile.counters.pmcRaids) * 100
-    : 0;
-  return (
-    <main className="page-frame">
-      <Link href="/" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
-      <ProfileSectionNav
-        label={t("profile.sectionNav")}
-        items={[
-          { id: "overview", label: t("profile.section.overview") },
-          { id: "progression", label: t("profile.section.progression") },
-          { id: "risk", label: t("profile.section.risk") },
-          { id: "statistics", label: t("profile.section.statistics") },
-        ]}
-      />
-      <ProfileHeader
+      <ProfileShell
         aid={aid}
         mode="seasonal"
+        cycleId={cycleId}
         kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
-        title={profile.nickname}
-        meta={
-          <div className="profile-header__meta">
-            <span>{t("seasonal.lastUpdated")}: {new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })}</span>
-          </div>
-        }
-        actions={
-          <div className="profile-actions-grid">
-              <RefreshButton aid={aid} mode="seasonal" />
-              <FavoriteButton
-                aid={aid}
-                nickname={profile.nickname}
-                identity={{ mode: "seasonal", cycleId }}
-              />
-              <CheaterReportButton aid={aid} mode="seasonal" cycle={cycleId} />
-          </div>
-        }
-      >
-        <div className="detail-grid mt-7">
-          <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
-          <StatCard label={t("player.level")} value={level || "—"} />
-          <StatCard label={t("player.pmcRaids")} value={profile.counters.pmcRaids.toLocaleString()} />
-          <StatCard label={t("player.pmcKills")} value={profile.counters.killedPmc.toLocaleString()} />
-          <StatCard label={t("seasonal.pmcSurvival")} value={number(survival)} suffix="%" />
-          <StatCard label={t("player.scavRaids")} value={profile.counters.scavRaids.toLocaleString()} />
-          <StatCard label={t("player.hoursPlayed")} value={number(profile.lifetimePvpHours)} suffix={t("unit.h")} />
-          <StatCard label={t("seasonal.lastUpdated")} value={new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })} />
-        </div>
-      </ProfileHeader>
+        title={displayNickname}
+        actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={displayNickname} missing={modeUnavailable} onCheck={refreshProfile} />}
+        overviewCards={overviewLabels.map((label) => ({ label, value: unknownValue }))}
+        progression={emptySlot}
+        risk={emptySlot}
+        comparison={emptySlot}
+        statistics={emptySlot}
+        skills={emptySlot}
+        statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</div>}
+      />
+    );
+  }
 
-      <div id="progression" tabIndex={-1} className="profile-anchor-section seasonal-controls">
-        {progressionLoading && <span className="text-sm text-[var(--muted)]">{t("common.loading")}</span>}
-      </div>
+  const stats = seasonalStatsFor(profile, levelBands);
+  const comparisonStats = {
+    hoursPlayed: profile.lifetimePvpHours,
+    pmcRaids: profile.counters.pmcRaids,
+    kdRatio: stats.kdRatio,
+    pmcKdRatio: stats.pmcKdRatio,
+    killsPerRaid: stats.killsPerRaid,
+    pmcSurvivalRate: stats.pmcSurvivalRate,
+    longestWinStreak: stats.longestWinStreak,
+    level: stats.level,
+  };
+  const statistics = (
+    <div className="data-ledger">
+      <StatCard label={t("player.totalRaids")} value={stats.totalRaids ?? unknownValue} />
+      <StatCard label={t("player.pmcRaids")} value={profile.counters.pmcRaids} />
+      <StatCard label={t("player.scavRaids")} value={profile.counters.scavRaids} />
+      <StatCard label={t("player.pmcKills")} value={profile.counters.pmcKills} />
+      <StatCard label={t("player.deaths")} value={stats.deaths ?? unknownValue} />
+      <StatCard label={t("seasonal.metric.pvpKd")} value={displayNumber(stats.pmcKdRatio, 2, unknownValue)} />
+      <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix="%" />
+      <StatCard label={t("player.level")} value={stats.level ?? unknownValue} />
+      <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
+      <StatCard label={t("player.achievements")} value={stats.achievementsCount ?? unknownValue} />
+    </div>
+  );
 
-      {progressionError && <p className="mt-5 text-sm text-[var(--muted)]">{progressionError}</p>}
-      {timeline && <ProgressionTimelineChart data={timeline} title={t("progression.timeline.title")} />}
-
-      {history && (
-        <div className="seasonal-chart__meta mt-4">
-          <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
-          <span>{t("progression.baselineSnapshot", { n: history.snapshotCount > 0 ? 1 : 0 })}</span>
-          <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
-          <span>{t("progression.intervals", { n: history.intervalCount })}</span>
-          <span>{t("progression.allIntervals", { n: history.allIntervalCount })}</span>
-          <span>{t("progression.changedIntervals", { n: history.changedIntervalCount })}</span>
-          <span>{t("progression.raidIntervals", { n: history.raidIntervalCount })}</span>
-          <span>{t("progression.tempoPoints", { n: history.tempoPointCount })}</span>
-          <span>{t("progression.formPoints", { n: history.formPointCount })}</span>
-          {history.firstObservedAt && (
-            <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-          )}
-          {history.lastObservedAt && (
-            <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-          )}
-        </div>
-      )}
-
-      <section id="risk" tabIndex={-1} className="profile-anchor-section seasonal-risk data-panel">
-        <div>
-          <p className="section-kicker">{t("seasonal.risk.kicker")}</p>
-          <h2 className="section-heading">{t("cheater.heading")}</h2>
-        </div>
-        {risk ? (
-          <>
-            <div className="seasonal-risk__scores">
-              <StatCard label={t("seasonal.risk.combined")} value={Math.round(risk.combined)} suffix="/100" />
-              <StatCard label={t("seasonal.risk.static")} value={risk.static == null ? "—" : Math.round(risk.static)} />
-              <StatCard label={t("seasonal.risk.progression")} value={risk.progression == null ? "—" : Math.round(risk.progression)} />
-              <StatCard label={t("seasonal.risk.confidence")} value={t("seasonal.confidence." + risk.confidence.tier)} suffix={`${Math.round(risk.confidence.value * 100)}%`} />
-            </div>
-            <p className="mt-4 text-sm text-[var(--muted)]">
-              {t("seasonal.risk.contributions", {
-                static: number(risk.staticContribution),
-                progression: number(risk.progressionContribution),
-              })}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {risk.staticReasons.map((reason) => (
-                <span key={`static-${reason}`} className="seasonal-risk__reason">
-                  {t("seasonal.risk.static")}: {t("metric." + reason)}
-                </span>
-              ))}
-              {risk.reasons.filter((reason) => reason !== "pmc_raids_per_day").map((reason) => (
-                <span key={reason} className="seasonal-risk__reason">
-                  {t("seasonal.riskReason." + (REASONS.has(reason) ? reason : "anomaly"))}
-                </span>
-              ))}
-              <span className="seasonal-risk__tier">{t("cheater.tier." + riskTier(risk.combined))}</span>
-            </div>
-          </>
-        ) : (
-          <p className="mt-4 text-sm text-[var(--muted)]">{t("seasonal.risk.unavailable")}</p>
-        )}
-        <p className="mt-4 text-xs leading-relaxed text-[var(--muted)]">{t("cheater.disclaimer")} {t("seasonal.risk.noAutoExclusion")}</p>
-      </section>
-
-      <section id="statistics" tabIndex={-1} className="profile-anchor-section mt-5">
-        <h2 className="section-heading mb-3">{t("seasonal.longTerm")}</h2>
-        <div className="data-ledger">
-          <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
-          <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
-          <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />
-          <StatCard label={t("seasonal.metric.overallPmcKd")} value={number(longTerm?.overallPmcKd)} />
-          <StatCard label={t("seasonal.metric.intervals")} value={longTerm?.intervals ?? history?.intervalCount ?? "—"} />
-          <StatCard label={t("seasonal.metric.coveredRaids")} value={longTerm?.coveredRaids ?? "—"} />
-        </div>
-      </section>
-    </main>
+  return (
+    <ProfileShell
+      aid={aid}
+      mode="seasonal"
+      cycleId={cycleId}
+      kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
+      title={profile.nickname}
+      meta={<div className="profile-header__meta"><span>{t("seasonal.lastUpdated")}: {new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })}</span></div>}
+      actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={profile.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
+      overviewCards={[
+        { label: t("player.hoursPlayed"), value: displayNumber(profile.lifetimePvpHours, 1, unknownValue), suffix: t("unit.h") },
+        { label: t("player.pmcKd"), value: displayNumber(stats.pmcKdRatio, 2, unknownValue) },
+        { label: t("seasonal.pmcSurvival"), value: displayNumber(stats.pmcSurvivalRate, 1, unknownValue), suffix: "%" },
+        { label: t("player.pmcRaids"), value: profile.counters.pmcRaids },
+      ]}
+      progression={<ProgressionPanel
+        aid={aid}
+        hours={profile.lifetimePvpHours ?? 0}
+        pmcRaids={profile.counters.pmcRaids}
+        mode="seasonal"
+        cycleId={cycleId}
+        profileUpdatedAt={profile.profileUpdatedAt}
+        refreshRevision={progressionRefreshRevision}
+        onRiskChange={setProgressionRisk}
+      />}
+      risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="seasonal" cycleId={cycleId} /></div>}
+      comparison={<PlayerRadarComparison aid={aid} stats={comparisonStats} mode="seasonal" cycleId={cycleId} />}
+      statistics={statistics}
+      skills={<SeasonalAchievements achievements={achievements ?? []} loading={achievements === null} />}
+    />
   );
 }

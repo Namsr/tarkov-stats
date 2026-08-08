@@ -72,6 +72,19 @@ test("isolates the same aid by cycle and deduplicates timestamps", async () => {
   const staticRow = db.prepare(`SELECT prestige, longest_win_streak, achievements
     FROM progression_snapshots WHERE mode = 'seasonal' AND cycle_id = 'season-a' AND aid = 42`).get() as Record<string, unknown>;
   assert.deepEqual({ ...staticRow }, { prestige: 2, longest_win_streak: 17, achievements: '["ach-b","ach-a"]' });
+  assert.deepEqual((await store.latestSnapshot({ mode: "seasonal", cycleId: "season-a", aid: 42 }))?.achievements, [
+    { id: "ach-a", unlockedAt: null },
+    { id: "ach-b", unlockedAt: null },
+  ]);
+
+  const timestamped = profile("season-a", 1700000001000, 200);
+  timestamped.seasonalAchievements = [{ id: "ach-a", unlockedAt: 1699999000000 }];
+  await store.upsertProfile(timestamped, 1700000001100);
+  await store.captureSnapshot(timestamped, 1700000001200);
+  const captured = db.prepare(`SELECT achievements FROM progression_snapshots
+    WHERE mode = 'seasonal' AND cycle_id = 'season-a' AND aid = 42
+    ORDER BY profile_updated_at DESC LIMIT 1`).get() as { achievements: string };
+  assert.deepEqual(JSON.parse(captured.achievements), timestamped.seasonalAchievements);
 });
 
 test("persists intervals and starts a new series after a reset", async () => {

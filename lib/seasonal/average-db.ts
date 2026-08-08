@@ -6,7 +6,7 @@ import { d1Rows, getSeasonalD1 } from "./d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { buildSeasonalAverageSeries, LIFETIME_BAND_DISTRIBUTION_SQL, lifetimeBandDistribution, progressionDailySql, SEASONAL_POPULATION_SQL, seasonalPopulationArgs, seasonalPopulationSummary, type DailyRow, type LifetimeBandCountRow, type SeasonalPopulationRow } from "./progression.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { initializeSeasonalSchema, upsertSqliteSeasonCycle } from "./storage.ts";
+import { initializeSeasonalSchema, parseSeasonalAchievementUnlocks, upsertSqliteSeasonCycle } from "./storage.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { upsertD1SeasonCycle } from "./storage-d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
@@ -18,6 +18,8 @@ import { resolveY } from "../metrics.ts";
 import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
+// @ts-ignore Node's strip-types test runner requires the explicit extension.
+import type { Baseline } from "../cheater-score.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -46,16 +48,17 @@ const DEFAULT_BOUNDS = { hours: { min: 0, max: 5000 }, pmc_raids: { min: 0, max:
 const TRIM_FRACTION = 0.05;
 const MIN_TRIM_N = 20;
 
-/** Latest Seasonal snapshot plus explicitly allow-listed PvP enrichment. */
+/** Latest Seasonal snapshot plus the account-wide PvP hours enrichment. */
 const PORTRAIT_CTE = `
 WITH latest AS (
   SELECT s.* FROM progression_snapshots s
   JOIN (
-    SELECT aid, MAX(profile_updated_at) AS profile_updated_at
+    SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
     FROM progression_snapshots
     WHERE mode = 'seasonal' AND cycle_id = ?
-    GROUP BY aid
-  ) current ON current.aid = s.aid AND current.profile_updated_at = s.profile_updated_at
+    GROUP BY aid, cycle_id
+  ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
+    AND current.profile_updated_at = s.profile_updated_at
   WHERE s.mode = 'seasonal' AND s.cycle_id = ?
 ), portrait AS (
   SELECT p.aid, p.profile_updated_at,
@@ -71,9 +74,8 @@ WITH latest AS (
     latest.longest_win_streak AS longest_win_streak,
     latest.level AS level,
     latest.prestige AS prestige,
-    CASE WHEN p.linked_pvp_profile_updated_at IS NOT NULL
-      AND p.linked_pvp_achievements IS NOT NULL AND json_valid(p.linked_pvp_achievements)
-      THEN COALESCE(p.linked_pvp_achievement_count, json_array_length(p.linked_pvp_achievements)) ELSE NULL END AS achv_count,
+    CASE WHEN latest.achievements IS NOT NULL AND json_valid(latest.achievements)
+      THEN COALESCE(latest.achv_count, json_array_length(latest.achievements)) ELSE NULL END AS achv_count,
     latest.pmc_survived AS pmc_survived,
     latest.pmc_deaths AS pmc_deaths,
     latest.pmc_kills AS pmc_kills
@@ -81,6 +83,7 @@ WITH latest AS (
   JOIN latest ON latest.aid = p.aid
     AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
   WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
+    AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
     AND (p.pmc_raids >= 1 OR p.scav_raids >= 1)
 ), normalized AS (
   SELECT portrait.*,
@@ -310,10 +313,52 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
   }
 }
 
-export async function getSeasonalAchievementBaseline(cycleId: string): Promise<{
+export interface SeasonalAchievementBaselineEntry {
+  ach_id: string;
+  owners: number;
+  eligibleN: number;
+  prevalencePct: number;
+  meanHours: number;
+  stdHours: number;
+  earlyHours: number;
+  /** 20th percentile of unlock day from the current cycle start. */
+  unlockDayP20: number | null;
+  timestampOwners: number;
+}
+
+export interface SeasonalAchievementBaseline {
+  /** Kept as an alias for existing risk callers; equals eligibleN. */
   total: number;
-  achievements: { ach_id: string; owners: number; meanHours: number; stdHours: number; earlyHours: number }[];
-} | null> {
+  eligibleN: number;
+  seasonStartsAt: number | null;
+  achievements: SeasonalAchievementBaselineEntry[];
+}
+
+function finiteValue(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function percentile20(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.max(0, Math.floor((sorted.length - 1) * 0.2))] ?? null;
+}
+
+function summary(values: number[]): { mean: number; std: number; early: number } {
+  if (values.length === 0) return { mean: 0, std: 0, early: 0 };
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return {
+    mean,
+    std: Math.sqrt(Math.max(0, variance)),
+    early: percentile20(values) ?? mean,
+  };
+}
+
+export async function getSeasonalAchievementBaseline(
+  cycleId: string,
+): Promise<SeasonalAchievementBaseline | null> {
   try {
     const d1 = await getSeasonalD1();
     let backend: AverageBackend;
@@ -327,48 +372,174 @@ export async function getSeasonalAchievementBaseline(cycleId: string): Promise<{
       }
       backend = { kind: "sqlite", db: database };
     }
-    const total = await backendFirst(backend, `WITH latest AS (
-        SELECT aid, MAX(profile_updated_at) AS profile_updated_at
-        FROM progression_snapshots WHERE mode = 'seasonal' AND cycle_id = ? GROUP BY aid
-      ) SELECT COUNT(*) AS n FROM player_profiles p
-      JOIN latest ON latest.aid = p.aid
-      WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
-        AND (p.pmc_raids >= 1 OR p.scav_raids >= 1)`, [cycleId, cycleId]);
+    const cycle = await backendFirst(
+      backend,
+      "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?",
+      [cycleId],
+    );
+    const seasonStartsAt = finiteValue(cycle?.starts_at);
     const rows = await backendRows(backend, `WITH latest AS (
-      SELECT aid, MAX(profile_updated_at) AS profile_updated_at
-      FROM progression_snapshots WHERE mode = 'seasonal' AND cycle_id = ? GROUP BY aid
-    ), expanded AS (
-      SELECT je.value AS ach_id, p.lifetime_pvp_hours AS hours
-      FROM player_profiles p JOIN latest ON latest.aid = p.aid,
-        json_each(p.linked_pvp_achievements) je
+      SELECT s.* FROM progression_snapshots s
+      JOIN (
+        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
+        FROM progression_snapshots
+        WHERE mode = 'seasonal' AND cycle_id = ?
+        GROUP BY aid, cycle_id
+      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
+        AND current.profile_updated_at = s.profile_updated_at
+      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
+    ) SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.achievements,
+        cycle.starts_at
+      FROM player_profiles p
+      JOIN latest ON latest.aid = p.aid
+        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
+      JOIN season_cycles cycle ON cycle.mode = 'seasonal' AND cycle.cycle_id = ?
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
-        AND (p.pmc_raids >= 1 OR p.scav_raids >= 1)
-    ), ranked AS (
-      SELECT ach_id, hours, COUNT(*) OVER (PARTITION BY ach_id) AS owners,
-        AVG(hours) OVER (PARTITION BY ach_id) AS mean_hours,
-        AVG(hours * hours) OVER (PARTITION BY ach_id) AS mean_sq,
-        ROW_NUMBER() OVER (PARTITION BY ach_id ORDER BY hours) AS rn
-      FROM expanded
-    ) SELECT ach_id, MAX(owners) AS owners, MAX(mean_hours) AS mean_hours,
-      MAX(mean_sq) AS mean_sq,
-      MIN(CASE WHEN rn = CAST((owners + 4) / 5 AS INTEGER) THEN hours END) AS early_hours
-      FROM ranked GROUP BY ach_id`, [cycleId, cycleId]);
-    return {
-      total: Number(total?.n ?? 0),
-      achievements: rows.map((row) => {
-        const mean = Number(row.mean_hours ?? 0) || 0;
-        const variance = Math.max(0, (Number(row.mean_sq ?? 0) || 0) - mean * mean);
-        return {
-          ach_id: String(row.ach_id),
-          owners: Number(row.owners ?? 0),
-          meanHours: mean,
-          stdHours: Math.sqrt(variance),
-          earlyHours: Number(row.early_hours ?? mean) || mean,
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
+        AND (latest.pmc_raids >= 1 OR latest.scav_raids >= 1)
+        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`,
+      [cycleId, cycleId, cycleId, cycleId]);
+
+    const eligible = rows.flatMap((row) => {
+      const achievements = parseSeasonalAchievementUnlocks(row.achievements);
+      if (achievements === null) return [];
+      return [{
+        aid: Number(row.aid),
+        hours: finiteValue(row.hours),
+        startsAt: finiteValue(row.starts_at),
+        achievements,
+      }];
+    });
+    const byAchievement = new Map<string, {
+      hours: number[];
+      unlockDays: number[];
+      owners: Set<number>;
+    }>();
+    for (const owner of eligible) {
+      const aid = owner.aid;
+      for (const achievement of owner.achievements) {
+        const entry = byAchievement.get(achievement.id) ?? {
+          hours: [], unlockDays: [], owners: new Set<number>(),
         };
-      }),
+        entry.owners.add(aid);
+        if (owner.hours !== null && owner.hours >= 0) entry.hours.push(owner.hours);
+        if (achievement.unlockedAt !== null && owner.startsAt !== null) {
+          const day = (achievement.unlockedAt - owner.startsAt) / 86_400_000;
+          if (Number.isFinite(day) && day >= 0) entry.unlockDays.push(day);
+        }
+        byAchievement.set(achievement.id, entry);
+      }
+    }
+    const eligibleN = eligible.length;
+    return {
+      total: eligibleN,
+      eligibleN,
+      seasonStartsAt,
+      achievements: [...byAchievement.entries()].map(([ach_id, value]) => {
+        const hours = summary(value.hours);
+        return {
+          ach_id,
+          owners: value.owners.size,
+          eligibleN,
+          prevalencePct: eligibleN > 0 ? value.owners.size / eligibleN * 100 : 0,
+          meanHours: hours.mean,
+          stdHours: hours.std,
+          earlyHours: hours.early,
+          unlockDayP20: percentile20(value.unlockDays),
+          timestampOwners: value.unlockDays.length,
+        };
+      }).sort((left, right) => left.prevalencePct - right.prevalencePct || left.ach_id.localeCompare(right.ach_id)),
     };
   } catch (error) {
     console.warn("seasonal achievement baseline unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Builds a Seasonal-only numeric baseline for the risk model. It deliberately
+ * reads the latest current-cycle Seasonal snapshots instead of the regular
+ * PlayerStore, even when a caller also has a regular store available.
+ */
+export async function getSeasonalRiskBaseline(
+  cycleId: string,
+  minHours: number,
+  maxHours: number | null,
+): Promise<Baseline | null> {
+  try {
+    const d1 = await getSeasonalD1();
+    let backend: AverageBackend;
+    if (d1) backend = { kind: "d1", db: d1 };
+    else {
+      if (!database) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sqlite = (await import("node:sqlite" as string)) as any;
+        database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+        initializeSeasonalSchema(database);
+      }
+      backend = { kind: "sqlite", db: database };
+    }
+    const range = maxHours === null
+      ? "p.lifetime_pvp_hours >= ?"
+      : "p.lifetime_pvp_hours >= ? AND p.lifetime_pvp_hours < ?";
+    const params = maxHours === null
+      ? [cycleId, cycleId, cycleId, minHours]
+      : [cycleId, cycleId, cycleId, minHours, maxHours];
+    const rows = await backendRows(backend, `WITH latest AS (
+      SELECT s.* FROM progression_snapshots s
+      JOIN (
+        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
+        FROM progression_snapshots
+        WHERE mode = 'seasonal' AND cycle_id = ?
+        GROUP BY aid, cycle_id
+      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
+        AND current.profile_updated_at = s.profile_updated_at
+      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
+    ) SELECT latest.pmc_raids, latest.pmc_survived, latest.pmc_deaths,
+        latest.pmc_kills, latest.killed_pmc, latest.longest_win_streak,
+        latest.prestige, p.lifetime_pvp_hours AS hours
+      FROM player_profiles p
+      JOIN latest ON latest.aid = p.aid
+        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
+      WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
+        AND latest.pmc_raids >= 1 AND ${range}`,
+      params);
+    const metrics: Record<string, number[]> = {
+      pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [],
+      longest_win_streak: [], prestige: [],
+    };
+    for (const row of rows) {
+      const raids = finiteValue(row.pmc_raids);
+      const survived = finiteValue(row.pmc_survived);
+      const deaths = finiteValue(row.pmc_deaths);
+      const killedPmc = finiteValue(row.killed_pmc);
+      const kills = finiteValue(row.pmc_kills);
+      if (raids == null || survived == null || deaths == null || killedPmc == null || kills == null) continue;
+      metrics.pmc_survival_rate.push(survived / raids * 100);
+      metrics.pmc_kd_ratio.push(deaths > 0 ? killedPmc / deaths : killedPmc);
+      metrics.pmc_kills_per_raid.push(kills / raids);
+      const streak = finiteValue(row.longest_win_streak);
+      const prestige = finiteValue(row.prestige);
+      if (streak != null) metrics.longest_win_streak.push(streak);
+      if (prestige != null) metrics.prestige.push(prestige);
+    }
+    const meanStd = (values: number[]) => {
+      if (values.length === 0) return null;
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+      return { n: values.length, mean, std: Math.sqrt(Math.max(0, variance)) };
+    };
+    const baseline: Baseline = {
+      n: rows.length,
+      metrics: Object.fromEntries(Object.entries(metrics).flatMap(([key, values]) => {
+        const result = meanStd(values);
+        return result ? [[key, result]] : [];
+      })),
+    };
+    return baseline;
+  } catch (error) {
+    console.warn("seasonal risk baseline unavailable: " + (error as Error).message);
     return null;
   }
 }

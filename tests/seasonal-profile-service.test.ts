@@ -87,6 +87,20 @@ test("canonical Seasonal pipeline upserts and deduplicates capture by profile ti
     now: () => 1_783_600_000_000,
   };
 
+  const linkedPayload = await fixture();
+  const linked = validateSeasonalProfile(linkedPayload, {
+    enabled: true,
+    confirmedContract: "game_mode",
+    cycleId: "season-2026-01",
+    seasonStartsAt: loadSeasonalCycleConfig(env)!.startsAt,
+    seasonEndsAt: loadSeasonalCycleConfig(env)!.endsAt,
+  });
+  assert.equal(linked.ok, true);
+  if (linked.ok) {
+    linked.profile.lifetimePvpHours = 321;
+    await store.upsertProfile(linked.profile, 1_783_500_000_000);
+  }
+
   const first = await resolveSeasonalProfile(
     { aid: 730001, cycleId: "season-2026-01", force: false },
     dependencies
@@ -97,6 +111,7 @@ test("canonical Seasonal pipeline upserts and deduplicates capture by profile ti
   );
 
   assert.equal(first.ok && first.capture.status, "baseline");
+  assert.equal(first.ok && first.profile.lifetimePvpHours, 321);
   assert.equal(duplicate.ok && duplicate.capture.status, "duplicate");
   assert.equal((await store.snapshotHistory({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).length, 1);
 });

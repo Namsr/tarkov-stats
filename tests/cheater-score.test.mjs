@@ -110,3 +110,51 @@ test("prestige six at veteran playtime is not suspicious by pace alone", () => {
   assert.equal(result.score, 0);
   assert.equal(result.factors.find((factor) => factor.key === "prestige")?.points, 0);
 });
+
+test("Seasonal rare achievement signal requires reliable current-cycle timing data", () => {
+  const quietSeasonal = {
+    ...account14280186,
+    prestige: 0,
+    pmcKdRatio: 1.2,
+    pmcSurvivalRate: 50,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 10,
+    achievementsCount: 1,
+    hoursPlayed: 100,
+  };
+  const reliable = scoreCheater(quietSeasonal, null, {
+    seasonal: true,
+    ownedIds: ["seasonal-ach"],
+    playerUnlockDays: { "seasonal-ach": 0 },
+    stats: [{
+      id: "seasonal-ach",
+      owners: 10,
+      eligibleN: 30,
+      samplePct: 0,
+      meanHours: 0,
+      earlyHours: 0,
+      unlockDayP20: 10,
+    }],
+  });
+  assert.equal(reliable.factors.find((factor) => factor.key === "ach_early")?.points, 18);
+  assert.equal(reliable.tier, "low");
+  assert.equal(reliable.factors.find((factor) => factor.key === "ach_early")?.available, true);
+
+  const unavailable = scoreCheater(quietSeasonal, null, {
+    seasonal: true,
+    ownedIds: ["seasonal-ach"],
+    playerUnlockDays: { "seasonal-ach": 0 },
+    stats: [{
+      id: "seasonal-ach",
+      owners: 9,
+      eligibleN: 29,
+      samplePct: 1,
+      meanHours: 0,
+      earlyHours: 0,
+      unlockDayP20: 10,
+    }],
+  });
+  const factor = unavailable.factors.find((entry) => entry.key === "ach_early");
+  assert.equal(factor?.points, 0);
+  assert.equal(factor?.available, false);
+});

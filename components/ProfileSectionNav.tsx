@@ -10,12 +10,12 @@ export default function ProfileSectionNav({
   label: string;
   items: readonly ProfileSectionLink[];
 }) {
-  if (items.length < 2) return null;
+  if (items.length === 0) return null;
 
   return (
     <nav className="profile-section-nav" aria-label={label}>
       {items.map((item) => (
-        <a key={item.id} href={`#${item.id}`}>
+        <a key={item.id} href={`#${item.id}`} className="scroll-mt-6">
           {item.label}
         </a>
       ))}

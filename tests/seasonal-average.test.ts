@@ -35,7 +35,10 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     ) VALUES ('seasonal', ?, ?, ?, ?, ?, '2026-01-01', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const add = (aid, updated, hours, raids, kills, banned = 0, cycle = "s1") => {
       profile.run(cycle, aid, `p-${aid}`, updated, updated, hours, 100, raids, 0, raids, 1, kills, 0, updated, updated, banned);
-      snapshot.run(cycle, aid, updated, updated, updated, 100, raids, raids, 0, 1, raids, 1, 1, kills, kills, 0, null, null, null, null, null, "[]");
+      const achievements = aid <= 2
+        ? JSON.stringify([{ id: "ach-a", unlockedAt: now - 10 * 86_400_000 }])
+        : "[]";
+      snapshot.run(cycle, aid, updated, updated, updated, 100, raids, raids, 0, 1, raids, 1, 1, kills, kills, 0, null, null, null, null, null, achievements);
     };
     add(1, now - 1_000, 10, 10, 4);
     add(2, now - 90 * 86_400_000, 20, 20, 8); // exact cutoff is included
@@ -46,7 +49,7 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       .run('["ach-a"]', now);
     db.close();
 
-    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline } = await import("../lib/seasonal/average-db.ts");
+    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline, getSeasonalRiskBaseline } = await import("../lib/seasonal/average-db.ts");
     const query = await getSeasonalAverageCrossSectionQuery();
     assert.ok(query);
     const all = await query({ cycleId: "s1", period: "all", statistic: "median", dimension: "hours", metric: "players", min: null, max: null, now });
@@ -73,7 +76,16 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
 
     const baseline = await getSeasonalAchievementBaseline("s1");
     assert.equal(baseline?.total, 2);
+    assert.equal(baseline?.eligibleN, 2);
+    assert.equal(baseline?.seasonStartsAt, now - 200 * 86_400_000);
     assert.deepEqual(baseline?.achievements.map((row) => row.ach_id), ["ach-a"]);
+    assert.equal(baseline?.achievements[0]?.owners, 2);
+    assert.equal(baseline?.achievements[0]?.prevalencePct, 100);
+    assert.equal(baseline?.achievements[0]?.unlockDayP20, 190);
+
+    const riskBaseline = await getSeasonalRiskBaseline("s1", 0, 50);
+    assert.equal(riskBaseline?.n, 2);
+    assert.equal(riskBaseline?.metrics.pmc_survival_rate?.n, 2);
 
     // Mutating only the copied PvP enrichment must not alter Seasonal combat.
     const update = new DatabaseSync(databasePath);

@@ -16,9 +16,10 @@ import { isReload } from "@/lib/is-reload";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
+import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
 import type { CrossSectionMode } from "@/lib/db";
-
-const PROFILE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
+import { isProfileStale } from "@/lib/profile-refresh-policy";
+import type { PublicRiskView } from "@/types/profile-view";
 
 interface Props {
   params: Promise<{ aid: string }>;
@@ -95,6 +96,7 @@ export default function RegularPlayer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
+  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(null);
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
@@ -111,6 +113,7 @@ export default function RegularPlayer({
     setModeUnavailable(false);
     setProfileSummary(null);
     setProgressionRisk(null);
+    setServerRisk(null);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const requestParams = new URLSearchParams({ aid, mode });
@@ -125,6 +128,9 @@ export default function RegularPlayer({
           achievementIds?: string[];
           profileUpdatedAt?: number | null;
           profileSummary?: ProfileSummary;
+          identity?: { aid?: number; mode?: string; cycleId?: string };
+          risk?: PublicRiskView | null;
+          viewModel?: { risk?: PublicRiskView | null };
         };
         if (!res.ok || !data.stats) {
           const unavailable = data.code === "mode_profile_unavailable";
@@ -137,6 +143,13 @@ export default function RegularPlayer({
           }
           throw new Error(data.error ?? t("player.loadError"));
         }
+        if (mode === "regular" && (
+          data.identity?.aid !== Number(aid) ||
+          data.identity?.mode !== "regular" ||
+          data.identity?.cycleId !== "persistent"
+        )) {
+          throw new Error(t("player.loadError"));
+        }
         return { ...data, stats: data.stats };
       })
       .then((data) => {
@@ -148,7 +161,8 @@ export default function RegularPlayer({
         );
         const updatedAt = data.profileUpdatedAt ?? null;
         setProfileUpdatedAt(updatedAt);
-        setProfileIsStale(updatedAt !== null && Date.now() - updatedAt > PROFILE_STALE_MS);
+        setProfileIsStale(isProfileStale(updatedAt));
+        setServerRisk(data.viewModel?.risk ?? data.risk ?? null);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : t("player.loadError"));
@@ -179,6 +193,9 @@ export default function RegularPlayer({
           achievementIds?: string[];
           profileUpdatedAt?: number | null;
           profileSummary?: ProfileSummary;
+          identity?: { aid?: number; mode?: string; cycleId?: string };
+          risk?: PublicRiskView | null;
+          viewModel?: { risk?: PublicRiskView | null };
         };
         if (generation !== requestGeneration.current) return "unchanged";
         if (!res.ok || !data.stats) {
@@ -188,6 +205,14 @@ export default function RegularPlayer({
             return "unchanged";
           }
           throw new Error(data.error ?? t("player.loadError"));
+        }
+
+        if (mode === "regular" && (
+          data.identity?.aid !== Number(aid) ||
+          data.identity?.mode !== "regular" ||
+          data.identity?.cycleId !== "persistent"
+        )) {
+          throw new Error(t("player.loadError"));
         }
 
         const updatedAt = data.profileUpdatedAt ?? data.stats.profileUpdatedAt ?? null;
@@ -201,9 +226,10 @@ export default function RegularPlayer({
           data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
         );
         setProfileUpdatedAt(updatedAt);
-        setProfileIsStale(updatedAt !== null && Date.now() - updatedAt > PROFILE_STALE_MS);
+        setProfileIsStale(isProfileStale(updatedAt));
         setModeUnavailable(false);
         setProfileSummary(null);
+        setServerRisk(data.viewModel?.risk ?? data.risk ?? null);
         setError("");
         setProgressionRefreshRevision((current) => current + 1);
         return changed ? "updated" : "unchanged";
@@ -216,6 +242,7 @@ export default function RegularPlayer({
   }, [aid, mode, profileUpdatedAt, stats, t]);
 
   if (loading) {
+    if (mode === "regular") return <ProfileShellLoading mode="regular" aid={Number(aid)} title={stats?.nickname} />;
     return (
       <main className="flex-1 px-4 py-8 max-w-7xl mx-auto w-full">
         <div className="animate-pulse space-y-6">
@@ -231,6 +258,42 @@ export default function RegularPlayer({
   }
 
   if (modeUnavailable) {
+    if (mode === "regular") {
+      const unknownValue = t("common.unknown");
+      const overviewCards = [
+        t("player.hoursPlayed"),
+        t("player.pmcKd"),
+        t("player.survivalRate"),
+        t("player.pmcRaids"),
+      ].map((label) => ({ label, value: unknownValue }));
+      const unavailableSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
+      return (
+        <ProfileShell
+          aid={Number(aid)}
+          mode="regular"
+          cycleId="persistent"
+          kicker={`#${aid}`}
+          title={profileSummary?.nickname}
+          meta={profileSummary?.side ? <div className="profile-header__meta">{t("player.sideLabel", { side: profileSummary.side })}</div> : undefined}
+          actions={
+            <ProfileActions
+              aid={Number(aid)}
+              mode="regular"
+              nickname={profileSummary?.nickname}
+              missing
+              onCheck={refreshProfile}
+            />
+          }
+          overviewCards={overviewCards}
+          progression={unavailableSlot}
+          risk={unavailableSlot}
+          comparison={unavailableSlot}
+          statistics={unavailableSlot}
+          skills={unavailableSlot}
+          statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{t("player.modeUnavailable")}</div>}
+        />
+      );
+    }
     const unavailableStats = mode === "arena"
       ? [t("player.hoursPlayed"), t("arena.totalKills"), t("arena.totalDeaths"), t("arena.kdRatio")]
       : [t("player.hoursPlayed"), t("player.pmcKd"), t("player.survivalRate"), t("player.killsPerRaid")];
@@ -286,6 +349,31 @@ export default function RegularPlayer({
   }
 
   if (error || !stats) {
+    if (mode === "regular") {
+      const errorSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--danger)]">{error || t("player.unknownError")}</div>;
+      return (
+        <ProfileShell
+          aid={Number(aid)}
+          mode="regular"
+          cycleId="persistent"
+          kicker={`#${aid}`}
+          title={profileSummary?.nickname}
+          actions={<ProfileActions aid={Number(aid)} mode="regular" nickname={profileSummary?.nickname} onCheck={refreshProfile} />}
+          overviewCards={[
+            t("player.hoursPlayed"),
+            t("player.pmcKd"),
+            t("player.survivalRate"),
+            t("player.pmcRaids"),
+          ].map((label) => ({ label, value: t("common.unknown") }))}
+          progression={errorSlot}
+          risk={errorSlot}
+          comparison={errorSlot}
+          statistics={errorSlot}
+          skills={errorSlot}
+          statusNotice={<div className="data-panel mt-5 p-5 text-center">{error || t("player.unknownError")}</div>}
+        />
+      );
+    }
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
         <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
@@ -300,7 +388,7 @@ export default function RegularPlayer({
   }
 
   const arena = stats.arena;
-  const pvpStatsKnown = mode !== "regular" || stats.pvpStatsKnown !== false;
+  const pvpStatsKnown = stats.pvpStatsKnown !== false;
   const coreStats: { label: string; value: string | number; suffix?: string }[] =
     mode === "arena"
       ? [
@@ -367,6 +455,88 @@ export default function RegularPlayer({
           ? [{ id: "skills", label: t("profile.section.skills") }]
           : []),
       ];
+
+  if (mode === "regular") {
+    const regularOverviewCards = [
+      { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+      { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
+      { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: "%" },
+      { label: t("player.pmcRaids"), value: stats.pmcRaids },
+    ];
+    const regularStatistics = (
+      <div className="space-y-5">
+        <section>
+          <div className="mb-3 flex items-baseline justify-between gap-4">
+            <h2 className="section-heading">{t("player.raidStats")}</h2>
+            <span className="section-kicker">{t("player.coreStats")}</span>
+          </div>
+          <div className="data-ledger">
+            {raidStats.map((item) => <StatCard key={item.label} {...item} />)}
+          </div>
+        </section>
+        <section>
+          <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+          <div className="detail-grid detail-grid--compact">
+            {progressionStats.map((item) => <StatCard key={item.label} {...item} />)}
+          </div>
+        </section>
+      </div>
+    );
+    const regularSkills = skills.length > 0 ? (
+      <div className="page-grid">
+        <section className="data-panel min-h-[240px] p-5">
+          <h2 className="section-heading text-base mb-4">{t("player.skills")}</h2>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 max-h-80 overflow-y-auto pr-1">
+            {skills
+              .filter((skill) => skill.Progress > 0)
+              .sort((a, b) => b.Progress - a.Progress)
+              .map((skill) => (
+                <div key={skill.Id} className="flex min-w-0 justify-between gap-2 border-b border-[var(--card-border)] py-2 text-sm">
+                  <span className="text-[var(--muted-strong)] truncate">{skill.Id.replace(/([A-Z])/g, " $1").trim()}</span>
+                  <span className="text-[var(--accent)] tabular-nums">{Math.floor(skill.Progress)}</span>
+                </div>
+              ))}
+          </div>
+        </section>
+        <aside><EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode="regular" /></aside>
+      </div>
+    ) : <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode="regular" />;
+
+    return (
+      <ProfileShell
+        aid={Number(aid)}
+        mode="regular"
+        cycleId="persistent"
+        kicker={`#${aid}`}
+        title={stats.nickname}
+        meta={
+          <div className="profile-header__meta">
+            <span>{t("player.sideLabel", { side: stats.side })}</span>
+            {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
+            {profileUpdatedAt !== null && <span>{t("player.profileUpdated", { date: dateTimeFormatter.format(profileUpdatedAt) })}</span>}
+            {lastPlayedAt !== null && <span>{t("player.lastPlayed", { date: dateTimeFormatter.format(lastPlayedAt) })}</span>}
+          </div>
+        }
+        actions={<ProfileActions aid={Number(aid)} mode="regular" nickname={stats.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
+        overviewCards={regularOverviewCards}
+        progression={<ProgressionPanel
+          aid={Number(aid)}
+          hours={stats.hoursPlayed}
+          pmcRaids={stats.pmcRaids}
+          mode="regular"
+          cycleId="persistent"
+          profileUpdatedAt={profileUpdatedAt}
+          refreshRevision={progressionRefreshRevision}
+          onRiskChange={setProgressionRisk}
+        />}
+        risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="regular" cycleId="persistent" statsKnown={pvpStatsKnown} /></div>}
+        comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode="regular" cycleId="persistent" demo={radarDemo} />}
+        statistics={regularStatistics}
+        skills={regularSkills}
+      />
+    );
+  }
+
   return (
     <main className="page-frame">
       <Link
@@ -476,28 +646,14 @@ export default function RegularPlayer({
         </div>
       ) : (
         <>
-          {mode === "regular" && (
-            <div id="progression" tabIndex={-1} className="profile-anchor-section">
-              <ProgressionPanel
-                aid={Number(aid)}
-                hours={stats.hoursPlayed}
-                pmcRaids={stats.pmcRaids}
-                mode="regular"
-                cycleId="persistent"
-                profileUpdatedAt={profileUpdatedAt}
-                refreshRevision={progressionRefreshRevision}
-                onRiskChange={setProgressionRisk}
-              />
-            </div>
-          )}
-
           <section id="risk" tabIndex={-1} className="profile-anchor-section mt-5">
             <h2 className="section-heading mb-3">{t("cheater.heading")}</h2>
             <CheaterScore
+              risk={serverRisk}
               stats={stats}
               ownedAchievementIds={achievementIds}
               mode={mode}
-              progressionRisk={mode === "regular" ? progressionRisk : null}
+              cycleId="persistent"
             />
           </section>
 

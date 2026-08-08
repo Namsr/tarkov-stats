@@ -40,4 +40,14 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     assert.match(source, /if \(capture\.inserted\)/);
     assert.match(source, /refreshProgressionAfterCapture\([\s\S]*\{ force: true \}\)/);
   }
+
+  const playerProfile = await readFile("app/api/player/profile/route.ts", "utf8");
+  assert.match(
+    playerProfile,
+    /fetchPayload: \(\{ aid: seasonalAid, force: shouldForce \}\) =>\s*fetchSeasonalPayload\(seasonalAid, \{ force: shouldForce \}\)/,
+  );
+  assert.match(
+    playerProfile,
+    /result\.status === 404[\s\S]*?identity: \{ aid, mode, cycleId \}[\s\S]*?code: "mode_profile_unavailable"/,
+  );
 });

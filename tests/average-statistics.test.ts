@@ -404,23 +404,41 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   ));
   assert.equal((await emptyAverage.json()).statistic, "median");
 
-  const defaultCohort = await getCohort(new NextRequest(
+  const missingAid = await getCohort(new NextRequest(
     "http://local/api/average/cohort?center=0&excludeAid=1",
   ));
-  assert.deepEqual(
-    (({ statistic, period }) => ({ statistic, period }))(await defaultCohort.json()),
-    { statistic: "trimmed_mean", period: "all" },
-  );
+  assert.equal(missingAid.status, 400);
 
-  const unavailable = await getCohort(new NextRequest(
-    "http://local/api/average/cohort?center=0&excludeAid=1&statistic=median&period=90d",
-  ));
-  assert.equal(unavailable.status, 200);
-  assert.equal(unavailable.headers.get("cache-control"), "public, max-age=60");
-  assert.deepEqual(
-    (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
-    { statistic: "median", period: "90d" },
-  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).includes("players.tarkov.dev/profile/1.json")) {
+      return new Response(JSON.stringify({
+        aid: 1,
+        updated: 1_800_000_000_000,
+        info: { nickname: "p1", side: "Usec", experience: 0 },
+        pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [
+          { Key: ["Sessions", "Pmc"], Value: 10 },
+          { Key: ["Deaths"], Value: 2 },
+          { Key: ["KilledPmc"], Value: 4 },
+          { Key: ["ExitStatus", "Survived", "Pmc"], Value: 5 },
+        ] } } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return originalFetch(input);
+  };
+  try {
+    const unavailable = await getCohort(new NextRequest(
+      "http://local/api/average/cohort?aid=1&statistic=median&period=90d",
+    ));
+    assert.equal(unavailable.status, 200);
+    assert.equal(unavailable.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(
+      (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
+      { statistic: "median", period: "90d" },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal((await getCohort(new NextRequest(
     "http://local/api/average/cohort?center=1&excludeAid=1&statistic=mean",
   ))).status, 400);

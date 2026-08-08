@@ -5,6 +5,8 @@ import { seasonalProfileCacheUrl } from "@/lib/seasonal/profile-cache-key";
 export interface SeasonalFetchOptions {
   /** Feed version used to make a CDN/proxy cache key deterministic. */
   expectedUpdatedAt?: number;
+  /** Explicit user refresh; bypass the normal fifteen-minute cache slot. */
+  force?: boolean;
   request?: typeof fetchTarkovJson;
 }
 
@@ -41,7 +43,10 @@ export async function fetchSeasonalPayload(
   const url = seasonalProfileUrl(aid);
   if (!url) throw new Error("Seasonal upstream endpoint is not configured");
   const request = options.request ?? fetchTarkovJson;
-  const response = await request(seasonalProfileCacheUrl(url, options.expectedUpdatedAt), { cache: "no-store" });
+  const response = await request(
+    seasonalProfileCacheUrl(url, options.expectedUpdatedAt, Date.now(), options.force),
+    { cache: "no-store" },
+  );
   if (!response.ok) throw new SeasonalFetchError(response.status);
   return response.json();
 }

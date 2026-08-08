@@ -7,7 +7,9 @@ import { useI18n } from "@/lib/i18n/context";
 import CompactDetails from "@/components/CompactDetails";
 import SegmentedRadio from "@/components/SegmentedRadio";
 import type { ParsedPlayerStats } from "@/types/tarkov";
-import type { AveragePeriod, AverageStatistic, CrossSectionMode } from "@/lib/db";
+import type { ProfileComparisonStats } from "@/types/profile-view";
+import type { AveragePeriod, AverageStatistic } from "@/lib/db";
+import type { GameMode } from "@/types/seasonal";
 
 type Dimension = "hours" | "pmc_raids";
 type MetricKey =
@@ -26,6 +28,8 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  identity?: { aid?: number; mode?: GameMode; cycleId?: string };
+  twoDimensional?: boolean;
   period?: AveragePeriod;
   statistic?: AverageStatistic;
   dimension?: Dimension;
@@ -45,6 +49,24 @@ interface CohortResponse {
   min?: number;
   max?: number;
   averages?: Partial<Record<MetricKey, CohortMetric>>;
+  ranges?: {
+    hours?: { min?: number; max?: number; percent?: number };
+    pmcRaids?: { min?: number; max?: number; percent?: number };
+    raids?: { min?: number; max?: number; percent?: number };
+  };
+  actualRanges?: {
+    hours?: { min?: number; max?: number } | null;
+    pmcRaids?: { min?: number; max?: number } | null;
+    raids?: { min?: number; max?: number } | null;
+  };
+}
+
+type ComparisonStats = ParsedPlayerStats | ProfileComparisonStats;
+
+interface CohortRange {
+  min: number;
+  max: number;
+  percent: number;
 }
 
 interface NormalizedCohort {
@@ -56,22 +78,24 @@ interface NormalizedCohort {
   n: number;
   quality: "sufficient" | "unavailable";
   reason: string;
-  min: number;
-  max: number;
+  twoDimensional: boolean;
+  hoursRange: CohortRange | null;
+  raidsRange: CohortRange | null;
   averages: Record<MetricKey, { value: number | null; count: number }>;
 }
 
 interface Props {
   aid: number;
-  stats: ParsedPlayerStats;
-  mode?: CrossSectionMode;
+  stats: ComparisonStats;
+  mode?: GameMode;
+  cycleId?: string;
   demo?: boolean;
 }
 
 interface MetricDefinition {
   key: MetricKey;
   labelKey: string;
-  get: (stats: ParsedPlayerStats) => number;
+  get: (stats: ComparisonStats) => number | null;
   decimals: number;
   suffix?: string;
 }
@@ -155,12 +179,22 @@ function pointsAt(radius: number): string {
   }).join(" ");
 }
 
+function rangeFromInput(input: { min?: number; max?: number; percent?: number } | undefined, fallbackPercent: number): CohortRange | null {
+  if (!input || !Number.isFinite(Number(input.min)) || !Number.isFinite(Number(input.max))) return null;
+  return {
+    min: Number(input.min),
+    max: Number(input.max),
+    percent: Number(input.percent ?? fallbackPercent),
+  };
+}
+
 function normalizeResponse(
   input: CohortResponse,
-  dimension: Dimension,
-  center: number,
+  hoursCenter: number,
+  raidsCenter: number,
   sourceAid: number,
-  mode: CrossSectionMode,
+  mode: GameMode,
+  cycleId: string,
   statistic: AverageStatistic,
   period: AveragePeriod
 ): NormalizedCohort {
@@ -183,67 +217,69 @@ function normalizeResponse(
   }
 
   return {
-    requestId: `${sourceAid}:${mode}:${dimension}:${center}:${input.statistic ?? statistic}:${input.period ?? period}`,
-    dimension: input.dimension === "pmc_raids" ? "pmc_raids" : dimension,
-    center: Number(input.center ?? center),
+    requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
+    dimension: "hours",
+    center: hoursCenter,
     targetN: Number(input.targetN ?? input.target ?? 20),
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
     reason: input.reason ?? "insufficient",
-    min: Number(input.bounds?.min ?? input.bounds?.lo ?? input.min ?? 0),
-    max: Number(input.bounds?.max ?? input.bounds?.hi ?? input.max ?? center),
+    twoDimensional: input.twoDimensional === true || Boolean(input.ranges?.hours && (input.ranges.pmcRaids ?? input.ranges.raids)),
+    hoursRange: rangeFromInput(
+      input.actualRanges ? input.actualRanges.hours ?? undefined : input.ranges?.hours,
+      Number(input.percent ?? 30),
+    ),
+    raidsRange: rangeFromInput(
+      input.actualRanges
+        ? input.actualRanges.pmcRaids ?? input.actualRanges.raids ?? undefined
+        : input.ranges?.pmcRaids ?? input.ranges?.raids,
+      Number(input.percent ?? 30),
+    ),
     averages,
   };
 }
 
 function demoCohort(
-  dimension: Dimension,
-  center: number,
+  hoursCenter: number,
+  raidsCenter: number,
   statistic: AverageStatistic,
   period: AveragePeriod
 ): NormalizedCohort {
   const percent = 15;
-  const rawMin = center * (1 - percent / 100);
-  const rawMax = center * (1 + percent / 100);
-  const round = dimension === "hours" ? 10 : 1;
   return {
-    requestId: `demo:${dimension}:${center}:${statistic}:${period}`,
-    dimension,
-    center,
+    requestId: `demo:${hoursCenter}:${raidsCenter}:${statistic}:${period}`,
+    dimension: "hours",
+    center: hoursCenter,
     targetN: 20,
     percent,
     n: 184,
     quality: "sufficient",
     reason: "",
-    min: Math.floor(rawMin * round) / round,
-    max: Math.ceil(rawMax * round) / round,
+    twoDimensional: true,
+    hoursRange: {
+      min: Math.floor(hoursCenter * (1 - percent / 100)),
+      max: Math.ceil(hoursCenter * (1 + percent / 100)),
+      percent,
+    },
+    raidsRange: {
+      min: Math.floor(raidsCenter * (1 - percent / 100)),
+      max: Math.ceil(raidsCenter * (1 + percent / 100)),
+      percent,
+    },
     averages: Object.fromEntries(
       METRICS.map((metric) => [metric.key, { value: DEMO_AVERAGES[metric.key], count: 184 }])
     ) as NormalizedCohort["averages"],
   };
 }
 
-function valuesFromStats(stats: ParsedPlayerStats): Record<MetricKey, number> {
-  return Object.fromEntries(METRICS.map((metric) => [metric.key, metric.get(stats)])) as Record<
-    MetricKey,
-    number
-  >;
+function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
+  return Object.fromEntries(
+    METRICS.map((metric) => [metric.key, metric.get(stats)]),
+  ) as Record<MetricKey, number | null>;
 }
 
-function reasonKey(reason: string, dimension: Dimension): string {
-  if (reason === "no_activity" || reason === "zero_center") return "radar.unavailable.noActivity";
-  if (reason === "above_coverage" || reason === "too_high") {
-    return dimension === "hours"
-      ? "radar.unavailable.aboveHoursCoverage"
-      : "radar.unavailable.aboveRaidsCoverage";
-  }
-  return dimension === "hours"
-    ? "radar.unavailable.insufficientHours"
-    : "radar.unavailable.insufficientRaids";
-}
-
-export default function PlayerRadarComparison({ aid, stats, mode = "regular", demo = false }: Props) {
+export default function PlayerRadarComparison({ aid, stats, mode = "regular", cycleId = "persistent", demo = false }: Props) {
   const { t } = useI18n();
   const descriptionId = useId();
   const tooltipId = useId();
@@ -258,7 +294,6 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const [selectedPeriod, setSelectedPeriod] = useState<AveragePeriod>(urlPeriod);
   const period = mode === "regular" ? selectedPeriod : "all";
   const { authStatus, favorites } = useFavorites();
-  const [dimension, setDimension] = useState<Dimension>("hours");
   const [remoteCohort, setRemoteCohort] = useState<NormalizedCohort | null>(null);
   const [cohortLoading, setCohortLoading] = useState(!demo);
   const [cohortError, setCohortError] = useState("");
@@ -268,7 +303,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   const [selectedAid, setSelectedAid] = useState<number | null>(null);
   const [favoriteProfile, setFavoriteProfile] = useState<{
     requestId: string;
-    stats: ParsedPlayerStats;
+    stats: ComparisonStats;
   } | null>(null);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   const [favoriteError, setFavoriteError] = useState("");
@@ -277,29 +312,49 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
 
   useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
 
-  const center = dimension === "hours" ? stats.hoursPlayed : stats.pmcRaids;
+  // Similarity is intentionally two-dimensional in both modes. The values
+  // below are only request identity hints for legacy handlers; the server
+  // derives the trusted centers from aid and the verified profile snapshot.
+  const hoursCenter = Number.isFinite(Number(stats.hoursPlayed)) ? Number(stats.hoursPlayed) : 0;
+  const raidsCenter = Number.isFinite(Number(stats.pmcRaids)) ? Number(stats.pmcRaids) : 0;
+  const cohortRequestId = `${aid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${statistic}:${period}`;
 
   useEffect(() => {
     if (demo) return;
     const controller = new AbortController();
     const params = new URLSearchParams({
-      dimension,
-      center: String(center),
-      excludeAid: String(aid),
+      aid: String(aid),
+      cycle: cycleId,
       mode,
       statistic,
       period,
     });
+    // PVE/Arena keep the legacy one-dimensional endpoint until their own
+    // profile migration. Regular/Seasonal comparison never accepts client
+    // supplied centers or baselines.
+    if (mode !== "regular" && mode !== "seasonal") {
+      params.set("dimension", "hours");
+      params.set("center", String(hoursCenter));
+      params.set("excludeAid", String(aid));
+    }
     setCohortLoading(true);
     setCohortError("");
-    fetch(`/api/average/cohort?${params.toString()}`, { signal: controller.signal })
+    const endpoint = mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort";
+    fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => {
         const payload = (await response.json()) as CohortResponse;
         if (!response.ok) throw new Error(t("radar.error.cohort"));
-        return normalizeResponse(payload, dimension, center, aid, mode, statistic, period);
+        if (payload.identity && (
+          (payload.identity.aid != null && payload.identity.aid !== aid) ||
+          (payload.identity.mode != null && payload.identity.mode !== mode) ||
+          (payload.identity.cycleId != null && payload.identity.cycleId !== cycleId)
+        )) {
+          throw new Error(t("radar.error.cohort"));
+        }
+        return normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
       })
       .then((payload) => {
-        if (!controller.signal.aborted) setRemoteCohort(payload);
+        if (!controller.signal.aborted && payload.requestId === cohortRequestId) setRemoteCohort(payload);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -310,7 +365,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!controller.signal.aborted) setCohortLoading(false);
       });
     return () => controller.abort();
-  }, [aid, center, demo, dimension, mode, period, statistic, t]);
+  }, [aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic, t]);
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
@@ -332,8 +387,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
   }
 
   const eligibleFavorites = useMemo(
-    () => favorites.filter((favorite) => favorite.mode === mode && favorite.aid !== aid),
-    [aid, favorites, mode]
+    () => favorites.filter((favorite) => favorite.mode === mode && favorite.cycleId === cycleId && favorite.aid !== aid),
+    [aid, cycleId, favorites, mode]
   );
   const defaultFavoriteAid =
     eligibleFavorites.find((favorite) => favorite.isMain)?.aid ?? eligibleFavorites[0]?.aid ?? null;
@@ -341,7 +396,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
     ? selectedAid
     : defaultFavoriteAid;
   const favoriteRequestId =
-    effectiveFavoriteAid == null ? null : `${mode}:${effectiveFavoriteAid}`;
+    effectiveFavoriteAid == null ? null : `${mode}:${cycleId}:${effectiveFavoriteAid}`;
   const favoriteStats =
     favoriteProfile?.requestId === favoriteRequestId ? favoriteProfile.stats : null;
 
@@ -359,15 +414,30 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
     setFavoriteLoading(true);
     setFavoriteError("");
     setFavoriteProfile(null);
-    fetch(`/api/player/profile?aid=${encodeURIComponent(effectiveFavoriteAid)}&mode=${mode}`, {
+    const favoriteParams = new URLSearchParams({
+      aid: String(effectiveFavoriteAid),
+      mode,
+      cycle: cycleId,
+    });
+    fetch(`/api/player/profile?${favoriteParams}`, {
       signal: controller.signal,
     })
       .then(async (response) => {
-        const payload = (await response.json()) as { stats?: ParsedPlayerStats };
-        if (!response.ok || !payload.stats) {
+        const payload = (await response.json()) as {
+          identity?: { aid?: number; mode?: GameMode; cycleId?: string };
+          stats?: ParsedPlayerStats;
+          viewModel?: { comparison?: ProfileComparisonStats };
+        };
+        const nextStats = payload.viewModel?.comparison ?? payload.stats;
+        const identityMatches = mode !== "regular" && mode !== "seasonal"
+          ? true
+          : payload.identity?.aid === effectiveFavoriteAid
+            && payload.identity.mode === mode
+            && payload.identity.cycleId === cycleId;
+        if (!response.ok || !nextStats || !identityMatches) {
           throw new Error(t("radar.error.favorite"));
         }
-        return payload.stats;
+        return nextStats;
       })
       .then((payload) => {
         if (!controller.signal.aborted) {
@@ -383,11 +453,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
         if (!controller.signal.aborted) setFavoriteLoading(false);
       });
     return () => controller.abort();
-  }, [authStatus, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t]);
+  }, [authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t]);
 
   const cohort = demo
-    ? demoCohort(dimension, center, statistic, period)
-    : remoteCohort?.requestId === `${aid}:${mode}:${dimension}:${center}:${statistic}:${period}`
+    ? demoCohort(hoursCenter, raidsCenter, statistic, period)
+    : remoteCohort?.requestId === cohortRequestId
       ? remoteCohort
       : null;
   const playerStatsKnown = demo || mode !== "regular" || stats.pvpStatsKnown !== false;
@@ -409,12 +479,30 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
     return { metric, average, available };
   });
 
-  const ratiosFor = (values: Record<MetricKey, number> | null, average = false) =>
+  const ratiosFor = (values: Record<MetricKey, number | null> | null, average = false) =>
     axes.map((axis) => {
-      if (!axis.available || !values) return null;
+      if (!axis.available || !values || values[axis.metric.key] == null) return null;
       if (average) return 1;
-      const ratio = values[axis.metric.key] / (axis.average.value as number);
+      const ratio = (values[axis.metric.key] as number) / (axis.average.value as number);
       return Number.isFinite(ratio) ? Math.max(0, ratio) : null;
+    });
+
+  // When the mandatory two-dimensional cohort is not reliable, keep the
+  // player's own form visible using fixed display scales. This is deliberately
+  // not a cohort-relative ratio and is never used for percentages or deltas.
+  const SELF_FORM_MAX: Record<MetricKey, number> = {
+    kd_ratio: 10,
+    pmc_kd_ratio: 8,
+    kills_per_raid: 8,
+    pmc_survival_rate: 100,
+    longest_win_streak: 60,
+    level: 70,
+  };
+  const selfFormRatios = (values: Record<MetricKey, number | null> | null) =>
+    METRICS.map((metric) => {
+      const value = values?.[metric.key];
+      if (value == null || !Number.isFinite(value)) return null;
+      return Math.max(0, Math.min(1, value / SELF_FORM_MAX[metric.key]));
     });
 
   const averageRatios = ratiosFor(DEMO_AVERAGES, true);
@@ -461,8 +549,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
     })}${metric.suffix ?? ""}`;
   };
 
-  const ratioText = (value: number, average: number | null) =>
-    average && average > 0
+  const ratioText = (value: number | null, average: number | null) =>
+    value != null && average && average > 0
       ? t(statistic === "median" ? "radar.ratio.median" : "radar.ratio.trimmedMean", {
           value: (value / average).toFixed(2),
         })
@@ -481,13 +569,14 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             : "";
   const favoriteDisabled = Boolean(favoriteDisabledReason);
   const selectedFavoriteName = t("radar.demoFavorite");
+  const comparativeCohortReady = cohort?.quality === "sufficient" && cohort.twoDimensional;
 
   const renderSeries = (
     key: keyof typeof SERIES,
     ratios: (number | null)[],
     visible: boolean
   ) => {
-    if (!visible || cohort?.quality !== "sufficient") return null;
+    if (!visible || (key !== "player" && !comparativeCohortReady)) return null;
     const style = SERIES[key];
     const seriesPoints = ratios.map((ratio, index) =>
       ratio === null ? null : point(index, radiusForRatio(ratio))
@@ -622,16 +711,6 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             onChange={changePeriod}
           />
         )}
-        <SegmentedRadio
-          name={`radar-dimension-${aid}`}
-          legend={t("radar.dimension.label")}
-          value={dimension}
-          options={[
-            { value: "hours", label: t("radar.dimension.hours") },
-            { value: "pmc_raids", label: t("radar.dimension.raids") },
-          ]}
-          onChange={setDimension}
-        />
       </div>
 
       <div className="radar-status sample-status" aria-live="polite">
@@ -639,20 +718,49 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
           <span className="text-[var(--muted)]">{t("radar.cohort.loading")}</span>
         ) : cohortError ? (
           <span className="text-[var(--danger)]">{cohortError}</span>
-        ) : cohort?.quality === "sufficient" ? (
+        ) : comparativeCohortReady && cohort?.hoursRange && cohort.raidsRange ? (
           <span className="text-[var(--muted-strong)]">
-            {t("radar.cohort.summary", {
-              min: cohort.min.toLocaleString(),
-              max: cohort.max.toLocaleString(),
-              unit: t(dimension === "hours" ? "unit.h" : "radar.unitRaids"),
+            {t("radar.cohort.twoDimensional", {
+              hoursMin: cohort.hoursRange.min.toLocaleString(),
+              hoursMax: cohort.hoursRange.max.toLocaleString(),
+              raidsMin: cohort.raidsRange.min.toLocaleString(),
+              raidsMax: cohort.raidsRange.max.toLocaleString(),
               percent: cohort.percent,
               n: cohort.n.toLocaleString(),
             })}
           </span>
         ) : cohort ? (
-          <span className="text-[var(--muted)]">{t(reasonKey(cohort.reason, dimension))}</span>
+          <span className="text-[var(--muted)]">
+            {t("radar.cohort.insufficient", { n: cohort.n.toLocaleString(), target: cohort.targetN.toLocaleString() })}
+            {cohort.hoursRange && cohort.raidsRange && (
+              <span className="ml-2">
+                {t("radar.cohort.actualRanges", {
+                  hoursMin: cohort.hoursRange.min.toLocaleString(),
+                  hoursMax: cohort.hoursRange.max.toLocaleString(),
+                  raidsMin: cohort.raidsRange.min.toLocaleString(),
+                  raidsMax: cohort.raidsRange.max.toLocaleString(),
+                })}
+              </span>
+            )}
+          </span>
         ) : null}
       </div>
+
+      <p className="mt-2 text-xs text-[var(--muted)]">{t("radar.cohort.context")}</p>
+
+      {cohort && !comparativeCohortReady && playerValues && (
+        <div className="mt-4 rounded border border-[var(--card-border)] p-3">
+          <h3 className="text-sm font-medium text-[var(--foreground)]">{t("radar.series.player")}</h3>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+            {METRICS.map((metric) => (
+              <div key={metric.key} className="flex min-h-11 flex-col justify-between rounded bg-[var(--input-bg)] px-2 py-1.5">
+                <span className="text-[var(--muted)]">{t(metric.labelKey)}</span>
+                <span className="tabular-nums text-[var(--muted-strong)]">{formatValue(metric, playerValues[metric.key])}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!playerStatsKnown && (
         <p className="mt-2 text-sm text-[var(--danger)]" role="status">
@@ -674,11 +782,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             <div className="mt-1 space-y-1 text-[var(--muted-strong)]">
               {showPlayer && playerValues && (
                 <div>
-                  {t("radar.series.player")}: {formatValue(active.metric, playerValues[active.metric.key])}{" "}
-                  ({ratioText(playerValues[active.metric.key], activeBaseline)})
+                  {t("radar.series.player")}: {formatValue(active.metric, playerValues[active.metric.key])}
+                  {comparativeCohortReady && <> ({ratioText(playerValues[active.metric.key], activeBaseline)})</>}
                 </div>
               )}
-              {showAverage && (
+              {showAverage && comparativeCohortReady && (
                 <div>
                   {baselineLabel}:{" "}
                   {active.available
@@ -686,7 +794,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
                     : t("radar.baselineUnavailable")}
                 </div>
               )}
-              {showFavorite && !favoriteDisabled && favoriteValues && (
+              {showFavorite && !favoriteDisabled && comparativeCohortReady && favoriteValues && (
                 <div>
                   {t("radar.series.favorite")}: {formatValue(active.metric, favoriteValues[active.metric.key])}{" "}
                   ({ratioText(favoriteValues[active.metric.key], activeBaseline)})
@@ -752,7 +860,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", de
             favoriteRatios,
             showFavorite && !favoriteDisabled && Boolean(favoriteValues)
           )}
-          {renderSeries("player", playerRatios, showPlayer && Boolean(playerValues))}
+          {renderSeries(
+            "player",
+            comparativeCohortReady ? playerRatios : selfFormRatios(playerValues),
+            showPlayer && Boolean(playerValues),
+          )}
 
           {METRICS.map((metric, index) => {
             const label = point(index, RADIUS + 55);

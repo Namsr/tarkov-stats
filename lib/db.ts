@@ -6,6 +6,17 @@ import { initializeFavoritesSchema } from "@/lib/favorites-schema";
 import { seasonalCandidateOrderParameters } from "@/lib/seasonal/scanner";
 import type { GameMode } from "@/types/seasonal";
 import type { ProfileSummary } from "@/lib/profile-summary";
+import {
+  COMPARISON_COHORT_PERCENTAGES,
+  COMPARISON_COHORT_TARGET,
+  COMPARISON_RADAR_METRICS,
+  comparisonRangeFor,
+  emptyComparisonAverages,
+  makeComparisonCohortResult,
+  type ComparisonActualRanges,
+  type ComparisonCohortPercent,
+  type ComparisonCohortResult,
+} from "@/lib/profile-cohort";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -571,6 +582,154 @@ function unavailableCohort(
   };
 }
 
+type CohortFirstReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown> | null>;
+
+function twoDimensionalRangeWhere(
+  mode: "regular",
+  center: { hours: number; pmcRaids: number },
+  percent: ComparisonCohortPercent,
+  excludeAid: number,
+  period: AveragePeriod,
+): { where: string; params: unknown[] } {
+  const range = comparisonRangeFor(center, percent);
+  const baseWhere = [
+    "hours > 0",
+    "pmc_raids > 0",
+    "hours >= ?",
+    "hours <= ?",
+    "pmc_raids >= ?",
+    "pmc_raids <= ?",
+    "aid != ?",
+  ].join(" AND ");
+  const params: unknown[] = [
+    range.hours.min,
+    range.hours.max,
+    range.pmcRaids.min,
+    range.pmcRaids.max,
+    excludeAid,
+  ];
+  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
+  return {
+    where: cohortEligibilityWhere(
+      mode,
+      averagePeriodWhere(mode, cohortSelectionPeriod(mode, period), `WHERE ${baseWhere}`, cutoff),
+    ),
+    params,
+  };
+}
+
+async function computeRegularTwoDimensionalCohort(input: {
+  center: { hours: number; pmcRaids: number };
+  excludeAid: number;
+  dimension: "hours" | "pmc_raids";
+  statistic: AverageStatistic;
+  period: AveragePeriod;
+  readFirst: CohortFirstReader;
+}): Promise<ComparisonCohortResult> {
+  const { center } = input;
+  if (center.hours <= 0 || center.pmcRaids <= 0) {
+    return makeComparisonCohortResult({
+      mode: "regular",
+      cycleId: LEGACY_IDENTITY.cycleId,
+      aid: input.excludeAid,
+      center,
+      dimension: input.dimension,
+      percent: 30,
+      n: 0,
+      actualRanges: { hours: null, pmcRaids: null, raids: null },
+      reason: "no_activity",
+    });
+  }
+
+  const counts = Object.fromEntries(
+    COMPARISON_COHORT_PERCENTAGES.map((percent) => [percent, 0])
+  ) as Record<ComparisonCohortPercent, number>;
+  for (const percent of COMPARISON_COHORT_PERCENTAGES) {
+    const range = twoDimensionalRangeWhere("regular", center, percent, input.excludeAid, input.period);
+    const row = await input.readFirst(
+      `SELECT COUNT(*) AS n FROM players ${range.where}`,
+      range.params,
+    );
+    counts[percent] = Number(row?.n ?? 0);
+  }
+  const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
+    counts[percent] >= COMPARISON_COHORT_TARGET
+  ) ?? 30;
+  const selected = twoDimensionalRangeWhere(
+    "regular",
+    center,
+    selectedPercent,
+    input.excludeAid,
+    input.period,
+  );
+  const group = await input.readFirst(
+    `SELECT COUNT(*) AS n,
+      MIN(hours) AS hours_min, MAX(hours) AS hours_max,
+      MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
+      FROM players ${selected.where}`,
+    selected.params,
+  );
+  const n = Number(group?.n ?? 0);
+  const actualRanges: ComparisonActualRanges = {
+    hours: group?.hours_min == null || group?.hours_max == null
+      ? null
+      : { min: Number(group.hours_min), max: Number(group.hours_max) },
+    pmcRaids: group?.raids_min == null || group?.raids_max == null
+      ? null
+      : { min: Number(group.raids_min), max: Number(group.raids_max) },
+    raids: group?.raids_min == null || group?.raids_max == null
+      ? null
+      : { min: Number(group.raids_min), max: Number(group.raids_max) },
+  };
+  if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
+    return makeComparisonCohortResult({
+      mode: "regular",
+      cycleId: LEGACY_IDENTITY.cycleId,
+      aid: input.excludeAid,
+      center,
+      dimension: input.dimension,
+      percent: selectedPercent,
+      n,
+      actualRanges,
+      reason: "insufficient_cohort",
+    });
+  }
+
+  const averages = emptyComparisonAverages();
+  for (const metric of COMPARISON_RADAR_METRICS) {
+    const metricWhere = populatedMetricClause("regular", metric, selected.where);
+    const countRow = metricWhere === selected.where
+      ? { n }
+      : await input.readFirst(`SELECT COUNT(*) AS n FROM players ${metricWhere}`, selected.params);
+    const count = Number(countRow?.n ?? 0);
+    const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
+    if (count < minimumPopulatedCount) {
+      averages[metric] = { value: null, count };
+      continue;
+    }
+    const { trim, off, lim } = trimWindow(count);
+    const queryParams = input.statistic === "trimmed_mean" && trim
+      ? [...selected.params, lim, off]
+      : selected.params;
+    const row = await input.readFirst(
+      metricStatisticSql(metric, metricWhere, input.statistic, trim),
+      queryParams,
+    );
+    averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
+  }
+  return makeComparisonCohortResult({
+    mode: "regular",
+    cycleId: LEGACY_IDENTITY.cycleId,
+    aid: input.excludeAid,
+    center,
+    dimension: input.dimension,
+    percent: selectedPercent,
+    n,
+    actualRanges,
+    averages,
+  });
+}
+
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
@@ -718,6 +877,15 @@ export interface PlayerStore {
     statistic?: AverageStatistic,
     period?: AveragePeriod,
   ): Promise<CohortResult>;
+  /** Server-derived two-axis cohort for the regular profile comparison view. */
+  cohort2d(
+    centerHours: number,
+    centerPmcRaids: number,
+    excludeAid: number,
+    dimension?: "hours" | "pmc_raids",
+    statistic?: AverageStatistic,
+    period?: AveragePeriod,
+  ): Promise<ComparisonCohortResult>;
   /**
    * Trimmed mean of one metric for each final display range. The range count is
    * derived inside each SQL statement so concurrent imports cannot skew which
@@ -1020,6 +1188,23 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           reason: null,
           averages,
         };
+      },
+      async cohort2d(
+        centerHours,
+        centerPmcRaids,
+        excludeAid,
+        dimension = "hours",
+        statistic = "trimmed_mean",
+        period = "all",
+      ) {
+        return computeRegularTwoDimensionalCohort({
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          dimension,
+          statistic,
+          period,
+          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
+        });
       },
       async histogramAverages(column, ranges, period = "all") {
         if (ranges.length === 0) return [];
@@ -1325,6 +1510,23 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           reason: null,
           averages,
         };
+      },
+      async cohort2d(
+        centerHours,
+        centerPmcRaids,
+        excludeAid,
+        dimension = "hours",
+        statistic = "trimmed_mean",
+        period = "all",
+      ) {
+        return computeRegularTwoDimensionalCohort({
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          dimension,
+          statistic,
+          period,
+          readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+        });
       },
       async histogramAverages(column, ranges, period = "all") {
         return ranges.map((range) => {

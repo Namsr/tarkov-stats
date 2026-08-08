@@ -2,26 +2,20 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { ParsedPlayerStats } from "@/types/tarkov";
-import { rangeForHours } from "@/lib/playtime-brackets";
-import type { CrossSectionMode } from "@/lib/db";
-import {
-  scoreCheater,
-  type Baseline,
-  type RiskTier,
-  type CheaterScoreResult,
-} from "@/lib/cheater-score";
 import type { ProgressionRiskPayload } from "@/components/ProgressionPanel";
+import type { GameMode } from "@/types/seasonal";
+import type { PublicRiskTier, PublicRiskView } from "@/types/profile-view";
+import type { ParsedPlayerStats } from "@/types/tarkov";
+import { rangeForHours } from "@/lib/playtime-brackets";
+import { scoreCheater, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
 
-const TIER_COLOR: Record<RiskTier, string> = {
+const TIER_COLOR: Record<PublicRiskTier, string> = {
   low: "#4caf50",
   medium: "#e0a82e",
   high: "#e07b39",
   severe: "#ef5350",
 };
 
-// Colored arc bands. Endpoints precomputed for a semicircle r=120, centre (160,160),
-// with tier cuts at score 20 / 45 / 70 (see tierFor in lib/cheater-score.ts).
 const ARCS: { d: string; color: string }[] = [
   { d: "M40,160 A120,120 0 0,1 62.9,89.5", color: TIER_COLOR.low },
   { d: "M62.9,89.5 A120,120 0 0,1 141.2,41.5", color: TIER_COLOR.medium },
@@ -29,131 +23,227 @@ const ARCS: { d: string; color: string }[] = [
   { d: "M230.5,62.9 A120,120 0 0,1 280,160", color: TIER_COLOR.severe },
 ];
 
-// Needle tip for a 0–100 score: angle 180°(left)→0°(right), length 96 from centre.
 function needle(score: number): { x: number; y: number } {
-  const s = Math.min(100, Math.max(0, score));
-  const rad = ((180 - (s / 100) * 180) * Math.PI) / 180;
-  return { x: 160 + 96 * Math.cos(rad), y: 160 - 96 * Math.sin(rad) };
+  const safeScore = Math.min(100, Math.max(0, score));
+  const radians = ((180 - (safeScore / 100) * 180) * Math.PI) / 180;
+  return { x: 160 + 96 * Math.cos(radians), y: 160 - 96 * Math.sin(radians) };
 }
 
-// /api/average/achievements response (only the fields the score needs).
-interface AchPayload {
-  total: number;
-  achievements: { id: string; owners: number; samplePct: number; meanHours: number; earlyHours: number }[];
-}
-
-const PROGRESSION_REASONS = new Set([
-  "pmc_kills_per_raid",
-  "pvp_kd",
-  "survival_rate",
-  "xp_per_pmc_raid",
-  "all_kills_per_pmc_raid",
-  "pmc_raids_per_day",
-]);
-
-function tierFor(score: number): RiskTier {
+function tierFor(score: number): PublicRiskTier {
   if (score < 20) return "low";
   if (score < 45) return "medium";
   if (score < 70) return "high";
   return "severe";
 }
 
-export default function CheaterScore({
-  stats,
-  ownedAchievementIds,
-  mode = "regular",
-  progressionRisk,
-}: {
-  stats: ParsedPlayerStats;
-  ownedAchievementIds: string[];
-  mode?: CrossSectionMode;
-  progressionRisk?: ProgressionRiskPayload | null;
-}) {
-  const { t } = useI18n();
-  const [result, setResult] = useState<CheaterScoreResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const pvpStatsKnown = mode !== "regular" || stats.pvpStatsKnown !== false;
+function knownTier(value: string | null | undefined, score: number): PublicRiskTier {
+  return value === "low" || value === "medium" || value === "high" || value === "severe"
+    ? value
+    : tierFor(score);
+}
 
-  const bracket = rangeForHours(stats.hoursPlayed);
-  // Stable dep: the effect refetches only when the owned-achievement set changes.
+type RiskInput = PublicRiskView | ProgressionRiskPayload;
+
+interface LegacyAchievementPayload {
+  achievements?: Array<{
+    id: string;
+    owners: number;
+    samplePct: number;
+    meanHours: number;
+    earlyHours: number;
+  }>;
+}
+
+interface NormalizedRisk {
+  score: number | null;
+  tier: PublicRiskTier | null;
+  confidence: number | null;
+  confidenceTier: "low" | "medium" | "high" | null;
+  sampleSize: number | null;
+  freshnessAt: number | null;
+  factors: Array<{ key: string; points: number | null; label: string | null; available?: boolean }>;
+  available: boolean;
+}
+
+function isPublicRisk(value: RiskInput): value is PublicRiskView {
+  return "score" in value;
+}
+
+function normalizeRisk(value: RiskInput | null | undefined): NormalizedRisk | null {
+  if (!value) return null;
+  if (isPublicRisk(value)) {
+    const confidence = value.confidence == null
+      ? null
+      : value.confidence > 1 ? value.confidence / 100 : value.confidence;
+    return {
+      score: Number.isFinite(value.score) && value.score != null ? value.score : null,
+      tier: value.score == null ? null : knownTier(value.tier, value.score),
+      confidence,
+      confidenceTier: value.confidenceTier ?? null,
+      sampleSize: value.sampleSize ?? value.sampleN ?? null,
+      freshnessAt: value.freshnessAt ?? null,
+      factors: (value.factors ?? []).map((factor) => typeof factor === "string"
+        ? { key: factor, points: null, label: null }
+        : {
+            key: factor.key,
+            points: factor.points == null ? null : factor.points,
+            label: factor.label ?? null,
+            available: factor.available,
+          }),
+      available: value.available !== false && value.score != null,
+    };
+  }
+
+  const score = Number.isFinite(value.combined) ? value.combined : null;
+  const confidence = Number.isFinite(value.confidence?.value) ? value.confidence.value : null;
+  return {
+    score,
+    tier: score == null ? null : tierFor(score),
+    confidence,
+    confidenceTier: value.confidence?.tier ?? null,
+    sampleSize: null,
+    freshnessAt: null,
+    factors: [
+      ...value.staticReasons.map((key) => ({ key, points: null, label: null })),
+      ...value.reasons.map((key) => ({ key, points: null, label: null })),
+    ],
+    available: score != null,
+  };
+}
+
+export default function CheaterScore({
+  risk,
+  stats,
+  ownedAchievementIds = [],
+  mode = "regular",
+  cycleId = "persistent",
+  statsKnown = true,
+  loading = false,
+}: {
+  risk?: RiskInput | null;
+  /** Kept only for the untouched PVE/Arena renderer during the migration. */
+  stats?: ParsedPlayerStats;
+  ownedAchievementIds?: string[];
+  mode?: GameMode;
+  cycleId?: string;
+  statsKnown?: boolean;
+  loading?: boolean;
+}) {
+  const { t, lang } = useI18n();
+  const [legacyResult, setLegacyResult] = useState<CheaterScoreResult | null>(null);
+  const [legacyLoading, setLegacyLoading] = useState(false);
   const ownedKey = ownedAchievementIds.join(",");
 
   useEffect(() => {
-    if (!pvpStatsKnown) {
-      setResult(null);
-      setLoading(false);
+    if (!stats) {
+      setLegacyResult(null);
+      setLegacyLoading(false);
+      return;
+    }
+    if (mode === "regular" && stats.pvpStatsKnown === false) {
+      setLegacyResult(null);
+      setLegacyLoading(false);
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    const ownedIds = ownedKey ? ownedKey.split(",") : [];
-    const params = new URLSearchParams();
-    params.set("minHours", String(bracket.min));
-    params.set("mode", mode);
-    if (bracket.max != null) params.set("maxHours", String(bracket.max));
-
-    Promise.all([
-      fetch(`/api/baseline?${params.toString()}`)
-        .then((r) => (r.ok ? (r.json() as Promise<Baseline>) : null))
-        .catch(() => null),
-      fetch(`/api/average/achievements?mode=${mode}`)
-        .then((r) => (r.ok ? (r.json() as Promise<AchPayload>) : null))
-        .catch(() => null),
-    ]).then(([baseline, achPayload]) => {
-      if (cancelled) return;
-      const ach =
-        achPayload && Array.isArray(achPayload.achievements)
-          ? {
-              ownedIds,
-              stats: achPayload.achievements.map((a) => ({
-                id: a.id,
-                owners: a.owners,
-                samplePct: a.samplePct,
-                meanHours: a.meanHours,
-                earlyHours: a.earlyHours,
-              })),
-            }
-          : null;
-      setResult(scoreCheater(stats, baseline, ach));
-      setLoading(false);
+    const bracket = rangeForHours(stats.hoursPlayed);
+    setLegacyLoading(true);
+    const params = new URLSearchParams({
+      mode,
+      minHours: String(bracket.min),
     });
+    if (bracket.max != null) params.set("maxHours", String(bracket.max));
+    Promise.all([
+      fetch(`/api/baseline?${params}`).then((response) => response.ok ? response.json() as Promise<Baseline> : null).catch(() => null),
+      fetch(`/api/average/achievements?mode=${encodeURIComponent(mode)}`)
+        .then((response) => response.ok ? response.json() as Promise<LegacyAchievementPayload> : null)
+        .catch(() => null),
+    ]).then(([baseline, achievementPayload]) => {
+      if (cancelled) return;
+      const achievements = achievementPayload?.achievements;
+      setLegacyResult(scoreCheater(
+        stats,
+        baseline,
+        achievements ? {
+          ownedIds: ownedKey ? ownedKey.split(",") : [],
+          stats: achievements,
+        } : null,
+      ));
+    }).finally(() => {
+      if (!cancelled) setLegacyLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [mode, ownedKey, stats]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [stats, bracket.min, bracket.max, mode, ownedKey, pvpStatsKnown]);
+  const legacyRisk: PublicRiskView | null = legacyResult ? {
+    score: legacyResult.score,
+    tier: legacyResult.tier,
+    confidence: Math.min(1, legacyResult.sampleN / 30),
+    sampleSize: legacyResult.sampleN,
+    freshnessAt: stats?.profileUpdatedAt ?? null,
+    factors: legacyResult.factors.map((factor) => ({
+      key: factor.key,
+      points: factor.points,
+      available: factor.available,
+    })),
+    available: true,
+  } : null;
+  const normalized = normalizeRisk(risk ?? legacyRisk);
+  const modeLabel = t("fav.mode." + mode);
 
-  if (!pvpStatsKnown) {
+  if (loading || legacyLoading) {
+    return <div className="data-panel min-h-[280px] skeleton rounded-xl" role="status" aria-label={t("common.loading")} />;
+  }
+
+  if (statsKnown === false) {
     return (
-      <div className="data-panel p-5">
-        <p className="text-sm text-[var(--muted)]" role="status">
-          {t("cheater.incompletePvp")}
+      <div className="data-panel min-h-[280px] p-5">
+        <p className="text-sm text-[var(--muted)]">{t("cheater.incompletePvp")}</p>
+        <p className="mt-3 text-xs text-[var(--muted)]">
+          {t("cheater.context", { mode: modeLabel, cycle: cycleId })}
         </p>
+        <p className="mt-4 text-xs leading-relaxed text-[var(--muted)]">{t("cheater.disclaimer")}</p>
       </div>
     );
   }
 
-  if (loading || !result) {
-    return <div className="h-64 skeleton rounded-xl" />;
+  if (!normalized?.available || normalized.score == null) {
+    return (
+      <div className="data-panel min-h-[280px] p-5">
+        <p className="text-sm text-[var(--muted)]">{t("cheater.serverUnavailable")}</p>
+        <p className="mt-3 text-xs text-[var(--muted)]">
+          {t("cheater.context", { mode: modeLabel, cycle: cycleId })}
+        </p>
+        <p className="mt-4 text-xs leading-relaxed text-[var(--muted)]">{t("cheater.disclaimer")}</p>
+      </div>
+    );
   }
 
-  const score = progressionRisk ? Math.round(progressionRisk.combined) : result.score;
-  const tier = progressionRisk ? tierFor(score) : result.tier;
+  const score = Math.round(Math.min(100, Math.max(0, normalized.score)));
+  const tier = normalized.tier ?? tierFor(score);
   const color = TIER_COLOR[tier];
   const tip = needle(score);
-  const shown = result.factors.filter((f) => f.points >= 1);
+  const confidencePercent = normalized.confidence == null ? null : Math.round(normalized.confidence * 100);
+  const freshness = normalized.freshnessAt == null
+    ? null
+    : new Intl.DateTimeFormat(lang, { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Moscow" })
+        .format(normalized.freshnessAt);
 
   return (
-    <div className="data-panel p-5">
+    <div className="data-panel min-h-[280px] p-5">
       <div className="mb-1 flex justify-end">
-        <span className="text-[var(--muted)] text-xs cursor-help" title={t("cheater.disclaimer")} aria-label={t("cheater.disclaimer")}>
+        <span
+          className="text-[var(--muted)] text-xs cursor-help"
+          title={t("cheater.disclaimer")}
+          aria-label={t("cheater.disclaimer")}
+        >
           ⓘ
         </span>
       </div>
 
       <svg viewBox="0 0 320 170" className="w-full max-w-[240px] mx-auto block" role="img" aria-label={t("cheater.heading")}>
-        {ARCS.map((a) => (
-          <path key={a.d} d={a.d} fill="none" stroke={a.color} strokeWidth={20} strokeOpacity={0.85} strokeLinecap="round" />
+        {ARCS.map((arc) => (
+          <path key={arc.d} d={arc.d} fill="none" stroke={arc.color} strokeWidth={20} strokeOpacity={0.85} strokeLinecap="round" />
         ))}
         <line x1={160} y1={160} x2={tip.x} y2={tip.y} stroke={color} strokeWidth={6} strokeLinecap="round" />
         <circle cx={160} cy={160} r={11} fill={color} />
@@ -163,68 +253,33 @@ export default function CheaterScore({
         </text>
       </svg>
 
-      <div className="text-center mt-1">
-        <span
-          className="inline-block px-3 py-0.5 rounded text-sm font-bold"
-          style={{ color, border: `1px solid ${color}66`, background: `${color}14` }}
-        >
+      <div className="mt-1 text-center">
+        <span className="inline-block px-3 py-0.5 rounded text-sm font-bold" style={{ color, border: `1px solid ${color}66`, background: `${color}14` }}>
           {t("cheater.tier." + tier)}
         </span>
-        <div className="text-[11px] text-gray-500 mt-1">
-          {score} {t("cheater.outOf")}
-        </div>
+        <div className="mt-1 text-[11px] text-gray-500">{score} {t("cheater.outOf")}</div>
       </div>
 
-      {progressionRisk ? (
-        <>
-          <p className="mt-3 text-center text-xs text-[var(--muted)]">
-            {t("seasonal.risk.contributions", {
-              static: progressionRisk.staticContribution.toLocaleString(undefined, { maximumFractionDigits: 1 }),
-              progression: progressionRisk.progressionContribution.toLocaleString(undefined, { maximumFractionDigits: 1 }),
-            })}
-          </p>
-          <p className="mt-1 text-center text-xs text-[var(--muted)]">
-            {t("progression.riskConfidence", {
-              tier: t("seasonal.confidence." + progressionRisk.confidence.tier),
-              n: Math.round(progressionRisk.confidence.value * 100),
-            })}
-          </p>
-          {(progressionRisk.staticReasons.length > 0 || progressionRisk.reasons.length > 0) && (
-            <div className="mt-3 flex flex-wrap justify-center gap-2">
-              {progressionRisk.staticReasons.map((reason) => (
-                <span key={`static-${reason}`} className="seasonal-risk__reason">
-                  {t("seasonal.risk.static")}: {t("metric." + reason)}
-                </span>
-              ))}
-              {progressionRisk.reasons.map((reason) => (
-                <span key={reason} className="seasonal-risk__reason">
-                  {t("seasonal.riskReason." + (PROGRESSION_REASONS.has(reason) ? reason : "anomaly"))}
-                </span>
-              ))}
-            </div>
-          )}
-        </>
-      ) : shown.length > 0 && (
-        <div className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-[11px] text-gray-400">
-          {shown.map((f) => (
-            <span key={f.key} className="whitespace-nowrap">
-              {t("metric." + f.key)}{" "}
-              <span className="font-medium tabular-nums" style={{ color }}>+{Math.round(f.points)}</span>
+      <div className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
+        <span>{t("cheater.context", { mode: modeLabel, cycle: cycleId })}</span>
+        <span>{t("cheater.sample", { n: normalized.sampleSize == null ? t("common.notAvailable") : normalized.sampleSize.toLocaleString(lang) })}</span>
+        {confidencePercent != null && <span>{t("seasonal.confidenceValue", { n: confidencePercent })}</span>}
+        {freshness && <span>{t("cheater.freshness", { date: freshness })}</span>}
+      </div>
+
+      {normalized.factors.length > 0 && (
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
+          {normalized.factors.map((factor, index) => (
+            <span key={`${factor.key}-${index}`} className="seasonal-risk__reason">
+              {factor.available === false
+                ? t("cheater.factorUnavailable")
+                : <>{factor.label ?? t("metric." + factor.key)}{factor.points == null ? "" : ` +${Math.round(factor.points)}`}</>}
             </span>
           ))}
         </div>
       )}
 
-      <p className="text-[10px] text-gray-600 mt-3 text-center">
-        {result.basedOnSample
-          ? t("cheater.basedOn", { n: result.sampleN.toLocaleString() })
-          : t("cheater.preliminary")}
-      </p>
-      {progressionRisk && (
-        <p className="text-[10px] text-gray-600 mt-1 text-center">
-          {t("seasonal.risk.noAutoExclusion")}
-        </p>
-      )}
+      <p className="mt-3 text-[10px] text-gray-600 text-center">{t("cheater.disclaimer")}</p>
     </div>
   );
 }

@@ -42,10 +42,10 @@ test("profile summary is absent when no other mode snapshot exists", async () =>
   assert.equal(summary, null);
 });
 
-test("only mode_profile_unavailable carries the optional profile summary", () => {
+test("mode-scoped profile responses carry identity and keep optional summaries additive", () => {
   assert.match(
     profileRouteSource,
-    /code: "mode_profile_unavailable",[\s\S]*?\.\.\.\(profileSummary \? \{ profileSummary \} : \{\}\)/,
+    /identity: \{ aid, mode, cycleId \}[\s\S]*?code: "mode_profile_unavailable"/,
   );
   assert.match(
     profileRouteSource,
@@ -57,6 +57,8 @@ test("only mode_profile_unavailable carries the optional profile summary", () =>
   );
   assert.match(
     profileRouteSource,
-    /\{ error: "Failed to fetch player profile" \},\s*\{ status: 502/,
+    /\{ error: "Failed to fetch player profile", identity: \{ aid, mode, cycleId \} \},\s*\{ status: 502/,
   );
+  assert.match(profileRouteSource, /viewModel: buildRegularProfileViewModel/);
+  assert.match(profileRouteSource, /viewModel: await enrichSeasonalViewModel/);
 });

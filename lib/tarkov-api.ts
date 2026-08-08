@@ -25,6 +25,7 @@ const PUBLIC_PROFILE_BASE = "https://players.tarkov.dev";
 const ITEMS_URL = "https://json.tarkov.dev/regular/items";
 const TASKS_URL = "https://json.tarkov.dev/regular/tasks";
 const TASKS_EN_URL = "https://json.tarkov.dev/regular/tasks_en";
+const TASKS_RU_URL = "https://json.tarkov.dev/regular/tasks_ru";
 
 /**
  * Nickname search. Requires a valid Cloudflare Turnstile token bound to
@@ -308,6 +309,9 @@ export function expToLevel(exp: number, levels: PlayerLevel[]): number {
 export interface AchievementMeta {
   id: string;
   name: string;
+  /** Explicit language fields for server ViewModels; `name` remains English for legacy callers. */
+  nameEn: string;
+  nameRu: string | null;
   side: string;
   rarity: string;
   /** BSG's official share of ALL players who have it. */
@@ -326,24 +330,25 @@ function percentage(value: unknown, field: string): number {
   return value;
 }
 
-function achievementTranslations(payload: unknown): Record<string, string> {
+function achievementTranslations(payload: unknown, language: "en" | "ru"): Record<string, string> {
   const data = record(record(payload)?.data);
-  if (!data) throw new Error("tasks_en.data must be an object");
+  if (!data) throw new Error(`tasks_${language}.data must be an object`);
   const translations: Record<string, string> = {};
   let usable = 0;
   for (const [key, value] of Object.entries(data)) {
-    if (typeof value !== "string") throw new Error(`tasks_en.data.${key} must be a string`);
+    if (typeof value !== "string") throw new Error(`tasks_${language}.data.${key} must be a string`);
     translations[key] = value;
     if (value.trim() !== "") usable += 1;
   }
-  if (usable === 0) throw new Error("tasks_en.data must contain translations");
+  if (usable === 0) throw new Error(`tasks_${language}.data must contain translations`);
   return translations;
 }
 
 /** Converts the JSON API achievement object into the existing metadata Map. */
 export function parseAchievements(
   payload: unknown,
-  translationsPayload?: unknown
+  translationsPayload?: unknown,
+  russianTranslationsPayload?: unknown,
 ): Map<string, AchievementMeta> {
   const achievements = record(record(record(payload)?.data)?.achievements);
   if (!achievements || Object.keys(achievements).length === 0) {
@@ -351,7 +356,10 @@ export function parseAchievements(
   }
   const translations = translationsPayload === undefined
     ? {}
-    : achievementTranslations(translationsPayload);
+    : achievementTranslations(translationsPayload, "en");
+  const russianTranslations = russianTranslationsPayload === undefined
+    ? {}
+    : achievementTranslations(russianTranslationsPayload, "ru");
   const result = new Map<string, AchievementMeta>();
   for (const [key, value] of Object.entries(achievements)) {
     const row = record(value);
@@ -360,6 +368,7 @@ export function parseAchievements(
     }
     const translationKey = typeof row.name === "string" ? row.name : "";
     const translated = translations[translationKey]?.trim();
+    const translatedRu = russianTranslations[translationKey]?.trim();
     const normalizedName = typeof row.normalizedName === "string"
       ? row.normalizedName.trim()
       : "";
@@ -370,6 +379,8 @@ export function parseAchievements(
     result.set(key, {
       id: key,
       name: translated || normalizedName || key,
+      nameEn: translated || normalizedName || key,
+      nameRu: translatedRu || null,
       side: typeof row.side === "string" ? row.side : "",
       rarity,
       playersCompletedPercent: percentage(
@@ -413,7 +424,18 @@ export async function getAchievements(): Promise<Map<string, AchievementMeta>> {
   try {
     const response = await fetchTarkovJson(TASKS_EN_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const map = parseAchievements(tasks, await response.json());
+    const english = await response.json();
+    let russian: unknown;
+    try {
+      const russianResponse = await fetchTarkovJson(TASKS_RU_URL, { cache: "no-store" });
+      if (russianResponse.ok) russian = await russianResponse.json();
+    } catch (error) {
+      console.warn("tarkov reference validation failed", {
+        reference: "achievements-ru-translations",
+        error: error instanceof Error ? error.message : "unknown",
+      });
+    }
+    const map = parseAchievements(tasks, english, russian);
     achievementsCache = { data: map, ts: now };
     console.info("tarkov reference", { reference: "achievements", source: "json" });
     return map;
