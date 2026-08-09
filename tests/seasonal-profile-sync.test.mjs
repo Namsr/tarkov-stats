@@ -64,7 +64,7 @@ test("Seasonal timers use the requested Moscow cadence and shared waiting lock",
   const feedService = await readFile("ops/systemd/tarkovstats-seasonal-profile-sync.service", "utf8");
   const indexService = await readFile("ops/systemd/tarkovstats-seasonal-index-sync.service", "utf8");
   assert.match(feedTimer, /OnCalendar=\*-\*-\* \*:07,22,37,52:00 Europe\/Moscow/);
-  assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:00:00 Europe\/Moscow/);
+  assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:10:00 Europe\/Moscow/);
   assert.match(feedService, /flock -n \/run\/tarkovstats-seasonal-sync\.lock/);
   assert.match(indexService, /flock \/run\/tarkovstats-seasonal-sync\.lock/);
 });

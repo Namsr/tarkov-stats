@@ -96,10 +96,11 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
           const stats = profile.seasonalStats;
           const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
           await db.prepare(`UPDATE progression_snapshots SET
-            total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
+            side = COALESCE(?, side), total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
             level = ?, prestige = ?, longest_win_streak = ?,
             achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements)
             WHERE ${IDENTITY} AND profile_updated_at = ?`).bind(
+            profile.side ?? null,
             stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
             stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
             achievementSnapshot.count, achievementSnapshot.value,
@@ -120,6 +121,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
       const seasonalStats = profile.seasonalStats;
       const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
       const snapshotValues = [
+        profile.side ?? null,
         profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
         profile.counters.scavRaids, seasonalStats?.survivedRaids ?? null, profile.counters.pmcSurvived,
         seasonalStats?.deaths ?? null, profile.counters.pmcDeaths, profile.counters.pmcKills,
@@ -136,7 +138,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
       ];
       const statements = [db.prepare(`INSERT INTO progression_snapshots (
         mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
-        experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
+        side, experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
         pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements
       ) SELECT ?, ?, ?, ?, ?, ?, ?, COALESCE((
           SELECT series_id + CASE WHEN
@@ -144,7 +146,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
             ? < pmc_deaths OR ? < pmc_kills OR ? < killed_pmc THEN 1 ELSE 0 END
           FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
             AND profile_updated_at < ? ORDER BY profile_updated_at DESC LIMIT 1
-        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
           AND profile_updated_at >= ?

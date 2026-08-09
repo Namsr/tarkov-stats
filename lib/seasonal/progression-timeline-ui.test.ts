@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { progressionLineSegments, progressionPointsInRaidDomain, progressionRaidDomain, progressionValueDomain } from "./progression-timeline-ui.ts";
+import {
+  progressionDayDomain,
+  progressionDayTicks,
+  progressionLineSegments,
+  progressionPointDay,
+  progressionPointsInDayDomain,
+  progressionPointsInRaidDomain,
+  progressionRaidDomain,
+  progressionValueDomain,
+} from "./progression-timeline-ui.ts";
 
 const point = (pmcRaids: number, value: number, seriesId: number | null = 1) => ({
   pointId: `${pmcRaids}-${value}`,
@@ -77,4 +86,26 @@ test("timeline lines split on resets and drop non-finite points", () => {
     point(5, 8, 2),
   ]);
   assert.deepEqual(segments.map((segment) => segment.map((item) => item.pmcRaids)), [[1, 2], [3], [5]]);
+});
+
+test("day timeline starts at the configured season day and labels calendar ticks", () => {
+  const seasonStart = Date.parse("2026-08-03T00:00:00+03:00");
+  const points = [
+    { ...point(10, 100), date: "2026-08-04", observedAt: Date.parse("2026-08-04T12:00:00+03:00") },
+    { ...point(20, 200), date: "2026-08-05", observedAt: Date.parse("2026-08-05T12:00:00+03:00") },
+  ];
+  const domain = progressionDayDomain(points, points, false, seasonStart);
+  assert.equal(domain.min, seasonStart);
+  assert.equal(progressionPointDay(points[0]), points[0].observedAt);
+  assert.deepEqual(progressionDayTicks(domain.min, domain.max).slice(0, 2), [
+    seasonStart,
+    seasonStart + 86_400_000,
+  ]);
+  assert.deepEqual(progressionPointsInDayDomain(points, domain).map((item) => item.pmcRaids), [10, 20]);
+});
+
+test("day timeline falls back to the stored local date when observedAt is absent", () => {
+  const fallback = point(12, 4);
+  assert.equal(progressionPointDay(fallback), Date.parse("2026-01-01T00:00:00+03:00"));
+  assert.equal(progressionPointsInDayDomain([{ ...fallback, value: Number.NaN }], { min: 0, max: Number.MAX_SAFE_INTEGER }).length, 0);
 });

@@ -71,6 +71,12 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function optionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
 function finiteNumber(value: unknown, field: string): number {
   const number = typeof value === "number" ? value : Number.NaN;
   if (!Number.isFinite(number)) {
@@ -441,6 +447,7 @@ export function parseSeasonalProfile(
   }
 
   const info = requiredRecord(extracted.profile.info, "profile.info");
+  const side = optionalString(info.side);
   const lifetimePvpHours = options.lifetimePvpHours === undefined
     ? totalInGameTimeHours(extracted.profile)
     : options.lifetimePvpHours;
@@ -456,6 +463,7 @@ export function parseSeasonalProfile(
     cycleId: options.cycleId,
     aid: extracted.aid,
     nickname: requiredString(info.nickname, "profile.info.nickname"),
+    ...(side ? { side } : {}),
     profileUpdatedAt,
     lastAccessAt,
     lifetimePvpHours,

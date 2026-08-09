@@ -545,6 +545,7 @@ async function assembleProgressionTimeline(
   profile: StaticProfileRow,
   historyRow: Record<string, unknown> | null | undefined,
   intervalCounts: Record<string, unknown> | null | undefined,
+  cycleStartsAt: number | null,
 ): Promise<ProgressionTimelineResponse> {
   const metrics = timelineMetricSeries(snapshotRows, intervalRows, input);
   const history = progressionHistory(historyRow, intervalCounts);
@@ -559,6 +560,7 @@ async function assembleProgressionTimeline(
   return {
     identity: { mode: input.mode, cycleId: input.cycleId, aid: input.aid },
     axis: "pmc_raids",
+    cycleStartsAt,
     metrics,
     history,
     risk: sharedDetails.risk,
@@ -577,10 +579,13 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
     if (d1) {
       if (configuredCycle) await upsertD1SeasonCycle(d1, configuredCycle);
       return async (input) => {
+        let cycleStartsAt: number | null = null;
         if (input.mode === "seasonal") {
           const cycle = await d1.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
             .bind(input.cycleId).first() as { starts_at: number } | null;
           if (!cycle) return null;
+          const startsAt = Number(cycle.starts_at);
+          cycleStartsAt = Number.isFinite(startsAt) ? startsAt : null;
         }
         const [snapshots, intervals, detailIntervals, profile, history, intervalCounts] = await Promise.all([
           d1.prepare(TIMELINE_SNAPSHOT_SQL).bind(input.mode, input.cycleId).all(),
@@ -608,6 +613,7 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
           profile,
           history as Record<string, unknown> | null,
           intervalCounts as Record<string, unknown> | null,
+          cycleStartsAt,
         );
       };
     }
@@ -617,6 +623,10 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
     return async (input) => {
       const profile = sqliteDb.prepare(STATIC_PROFILE_SQL).get(input.mode, input.cycleId, input.aid) as StaticProfileRow | undefined;
       if (!profile) return null;
+      const cycleStartsAt = input.mode === "seasonal"
+        ? Number((sqliteDb.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
+          .get(input.cycleId) as { starts_at?: number } | undefined)?.starts_at)
+        : null;
       const snapshots = sqliteDb.prepare(TIMELINE_SNAPSHOT_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
       const intervals = sqliteDb.prepare(TIMELINE_INTERVAL_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
       const detailIntervals = sqliteDb.prepare(DETAIL_INTERVAL_SQL)
@@ -632,7 +642,7 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
           SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
         FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
         .get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
-      return assembleProgressionTimeline(input, snapshots, intervals, detailIntervals, profile, history, intervalCounts);
+      return assembleProgressionTimeline(input, snapshots, intervals, detailIntervals, profile, history, intervalCounts, Number.isFinite(cycleStartsAt) ? cycleStartsAt : null);
     };
   } catch (error) {
     console.warn("progression timeline query unavailable: " + (error as Error).message);

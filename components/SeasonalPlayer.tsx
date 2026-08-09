@@ -287,6 +287,11 @@ export default function SeasonalPlayer({
   }
 
   const stats = seasonalStatsFor(profile, levelBands);
+  const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Europe/Moscow",
+  });
   const comparisonStats = {
     hoursPlayed: profile.lifetimePvpHours,
     pmcRaids: profile.counters.pmcRaids,
@@ -319,7 +324,16 @@ export default function SeasonalPlayer({
       cycleId={cycleId}
       kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
       title={profile.nickname}
-      meta={<div className="profile-header__meta"><span>{t("seasonal.lastUpdated")}: {new Date(profile.profileUpdatedAt).toLocaleDateString(undefined, { timeZone: "Europe/Moscow" })}</span></div>}
+      meta={
+        <div className="profile-header__meta">
+          <span>{t("player.sideLabel", { side: profile.side ?? unknownValue })}</span>
+          {stats.prestige != null && stats.prestige > 0 && (
+            <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
+          )}
+          <span>{t("player.profileUpdated", { date: dateTimeFormatter.format(profile.profileUpdatedAt) })}</span>
+          <span>{t("player.lastPlayed", { date: dateTimeFormatter.format(profile.lastAccessAt) })}</span>
+        </div>
+      }
       actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={profile.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
       overviewCards={[
         { label: t("player.hoursPlayed"), value: displayNumber(profile.lifetimePvpHours, 1, unknownValue), suffix: t("unit.h") },

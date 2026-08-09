@@ -684,12 +684,52 @@ html:not([data-theme="light"]) .home-socials__link--github .home-socials__icon {
   margin-top: 16px;
 }
 
+.progression-timeline__axis-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 12px;
+}
+
+.progression-timeline__axis-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: .72rem;
+  font-weight: 800;
+}
+
+.progression-timeline__axis-select select {
+  min-height: 34px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--foreground);
+  padding: 5px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.progression-timeline__axis-select select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 78%, white);
+  outline-offset: 2px;
+}
+
 .progression-timeline__metric-group,
 .progression-timeline__comparison {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+
+.progression-timeline__comparison-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: .7rem;
 }
 
 .progression-timeline__metric-group {
@@ -917,9 +957,12 @@ html:not([data-theme="light"]) .home-socials__link--github .home-socials__icon {
 .progression-timeline__point--highlight { filter: drop-shadow(0 0 3px currentColor); }
 .progression-timeline__focus { fill: color-mix(in srgb, var(--accent) 7%, transparent); stroke: color-mix(in srgb, var(--accent) 42%, transparent); stroke-dasharray: 4 4; pointer-events: none; }
 .progression-timeline__area { pointer-events: none; }
-.progression-timeline__area--xp { opacity: .85; }
-.progression-timeline__area--xp.is-highlighted { opacity: 1; }
-.progression-timeline__area--xp.is-dimmed { opacity: .12; filter: blur(1px); }
+.progression-timeline__area--xp,
+.progression-timeline__area--raids { opacity: .85; }
+.progression-timeline__area--xp.is-highlighted,
+.progression-timeline__area--raids.is-highlighted { opacity: 1; }
+.progression-timeline__area--xp.is-dimmed,
+.progression-timeline__area--raids.is-dimmed { opacity: .12; filter: blur(1px); }
 .progression-timeline__hover-guide { stroke: color-mix(in srgb, var(--foreground) 70%, transparent); stroke-width: 1; stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; pointer-events: none; }
 .progression-timeline__level-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .progression-timeline__level-axis.is-highlighted { fill: var(--foreground); font-weight: 800; }

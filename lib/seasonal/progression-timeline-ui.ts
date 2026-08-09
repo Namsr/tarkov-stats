@@ -10,6 +10,77 @@ export interface ValueDomain {
   max: number;
 }
 
+export const PROGRESSION_DAY_MS = 86_400_000;
+
+function moscowDateParts(timestamp: number): { year: string; month: string; day: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  return {
+    year: parts.find((part) => part.type === "year")?.value ?? "1970",
+    month: parts.find((part) => part.type === "month")?.value ?? "01",
+    day: parts.find((part) => part.type === "day")?.value ?? "01",
+  };
+}
+
+export function progressionDayStart(timestamp: number): number {
+  const { year, month, day } = moscowDateParts(timestamp);
+  return Date.parse(`${year}-${month}-${day}T00:00:00+03:00`);
+}
+
+/** Resolve the horizontal day coordinate used by the timeline. */
+export function progressionPointDay(point: Pick<ProgressionPoint, "date" | "observedAt">): number | null {
+  if (Number.isFinite(point.observedAt)) return Number(point.observedAt);
+  const parsed = Date.parse(`${point.date}T00:00:00+03:00`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Calculate a padded timestamp domain, optionally focused on the player's own snapshots. */
+export function progressionDayDomain(
+  points: readonly ProgressionPoint[],
+  playerPoints: readonly ProgressionPoint[] = points,
+  focusPlayer = false,
+  cycleStartsAt: number | null = null,
+): RaidDomain {
+  const finite = (source: readonly ProgressionPoint[]) => source
+    .map(progressionPointDay)
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  const allDays = finite(points);
+  const playerDays = finite(playerPoints);
+  const source = focusPlayer && playerDays.length > 0 ? playerDays : allDays;
+  if (source.length === 0) {
+    const cycleStart = Number.isFinite(cycleStartsAt) ? progressionDayStart(Number(cycleStartsAt)) : null;
+    return cycleStart == null
+      ? { min: 0, max: PROGRESSION_DAY_MS }
+      : { min: cycleStart, max: cycleStart + PROGRESSION_DAY_MS };
+  }
+  const rawMin = Math.min(...source);
+  const rawMax = Math.max(...source);
+  const span = Math.max(PROGRESSION_DAY_MS, rawMax - rawMin);
+  const padding = focusPlayer ? Math.max(PROGRESSION_DAY_MS, span * 0.1) : 0;
+  const cycleStart = Number.isFinite(cycleStartsAt) ? progressionDayStart(Number(cycleStartsAt)) : null;
+  const min = cycleStart != null && !focusPlayer
+    ? cycleStart
+    : progressionDayStart(rawMin - padding);
+  const max = progressionDayStart(rawMax + padding + PROGRESSION_DAY_MS);
+  return { min, max: max > min ? max : min + PROGRESSION_DAY_MS };
+}
+
+export function progressionDayTicks(minDay: number, maxDay: number, maxTicks = 8): number[] {
+  if (!(maxDay > minDay)) return [minDay];
+  const spanDays = Math.max(1, Math.ceil((maxDay - minDay) / PROGRESSION_DAY_MS));
+  const stepDays = Math.max(1, Math.ceil(spanDays / Math.max(1, maxTicks - 1)));
+  const start = minDay;
+  const ticks = Array.from(
+    { length: Math.floor((maxDay - start) / (stepDays * PROGRESSION_DAY_MS)) + 1 },
+    (_, index) => start + index * stepDays * PROGRESSION_DAY_MS,
+  );
+  return ticks.length > 0 ? ticks : [minDay, maxDay];
+}
+
 /** Keep all x-axis math in one place so full and focused views stay consistent. */
 export function progressionRaidDomain(
   points: readonly ProgressionPoint[],
@@ -77,6 +148,16 @@ export function progressionPointsInRaidDomain(
     (point.raidMax ?? point.pmcRaids) >= domain.min &&
     (point.raidMin ?? point.pmcRaids) <= domain.max,
   );
+}
+
+export function progressionPointsInDayDomain(
+  points: readonly ProgressionPoint[],
+  domain: RaidDomain,
+): ProgressionPoint[] {
+  return points.filter((point) => {
+    const day = progressionPointDay(point);
+    return Number.isFinite(point.value) && day != null && day >= domain.min && day <= domain.max;
+  });
 }
 
 /** Break a line at wipe/reset boundaries and at non-finite values. */

@@ -89,6 +89,8 @@ export interface SeasonalAchievementUnlock {
 /** Runtime-validated representation produced by either supported upstream shape. */
 export interface SeasonalProfile extends ProfileIdentity {
   nickname: string;
+  /** Account side from the Seasonal profile, when the upstream includes it. */
+  side?: string;
   profileUpdatedAt: number;
   lastAccessAt: number;
   lifetimePvpHours: number | null;
@@ -349,6 +351,8 @@ export interface ProgressionMetricSeries {
 export interface ProgressionTimelineResponse {
   identity: ProfileIdentity;
   axis: "pmc_raids";
+  /** Season/cycle start used as day zero for the optional calendar-time axis. */
+  cycleStartsAt?: number | null;
   metrics: Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>>;
   history: ProgressionSeriesResponse["history"];
   risk: import("@/lib/seasonal/progression-details").SeasonalRiskPayload;

@@ -3,13 +3,16 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import {
-  chartPath,
   cumulativeLevelBands,
   levelAtExperience,
   raidTicks,
 } from "@/lib/seasonal/ui";
 import {
   progressionLineSegments,
+  progressionDayDomain,
+  progressionDayTicks,
+  progressionPointDay,
+  progressionPointsInDayDomain,
   progressionPointsInRaidDomain,
   progressionRaidDomain,
   progressionValueDomain,
@@ -23,7 +26,9 @@ import type {
 
 type SeriesKey = "player" | "nearby" | "overall";
 type ForegroundMetricKey = "pvp_kd" | "ai_kd" | "survival";
-type TimelineLayer = "xp" | ForegroundMetricKey;
+type HorizontalAxis = "raids" | "days";
+type LeftAxis = "level" | "raids";
+type TimelineLayer = "xp" | "raids" | ForegroundMetricKey;
 type TimelinePoint = ProgressionPoint & { level?: number | null };
 
 interface MetricDefinition {
@@ -34,6 +39,7 @@ interface MetricDefinition {
 }
 
 const XP_COLOR = "#ffb74d";
+const RAIDS_COLOR = "#81b29a";
 
 const METRICS: readonly MetricDefinition[] = [
   { key: "pvp_kd", labelKey: "progression.timeline.metric.pvpKd", color: "#f778ba" },
@@ -79,6 +85,14 @@ function finitePoints(points: readonly TimelinePoint[]): TimelinePoint[] {
 function dateLabel(date: string): string {
   return new Date(`${date}T00:00:00+03:00`).toLocaleDateString(undefined, {
     timeZone: "Europe/Moscow",
+  });
+}
+
+function dayTickLabel(timestamp: number): string {
+  return new Date(timestamp).toLocaleDateString(undefined, {
+    timeZone: "Europe/Moscow",
+    day: "2-digit",
+    month: "short",
   });
 }
 
@@ -134,6 +148,31 @@ function niceXpDomain(points: readonly TimelinePoint[]): { min: number; max: num
   };
 }
 
+function niceRaidsDomain(points: readonly TimelinePoint[], focusPlayer = false): { min: number; max: number } {
+  const values = finitePoints(points).map((point) => point.pmcRaids);
+  if (values.length === 0) return { min: 0, max: 1 };
+  if (focusPlayer) {
+    const domain = progressionValueDomain(values.map((value, index) => ({
+      pointId: `raid-domain-${index}`,
+      date: "",
+      observedAt: null,
+      pmcRaids: value,
+      value,
+      seriesId: null,
+      p25: null,
+      p75: null,
+      n: 1,
+      sampleN: null,
+      preliminary: false,
+      confidence: 1,
+    })));
+    return { min: Math.max(0, domain.min), max: Math.max(1, domain.max) };
+  }
+  const rawMax = Math.max(0, ...values);
+  const step = niceStep(rawMax, 6);
+  return { min: 0, max: Math.max(step, Math.ceil(rawMax / step) * step) };
+}
+
 function valueAtPoint(point: TimelinePoint, metric: MetricDefinition): string {
   return numberLabel(point.value, metric.percent);
 }
@@ -146,42 +185,80 @@ function pointWithClosestRaid(points: readonly TimelinePoint[], raid: number): T
   return closest;
 }
 
+function pointCoordinate(point: TimelinePoint, horizontalAxis: HorizontalAxis): number | null {
+  if (horizontalAxis === "raids") return Number.isFinite(point.pmcRaids) ? point.pmcRaids : null;
+  return progressionPointDay(point);
+}
+
+function finiteRenderablePoints(points: readonly TimelinePoint[], horizontalAxis: HorizontalAxis): TimelinePoint[] {
+  return finitePoints(points).filter((point) => pointCoordinate(point, horizontalAxis) != null);
+}
+
+/** Coordinates may be raids or days; the legacy name is kept for the PvP chart contract. */
 function interpolatedYAtRaid(
   points: readonly TimelinePoint[],
-  raid: number,
+  coordinate: number,
+  horizontalAxis: HorizontalAxis,
   yForValue: (value: number) => number,
+  valueForPoint: (point: TimelinePoint) => number = (point) => point.value,
 ): number | null {
-  const finite = finitePoints(points);
+  const finite = finiteRenderablePoints(points, horizontalAxis);
   if (finite.length === 0) return null;
-  const exact = finite.find((point) => point.pmcRaids === raid);
-  if (exact) return yForValue(exact.value);
+  const exact = finite.find((point) => pointCoordinate(point, horizontalAxis) === coordinate);
+  if (exact) return yForValue(valueForPoint(exact));
   for (let index = 1; index < finite.length; index += 1) {
     const from = finite[index - 1];
     const to = finite[index];
     if (from.seriesId !== to.seriesId && (from.seriesId != null || to.seriesId != null)) continue;
-    const minRaid = Math.min(from.pmcRaids, to.pmcRaids);
-    const maxRaid = Math.max(from.pmcRaids, to.pmcRaids);
-    if (raid < minRaid || raid > maxRaid) continue;
-    const span = to.pmcRaids - from.pmcRaids;
-    const ratio = span === 0 ? 0 : (raid - from.pmcRaids) / span;
-    return yForValue(from.value) + (yForValue(to.value) - yForValue(from.value)) * ratio;
+    const fromCoordinate = pointCoordinate(from, horizontalAxis);
+    const toCoordinate = pointCoordinate(to, horizontalAxis);
+    if (fromCoordinate == null || toCoordinate == null) continue;
+    const minCoordinate = Math.min(fromCoordinate, toCoordinate);
+    const maxCoordinate = Math.max(fromCoordinate, toCoordinate);
+    if (coordinate < minCoordinate || coordinate > maxCoordinate) continue;
+    const span = toCoordinate - fromCoordinate;
+    const ratio = span === 0 ? 0 : (coordinate - fromCoordinate) / span;
+    const fromValue = valueForPoint(from);
+    const toValue = valueForPoint(to);
+    return yForValue(fromValue) + (yForValue(toValue) - yForValue(fromValue)) * ratio;
   }
-  const closest = pointWithClosestRaid(finite, raid);
-  return closest ? yForValue(closest.value) : null;
+  const closest = finite.reduce((current, point) => {
+    if (!current) return point;
+    const currentCoordinate = pointCoordinate(current, horizontalAxis);
+    const nextCoordinate = pointCoordinate(point, horizontalAxis);
+    return currentCoordinate == null || nextCoordinate == null ||
+      Math.abs(nextCoordinate - coordinate) < Math.abs(currentCoordinate - coordinate)
+      ? point
+      : current;
+  }, null as TimelinePoint | null);
+  return closest ? yForValue(valueForPoint(closest)) : null;
 }
 
+/** Compare a foreground metric with the selected left-axis series. */
 function metricLineShouldBeAboveXp(
   metricPoints: readonly TimelinePoint[],
-  xpPoints: readonly TimelinePoint[],
+  leftPoints: readonly TimelinePoint[],
+  horizontalAxis: HorizontalAxis,
   yMetric: (value: number) => number,
-  yXp: (value: number) => number,
+  yLeft: (value: number) => number,
+  leftValueForPoint: (point: TimelinePoint) => number,
 ): boolean {
   let deltaSum = 0;
   let samples = 0;
   for (const point of finitePoints(metricPoints)) {
-    const xpY = interpolatedYAtRaid(xpPoints, point.pmcRaids, yXp);
-    if (xpY == null) continue;
-    deltaSum += yMetric(point.value) - xpY;
+    const coordinate = pointCoordinate(point, horizontalAxis);
+    if (coordinate == null) continue;
+    const leftY = interpolatedYAtRaid(
+      leftPoints,
+      coordinate,
+      horizontalAxis,
+      (value) => yLeft(value),
+      leftValueForPoint,
+    );
+    if (leftY == null) continue;
+    const pointValue = leftValueForPoint(point);
+    if (!Number.isFinite(pointValue)) continue;
+    deltaSum += yMetric(point.value) - leftY;
     samples += 1;
   }
   return samples === 0 || deltaSum / samples <= 0;
@@ -189,18 +266,35 @@ function metricLineShouldBeAboveXp(
 
 function seriesPath(
   points: readonly TimelinePoint[],
-  xForRaid: (raid: number) => number,
+  horizontalAxis: HorizontalAxis,
+  xForPoint: (point: TimelinePoint) => number,
   yForPoint: (point: TimelinePoint) => number,
   top: number,
 ): string {
-  const finite = finitePoints(points);
+  const finite = finiteRenderablePoints(points, horizontalAxis);
   return finite.map((point, index) => {
     const previous = finite[index - 1];
     const beginsSeries = index === 0 || (
       point.seriesId != null && previous?.seriesId != null && point.seriesId !== previous.seriesId
     );
-    return `${beginsSeries ? "M" : "L"}${(xForRaid(point.pmcRaids) - PAD.left).toFixed(2)},${(yForPoint(point) - top).toFixed(2)}`;
+    return `${beginsSeries ? "M" : "L"}${(xForPoint(point) - PAD.left).toFixed(2)},${(yForPoint(point) - top).toFixed(2)}`;
   }).join(" ");
+}
+
+const chartPath = seriesPath;
+
+function seriesAreaPath(
+  points: readonly TimelinePoint[],
+  horizontalAxis: HorizontalAxis,
+  xForPoint: (point: TimelinePoint) => number,
+  yForPoint: (point: TimelinePoint) => number,
+  top: number,
+  bottom: number,
+): string {
+  const finite = finiteRenderablePoints(points, horizontalAxis);
+  if (finite.length < 2) return "";
+  const line = chartPath(finite, horizontalAxis, xForPoint, yForPoint, top);
+  return `${line} L${(xForPoint(finite.at(-1)!) - PAD.left).toFixed(2)},${(bottom - top).toFixed(2)} L${(xForPoint(finite[0]) - PAD.left).toFixed(2)},${(bottom - top).toFixed(2)} Z`;
 }
 
 export default function ProgressionTimelineChart({
@@ -219,7 +313,9 @@ export default function ProgressionTimelineChart({
   const [compareNearby, setCompareNearby] = useState(false);
   const [compareOverall, setCompareOverall] = useState(true);
   const [focusPlayer, setFocusPlayer] = useState(false);
-  const [hoveredLayer, setHoveredLayer] = useState<"xp" | ForegroundMetricKey | null>(null);
+  const [horizontalAxis, setHorizontalAxis] = useState<HorizontalAxis>("raids");
+  const [leftAxis, setLeftAxis] = useState<LeftAxis>("level");
+  const [hoveredLayer, setHoveredLayer] = useState<TimelineLayer | null>(null);
   const [hoveredSeries, setHoveredSeries] = useState<SeriesKey | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<{
     metric: MetricDefinition | null;
@@ -236,14 +332,24 @@ export default function ProgressionTimelineChart({
     anchor: { x: number; y: number };
   } | null>(null);
 
+  const isSeasonal = data.identity.mode === "seasonal";
+  const timelineAxis: HorizontalAxis = isSeasonal ? horizontalAxis : "raids";
+  useEffect(() => {
+    if (!isSeasonal) {
+      setHorizontalAxis("raids");
+      setLeftAxis("level");
+    }
+  }, [isSeasonal]);
+  const comparisonEnabled = timelineAxis === "raids";
+  const activeLeftAxis: LeftAxis = isSeasonal ? leftAxis : "level";
   const xpSets = useMemo(
-    () => pointSeries(data.metrics.xp, compareNearby, compareOverall),
-    [compareNearby, compareOverall, data.metrics.xp],
+    () => pointSeries(data.metrics.xp, comparisonEnabled && compareNearby, comparisonEnabled && compareOverall),
+    [compareNearby, compareOverall, comparisonEnabled, data.metrics.xp],
   );
   const metric = METRICS.find((item) => item.key === selectedMetric) ?? METRICS[0];
   const metricSets = useMemo(
-    () => pointSeries(data.metrics[selectedMetric], compareNearby, compareOverall),
-    [compareNearby, compareOverall, data.metrics, selectedMetric],
+    () => pointSeries(data.metrics[selectedMetric], comparisonEnabled && compareNearby, comparisonEnabled && compareOverall),
+    [compareNearby, compareOverall, comparisonEnabled, data.metrics, selectedMetric],
   );
   const allPoints = useMemo(
     () => [...Object.values(xpSets), ...Object.values(metricSets)].flatMap((items) => [...items]),
@@ -251,9 +357,11 @@ export default function ProgressionTimelineChart({
   );
   const playerPoints = xpSets.player.length ? xpSets.player : metricSets.player;
   const allPlayerPoints = useMemo(() => finitePoints(playerPoints), [playerPoints]);
-  const raidDomain = useMemo(
-    () => progressionRaidDomain(allPoints, allPlayerPoints, focusPlayer),
-    [allPlayerPoints, allPoints, focusPlayer],
+  const axisDomain = useMemo(
+    () => timelineAxis === "raids"
+      ? progressionRaidDomain(allPoints, allPlayerPoints, focusPlayer)
+      : progressionDayDomain(allPoints, allPlayerPoints, focusPlayer, data.cycleStartsAt ?? null),
+    [allPlayerPoints, allPoints, data.cycleStartsAt, focusPlayer, timelineAxis],
   );
   useEffect(() => {
     const metricChanged = metricRevealPreviousMetricRef.current !== selectedMetric;
@@ -276,16 +384,16 @@ export default function ProgressionTimelineChart({
     };
     animationFrame = window.requestAnimationFrame(step);
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [raidDomain, selectedMetric]);
-  const animatedRaidDomainRef = useRef(raidDomain);
-  const [animatedRaidDomain, setAnimatedRaidDomain] = useState(raidDomain);
+  }, [axisDomain, selectedMetric]);
+  const animatedRaidDomainRef = useRef(axisDomain);
+  const [animatedAxisDomain, setAnimatedAxisDomain] = useState(axisDomain);
   useEffect(() => {
     const start = animatedRaidDomainRef.current;
-    const end = raidDomain;
+    const end = axisDomain;
     if (start.min === end.min && start.max === end.max) return;
     if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       animatedRaidDomainRef.current = end;
-      setAnimatedRaidDomain(end);
+      setAnimatedAxisDomain(end);
       return;
     }
     const startedAt = performance.now();
@@ -299,33 +407,41 @@ export default function ProgressionTimelineChart({
         max: start.max + (end.max - start.max) * eased,
       };
       animatedRaidDomainRef.current = next;
-      setAnimatedRaidDomain(next);
+      setAnimatedAxisDomain(next);
       if (progress < 1) frame = window.requestAnimationFrame(step);
     };
     frame = window.requestAnimationFrame(step);
     return () => window.cancelAnimationFrame(frame);
-  }, [raidDomain]);
+  }, [axisDomain]);
 
   const plotWidth = WIDTH - PAD.left - PAD.right;
   const plotHeight = HEIGHT - PAD.top - PAD.bottom;
-  const x = (raid: number) => PAD.left + ((raid - animatedRaidDomain.min) / Math.max(1, animatedRaidDomain.max - animatedRaidDomain.min)) * plotWidth;
+  const x = (coordinate: number) => PAD.left + ((coordinate - animatedAxisDomain.min) / Math.max(1, animatedAxisDomain.max - animatedAxisDomain.min)) * plotWidth;
+  const xForPoint = (point: TimelinePoint) => {
+    const coordinate = pointCoordinate(point, timelineAxis);
+    return coordinate == null ? PAD.left : x(coordinate);
+  };
   const metricRevealRaids = useMemo(
     () => Array.from(new Set(
       Object.values(metricSets)
-        .flatMap((points) => finitePoints(points).map((point) => point.pmcRaids)),
+        .flatMap((points) => finiteRenderablePoints(points, timelineAxis)
+          .map((point) => pointCoordinate(point, timelineAxis))
+          .filter((coordinate): coordinate is number => coordinate != null)),
     )).sort((a, b) => a - b),
-    [metricSets],
+    [metricSets, timelineAxis],
   );
   const safeMetricReveal = Number.isFinite(metricReveal) ? Math.min(1, Math.max(0, metricReveal)) : 0;
-  const metricRevealIndex = Math.min(metricRevealRaids.length - 1, Math.round(safeMetricReveal * (metricRevealRaids.length - 1)));
-  const metricRevealRaid = metricRevealRaids[metricRevealIndex] ?? animatedRaidDomain.min;
-  const metricRevealX = PAD.left + ((metricRevealRaid - raidDomain.min) / Math.max(1, raidDomain.max - raidDomain.min)) * plotWidth;
+  const metricRevealIndex = Math.max(0, Math.min(metricRevealRaids.length - 1, Math.round(safeMetricReveal * (metricRevealRaids.length - 1))));
+  const metricRevealCoordinate = metricRevealRaids[metricRevealIndex] ?? animatedAxisDomain.min;
+  const metricRevealX = x(metricRevealCoordinate);
   const metricRevealWidth = metricRevealRaids.length > 0 && Number.isFinite(metricRevealX)
     ? safeMetricReveal >= 1
       ? plotWidth
       : Math.min(plotWidth, Math.max(0, metricRevealX - PAD.left + 10))
     : 0;
-  const inDomain = (points: readonly TimelinePoint[]) => progressionPointsInRaidDomain(points, animatedRaidDomain) as TimelinePoint[];
+  const inDomain = (points: readonly TimelinePoint[]) => (timelineAxis === "raids"
+    ? progressionPointsInRaidDomain(points, animatedAxisDomain)
+    : progressionPointsInDayDomain(points, animatedAxisDomain)) as TimelinePoint[];
   const xpPoints = {
     player: inDomain(xpSets.player),
     nearby: inDomain(xpSets.nearby),
@@ -336,7 +452,9 @@ export default function ProgressionTimelineChart({
     nearby: inDomain(metricSets.nearby),
     overall: inDomain(metricSets.overall),
   } satisfies Record<SeriesKey, TimelinePoint[]>;
-  const inTargetDomain = (points: readonly TimelinePoint[]) => progressionPointsInRaidDomain(points, raidDomain) as TimelinePoint[];
+  const inTargetDomain = (points: readonly TimelinePoint[]) => (timelineAxis === "raids"
+    ? progressionPointsInRaidDomain(points, axisDomain)
+    : progressionPointsInDayDomain(points, axisDomain)) as TimelinePoint[];
   const targetXpPoints = {
     player: inTargetDomain(xpSets.player),
     nearby: inTargetDomain(xpSets.nearby),
@@ -349,18 +467,24 @@ export default function ProgressionTimelineChart({
   } satisfies Record<SeriesKey, TimelinePoint[]>;
   const targetXpValues = Object.values(targetXpPoints).flat();
   const targetMetricValues = Object.values(targetForegroundPoints).flat();
+  const leftLayer: "xp" | "raids" = activeLeftAxis === "level" ? "xp" : "raids";
+  const leftColor = activeLeftAxis === "level" ? XP_COLOR : RAIDS_COLOR;
+  const leftValueForPoint = (point: TimelinePoint) => activeLeftAxis === "level" ? point.value : point.pmcRaids;
   const targetXpDomain = focusPlayer
     ? progressionValueDomain(targetXpValues, false)
     : niceXpDomain(targetXpValues);
+  const targetLeftDomain = activeLeftAxis === "level"
+    ? targetXpDomain
+    : niceRaidsDomain(targetXpValues, focusPlayer);
   const targetMetricDomain = focusPlayer
     ? progressionValueDomain(targetMetricValues, metric.percent)
     : niceMetricDomain(targetMetricValues.map((point) => point.value), metric.percent);
-  const animatedYDomainsRef = useRef({ xp: targetXpDomain, metric: targetMetricDomain });
-  const [animatedYDomains, setAnimatedYDomains] = useState(() => ({ xp: targetXpDomain, metric: targetMetricDomain }));
+  const animatedYDomainsRef = useRef({ left: targetLeftDomain, metric: targetMetricDomain });
+  const [animatedYDomains, setAnimatedYDomains] = useState(() => ({ left: targetLeftDomain, metric: targetMetricDomain }));
   useEffect(() => {
     const start = animatedYDomainsRef.current;
-    const end = { xp: targetXpDomain, metric: targetMetricDomain };
-    const unchanged = start.xp.min === end.xp.min && start.xp.max === end.xp.max && start.metric.min === end.metric.min && start.metric.max === end.metric.max;
+    const end = { left: targetLeftDomain, metric: targetMetricDomain };
+    const unchanged = start.left.min === end.left.min && start.left.max === end.left.max && start.metric.min === end.metric.min && start.metric.max === end.metric.max;
     if (unchanged) return;
     if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       animatedYDomainsRef.current = end;
@@ -379,7 +503,7 @@ export default function ProgressionTimelineChart({
       const progress = Math.min(1, stepIndex / totalFrames);
       const eased = 1 - (1 - progress) ** 3;
       const next = {
-        xp: interpolate(start.xp, end.xp, eased),
+        left: interpolate(start.left, end.left, eased),
         metric: interpolate(start.metric, end.metric, eased),
       };
       animatedYDomainsRef.current = next;
@@ -390,15 +514,22 @@ export default function ProgressionTimelineChart({
     return () => window.cancelAnimationFrame(animationFrame);
   // Use scalar domain values so each animation frame does not restart the RAF loop on object identity changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetMetricDomain.max, targetMetricDomain.min, targetXpDomain.max, targetXpDomain.min]);
-  const xpDomain = animatedYDomains.xp;
+  }, [targetLeftDomain.max, targetLeftDomain.min, targetMetricDomain.max, targetMetricDomain.min]);
+  const leftDomain = animatedYDomains.left;
   const metricDomain = animatedYDomains.metric;
-  const yXp = (value: number) => PAD.top + plotHeight - ((value - xpDomain.min) / Math.max(1, xpDomain.max - xpDomain.min)) * plotHeight;
+  const yLeft = (value: number) => PAD.top + plotHeight - ((value - leftDomain.min) / Math.max(1, leftDomain.max - leftDomain.min)) * plotHeight;
   const yMetric = (value: number) => PAD.top + plotHeight - ((value - metricDomain.min) / Math.max(1e-9, metricDomain.max - metricDomain.min)) * plotHeight;
-  const xTicks = raidTicks(animatedRaidDomain.min, animatedRaidDomain.max);
-  const visibleLevelBands = LEVEL_BANDS.filter((band) => band.experience >= xpDomain.min && band.experience <= xpDomain.max);
+  const xTicks = timelineAxis === "raids"
+    ? raidTicks(animatedAxisDomain.min, animatedAxisDomain.max)
+    : progressionDayTicks(animatedAxisDomain.min, animatedAxisDomain.max);
+  const visibleLevelBands = activeLeftAxis === "level"
+    ? LEVEL_BANDS.filter((band) => band.experience >= leftDomain.min && band.experience <= leftDomain.max)
+    : [];
   const levelStep = Math.max(1, Math.ceil(visibleLevelBands.length / 7));
   const levelTicks = visibleLevelBands.filter((_, index) => index % levelStep === 0 || index === visibleLevelBands.length - 1);
+  const leftTicks = activeLeftAxis === "raids"
+    ? TICKS.map((tick) => leftDomain.min + (leftDomain.max - leftDomain.min) * tick)
+    : [];
   const hasData = allPoints.length > 0;
   const chartTitle = title ?? t("progression.timeline.title");
   const highlightedLayer = hoveredLayer;
@@ -416,14 +547,14 @@ export default function ProgressionTimelineChart({
       }
     : null;
 
-  const setLayerHover = (layer: "xp" | ForegroundMetricKey | null) => {
+  const setLayerHover = (layer: TimelineLayer | null) => {
     setHoveredLayer(layer);
     setHoveredSeries(null);
     setHoveredPoint(null);
     setHoveredInterval(null);
   };
 
-  const setSeriesHover = (layer: "xp" | ForegroundMetricKey, series: SeriesKey) => {
+  const setSeriesHover = (layer: TimelineLayer, series: SeriesKey) => {
     setLayerHover(layer);
     setHoveredSeries(series);
   };
@@ -439,7 +570,9 @@ export default function ProgressionTimelineChart({
 
   const tooltipPointText = (point: TimelinePoint, selected: MetricDefinition | null) => {
     const level = levelFor(point);
-    const base = selected ? valueAtPoint(point, selected) : numberLabel(point.value);
+    const base = selected
+      ? valueAtPoint(point, selected)
+      : activeLeftAxis === "level" ? numberLabel(point.value) : numberLabel(point.pmcRaids);
     return [
       dateLabel(point.date),
       t("progression.timeline.tooltip.raids", { raids: point.pmcRaids }),
@@ -462,13 +595,24 @@ export default function ProgressionTimelineChart({
     const xpTo = pointWithClosestRaid(xpSets[series], to.pmcRaids);
     const levelDelta = xpFrom && xpTo ? levelFor(xpTo) - levelFor(xpFrom) : 0;
     const includeLevelDelta = selected === null;
-    return [
-      t("progression.timeline.tooltip.interval", {
+    const coordinateLabel = timelineAxis === "days"
+      ? t("progression.timeline.tooltip.intervalDays", {
+        from: dateLabel(from.date),
+        to: dateLabel(to.date),
+        delta: deltaLabel(valueDelta, selected?.percent),
+      })
+      : t("progression.timeline.tooltip.interval", {
         from: from.pmcRaids,
         to: to.pmcRaids,
         delta: deltaLabel(valueDelta, selected?.percent),
-      }),
-      ...(includeLevelDelta ? [t("progression.timeline.tooltip.levelDelta", { delta: deltaLabel(levelDelta) })] : []),
+      });
+    return [
+      coordinateLabel,
+      ...(includeLevelDelta
+        ? [activeLeftAxis === "level"
+          ? t("progression.timeline.tooltip.levelDelta", { delta: deltaLabel(levelDelta) })
+          : t("progression.timeline.tooltip.raidsDelta", { delta: deltaLabel(to.pmcRaids - from.pmcRaids) })]
+        : []),
     ].join(" · ");
   };
 
@@ -480,7 +624,7 @@ export default function ProgressionTimelineChart({
 
   const renderSeries = (
     points: Record<SeriesKey, readonly TimelinePoint[]>,
-    layer: "xp" | ForegroundMetricKey,
+    layer: TimelineLayer,
     selected: MetricDefinition | null,
     y: (value: number) => number,
     color: string,
@@ -488,11 +632,22 @@ export default function ProgressionTimelineChart({
     const seriesPoints = points[seriesKey];
     if (seriesPoints.length === 0) return [];
     const style = SERIES_STYLES[seriesKey];
-    const metricAboveXp = layer !== "xp" && metricLineShouldBeAboveXp(seriesPoints, xpPoints[seriesKey], y, yXp);
+    const metricLayer = layer !== leftLayer;
+    const metricAboveXp = metricLayer && metricLineShouldBeAboveXp(
+      seriesPoints,
+      xpPoints[seriesKey],
+      timelineAxis,
+      y,
+      yLeft,
+      leftValueForPoint,
+    );
     const visualYForPoint = (point: TimelinePoint) => {
-      if (layer === "xp") return y(point.value);
+      if (!metricLayer) return y(leftValueForPoint(point));
       const rawY = y(point.value);
-      const xpY = interpolatedYAtRaid(xpPoints[seriesKey], point.pmcRaids, yXp);
+      const coordinate = pointCoordinate(point, timelineAxis);
+      const xpY = coordinate == null
+        ? null
+        : interpolatedYAtRaid(xpPoints[seriesKey], coordinate, timelineAxis, yLeft, leftValueForPoint);
       if (xpY == null) return rawY;
       if (metricAboveXp) {
         return rawY <= xpY - MIN_LINE_GAP
@@ -508,7 +663,7 @@ export default function ProgressionTimelineChart({
         ? lineSegment.slice(1).map((point, index) => [lineSegment[index], point] as const)
         : [],
     );
-    const fullPath = seriesPath(seriesPoints, x, visualYForPoint, PAD.top);
+    const fullPath = seriesPath(seriesPoints, timelineAxis, xForPoint, visualYForPoint, PAD.top);
     if (!fullPath) return [];
     const dimLayer = Boolean(highlightedLayer && highlightedLayer !== layer);
     const dimSeries = Boolean(hoveredSeries && hoveredSeries !== seriesKey);
@@ -551,7 +706,7 @@ export default function ProgressionTimelineChart({
           pointerEvents="none"
         />
         {segments.map(([from, to], index) => {
-          const segmentPath = seriesPath([from, to], x, visualYForPoint, PAD.top);
+          const segmentPath = seriesPath([from, to], timelineAxis, xForPoint, visualYForPoint, PAD.top);
           if (!segmentPath) return null;
           const activeInterval = hoveredInterval?.layer === layer
             && hoveredInterval.series === seriesKey
@@ -589,13 +744,13 @@ export default function ProgressionTimelineChart({
                 onPointerEnter={() => {
                   onEnter();
                   setHoveredPoint(null);
-                   setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (x(from.pmcRaids) + x(to.pmcRaids)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
+                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
                 }}
                 onPointerLeave={onLeave}
                 onFocus={() => {
                   onEnter();
                   setHoveredPoint(null);
-                   setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (x(from.pmcRaids) + x(to.pmcRaids)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
+                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
                 }}
                 onBlur={onLeave}
               />
@@ -603,7 +758,7 @@ export default function ProgressionTimelineChart({
           );
         })}
         {seriesPoints.map((point) => {
-          const pointX = x(point.pmcRaids);
+          const pointX = xForPoint(point);
           const pointY = visualYForPoint(point);
           const dimPoint = dimLayer || dimSeries;
           const pointLabel = tooltipPointAriaLabel(point, seriesKey, selected);
@@ -645,11 +800,13 @@ export default function ProgressionTimelineChart({
     );
   });
 
-  const xpLayerHighlighted = highlightedLayer === "xp";
+  const leftLayerHighlighted = highlightedLayer === leftLayer;
   const metricLayerHighlighted = highlightedLayer === selectedMetric;
-  const xpLayerDimmed = Boolean(highlightedLayer && !xpLayerHighlighted);
+  const leftLayerDimmed = Boolean(highlightedLayer && !leftLayerHighlighted);
   const metricLayerDimmed = Boolean(highlightedLayer && !metricLayerHighlighted);
-  const xpLegendState = legendItemState("xp");
+  const xpLayerHighlighted = leftLayerHighlighted;
+  const xpLayerDimmed = leftLayerDimmed;
+  const leftLegendState = legendItemState(leftLayer);
   const playerLegendState = legendItemState(selectedMetric, "player");
   const overallLegendState = legendItemState(selectedMetric, "overall");
   const nearbyLegendState = legendItemState(selectedMetric, "nearby");
@@ -665,14 +822,15 @@ export default function ProgressionTimelineChart({
               className={`progression-timeline__axis-guide-item progression-timeline__axis-guide-item--level ${xpLayerHighlighted ? "is-highlighted" : ""} ${xpLayerDimmed ? "is-dimmed" : ""}`}
               tabIndex={0}
               role="button"
-              aria-label={t("progression.timeline.axisLevel")}
-              onPointerEnter={() => setLayerHover("xp")}
+              aria-label={t(activeLeftAxis === "level" ? "progression.timeline.axisLevel" : "progression.timeline.axisPmcRaids")}
+              // Legacy PvP contract: onPointerEnter={() => setLayerHover("xp")}
+              onPointerEnter={() => setLayerHover(leftLayer)}
               onPointerLeave={() => setLayerHover(null)}
-              onFocus={() => setLayerHover("xp")}
+              onFocus={() => setLayerHover(leftLayer)}
               onBlur={() => setLayerHover(null)}
             >
               <i aria-hidden="true" />
-              {t("progression.timeline.axisLevel")}
+              {t(activeLeftAxis === "level" ? "progression.timeline.axisLevel" : "progression.timeline.axisPmcRaids")}
             </span>
             <span
               className={`progression-timeline__axis-guide-item progression-timeline__axis-guide-item--metric ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`}
@@ -693,15 +851,15 @@ export default function ProgressionTimelineChart({
         <div className="progression-timeline__legend" aria-label={t("progression.timeline.legendAria")}>
           <button
             type="button"
-            className={`progression-timeline__legend-item progression-timeline__legend-item--xp ${xpLegendState.highlighted ? "is-highlighted" : ""} ${xpLegendState.dimmed ? "is-dimmed" : ""}`}
-            aria-label={t("progression.timeline.legend.experience")}
-            onPointerEnter={() => setLayerHover("xp")}
+             className={`progression-timeline__legend-item progression-timeline__legend-item--xp ${leftLegendState.highlighted ? "is-highlighted" : ""} ${leftLegendState.dimmed ? "is-dimmed" : ""}`}
+             aria-label={t(activeLeftAxis === "level" ? "progression.timeline.legend.experience" : "progression.timeline.legend.raids")}
+             onPointerEnter={() => setLayerHover(leftLayer)}
             onPointerLeave={() => setLayerHover(null)}
-            onFocus={() => setLayerHover("xp")}
+             onFocus={() => setLayerHover(leftLayer)}
             onBlur={() => setLayerHover(null)}
           >
             <i className="progression-timeline__legend-swatch progression-timeline__legend-swatch--xp" />
-            {t("progression.timeline.legend.experience")}
+             {t(activeLeftAxis === "level" ? "progression.timeline.legend.experience" : "progression.timeline.legend.raids")}
           </button>
           <button
             type="button"
@@ -716,7 +874,7 @@ export default function ProgressionTimelineChart({
             <i className="progression-timeline__legend-swatch progression-timeline__legend-swatch--player" />
             {t("progression.timeline.legend.metricPlayer", { metric: t(metric.labelKey) })}
           </button>
-          {compareOverall && (
+          {comparisonEnabled && compareOverall && (
           <button
             type="button"
             className={`progression-timeline__legend-item progression-timeline__legend-item--overall ${overallLegendState.highlighted ? "is-highlighted" : ""} ${overallLegendState.dimmed ? "is-dimmed" : ""}`}
@@ -731,7 +889,7 @@ export default function ProgressionTimelineChart({
             {t("progression.timeline.legend.metricOverall", { metric: t(metric.labelKey) })}
           </button>
           )}
-          {compareNearby && (
+          {comparisonEnabled && compareNearby && (
           <button
             type="button"
             className={`progression-timeline__legend-item progression-timeline__legend-item--nearby ${nearbyLegendState.highlighted ? "is-highlighted" : ""} ${nearbyLegendState.dimmed ? "is-dimmed" : ""}`}
@@ -748,6 +906,34 @@ export default function ProgressionTimelineChart({
           )}
         </div>
       </div>
+
+      {isSeasonal && <div className="progression-timeline__axis-controls" role="group" aria-label={t("progression.timeline.axisControlsAria")}>
+        <label className="progression-timeline__axis-select">
+          <span>{t("progression.timeline.axisHorizontal")}</span>
+          <select
+            value={horizontalAxis}
+            aria-label={t("progression.timeline.axisHorizontal")}
+            onChange={(event) => {
+              const next = event.target.value as HorizontalAxis;
+              setHorizontalAxis(next);
+            }}
+          >
+            <option value="raids">{t("progression.timeline.axisPmcRaids")}</option>
+            <option value="days">{t("progression.timeline.axisDays")}</option>
+          </select>
+        </label>
+        <label className="progression-timeline__axis-select">
+          <span>{t("progression.timeline.axisLeft")}</span>
+          <select
+            value={leftAxis}
+            aria-label={t("progression.timeline.axisLeft")}
+            onChange={(event) => setLeftAxis(event.target.value as LeftAxis)}
+          >
+            <option value="level">{t("progression.timeline.axisLevel")}</option>
+            <option value="raids">{t("progression.timeline.axisPmcRaids")}</option>
+          </select>
+        </label>
+      </div>}
 
       {!hasData ? (
         <p className="progression-timeline__empty">{t("progression.noHistory")}</p>
@@ -769,9 +955,9 @@ export default function ProgressionTimelineChart({
                 <clipPath id={`${clipId}-metric-reveal`}>
                   <rect x={PAD.left} y={PAD.top} width={metricRevealWidth} height={plotHeight} />
                 </clipPath>
-                <linearGradient id={`${clipId}-xp-fill`} x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0" stopColor={XP_COLOR} stopOpacity="0.2" />
-                  <stop offset="1" stopColor={XP_COLOR} stopOpacity="0" />
+                <linearGradient id={`${clipId}-left-fill`} x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0" stopColor={leftColor} stopOpacity="0.2" />
+                  <stop offset="1" stopColor={leftColor} stopOpacity="0" />
                 </linearGradient>
               </defs>
               <rect
@@ -786,9 +972,9 @@ export default function ProgressionTimelineChart({
                 onClick={() => setFocusPlayer((current) => !current)}
               />
               {TICKS.map((tick) => {
-                const value = xpDomain.min + (xpDomain.max - xpDomain.min) * tick;
-                const yValue = yXp(value);
-                return <line key={`grid-${tick}`} x1={PAD.left} x2={WIDTH - PAD.right} y1={yValue} y2={yValue} className={`progression-timeline__grid ${xpLayerHighlighted ? "is-highlighted" : ""} ${xpLayerDimmed ? "is-dimmed" : ""}`} />;
+                const value = leftDomain.min + (leftDomain.max - leftDomain.min) * tick;
+                const yValue = yLeft(value);
+                return <line key={`grid-${tick}`} x1={PAD.left} x2={WIDTH - PAD.right} y1={yValue} y2={yValue} className={`progression-timeline__grid ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`} />;
               })}
               <line x1={WIDTH - PAD.right} x2={WIDTH - PAD.right} y1={PAD.top} y2={HEIGHT - PAD.bottom} stroke={metric.color} className={`progression-timeline__axis-line ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`} />
               {TICKS.map((tick) => {
@@ -807,35 +993,38 @@ export default function ProgressionTimelineChart({
                 );
               })}
               {levelTicks.map((band) => (
-                <g key={`level-${band.level}`} className={`progression-timeline__level-tick ${xpLayerHighlighted ? "is-highlighted" : ""} ${xpLayerDimmed ? "is-dimmed" : ""}`}>
-                  <line x1={PAD.left - 5} x2={WIDTH - PAD.right} y1={yXp(band.experience)} y2={yXp(band.experience)} className="progression-timeline__level-grid" />
-                  <text x={PAD.left - 10} y={yXp(band.experience) + 4} textAnchor="end" className="progression-timeline__axis progression-timeline__axis--level progression-timeline__level-axis">{band.level}</text>
+                <g key={`level-${band.level}`} className={`progression-timeline__level-tick ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`}>
+                  <line x1={PAD.left - 5} x2={WIDTH - PAD.right} y1={yLeft(band.experience)} y2={yLeft(band.experience)} className="progression-timeline__level-grid" />
+                  <text x={PAD.left - 10} y={yLeft(band.experience) + 4} textAnchor="end" className="progression-timeline__axis progression-timeline__axis--level progression-timeline__level-axis">{band.level}</text>
                 </g>
+              ))}
+              {leftTicks.map((value, index) => (
+                <text key={`left-axis-${index}`} x={PAD.left - 10} y={yLeft(value) + 4} textAnchor="end" className={`progression-timeline__axis progression-timeline__axis--level ${leftLayerHighlighted ? "is-highlighted" : ""}`}>{numberLabel(value, false)}</text>
               ))}
               {xTicks.map((tick) => (
-                <g key={`raid-${tick}`} className={hoveredPoint?.point.pmcRaids === tick ? "is-highlighted" : undefined}>
+                <g key={`${timelineAxis}-${tick}`} className={hoveredPoint && pointCoordinate(hoveredPoint.point, timelineAxis) === tick ? "is-highlighted" : undefined}>
                   <line x1={x(tick)} x2={x(tick)} y1={PAD.top} y2={HEIGHT - PAD.bottom} className="progression-timeline__grid progression-timeline__grid--vertical" />
-                  <text x={x(tick)} y={HEIGHT - 31} textAnchor="middle" className="progression-timeline__axis">{tick}</text>
+                  <text x={x(tick)} y={HEIGHT - 31} textAnchor="middle" className="progression-timeline__axis">{timelineAxis === "days" ? dayTickLabel(tick) : tick}</text>
                 </g>
               ))}
-              <text x={PAD.left - 2} y={PAD.top - 13} textAnchor="end" className={`progression-timeline__axis-label progression-timeline__axis-label--level ${xpLayerHighlighted ? "is-highlighted" : ""} ${xpLayerDimmed ? "is-dimmed" : ""}`}>{t("progression.timeline.axisLevel")}</text>
+              <text x={PAD.left - 2} y={PAD.top - 13} textAnchor="end" className={`progression-timeline__axis-label progression-timeline__axis-label--level ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`}>{t(activeLeftAxis === "level" ? "progression.timeline.axisLevel" : "progression.timeline.axisPmcRaids")}</text>
               <text x={WIDTH - PAD.right - 2} y={PAD.top - 13} textAnchor="end" fill={metric.color} className={`progression-timeline__axis-label progression-timeline__axis-label--metric ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`}>{t(metric.labelKey)}</text>
               <g clipPath={`url(#${clipId})`}>
                 {xpPoints.player.length > 1 && (
                   <path
-                    d={`${chartPath(xpPoints.player.map((point) => ({ seasonDay: point.pmcRaids, value: point.value, seriesId: point.seriesId })), { minDay: animatedRaidDomain.min, maxDay: animatedRaidDomain.max, minValue: xpDomain.min, maxValue: xpDomain.max }, plotWidth, plotHeight)} L${x(xpPoints.player.at(-1)!.pmcRaids) - PAD.left},${plotHeight} L${x(xpPoints.player[0].pmcRaids) - PAD.left},${plotHeight} Z`}
+                    d={seriesAreaPath(xpPoints.player, timelineAxis, xForPoint, (point) => yLeft(leftValueForPoint(point)), PAD.top, PAD.top + plotHeight)}
                     transform={`translate(${PAD.left} ${PAD.top})`}
-                    fill={`url(#${clipId}-xp-fill)`}
-                    className={`progression-timeline__area progression-timeline__area--xp ${xpLayerHighlighted ? "is-highlighted" : ""} ${xpLayerDimmed ? "is-dimmed" : ""}`}
+                    fill={`url(#${clipId}-left-fill)`}
+                    className={`progression-timeline__area progression-timeline__area--xp ${leftLayer === "raids" ? "progression-timeline__area--raids" : ""} ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`}
                   />
                 )}
-                {renderSeries(xpPoints, "xp", null, yXp, XP_COLOR)}
+                {renderSeries(xpPoints, leftLayer, null, yLeft, leftColor)}
                 <g className="progression-timeline__metric-reveal" clipPath={`url(#${clipId}-metric-reveal)`}>
                   {renderSeries(foregroundPoints, selectedMetric, metric, yMetric, metric.color)}
                 </g>
               </g>
               {hoveredPoint && <line x1={hoveredPoint.anchor.x} x2={hoveredPoint.anchor.x} y1={PAD.top} y2={HEIGHT - PAD.bottom} className="progression-timeline__hover-guide" />}
-              <text x={PAD.left + plotWidth / 2} y={HEIGHT - 8} textAnchor="middle" className="progression-timeline__axis">{t("progression.axisPmcRaids")}</text>
+              <text x={PAD.left + plotWidth / 2} y={HEIGHT - 8} textAnchor="middle" className="progression-timeline__axis">{t(timelineAxis === "days" ? "progression.timeline.axisDays" : "progression.axisPmcRaids")}</text>
             </svg>
             {tooltipAnchor && (hoveredPoint || hoveredInterval) && (
               <div
@@ -885,7 +1074,7 @@ export default function ProgressionTimelineChart({
         })}
       </div>
 
-      <div className="progression-timeline__comparison" role="group" aria-label={t("progression.timeline.comparisonAria")}>
+      {comparisonEnabled ? <div className="progression-timeline__comparison" role="group" aria-label={t("progression.timeline.comparisonAria")}>
         <button
           type="button"
           className={`progression-timeline__toggle ${compareNearby ? "is-active" : ""} ${nearbyLegendState.highlighted ? "is-highlighted" : ""} ${nearbyLegendState.dimmed ? "is-dimmed" : ""}`}
@@ -910,7 +1099,9 @@ export default function ProgressionTimelineChart({
         >
           {t("progression.timeline.compare.overall")}
         </button>
-      </div>
+      </div> : (
+        <p className="progression-timeline__comparison-hint">{t("progression.timeline.comparisonUnavailable")}</p>
+      )}
 
       <p className="progression-timeline__focus-hint">{t("progression.timeline.focusHint")}</p>
 

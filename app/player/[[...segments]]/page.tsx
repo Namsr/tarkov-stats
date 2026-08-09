@@ -6,7 +6,7 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
 import { getPlayerLevels } from "@/lib/tarkov-api";
 import { parsePlayerId } from "@/lib/player-id";
-import { isGameMode } from "@/types/seasonal";
+import { isGameMode, SEASONAL_UPSTREAM_MODE } from "@/types/seasonal";
 
 interface Props {
   params: Promise<{ segments?: string[] }>;
@@ -18,7 +18,8 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   const route = await params;
   const query = await searchParams;
   const segments = route.segments ?? [];
-  const mode = segments.length === 1 ? "regular" : segments[0];
+  const routeMode = segments.length === 1 ? "regular" : segments[0];
+  const mode = routeMode === SEASONAL_UPSTREAM_MODE ? "seasonal" : routeMode;
   const aid = segments.length === 1 ? segments[0] : segments[1];
   if (segments.length < 1 || segments.length > 2 || !aid || !isGameMode(mode)) {
     return <ModeUnavailable />;

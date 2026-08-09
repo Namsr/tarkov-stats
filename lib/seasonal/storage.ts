@@ -597,11 +597,16 @@ export function toProfile(
   } catch {
     achievementIds = [];
   }
+  const snapshotSide = snapshot && Number(snapshot.profile_updated_at) === Number(row.profile_updated_at) &&
+    typeof snapshot.side === "string" && snapshot.side.trim() !== ""
+    ? snapshot.side.trim()
+    : undefined;
   const profile: PlayerProfileRecord = {
     mode: String(row.mode) as ProfileIdentity["mode"], cycleId: String(row.cycle_id), aid: Number(row.aid),
     nickname: String(row.nickname), profileUpdatedAt: Number(row.profile_updated_at),
     lastAccessAt: Number(row.last_access_at), lifetimePvpHours: row.lifetime_pvp_hours == null ? null : Number(row.lifetime_pvp_hours),
     counters: rowCounters(row), firstSeenAt: Number(row.first_seen_at), lastSeenAt: Number(row.last_seen_at),
+    ...(snapshotSide ? { side: snapshotSide } : {}),
     pvpEnrichment: {
       lifetimeHours: row.lifetime_pvp_hours == null ? null : Number(row.lifetime_pvp_hours),
       achievementIds,
@@ -755,10 +760,11 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
             const stats = profile.seasonalStats;
             const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
             db.prepare(`UPDATE progression_snapshots SET
-              total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
+              side = COALESCE(?, side), total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
               level = ?, prestige = ?, longest_win_streak = ?,
               achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements)
               WHERE ${identityWhere} AND profile_updated_at = ?`).run(
+              profile.side ?? null,
               stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
               stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
               achievementSnapshot.count, achievementSnapshot.value,
@@ -790,10 +796,11 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
         const inserted = db.prepare(`INSERT INTO progression_snapshots (
           mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
-          experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
+          side, experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
           pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements
-        ) VALUES (${Array.from({ length: 25 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
+        ) VALUES (${Array.from({ length: 26 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
           profile.profileUpdatedAt, capturedAt, moscowDate(profile.profileUpdatedAt), seriesId,
+          profile.side ?? null,
           profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
           profile.counters.scavRaids, seasonalStats?.survivedRaids ?? null, profile.counters.pmcSurvived,
           seasonalStats?.deaths ?? null, profile.counters.pmcDeaths, profile.counters.pmcKills,
