@@ -12,10 +12,12 @@ export default function ProfileModeSwitch({
   current,
   page,
   aid,
+  onBeforeNavigate,
 }: {
   current: GameMode;
   page: "average" | "player";
   aid?: number;
+  onBeforeNavigate?: (mode: GameMode) => void;
 }) {
   const { t } = useI18n();
   const router = useRouter();
@@ -51,6 +53,7 @@ export default function ProfileModeSwitch({
         const isProfileModeSwitch = page === "player" &&
           (current === "regular" || current === "seasonal") &&
           (mode === "regular" || mode === "seasonal");
+        const canNavigateImmediately = page === "average" || isProfileModeSwitch;
         return (
           <Link
             key={mode}
@@ -58,9 +61,10 @@ export default function ProfileModeSwitch({
             aria-current={mode === current ? "page" : undefined}
             className="mode-switch__item"
             onClick={(event) => {
-              if (isProfileModeSwitch && mode !== current && event.button === 0 &&
+              if (canNavigateImmediately && mode !== current && event.button === 0 &&
                 !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
                 event.preventDefault();
+                onBeforeNavigate?.(mode);
                 const hash = window.location.hash;
                 const target = hash && !href.endsWith(hash) ? `${href.split("#")[0]}${hash}` : href;
                 router.push(target, { scroll: false });

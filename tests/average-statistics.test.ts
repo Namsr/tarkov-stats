@@ -13,6 +13,12 @@ import { DatabaseSync } from "node:sqlite";
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "next/server") return nextResolve("next/server.js", context);
+    if (specifier === "next/cache") {
+      return {
+        shortCircuit: true,
+        url: pathToFileURL(resolve("tests/fixtures/next-cache-shim.mjs")).href,
+      };
+    }
     if (specifier.startsWith("@/")) {
       return {
         shortCircuit: true,
@@ -371,8 +377,11 @@ test("average and cohort API contracts default, echo median, and reject unknown 
     "http://local/api/average?statistic=median&period=90d",
   ));
   const medianBody = await medianResponse.json();
-  assert.equal(medianResponse.headers.get("cache-control"), "public, max-age=60");
-  assert.equal(medianResponse.headers.get("x-average-cache"), "miss");
+  assert.equal(
+    medianResponse.headers.get("cache-control"),
+    "public, max-age=1800, s-maxage=1800, stale-while-revalidate=300",
+  );
+  assert.equal(medianResponse.headers.get("x-average-cache"), "next-data");
   assert.equal(medianBody.statistic, "median");
   assert.equal(medianBody.period, "90d");
   assert.equal(medianBody.averages.total_raids, 2);
@@ -380,12 +389,12 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   const cachedMedian = await getAverage(new NextRequest(
     "http://local/api/average?statistic=median&period=90d",
   ));
-  assert.equal(cachedMedian.headers.get("x-average-cache"), "hit");
+  assert.equal(cachedMedian.headers.get("x-average-cache"), "next-data");
   assert.equal((await cachedMedian.json()).averages.total_raids, 2);
   const rangedMedian = await getAverage(new NextRequest(
     "http://local/api/average?dimension=hours&min=100&max=100&statistic=median&period=90d",
   ));
-  assert.equal(rangedMedian.headers.get("x-average-cache"), "bypass");
+  assert.equal(rangedMedian.headers.get("x-average-cache"), "next-data");
   assert.equal((await rangedMedian.json()).averages.total_raids, 100);
 
   assert.equal((await getAverage(new NextRequest(

@@ -10,10 +10,12 @@ export default function RegularAverageProgression({
   levelBands,
   mode = "regular",
   cycleId = "persistent",
+  requestRef,
 }: {
   levelBands: LevelBand[];
   mode?: "regular" | "seasonal";
   cycleId?: string;
+  requestRef?: { current: AbortController | null };
 }) {
   const { t } = useI18n();
   const [data, setData] = useState<ProgressionAverageResponse | null>(null);
@@ -21,6 +23,9 @@ export default function RegularAverageProgression({
 
   useEffect(() => {
     const controller = new AbortController();
+    setData(null);
+    setError("");
+    if (requestRef) requestRef.current = controller;
     const params = new URLSearchParams();
     if (mode === "seasonal") {
       params.set("mode", mode);
@@ -38,11 +43,18 @@ export default function RegularAverageProgression({
         if (caught instanceof Error && caught.name === "AbortError") return;
         setError(t("progression.unavailable"));
       });
-    return () => controller.abort();
-  }, [cycleId, mode, t]);
+    return () => {
+      controller.abort();
+      if (requestRef?.current === controller) requestRef.current = null;
+    };
+  }, [cycleId, mode, requestRef, t]);
+
+  const currentData = data?.mode === mode && (mode !== "seasonal" || data.cycleId === cycleId)
+    ? data
+    : null;
 
   if (error) return <p className="mt-10 text-sm text-[var(--danger)]" role="status">{error}</p>;
-  if (!data) {
+  if (!currentData) {
     return (
       <div className="mt-10 grid gap-4" role="status" aria-label={t("common.loading")}>
         {Array.from({ length: 3 }).map((_, index) => (
@@ -57,23 +69,23 @@ export default function RegularAverageProgression({
       <p className="section-kicker">{t("progression.kicker")}</p>
       <h2 id="average-progression-heading" className="section-heading">{t("player.progression")}</h2>
       <SeasonalProgressionChart
-        data={data.series.cumulative}
+        data={currentData.series.cumulative}
         title={t("progression.chart.xp")}
         levelBands={levelBands}
         averageOnly
         mode={mode}
       />
-      {data.series.tempo.overall.length > 0 && (
+      {currentData.series.tempo.overall.length > 0 && (
         <SeasonalProgressionChart
-          data={data.series.tempo}
+          data={currentData.series.tempo}
           title={t("progression.chart.tempo")}
           averageOnly
           mode={mode}
         />
       )}
-      {data.series.form.overall.length > 0 && (
+      {currentData.series.form.overall.length > 0 && (
         <SeasonalProgressionChart
-          data={data.series.form}
+          data={currentData.series.form}
           title={t("progression.chart.form")}
           averageOnly
           mode={mode}

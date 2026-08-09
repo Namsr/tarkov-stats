@@ -44,6 +44,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs .
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/lib/brackets.ts ./lib/brackets.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/cheater-score.ts ./lib/cheater-score.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/admin/moderation-db.ts ./lib/admin/moderation-db.ts
@@ -66,4 +68,4 @@ ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
 ENV ADMIN_ANALYTICS_SQLITE_PATH="/data/admin-analytics.db"
 
 # --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
-CMD ["node", "--experimental-sqlite", "server.js"]
+CMD ["node", "scripts/start-web.mjs"]

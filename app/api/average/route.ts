@@ -1,39 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { unstable_cache } from "next/cache";
 import {
   getStore,
   parseAveragePeriod,
   parseAverageStatistic,
   type BucketAgg,
+  type AveragePeriod,
+  type AverageStatistic,
+  type CrossSectionMode,
   type RangeDimension,
 } from "@/lib/db";
 import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
-import { createRequestTiming, startTimingPhase } from "@/lib/observability/request-timing";
-
-const AVERAGE_CACHE_TTL_MS = 15 * 60_000;
-const AVERAGE_CACHE_MAX = 64;
-const averageCache = new Map<string, { body: unknown; expiresAt: number }>();
-const CACHE_CONTROL = "public, max-age=60";
-
-function cachedAverage(key: string): unknown | null {
-  const entry = averageCache.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
-    averageCache.delete(key);
-    return null;
-  }
-  averageCache.delete(key);
-  averageCache.set(key, entry);
-  return entry.body;
-}
-
-function cacheAverage(key: string, body: unknown) {
-  if (averageCache.size >= AVERAGE_CACHE_MAX) {
-    averageCache.delete(averageCache.keys().next().value!);
-  }
-  averageCache.set(key, { body, expiresAt: Date.now() + AVERAGE_CACHE_TTL_MS });
-}
+import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
+import { createRequestTiming } from "@/lib/observability/request-timing";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -62,6 +43,88 @@ function binCount(value: string | null): number {
     ? Math.max(1, Math.min(MAX_HISTOGRAM_BINS, Math.floor(number)))
     : MAX_HISTOGRAM_BINS;
 }
+
+async function computeAverage(
+  mode: CrossSectionMode,
+  dimension: RangeDimension,
+  metricKey: string,
+  maxBins: number,
+  statistic: AverageStatistic,
+  period: AveragePeriod,
+  min: number | null,
+  max: number | null,
+  maxInclusive: boolean,
+) {
+  const metric = resolveY(metricKey);
+  const store = await getStore(mode);
+  if (!store) {
+    return {
+      storage: "unavailable" as const,
+      body: {
+        mode,
+        cycleId: "persistent",
+        total: 0,
+        averages: null,
+        metricCounts: {},
+        brackets: [],
+        buckets: [],
+        histogram: [],
+        bounds: { min: 0, max: dimension === "hours" ? 5000 : 1000 },
+        dimension,
+        metric: metric.key || DEFAULT_Y,
+        statistic,
+        period,
+      },
+    };
+  }
+
+  const [averageResult, bucketResult, boundsResult] = await Promise.all([
+    store.averages({ dimension, min, max, maxInclusive }, statistic, period),
+    store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
+    store.rangeBounds(dimension, period),
+  ]);
+  const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
+  const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };
+  const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
+    ...bin,
+    avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
+  }));
+
+  return {
+    storage: "sqlite" as const,
+    body: {
+      mode,
+      cycleId: "persistent",
+      total,
+      averages: averageResult ? averageValues : null,
+      metricCounts,
+      brackets: legacyBrackets(bucketResult),
+      buckets: bucketResult,
+      histogram,
+      bounds: boundsResult,
+      dimension,
+      metric: metric.key,
+      statistic,
+      period,
+    },
+  };
+}
+
+const loadCachedAverage = unstable_cache(
+  async (
+    mode: CrossSectionMode,
+    dimension: RangeDimension,
+    metricKey: string,
+    maxBins: number,
+    statistic: AverageStatistic,
+    period: AveragePeriod,
+    min: number | null,
+    max: number | null,
+    maxInclusive: boolean,
+  ) => computeAverage(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
+  ["average-dashboard-v2"],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
@@ -107,122 +170,33 @@ export async function GET(request: NextRequest) {
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
-  const cacheKey = rawMode === "regular" &&
-    !["min", "max", "minHours", "maxHours"].some((key) => params.has(key))
-    ? [dimension, metric.key, maxBins, statistic, period].join(":")
-    : null;
-  const cached = cacheKey ? cachedAverage(cacheKey) : null;
-  if (cached) {
-    timing.finish({
-      operation: "average", mode: rawMode, outcome: "success", status: 200, memo: "hit",
-    });
-    return NextResponse.json(cached, {
-      headers: { "Cache-Control": CACHE_CONTROL, "X-Average-Cache": "hit" },
-    });
-  }
-  const storeOpenStarted = timing.now();
-  const store = await getStore(rawMode).catch((error) => {
-    timing.finish({
-      operation: "average", mode: rawMode, outcome: "error", status: 500,
-      storage: "unavailable", storeOpenMs: timing.elapsedMs(storeOpenStarted),
-    });
-    throw error;
-  });
-  const storeOpenMs = timing.elapsedMs(storeOpenStarted);
-  if (!store) {
-    const response = NextResponse.json({
-      mode: rawMode,
-      cycleId: "persistent",
-      total: 0,
-      averages: null,
-      metricCounts: {},
-      brackets: [],
-      buckets: [],
-      histogram: [],
-      bounds: { min: 0, max: dimension === "hours" ? 5000 : 1000 },
-      dimension,
-      metric: metric.key || DEFAULT_Y,
-      statistic,
-      period,
-    });
-    timing.finish({
-      operation: "average", mode: rawMode, outcome: "unavailable", status: 200,
-      storage: "unavailable", storeOpenMs,
-    });
-    return response;
-  }
-
-  let averagesMs: number | undefined;
-  let bucketAggregateMs: number | undefined;
-  let rangeBoundsMs: number | undefined;
   try {
-    const averages = startTimingPhase(timing.now, () => store.averages(
-      {
-        dimension,
-        min: parsedMin.value,
-        max: parsedMax.value,
-        maxInclusive: usesNewRange,
-      },
-      statistic,
-      period,
-    ));
-    const buckets = startTimingPhase(
-      timing.now,
-      () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
-    );
-    const bounds = startTimingPhase(timing.now, () => store.rangeBounds(dimension, period));
-    await Promise.resolve();
-    const averagesSynchronous = averages.isSettled();
-    const bucketsSynchronous = buckets.isSettled();
-    const boundsSynchronous = bounds.isSettled();
-    const [averageResult, bucketResult, boundsResult] = await Promise.all([
-      averages.promise,
-      buckets.promise,
-      bounds.promise,
-    ]).finally(() => {
-      if (averages.isSettled()) averagesMs = averages.durationMs(averagesSynchronous);
-      if (buckets.isSettled()) bucketAggregateMs = buckets.durationMs(bucketsSynchronous);
-      if (bounds.isSettled()) rangeBoundsMs = bounds.durationMs(boundsSynchronous);
-    });
-    const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
-    const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };
-    const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
-      ...bin,
-      avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
-    }));
-
-    const body = {
-      mode: rawMode,
-      cycleId: "persistent",
-      total,
-      averages: averageResult ? averageValues : null,
-      metricCounts,
-      brackets: legacyBrackets(bucketResult),
-      buckets: bucketResult,
-      histogram,
-      bounds: boundsResult,
+    const result = await loadCachedAverage(
+      rawMode,
       dimension,
-      metric: metric.key,
+      metric.key,
+      maxBins,
       statistic,
       period,
-    };
-    if (cacheKey) cacheAverage(cacheKey, body);
-    const response = NextResponse.json(body, {
+      parsedMin.value,
+      parsedMax.value,
+      usesNewRange,
+    );
+    const response = NextResponse.json(result.body, {
       headers: {
-        "Cache-Control": CACHE_CONTROL,
-        "X-Average-Cache": cacheKey ? "miss" : "bypass",
+        "Cache-Control": AVERAGE_CACHE_CONTROL,
+        "X-Average-Cache": "next-data",
       },
     });
     timing.finish({
-      operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", storeOpenMs,
-      averagesMs, bucketAggregateMs, rangeBoundsMs, memo: cacheKey ? "miss" : undefined,
+      operation: "average", mode: rawMode, outcome: result.storage === "sqlite" ? "success" : "unavailable",
+      status: 200, storage: result.storage,
     });
     return response;
   } catch (error) {
     console.error("average stats failed", error);
     timing.finish({
-      operation: "average", mode: rawMode, outcome: "error", status: 500, storage: "sqlite", storeOpenMs,
-      averagesMs, bucketAggregateMs, rangeBoundsMs,
+      operation: "average", mode: rawMode, outcome: "error", status: 500,
     });
     return NextResponse.json({ error: "Failed to compute averages" }, { status: 500 });
   }

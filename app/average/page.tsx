@@ -152,6 +152,8 @@ function AveragePageContent({
   const [showAch, setShowAch] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
+  const averageRequestRef = useRef<AbortController | null>(null);
+  const progressionRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
 
@@ -173,6 +175,7 @@ function AveragePageContent({
 
   useEffect(() => {
     const controller = new AbortController();
+    averageRequestRef.current = controller;
     // The regular request used this shape before Seasonal shared the adapter:
     // new URLSearchParams({ dimension, metric: yMetric, mode, statistic, period })
     // Keep the old mode/period semantics documented while the endpoint now
@@ -213,8 +216,16 @@ function AveragePageContent({
         if (!controller.signal.aborted) setLoading(false);
       });
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (averageRequestRef.current === controller) averageRequestRef.current = null;
+    };
   }, [cycleId, dimension, mode, period, requestedRange, statistic, t, yMetric]);
+
+  function cancelAverageRequests() {
+    averageRequestRef.current?.abort();
+    progressionRequestRef.current?.abort();
+  }
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
@@ -256,6 +267,8 @@ function AveragePageContent({
   }
 
   const currentData =
+    data?.mode === mode &&
+    (mode !== "seasonal" || data.cycleId === cycleId) &&
     data?.statistic === statistic &&
     data.period === period &&
     data.dimension === dimension &&
@@ -291,6 +304,7 @@ function AveragePageContent({
   const statisticLabel = t(
     statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
   );
+  const showAverageProgression = mode === "regular" || mode === "seasonal";
   const focusMetrics = METRICS.slice(0, 4);
   const detailMetrics = METRICS.slice(4).map((metric) =>
     dimension === "pmc_raids" && metric.key === "total_raids"
@@ -409,7 +423,11 @@ function AveragePageContent({
           </div>
           <div className="average-settings__mode">
             <span>{t("mode.selectorAria")}</span>
-            <ProfileModeSwitch current={mode} page="average" />
+            <ProfileModeSwitch
+              current={mode}
+              page="average"
+              onBeforeNavigate={cancelAverageRequests}
+            />
           </div>
         </div>
         <CompactDetails summary={t("average.calculation.help")}>
@@ -667,8 +685,13 @@ function AveragePageContent({
 
       {/* Regular legacy guard: mode === "regular" && levelBands.length > 0 */}
       {/* Legacy JSX shape: <RegularAverageProgression levelBands={levelBands} /> */}
-      {levelBands.length > 0 && (
-        <RegularAverageProgression levelBands={levelBands} mode={mode === "seasonal" ? "seasonal" : "regular"} cycleId={cycleId} />
+      {showAverageProgression && levelBands.length > 0 && (
+        <RegularAverageProgression
+          levelBands={levelBands}
+          mode={mode === "seasonal" ? "seasonal" : "regular"}
+          cycleId={cycleId}
+          requestRef={progressionRequestRef}
+        />
       )}
 
       {currentData && sampleN > 0 && (

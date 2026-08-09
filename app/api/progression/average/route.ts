@@ -1,7 +1,24 @@
 import { NextResponse } from "next/server";
+import { unstable_cache } from "next/cache";
 import { getRegularProgressionAverage } from "@/lib/seasonal/progression-db";
 import { getSeasonalAverageQuery } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
+import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
+
+const loadCachedRegularAverageProgression = unstable_cache(
+  () => getRegularProgressionAverage(),
+  ["average-progression-regular-v2"],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
+
+const loadCachedSeasonalAverageProgression = unstable_cache(
+  async (cycleId: string) => {
+    const query = await getSeasonalAverageQuery();
+    return query ? query(cycleId) : null;
+  },
+  ["average-progression-seasonal-v2"],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
 
 export async function GET(request: Request) {
   try {
@@ -14,18 +31,17 @@ export async function GET(request: Request) {
       if (!cycle || cycleId !== cycle.cycleId || params.getAll("cycle").length !== 1) {
         return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
       }
-      const query = await getSeasonalAverageQuery();
-      const result = query ? await query(cycleId) : null;
+      const result = await loadCachedSeasonalAverageProgression(cycleId);
       if (!result) return NextResponse.json({ error: "Seasonal progression unavailable" }, { status: 503 });
-      return NextResponse.json(result, { headers: { "Cache-Control": "public, max-age=60" } });
+      return NextResponse.json(result, { headers: { "Cache-Control": AVERAGE_CACHE_CONTROL } });
     }
     if (mode !== "regular") return NextResponse.json({ error: "Invalid progression mode" }, { status: 400 });
-    const result = await getRegularProgressionAverage();
+    const result = await loadCachedRegularAverageProgression();
     if (!result) {
       return NextResponse.json({ error: "PvP progression unavailable" }, { status: 503 });
     }
     return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, max-age=60" },
+      headers: { "Cache-Control": AVERAGE_CACHE_CONTROL },
     });
   } catch (error) {
     console.error("regular progression average failed", error);

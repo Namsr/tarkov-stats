@@ -108,6 +108,7 @@ test("active navigation links go back only for an unmodified click at their dest
   const helper = await readFile("lib/active-link.ts", "utf8");
   const header = await readFile("components/SiteHeader.tsx", "utf8");
   const average = await readFile("components/AverageNavButton.tsx", "utf8");
+  const averagePage = await readFile("app/average/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
   const seasonalAverage = await readFile("components/SeasonalAverage.tsx", "utf8");
 
@@ -137,6 +138,12 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
   assert.match(average, /const active = pathname\.startsWith\("\/average"\)/);
   assert.match(average, /handleActiveLinkClick\(event, active, router\)/);
+  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| isProfileModeSwitch/);
+  assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);
+  assert.match(averagePage, /averageRequestRef\.current\?\.abort\(\)/);
+  assert.match(averagePage, /onBeforeNavigate=\{cancelAverageRequests\}/);
+  assert.match(averagePage, /progressionRequestRef\.current\?\.abort\(\)/);
+  assert.match(averagePage, /requestRef=\{progressionRequestRef\}/);
   assert.match(modes, /handleActiveLinkClick\(event, mode === current, router\)/);
   assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
   assert.match(seasonalAverage, /average-settings__top[\s\S]*average-settings__mode md:col-start-2/);
@@ -146,6 +153,8 @@ test("regular average period switch keeps URL state and masks stale responses", 
   const source = await readFile("app/average/page.tsx", "utf8");
 
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
+  assert.match(source, /data\?\.mode === mode &&/);
+  assert.match(source, /mode !== "seasonal" \|\| data\.cycleId === cycleId/);
   assert.match(source, /const \[selectedPeriod, setSelectedPeriod\] = useState<AveragePeriod>\(urlPeriod\)/);
   assert.match(source, /params\.set\("period", next\)/);
   assert.match(source, /params\.delete\("period"\)/);
@@ -481,8 +490,9 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   const route = await readFile("app/api/progression/average/route.ts", "utf8");
   const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
 
-  assert.match(canonical, /mode === "regular"[\s\S]*?getPlayerLevels\(\)/);
-  assert.match(canonical, /levelBands=\{cumulativeLevelBands\(levels\)\}/);
+  assert.match(canonical, /PLAYER_LEVELS_V2026_07_22/);
+  assert.match(canonical, /levelBands=\{levelBands\}/);
+  assert.doesNotMatch(canonical, /await getPlayerLevels\(\)/);
   assert.match(average, /mode === "regular" && levelBands\.length > 0/);
   assert.match(average, /<RegularAverageProgression levelBands=\{levelBands\} \/>/);
   assert.ok(
@@ -490,6 +500,8 @@ test("regular average mounts median raid progression and cumulative tooltips inc
     "regular progression should render before the full metric set",
   );
   assert.match(progression, /fetch\("\/api\/progression\/average"/);
+  assert.match(progression, /data\?\.mode === mode/);
+  assert.match(progression, /setData\(null\);\s*setError\(""\);/);
   assert.equal((progression.match(/averageOnly/g) ?? []).length, 3);
   assert.equal((progression.match(/mode="regular"/g) ?? []).length, 3);
   assert.match(chart, /levelAtExperience\(point\.value, levelBands\)/);
@@ -500,7 +512,33 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt\)/);
   assert.doesNotMatch(chart, /point\.periodStartAt[\s\S]*toISOString\(\)\.slice/);
   assert.match(route, /getRegularProgressionAverage\(\)/);
-  assert.match(route, /"Cache-Control": "public, max-age=60"/);
+  assert.match(route, /AVERAGE_CACHE_CONTROL/);
+  assert.match(route, /unstable_cache/);
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
+});
+test("average dashboard warms every mode and skips PvP progression for PvE/Arena", async () => {
+  const cache = await readFile("lib/average-cache.ts", "utf8");
+  const average = await readFile("app/api/average/route.ts", "utf8");
+  const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
+  const progression = await readFile("app/api/progression/average/route.ts", "utf8");
+  const page = await readFile("app/average/page.tsx", "utf8");
+  const warmer = await readFile("scripts/warm-average-cache.mjs", "utf8");
+  const dockerfile = await readFile("Dockerfile", "utf8");
+  const startup = await readFile("scripts/start-web.mjs", "utf8");
+
+  assert.match(cache, /30 \* 60/);
+  assert.match(cache, /s-maxage=\$\{AVERAGE_CACHE_TTL_SECONDS\}/);
+  assert.match(average, /\["average-dashboard-v2"\]/);
+  assert.match(average, /mode: CrossSectionMode/);
+  assert.match(seasonal, /\["average-seasonal-dashboard-v2"\]/);
+  assert.match(progression, /\["average-progression-regular-v2"\]/);
+  assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "seasonal"/);
+  assert.match(page, /showAverageProgression && levelBands\.length > 0/);
+  for (const mode of ["regular", "pve", "arena"]) assert.match(warmer, new RegExp(`"${mode}"`));
+  assert.match(warmer, /SEASONAL_CYCLE_ID/);
+  assert.match(dockerfile, /warm-average-cache\.mjs/);
+  assert.match(dockerfile, /start-web\.mjs/);
+  assert.match(startup, /warm-average-cache\.mjs/);
+  assert.match(startup, /AVERAGE_WARM_BASE_URL/);
 });

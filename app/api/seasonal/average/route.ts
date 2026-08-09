@@ -1,38 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
+import { unstable_cache } from "next/cache";
 import { getSeasonalAverageCrossSectionQuery } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { resolveY } from "@/lib/metrics";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
-
-const CACHE_TTL_MS = 15 * 60_000;
-const CACHE_MAX = 64;
-const seasonalAverageCache = new Map<string, { body: unknown; expiresAt: number }>();
-
-function cached(key: string): unknown | null {
-  const entry = seasonalAverageCache.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
-    seasonalAverageCache.delete(key);
-    return null;
-  }
-  seasonalAverageCache.delete(key);
-  seasonalAverageCache.set(key, entry);
-  return entry.body;
-}
-
-function cache(key: string, body: unknown): void {
-  if (seasonalAverageCache.size >= CACHE_MAX) {
-    const first = seasonalAverageCache.keys().next().value;
-    if (first) seasonalAverageCache.delete(first);
-  }
-  seasonalAverageCache.set(key, { body, expiresAt: Date.now() + CACHE_TTL_MS });
-}
+import type { SeasonalAverageDimension } from "@/lib/seasonal/average-db";
+import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
 
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : Number.NaN;
 }
+
+const loadCachedSeasonalAverage = unstable_cache(
+  async (
+    cycleId: string,
+    period: AveragePeriod,
+    statistic: AverageStatistic,
+    dimension: SeasonalAverageDimension,
+    metric: string,
+    min: number | null,
+    max: number | null,
+  ) => {
+    const query = await getSeasonalAverageCrossSectionQuery();
+    if (!query) return { status: "unavailable" as const };
+    const result = await query({ cycleId, period, statistic, dimension, metric, min, max });
+    return result
+      ? { status: "ready" as const, result }
+      : { status: "not-found" as const };
+  },
+  ["average-seasonal-dashboard-v2"],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
 
 export async function GET(request: NextRequest) {
   if (!isSeasonalRolloutReady()) {
@@ -61,30 +61,20 @@ export async function GET(request: NextRequest) {
   if (Number.isNaN(min) || Number.isNaN(max) || (min != null && max != null && min > max)) {
     return NextResponse.json({ error: "Invalid range" }, { status: 400 });
   }
-  const query = await getSeasonalAverageCrossSectionQuery();
-  if (!query) return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
-  const cacheKey = [cycle, period, statistic, dimension, resolveY(params.get("metric")).key,
-    min == null ? "" : min, max == null ? "" : max].join(":");
-  const hit = cached(cacheKey);
-  if (hit) {
-    return NextResponse.json(hit, {
-      headers: { "Cache-Control": "public, max-age=60", "X-Seasonal-Average-Cache": "hit" },
-    });
-  }
+  const metric = resolveY(params.get("metric")).key;
   try {
-    const result = await query({
-      cycleId: cycle,
-      period,
-      statistic,
-      dimension,
-      metric: resolveY(params.get("metric")).key,
-      min,
-      max,
-    });
-    if (!result) return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
-    cache(cacheKey, result);
-    return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, max-age=60", "X-Seasonal-Average-Cache": "miss" },
+    const cached = await loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max);
+    if (cached.status === "unavailable") {
+      return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
+    }
+    if (cached.status === "not-found") {
+      return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
+    }
+    return NextResponse.json(cached.result, {
+      headers: {
+        "Cache-Control": AVERAGE_CACHE_CONTROL,
+        "X-Seasonal-Average-Cache": "next-data",
+      },
     });
   } catch (error) {
     console.error("seasonal cross-section average failed", error);

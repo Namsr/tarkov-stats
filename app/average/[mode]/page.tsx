@@ -3,7 +3,7 @@ import LegacyAveragePage from "@/app/average/page";
 import ModeUnavailable from "@/components/ModeUnavailable";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
-import { getPlayerLevels } from "@/lib/tarkov-api";
+import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";
 import { isGameMode } from "@/types/seasonal";
 
 interface Props {
@@ -15,9 +15,13 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   await connection();
   const { mode } = await params;
   if (!isGameMode(mode)) return <ModeUnavailable />;
+  // Level bands are presentation metadata for the below-the-fold progression
+  // chart. Do not block the mode switch on the remote reference fetch: the
+  // chart can render from the known-good local snapshot while the average
+  // profile request starts immediately.
+  const levelBands = cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22);
   if (mode === "regular") {
-    const levels = await getPlayerLevels().catch(() => []);
-    return <LegacyAveragePage mode={mode} levelBands={cumulativeLevelBands(levels)} />;
+    return <LegacyAveragePage mode={mode} levelBands={levelBands} />;
   }
   if (mode !== "seasonal") return <LegacyAveragePage mode={mode} />;
   const cycle = loadSeasonalCycleConfig();
@@ -25,6 +29,5 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   if (!isSeasonalRolloutReady() || !cycle || Array.isArray(requestedCycle) || (requestedCycle && requestedCycle !== cycle.cycleId)) {
     return <ModeUnavailable seasonal />;
   }
-  const levels = await getPlayerLevels().catch(() => []);
-  return <LegacyAveragePage mode="seasonal" cycleId={cycle.cycleId} levelBands={cumulativeLevelBands(levels)} />;
+  return <LegacyAveragePage mode="seasonal" cycleId={cycle.cycleId} levelBands={levelBands} />;
 }
