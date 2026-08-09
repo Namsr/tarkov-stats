@@ -37,6 +37,15 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
       } : null;
     },
 
+    async getProfile(identity) {
+      const row = await db.prepare(`SELECT * FROM player_profiles WHERE ${IDENTITY}`)
+        .bind(identity.mode, identity.cycleId, identity.aid).first() as Record<string, unknown> | null;
+      if (!row) return null;
+      const snapshot = await db.prepare(`SELECT * FROM progression_snapshots WHERE ${IDENTITY} ORDER BY profile_updated_at DESC LIMIT 1`)
+        .bind(identity.mode, identity.cycleId, identity.aid).first() as Record<string, unknown> | null;
+      return toProfile(row, snapshot ?? undefined);
+    },
+
     async upsertProfile(profile, observedAt = Date.now()) {
       validateProfile(profile);
       await db.prepare(`

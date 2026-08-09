@@ -182,7 +182,7 @@ export async function GET(request: NextRequest) {
       outcome: result.ok ? "success" : result.status === 404 ? "not_found" : "error",
       status: result.ok ? 200 : result.status,
       force,
-      source: "upstream",
+      source: result.ok && result.capture.status === "stored" ? "stored" : "upstream",
       seasonalMs: timing.elapsedMs(seasonalStarted),
     });
     return response;

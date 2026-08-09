@@ -123,6 +123,9 @@ test("D1 Seasonal store bootstraps cycles, captures an ordered chain, and leases
   assert.equal((await store.captureSnapshot(profile(1, 3000, 30, 3), 3000)).status, "progression");
   assert.equal((await store.captureSnapshot(profile(1, 2000, 20, 2), 2000)).status, "stale");
   assert.deepEqual((await store.snapshotHistory({ mode: "seasonal", cycleId: "s1", aid: 1 })).map((row) => row.profileUpdatedAt), [1000, 3000]);
+  const stored = await store.getProfile({ mode: "seasonal", cycleId: "s1", aid: 1 });
+  assert.equal(stored?.profileUpdatedAt, 3000);
+  assert.deepEqual(stored?.seasonalAchievements, [{ id: "d1-ach", unlockedAt: null }]);
   assert.deepEqual({ ...sqlite.prepare(`SELECT prestige, longest_win_streak, achievements
     FROM progression_snapshots WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 1
     ORDER BY profile_updated_at DESC LIMIT 1`).get() },

@@ -570,7 +570,26 @@ export function toSnapshot(row: Record<string, unknown> | undefined): Progressio
   };
 }
 
-export function toProfile(row: Record<string, unknown>): PlayerProfileRecord {
+function nullableNumber(value: unknown): number | null {
+  if (value == null) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function quotient(numerator: number | null, denominator: number | null): number | null {
+  if (numerator == null || denominator == null) return null;
+  return denominator > 0 ? numerator / denominator : numerator;
+}
+
+function percentage(numerator: number | null, denominator: number | null): number | null {
+  if (numerator == null || denominator == null || denominator <= 0) return null;
+  return numerator / denominator * 100;
+}
+
+export function toProfile(
+  row: Record<string, unknown>,
+  snapshot?: Record<string, unknown>,
+): PlayerProfileRecord {
   let achievementIds: string[] = [];
   try {
     const parsed = JSON.parse(String(row.linked_pvp_achievements ?? "[]"));
@@ -578,7 +597,7 @@ export function toProfile(row: Record<string, unknown>): PlayerProfileRecord {
   } catch {
     achievementIds = [];
   }
-  return {
+  const profile: PlayerProfileRecord = {
     mode: String(row.mode) as ProfileIdentity["mode"], cycleId: String(row.cycle_id), aid: Number(row.aid),
     nickname: String(row.nickname), profileUpdatedAt: Number(row.profile_updated_at),
     lastAccessAt: Number(row.last_access_at), lifetimePvpHours: row.lifetime_pvp_hours == null ? null : Number(row.lifetime_pvp_hours),
@@ -593,6 +612,42 @@ export function toProfile(row: Record<string, unknown>): PlayerProfileRecord {
     },
     snapshotCount: Number(row.snapshot_count), confirmedBanned: Number(row.confirmed_banned) === 1,
   };
+
+  // The durable portrait fields live in the latest progression snapshot. Only
+  // hydrate a snapshot that belongs to the same profile version; otherwise the
+  // counters above are still a safe, current fallback without stale portrait
+  // data from an older capture.
+  if (snapshot && Number(snapshot.profile_updated_at) === profile.profileUpdatedAt) {
+    const achievements = parseSeasonalAchievementUnlocks(snapshot.achievements);
+    const totalRaids = nullableNumber(snapshot.total_raids);
+    const survivedRaids = nullableNumber(snapshot.survived);
+    const totalKills = nullableNumber(snapshot.total_kills);
+    const deaths = nullableNumber(snapshot.deaths);
+    profile.seasonalStats = {
+      totalRaids,
+      survivedRaids,
+      totalKills,
+      deaths,
+      runThrough: nullableNumber(snapshot.run_through),
+      survivalRate: percentage(survivedRaids, totalRaids),
+      kdRatio: quotient(totalKills, deaths),
+      pmcKdRatio: quotient(profile.counters.killedPmc, profile.counters.pmcDeaths),
+      killsPerRaid: quotient(totalKills, totalRaids),
+      pmcSurvivalRate: percentage(profile.counters.pmcSurvived, profile.counters.pmcRaids),
+      level: nullableNumber(snapshot.level),
+      prestige: nullableNumber(snapshot.prestige),
+      longestWinStreak: nullableNumber(snapshot.longest_win_streak),
+      achievementsCount: nullableNumber(snapshot.achv_count) ?? (achievements === null ? null : achievements.length),
+    };
+    profile.seasonalAchievements = achievements;
+    profile.staticSignals = {
+      prestige: nullableNumber(snapshot.prestige) ?? 0,
+      longestWinStreak: nullableNumber(snapshot.longest_win_streak) ?? 0,
+      achievementIds: achievements?.map((achievement) => achievement.id) ?? [],
+    };
+  }
+
+  return profile;
 }
 
 export function toScanTask(row: Record<string, unknown>): ScanTaskRecord {
@@ -647,6 +702,12 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         endsAt: row.ends_at == null ? null : Number(row.ends_at), enabled: Number(row.enabled) === 1,
         upstreamContract: row.upstream_contract == null ? null : String(row.upstream_contract) as SeasonCycle["upstreamContract"],
       } : null;
+    },
+    async getProfile(identity) {
+      const row = db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(identity.mode, identity.cycleId, identity.aid) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const snapshot = db.prepare(`SELECT * FROM progression_snapshots WHERE ${identityWhere} ORDER BY profile_updated_at DESC LIMIT 1`).get(identity.mode, identity.cycleId, identity.aid) as Record<string, unknown> | undefined;
+      return toProfile(row, snapshot);
     },
     async upsertProfile(profile, observedAt = Date.now()) {
       validateProfile(profile);

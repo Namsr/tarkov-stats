@@ -116,6 +116,61 @@ test("canonical Seasonal pipeline upserts and deduplicates capture by profile ti
   assert.equal((await store.snapshotHistory({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).length, 1);
 });
 
+test("normal profile loads fall back to the latest stored capture when upstream is unavailable", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const first = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    { ...cycleDependencies, fetchPayload: async () => fixture(), getStore: async () => store },
+  );
+  assert.equal(first.ok, true);
+
+  const fallback = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false },
+    {
+      ...cycleDependencies,
+      fetchPayload: async () => { throw Object.assign(new Error("upstream 404"), { status: 404 }); },
+      getStore: async () => store,
+    },
+  );
+
+  assert.equal(fallback.ok, true);
+  assert.equal(fallback.ok && fallback.capture.status, "stored");
+  assert.equal(fallback.ok && fallback.profile.profileUpdatedAt, first.ok && first.profile.profileUpdatedAt);
+  assert.deepEqual(fallback.ok && fallback.profile.seasonalAchievements, [{ id: "first_raid", unlockedAt: 1_783_495_000_000 }]);
+});
+
+test("expected-version captures do not treat a stored profile as a confirmed upstream response", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    { ...cycleDependencies, fetchPayload: async () => fixture(), getStore: async () => store },
+  );
+  const result = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true, expectedUpdatedAt: 1_783_501_200_000 },
+    {
+      ...cycleDependencies,
+      fetchPayload: async () => { throw Object.assign(new Error("upstream 404"), { status: 404 }); },
+      getStore: async () => store,
+    },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.status, 404);
+});
+
 test("canonical Seasonal pipeline rejects an upstream aid mismatch before persistence", async () => {
   let writes = 0;
   const result = await resolveSeasonalProfile(

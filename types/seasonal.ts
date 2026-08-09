@@ -360,6 +360,7 @@ export interface ProgressionTimelineResponse {
 
 export interface SeasonalStore {
   getCycle(cycleId: CycleId): Promise<SeasonCycle | null>;
+  getProfile(identity: ProfileIdentity): Promise<PlayerProfileRecord | null>;
   upsertProfile(profile: SeasonalProfile, observedAt?: number): Promise<PlayerProfileRecord>;
   captureSnapshot(profile: SeasonalProfile, capturedAt?: number): Promise<CaptureSnapshotResult>;
   latestSnapshot(identity: ProfileIdentity): Promise<ProgressionSnapshotRecord | null>;
