@@ -7,7 +7,7 @@ import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
-import { GAME_MODES, type GameMode } from "@/types/seasonal";
+import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
 type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
@@ -26,7 +26,7 @@ const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
 
 function isProfileMode(value: string): value is GameMode { return GAME_MODES.includes(value as GameMode); }
-function profileHref(aid: number, mode: GameMode): string { return `/player/${mode}/${aid}`; }
+function profileHref(aid: number, mode: GameMode): string { return `/player/${appRouteMode(mode)}/${aid}`; }
 
 function finite(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
 function formatNumber(value: number): string { return new Intl.NumberFormat().format(value); }

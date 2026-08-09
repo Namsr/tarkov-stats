@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { parsePlayerInput } from "@/lib/player-id";
 import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchResult } from "@/types/tarkov";
+import { appRouteMode } from "@/types/seasonal";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 
@@ -59,7 +60,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     setError("");
     setNotFound(false);
     setResults([]);
-    router.push(`/player/${player.mode}/${player.aid}`);
+    router.push(`/player/${appRouteMode(player.mode)}/${player.aid}`);
   }
 
   return (

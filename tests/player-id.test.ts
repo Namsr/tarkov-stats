@@ -21,6 +21,10 @@ test("profile links preserve their game mode", () => {
     aid: 5869253,
     mode: "seasonal",
   });
+  assert.deepEqual(parsePlayerInput("https://tarkov.dev/players/season/5869253"), {
+    aid: 5869253,
+    mode: "seasonal",
+  });
 });
 
 test("bare ids remain regular and id-only callers stay compatible", () => {

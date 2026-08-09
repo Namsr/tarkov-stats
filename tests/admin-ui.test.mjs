@@ -32,7 +32,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dashboard, /confirmAid: Number\(confirmAid\)/);
   assert.match(dashboard, /!reason\.trim\(\)/);
   assert.match(dashboard, /maxLength=\{2000\}/);
-  assert.match(dashboard, /return `\/player\/\$\{mode\}\/\$\{aid\}`/);
+  assert.match(dashboard, /import \{ appRouteMode, GAME_MODES/);
+  assert.match(dashboard, /return `\/player\/\$\{appRouteMode\(mode\)\}\/\$\{aid\}`/);
   assert.match(dashboard, /href=\{profileHref\(account\.aid, defaultMode\)\}/);
   assert.match(dashboard, /href=\{profileHref\(account\.aid, mode\)\}/);
   assert.match(dashboard, /onClick=\{\(event\) => event\.stopPropagation\(\)\}/);

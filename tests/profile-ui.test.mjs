@@ -542,3 +542,16 @@ test("average dashboard warms every mode and skips PvP progression for PvE/Arena
   assert.match(startup, /warm-average-cache\.mjs/);
   assert.match(startup, /AVERAGE_WARM_BASE_URL/);
 });
+
+test("Season route keeps the internal seasonal cache and profile identity", async () => {
+  const modes = await readFile("types/seasonal.ts", "utf8");
+  const averageRoute = await readFile("app/average/[mode]/page.tsx", "utf8");
+  const playerRoute = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
+  const switcher = await readFile("components/ProfileModeSwitch.tsx", "utf8");
+
+  assert.match(modes, /SEASON_ROUTE_MODE = "season"/);
+  assert.match(modes, /function appRouteMode\(mode: GameMode\)/);
+  assert.match(averageRoute, /routeMode === SEASON_ROUTE_MODE/);
+  assert.match(playerRoute, /routeMode === SEASON_ROUTE_MODE/);
+  assert.match(switcher, /const routeMode = appRouteMode\(mode\)/);
+});

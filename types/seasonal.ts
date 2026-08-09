@@ -5,12 +5,19 @@ export type CycleId = string;
 
 /** The internal mode name stays stable even when Tarkov.dev uses another slug. */
 export const SEASONAL_UPSTREAM_MODE = "pvp-season" as const;
+/** Canonical public route slug for the internal Seasonal mode. */
+export const SEASON_ROUTE_MODE = "season" as const;
 export type SeasonalCollectionSource = "operator" | "json_feed";
 export type SeasonalUpstreamContract = "game_mode" | "profile_section" | "direct_profile";
 
 /** Maps an internal mode to the slug understood by Tarkov.dev URLs. */
 export function tarkovDevMode(mode: GameMode): string {
   return mode === "seasonal" ? SEASONAL_UPSTREAM_MODE : mode;
+}
+
+/** Maps an internal mode to the public route used by this application. */
+export function appRouteMode(mode: GameMode): string {
+  return mode === "seasonal" ? SEASON_ROUTE_MODE : mode;
 }
 
 /** Legacy routes and rows without an explicit identity remain regular/persistent. */

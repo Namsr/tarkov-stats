@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useI18n } from "@/lib/i18n/context";
 import { handleActiveLinkClick } from "@/lib/active-link";
-import { GAME_MODES, tarkovDevMode, type GameMode } from "@/types/seasonal";
+import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
 export default function ProfileModeSwitch({
   current,
@@ -32,7 +32,7 @@ export default function ProfileModeSwitch({
   }, []);
 
   function profileHref(mode: GameMode): string {
-    const routeMode = tarkovDevMode(mode);
+    const routeMode = appRouteMode(mode);
     const base = page === "average" ? `/average/${routeMode}` : `/player/${routeMode}/${aid}`;
     if (page !== "player" || (mode !== "regular" && mode !== "seasonal")) return base;
 
