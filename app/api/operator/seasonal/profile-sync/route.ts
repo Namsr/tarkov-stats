@@ -1,4 +1,6 @@
+import { revalidateTag } from "next/cache";
 import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
+import { SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
 import { isSeasonalCollectorReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
@@ -75,6 +77,9 @@ export async function POST(request: Request) {
 
     if (!result.ok) {
       return Response.json({ error: result.error }, { status: result.status, headers });
+    }
+    if (result.capture.inserted === true) {
+      revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, { expire: 0 });
     }
     return Response.json({
       state: result.capture.inserted ? "updated" : result.capture.status,

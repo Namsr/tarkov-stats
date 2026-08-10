@@ -45,6 +45,21 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
   assert.doesNotMatch(profileSource + indexSource, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
 });
 
+test("Seasonal capture invalidates the average cache only after an inserted profile", async () => {
+  const source = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
+
+  assert.match(source, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, \{ expire: 0 \}\);/s);
+  assert.equal((source.match(/revalidateTag\(/g) ?? []).length, 1);
+  assert.ok(
+    source.indexOf("if (!result.ok)") < source.indexOf("if (result.capture.inserted === true)"),
+    "failed captures must not invalidate the cache",
+  );
+  assert.ok(
+    source.indexOf("result.capture.inserted === true") < source.indexOf("return Response.json({", source.indexOf("result.capture.inserted === true")),
+    "duplicate/no-op captures must return through the normal response path without invalidation",
+  );
+});
+
 test("Docker runtime contains the Seasonal collectors and their source imports", async () => {
   const dockerfile = await readFile("Dockerfile", "utf8");
   for (const path of [

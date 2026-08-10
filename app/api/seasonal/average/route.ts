@@ -5,7 +5,7 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { resolveY } from "@/lib/metrics";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { SeasonalAverageDimension } from "@/lib/seasonal/average-db";
-import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
+import { AVERAGE_CACHE_TTL_SECONDS, SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
 
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
@@ -31,7 +31,7 @@ const loadCachedSeasonalAverage = unstable_cache(
       : { status: "not-found" as const };
   },
   ["average-seasonal-dashboard-v2"],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [SEASONAL_AVERAGE_CACHE_TAG] },
 );
 
 export async function GET(request: NextRequest) {
@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(cached.result, {
       headers: {
-        "Cache-Control": AVERAGE_CACHE_CONTROL,
+        "Cache-Control": "no-store",
         "X-Seasonal-Average-Cache": "next-data",
       },
     });

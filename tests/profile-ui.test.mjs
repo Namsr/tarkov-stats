@@ -543,6 +543,23 @@ test("average dashboard warms every mode and skips PvP progression for PvE/Arena
   assert.match(startup, /AVERAGE_WARM_BASE_URL/);
 });
 
+test("Seasonal average invalidation keeps the server cache tagged and the JSON response uncached", async () => {
+  const cache = await readFile("lib/average-cache.ts", "utf8");
+  const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
+  const sync = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
+
+  assert.match(cache, /export const SEASONAL_AVERAGE_CACHE_TAG = "average-seasonal-dashboard-v2"/);
+  assert.match(seasonal, /revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: \[SEASONAL_AVERAGE_CACHE_TAG\]/);
+  assert.match(seasonal, /"Cache-Control": "no-store"/);
+  assert.match(sync, /import \{ revalidateTag \} from "next\/cache"/);
+  assert.match(sync, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, \{ expire: 0 \}\);/s);
+  assert.equal((sync.match(/revalidateTag\(/g) ?? []).length, 1);
+  assert.ok(
+    sync.indexOf("if (!result.ok)") < sync.indexOf("result.capture.inserted === true"),
+    "failed captures must return before tag invalidation",
+  );
+});
+
 test("Season route keeps the internal seasonal cache and profile identity", async () => {
   const modes = await readFile("types/seasonal.ts", "utf8");
   const averageRoute = await readFile("app/average/[mode]/page.tsx", "utf8");

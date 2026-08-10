@@ -4,9 +4,13 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Changes, d1Rows } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
-import { mapRun, mapTask, SYSTEM_ERRORS, validateScope, type OperatorTaskOutcome } from "./operator.ts";
+import { mapRefreshCandidate, mapRefreshRun, mapRun, mapTask, PROGRESSION_REFRESH_SCHEMA, SYSTEM_ERRORS, validateRefreshIdentifiers, validateScope, type OperatorTaskOutcome, type ProgressionRefreshOutcome } from "./operator.ts";
 
 export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
+  const refreshSchemaReady = typeof db.exec === "function"
+    ? db.exec(PROGRESSION_REFRESH_SCHEMA)
+    : Promise.resolve();
+  const ensureRefreshSchema = async () => { await refreshSchemaReady; };
   const activeLease = async (input: { runId: number; taskId: number; owner: string; now?: number }) => {
     const now = input.now ?? Date.now();
     const row = await db.prepare(`SELECT t.id, t.aid, t.kind, t.mode, t.cycle_id
@@ -18,6 +22,100 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
   };
 
   const store = {
+    async beginOrResumeProgressionRefreshRun(cycleId: string, owner: string, now = Date.now()) {
+      await ensureRefreshSchema();
+      validateScope(cycleId, owner);
+      let run = await db.prepare(`SELECT * FROM seasonal_progression_refresh_runs
+        WHERE cycle_id = ? AND owner = ? AND state = 'running' ORDER BY id DESC LIMIT 1`)
+        .bind(cycleId, owner).first() as Record<string, unknown> | null;
+      let resumed = true;
+      if (!run) {
+        await db.prepare(`INSERT INTO seasonal_progression_refresh_runs
+          (cycle_id, owner, state, started_at, updated_at) VALUES (?, ?, 'running', ?, ?)`)
+          .bind(cycleId, owner, now, now).run();
+        run = await db.prepare(`SELECT * FROM seasonal_progression_refresh_runs
+          WHERE cycle_id = ? AND owner = ? AND state = 'running' ORDER BY id DESC LIMIT 1`)
+          .bind(cycleId, owner).first() as Record<string, unknown> | null;
+        if (!run) throw new Error("progression refresh run could not be created");
+        await db.prepare(`INSERT INTO seasonal_progression_refresh_candidates
+          (run_id, cycle_id, aid, latest_captured_at, state, updated_at)
+          SELECT ?, s.cycle_id, s.aid, MAX(s.captured_at), 'queued', ?
+          FROM progression_snapshots s
+          LEFT JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
+          WHERE s.mode = 'seasonal' AND s.cycle_id = ? AND COALESCE(p.confirmed_banned, 0) = 0
+            AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)
+          GROUP BY s.cycle_id, s.aid ORDER BY MAX(s.captured_at), s.aid`)
+          .bind(Number(run.id), now, cycleId).run();
+        resumed = false;
+      }
+      return { run: mapRefreshRun(run), resumed };
+    },
+
+    async claimNextProgressionRefresh(runId: number, owner: string, now = Date.now()) {
+      await ensureRefreshSchema();
+      validateRefreshIdentifiers(runId);
+      if (!owner.trim()) throw new Error("refresh lease owner is required");
+      const run = await db.prepare(`SELECT * FROM seasonal_progression_refresh_runs
+        WHERE id = ? AND owner = ? AND state = 'running'`).bind(runId, owner).first() as Record<string, unknown> | null;
+      if (!run) throw new Error("active progression refresh run not found");
+      let candidate = await db.prepare(`SELECT * FROM seasonal_progression_refresh_candidates
+        WHERE run_id = ? AND (state = 'queued' OR (state = 'leased' AND leased_until <= ?))
+        ORDER BY latest_captured_at, aid LIMIT 1`).bind(runId, now).first() as Record<string, unknown> | null;
+      if (!candidate) {
+        const live = await db.prepare(`SELECT MIN(leased_until) AS retry_at
+          FROM seasonal_progression_refresh_candidates WHERE run_id = ? AND state = 'leased' AND leased_until > ?`)
+          .bind(runId, now).first() as { retry_at: number | null } | null;
+        const remaining = await db.prepare(`SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates
+          WHERE run_id = ? AND state NOT IN ('completed', 'skipped', 'not_found')`).bind(runId).first() as { n: number };
+        if (live?.retry_at != null) return { run: mapRefreshRun(run), candidate: null, retryAt: Number(live.retry_at), remaining: Number(remaining?.n ?? 0) };
+        await db.prepare(`UPDATE seasonal_progression_refresh_runs SET state = 'completed', updated_at = ?, finished_at = ? WHERE id = ?`)
+          .bind(now, now, runId).run();
+        return { run: mapRefreshRun({ ...run, state: "completed", updated_at: now, finished_at: now }), candidate: null, remaining: 0 };
+      }
+      await db.prepare(`UPDATE seasonal_progression_refresh_candidates
+        SET state = 'leased', lease_owner = ?, leased_until = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?`)
+        .bind(owner, now + 10 * 60_000, now, Number(candidate.id)).run();
+      candidate = await db.prepare("SELECT * FROM seasonal_progression_refresh_candidates WHERE id = ?")
+        .bind(Number(candidate.id)).first() as Record<string, unknown>;
+      await db.prepare("UPDATE seasonal_progression_refresh_runs SET updated_at = ? WHERE id = ?")
+        .bind(now, runId).run();
+      const remaining = await db.prepare(`SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates
+        WHERE run_id = ? AND state NOT IN ('completed', 'skipped', 'not_found')`).bind(runId).first() as { n: number };
+      return { run: mapRefreshRun({ ...run, updated_at: now }), candidate: mapRefreshCandidate(candidate), remaining: Number(remaining?.n ?? 0) };
+    },
+
+    async activeProgressionRefreshLease(input: { runId: number; candidateId: number; owner: string; aid: number; cycleId: string; now?: number }) {
+      await ensureRefreshSchema();
+      const now = input.now ?? Date.now();
+      validateRefreshIdentifiers(input.runId, input.candidateId, input.aid);
+      const row = await db.prepare(`SELECT c.id, c.aid, c.cycle_id, c.state
+        FROM seasonal_progression_refresh_candidates c JOIN seasonal_progression_refresh_runs r ON r.id = c.run_id
+        WHERE c.run_id = ? AND c.id = ? AND c.aid = ? AND c.cycle_id = ? AND r.owner = ? AND r.state = 'running'
+          AND c.state = 'leased' AND c.lease_owner = ? AND c.leased_until > ?`)
+        .bind(input.runId, input.candidateId, input.aid, input.cycleId, input.owner, input.owner, now).first() as Record<string, unknown> | null;
+      return row ? { id: Number(row.id), aid: Number(row.aid), cycleId: String(row.cycle_id), state: String(row.state) } : null;
+    },
+
+    async recordProgressionRefreshOutcome(input: {
+      runId: number; candidateId: number; aid: number; cycleId: string; owner: string;
+      outcome: ProgressionRefreshOutcome; now?: number;
+    }) {
+      await ensureRefreshSchema();
+      const now = input.now ?? Date.now();
+      validateRefreshIdentifiers(input.runId, input.candidateId, input.aid);
+      if (!input.owner.trim()) throw new Error("refresh lease owner is required");
+      const result = await db.prepare(`UPDATE seasonal_progression_refresh_candidates
+        SET state = ?, outcome = ?, lease_owner = NULL, leased_until = NULL, updated_at = ?
+        WHERE id = ? AND run_id = ? AND cycle_id = ? AND aid = ? AND state = 'leased'
+          AND lease_owner = ? AND leased_until > ?`)
+        .bind(input.outcome, input.outcome, now, input.candidateId, input.runId, input.cycleId,
+          input.aid, input.owner, now).run();
+      if (d1Changes(result) !== 1) throw new Error("progression refresh lease not found");
+      await db.prepare("UPDATE seasonal_progression_refresh_runs SET updated_at = ? WHERE id = ?")
+        .bind(now, input.runId).run();
+      return { state: input.outcome };
+    },
+
     activeLease,
 
     async confirmBanned(input: { runId: number; taskId: number; owner: string; aid: number; cycleId: string; now?: number }) {
