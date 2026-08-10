@@ -17,6 +17,10 @@ export const runtime = "nodejs";
 
 const OUTCOMES = new Set<ProgressionRefreshOutcome>(["completed", "skipped", "not_found"]);
 const SUCCESSFUL_CAPTURE_STATES = new Set(["progression", "duplicate", "reset", "schema_anomaly"]);
+const fetchSeasonalPayloadCompat = fetchSeasonalPayload as (
+  aid: number,
+  options?: { force?: boolean },
+) => Promise<unknown>;
 
 export async function POST(request: Request) {
   const headers = operatorNoStoreHeaders();
@@ -88,7 +92,7 @@ export async function POST(request: Request) {
           seasonStartsAt: currentCycle.startsAt,
           seasonEndsAt: currentCycle.endsAt,
         }),
-        fetchPayload: ({ aid: profileAid }) => fetchSeasonalPayload(profileAid, { force: true }),
+        fetchPayload: ({ aid: profileAid }) => fetchSeasonalPayloadCompat(profileAid, { force: true }),
         getStore: getSeasonalStore,
         afterCapture: async ({ cycle: currentCycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(currentCycle, profile, capture, "task", observedAt);
