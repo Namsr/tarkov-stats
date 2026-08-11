@@ -356,9 +356,6 @@ export async function GET(request: NextRequest) {
   let levelsMs: number | undefined;
   let parseMs: number | undefined;
   let profileStarted: number | undefined;
-  let storeOpenMs: number | undefined;
-  let storeWriteMs: number | undefined;
-  let storage: "sqlite" | "unavailable" | undefined;
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
   try {
@@ -402,24 +399,15 @@ export async function GET(request: NextRequest) {
         console.error("regular admin risk evaluation failed", error);
       }));
     }
-    let store: Awaited<ReturnType<typeof getStore>> = null;
-    if (!fromCache) {
-      const storeOpenStarted = timing.now();
-      store = await getStore();
-      storeOpenMs = timing.elapsedMs(storeOpenStarted);
-      storage = store ? "sqlite" : "unavailable";
-    }
-    const storeWriteStarted = !fromCache ? timing.now() : undefined;
-    try {
-      await persistRegularProfileSnapshot(
-        makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
-        { upsertPlayer: !fromCache, playerStore: store },
-      );
-    } catch (error) {
-      console.error("player store failed", error);
-    } finally {
-      if (storeWriteStarted !== undefined) storeWriteMs = timing.elapsedMs(storeWriteStarted);
-    }
+    const regularSnapshot = makePlayerSnapshot(
+      aid,
+      stats,
+      achievementIds,
+      Number(stats.profileUpdatedAt),
+    );
+    after(() => persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !fromCache }).catch((error) => {
+      console.error("regular profile capture after response failed", error);
+    }));
 
     const publicRisk = stats.pvpStatsKnown === false
       ? null
@@ -452,12 +440,9 @@ export async function GET(request: NextRequest) {
       force,
       source,
       cache,
-      storage,
       profileMs,
       levelsMs,
       parseMs,
-      storeOpenMs,
-      storeWriteMs,
     });
     return response;
   } catch {
@@ -476,12 +461,9 @@ export async function GET(request: NextRequest) {
       force,
       source,
       cache,
-      storage,
       profileMs,
       levelsMs,
       parseMs,
-      storeOpenMs,
-      storeWriteMs,
     });
     return response;
   }

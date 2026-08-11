@@ -3,8 +3,10 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import ProfileHeader from "@/components/ProfileHeader";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import { useI18n } from "@/lib/i18n/context";
+import type { GameMode } from "@/types/seasonal";
 import type { ProfileShellMode, ProfileViewMetric } from "@/types/profile-view";
 
 const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
@@ -13,7 +15,7 @@ export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?:
   return <div className={`data-panel ${className} skeleton rounded-xl`} aria-hidden="true" />;
 }
 
-export function ProfileShellLoading({ mode, aid, title }: { mode: ProfileShellMode; aid?: number; title?: string }) {
+export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?: number; title?: string }) {
   const { t } = useI18n();
   return (
     <main className="page-frame" data-profile-shell-mode={mode}>
@@ -28,7 +30,18 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: ProfileShellMo
             <div className="page-kicker">{aid == null ? <span className="inline-block h-4 w-24 skeleton rounded" /> : `#${aid}`}</div>
             {title ? <h1 className="page-title break-words">{title}</h1> : <div className="mt-3 h-10 w-56 skeleton rounded" />}
           </div>
-          <div className="h-12 w-full max-w-[520px] skeleton rounded" />
+          <div className="profile-header__controls">
+            <div className="profile-header__actions">
+              <div className="h-12 w-full max-w-[520px] skeleton rounded" />
+            </div>
+            <div className="profile-header__mode">
+              {aid == null ? (
+                <div className="h-10 w-full max-w-[220px] skeleton rounded" aria-hidden="true" />
+              ) : (
+                <ProfileModeSwitch current={mode} page="player" aid={aid} />
+              )}
+            </div>
+          </div>
         </div>
         <div className="detail-grid mt-7">
           {Array.from({ length: 4 }).map((_, index) => (

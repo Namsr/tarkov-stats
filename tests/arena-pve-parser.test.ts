@@ -84,6 +84,46 @@ test("public profile fetch uses the mode-specific static cache path", async () =
   ]);
 });
 
+test("public profile cache is isolated by mode and aid while force stays fresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const aid = 5869267;
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    const modeShape = url.includes("/pve/")
+      ? { pmcStats: { eft: { overAllCounters: { Items: [] }, totalInGameTime: 0 } }, skills: { Common: [] } }
+      : {};
+    const requestedAid = Number(url.match(/(?:profile|pve)\/(\d+)\.json/)?.[1]);
+    return new Response(JSON.stringify({ ...base, aid: requestedAid, ...modeShape }), { status: 200 });
+  };
+  try {
+    const first = await getPublicProfile(aid, { mode: "regular" });
+    const cached = await getPublicProfile(aid, { mode: "regular" });
+    const otherMode = await getPublicProfile(aid, { mode: "pve" });
+    const otherAid = await getPublicProfile(aid + 1, { mode: "regular" });
+    const forced = await getPublicProfile(aid, { mode: "regular", force: true });
+
+    assert.equal(first.fromCache, false);
+    assert.equal(cached.fromCache, true);
+    assert.equal(otherMode.fromCache, false);
+    assert.equal(otherAid.fromCache, false);
+    assert.equal(forced.fromCache, false);
+    assert.equal(first.profile?.aid, aid);
+    assert.equal(otherMode.profile?.aid, aid);
+    assert.equal(otherAid.profile?.aid, aid + 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(urls.length, 4);
+  assert.deepEqual(urls.slice(0, 3), [
+    `https://players.tarkov.dev/profile/${aid}.json`,
+    `https://players.tarkov.dev/pve/${aid}.json`,
+    `https://players.tarkov.dev/profile/${aid + 1}.json`,
+  ]);
+  assert.match(urls[3], new RegExp(`^https://players\\.tarkov\\.dev/profile/${aid}\\.json\\?v=\\d+$`));
+});
+
 test("regular forced fetch cache-busts upstream and rejects an older profile version", async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";

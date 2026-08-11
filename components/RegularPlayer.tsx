@@ -116,9 +116,12 @@ export default function RegularPlayer({
     setServerRisk(null);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
+    const forceRefresh = isReload();
     const requestParams = new URLSearchParams({ aid, mode });
-    if (isReload()) requestParams.set("refresh", "1");
-    fetch(`/api/player/profile?${requestParams}`)
+    if (forceRefresh) requestParams.set("refresh", "1");
+    fetch(`/api/player/profile?${requestParams}`, {
+      cache: forceRefresh ? "no-store" : "default",
+    })
       .then(async (res) => {
         const data = (await res.json()) as {
           code?: string;
@@ -242,19 +245,7 @@ export default function RegularPlayer({
   }, [aid, mode, profileUpdatedAt, stats, t]);
 
   if (loading) {
-    if (mode === "regular") return <ProfileShellLoading mode="regular" aid={Number(aid)} title={stats?.nickname} />;
-    return (
-      <main className="flex-1 px-4 py-8 max-w-7xl mx-auto w-full">
-        <div className="animate-pulse space-y-6">
-          <div className="h-8 w-48 skeleton rounded" />
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {Array.from({ length: 12 }).map((_, i) => (
-              <div key={i} className="h-20 skeleton rounded-lg" />
-            ))}
-          </div>
-        </div>
-      </main>
-    );
+    return <ProfileShellLoading mode={mode} aid={Number(aid)} title={stats?.nickname} />;
   }
 
   if (modeUnavailable) {

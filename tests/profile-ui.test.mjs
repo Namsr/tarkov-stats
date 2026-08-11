@@ -73,6 +73,22 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.doesNotMatch(report, /signedOut && <span className="profile-action__status"/);
 });
 
+test("profile mode switching is available during loading and capture is post-response", async () => {
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const regular = await readFile("components/RegularPlayer.tsx", "utf8");
+  const route = await readFile("app/api/player/profile/route.ts", "utf8");
+
+  assert.match(shell, /<ProfileModeSwitch current=\{mode\} page="player" aid=\{aid\} \/>/);
+  assert.match(shell, /profile-header__controls[\s\S]*profile-header__actions[\s\S]*profile-header__mode/);
+  assert.match(regular, /const forceRefresh = isReload\(\)/);
+  assert.match(regular, /cache: forceRefresh \? "no-store" : "default"/);
+  assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
+  assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
+  assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
+  assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !fromCache \}\)/);
+  assert.doesNotMatch(route, /await persistRegularProfileSnapshot/);
+});
+
 test("visitor help is hidden from home without deleting its implementation", async () => {
   const home = await readFile("components/HomePage.tsx", "utf8");
   assert.doesNotMatch(home, /CommunityHelper/);
