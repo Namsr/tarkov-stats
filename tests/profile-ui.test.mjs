@@ -73,19 +73,29 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.doesNotMatch(report, /signedOut && <span className="profile-action__status"/);
 });
 
-test("profile mode switch is route-level and available before profile data", async () => {
+test("profile mode switch stays below profile actions and is available before profile data", async () => {
   const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const header = await readFile("components/ProfileHeader.tsx", "utf8");
   const styles = await readFile("app/globals.css", "utf8");
 
-  assert.match(route, /const modeSwitch = parsedAid === null \? null/);
-  assert.match(route, /<ProfileModeSwitch current=\{mode\} page="player" aid=\{parsedAid\} \/>/);
+  assert.doesNotMatch(route, /profile-route-modebar|const modeSwitch/);
   const pageBody = route.slice(route.indexOf("export default async function"));
   assert.doesNotMatch(pageBody, /await getPlayerLevels/);
-  assert.match(pageBody, /modeSwitch[\s\S]*<RegularPlayer/);
-  assert.match(pageBody, /modeSwitch[\s\S]*<SeasonalPlayer/);
+  assert.match(shell, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
+  assert.match(header, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
+  assert.match(shell, /ProfileShellLoading[\s\S]*<ProfileModeSwitch current=\{mode\}/);
   assert.match(modes, /const canNavigateImmediately = page === "average" \|\| page === "player"/);
-  assert.match(styles, /\.profile-route-modebar \.mode-switch/);
+  assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
+  assert.match(modes, /aria-busy=\{pending \|\| undefined\}/);
+  assert.match(modes, /const pathname = usePathname\(\)/);
+  assert.match(modes, /pendingNavigation\.fromMode === current &&[\s\S]*pendingNavigation\.pathname === pathname/);
+  assert.match(modes, /window\.setTimeout\(\(\) => setPendingNavigation\(null\), PENDING_TIMEOUT_MS\)/);
+  assert.match(modes, /!event\.metaKey && !event\.ctrlKey && !event\.shiftKey && !event\.altKey\) \{[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.equal((modes.match(/profile-mode-navigate/g) ?? []).length, 1);
+  assert.match(styles, /\.profile-header__mode \.mode-switch/);
+  assert.doesNotMatch(styles, /\.profile-route-modebar/);
 });
 
 test("profile mode switching is available during loading and capture is post-response", async () => {
@@ -97,6 +107,12 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
   const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
   assert.match(progression, /cache: forceRefresh \|\| refreshRevision > 0 \? "no-store" : "default"/);
+  assert.match(progression, /const timelineCache = new Map<string, ProgressionTimelineResponse>\(\)/);
+  assert.match(progression, /`\$\{mode\}\\0\$\{cycleId\}\\0\$\{aid\}`/);
+  assert.match(progression, /const cached = timelineCache\.get\(cacheKey\) \?\? null/);
+  assert.match(progression, /setData\(cached\)[\s\S]*void loadTimeline\(\)/);
+  assert.match(progression, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
+  assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
@@ -476,8 +492,8 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   assert.match(cache, /unstable_cache\(/);
   assert.match(cache, /PROGRESSION_CACHE_TTL_SECONDS = 18_000/);
   assert.match(cache, /\["progression-bundle-v4"\]/);
-  assert.match(cache, /\["progression-timeline-v1"\]/);
-  assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,\s*_revision: number \| null,/);
+  assert.match(cache, /\["progression-timeline-v2"\]/);
+  assert.match(cache, /async \(\s*mode: ProgressionMode,\s*cycleId: string,\s*aid: number,\s*_personalRevision: number,\s*_populationGeneration: number,/);
   assert.doesNotMatch(cache, /kind: ProgressionKind/);
   assert.match(cache, /throw new UncacheableProgressionResult\("unavailable"\)/);
   assert.match(cache, /throw new UncacheableProgressionResult\("not-found"\)/);
@@ -486,8 +502,9 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   assert.match(cache, /`\$\{progressionFlightKey\(mode, cycleId, aid\)\}\\0\$\{revision \?\? "none"\}`/);
   assert.match(cache, /loadProgressionBundle\(mode, cycleId, aid, revision\)/);
   assert.match(cache, /getCachedProgressionTimeline/);
-  assert.match(cache, /loadProgressionTimeline\(mode, cycleId, aid, revision\)/);
-  assert.match(cache, /\\0timeline\\0/);
+  assert.match(cache, /getProgressionTimelineRevisions\(\{ mode, cycleId, aid \}\)/);
+  assert.match(cache, /loadProgressionTimeline\(mode, cycleId, aid, personalRevision, populationGeneration\)/);
+  assert.match(cache, /\\0timeline\\0\$\{personalRevision\}\\0\$\{populationGeneration\}/);
   assert.match(flight, /load\(\)\.finally/);
   assert.match(flight, /inFlight\.delete\(key\)/);
 
@@ -591,15 +608,21 @@ test("Seasonal average invalidation keeps the server cache tagged and the JSON r
   );
 });
 
-test("Season route keeps the internal seasonal cache and profile identity", async () => {
+test("PVP Season uses one canonical public route and keeps the internal seasonal identity", async () => {
   const modes = await readFile("types/seasonal.ts", "utf8");
   const averageRoute = await readFile("app/average/[mode]/page.tsx", "utf8");
   const playerRoute = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const switcher = await readFile("components/ProfileModeSwitch.tsx", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
 
-  assert.match(modes, /SEASON_ROUTE_MODE = "season"/);
+  assert.match(modes, /SEASON_ROUTE_MODE = "pvp-season"/);
   assert.match(modes, /function appRouteMode\(mode: GameMode\)/);
-  assert.match(averageRoute, /routeMode === SEASON_ROUTE_MODE/);
-  assert.match(playerRoute, /routeMode === SEASON_ROUTE_MODE/);
+  assert.match(modes, /function gameModeFromAppRoute\(value: unknown\)/);
+  assert.match(averageRoute, /gameModeFromAppRoute\(routeMode\)/);
+  assert.match(playerRoute, /gameModeFromAppRoute\(routeMode\)/);
+  assert.match(averageRoute, /if \(!mode\) notFound\(\)/);
+  assert.match(playerRoute, /if \(segments\.length < 1 \|\| segments\.length > 2 \|\| !aid \|\| !mode\) notFound\(\)/);
   assert.match(switcher, /const routeMode = appRouteMode\(mode\)/);
+  assert.match(dictionary, /"fav\.mode\.seasonal": "PVP-SEASON"/);
+  assert.match(dictionary, /"fav\.mode\.seasonal": "PVP-СЕЗОН"/);
 });

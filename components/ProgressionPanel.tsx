@@ -7,6 +7,8 @@ import { useI18n } from "@/lib/i18n/context";
 import type { LevelBand } from "@/lib/seasonal/ui";
 import type { ProgressionTimelineResponse } from "@/types/seasonal";
 
+const timelineCache = new Map<string, ProgressionTimelineResponse>();
+
 export interface ProgressionRiskPayload {
   combined: number;
   static: number | null;
@@ -64,10 +66,14 @@ export default function ProgressionPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
+    const cacheKey = `${mode}\0${cycleId}\0${aid}`;
+    const cached = timelineCache.get(cacheKey) ?? null;
+    const abortForNavigation = () => controller.abort();
+    window.addEventListener("profile-mode-navigate", abortForNavigation, { once: true });
+    setLoading(cached === null);
     setError(false);
-    setData(null);
-    onRiskChange?.(null);
+    setData(cached);
+    onRiskChange?.(cached?.history?.ready && validRisk(cached.risk) ? cached.risk : null);
 
     const loadTimeline = async () => {
       try {
@@ -83,11 +89,12 @@ export default function ProgressionPanel({
         if (!response.ok) throw new Error(t("progression.unavailable"));
         const result = (await response.json()) as ProgressionTimelineResponse;
         if (controller.signal.aborted) return;
+        timelineCache.set(cacheKey, result);
         setData(result);
         onRiskChange?.(result.history?.ready && validRisk(result.risk) ? result.risk : null);
       } catch (caught: unknown) {
         if (caught instanceof Error && caught.name === "AbortError") return;
-        if (!controller.signal.aborted) setError(true);
+        if (!controller.signal.aborted && !cached) setError(true);
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -95,7 +102,10 @@ export default function ProgressionPanel({
 
     void loadTimeline();
 
-    return () => controller.abort();
+    return () => {
+      window.removeEventListener("profile-mode-navigate", abortForNavigation);
+      controller.abort();
+    };
   }, [aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
 
   const history = data?.history;
@@ -112,6 +122,12 @@ export default function ProgressionPanel({
           <h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
         </div>
       </div>
+
+      {data?.comparison.status === "warming" && (
+        <div className="data-panel mt-4 p-5" role="status">
+          <p className="text-sm text-[var(--muted)]">{t("progression.comparisonWarming")}</p>
+        </div>
+      )}
 
       {loading && (
         <div className="mt-4 grid gap-4" role="status" aria-label={t("common.loading")}>

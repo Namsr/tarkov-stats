@@ -4,7 +4,6 @@ import {
   type OperatorTaskOutcome,
 } from "@/lib/seasonal/operator";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
-import { refreshSeasonalDailyAggregates } from "@/lib/seasonal/daily-aggregates";
 import { finalizeSeasonalTaskLifecycle, prepareSeasonalScannerCycle } from "@/lib/seasonal/scanner";
 
 export const runtime = "nodejs";
@@ -45,9 +44,6 @@ export async function POST(request: Request) {
       const claimed = await store.claimNext(run.id, body.owner) as {
         run: { state: string }; task: unknown; retryAt?: number;
       };
-      if (claimed.run.state === "completed") {
-        return Response.json({ ...claimed, materialized: await refreshSeasonalDailyAggregates(body.cycleId) }, { headers });
-      }
       return Response.json(claimed, { headers });
     }
     if (body.action === "outcome") {

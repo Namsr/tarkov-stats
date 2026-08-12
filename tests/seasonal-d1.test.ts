@@ -68,7 +68,9 @@ test("D1 migration creates every Seasonal backend table", () => {
   db.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8"));
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name));
   for (const name of ["season_cycles", "player_profiles", "progression_snapshots", "progression_intervals",
-    "daily_aggregates", "progression_materializations", "scan_cohorts", "scan_candidates", "scan_discovery_state", "scan_daily_requeues",
+    "daily_aggregates", "progression_materializations", "progression_population_generations",
+    "progression_population_current", "progression_population_chunks", "progression_personal_revisions",
+    "scan_cohorts", "scan_candidates", "scan_discovery_state", "scan_daily_requeues",
     "scan_members", "scan_tasks", "scan_runs", "scan_task_outcomes", "helper_sessions"]) {
     assert.ok(tables.has(name), `missing ${name}`);
   }

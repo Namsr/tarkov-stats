@@ -262,6 +262,7 @@ export default function RegularPlayer({
       const unavailableSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
       return (
         <ProfileShell
+          aid={Number(aid)}
           mode="regular"
           cycleId="persistent"
           kicker={`#${aid}`}
@@ -299,6 +300,8 @@ export default function RegularPlayer({
         </Link>
 
         <ProfileHeader
+          aid={Number(aid)}
+          mode={mode}
           kicker={`#${aid}`}
           title={profileSummary?.nickname}
           meta={mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) ? (
@@ -343,6 +346,7 @@ export default function RegularPlayer({
       const errorSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--danger)]">{error || t("player.unknownError")}</div>;
       return (
         <ProfileShell
+          aid={Number(aid)}
           mode="regular"
           cycleId="persistent"
           kicker={`#${aid}`}
@@ -364,13 +368,24 @@ export default function RegularPlayer({
       );
     }
     return (
-      <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
-        <p className="text-[var(--danger)] text-lg text-center max-w-md">
-          {error || t("player.unknownError")}
-        </p>
-        <Link href="/" className="text-[var(--accent)] hover:underline">
+      <main className="page-frame">
+        <Link href="/" className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-8 inline-block">
           {t("common.back")}
         </Link>
+        <ProfileHeader
+          aid={Number(aid)}
+          mode={mode}
+          kicker={`#${aid}`}
+          title={profileSummary?.nickname}
+          actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={profileSummary?.nickname} onCheck={refreshProfile} />}
+        >
+          <div className="detail-grid mt-7">
+            {Array.from({ length: 4 }).map((_, index) => <StatCard key={index} label={t("common.unknown")} value="?" />)}
+          </div>
+        </ProfileHeader>
+        <div className="data-panel mt-5 p-5 text-center text-[var(--danger)]" role="status">
+          {error || t("player.unknownError")}
+        </div>
       </main>
     );
   }
@@ -492,6 +507,7 @@ export default function RegularPlayer({
 
     return (
       <ProfileShell
+        aid={Number(aid)}
         mode="regular"
         cycleId="persistent"
         kicker={`#${aid}`}
@@ -537,6 +553,8 @@ export default function RegularPlayer({
       <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks} />
 
       <ProfileHeader
+        aid={Number(aid)}
+        mode={mode}
         kicker={`#${aid}`}
         title={stats.nickname}
         meta={

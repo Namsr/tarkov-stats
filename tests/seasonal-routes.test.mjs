@@ -37,8 +37,7 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     await readFile("app/api/operator/seasonal/profile/route.ts", "utf8"),
     helperApi,
   ]) {
-    assert.match(source, /if \(capture\.inserted\)/);
-    assert.match(source, /refreshProgressionAfterCapture\([\s\S]*\{ force: true \}\)/);
+    assert.doesNotMatch(source, /refreshProgressionAfterCapture/);
   }
 
   const playerProfile = await readFile("app/api/player/profile/route.ts", "utf8");

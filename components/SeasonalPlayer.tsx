@@ -272,6 +272,7 @@ export default function SeasonalPlayer({
   if (modeUnavailable || error || !profile) {
     return (
       <ProfileShell
+        aid={aid}
         mode="seasonal"
         cycleId={cycleId}
         kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
@@ -321,6 +322,7 @@ export default function SeasonalPlayer({
 
   return (
     <ProfileShell
+      aid={aid}
       mode="seasonal"
       cycleId={cycleId}
       kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}

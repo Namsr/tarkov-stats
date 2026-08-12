@@ -46,12 +46,24 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs .
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/lib/brackets.ts ./lib/brackets.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/cheater-score.ts ./lib/cheater-score.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/admin/moderation-db.ts ./lib/admin/moderation-db.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/tarkov-api.ts ./lib/tarkov-api.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/config.ts ./lib/seasonal/config.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/storage.ts ./lib/seasonal/storage.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/regular-progression.ts ./lib/regular-progression.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/playtime-brackets.ts ./lib/playtime-brackets.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/analytics.ts ./lib/seasonal/analytics.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/d1.ts ./lib/seasonal/d1.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/daily-aggregates.ts ./lib/seasonal/daily-aggregates.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression.ts ./lib/seasonal/progression.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression-db.ts ./lib/seasonal/progression-db.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression-details.ts ./lib/seasonal/progression-details.ts
+COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/storage-d1.ts ./lib/seasonal/storage-d1.ts
+COPY --from=builder --chown=nextjs:nodejs /app/types/seasonal.ts ./types/seasonal.ts
+COPY --from=builder --chown=nextjs:nodejs /app/types/tarkov.ts ./types/tarkov.ts
 
 # Каталог для локальной БД игроков (node:sqlite). Делаем его владельцем nextjs,
 # чтобы примонтированный сюда docker-volume унаследовал права на запись.

@@ -7,7 +7,6 @@ import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
-import { refreshProgressionAfterCapture } from "@/lib/seasonal/daily-aggregates";
 
 export const runtime = "nodejs";
 
@@ -63,14 +62,6 @@ export async function POST(request: Request) {
         getStore: getSeasonalStore,
         afterCapture: async ({ cycle: currentCycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(currentCycle, profile, capture, "task", observedAt);
-          // Re-materialize on retries too: a snapshot may have been committed
-          // before a previous aggregate refresh failed.
-          await refreshProgressionAfterCapture(
-            "seasonal",
-            currentCycle.cycleId,
-            profile.counters.pmcRaids,
-            { force: true },
-          );
         },
       },
     );

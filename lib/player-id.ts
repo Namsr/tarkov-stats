@@ -9,7 +9,7 @@ export function parsePlayerInput(input: string): ParsedPlayerInput | null {
   if (!trimmed) return null;
 
   // tarkov.dev/players/<mode>/<aid> with optional protocol, query or hash.
-  const urlMatch = trimmed.match(/players\/(regular|pve|arena|season|seasonal|pvp-season)\/(\d{1,15})(?:[/?#]|$)/i);
+  const urlMatch = trimmed.match(/players\/(regular|pve|arena|pvp-season)\/(\d{1,15})(?:[/?#]|$)/i);
   if (urlMatch) {
     const aid = toAid(urlMatch[2]);
     const upstreamMode = urlMatch[1].toLowerCase();
@@ -17,9 +17,7 @@ export function parsePlayerInput(input: string): ParsedPlayerInput | null {
       ? null
       : {
           aid,
-          mode: upstreamMode === "season" || upstreamMode === "seasonal" || upstreamMode === "pvp-season"
-            ? "seasonal"
-            : upstreamMode as ParsedPlayerInput["mode"],
+          mode: upstreamMode === "pvp-season" ? "seasonal" : upstreamMode as ParsedPlayerInput["mode"],
         };
   }
 

@@ -6,7 +6,6 @@ import { getSeasonalOperatorStore } from "@/lib/seasonal/operator";
 import { getPlayerLevels, getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { getStore } from "@/lib/db";
 import { recordLinkedPvpLifecycle, recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
-import { refreshProgressionAfterCapture } from "@/lib/seasonal/daily-aggregates";
 
 export const runtime = "nodejs";
 
@@ -69,9 +68,6 @@ export async function POST(request: Request) {
     await store.upsertProfile(validated.profile);
     const capture = await store.captureSnapshot(validated.profile);
     await recordSeasonalCaptureLifecycle(cycle, validated.profile, capture, "task");
-    if (capture.inserted) {
-      await refreshProgressionAfterCapture("seasonal", cycle.cycleId, validated.profile.counters.pmcRaids, { force: true });
-    }
     return Response.json({ state: capture.status }, { headers });
   } catch (error) {
     console.error("operator Seasonal capture failed", error);

@@ -1,30 +1,22 @@
-import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
-import {
-  buildProgressionMetricSeries,
-  buildProgressionSeries,
-  PROGRESSION_KINDS,
-  progressionDailySql,
-  queryRegularProgressionAverage,
-  queryProgressionSeriesBundle,
-  type DailyRow,
-  type ProgressionRequest,
-} from "@/lib/seasonal/progression";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { buildSequentialIntervals, DAY_MS } from "@/lib/seasonal/analytics.ts";
-import { d1Rows, getSeasonalD1 } from "@/lib/seasonal/d1";
-import { loadSeasonalCycleConfig } from "@/lib/seasonal/config";
-import { upsertD1SeasonCycle } from "@/lib/seasonal/storage-d1";
-import { upsertSqliteSeasonCycle } from "@/lib/seasonal/storage";
-import { scoreCheater, type CheaterScoreResult } from "@/lib/cheater-score";
-import { rangeForHours } from "@/lib/playtime-brackets";
-import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline } from "@/lib/seasonal/average-db";
-import { parseSeasonalAchievementUnlocks } from "@/lib/seasonal/storage";
-import {
-  buildSeasonalProgressionDetails,
-  type ProgressionDetailIntervalRow,
-  type SeasonalProgressionDetails,
-} from "@/lib/seasonal/progression-details";
-import type { ParsedPlayerStats } from "@/types/tarkov";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { buildProgressionMetricSeries, buildProgressionSeries, PROGRESSION_KINDS, progressionDailySql, queryRegularProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { buildSequentialIntervals, DAY_MS, quantile } from "./analytics.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { loadSeasonalCycleConfig } from "./config.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { upsertD1SeasonCycle } from "./storage-d1.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { initializeSeasonalSchema, upsertSqliteSeasonCycle, parseSeasonalAchievementUnlocks } from "./storage.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { scoreCheater, type Baseline, type CheaterScoreResult } from "../cheater-score.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
+import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,
   ProgressionKind,
@@ -33,7 +25,7 @@ import type {
   ProgressionSeriesResponse,
   ProgressionTimelineResponse,
   SeasonalCounters,
-} from "@/types/seasonal";
+} from "../../types/seasonal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let database: any = null;
@@ -86,11 +78,7 @@ interface StaticProfileRow extends Record<string, unknown> {
   achievements: string;
 }
 
-const DETAIL_INTERVAL_SQL = `WITH target_dates AS (
-    SELECT DISTINCT local_date FROM progression_intervals
-    WHERE mode = ? AND cycle_id = ? AND aid = ? AND status = 'valid'
-  )
-  SELECT i.aid, i.local_date, i.ended_at, i.elapsed_days, i.status,
+const DETAIL_INTERVAL_SQL = `SELECT i.aid, i.local_date, i.ended_at, i.elapsed_days, i.status,
     i.experience, i.pmc_raids, i.scav_raids, i.pmc_survived, i.pmc_deaths,
     i.pmc_kills, i.killed_pmc,
     CASE
@@ -108,10 +96,9 @@ const DETAIL_INTERVAL_SQL = `WITH target_dates AS (
   FROM progression_intervals i
   JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id
   JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
-  JOIN target_dates d ON d.local_date = i.local_date
   JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
     AND p.confirmed_banned = 0
-  WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'
+  WHERE i.mode = ? AND i.cycle_id = ? AND i.aid = ? AND i.status = 'valid'
   ORDER BY i.local_date, i.aid, i.ended_at`;
 
 const STATIC_PROFILE_SQL = `SELECT p.nickname, p.experience, p.pmc_raids, p.scav_raids,
@@ -138,7 +125,7 @@ const TIMELINE_SNAPSHOT_SQL = `SELECT s.aid, s.id AS point_id, s.local_date,
   FROM progression_snapshots s
   JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
     AND p.confirmed_banned = 0
-  WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0
+  WHERE s.mode = ? AND s.cycle_id = ? AND s.aid = ? AND s.pmc_raids > 0
   ORDER BY s.aid, s.profile_updated_at, s.id`;
 
 const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
@@ -167,8 +154,15 @@ const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
   JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
   JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
     AND p.confirmed_banned = 0
-  WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid' AND i.pmc_raids > 0
+  WHERE i.mode = ? AND i.cycle_id = ? AND i.aid = ? AND i.status = 'valid' AND i.pmc_raids > 0
   ORDER BY i.aid, i.ended_at, i.id`;
+
+const POPULATION_TIMELINE_SNAPSHOT_SQL = TIMELINE_SNAPSHOT_SQL.replace("AND s.aid = ? ", "")
+  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY");
+const POPULATION_TIMELINE_INTERVAL_SQL = TIMELINE_INTERVAL_SQL.replace("AND i.aid = ? ", "")
+  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
+const POPULATION_DETAIL_INTERVAL_SQL = DETAIL_INTERVAL_SQL.replace("AND i.aid = ? ", "")
+  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
 
 interface TimelineIntervalRow {
   aid: number;
@@ -384,26 +378,347 @@ function timelineLegacyMetricRows(
   });
 }
 
+function timelineMetricRows(
+  snapshotRows: readonly Record<string, unknown>[],
+  intervalRows: readonly Record<string, unknown>[],
+): Partial<Record<ProgressionMetricKey, DailyRow[]>> {
+  const metrics: Partial<Record<ProgressionMetricKey, DailyRow[]>> = {};
+  const snapshots = timelineSnapshotRows(snapshotRows);
+  if (snapshots.length) metrics.xp = snapshots;
+  for (const metric of TIMELINE_CUMULATIVE_METRICS) {
+    const source = timelineCumulativeMetricRows(snapshotRows, metric);
+    if (source.length) metrics[metric] = source;
+  }
+  for (const metric of TIMELINE_LEGACY_METRICS) {
+    const source = timelineLegacyMetricRows(intervalRows, metric);
+    if (source.length) metrics[metric] = source;
+  }
+  return metrics;
+}
+
 function timelineMetricSeries(
   snapshotRows: readonly Record<string, unknown>[],
   intervalRows: readonly Record<string, unknown>[],
   identity: ProgressionIdentity,
 ): Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>> {
-  const metrics: Partial<Record<ProgressionMetricKey, ProgressionMetricSeries>> = {};
-  const snapshots = timelineSnapshotRows(snapshotRows);
-  if (snapshots.length) metrics.xp = buildProgressionMetricSeries(snapshots, identity, "xp");
-  for (const metric of TIMELINE_CUMULATIVE_METRICS) {
-    const source = timelineCumulativeMetricRows(snapshotRows, metric);
-    if (source.length) metrics[metric] = buildProgressionMetricSeries(source, identity, metric);
-  }
-  for (const metric of TIMELINE_LEGACY_METRICS) {
-    const source = timelineLegacyMetricRows(intervalRows, metric);
-    if (source.length) metrics[metric] = buildProgressionMetricSeries(source, identity, metric);
-  }
-  return metrics;
+  return Object.fromEntries(Object.entries(timelineMetricRows(snapshotRows, intervalRows)).map(([metric, rows]) => [
+    metric,
+    buildProgressionMetricSeries(rows, identity, metric as ProgressionMetricKey),
+  ]));
 }
 
-function detailRows(rows: DetailDbRow[], input: ProgressionRequest): ProgressionDetailIntervalRow[] {
+interface PopulationMetricSnapshot {
+  overall: ProgressionMetricSeries["overall"];
+  byHours: Array<{
+    min: number;
+    max: number | null;
+    points: ProgressionMetricSeries["overall"];
+    n: number;
+    confidence: number;
+  }>;
+  freshnessAt: number | null;
+}
+
+interface PopulationSnapshotPayload {
+  metrics: Partial<Record<ProgressionMetricKey, PopulationMetricSnapshot>>;
+  riskBaselines: Array<{ min: number; max: number | null; baseline: Baseline }>;
+  achievementBaseline: {
+    eligibleN: number;
+    seasonStartsAt: number | null;
+    achievements: Array<{
+      id: string; owners: number; samplePct: number; meanHours: number; earlyHours: number;
+      eligibleN: number; unlockDayP20: number | null; timestampOwners: number;
+    }>;
+  } | null;
+  progressionPercentiles: ProgressionPercentileDistributions;
+}
+
+interface PublishedPopulationSnapshot {
+  generation: number;
+  generatedAt: number;
+  payload: PopulationSnapshotPayload;
+}
+
+export const D1_POPULATION_CHUNK_CHARS = 250_000;
+
+function payloadChunks(payload: string): string[] {
+  return Array.from({ length: Math.ceil(payload.length / D1_POPULATION_CHUNK_CHARS) }, (_, index) =>
+    payload.slice(index * D1_POPULATION_CHUNK_CHARS, (index + 1) * D1_POPULATION_CHUNK_CHARS));
+}
+
+const POPULATION_RISK_SQL = `SELECT p.lifetime_pvp_hours, s.pmc_raids, s.pmc_survived,
+    s.pmc_deaths, s.pmc_kills, s.killed_pmc, s.longest_win_streak, s.prestige
+  FROM player_profiles p JOIN progression_snapshots s ON s.id = (
+    SELECT latest.id FROM progression_snapshots latest
+    WHERE latest.mode = p.mode AND latest.cycle_id = p.cycle_id AND latest.aid = p.aid
+    ORDER BY latest.profile_updated_at DESC, latest.id DESC LIMIT 1
+  )
+  WHERE p.mode = ? AND p.cycle_id = ? AND p.confirmed_banned = 0
+    AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`;
+
+const POPULATION_ACHIEVEMENT_SQL = `SELECT p.aid, p.lifetime_pvp_hours, s.achievements
+  FROM player_profiles p JOIN progression_snapshots s ON s.id = (
+    SELECT latest.id FROM progression_snapshots latest
+    WHERE latest.mode = p.mode AND latest.cycle_id = p.cycle_id AND latest.aid = p.aid
+    ORDER BY latest.profile_updated_at DESC, latest.id DESC LIMIT 1
+  )
+  WHERE p.mode = ? AND p.cycle_id = ? AND p.confirmed_banned = 0
+    AND s.achievements IS NOT NULL AND json_valid(s.achievements)
+    AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`;
+
+function buildRiskBaseline(rows: readonly Record<string, unknown>[]): Baseline {
+  const values: Record<string, number[]> = {
+    pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [], longest_win_streak: [], prestige: [],
+  };
+  for (const row of rows) {
+    const raids = finiteNumber(row.pmc_raids);
+    const survived = finiteNumber(row.pmc_survived);
+    const deaths = finiteNumber(row.pmc_deaths);
+    const killedPmc = finiteNumber(row.killed_pmc);
+    const kills = finiteNumber(row.pmc_kills);
+    if (raids == null || raids <= 0 || survived == null || deaths == null || killedPmc == null || kills == null) continue;
+    values.pmc_survival_rate.push(survived / raids * 100);
+    values.pmc_kd_ratio.push(deaths > 0 ? killedPmc / deaths : killedPmc);
+    values.pmc_kills_per_raid.push(kills / raids);
+    const streak = finiteNumber(row.longest_win_streak);
+    const prestige = finiteNumber(row.prestige);
+    if (streak != null) values.longest_win_streak.push(streak);
+    if (prestige != null) values.prestige.push(prestige);
+  }
+  return {
+    n: rows.length,
+    metrics: Object.fromEntries(Object.entries(values).flatMap(([key, entries]) => {
+      if (!entries.length) return [];
+      const mean = entries.reduce((sum, value) => sum + value, 0) / entries.length;
+      const variance = entries.reduce((sum, value) => sum + (value - mean) ** 2, 0) / entries.length;
+      return [[key, { n: entries.length, mean, std: Math.sqrt(Math.max(0, variance)) }]];
+    })),
+  };
+}
+
+function percentile20(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor((sorted.length - 1) * 0.2)] ?? null;
+}
+
+function buildAchievementBaseline(
+  rows: readonly Record<string, unknown>[],
+  seasonStartsAt: number | null,
+): PopulationSnapshotPayload["achievementBaseline"] {
+  const eligible = rows.flatMap((row) => {
+    const achievements = parseSeasonalAchievementUnlocks(row.achievements);
+    return achievements == null ? [] : [{ aid: Number(row.aid), hours: finiteNumber(row.lifetime_pvp_hours), achievements }];
+  });
+  if (!eligible.length) return null;
+  const byAchievement = new Map<string, { owners: Set<number>; hours: number[]; unlockDays: number[] }>();
+  for (const owner of eligible) {
+    for (const achievement of owner.achievements) {
+      const entry = byAchievement.get(achievement.id) ?? { owners: new Set<number>(), hours: [], unlockDays: [] };
+      entry.owners.add(owner.aid);
+      if (owner.hours != null && owner.hours >= 0) entry.hours.push(owner.hours);
+      if (achievement.unlockedAt != null && seasonStartsAt != null) {
+        const day = (achievement.unlockedAt - seasonStartsAt) / DAY_MS;
+        if (Number.isFinite(day) && day >= 0) entry.unlockDays.push(day);
+      }
+      byAchievement.set(achievement.id, entry);
+    }
+  }
+  return {
+    eligibleN: eligible.length,
+    seasonStartsAt,
+    achievements: [...byAchievement.entries()].map(([id, value]) => {
+      const meanHours = value.hours.length ? value.hours.reduce((sum, hours) => sum + hours, 0) / value.hours.length : 0;
+      return {
+        id, owners: value.owners.size, eligibleN: eligible.length,
+        samplePct: value.owners.size / eligible.length * 100,
+        meanHours, earlyHours: percentile20(value.hours) ?? meanHours,
+        unlockDayP20: percentile20(value.unlockDays), timestampOwners: value.unlockDays.length,
+      };
+    }),
+  };
+}
+
+function percentileGrid(
+  distributions: ProgressionPercentileDistributions,
+): ProgressionPercentileDistributions {
+  return Object.fromEntries(Object.entries(distributions).map(([date, metrics]) => [
+    date,
+    Object.fromEntries(Object.entries(metrics).map(([metric, values]) => [
+      metric,
+      Array.from({ length: 101 }, (_, percentile) => quantile(values, percentile / 100) ?? 0),
+    ])),
+  ]));
+}
+
+function buildPopulationSnapshotPayload(
+  snapshotRows: readonly Record<string, unknown>[],
+  intervalRows: readonly Record<string, unknown>[],
+  riskRows: readonly Record<string, unknown>[],
+  achievementRows: readonly Record<string, unknown>[],
+  detailIntervalRows: readonly DetailDbRow[],
+  seasonStartsAt: number | null,
+  mode: ProgressionIdentity["mode"],
+  cycleId: string,
+): PopulationSnapshotPayload {
+  const identity = { mode, cycleId, aid: -1 };
+  const source = timelineMetricRows(snapshotRows, intervalRows);
+  const metricKeys: ProgressionMetricKey[] = ["xp", ...TIMELINE_CUMULATIVE_METRICS, ...TIMELINE_LEGACY_METRICS];
+  const metrics = Object.fromEntries(metricKeys.map((metric) => {
+    const rows = source[metric] ?? [];
+    const overall = buildProgressionMetricSeries(rows, identity, metric);
+    const byHours = PLAYTIME_RANGES.map((range) => {
+      const scoped = rows.filter((row) => row.lifetime_hours != null && Number(row.lifetime_hours) >= range.min &&
+        (range.max == null || Number(row.lifetime_hours) < range.max));
+      const series = buildProgressionMetricSeries(scoped, identity, metric);
+      return { min: range.min, max: range.max, points: series.overall, n: series.overall.at(-1)?.n ?? 0,
+        confidence: series.overall.at(-1)?.confidence ?? 0 };
+    });
+    return [metric, { overall: overall.overall, byHours, freshnessAt: overall.freshnessAt }];
+  })) as PopulationSnapshotPayload["metrics"];
+  const riskBaselines = PLAYTIME_RANGES.map((range) => ({
+    min: range.min,
+    max: range.max,
+    baseline: buildRiskBaseline(riskRows.filter((row) => {
+      const hours = finiteNumber(row.lifetime_hours);
+      return hours != null && hours >= range.min && (range.max == null || hours < range.max);
+    })),
+  }));
+  return {
+    metrics,
+    riskBaselines,
+    achievementBaseline: buildAchievementBaseline(achievementRows, seasonStartsAt),
+    progressionPercentiles: percentileGrid(buildProgressionPercentileDistributions(
+      detailRows(detailIntervalRows, { ...identity, kind: "cumulative" }),
+    )),
+  };
+}
+
+function parsePublishedPopulationSnapshot(row: Record<string, unknown> | null | undefined): PublishedPopulationSnapshot | null {
+  if (!row?.payload || row.generation == null || row.generated_at == null) return null;
+  try {
+    const payload = JSON.parse(String(row.payload)) as PopulationSnapshotPayload;
+    if (!payload || typeof payload !== "object" || !payload.metrics || !Array.isArray(payload.riskBaselines)) return null;
+    return { generation: Number(row.generation), generatedAt: Number(row.generated_at), payload };
+  } catch {
+    return null;
+  }
+}
+
+export function materializeSqlitePopulationSnapshot(
+  db: { prepare(sql: string): { all(...args: unknown[]): Record<string, unknown>[]; get(...args: unknown[]): Record<string, unknown> | undefined; run(...args: unknown[]): unknown }; exec(sql: string): void },
+  mode: ProgressionIdentity["mode"],
+  cycleId: string,
+  now = Date.now(),
+): { generation: number; generatedAt: number } {
+  initializeSeasonalSchema(db);
+  const snapshots = db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL).all(mode, cycleId);
+  const intervals = db.prepare(POPULATION_TIMELINE_INTERVAL_SQL).all(mode, cycleId);
+  const riskRows = db.prepare(POPULATION_RISK_SQL).all(mode, cycleId);
+  const achievementRows = db.prepare(POPULATION_ACHIEVEMENT_SQL).all(mode, cycleId);
+  const detailIntervals = db.prepare(POPULATION_DETAIL_INTERVAL_SQL).all(mode, cycleId) as unknown as DetailDbRow[];
+  const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
+  const payload = JSON.stringify(buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
+    finiteNumber(cycle?.starts_at), mode, cycleId));
+  const generation = now;
+  db.exec("SAVEPOINT publish_progression_population");
+  try {
+    db.prepare(`INSERT INTO progression_population_generations
+      (mode, cycle_id, generation, generated_at, payload) VALUES (?, ?, ?, ?, ?)`)
+      .run(mode, cycleId, generation, now, payload);
+    db.prepare(`INSERT INTO progression_population_current (mode, cycle_id, generation, generated_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(mode, cycle_id) DO UPDATE SET
+        generation = excluded.generation, generated_at = excluded.generated_at`)
+      .run(mode, cycleId, generation, now);
+    db.prepare(`DELETE FROM progression_population_generations WHERE mode = ? AND cycle_id = ?
+      AND generation NOT IN (SELECT generation FROM progression_population_generations
+        WHERE mode = ? AND cycle_id = ? ORDER BY generation DESC LIMIT 2)`)
+      .run(mode, cycleId, mode, cycleId);
+    db.exec("RELEASE publish_progression_population");
+    return { generation, generatedAt: now };
+  } catch (error) {
+    db.exec("ROLLBACK TO publish_progression_population");
+    db.exec("RELEASE publish_progression_population");
+    throw error;
+  }
+}
+
+export async function materializeD1PopulationSnapshot(
+  db: D1DatabaseLike,
+  mode: ProgressionIdentity["mode"],
+  cycleId: string,
+  now = Date.now(),
+): Promise<{ generation: number; generatedAt: number }> {
+  const [snapshots, intervals, risks, achievements, detailIntervals, cycle] = await Promise.all([
+    db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL).bind(mode, cycleId).all(),
+    db.prepare(POPULATION_TIMELINE_INTERVAL_SQL).bind(mode, cycleId).all(),
+    db.prepare(POPULATION_RISK_SQL).bind(mode, cycleId).all(),
+    db.prepare(POPULATION_ACHIEVEMENT_SQL).bind(mode, cycleId).all(),
+    db.prepare(POPULATION_DETAIL_INTERVAL_SQL).bind(mode, cycleId).all(),
+    mode === "seasonal"
+      ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").bind(cycleId).first()
+      : Promise.resolve(null),
+  ]);
+  const payload = JSON.stringify(buildPopulationSnapshotPayload(
+    d1Rows(snapshots), d1Rows(intervals), d1Rows(risks), d1Rows(achievements),
+    d1Rows(detailIntervals) as unknown as DetailDbRow[],
+    finiteNumber((cycle as Record<string, unknown> | null)?.starts_at), mode, cycleId,
+  ));
+  const generation = now;
+  const chunks = payloadChunks(payload);
+  if (chunks.length > 90) throw new RangeError("progression population snapshot exceeds the D1 chunk budget");
+  await db.batch([
+    db.prepare(`INSERT INTO progression_population_generations
+      (mode, cycle_id, generation, generated_at, payload) VALUES (?, ?, ?, ?, ?)`)
+      .bind(mode, cycleId, generation, now, `chunks:${chunks.length}`),
+    ...chunks.map((chunk, index) => db.prepare(`INSERT INTO progression_population_chunks
+      (mode, cycle_id, generation, chunk_index, payload) VALUES (?, ?, ?, ?, ?)`)
+      .bind(mode, cycleId, generation, index, chunk)),
+    db.prepare(`INSERT INTO progression_population_current (mode, cycle_id, generation, generated_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(mode, cycle_id) DO UPDATE SET
+        generation = excluded.generation, generated_at = excluded.generated_at`)
+      .bind(mode, cycleId, generation, now),
+    db.prepare(`DELETE FROM progression_population_generations WHERE mode = ? AND cycle_id = ?
+      AND generation NOT IN (SELECT generation FROM progression_population_generations
+        WHERE mode = ? AND cycle_id = ? ORDER BY generation DESC LIMIT 2)`)
+      .bind(mode, cycleId, mode, cycleId),
+    db.prepare(`DELETE FROM progression_population_chunks WHERE mode = ? AND cycle_id = ?
+      AND generation NOT IN (SELECT generation FROM progression_population_generations
+        WHERE mode = ? AND cycle_id = ? ORDER BY generation DESC LIMIT 2)`)
+      .bind(mode, cycleId, mode, cycleId),
+  ]);
+  return { generation, generatedAt: now };
+}
+
+function sqlitePopulationSnapshot(db: { prepare(sql: string): { get(...args: unknown[]): Record<string, unknown> | undefined } }, mode: ProgressionIdentity["mode"], cycleId: string) {
+  return parsePublishedPopulationSnapshot(db.prepare(`SELECT g.generation, g.generated_at, g.payload
+    FROM progression_population_current c JOIN progression_population_generations g
+      ON g.mode = c.mode AND g.cycle_id = c.cycle_id AND g.generation = c.generation
+    WHERE c.mode = ? AND c.cycle_id = ?`).get(mode, cycleId));
+}
+
+export async function d1PopulationSnapshot(db: D1DatabaseLike, mode: ProgressionIdentity["mode"], cycleId: string) {
+  try {
+    const row = await db.prepare(`SELECT g.generation, g.generated_at, g.payload
+      FROM progression_population_current c JOIN progression_population_generations g
+        ON g.mode = c.mode AND g.cycle_id = c.cycle_id AND g.generation = c.generation
+      WHERE c.mode = ? AND c.cycle_id = ?`).bind(mode, cycleId).first() as Record<string, unknown> | null;
+    if (!row || !String(row.payload ?? "").startsWith("chunks:")) return parsePublishedPopulationSnapshot(row);
+    const result = await db.prepare(`SELECT payload FROM progression_population_chunks
+      WHERE mode = ? AND cycle_id = ? AND generation = ? ORDER BY chunk_index`)
+      .bind(mode, cycleId, row.generation).all();
+    const chunks = d1Rows(result).map((entry) => String(entry.payload ?? ""));
+    const expected = Number(String(row.payload).slice("chunks:".length));
+    if (chunks.length !== expected) return null;
+    return parsePublishedPopulationSnapshot({ ...row, payload: chunks.join("") });
+  } catch (error) {
+    if (/no such table|does not exist/i.test((error as Error).message)) return null;
+    console.warn("progression population snapshot unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
+function detailRows(rows: readonly DetailDbRow[], input: ProgressionRequest): ProgressionDetailIntervalRow[] {
   return rows.map((row) => ({
     mode: input.mode,
     cycleId: input.cycleId,
@@ -429,7 +744,10 @@ function achievementIds(value: string): string[] {
   return parseSeasonalAchievementUnlocks(value)?.map((achievement) => achievement.id) ?? [];
 }
 
-async function trustedStaticScore(row: StaticProfileRow, cycleId: string): Promise<CheaterScoreResult> {
+async function trustedStaticScore(
+  row: StaticProfileRow,
+  population: PublishedPopulationSnapshot | null,
+): Promise<CheaterScoreResult> {
   const raids = Number(row.pmc_raids);
   const survived = Number(row.pmc_survived);
   const deaths = Number(row.pmc_deaths);
@@ -455,42 +773,34 @@ async function trustedStaticScore(row: StaticProfileRow, cycleId: string): Promi
     registrationDate: 0, lastActiveDate: 0,
     avgLifespan: 0, totalLootValue: 0,
   };
-  try {
-    const bracket = rangeForHours(stats.hoursPlayed);
-    const [baseline, achievementBaseline] = await Promise.all([
-      getSeasonalRiskBaseline(cycleId, bracket.min, bracket.max),
-      getSeasonalAchievementBaseline(cycleId),
-    ]);
-    const unlocks = parseSeasonalAchievementUnlocks(row.achievements) ?? [];
-    const ownedIds = unlocks.map((achievement) => achievement.id);
-    const achievements = achievementBaseline && achievementBaseline.total > 0 ? {
-      ownedIds,
-      seasonal: true,
-      playerUnlockDays: Object.fromEntries(unlocks
-        .filter((achievement) => achievement.unlockedAt !== null)
-        .map((achievement) => [
-          achievement.id,
-          (achievement.unlockedAt! - (achievementBaseline.seasonStartsAt ?? 0)) / DAY_MS,
-        ])),
-      stats: achievementBaseline.achievements.map((entry) => ({
-        id: entry.ach_id,
-        owners: entry.owners,
-        samplePct: entry.prevalencePct,
-        meanHours: entry.meanHours,
-        earlyHours: entry.earlyHours,
-        eligibleN: entry.eligibleN,
-        unlockDayP20: entry.timestampOwners < 1 ? null : entry.unlockDayP20,
-      })),
-    } : null;
-    return scoreCheater(stats, baseline, achievements);
-  } catch (error) {
-    console.warn("Seasonal static risk baseline unavailable: " + (error as Error).message);
-    return scoreCheater(stats, null);
-  }
+  const bracket = rangeForHours(stats.hoursPlayed);
+  const baseline = population?.payload.riskBaselines.find((entry) =>
+    entry.min === bracket.min && entry.max === bracket.max)?.baseline ?? null;
+  const achievementBaseline = population?.payload.achievementBaseline;
+  const unlocks = parseSeasonalAchievementUnlocks(row.achievements) ?? [];
+  const achievements = achievementBaseline ? {
+    ownedIds: unlocks.map((achievement) => achievement.id),
+    seasonal: true,
+    playerUnlockDays: Object.fromEntries(unlocks
+      .filter((achievement) => achievement.unlockedAt != null && achievementBaseline.seasonStartsAt != null)
+      .map((achievement) => [achievement.id,
+        (achievement.unlockedAt! - achievementBaseline.seasonStartsAt!) / DAY_MS])),
+    stats: achievementBaseline.achievements.map((entry) => ({
+      id: entry.id, owners: entry.owners, samplePct: entry.samplePct, meanHours: entry.meanHours,
+      earlyHours: entry.earlyHours, eligibleN: entry.eligibleN,
+      unlockDayP20: entry.timestampOwners < 1 ? null : entry.unlockDayP20,
+    })),
+  } : null;
+  return scoreCheater(stats, baseline, achievements);
 }
 
-async function details(input: ProgressionRequest, intervals: DetailDbRow[], profile: StaticProfileRow): Promise<SeasonalProgressionDetails> {
-  const staticRisk = await trustedStaticScore(profile, input.cycleId);
+async function details(
+  input: ProgressionRequest,
+  intervals: DetailDbRow[],
+  profile: StaticProfileRow,
+  population: PublishedPopulationSnapshot | null = null,
+): Promise<SeasonalProgressionDetails> {
+  const staticRisk = await trustedStaticScore(profile, population);
   return buildSeasonalProgressionDetails({
     mode: input.mode,
     cycleId: input.cycleId,
@@ -498,6 +808,8 @@ async function details(input: ProgressionRequest, intervals: DetailDbRow[], prof
     trustedStaticScore: staticRisk.score,
     staticReasons: staticRisk.factors.filter((factor) => factor.points >= 1).map((factor) => factor.key),
     intervals: detailRows(intervals, input),
+    populationPercentiles: population?.payload.progressionPercentiles,
+    comparisonsReady: population !== null,
   });
 }
 
@@ -537,7 +849,7 @@ function mergeProgressionBundle(
 
 type ProgressionTimelineQuery = (input: ProgressionIdentity) => Promise<ProgressionTimelineResponse | null>;
 
-async function assembleProgressionTimeline(
+export async function assembleProgressionTimeline(
   input: ProgressionIdentity,
   snapshotRows: readonly Record<string, unknown>[],
   intervalRows: readonly Record<string, unknown>[],
@@ -546,11 +858,23 @@ async function assembleProgressionTimeline(
   historyRow: Record<string, unknown> | null | undefined,
   intervalCounts: Record<string, unknown> | null | undefined,
   cycleStartsAt: number | null,
+  population: PublishedPopulationSnapshot | null,
 ): Promise<ProgressionTimelineResponse> {
   const metrics = timelineMetricSeries(snapshotRows, intervalRows, input);
+  const hours = finiteNumber(profile.lifetime_pvp_hours);
+  for (const [key, series] of Object.entries(metrics)) {
+    const shared = population?.payload.metrics[key as ProgressionMetricKey];
+    const nearby = hours == null ? null : shared?.byHours.find((entry) =>
+      hours >= entry.min && (entry.max == null || hours < entry.max));
+    series.overall = shared?.overall ?? [];
+    series.nearby = nearby?.points ?? [];
+    series.n = nearby?.n ?? 0;
+    series.confidence = nearby?.confidence ?? 0;
+    series.freshnessAt = Math.max(series.freshnessAt ?? 0, shared?.freshnessAt ?? 0) || null;
+  }
   const history = progressionHistory(historyRow, intervalCounts);
   const detailInput = { ...input, kind: "cumulative" as const };
-  const sharedDetails = await details(detailInput, [...detailIntervalRows], profile);
+  const sharedDetails = await details(detailInput, [...detailIntervalRows], profile, population);
   const series = Object.values(metrics);
   const targetPoints = series.reduce((count, metric) => count + metric.player.length, 0);
   const confidence = metrics.xp?.confidence ?? series.at(-1)?.confidence ?? 0;
@@ -568,6 +892,9 @@ async function assembleProgressionTimeline(
     n: targetPoints,
     confidence,
     freshnessAt: freshnessValues.length ? Math.max(...freshnessValues) : null,
+    comparison: population
+      ? { status: "ready", generation: population.generation, generatedAt: population.generatedAt }
+      : { status: "warming", generation: null, generatedAt: null },
   };
 }
 
@@ -587,10 +914,10 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
           const startsAt = Number(cycle.starts_at);
           cycleStartsAt = Number.isFinite(startsAt) ? startsAt : null;
         }
-        const [snapshots, intervals, detailIntervals, profile, history, intervalCounts] = await Promise.all([
-          d1.prepare(TIMELINE_SNAPSHOT_SQL).bind(input.mode, input.cycleId).all(),
-          d1.prepare(TIMELINE_INTERVAL_SQL).bind(input.mode, input.cycleId).all(),
-          d1.prepare(DETAIL_INTERVAL_SQL).bind(input.mode, input.cycleId, input.aid, input.mode, input.cycleId).all(),
+        const [snapshots, intervals, detailIntervals, profile, history, intervalCounts, population] = await Promise.all([
+          d1.prepare(TIMELINE_SNAPSHOT_SQL).bind(input.mode, input.cycleId, input.aid).all(),
+          d1.prepare(TIMELINE_INTERVAL_SQL).bind(input.mode, input.cycleId, input.aid).all(),
+          d1.prepare(DETAIL_INTERVAL_SQL).bind(input.mode, input.cycleId, input.aid).all(),
           d1.prepare(STATIC_PROFILE_SQL).bind(input.mode, input.cycleId, input.aid).first() as Promise<StaticProfileRow | null>,
           d1.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
               MAX(profile_updated_at) last_observed_at FROM progression_snapshots
@@ -603,6 +930,7 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
               SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
             FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
             .bind(input.mode, input.cycleId, input.aid).first(),
+          d1PopulationSnapshot(d1, input.mode, input.cycleId),
         ]);
         if (!profile) return null;
         return assembleProgressionTimeline(
@@ -614,6 +942,7 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
           history as Record<string, unknown> | null,
           intervalCounts as Record<string, unknown> | null,
           cycleStartsAt,
+          population,
         );
       };
     }
@@ -627,10 +956,10 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
         ? Number((sqliteDb.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
           .get(input.cycleId) as { starts_at?: number } | undefined)?.starts_at)
         : null;
-      const snapshots = sqliteDb.prepare(TIMELINE_SNAPSHOT_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
-      const intervals = sqliteDb.prepare(TIMELINE_INTERVAL_SQL).all(input.mode, input.cycleId) as Record<string, unknown>[];
+      const snapshots = sqliteDb.prepare(TIMELINE_SNAPSHOT_SQL).all(input.mode, input.cycleId, input.aid) as Record<string, unknown>[];
+      const intervals = sqliteDb.prepare(TIMELINE_INTERVAL_SQL).all(input.mode, input.cycleId, input.aid) as Record<string, unknown>[];
       const detailIntervals = sqliteDb.prepare(DETAIL_INTERVAL_SQL)
-        .all(input.mode, input.cycleId, input.aid, input.mode, input.cycleId) as DetailDbRow[];
+        .all(input.mode, input.cycleId, input.aid) as DetailDbRow[];
       const history = sqliteDb.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
           MAX(profile_updated_at) last_observed_at FROM progression_snapshots
         WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
@@ -642,7 +971,8 @@ export async function getProgressionTimelineQuery(): Promise<ProgressionTimeline
           SUM(CASE WHEN status = 'valid' AND pmc_raids > 0 AND form_score IS NOT NULL THEN 1 ELSE 0 END) form_points
         FROM progression_intervals WHERE mode = ? AND cycle_id = ? AND aid = ?`)
         .get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
-      return assembleProgressionTimeline(input, snapshots, intervals, detailIntervals, profile, history, intervalCounts, Number.isFinite(cycleStartsAt) ? cycleStartsAt : null);
+      return assembleProgressionTimeline(input, snapshots, intervals, detailIntervals, profile, history, intervalCounts,
+        Number.isFinite(cycleStartsAt) ? cycleStartsAt : null, sqlitePopulationSnapshot(sqliteDb, input.mode, input.cycleId));
     };
   } catch (error) {
     console.warn("progression timeline query unavailable: " + (error as Error).message);
@@ -664,7 +994,7 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
         const [results, intervalResult, profile, history, intervalCounts] = await Promise.all([
           Promise.all(PROGRESSION_KINDS.map((kind) => d1.prepare(progressionDailySql(kind))
             .bind("seasonal", input.cycleId, "seasonal", input.cycleId, input.aid).all())),
-          d1.prepare(DETAIL_INTERVAL_SQL).bind("seasonal", input.cycleId, input.aid, "seasonal", input.cycleId).all(),
+          d1.prepare(DETAIL_INTERVAL_SQL).bind("seasonal", input.cycleId, input.aid).all(),
           d1.prepare(STATIC_PROFILE_SQL).bind("seasonal", input.cycleId, input.aid).first() as Promise<StaticProfileRow | null>,
           d1.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
             MAX(profile_updated_at) last_observed_at FROM progression_snapshots
@@ -703,7 +1033,7 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
       const profile = sqliteDb.prepare(STATIC_PROFILE_SQL).get(mode, input.cycleId, input.aid) as StaticProfileRow | undefined;
       if (!profile) return null;
       const intervals = sqliteDb.prepare(DETAIL_INTERVAL_SQL)
-        .all(mode, input.cycleId, input.aid, mode, input.cycleId) as DetailDbRow[];
+        .all(mode, input.cycleId, input.aid) as DetailDbRow[];
       const history = sqliteDb.prepare(`SELECT COUNT(*) snapshots, MIN(profile_updated_at) first_observed_at,
         MAX(profile_updated_at) last_observed_at FROM progression_snapshots
         WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(mode, input.cycleId, input.aid) as Record<string, unknown>;
@@ -743,6 +1073,43 @@ export async function getLatestProgressionRevision(input: ProgressionIdentity): 
   } catch (error) {
     console.warn("progression revision unavailable: " + (error as Error).message);
     return null;
+  }
+}
+
+export async function getProgressionTimelineRevisions(
+  input: ProgressionIdentity,
+): Promise<{ personalRevision: number; populationGeneration: number }> {
+  try {
+    const d1 = await getSeasonalD1();
+    if (d1) {
+      let personal: Record<string, unknown> | null = null;
+      let population: Record<string, unknown> | null = null;
+      try {
+        personal = await d1.prepare(`SELECT revision FROM progression_personal_revisions
+          WHERE mode = ? AND cycle_id = ? AND aid = ?`).bind(input.mode, input.cycleId, input.aid).first();
+      } catch {
+        personal = await d1.prepare(`SELECT COALESCE(MAX(id), 0) AS revision FROM progression_snapshots
+          WHERE mode = ? AND cycle_id = ? AND aid = ?`).bind(input.mode, input.cycleId, input.aid).first();
+      }
+      try {
+        population = await d1.prepare(`SELECT generation FROM progression_population_current
+          WHERE mode = ? AND cycle_id = ?`).bind(input.mode, input.cycleId).first();
+      } catch {
+        population = null;
+      }
+      return { personalRevision: Number(personal?.revision ?? 0), populationGeneration: Number(population?.generation ?? 0) };
+    }
+    const db = await getSqliteProgressionDatabase();
+    const personal = db.prepare(`SELECT revision FROM progression_personal_revisions
+      WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(input.mode, input.cycleId, input.aid) as Record<string, unknown> | undefined
+      ?? db.prepare(`SELECT COALESCE(MAX(id), 0) AS revision FROM progression_snapshots
+        WHERE mode = ? AND cycle_id = ? AND aid = ?`).get(input.mode, input.cycleId, input.aid) as Record<string, unknown>;
+    const population = db.prepare(`SELECT generation FROM progression_population_current
+      WHERE mode = ? AND cycle_id = ?`).get(input.mode, input.cycleId) as Record<string, unknown> | undefined;
+    return { personalRevision: Number(personal?.revision ?? 0), populationGeneration: Number(population?.generation ?? 0) };
+  } catch (error) {
+    console.warn("progression timeline revisions unavailable: " + (error as Error).message);
+    return { personalRevision: 0, populationGeneration: 0 };
   }
 }
 

@@ -19,7 +19,6 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
-import { refreshProgressionAfterCapture } from "@/lib/seasonal/daily-aggregates";
 import type { PlayerProfile } from "@/types/tarkov";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { findProfileSummary } from "@/lib/profile-summary";
@@ -142,9 +141,6 @@ export async function GET(request: NextRequest) {
           fetchSeasonalPayload(seasonalAid, { force: shouldForce }),
         afterCapture: async ({ cycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt);
-          if (capture.inserted) {
-            await refreshProgressionAfterCapture("seasonal", cycle.cycleId, profile.counters.pmcRaids, { force: true });
-          }
         },
       }
     );

@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
 import {
   getLatestProgressionRevision,
+  getProgressionTimelineRevisions,
   getProgressionBundleQuery,
   getProgressionTimelineQuery,
   type ProgressionBundle,
@@ -56,16 +57,18 @@ const loadProgressionTimeline = unstable_cache(
     mode: ProgressionMode,
     cycleId: string,
     aid: number,
-    _revision: number | null,
+    _personalRevision: number,
+    _populationGeneration: number,
   ): Promise<CachedProgressionTimeline> => {
-    void _revision;
+    void _personalRevision;
+    void _populationGeneration;
     const query = await getProgressionTimelineQuery();
     if (!query) throw new UncacheableProgressionResult("unavailable");
     const timeline = await query({ mode, cycleId, aid });
     if (!timeline) throw new UncacheableProgressionResult("not-found");
     return { status: "ready", timeline };
   },
-  ["progression-timeline-v1"],
+  ["progression-timeline-v2"],
   { revalidate: PROGRESSION_CACHE_TTL_SECONDS },
 );
 
@@ -94,11 +97,11 @@ export async function getCachedProgressionTimeline(
   cycleId: string,
   aid: number,
 ): Promise<CachedProgressionTimeline> {
-  const revision = await getLatestProgressionRevision({ mode, cycleId, aid });
+  const { personalRevision, populationGeneration } = await getProgressionTimelineRevisions({ mode, cycleId, aid });
   return singleFlight(
     inFlightProgressionTimelines,
-    `${progressionFlightKey(mode, cycleId, aid)}\0timeline\0${revision ?? "none"}`,
-    () => loadProgressionTimeline(mode, cycleId, aid, revision).catch((error: unknown) => {
+    `${progressionFlightKey(mode, cycleId, aid)}\0timeline\0${personalRevision}\0${populationGeneration}`,
+    () => loadProgressionTimeline(mode, cycleId, aid, personalRevision, populationGeneration).catch((error: unknown) => {
       if (error instanceof UncacheableProgressionResult) {
         return { status: error.status };
       }

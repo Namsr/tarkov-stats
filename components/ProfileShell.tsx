@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import ProfileHeader from "@/components/ProfileHeader";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
@@ -33,6 +34,13 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
             <div className="profile-header__actions">
               <div className="h-12 w-full max-w-[520px] skeleton rounded" />
             </div>
+            <div className="profile-header__mode">
+              {aid == null ? (
+                <div className="h-10 w-full max-w-[220px] skeleton rounded" aria-hidden="true" />
+              ) : (
+                <ProfileModeSwitch current={mode} page="player" aid={aid} />
+              )}
+            </div>
           </div>
         </div>
         <div className="detail-grid mt-7">
@@ -57,6 +65,7 @@ function ProfileShellLoadingSection({ id, height }: { id: string; height: string
 }
 
 export default function ProfileShell({
+  aid,
   mode,
   cycleId,
   kicker,
@@ -71,6 +80,7 @@ export default function ProfileShell({
   skills,
   statusNotice,
 }: {
+  aid: number;
   mode: ProfileShellMode;
   cycleId: string;
   kicker: string;
@@ -103,6 +113,8 @@ export default function ProfileShell({
       <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks} />
 
       <ProfileHeader
+        aid={aid}
+        mode={mode}
         kicker={kicker}
         title={title}
         meta={meta}

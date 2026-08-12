@@ -1,4 +1,4 @@
-import type { IntervalStatus, SeasonalCounters } from "@/types/seasonal";
+import type { IntervalStatus, SeasonalCounters } from "../../types/seasonal";
 
 export const ANALYTICS_SCORE_VERSION = 1;
 export const DAY_MS = 86_400_000;

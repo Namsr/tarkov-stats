@@ -1,4 +1,4 @@
-import type { SeasonCycle, SeasonalCollectionSource } from "@/types/seasonal";
+import type { SeasonCycle, SeasonalCollectionSource } from "../../types/seasonal";
 
 type Environment = Record<string, string | undefined>;
 

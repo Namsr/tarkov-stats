@@ -11,6 +11,7 @@
     "lint": "eslint",
     "test:admin-moderation": "node --experimental-strip-types --test tests/admin-moderation.test.ts",
     "test:regular-progression": "node --experimental-strip-types --test tests/regular-progression.test.ts",
+    "test:progression-population": "node --experimental-strip-types --experimental-sqlite --test tests/progression-population-snapshot.test.ts",
     "backfill:regular-progression": "node --experimental-strip-types scripts/backfill-regular-progression.mjs",
     "backfill:progression": "node --experimental-strip-types scripts/backfill-progression.mjs",
     "backfill:seasonal-average": "node --experimental-strip-types --experimental-sqlite scripts/backfill-seasonal-average.mjs",

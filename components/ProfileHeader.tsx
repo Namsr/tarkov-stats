@@ -1,12 +1,18 @@
 import type { ReactNode } from "react";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import type { GameMode } from "@/types/seasonal";
 
 export default function ProfileHeader({
+  aid,
+  mode,
   kicker,
   title,
   meta,
   actions,
   children,
 }: {
+  aid: number;
+  mode: GameMode;
   kicker: string;
   title?: string;
   meta?: ReactNode;
@@ -24,6 +30,9 @@ export default function ProfileHeader({
         <div className="profile-header__controls">
           <div className="profile-header__actions" aria-live="polite">
             {actions}
+          </div>
+          <div className="profile-header__mode">
+            <ProfileModeSwitch current={mode} page="player" aid={aid} />
           </div>
         </div>
       </div>

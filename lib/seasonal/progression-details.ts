@@ -1,4 +1,4 @@
-import type { IntervalStatus, ProgressionMode, SeasonalCounters } from "@/types/seasonal";
+import type { IntervalStatus, ProgressionMode, SeasonalCounters } from "../../types/seasonal";
 import {
   DAY_MS,
   buildSequentialIntervals,
@@ -89,7 +89,16 @@ export interface BuildSeasonalProgressionDetailsInput {
   staticReasons?: readonly string[];
   /** All candidate rows for the cycle, not only rows belonging to the requested player. */
   intervals: readonly ProgressionDetailIntervalRow[];
+  /** Materialized cycle-wide daily distributions; omitted by legacy callers. */
+  populationPercentiles?: ProgressionPercentileDistributions;
+  /** False while the shared comparison snapshot is warming. */
+  comparisonsReady?: boolean;
 }
+
+export type ProgressionPercentileDistributions = Record<
+  string,
+  Partial<Record<AnomalyMetric, number[]>>
+>;
 
 interface ScoredInterval {
   row: ProgressionDetailIntervalRow;
@@ -139,6 +148,26 @@ function zeroCounters(): SeasonalCounters {
 
 function metricValue(metrics: IntervalMetrics, metric: AnomalyMetric): number | null {
   return metrics[metric];
+}
+
+export function buildProgressionPercentileDistributions(
+  intervals: readonly ProgressionDetailIntervalRow[],
+): ProgressionPercentileDistributions {
+  const distributions: ProgressionPercentileDistributions = {};
+  for (const row of intervals) {
+    if (row.status !== "valid") continue;
+    const metrics = metricsFor(row);
+    if (!metrics) continue;
+    const daily = distributions[row.localDate] ?? {};
+    for (const metric of Object.keys(REASON_BY_METRIC) as AnomalyMetric[]) {
+      if (PER_RAID_METRICS.has(metric) && row.changes.pmcRaids <= 0) continue;
+      const value = metricValue(metrics, metric);
+      if (value == null || !Number.isFinite(value)) continue;
+      daily[metric] = [...(daily[metric] ?? []), value];
+    }
+    distributions[row.localDate] = daily;
+  }
+  return distributions;
 }
 
 function uniqueReasons(anomaly: IntervalAnomalyResult): ProgressionRiskReason[] {
@@ -215,16 +244,16 @@ export function buildSeasonalProgressionDetails(
   const player = eligible
     .filter((entry) => entry.row.aid === input.aid)
     .sort((a, b) => a.row.endedAt - b.row.endedAt);
-  const scored: ScoredInterval[] = player.map((entry) => {
+  const scored: ScoredInterval[] = input.comparisonsReady === false ? [] : player.map((entry) => {
     const daily = populations.get(entry.row.localDate) ?? [];
     const percentiles = {} as AnomalyPercentiles;
     for (const metric of Object.keys(REASON_BY_METRIC) as AnomalyMetric[]) {
       const value = metricValue(entry.metrics, metric);
       const targetEligible = value != null && (!PER_RAID_METRICS.has(metric) || entry.row.changes.pmcRaids > 0);
-      const population = daily
-        .filter((candidate) => !PER_RAID_METRICS.has(metric) || candidate.row.changes.pmcRaids > 0)
-        .map((candidate) => metricValue(candidate.metrics, metric))
-        .filter((candidate): candidate is number => candidate != null && Number.isFinite(candidate));
+      const population = input.populationPercentiles?.[entry.row.localDate]?.[metric] ?? daily
+          .filter((candidate) => !PER_RAID_METRICS.has(metric) || candidate.row.changes.pmcRaids > 0)
+          .map((candidate) => metricValue(candidate.metrics, metric))
+          .filter((candidate): candidate is number => candidate != null && Number.isFinite(candidate));
       percentiles[metric] = targetEligible ? (percentileRank(value, population) ?? 0) : 0;
     }
     return { ...entry, anomaly: intervalAnomaly(percentiles) };

@@ -8,7 +8,6 @@ import {
   getSeasonalOperatorStore,
   type ProgressionRefreshOutcome,
 } from "@/lib/seasonal/operator";
-import { refreshProgressionAfterCapture } from "@/lib/seasonal/daily-aggregates";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
@@ -96,9 +95,6 @@ export async function POST(request: Request) {
         getStore: getSeasonalStore,
         afterCapture: async ({ cycle: currentCycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(currentCycle, profile, capture, "task", observedAt);
-          if (capture.inserted) {
-            await refreshProgressionAfterCapture("seasonal", currentCycle.cycleId, profile.counters.pmcRaids, { force: true });
-          }
         },
       },
     );

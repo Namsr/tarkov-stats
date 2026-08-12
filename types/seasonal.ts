@@ -6,7 +6,7 @@ export type CycleId = string;
 /** The internal mode name stays stable even when Tarkov.dev uses another slug. */
 export const SEASONAL_UPSTREAM_MODE = "pvp-season" as const;
 /** Canonical public route slug for the internal Seasonal mode. */
-export const SEASON_ROUTE_MODE = "season" as const;
+export const SEASON_ROUTE_MODE = "pvp-season" as const;
 export type SeasonalCollectionSource = "operator" | "json_feed";
 export type SeasonalUpstreamContract = "game_mode" | "profile_section" | "direct_profile";
 
@@ -18,6 +18,12 @@ export function tarkovDevMode(mode: GameMode): string {
 /** Maps an internal mode to the public route used by this application. */
 export function appRouteMode(mode: GameMode): string {
   return mode === "seasonal" ? SEASON_ROUTE_MODE : mode;
+}
+
+/** Parses only canonical public route slugs; internal and retired names are not aliases. */
+export function gameModeFromAppRoute(value: unknown): GameMode | null {
+  if (value === SEASON_ROUTE_MODE) return "seasonal";
+  return value === "regular" || value === "pve" || value === "arena" ? value : null;
 }
 
 /** Legacy routes and rows without an explicit identity remain regular/persistent. */
@@ -367,6 +373,11 @@ export interface ProgressionTimelineResponse {
   n: number;
   confidence: number;
   freshnessAt: number | null;
+  comparison: {
+    status: "ready" | "warming";
+    generation: number | null;
+    generatedAt: number | null;
+  };
 }
 
 export interface SeasonalStore {

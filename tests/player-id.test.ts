@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parsePlayerId, parsePlayerInput } from "../lib/player-id.ts";
+import { appRouteMode, gameModeFromAppRoute } from "../types/seasonal.ts";
 
 test("profile links preserve their game mode", () => {
   assert.deepEqual(parsePlayerInput("https://tarkov.dev/players/arena/5869253"), {
@@ -21,14 +22,19 @@ test("profile links preserve their game mode", () => {
     aid: 5869253,
     mode: "seasonal",
   });
-  assert.deepEqual(parsePlayerInput("https://tarkov.dev/players/season/5869253"), {
-    aid: 5869253,
-    mode: "seasonal",
-  });
+  assert.equal(parsePlayerInput("https://tarkov.dev/players/season/5869253"), null);
+  assert.equal(parsePlayerInput("https://tarkov.dev/players/seasonal/5869253"), null);
 });
 
 test("bare ids remain regular and id-only callers stay compatible", () => {
   assert.deepEqual(parsePlayerInput("5869253"), { aid: 5869253, mode: "regular" });
   assert.equal(parsePlayerId("https://tarkov.dev/players/arena/5869253"), 5869253);
   assert.equal(parsePlayerInput("https://tarkov.dev/players/unknown/5869253"), null);
+});
+
+test("application routes expose only the canonical pvp-season slug", () => {
+  assert.equal(appRouteMode("seasonal"), "pvp-season");
+  assert.equal(gameModeFromAppRoute("pvp-season"), "seasonal");
+  assert.equal(gameModeFromAppRoute("season"), null);
+  assert.equal(gameModeFromAppRoute("seasonal"), null);
 });

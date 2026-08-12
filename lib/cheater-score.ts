@@ -10,7 +10,7 @@
 // normally-late achievement well before the typical owner playtime, and a bounded
 // compound bonus represents several independent extreme signals occurring at once.
 
-import type { ParsedPlayerStats } from "@/types/tarkov";
+import type { ParsedPlayerStats } from "../types/tarkov";
 
 export interface MetricBaseline {
   /** Players in the bracket that actually HAVE this metric (value > 0). The z-score

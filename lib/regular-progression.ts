@@ -16,6 +16,8 @@ interface SnapshotRow {
 export interface RegularMaterializationOptions {
   /** Rebuild only the affected 10-raid bucket after a new snapshot. */
   targetBucket?: number;
+  /** Capture paths only maintain this player's normalized rows and intervals. */
+  refreshAggregates?: boolean;
 }
 
 const KEYS = ["experience", "pmcRaids", "scavRaids", "pmcSurvived", "pmcDeaths", "pmcKills", "killedPmc"] as const;
@@ -113,7 +115,9 @@ export function materializeRegularProgression(
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
         Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0);
     }
-    refreshSqliteProgressionAggregates(db, "regular", "persistent", options.targetBucket);
+    if (options.refreshAggregates !== false) {
+      refreshSqliteProgressionAggregates(db, "regular", "persistent", options.targetBucket);
+    }
     db.exec("RELEASE materialize_regular_progression");
     return { snapshots: rows.length, intervals: intervalCount };
   } catch (error) {

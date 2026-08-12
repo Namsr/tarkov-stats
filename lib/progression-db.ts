@@ -146,7 +146,6 @@ async function getSqliteDb(): Promise<any | null> {
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(files.progression);
     initializeSeasonalSchema(db);
-    materializeRegularProgression(db);
     db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
     db.exec(`
       CREATE TABLE IF NOT EXISTS players_db.excluded_players (
@@ -204,7 +203,7 @@ function sqliteStore(db: any): ProgressionStore {
       try {
         db.prepare(INSERT_SQL).run(...args(input, seriesId));
         const targetBucket = raidBucket(input.stats.pmcRaids);
-        materializeRegularProgression(db, input.aid, { targetBucket });
+        materializeRegularProgression(db, input.aid, { targetBucket, refreshAggregates: false });
         db.exec("RELEASE record_regular_snapshot");
       } catch (error) {
         db.exec("ROLLBACK TO record_regular_snapshot");
