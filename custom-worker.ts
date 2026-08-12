@@ -3,16 +3,21 @@
 import handler from "./.open-next/worker.js";
 import { materializeScheduledD1Population, type ProgressionSchedulerEnv } from "./lib/seasonal/population-scheduler";
 
-export default {
+type ScheduledEvent = { scheduledTime: number };
+type WaitUntilContext = { waitUntil(promise: Promise<unknown>): void };
+
+const worker = {
   fetch: handler.fetch,
-  scheduled(event, env, ctx) {
-    ctx.waitUntil(materializeScheduledD1Population(env as CloudflareEnv & ProgressionSchedulerEnv, event.scheduledTime).then((result) => {
+  scheduled(event: ScheduledEvent, env: ProgressionSchedulerEnv, ctx: WaitUntilContext) {
+    ctx.waitUntil(materializeScheduledD1Population(env, event.scheduledTime).then((result) => {
       if (result.skipped) console.warn("scheduled D1 progression population materialization skipped");
-    }).catch((error) => {
+    }).catch((error: unknown) => {
       console.error("scheduled D1 progression population materialization failed", error);
     }));
   },
-} satisfies ExportedHandler<CloudflareEnv>;
+};
+
+export default worker;
 
 // @ts-ignore OpenNext generates these exports before Wrangler bundles the custom entrypoint.
 export { DOQueueHandler, DOShardedTagCache } from "./.open-next/worker.js";
