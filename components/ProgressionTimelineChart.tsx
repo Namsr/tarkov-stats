@@ -8,6 +8,7 @@ import {
   raidTicks,
 } from "@/lib/seasonal/ui";
 import {
+  compactProgressionPoints,
   progressionLineSegments,
   progressionDayDomain,
   progressionDayTicks,
@@ -63,6 +64,7 @@ const WIDTH = 920;
 const HEIGHT = 360;
 const PAD = { top: 32, right: 84, bottom: 62, left: 64 };
 const MIN_LINE_GAP = 12;
+const MAX_AGGREGATE_POINTS = 48;
 const TICKS = [0, 0.25, 0.5, 0.75, 1] as const;
 const LEVEL_BANDS = cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22);
 
@@ -629,7 +631,10 @@ export default function ProgressionTimelineChart({
     y: (value: number) => number,
     color: string,
   ) => (['player', 'nearby', 'overall'] as const).flatMap((seriesKey) => {
-    const seriesPoints = points[seriesKey];
+    const sourcePoints = points[seriesKey];
+    const seriesPoints = seriesKey === "player"
+      ? sourcePoints
+      : compactProgressionPoints(sourcePoints, MAX_AGGREGATE_POINTS);
     if (seriesPoints.length === 0) return [];
     const style = SERIES_STYLES[seriesKey];
     const metricLayer = layer !== leftLayer;

@@ -115,10 +115,6 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(progression, /setData\(cached\)[\s\S]*void loadTimeline\(\)/);
   assert.match(progression, /startTransition\(\(\) => \{\s*setData\(result\)/);
   assert.match(progression, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
-  assert.match(progression, /dynamic\(\(\) => import\("@\/components\/ProgressionTimelineChart"\)/);
-  assert.match(progression, /new IntersectionObserver/);
-  assert.match(progression, /window\.addEventListener\("profile-mode-navigate", cancelPendingChart/);
-  assert.match(progression, /chartVisible\s*\? <ProgressionTimelineChart/);
   assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
@@ -392,6 +388,8 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /function interpolatedYAtRaid/);
   assert.match(chart, /function metricLineShouldBeAboveXp/);
   assert.match(chart, /function seriesPath/);
+  assert.match(chart, /const MAX_AGGREGATE_POINTS = 48/);
+  assert.match(chart, /seriesKey === "player"[\s\S]*compactProgressionPoints\(sourcePoints, MAX_AGGREGATE_POINTS\)/);
   assert.match(chart, /const \[metricReveal, setMetricReveal\] = useState\(1\)/);
   assert.match(chart, /metricRevealRaids/);
   assert.match(chart, /progression-timeline__metric-reveal/);

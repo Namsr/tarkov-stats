@@ -12,6 +12,76 @@ export interface ValueDomain {
 
 export const PROGRESSION_DAY_MS = 86_400_000;
 
+function average(values: readonly (number | null | undefined)[]): number | null {
+  const finite = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
+}
+
+function combineProgressionBucket(points: readonly ProgressionPoint[]): ProgressionPoint {
+  const first = points[0]!;
+  const last = points.at(-1)!;
+  const value = average(points.map((point) => point.value)) ?? first.value;
+  const pmcRaids = Math.round(average(points.map((point) => point.pmcRaids)) ?? first.pmcRaids);
+  const observedAt = average(points.map((point) => point.observedAt));
+  const level = average(points.map((point) => point.level));
+  const p25 = average(points.map((point) => point.p25));
+  const p75 = average(points.map((point) => point.p75));
+  const sampleN = average(points.map((point) => point.sampleN));
+  return {
+    ...last,
+    pointId: `combined:${first.pointId}:${last.pointId}`,
+    observedAt,
+    pmcRaids,
+    ...(level == null ? {} : { level }),
+    raidMin: Math.min(...points.map((point) => point.raidMin ?? point.pmcRaids)),
+    raidMax: Math.max(...points.map((point) => point.raidMax ?? point.pmcRaids)),
+    periodStartAt: first.periodStartAt ?? null,
+    elapsedDays: null,
+    deltaExperience: null,
+    deltaPmcRaids: null,
+    value,
+    p25,
+    p75,
+    n: Math.round(average(points.map((point) => point.n)) ?? first.n),
+    sampleN: sampleN == null ? null : Math.round(sampleN),
+    preliminary: points.some((point) => point.preliminary),
+    confidence: average(points.map((point) => point.confidence)) ?? first.confidence,
+  };
+}
+
+/**
+ * Keep aggregate chart series readable and cheap to interact with. Exact player
+ * history is never passed here. Endpoints and reset boundaries stay distinct;
+ * only adjacent population raid buckets are averaged together.
+ */
+export function compactProgressionPoints(
+  points: readonly ProgressionPoint[],
+  maxPoints = 48,
+): ProgressionPoint[] {
+  const finite = points.filter((point) => Number.isFinite(point.pmcRaids) && Number.isFinite(point.value));
+  if (finite.length <= maxPoints || maxPoints < 3) return [...finite];
+  const first = finite[0]!;
+  const last = finite.at(-1)!;
+  const interior = finite.slice(1, -1);
+  const groupSize = Math.ceil(interior.length / (maxPoints - 2));
+  const compacted: ProgressionPoint[] = [first];
+  for (let index = 0; index < interior.length; index += groupSize) {
+    const group = interior.slice(index, index + groupSize);
+    let start = 0;
+    for (let cursor = 1; cursor <= group.length; cursor += 1) {
+      const previous = group[cursor - 1];
+      const current = group[cursor];
+      const boundary = cursor === group.length ||
+        (previous?.seriesId !== current?.seriesId && (previous?.seriesId != null || current?.seriesId != null));
+      if (!boundary) continue;
+      compacted.push(combineProgressionBucket(group.slice(start, cursor)));
+      start = cursor;
+    }
+  }
+  compacted.push(last);
+  return compacted;
+}
+
 function moscowDateParts(timestamp: number): { year: string; month: string; day: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Moscow",

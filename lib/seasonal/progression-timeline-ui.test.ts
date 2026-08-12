@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import {
+  compactProgressionPoints,
   progressionDayDomain,
   progressionDayTicks,
   progressionLineSegments,
@@ -86,6 +87,36 @@ test("timeline lines split on resets and drop non-finite points", () => {
     point(5, 8, 2),
   ]);
   assert.deepEqual(segments.map((segment) => segment.map((item) => item.pmcRaids)), [[1, 2], [3], [5]]);
+});
+
+test("aggregate timeline compaction preserves endpoints, raid spans, and a linear trend", () => {
+  const source = Array.from({ length: 100 }, (_, index) => ({
+    ...point((index + 1) * 10, (index + 1) * 2, null),
+    raidMin: index * 10 + 1,
+    raidMax: (index + 1) * 10,
+    n: 20 + index,
+  }));
+  const compacted = compactProgressionPoints(source, 12);
+  assert.equal(compacted.length, 12);
+  assert.equal(compacted[0], source[0]);
+  assert.equal(compacted.at(-1), source.at(-1));
+  assert.ok(compacted.slice(1, -1).every((item) => item.pointId.startsWith("combined:")));
+  assert.ok(compacted.every((item) => item.value === item.pmcRaids / 5));
+  assert.equal(compacted[1]?.raidMin, source[1]?.raidMin);
+  assert.equal(compacted[1]?.raidMax, source[10]?.raidMax);
+});
+
+test("aggregate timeline compaction never joins reset series", () => {
+  const source = Array.from({ length: 14 }, (_, index) => point(
+    (index + 1) * 10,
+    index + 1,
+    index < 7 ? 1 : 2,
+  ));
+  const compacted = compactProgressionPoints(source, 5);
+  assert.deepEqual(
+    progressionLineSegments(compacted).map((segment) => new Set(segment.map((item) => item.seriesId)).size),
+    [1, 1],
+  );
 });
 
 test("day timeline starts at the configured season day and labels calendar ticks", () => {
