@@ -115,7 +115,7 @@ export function seasonalFeedCacheUrl(value, now = Date.now()) {
 
 export function seasonalIndexCacheUrl(value, now = Date.now()) {
   const url = new URL(value);
-  url.searchParams.set("v", new Date(now).toISOString().slice(0, 10));
+  url.searchParams.set("v", String(feedCacheSlot(now)));
   return url.toString();
 }
 
