@@ -173,7 +173,7 @@ test("Cloudflare uses a non-public two-hour scheduled D1 lifecycle", async () =>
   assert.match(wrangler, /"main": "custom-worker\.ts"/);
   assert.match(wrangler, /"crons": \["0 \*\/2 \* \* \*"\]/);
   assert.match(worker, /fetch: handler\.fetch/);
-  assert.match(worker, /scheduled\(event, env, ctx\)/);
+  assert.match(worker, /scheduled\(event(?:\s*:[^,]+)?, env(?:\s*:[^,]+)?, ctx(?:\s*:[^)]+)?\)/);
   assert.deepEqual(await materializeScheduledD1Population({}, 1), { skipped: true });
 });
 

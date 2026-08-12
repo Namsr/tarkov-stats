@@ -61,4 +61,6 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
   );
   assert.match(profileRouteSource, /viewModel: buildRegularProfileViewModel/);
   assert.match(profileRouteSource, /viewModel: await enrichSeasonalViewModel/);
+  assert.match(profileRouteSource, /getPublishedSeasonalAchievementBaseline/);
+  assert.doesNotMatch(profileRouteSource, /getSeasonalAchievementBaseline/);
 });

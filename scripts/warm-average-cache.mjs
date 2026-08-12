@@ -65,8 +65,10 @@ async function warmAverageCache() {
   }
 
   await request("/api/progression/average?mode=regular");
+  await request("/api/average/achievements?mode=regular");
   if (process.env.SEASONAL_ENABLED === "true" && cycle) {
     await request(`/api/progression/average?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
+    await request(`/api/average/achievements?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
   }
 }
 

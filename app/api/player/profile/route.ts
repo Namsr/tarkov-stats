@@ -14,7 +14,7 @@ import { getStore } from "@/lib/db";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
-import { getSeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
+import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
@@ -37,14 +37,14 @@ async function enrichSeasonalViewModel(
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
 ) {
   const [baseline, metadata] = await Promise.all([
-    getSeasonalAchievementBaseline(profile.cycleId).catch(() => null),
+    getPublishedSeasonalAchievementBaseline(profile.cycleId),
     getAchievements().catch(() => new Map()),
   ]);
-  const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
+  const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
     const meta = metadata.get(achievement.id);
     const row = baselineById.get(achievement.id);
-    const eligibleN = row?.eligibleN ?? baseline?.eligibleN ?? null;
+    const eligibleN = baseline?.eligibleN ?? null;
     return {
       ...achievement,
       name: meta?.nameEn ?? meta?.name ?? achievement.name ?? achievement.id,
@@ -52,7 +52,7 @@ async function enrichSeasonalViewModel(
       rarity: meta?.rarity ?? achievement.rarity ?? "common",
       owners: row?.owners ?? null,
       eligibleN,
-      percentage: row && eligibleN !== null && eligibleN >= 30 ? row.prevalencePct : null,
+      percentage: row && eligibleN !== null && eligibleN >= 30 ? row.samplePct : null,
     };
   });
   return {

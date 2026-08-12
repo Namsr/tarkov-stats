@@ -600,6 +600,8 @@ test("average dashboard warms every mode and skips PvP progression for PvE/Arena
   assert.match(page, /showAverageProgression && levelBands\.length > 0/);
   for (const mode of ["regular", "pve", "arena"]) assert.match(warmer, new RegExp(`"${mode}"`));
   assert.match(warmer, /SEASONAL_CYCLE_ID/);
+  assert.match(warmer, /api\/average\/achievements\?mode=regular/);
+  assert.match(warmer, /api\/average\/achievements\?mode=seasonal&cycle=/);
   assert.match(dockerfile, /warm-average-cache\.mjs/);
   assert.match(dockerfile, /start-web\.mjs/);
   assert.match(startup, /warm-average-cache\.mjs/);

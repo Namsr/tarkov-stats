@@ -718,6 +718,36 @@ export async function d1PopulationSnapshot(db: D1DatabaseLike, mode: Progression
   }
 }
 
+export interface PublishedSeasonalAchievementBaseline {
+  eligibleN: number;
+  achievements: Array<{
+    id: string;
+    owners: number;
+    samplePct: number;
+  }>;
+}
+
+/** Read the already-published two-hour achievement sample without rescanning players. */
+export async function getPublishedSeasonalAchievementBaseline(
+  cycleId: string,
+): Promise<PublishedSeasonalAchievementBaseline | null> {
+  try {
+    const d1 = await getSeasonalD1();
+    const population = d1
+      ? await d1PopulationSnapshot(d1, "seasonal", cycleId)
+      : sqlitePopulationSnapshot(await getSqliteProgressionDatabase(), "seasonal", cycleId);
+    const baseline = population?.payload.achievementBaseline;
+    if (!baseline) return null;
+    return {
+      eligibleN: baseline.eligibleN,
+      achievements: baseline.achievements.map(({ id, owners, samplePct }) => ({ id, owners, samplePct })),
+    };
+  } catch (error) {
+    console.warn("published Seasonal achievement baseline unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
 function detailRows(rows: readonly DetailDbRow[], input: ProgressionRequest): ProgressionDetailIntervalRow[] {
   return rows.map((row) => ({
     mode: input.mode,
