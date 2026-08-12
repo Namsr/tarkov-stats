@@ -5,9 +5,11 @@ import {
   classifySeasonalVersion,
   createStringObjectParser,
   createTimestampObjectParser,
+  enqueueMissingSeasonalIndexProfiles,
   normalizeAid,
   normalizeNickname,
 } from "../scripts/seasonal-profile-sync-core.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 test("Seasonal updated parser streams versions and normalizes timestamps", () => {
   const entries = [];
@@ -32,6 +34,42 @@ test("Seasonal index parser accepts only nickname strings", () => {
   assert.equal(normalizeNickname("Bad Nick"), null);
 });
 
+test("Seasonal index entries without snapshots are queued exactly once", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE seasonal_player_index (
+      cycle_id TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid)
+    );
+    CREATE TABLE seasonal_profile_sync_queue (
+      cycle_id TEXT NOT NULL, aid INTEGER NOT NULL, feed_updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid, feed_updated_at)
+    );
+    CREATE TABLE progression_snapshots (mode TEXT, cycle_id TEXT, aid INTEGER);
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    INSERT INTO seasonal_player_index VALUES
+      ('s1', 1, 'One', 'one', 10), ('s1', 2, 'Two', 'two', 10), ('s1', 3, 'Three', 'three', 10);
+    INSERT INTO progression_snapshots VALUES ('seasonal', 's1', 1);
+    INSERT INTO excluded_players VALUES (3);
+  `);
+  assert.deepEqual(enqueueMissingSeasonalIndexProfiles(db, "s1", 100, 200), {
+    indexEntries: 3,
+    indexedMissingQueued: 1,
+  });
+  assert.deepEqual(enqueueMissingSeasonalIndexProfiles(db, "s1", 100, 300), {
+    indexEntries: 3,
+    indexedMissingQueued: 0,
+  });
+  const queued = db.prepare("SELECT aid, feed_updated_at, status FROM seasonal_profile_sync_queue")
+    .all().map((row) => ({ ...row }));
+  assert.deepEqual(queued, [
+    { aid: 2, feed_updated_at: 100, status: "pending" },
+  ]);
+  db.close();
+});
+
 test("Seasonal collectors use the authenticated capture endpoint and JSON helper", async () => {
   const profileSource = await readFile("scripts/sync-seasonal-profiles.mjs", "utf8");
   const indexSource = await readFile("scripts/sync-seasonal-index.mjs", "utf8");
@@ -39,6 +77,7 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
   assert.match(indexSource, /fetchTarkovJson/);
   assert.match(profileSource, /\/api\/operator\/seasonal\/profile-sync/);
   assert.match(profileSource, /feed_updated_at/);
+  assert.match(profileSource, /enqueueMissingSeasonalIndexProfiles/);
   assert.match(profileSource, /superseded/);
   assert.match(profileSource + indexSource, /isSeasonalCollectorReady/);
   assert.doesNotMatch(profileSource + indexSource, /isSeasonalRolloutReady/);
@@ -82,4 +121,8 @@ test("Seasonal timers use the requested Moscow cadence and shared waiting lock",
   assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:10:00 Europe\/Moscow/);
   assert.match(feedService, /flock -n \/run\/tarkovstats-seasonal-sync\.lock/);
   assert.match(indexService, /flock \/run\/tarkovstats-seasonal-sync\.lock/);
+  assert.match(feedService, /ConditionPathExists=\/opt\/tarkovstats-auto\/docker-compose\.vps\.yml/);
+  assert.match(feedService, /WorkingDirectory=\/opt\/tarkovstats-auto/);
+  assert.match(indexService, /ConditionPathExists=\/opt\/tarkovstats-auto\/docker-compose\.vps\.yml/);
+  assert.match(indexService, /WorkingDirectory=\/opt\/tarkovstats-auto/);
 });

@@ -6,6 +6,7 @@ import process from "node:process";
 import {
   classifySeasonalVersion,
   createTimestampObjectParser,
+  enqueueMissingSeasonalIndexProfiles,
   normalizeAid,
   normalizeUpdatedAt,
   summarizeSeasonalCoverage,
@@ -98,6 +99,8 @@ async function main() {
   for (const [key, value] of Object.entries({
     last_poll_at: feed.polledAt,
     last_feed_max_updated_at: feed.maxFeedUpdatedAt,
+    last_index_entries: feed.indexEntries,
+    last_indexed_missing_queued: feed.indexedMissingQueued,
     last_backlog: backlog,
     last_completed: processed.completed,
     last_not_found: processed.notFound,
@@ -118,6 +121,16 @@ async function main() {
 
 function initSyncSchema() {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS seasonal_player_index (
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL,
+      synced_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_seasonal_player_index_name
+      ON seasonal_player_index(cycle_id, nickname_lower, aid);
     CREATE TABLE IF NOT EXISTS seasonal_profile_sync_queue (
       cycle_id TEXT NOT NULL,
       aid INTEGER NOT NULL,
@@ -227,6 +240,7 @@ async function loadFeed() {
   saveMeta("feed_watermark", String(counters.maxFeedUpdatedAt || getMeta("feed_watermark") || ""));
   saveMeta("last_poll_at", String(counters.polledAt));
   saveMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
+  Object.assign(counters, enqueueMissingSeasonalIndexProfiles(db, cycle.cycleId, cycle.startsAt));
   heartbeat();
   return counters;
 }

@@ -138,6 +138,28 @@ export function normalizeNickname(value) {
   return /^[a-zA-Z0-9_-]{1,15}$/.test(nickname) ? nickname : null;
 }
 
+export function enqueueMissingSeasonalIndexProfiles(db, cycleId, fallbackUpdatedAt, queuedAt = Date.now()) {
+  const indexEntries = Number(db.prepare(
+    "SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?",
+  ).get(cycleId)?.n) || 0;
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO seasonal_profile_sync_queue
+      (cycle_id, aid, feed_updated_at, status, attempts, updated_at)
+    SELECT player_index.cycle_id, player_index.aid, ?, 'pending', 0, ?
+    FROM seasonal_player_index AS player_index
+    LEFT JOIN excluded_players AS excluded ON excluded.aid = player_index.aid
+    WHERE player_index.cycle_id = ?
+      AND excluded.aid IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM progression_snapshots AS snapshot
+        WHERE snapshot.mode = 'seasonal'
+          AND snapshot.cycle_id = player_index.cycle_id
+          AND snapshot.aid = player_index.aid
+      )
+  `).run(fallbackUpdatedAt, queuedAt, cycleId);
+  return { indexEntries, indexedMissingQueued: Number(result.changes) };
+}
+
 export function summarizeSeasonalCoverage(db, cycleId) {
   const row = db.prepare(`
     WITH latest AS (
