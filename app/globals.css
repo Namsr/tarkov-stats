@@ -255,6 +255,15 @@ select:focus-visible {
   padding: 42px 0 72px;
 }
 
+.profile-route-modebar {
+  width: min(100% - 32px, 1240px);
+  margin: 0 auto;
+  padding-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+.profile-route-modebar .mode-switch { width: min(100%, 520px); }
+
 .page-kicker,
 .section-kicker {
   color: var(--muted);
@@ -451,8 +460,6 @@ select:focus-visible {
 .profile-action__button { box-sizing: border-box; width: 100%; height: 48px !important; min-height: 48px !important; display: flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; padding: 6px 10px; line-height: 1.2; white-space: normal !important; text-align: center; }
 .profile-action__status { color: var(--muted); font-size: .67rem; line-height: 1.35; }
 .report-count { min-width: 22px; flex: 0 0 auto; border-left: 1px solid var(--card-border); padding-left: 7px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.profile-header__mode { min-width: 0; }
-.profile-header__mode .mode-switch { width: 100%; }
 .profile-header > .detail-grid { padding: 0 24px 24px; }
 .profile-section-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 24px; }
 .profile-section-nav a { min-height: 44px; display: inline-flex; align-items: center; border: 1px solid var(--card-border); border-radius: 999px; color: var(--muted-strong); padding: 8px 14px; font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; transition: border-color 160ms ease, color 160ms ease; }
@@ -1341,6 +1348,7 @@ a.help-card:hover { border-color: var(--foreground); }
   .site-header__controls { padding-inline: 12px; }
   .site-header__utilities { flex-wrap: wrap; }
   .page-frame { width: min(100% - 24px, 680px); padding: 30px 0 62px; }
+  .profile-route-modebar { width: min(100% - 24px, 680px); padding-top: 12px; }
   .home-hero { min-height: calc(100svh - 62px); padding-bottom: 96px; }
   .home-command { width: min(100% - 24px, 680px); }
   .home-command__title { font-size: clamp(2.7rem, 16vw, 4.2rem); }

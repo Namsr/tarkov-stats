@@ -11,6 +11,7 @@ import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
 import CheaterScore from "@/components/CheaterScore";
 import { useI18n } from "@/lib/i18n/context";
+import { isReload } from "@/lib/is-reload";
 import { isProfileStale } from "@/lib/profile-refresh-policy";
 import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
@@ -157,6 +158,7 @@ export default function SeasonalPlayer({
   const [modeUnavailable, setModeUnavailable] = useState(false);
   const [profileIsStale, setProfileIsStale] = useState(false);
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
+  const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const [displayNickname, setDisplayNickname] = useState<string | undefined>();
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
@@ -177,6 +179,7 @@ export default function SeasonalPlayer({
     setModeUnavailable(false);
     setProfileIsStale(false);
     setProgressionRefreshRevision(0);
+    setForceProgressionRefresh(isReload());
 
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId });
     fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "no-store" })
@@ -269,7 +272,6 @@ export default function SeasonalPlayer({
   if (modeUnavailable || error || !profile) {
     return (
       <ProfileShell
-        aid={aid}
         mode="seasonal"
         cycleId={cycleId}
         kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
@@ -319,7 +321,6 @@ export default function SeasonalPlayer({
 
   return (
     <ProfileShell
-      aid={aid}
       mode="seasonal"
       cycleId={cycleId}
       kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
@@ -349,6 +350,7 @@ export default function SeasonalPlayer({
         cycleId={cycleId}
         profileUpdatedAt={profile.profileUpdatedAt}
         refreshRevision={progressionRefreshRevision}
+        forceRefresh={forceProgressionRefresh}
         onRiskChange={setProgressionRisk}
       />}
       risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="seasonal" cycleId={cycleId} /></div>}

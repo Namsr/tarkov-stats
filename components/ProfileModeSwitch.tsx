@@ -51,10 +51,7 @@ export default function ProfileModeSwitch({
     <nav className="mode-switch" aria-label={t("mode.selectorAria")}>
       {GAME_MODES.map((mode) => {
         const href = profileHref(mode);
-        const isProfileModeSwitch = page === "player" &&
-          (current === "regular" || current === "seasonal") &&
-          (mode === "regular" || mode === "seasonal");
-        const canNavigateImmediately = page === "average" || isProfileModeSwitch;
+        const canNavigateImmediately = page === "average" || page === "player";
         return (
           <Link
             key={mode}

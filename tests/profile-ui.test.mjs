@@ -55,7 +55,7 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.match(styles, /html \{ scroll-behavior: smooth; \}/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{\s*html \{ scroll-behavior: auto; \}/);
   assert.match(header, /<h1 className="page-title break-words">/);
-  assert.match(header, /profile-header__controls[\s\S]*profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
+  assert.match(header, /profile-header__controls[\s\S]*profile-header__actions/);
   assert.doesNotMatch(styles, /\.profile-header__mode \{[^}]*border/);
   assert.match(shell, /<ProfileSectionNav[\s\S]*?<ProfileHeader/);
   assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
@@ -73,15 +73,30 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.doesNotMatch(report, /signedOut && <span className="profile-action__status"/);
 });
 
+test("profile mode switch is route-level and available before profile data", async () => {
+  const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
+  const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
+  const styles = await readFile("app/globals.css", "utf8");
+
+  assert.match(route, /const modeSwitch = parsedAid === null \? null/);
+  assert.match(route, /<ProfileModeSwitch current=\{mode\} page="player" aid=\{parsedAid\} \/>/);
+  const pageBody = route.slice(route.indexOf("export default async function"));
+  assert.doesNotMatch(pageBody, /await getPlayerLevels/);
+  assert.match(pageBody, /modeSwitch[\s\S]*<RegularPlayer/);
+  assert.match(pageBody, /modeSwitch[\s\S]*<SeasonalPlayer/);
+  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| page === "player"/);
+  assert.match(styles, /\.profile-route-modebar \.mode-switch/);
+});
+
 test("profile mode switching is available during loading and capture is post-response", async () => {
-  const shell = await readFile("components/ProfileShell.tsx", "utf8");
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const route = await readFile("app/api/player/profile/route.ts", "utf8");
 
-  assert.match(shell, /<ProfileModeSwitch current=\{mode\} page="player" aid=\{aid\} \/>/);
-  assert.match(shell, /profile-header__controls[\s\S]*profile-header__actions[\s\S]*profile-header__mode/);
   assert.match(regular, /const forceRefresh = isReload\(\)/);
   assert.match(regular, /cache: forceRefresh \? "no-store" : "default"/);
+  assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
+  const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
+  assert.match(progression, /cache: forceRefresh \|\| refreshRevision > 0 \? "no-store" : "default"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
@@ -154,7 +169,7 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
   assert.match(average, /const active = pathname\.startsWith\("\/average"\)/);
   assert.match(average, /handleActiveLinkClick\(event, active, router\)/);
-  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| isProfileModeSwitch/);
+  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| page === "player"/);
   assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);
   assert.match(averagePage, /averageRequestRef\.current\?\.abort\(\)/);
   assert.match(averagePage, /onBeforeNavigate=\{cancelAverageRequests\}/);
@@ -320,7 +335,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /ProgressionTimelineResponse/);
   assert.match(panel, /setData\(result\)/);
   assert.match(panel, /Object\.values\(data\.metrics\)/);
-  assert.match(panel, /\[aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]/);
+  assert.match(panel, /\[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]/);
   assert.doesNotMatch(panel, /params\.(?:set|append)\("revision"/);
   assert.match(panel, /role="status"/);
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);

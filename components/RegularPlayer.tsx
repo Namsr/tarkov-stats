@@ -13,7 +13,6 @@ import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
-import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
@@ -98,6 +97,7 @@ export default function RegularPlayer({
   const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
   const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(null);
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
+  const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
 
@@ -114,9 +114,11 @@ export default function RegularPlayer({
     setProfileSummary(null);
     setProgressionRisk(null);
     setServerRisk(null);
+    setForceProgressionRefresh(false);
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const forceRefresh = isReload();
+    setForceProgressionRefresh(forceRefresh);
     const requestParams = new URLSearchParams({ aid, mode });
     if (forceRefresh) requestParams.set("refresh", "1");
     fetch(`/api/player/profile?${requestParams}`, {
@@ -260,7 +262,6 @@ export default function RegularPlayer({
       const unavailableSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
       return (
         <ProfileShell
-          aid={Number(aid)}
           mode="regular"
           cycleId="persistent"
           kicker={`#${aid}`}
@@ -298,8 +299,6 @@ export default function RegularPlayer({
         </Link>
 
         <ProfileHeader
-          aid={Number(aid)}
-          mode={mode}
           kicker={`#${aid}`}
           title={profileSummary?.nickname}
           meta={mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) ? (
@@ -344,7 +343,6 @@ export default function RegularPlayer({
       const errorSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--danger)]">{error || t("player.unknownError")}</div>;
       return (
         <ProfileShell
-          aid={Number(aid)}
           mode="regular"
           cycleId="persistent"
           kicker={`#${aid}`}
@@ -367,7 +365,6 @@ export default function RegularPlayer({
     }
     return (
       <main className="flex-1 flex flex-col items-center justify-center px-4 gap-4">
-        <ProfileModeSwitch current={mode} page="player" aid={Number(aid)} />
         <p className="text-[var(--danger)] text-lg text-center max-w-md">
           {error || t("player.unknownError")}
         </p>
@@ -495,7 +492,6 @@ export default function RegularPlayer({
 
     return (
       <ProfileShell
-        aid={Number(aid)}
         mode="regular"
         cycleId="persistent"
         kicker={`#${aid}`}
@@ -518,6 +514,7 @@ export default function RegularPlayer({
           cycleId="persistent"
           profileUpdatedAt={profileUpdatedAt}
           refreshRevision={progressionRefreshRevision}
+          forceRefresh={forceProgressionRefresh}
           onRiskChange={setProgressionRisk}
         />}
         risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="regular" cycleId="persistent" statsKnown={pvpStatsKnown} /></div>}
@@ -540,8 +537,6 @@ export default function RegularPlayer({
       <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks} />
 
       <ProfileHeader
-        aid={Number(aid)}
-        mode={mode}
         kicker={`#${aid}`}
         title={stats.nickname}
         meta={

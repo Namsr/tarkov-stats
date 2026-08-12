@@ -44,6 +44,7 @@ export default function ProgressionPanel({
   cycleId = "persistent",
   profileUpdatedAt,
   refreshRevision = 0,
+  forceRefresh = false,
 }: {
   aid: number;
   hours: number;
@@ -54,6 +55,7 @@ export default function ProgressionPanel({
   levelBands?: LevelBand[];
   profileUpdatedAt?: number | null;
   refreshRevision?: number;
+  forceRefresh?: boolean;
 }) {
   const { t } = useI18n();
   const [data, setData] = useState<ProgressionTimelineResponse | null>(null);
@@ -74,7 +76,10 @@ export default function ProgressionPanel({
           cycle: cycleId,
           aid: String(aid),
         });
-        const response = await fetch(`/api/progression/timeline?${params}`, { signal: controller.signal });
+        const response = await fetch(`/api/progression/timeline?${params}`, {
+          signal: controller.signal,
+          cache: forceRefresh || refreshRevision > 0 ? "no-store" : "default",
+        });
         if (!response.ok) throw new Error(t("progression.unavailable"));
         const result = (await response.json()) as ProgressionTimelineResponse;
         if (controller.signal.aborted) return;
@@ -91,7 +96,7 @@ export default function ProgressionPanel({
     void loadTimeline();
 
     return () => controller.abort();
-  }, [aid, cycleId, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
+  }, [aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
 
   const history = data?.history;
   const longTerm = data?.longTerm;

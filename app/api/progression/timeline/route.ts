@@ -30,9 +30,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(result.timeline, {
       headers: {
-        "Cache-Control": input.mode === "regular"
-          ? "private, no-store"
-          : PROGRESSION_CACHE_CONTROL,
+        "Cache-Control": PROGRESSION_CACHE_CONTROL,
       },
     });
   } catch (error) {

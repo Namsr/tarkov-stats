@@ -1,6 +1,8 @@
+import { Suspense } from "react";
 import { connection } from "next/server";
 import RegularPlayer from "@/components/RegularPlayer";
 import ModeUnavailable from "@/components/ModeUnavailable";
+import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import SeasonalPlayer from "@/components/SeasonalPlayer";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
@@ -11,6 +13,11 @@ import { isGameMode, SEASONAL_UPSTREAM_MODE, SEASON_ROUTE_MODE } from "@/types/s
 interface Props {
   params: Promise<{ segments?: string[] }>;
   searchParams: Promise<{ cycle?: string | string[]; radarDemo?: string | string[] }>;
+}
+
+async function SeasonalPlayerRoute({ aid, cycleId }: { aid: number; cycleId: string }) {
+  const levels = await getPlayerLevels().catch(() => []);
+  return <SeasonalPlayer aid={aid} cycleId={cycleId} levelBands={cumulativeLevelBands(levels)} />;
 }
 
 export default async function CanonicalPlayerPage({ params, searchParams }: Props) {
@@ -26,21 +33,41 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   if (segments.length < 1 || segments.length > 2 || !aid || !isGameMode(mode)) {
     return <ModeUnavailable />;
   }
+  const parsedAid = parsePlayerId(aid);
+  const modeSwitch = parsedAid === null ? null : (
+    <div className="profile-route-modebar">
+      <ProfileModeSwitch current={mode} page="player" aid={parsedAid} />
+    </div>
+  );
   if (mode !== "seasonal") {
     return (
-      <RegularPlayer
-        mode={mode}
-        params={Promise.resolve({ aid })}
-        searchParams={Promise.resolve({ radarDemo: query.radarDemo })}
-      />
+      <>
+        {modeSwitch}
+        <RegularPlayer
+          mode={mode}
+          params={Promise.resolve({ aid })}
+          searchParams={Promise.resolve({ radarDemo: query.radarDemo })}
+        />
+      </>
     );
   }
-  const parsedAid = parsePlayerId(aid);
   const requestedCycle = Array.isArray(query.cycle) ? null : query.cycle;
   const cycle = loadSeasonalCycleConfig();
-  if (parsedAid === null || !isSeasonalRolloutReady() || !cycle || (requestedCycle && requestedCycle !== cycle.cycleId)) {
-    return <ModeUnavailable seasonal />;
+  if (parsedAid === null) return <ModeUnavailable seasonal />;
+  if (!isSeasonalRolloutReady() || !cycle || (requestedCycle && requestedCycle !== cycle.cycleId)) {
+    return (
+      <>
+        {modeSwitch}
+        <ModeUnavailable seasonal />
+      </>
+    );
   }
-  const levels = await getPlayerLevels().catch(() => []);
-  return <SeasonalPlayer aid={parsedAid} cycleId={cycle.cycleId} levelBands={cumulativeLevelBands(levels)} />;
+  return (
+    <>
+      {modeSwitch}
+      <Suspense fallback={null}>
+        <SeasonalPlayerRoute aid={parsedAid} cycleId={cycle.cycleId} />
+      </Suspense>
+    </>
+  );
 }
