@@ -115,6 +115,10 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(progression, /setData\(cached\)[\s\S]*void loadTimeline\(\)/);
   assert.match(progression, /startTransition\(\(\) => \{\s*setData\(result\)/);
   assert.match(progression, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
+  assert.match(progression, /dynamic\(\(\) => import\("@\/components\/ProgressionTimelineChart"\)/);
+  assert.match(progression, /new IntersectionObserver/);
+  assert.match(progression, /window\.addEventListener\("profile-mode-navigate", cancelPendingChart/);
+  assert.match(progression, /chartVisible\s*\? <ProgressionTimelineChart/);
   assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);

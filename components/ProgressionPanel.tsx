@@ -1,13 +1,16 @@
 "use client";
 
-import { startTransition, useEffect, useState } from "react";
-import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
+import dynamic from "next/dynamic";
+import { startTransition, useEffect, useRef, useState } from "react";
 import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
 import type { LevelBand } from "@/lib/seasonal/ui";
 import type { ProgressionTimelineResponse } from "@/types/seasonal";
 
 const timelineCache = new Map<string, ProgressionTimelineResponse>();
+const ProgressionTimelineChart = dynamic(() => import("@/components/ProgressionTimelineChart"), {
+  ssr: false,
+});
 
 export interface ProgressionRiskPayload {
   combined: number;
@@ -63,6 +66,8 @@ export default function ProgressionPanel({
   const [data, setData] = useState<ProgressionTimelineResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [chartVisible, setChartVisible] = useState(false);
+  const chartHostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -115,6 +120,33 @@ export default function ProgressionPanel({
   const hasPoints = Boolean(data && Object.values(data.metrics).some((metric) =>
     metric && (metric.player.length || metric.nearby.length || metric.overall.length),
   ));
+  const chartEligible = Boolean(data && (hasPoints || history?.ready));
+
+  useEffect(() => {
+    if (!chartEligible || chartVisible || !chartHostRef.current) return;
+    const host = chartHostRef.current;
+    let revealTimer: number | null = null;
+    const reveal = () => {
+      revealTimer = window.setTimeout(() => {
+        startTransition(() => setChartVisible(true));
+      }, 0);
+    };
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      reveal();
+    });
+    const cancelPendingChart = () => {
+      observer.disconnect();
+      if (revealTimer !== null) window.clearTimeout(revealTimer);
+    };
+    observer.observe(host);
+    window.addEventListener("profile-mode-navigate", cancelPendingChart, { once: true });
+    return () => {
+      window.removeEventListener("profile-mode-navigate", cancelPendingChart);
+      cancelPendingChart();
+    };
+  }, [chartEligible, chartVisible]);
 
   return (
     <section className="mt-5" aria-labelledby="progression-heading">
@@ -151,11 +183,12 @@ export default function ProgressionPanel({
             </div>
           )}
 
-          {data && (hasPoints || history?.ready) && (
-            <ProgressionTimelineChart
-              data={data}
-              title={t("progression.timeline.title")}
-            />
+          {data && chartEligible && (
+            <div ref={chartHostRef}>
+              {chartVisible
+                ? <ProgressionTimelineChart data={data} title={t("progression.timeline.title")} />
+                : <div className="mt-4 h-72 skeleton rounded-xl" role="status" aria-label={t("common.loading")} />}
+            </div>
           )}
 
           {history && (
