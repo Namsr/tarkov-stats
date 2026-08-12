@@ -344,6 +344,7 @@ function columns(db: SqliteDatabase, table: string): Set<string> {
 
 /** Upgrade the original aid-only snapshot table without losing its history. */
 export function initializeSeasonalSchema(db: SqliteDatabase): void {
+  db.exec("PRAGMA busy_timeout = 30000");
   const snapshotColumns = columns(db, "progression_snapshots");
   if (snapshotColumns.size > 0 && !snapshotColumns.has("mode")) {
     db.exec("BEGIN IMMEDIATE");

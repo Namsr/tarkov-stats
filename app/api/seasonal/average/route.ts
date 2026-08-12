@@ -13,6 +13,8 @@ function numberParam(value: string | null): number | null {
   return Number.isFinite(number) && number >= 0 ? number : Number.NaN;
 }
 
+class SeasonalAverageUnavailableError extends Error {}
+
 const loadCachedSeasonalAverage = unstable_cache(
   async (
     cycleId: string,
@@ -24,7 +26,7 @@ const loadCachedSeasonalAverage = unstable_cache(
     max: number | null,
   ) => {
     const query = await getSeasonalAverageCrossSectionQuery();
-    if (!query) return { status: "unavailable" as const };
+    if (!query) throw new SeasonalAverageUnavailableError();
     const result = await query({ cycleId, period, statistic, dimension, metric, min, max });
     return result
       ? { status: "ready" as const, result }
@@ -64,9 +66,6 @@ export async function GET(request: NextRequest) {
   const metric = resolveY(params.get("metric")).key;
   try {
     const cached = await loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max);
-    if (cached.status === "unavailable") {
-      return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
-    }
     if (cached.status === "not-found") {
       return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
     }
@@ -77,6 +76,9 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof SeasonalAverageUnavailableError) {
+      return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
+    }
     console.error("seasonal cross-section average failed", error);
     return NextResponse.json({ error: "Failed to query Seasonal average" }, { status: 500 });
   }

@@ -607,6 +607,8 @@ test("Seasonal average invalidation keeps the server cache tagged and the JSON r
 
   assert.match(cache, /export const SEASONAL_AVERAGE_CACHE_TAG = "average-seasonal-dashboard-v2"/);
   assert.match(seasonal, /revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: \[SEASONAL_AVERAGE_CACHE_TAG\]/);
+  assert.match(seasonal, /if \(!query\) throw new SeasonalAverageUnavailableError\(\)/);
+  assert.doesNotMatch(seasonal, /return \{ status: "unavailable" as const \}/);
   assert.match(seasonal, /"Cache-Control": "no-store"/);
   assert.match(sync, /import \{ revalidateTag \} from "next\/cache"/);
   assert.match(sync, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, \{ expire: 0 \}\);/s);

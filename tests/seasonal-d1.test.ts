@@ -80,6 +80,12 @@ test("D1 migration creates every Seasonal backend table", () => {
   assert.ok(outcomeColumns.has("attempt"));
 });
 
+test("SQLite Seasonal connections wait for a concurrent writer", () => {
+  const db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(db);
+  assert.equal(Number(db.prepare("PRAGMA busy_timeout").get().timeout), 30_000);
+});
+
 test("deployed D1 outcome upgrade preserves history and replaces attempt uniqueness", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`${SEASONAL_SCHEMA}
