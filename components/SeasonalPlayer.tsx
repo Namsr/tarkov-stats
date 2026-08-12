@@ -39,7 +39,7 @@ function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): Se
   const totalRaids = existing?.totalRaids ?? counters.pmcRaids + counters.scavRaids;
   const survivedRaids = existing?.survivedRaids ?? counters.pmcSurvived;
   const deaths = existing?.deaths ?? counters.pmcDeaths;
-  const pmcKdRatio = existing?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null);
+  const pmcKdRatio = existing?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.killedPmc / counters.pmcDeaths : null);
   const pmcSurvivalRate = existing?.pmcSurvivalRate ?? (counters.pmcRaids > 0 ? (counters.pmcSurvived / counters.pmcRaids) * 100 : null);
   const level = existing?.level ?? levelAtExperience(counters.experience, levelBands);
   return {

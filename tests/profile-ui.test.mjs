@@ -290,6 +290,15 @@ test("Seasonal missing profiles keep the shell and refresh after returning", asy
   assert.match(dictionary, /"player\.refreshStaleHint": "Профиль не обновлялся больше трёх дней\./);
 });
 
+test("seasonal PMC K/D fallback uses PMC-vs-PMC kills", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+
+  assert.match(
+    seasonal,
+    /const pmcKdRatio = existing\?\.pmcKdRatio \?\? \(counters\.pmcDeaths > 0 \? counters\.killedPmc \/ counters\.pmcDeaths : null\);/,
+  );
+});
+
 test("profile freshness becomes stale only after three full days", async () => {
   const { PROFILE_STALE_MS, isProfileStale } = await import("../lib/profile-refresh-policy.ts");
   const now = 1_800_000_000_000;
