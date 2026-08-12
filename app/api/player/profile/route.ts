@@ -170,7 +170,7 @@ export async function GET(request: NextRequest) {
         : result.status === 404
           ? { identity: { aid, mode, cycleId }, code: "mode_profile_unavailable", error: result.error }
           : { identity: { aid, mode, cycleId }, error: result.error },
-      { status: result.ok ? 200 : result.status, headers: noStore }
+      { status: result.ok ? 200 : result.status, headers: result.ok ? profileHeaders : noStore }
     );
     timing.finish({
       operation: "player_profile",

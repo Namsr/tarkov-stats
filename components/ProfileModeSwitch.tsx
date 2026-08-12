@@ -64,7 +64,6 @@ export default function ProfileModeSwitch({
     <nav className="mode-switch" aria-label={t("mode.selectorAria")}>
       {GAME_MODES.map((mode) => {
         const href = profileHref(mode);
-        const canNavigateImmediately = page === "average" || page === "player";
         const pending = pendingNavigation?.mode === mode &&
           pendingNavigation.fromMode === current &&
           pendingNavigation.pathname === pathname &&
@@ -73,21 +72,19 @@ export default function ProfileModeSwitch({
           <Link
             key={mode}
             href={href}
+            prefetch
+            scroll={false}
             aria-current={mode === current ? "page" : undefined}
             aria-busy={pending || undefined}
             className={`mode-switch__item${pending ? " mode-switch__item--pending" : ""}`}
-            onClick={(event) => {
-              if (canNavigateImmediately && mode !== current && event.button === 0 &&
-                !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
-                event.preventDefault();
+            onNavigate={() => {
+              if (mode !== current) {
                 setPendingNavigation({ mode, fromMode: current, pathname });
                 onBeforeNavigate?.(mode);
                 window.dispatchEvent(new Event("profile-mode-navigate"));
-                const hash = window.location.hash;
-                const target = hash && !href.endsWith(hash) ? `${href.split("#")[0]}${hash}` : href;
-                router.push(target, { scroll: false });
-                return;
               }
+            }}
+            onClick={(event) => {
               handleActiveLinkClick(event, mode === current, router);
             }}
           >

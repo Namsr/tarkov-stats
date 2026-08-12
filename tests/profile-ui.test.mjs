@@ -86,13 +86,15 @@ test("profile mode switch stays below profile actions and is available before pr
   assert.match(shell, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
   assert.match(header, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
   assert.match(shell, /ProfileShellLoading[\s\S]*<ProfileModeSwitch current=\{mode\}/);
-  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| page === "player"/);
+  assert.match(modes, /prefetch/);
+  assert.match(modes, /scroll=\{false\}/);
   assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
   assert.match(modes, /aria-busy=\{pending \|\| undefined\}/);
   assert.match(modes, /const pathname = usePathname\(\)/);
   assert.match(modes, /pendingNavigation\.fromMode === current &&[\s\S]*pendingNavigation\.pathname === pathname/);
   assert.match(modes, /window\.setTimeout\(\(\) => setPendingNavigation\(null\), PENDING_TIMEOUT_MS\)/);
-  assert.match(modes, /!event\.metaKey && !event\.ctrlKey && !event\.shiftKey && !event\.altKey\) \{[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.match(modes, /onNavigate=\{\(\) => \{[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.doesNotMatch(modes, /event\.preventDefault\(\)[\s\S]*router\.push\(target/);
   assert.equal((modes.match(/profile-mode-navigate/g) ?? []).length, 1);
   assert.match(styles, /\.profile-header__mode \.mode-switch/);
   assert.doesNotMatch(styles, /\.profile-route-modebar/);
@@ -111,6 +113,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(progression, /`\$\{mode\}\\0\$\{cycleId\}\\0\$\{aid\}`/);
   assert.match(progression, /const cached = timelineCache\.get\(cacheKey\) \?\? null/);
   assert.match(progression, /setData\(cached\)[\s\S]*void loadTimeline\(\)/);
+  assert.match(progression, /startTransition\(\(\) => \{\s*setData\(result\)/);
   assert.match(progression, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
   assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
@@ -185,7 +188,8 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
   assert.match(average, /const active = pathname\.startsWith\("\/average"\)/);
   assert.match(average, /handleActiveLinkClick\(event, active, router\)/);
-  assert.match(modes, /const canNavigateImmediately = page === "average" \|\| page === "player"/);
+  assert.match(modes, /onNavigate=\{\(\) => \{/);
+  assert.match(modes, /prefetch/);
   assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);
   assert.match(averagePage, /averageRequestRef\.current\?\.abort\(\)/);
   assert.match(averagePage, /onBeforeNavigate=\{cancelAverageRequests\}/);

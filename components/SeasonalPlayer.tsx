@@ -182,7 +182,7 @@ export default function SeasonalPlayer({
     setForceProgressionRefresh(isReload());
 
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId });
-    fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "no-store" })
+    fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "default" })
       .then(async (response) => {
         const body = (await response.json()) as SeasonalProfileResponse;
         if (!response.ok || !body.profile) {

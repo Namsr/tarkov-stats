@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
 import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
@@ -90,8 +90,10 @@ export default function ProgressionPanel({
         const result = (await response.json()) as ProgressionTimelineResponse;
         if (controller.signal.aborted) return;
         timelineCache.set(cacheKey, result);
-        setData(result);
-        onRiskChange?.(result.history?.ready && validRisk(result.risk) ? result.risk : null);
+        startTransition(() => {
+          setData(result);
+          onRiskChange?.(result.history?.ready && validRisk(result.risk) ? result.risk : null);
+        });
       } catch (caught: unknown) {
         if (caught instanceof Error && caught.name === "AbortError") return;
         if (!controller.signal.aborted && !cached) setError(true);
