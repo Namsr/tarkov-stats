@@ -23,7 +23,7 @@ function combineProgressionBucket(points: readonly ProgressionPoint[]): Progress
   const value = average(points.map((point) => point.value)) ?? first.value;
   const pmcRaids = Math.round(average(points.map((point) => point.pmcRaids)) ?? first.pmcRaids);
   const observedAt = average(points.map((point) => point.observedAt));
-  const level = average(points.map((point) => point.level));
+  const averageLevel = average(points.map((point) => point.level));
   const p25 = average(points.map((point) => point.p25));
   const p75 = average(points.map((point) => point.p75));
   const sampleN = average(points.map((point) => point.sampleN));
@@ -32,7 +32,7 @@ function combineProgressionBucket(points: readonly ProgressionPoint[]): Progress
     pointId: `combined:${first.pointId}:${last.pointId}`,
     observedAt,
     pmcRaids,
-    ...(level == null ? {} : { level }),
+    ...(averageLevel == null ? {} : { level: Math.round(averageLevel) }),
     raidMin: Math.min(...points.map((point) => point.raidMin ?? point.pmcRaids)),
     raidMax: Math.max(...points.map((point) => point.raidMax ?? point.pmcRaids)),
     periodStartAt: first.periodStartAt ?? null,

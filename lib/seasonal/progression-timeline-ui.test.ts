@@ -92,6 +92,7 @@ test("timeline lines split on resets and drop non-finite points", () => {
 test("aggregate timeline compaction preserves endpoints, raid spans, and a linear trend", () => {
   const source = Array.from({ length: 100 }, (_, index) => ({
     ...point((index + 1) * 10, (index + 1) * 2, null),
+    level: 40 + (index % 3),
     raidMin: index * 10 + 1,
     raidMax: (index + 1) * 10,
     n: 20 + index,
@@ -102,6 +103,7 @@ test("aggregate timeline compaction preserves endpoints, raid spans, and a linea
   assert.equal(compacted.at(-1), source.at(-1));
   assert.ok(compacted.slice(1, -1).every((item) => item.pointId.startsWith("combined:")));
   assert.ok(compacted.every((item) => item.value === item.pmcRaids / 5));
+  assert.ok(compacted.every((item) => item.level == null || Number.isInteger(item.level)));
   assert.equal(compacted[1]?.raidMin, source[1]?.raidMin);
   assert.equal(compacted[1]?.raidMax, source[10]?.raidMax);
 });
