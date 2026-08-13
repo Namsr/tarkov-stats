@@ -6,6 +6,7 @@ import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import {
   getSeasonalOperatorStore,
+  normalizeProgressionRefreshCandidates,
   type ProgressionRefreshOutcome,
 } from "@/lib/seasonal/operator";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
@@ -46,6 +47,26 @@ export async function POST(request: Request) {
 
   try {
     const store = await getSeasonalOperatorStore();
+    if (body.action === "restart") {
+      if (!Array.isArray(body.candidates)) {
+        return Response.json({ error: "Seasonal candidate list is required" }, { status: 400, headers });
+      }
+      try {
+        const candidates = normalizeProgressionRefreshCandidates(body.candidates.map((candidate) => {
+          const value = candidate as Record<string, unknown>;
+          return { aid: Number(value?.aid), updatedAt: Number(value?.updatedAt) };
+        }));
+        const result = await store.restartProgressionRefreshRun(cycle.cycleId, owner, candidates);
+        return Response.json({
+          cycleId: cycle.cycleId,
+          received: body.candidates.length,
+          ...result,
+        }, { headers });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return Response.json({ error: message }, { status: 400, headers });
+      }
+    }
     if (body.action === "claim") {
       const result = await store.beginOrResumeProgressionRefreshRun(cycle.cycleId, owner);
       const claim = await store.claimNextProgressionRefresh(result.run.id, owner);
@@ -59,6 +80,12 @@ export async function POST(request: Request) {
         !Number.isSafeInteger(candidateId) || candidateId <= 0 ||
         !Number.isSafeInteger(aid) || aid <= 0) {
       return Response.json({ error: "Invalid Seasonal refresh candidate" }, { status: 400, headers });
+    }
+
+    if (body.action === "release") {
+      return Response.json(await store.releaseProgressionRefreshLease({
+        runId, candidateId, aid, cycleId: cycle.cycleId, owner,
+      }), { headers });
     }
 
     if (body.action === "skip") {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
-import { createSqliteSeasonalOperatorStore } from "../lib/seasonal/operator.ts";
+import { createSqliteSeasonalOperatorStore, normalizeProgressionRefreshCandidates } from "../lib/seasonal/operator.ts";
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 
@@ -27,7 +27,60 @@ class FakeD1 {
   constructor(db: InstanceType<typeof DatabaseSync>) { this.db = db; }
   prepare(sql: string) { return new FakeD1Statement(this.db, sql); }
   async exec(sql: string) { this.db.exec(sql); }
+  async batch(statements: FakeD1Statement[]) {
+    return Promise.all(statements.map((statement) => statement.run()));
+  }
 }
+
+test("Seasonal refresh restart caps one synchronized batch at 500 candidates", () => {
+  const candidates = Array.from({ length: 500 }, (_, index) => ({ aid: index + 1, updatedAt: index + 1 }));
+  assert.equal(normalizeProgressionRefreshCandidates(candidates).length, 500);
+  assert.throws(
+    () => normalizeProgressionRefreshCandidates([...candidates, { aid: 501, updatedAt: 501 }]),
+    /too large/,
+  );
+});
+
+test("Seasonal progression refresh restart replaces the active queue in upstream order", () => {
+  const db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(db);
+  const store = createSqliteSeasonalOperatorStore(db);
+  const restarted = store.restartProgressionRefreshRun("cycle-restart", "extension-test", [
+    { aid: 303, updatedAt: 300 },
+    { aid: 301, updatedAt: 100 },
+    { aid: 303, updatedAt: 200 },
+  ], 1_000);
+  assert.equal(restarted.requested, 2);
+  assert.equal(restarted.accepted, 2);
+  const first = store.claimNextProgressionRefresh(restarted.run.id, "extension-test", 1_001);
+  assert.equal(first.candidate?.aid, 301);
+  const secondRestart = store.restartProgressionRefreshRun("cycle-restart", "extension-test", [
+    { aid: 399, updatedAt: 50 },
+  ], 1_002);
+  assert.equal(secondRestart.run.id, restarted.run.id);
+  const replacement = store.claimNextProgressionRefresh(secondRestart.run.id, "extension-test", 1_003);
+  assert.equal(replacement.candidate?.aid, 399);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?").get(restarted.run.id).n, 1);
+});
+
+test("D1 Seasonal progression refresh restart and release preserve the upstream queue", async () => {
+  const db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(db);
+  const operator = createD1SeasonalOperatorStore(new FakeD1(db));
+  const restarted = await operator.restartProgressionRefreshRun("cycle-d1-restart", "d1-test", [
+    { aid: 402, updatedAt: 200 },
+    { aid: 401, updatedAt: 100 },
+  ], 100);
+  const first = await operator.claimNextProgressionRefresh(restarted.run.id, "d1-test", 101);
+  assert.equal(first.candidate?.aid, 401);
+  const released = await operator.releaseProgressionRefreshLease({
+    runId: restarted.run.id, candidateId: first.candidate!.id, aid: 401,
+    cycleId: "cycle-d1-restart", owner: "d1-test", now: 102,
+  });
+  assert.equal(released.released, true);
+  const again = await operator.claimNextProgressionRefresh(restarted.run.id, "d1-test", 103);
+  assert.equal(again.candidate?.aid, 401);
+});
 
 test("Seasonal progression refresh freezes eligible active-cycle snapshots in oldest-latest order", () => {
   const db = new DatabaseSync(":memory:");

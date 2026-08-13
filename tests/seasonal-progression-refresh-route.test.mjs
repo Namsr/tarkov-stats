@@ -6,7 +6,11 @@ const source = await readFile("app/api/operator/seasonal/refresh/route.ts", "utf
 
 test("Seasonal refresh route uses the seasonal queue and captures only after a live lease", () => {
   assert.match(source, /action === "claim"/);
+  assert.match(source, /action === "restart"/);
+  assert.match(source, /action === "release"/);
   assert.match(source, /beginOrResumeProgressionRefreshRun/);
+  assert.match(source, /restartProgressionRefreshRun/);
+  assert.match(source, /releaseProgressionRefreshLease/);
   assert.match(source, /claimNextProgressionRefresh/);
   assert.match(source, /activeProgressionRefreshLease/);
   assert.match(source, /recordProgressionRefreshOutcome/);

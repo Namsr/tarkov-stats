@@ -29,6 +29,20 @@ export interface ProgressionRefreshClaimResult {
   remaining: number;
 }
 
+export interface ProgressionRefreshFeedCandidate {
+  aid: number;
+  updatedAt: number;
+}
+
+export interface ProgressionRefreshRestartResult {
+  run: ReturnType<typeof mapRefreshRun>;
+  requested: number;
+  accepted: number;
+  excluded: number;
+}
+
+const MAX_PROGRESSION_REFRESH_CANDIDATES = 500;
+
 const OPERATOR_SCHEMA = `
 CREATE TABLE IF NOT EXISTS scan_task_outcomes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +131,30 @@ export function validateScope(cycleId: string, owner: string): void {
   if (!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(owner)) throw new Error("invalid owner");
 }
 
+export function normalizeProgressionRefreshCandidates(
+  candidates: readonly ProgressionRefreshFeedCandidate[],
+): ProgressionRefreshFeedCandidate[] {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    throw new Error("Seasonal refresh candidate list is empty");
+  }
+  if (candidates.length > MAX_PROGRESSION_REFRESH_CANDIDATES) {
+    throw new Error("Seasonal refresh candidate list is too large");
+  }
+  const byAid = new Map<number, ProgressionRefreshFeedCandidate>();
+  for (const candidate of candidates) {
+    if (!Number.isSafeInteger(candidate?.aid) || candidate.aid <= 0 ||
+        !Number.isSafeInteger(candidate?.updatedAt) || candidate.updatedAt <= 0) {
+      throw new Error("invalid Seasonal refresh candidate");
+    }
+    const previous = byAid.get(candidate.aid);
+    if (!previous || candidate.updatedAt > previous.updatedAt) byAid.set(candidate.aid, {
+      aid: candidate.aid,
+      updatedAt: candidate.updatedAt,
+    });
+  }
+  return [...byAid.values()].sort((left, right) => left.updatedAt - right.updatedAt || left.aid - right.aid);
+}
+
 export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
   db.exec(OPERATOR_SCHEMA);
   createProgressionRefreshSchema(db);
@@ -165,6 +203,70 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
         }
         db.exec("COMMIT");
         return { run: mapRefreshRun(run!), resumed };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    restartProgressionRefreshRun(
+      cycleId: string,
+      owner: string,
+      candidates: readonly ProgressionRefreshFeedCandidate[],
+      now = Date.now(),
+    ): ProgressionRefreshRestartResult {
+      validateScope(cycleId, owner);
+      const ordered = normalizeProgressionRefreshCandidates(candidates);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        let run = db.prepare(`
+          SELECT * FROM seasonal_progression_refresh_runs
+          WHERE cycle_id = ? AND owner = ? AND state = 'running'
+          ORDER BY id DESC LIMIT 1
+        `).get(cycleId, owner) as Record<string, unknown> | undefined;
+        let runId: number;
+        if (!run) {
+          const inserted = db.prepare(`
+            INSERT INTO seasonal_progression_refresh_runs
+              (cycle_id, owner, state, started_at, updated_at)
+            VALUES (?, ?, 'running', ?, ?)
+          `).run(cycleId, owner, now, now);
+          runId = Number(inserted.lastInsertRowid);
+        } else {
+          runId = Number(run.id);
+          db.prepare(`UPDATE seasonal_progression_refresh_runs
+            SET state = 'running', started_at = ?, updated_at = ?, finished_at = NULL
+            WHERE id = ?`).run(now, now, runId);
+        }
+        db.prepare("DELETE FROM seasonal_progression_refresh_candidates WHERE run_id = ?").run(runId);
+        db.prepare(`
+          INSERT INTO seasonal_progression_refresh_candidates
+            (run_id, cycle_id, aid, latest_captured_at, state, updated_at)
+          SELECT ?, ?, CAST(json_extract(value, '$.aid') AS INTEGER),
+            CAST(json_extract(value, '$.updatedAt') AS INTEGER), 'queued', ?
+          FROM json_each(?)
+          WHERE NOT EXISTS (
+              SELECT 1 FROM excluded_players e
+              WHERE e.aid = CAST(json_extract(value, '$.aid') AS INTEGER)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM player_profiles p
+              WHERE p.mode = 'seasonal' AND p.cycle_id = ?
+                AND p.aid = CAST(json_extract(value, '$.aid') AS INTEGER)
+                AND COALESCE(p.confirmed_banned, 0) = 1
+            )
+        `).run(runId, cycleId, now, JSON.stringify(ordered), cycleId);
+        run = db.prepare("SELECT * FROM seasonal_progression_refresh_runs WHERE id = ?").get(runId);
+        const accepted = Number((db.prepare(`
+          SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?
+        `).get(runId) as { n: number }).n);
+        db.exec("COMMIT");
+        return {
+          run: mapRefreshRun(run!),
+          requested: ordered.length,
+          accepted,
+          excluded: ordered.length - accepted,
+        };
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
@@ -272,6 +374,37 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
           .run(now, input.runId);
         db.exec("COMMIT");
         return { state: input.outcome };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    releaseProgressionRefreshLease(input: {
+      runId: number;
+      candidateId: number;
+      aid: number;
+      cycleId: string;
+      owner: string;
+      now?: number;
+    }) {
+      const now = input.now ?? Date.now();
+      validateRefreshIdentifiers(input.runId, input.candidateId, input.aid);
+      if (!input.owner.trim()) throw new Error("refresh lease owner is required");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const updated = db.prepare(`
+          UPDATE seasonal_progression_refresh_candidates
+          SET state = 'queued', outcome = NULL, lease_owner = NULL, leased_until = NULL, updated_at = ?
+          WHERE id = ? AND run_id = ? AND cycle_id = ? AND aid = ?
+            AND state = 'leased' AND lease_owner = ?
+        `).run(now, input.candidateId, input.runId, input.cycleId, input.aid, input.owner);
+        if (Number(updated.changes) === 1) {
+          db.prepare("UPDATE seasonal_progression_refresh_runs SET updated_at = ? WHERE id = ?")
+            .run(now, input.runId);
+        }
+        db.exec("COMMIT");
+        return { released: Number(updated.changes) === 1 };
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
