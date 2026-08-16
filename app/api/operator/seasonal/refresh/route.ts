@@ -16,7 +16,15 @@ import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 export const runtime = "nodejs";
 
 const OUTCOMES = new Set<ProgressionRefreshOutcome>(["completed", "skipped", "not_found"]);
-const SUCCESSFUL_CAPTURE_STATES = new Set(["progression", "duplicate", "reset", "schema_anomaly"]);
+const SUCCESSFUL_CAPTURE_STATES = new Set([
+  "baseline",
+  "progression",
+  "duplicate",
+  "stale",
+  "stored",
+  "reset",
+  "schema_anomaly",
+]);
 const fetchSeasonalPayloadCompat = fetchSeasonalPayload as (
   aid: number,
   options?: { force?: boolean },
@@ -125,7 +133,25 @@ export async function POST(request: Request) {
         },
       },
     );
-    if (!result.ok) return Response.json({ error: result.error }, { status: result.status, headers });
+    if (!result.ok) {
+      // A profile can legitimately be present in the updated feed while its
+      // Seasonal endpoint has no capturable data (404, zero completed raids,
+      // or a payload that does not contain the confirmed Seasonal shape). It
+      // must not strand the queue lease or force the operator to intervene.
+      const notFound = result.status === 404 ||
+        (result.status === 502 && result.error === "Invalid Seasonal profile payload");
+      if (notFound) {
+        const outcome = await store.recordProgressionRefreshOutcome({
+          runId, candidateId, aid, cycleId: cycle.cycleId, owner, outcome: "not_found",
+        });
+        return Response.json({
+          ...outcome,
+          state: "not_found",
+          capture: { inserted: false, status: "not_found" },
+        }, { headers });
+      }
+      return Response.json({ error: result.error }, { status: result.status, headers });
+    }
     if (!SUCCESSFUL_CAPTURE_STATES.has(result.capture.status)) {
       return Response.json({ error: "Seasonal snapshot was not captured", state: result.capture.status }, { status: 409, headers });
     }
