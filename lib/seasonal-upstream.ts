@@ -377,10 +377,16 @@ export function seasonalLastAccess(profile: unknown): number {
     });
   }
 
+  // Fresh accounts can have no completed raids and no unlocked achievements
+  // yet. Their profile.updated timestamp is still a trustworthy current-cycle
+  // activity signal, so keep the account visible instead of rejecting it.
+  if (candidates.length === 0 && root.updated !== undefined && root.updated !== null) {
+    return unixMilliseconds(root.updated, "profile.updated");
+  }
   if (candidates.length === 0) {
     throw new SeasonalValidationError(
       "invalid_payload",
-      "profile must contain at least one skill or achievement activity timestamp"
+      "profile must contain an activity timestamp"
     );
   }
   return Math.max(...candidates);
@@ -423,12 +429,6 @@ export function parseSeasonalProfile(
   const counters = parseCounters(extracted.profile);
   const seasonalAchievements = parseSeasonalAchievements(extracted.profile);
   const seasonalStats = parseSeasonalStats(extracted.profile, counters);
-  if (counters.pmcRaids + counters.scavRaids === 0) {
-    throw new SeasonalValidationError(
-      "no_completed_raids",
-      "Seasonal profile has no completed PMC or Scav raids"
-    );
-  }
   validateCounterRelationships(counters);
 
   const lastAccessAt = seasonalLastAccess(extracted.profile);

@@ -192,7 +192,7 @@ test("stays fail-closed until both flag and contract confirmation are present", 
   );
 });
 
-test("rejects a mismatched cycle, out-of-season activity and zero raids", async () => {
+test("rejects a mismatched cycle and out-of-season activity while keeping zero-raid profiles", async () => {
   const payload = await loadFixture("seasonal-game-mode.json");
   const options = { ...baseOptions, confirmedContract: "game_mode" };
 
@@ -212,7 +212,39 @@ test("rejects a mismatched cycle, out-of-season activity and zero raids", async 
     (item) => item.Key[0] === "Sessions"
   ).Value = 0;
   zeroRaids.profile.scavStats.eft.overAllCounters.Items[0].Value = 0;
-  assert.equal(validateSeasonalProfile(zeroRaids, options).code, "no_completed_raids");
+  zeroRaids.profile.pmcStats.eft.overAllCounters.Items.forEach((item) => {
+    if (item.Key[0] !== "Sessions") item.Value = 0;
+  });
+  zeroRaids.profile.scavStats.eft.overAllCounters.Items.forEach((item) => {
+    if (item.Key[0] !== "Sessions") item.Value = 0;
+  });
+  const zeroRaidResult = validateSeasonalProfile(zeroRaids, options);
+  assert.equal(zeroRaidResult.ok, true);
+  assert.equal(zeroRaidResult.ok && zeroRaidResult.profile.counters.pmcRaids, 0);
+  assert.equal(zeroRaidResult.ok && zeroRaidResult.profile.counters.scavRaids, 0);
+  assert.equal(zeroRaidResult.ok && zeroRaidResult.profile.seasonalStats?.totalRaids, 0);
+});
+
+test("uses profile.updated for a fresh zero-raid profile without activity arrays", async () => {
+  const payload = await loadFixture("seasonal-game-mode.json");
+  delete payload.profile.skills;
+  delete payload.profile.achievements;
+  payload.profile.pmcStats.eft.overAllCounters.Items.find(
+    (item) => item.Key[0] === "Sessions"
+  ).Value = 0;
+  payload.profile.scavStats.eft.overAllCounters.Items[0].Value = 0;
+  payload.profile.pmcStats.eft.overAllCounters.Items.forEach((item) => {
+    if (item.Key[0] !== "Sessions") item.Value = 0;
+  });
+  payload.profile.scavStats.eft.overAllCounters.Items.forEach((item) => {
+    if (item.Key[0] !== "Sessions") item.Value = 0;
+  });
+  const result = validateSeasonalProfile(payload, {
+    ...baseOptions,
+    confirmedContract: "game_mode",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.profile.lastAccessAt, result.ok && result.profile.profileUpdatedAt);
 });
 
 test("runtime validation rejects malformed counters and timestamps", async () => {
