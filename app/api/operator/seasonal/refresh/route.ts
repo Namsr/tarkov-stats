@@ -30,6 +30,26 @@ const fetchSeasonalPayloadCompat = fetchSeasonalPayload as (
   options?: { force?: boolean },
 ) => Promise<unknown>;
 
+/**
+ * A refresh can observe a transient upstream/schema failure after the account
+ * was already captured. Keep that durable snapshot eligible for queue
+ * completion instead of turning a known account into `not_found`.
+ */
+async function storedSeasonalVersion(aid: number, cycleId: string): Promise<number | null> {
+  try {
+    const seasonal = await getSeasonalStore();
+    if (!seasonal) return null;
+    const profile = await seasonal.getProfile({ mode: "seasonal", cycleId, aid });
+    if (profile) {
+      return profile.confirmedBanned ? null : profile.profileUpdatedAt;
+    }
+    const snapshot = await seasonal.latestSnapshot({ mode: "seasonal", cycleId, aid });
+    return snapshot?.profileUpdatedAt ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(request: Request) {
   const headers = operatorNoStoreHeaders();
   if (!(await isOperatorRequest(request))) {
@@ -134,13 +154,21 @@ export async function POST(request: Request) {
       },
     );
     if (!result.ok) {
-      // A profile can legitimately be present in the updated feed while its
-      // Seasonal endpoint has no capturable data (404, zero completed raids,
-      // or a payload that does not contain the confirmed Seasonal shape). It
-      // must not strand the queue lease or force the operator to intervene.
-      const notFound = result.status === 404 ||
-        (result.status === 502 && result.error === "Invalid Seasonal profile payload");
-      if (notFound) {
+      const storedVersion = await storedSeasonalVersion(aid, cycle.cycleId);
+      if (storedVersion !== null) {
+        await store.recordProgressionRefreshOutcome({
+          runId, candidateId, aid, cycleId: cycle.cycleId, owner, outcome: "completed",
+        });
+        return Response.json({
+          state: "stored",
+          profileUpdatedAt: storedVersion,
+          capture: { inserted: false, status: "stored" },
+        }, { headers });
+      }
+      // A 404 with no durable Seasonal row is a genuine missing profile. A
+      // validation/schema failure remains visible to the operator instead of
+      // silently discarding a potentially valid account.
+      if (result.status === 404) {
         const outcome = await store.recordProgressionRefreshOutcome({
           runId, candidateId, aid, cycleId: cycle.cycleId, owner, outcome: "not_found",
         });

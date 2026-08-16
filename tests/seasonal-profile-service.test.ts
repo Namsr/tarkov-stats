@@ -151,6 +151,36 @@ test("normal profile loads use the latest stored capture without waiting for ups
   assert.deepEqual(fallback.ok && fallback.profile.seasonalAchievements, [{ id: "first_raid", unlockedAt: 1_783_495_000_000 }]);
 });
 
+test("forced refresh keeps a stored Seasonal snapshot when the upstream payload is temporarily invalid", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const first = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    { ...cycleDependencies, fetchPayload: async () => fixture(), getStore: async () => store },
+  );
+  assert.equal(first.ok, true);
+
+  const fallback = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: true },
+    {
+      ...cycleDependencies,
+      fetchPayload: async () => ({ invalid: true }),
+      validatePayload: () => ({ ok: false, code: "invalid_payload" }),
+      getStore: async () => store,
+    },
+  );
+
+  assert.equal(fallback.ok, true);
+  assert.equal(fallback.ok && fallback.capture.status, "stored");
+  assert.equal(fallback.ok && fallback.profile.profileUpdatedAt, first.ok && first.profile.profileUpdatedAt);
+});
+
 test("expected-version captures do not treat a stored profile as a confirmed upstream response", async (t) => {
   let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
   try {

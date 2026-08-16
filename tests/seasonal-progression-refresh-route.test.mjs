@@ -21,8 +21,8 @@ test("Seasonal refresh route uses the seasonal queue and captures only after a l
   assert.match(source, /"baseline"/);
   assert.match(source, /"stale"/);
   assert.match(source, /"stored"/);
+  assert.match(source, /storedSeasonalVersion/);
   assert.match(source, /result\.status === 404/);
-  assert.match(source, /result\.error === "Invalid Seasonal profile payload"/);
   assert.match(source, /outcome: "not_found"/);
   assert.match(source, /if \(!SUCCESSFUL_CAPTURE_STATES\.has\(result\.capture\.status\)\)/);
   assert.doesNotMatch(source, /profile-refresh|regular-profile|persistRegularProfileSnapshot/);
