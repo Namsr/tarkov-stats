@@ -43,14 +43,8 @@ function target(identity?: FavoriteIdentity): FavoriteIdentity {
   return identity ?? LEGACY_IDENTITY;
 }
 
-function matches(favorite: Favorite, aid: number, identity?: FavoriteIdentity): boolean {
-  const id = target(identity);
-  return favorite.aid === aid && favorite.mode === id.mode && favorite.cycleId === id.cycleId;
-}
-
-function identityParams(aid: number, identity?: FavoriteIdentity): string {
-  const id = target(identity);
-  return new URLSearchParams({ aid: String(aid), mode: id.mode, cycle: id.cycleId }).toString();
+function matches(favorite: Favorite, aid: number): boolean {
+  return favorite.aid === aid;
 }
 
 export function FavoritesProvider({ children }: { children: React.ReactNode }) {
@@ -65,10 +59,13 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/favorites?all=1");
       if (!res.ok) {
-        // 401 → not signed in: the feature is simply disabled, never an error.
-        setEnabled(false);
-        setFavorites([]);
-        setAuthStatus(res.status === 401 ? "unauthenticated" : "error");
+        if (res.status === 401) {
+          setEnabled(false);
+          setFavorites([]);
+          setAuthStatus("unauthenticated");
+        } else {
+          setAuthStatus("error");
+        }
         return;
       }
       const data = (await res.json()) as { favorites: Favorite[] };
@@ -76,8 +73,6 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       setFavorites(data.favorites ?? []);
       setAuthStatus("authenticated");
     } catch {
-      setEnabled(false);
-      setFavorites([]);
       setAuthStatus("error");
     } finally {
       setLoading(false);
@@ -90,7 +85,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const has = useCallback(
-    (aid: number, identity?: FavoriteIdentity) => favorites.some((favorite) => matches(favorite, aid, identity)),
+    (aid: number) => favorites.some((favorite) => matches(favorite, aid)),
     [favorites]
   );
 
@@ -99,12 +94,22 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       if (!enabled) return "noop";
       const id = target(identity);
 
-      if (favorites.some((favorite) => matches(favorite, aid, id))) {
-        setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id))); // optimistic
+      if (favorites.some((favorite) => matches(favorite, aid))) {
+        const removed = favorites.find((favorite) => matches(favorite, aid)) ?? null;
+        const removedIndex = favorites.findIndex((favorite) => matches(favorite, aid));
+        setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid))); // optimistic
         try {
-          await fetch(`/api/favorites?${identityParams(aid, id)}`, { method: "DELETE" });
+          const res = await fetch(`/api/favorites?${new URLSearchParams({ aid: String(aid) })}`, { method: "DELETE" });
+          if (!res.ok) throw new Error();
         } catch {
-          refresh();
+          setFavorites((prev) => {
+            if (!removed || prev.some((favorite) => matches(favorite, aid))) return prev;
+            const next = [...prev];
+            next.splice(Math.min(removedIndex, next.length), 0, removed);
+            return next;
+          });
+          await refresh();
+          return "noop";
         }
         return "removed";
       }
@@ -117,7 +122,9 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
         isMain: false,
         createdAt: Date.now(),
       };
-      setFavorites((prev) => [optimistic, ...prev]);
+      setFavorites((prev) => prev.some((favorite) => matches(favorite, aid))
+        ? prev
+        : [optimistic, ...prev]);
       try {
         const res = await fetch("/api/favorites", {
           method: "POST",
@@ -125,16 +132,21 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
           body: JSON.stringify({ aid, nickname, mode: id.mode, cycle: id.cycleId }),
         });
         if (!res.ok) {
-          setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id))); // roll back
+          let outcome: ToggleResult = "noop";
           if (res.status === 409) {
             const d = (await res.json().catch(() => ({}))) as { error?: string };
-            if (d.error === "limit") return "limit";
+            if (d.error === "limit") outcome = "limit";
           }
-          return "noop";
+          setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid)));
+          await refresh();
+          return outcome;
         }
+        const data = (await res.json().catch(() => ({}))) as { already?: boolean };
+        if (data.already) await refresh();
         return "added";
       } catch {
-        refresh();
+        setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid)));
+        await refresh();
         return "noop";
       }
     },
@@ -142,50 +154,65 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   );
 
   const remove = useCallback(
-    async (aid: number, identity?: FavoriteIdentity) => {
-      const id = target(identity);
-      setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid, id)));
+    async (aid: number) => {
+      const removed = favorites.find((favorite) => matches(favorite, aid)) ?? null;
+      const removedIndex = favorites.findIndex((favorite) => matches(favorite, aid));
+      setFavorites((prev) => prev.filter((favorite) => !matches(favorite, aid)));
       try {
-        await fetch(`/api/favorites?${identityParams(aid, id)}`, { method: "DELETE" });
+        const res = await fetch(`/api/favorites?${new URLSearchParams({ aid: String(aid) })}`, { method: "DELETE" });
+        if (!res.ok) throw new Error();
       } catch {
-        refresh();
+        setFavorites((prev) => {
+          if (!removed || prev.some((favorite) => matches(favorite, aid))) return prev;
+          const next = [...prev];
+          next.splice(Math.min(removedIndex, next.length), 0, removed);
+          return next;
+        });
+        await refresh();
       }
     },
-    [refresh]
+    [favorites, refresh]
   );
 
   const setNote = useCallback(
-    async (aid: number, note: string | null, identity?: FavoriteIdentity) => {
-      const id = target(identity);
-      setFavorites((prev) => prev.map((favorite) => matches(favorite, aid, id) ? { ...favorite, note } : favorite));
+    async (aid: number, note: string | null) => {
+      const previousNote = favorites.find((favorite) => matches(favorite, aid))?.note ?? null;
+      setFavorites((prev) => prev.map((favorite) => matches(favorite, aid) ? { ...favorite, note } : favorite));
       try {
-        await fetch("/api/favorites", {
+        const res = await fetch("/api/favorites", {
           method: "PATCH",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ aid, note: note ?? "", mode: id.mode, cycle: id.cycleId }),
+          body: JSON.stringify({ aid, note: note ?? "" }),
         });
+        if (!res.ok) throw new Error();
       } catch {
-        refresh();
+        setFavorites((prev) => prev.map((favorite) =>
+          matches(favorite, aid) && favorite.note === note ? { ...favorite, note: previousNote } : favorite));
+        await refresh();
       }
     },
-    [refresh]
+    [favorites, refresh]
   );
 
   const setMain = useCallback(
-    async (aid: number, identity?: FavoriteIdentity) => {
-      const id = target(identity);
-      setFavorites((prev) => prev.map((favorite) => ({ ...favorite, isMain: matches(favorite, aid, id) })));
+    async (aid: number) => {
+      const previousMainAid = favorites.find((favorite) => favorite.isMain)?.aid ?? null;
+      setFavorites((prev) => prev.map((favorite) => ({ ...favorite, isMain: matches(favorite, aid) })));
       try {
-        await fetch("/api/favorites", {
+        const res = await fetch("/api/favorites", {
           method: "PATCH",
           headers: JSON_HEADERS,
-          body: JSON.stringify({ aid, main: true, mode: id.mode, cycle: id.cycleId }),
+          body: JSON.stringify({ aid, main: true }),
         });
+        if (!res.ok) throw new Error();
       } catch {
-        refresh();
+        setFavorites((prev) => prev.some((favorite) => matches(favorite, aid) && favorite.isMain)
+          ? prev.map((favorite) => ({ ...favorite, isMain: favorite.aid === previousMainAid }))
+          : prev);
+        await refresh();
       }
     },
-    [refresh]
+    [favorites, refresh]
   );
 
   const value = useMemo<FavoritesValue>(

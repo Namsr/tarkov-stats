@@ -387,8 +387,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   }
 
   const eligibleFavorites = useMemo(
-    () => favorites.filter((favorite) => favorite.mode === mode && favorite.cycleId === cycleId && favorite.aid !== aid),
-    [aid, cycleId, favorites, mode]
+    () => favorites.filter((favorite) => favorite.aid !== aid),
+    [aid, favorites]
   );
   const defaultFavoriteAid =
     eligibleFavorites.find((favorite) => favorite.isMain)?.aid ?? eligibleFavorites[0]?.aid ?? null;

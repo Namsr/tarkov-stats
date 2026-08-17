@@ -2,6 +2,46 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
+test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
+  const context = await readFile("lib/favorites/context.tsx", "utf8");
+  const route = await readFile("app/api/favorites/route.ts", "utf8");
+  const store = await readFile("lib/db.ts", "utf8");
+  const schema = await readFile("lib/favorites-schema.ts", "utf8");
+  const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
+  const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+
+  assert.match(context, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
+  assert.doesNotMatch(context, /favorite\.mode === id\.mode|favorite\.cycleId === id\.cycleId/);
+  assert.match(context, /body: JSON\.stringify\(\{ aid, nickname, mode: id\.mode, cycle: id\.cycleId \}\)/);
+  assert.ok((context.match(/if \(!res\.ok\) throw new Error\(\)/g) ?? []).length >= 4);
+  assert.ok((context.match(/await refresh\(\)/g) ?? []).length >= 4);
+
+  assert.match(route, /store\.add\([\s\S]*identity/);
+  assert.match(route, /store\.remove\(g\.sub, aid\)/);
+  assert.ok((route.match(/Storage unavailable/g) ?? []).length >= 3);
+  assert.match(route, /store\.setMain\(g\.sub, aid\)/);
+  assert.match(route, /store\.setNote\(g\.sub, aid, clean\(body\.note, NOTE_MAX\)\)/);
+  assert.doesNotMatch(route, /store\.(?:remove|setMain|setNote)\(g\.sub, aid,[^)]*identity/);
+
+  assert.match(schema, /INSERT OR IGNORE INTO favorites[\s\S]*COUNT\(DISTINCT aid\)/);
+  assert.match(schema, /SET is_main = CASE WHEN aid = \? THEN 1 ELSE 0 END/);
+  assert.match(schema, /throw new Error\("Favorite insert was ignored unexpectedly"\)/);
+  assert.ok((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length >= 2);
+  assert.ok((store.match(/prepare\(FAVORITE_SET_MAIN_SQL\)/g) ?? []).length >= 2);
+  assert.match(store, /inserted\?\.meta\?\.changes \?\? 0/);
+  assert.match(store, /favoriteInsertResult\(inserted\.changes/);
+  assert.ok((store.match(/DELETE FROM favorites WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
+  assert.ok((store.match(/UPDATE favorites SET note = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
+  assert.ok((store.match(/UPDATE favorites SET nickname = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
+
+  for (const source of [panel, radar]) {
+    assert.match(source, /favorites\.filter\(\(favorite\) => favorite\.aid !== aid\)/);
+    assert.doesNotMatch(source, /favorite\.mode === mode && favorite\.cycleId === cycleId/);
+  }
+  assert.match(panel, /mode,\s*cycle: cycleId,\s*aid: String\(favorite\.aid\)/);
+  assert.match(radar, /aid: String\(effectiveFavoriteAid\),\s*mode,\s*cycle: cycleId/);
+});
+
 test("missing mode keeps the profile shell without mounting data sections", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   const unavailableStart = source.indexOf("if (modeUnavailable)");
@@ -371,7 +411,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /result\.history\?\.ready && validRisk\(result\.risk\) \? result\.risk : null/);
   assert.match(panel, /if \(controller\.signal\.aborted\) return/);
   assert.match(panel, /useFavorites/);
-  assert.match(panel, /favorite\.mode === mode && favorite\.cycleId === cycleId && favorite\.aid !== aid/);
+  assert.match(panel, /favorites\.filter\(\(favorite\) => favorite\.aid !== aid\)/);
   assert.match(panel, /const \[selection, setSelection\] = useState<ComparisonSelection>/);
   assert.match(panel, /selection\.ownerKey === mainIdentityKey \? selection\.aid : ""/);
   assert.match(panel, /const cacheKey = `\$\{mode\}\\0\$\{cycleId\}\\0\$\{favorite\.aid\}`/);

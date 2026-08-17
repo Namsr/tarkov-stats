@@ -188,10 +188,8 @@ export default function ProgressionPanel({
   const longTerm = data?.longTerm;
   const hasPoints = timelineHasPoints(data);
   const eligibleFavorites = useMemo(
-    () => favorites.filter((favorite) =>
-      favorite.mode === mode && favorite.cycleId === cycleId && favorite.aid !== aid,
-    ),
-    [aid, cycleId, favorites, mode],
+    () => favorites.filter((favorite) => favorite.aid !== aid),
+    [aid, favorites],
   );
   const selectedFavorite = eligibleFavorites.find((favorite) => String(favorite.aid) === selectedAid) ?? null;
   const selectedNickname = selectedFavorite

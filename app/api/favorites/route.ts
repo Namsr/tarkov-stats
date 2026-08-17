@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
   if (!g.ok) return g.response;
 
   const store = await getFavoritesStore();
-  if (!store) return NextResponse.json({ favorites: [] }, { headers: g.headers });
+  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
 
   const all = request.nextUrl.searchParams.get("all") === "1";
   const identity = all
@@ -107,16 +107,9 @@ export async function DELETE(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: g.headers });
   }
-  const identity = parseIdentity(
-    request.nextUrl.searchParams.get("mode"),
-    request.nextUrl.searchParams.get("cycle")
-  );
-  if (!identity) {
-    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
-  }
-
   const store = await getFavoritesStore();
-  if (store) await store.remove(g.sub, aid, identity);
+  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
+  await store.remove(g.sub, aid);
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }
 
@@ -134,17 +127,12 @@ export async function PATCH(request: NextRequest) {
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: g.headers });
   }
-  const identity = parseIdentity(body.mode, body.cycle);
-  if (!identity) {
-    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
-  }
-
   const store = await getFavoritesStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
 
-  if (body.main === true) await store.setMain(g.sub, aid, identity);
+  if (body.main === true) await store.setMain(g.sub, aid);
   // Only touch the note when the field is present (distinguishes "clear" from "absent").
-  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX), identity);
+  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX));
 
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }

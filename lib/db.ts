@@ -2,7 +2,13 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
 import { isAidBanned } from "@/lib/ban-db";
 import { LEGACY_IDENTITY, type ProfileIdentity } from "@/types/seasonal";
-import { initializeFavoritesSchema } from "@/lib/favorites-schema";
+import {
+  FAVORITE_INSERT_SQL,
+  FAVORITE_SET_MAIN_SQL,
+  MAX_FAVORITES,
+  favoriteInsertResult,
+  initializeFavoritesSchema,
+} from "@/lib/favorites-schema";
 import { seasonalCandidateOrderParameters } from "@/lib/seasonal/scanner";
 import type { GameMode } from "@/types/seasonal";
 import type { ProfileSummary } from "@/lib/profile-summary";
@@ -81,7 +87,7 @@ CREATE TABLE IF NOT EXISTS favorites (
   aid INTEGER NOT NULL,
   nickname TEXT, note TEXT, is_main INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (user_sub, mode, cycle_id, aid)
+  PRIMARY KEY (user_sub, aid)
 );
 CREATE INDEX IF NOT EXISTS idx_favorites_user_identity ON favorites(user_sub, mode, cycle_id);
 
@@ -339,7 +345,6 @@ function toAchStats(
 const MAX_PLAYERS = Number(process.env.MAX_PLAYERS ?? 200_000) || 0;
 
 // Лимит избранного на пользователя — защита от раздувания таблицы одним аккаунтом.
-const MAX_FAVORITES = 50;
 
 // Робастный портрет среднего игрока: по КАЖДОЙ метрике отбрасываем по TRIM_FRACTION
 // с обоих хвостов (триммированное среднее), чтобы читеры/боты с экстремальными
@@ -1747,7 +1752,7 @@ export interface Favorite {
 export interface FavoritesStore {
   /** A user's favorites, main first, then newest first. */
   list(userSub: string, identity?: FavoriteIdentity | null): Promise<Favorite[]>;
-  /** Pin an account. "exists" if already pinned, "limit" if over MAX_FAVORITES. */
+  /** Pin an account globally by AID. "exists" if already pinned in any identity. */
   add(
     userSub: string,
     aid: number,
@@ -1755,7 +1760,7 @@ export interface FavoritesStore {
     note: string | null,
     identity?: FavoriteIdentity
   ): Promise<"ok" | "exists" | "limit">;
-  /** Unpin. */
+  /** Unpin every stored identity for this AID. */
   remove(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
   /** Set/clear the note. */
   setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<void>;
@@ -1772,16 +1777,13 @@ function favoriteIdentity(identity?: FavoriteIdentity): FavoriteIdentity {
 }
 
 const FAV_LIST_SQL =
-  "SELECT mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
+  "SELECT rowid AS source_rowid, mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
   "WHERE user_sub = ? AND mode = ? AND cycle_id = ? ORDER BY is_main DESC, created_at DESC";
 const FAV_LIST_ALL_SQL =
-  "SELECT mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
+  "SELECT rowid AS source_rowid, mode, cycle_id, aid, nickname, note, is_main, created_at FROM favorites " +
   "WHERE user_sub = ? ORDER BY is_main DESC, created_at DESC";
-const FAV_INSERT_SQL =
-  "INSERT INTO favorites (user_sub, mode, cycle_id, aid, nickname, note, is_main, created_at) " +
-  "VALUES (?, ?, ?, ?, ?, ?, 0, ?)";
-
 interface FavRow {
+  source_rowid: number;
   mode: ProfileIdentity["mode"];
   cycle_id: string;
   aid: number;
@@ -1792,15 +1794,39 @@ interface FavRow {
 }
 
 function toFavorites(rows: FavRow[]): Favorite[] {
-  return rows.map((r) => ({
-    mode: r.mode,
-    cycleId: r.cycle_id,
-    aid: Number(r.aid),
-    nickname: r.nickname ?? null,
-    note: r.note ?? null,
-    isMain: Number(r.is_main) === 1,
-    createdAt: Number(r.created_at),
-  }));
+  const groups = new Map<number, (Favorite & { sourceRowId: number })[]>();
+  for (const r of rows) {
+    const favorite = {
+      mode: r.mode,
+      cycleId: r.cycle_id,
+      aid: Number(r.aid),
+      nickname: r.nickname ?? null,
+      note: r.note ?? null,
+      isMain: Number(r.is_main) === 1,
+      createdAt: Number(r.created_at),
+      sourceRowId: Number(r.source_rowid),
+    } satisfies Favorite & { sourceRowId: number };
+    groups.set(favorite.aid, [...(groups.get(favorite.aid) ?? []), favorite]);
+  }
+  const favorites = [...groups.values()].map((group) => {
+    const newest = [...group].sort((a, b) => b.createdAt - a.createdAt || b.sourceRowId - a.sourceRowId);
+    const canonical = [...group].sort((a, b) =>
+      Number(b.mode === "regular") - Number(a.mode === "regular")
+      || b.createdAt - a.createdAt
+      || b.sourceRowId - a.sourceRowId
+    )[0];
+    const { sourceRowId: _sourceRowId, ...favorite } = canonical;
+    void _sourceRowId;
+    return {
+      ...favorite,
+      nickname: newest.find((favorite) => favorite.nickname)?.nickname ?? null,
+      note: newest.find((favorite) => favorite.note)?.note ?? null,
+      isMain: group.some((favorite) => favorite.isMain),
+      createdAt: Math.min(...group.map((favorite) => favorite.createdAt)),
+    };
+  }).sort((a, b) => Number(b.isMain) - Number(a.isMain) || b.createdAt - a.createdAt || a.aid - b.aid);
+  const mainAid = favorites.find((favorite) => favorite.isMain)?.aid ?? null;
+  return favorites.map((favorite) => ({ ...favorite, isMain: favorite.aid === mainAid }));
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1817,43 +1843,33 @@ function d1FavoritesStore(db: any): FavoritesStore {
     },
     async add(userSub, aid, nickname, note, identity) {
       const id = favoriteIdentity(identity);
-      const existing = await db
-        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
-        .bind(userSub, id.mode, id.cycleId, aid)
-        .first();
-      if (existing) return "exists";
-      const row = (await db
-        .prepare("SELECT COUNT(*) AS n FROM favorites WHERE user_sub = ?")
-        .bind(userSub)
-        .first()) as { n: number } | null;
-      if (row && row.n >= MAX_FAVORITES) return "limit";
-      await db.prepare(FAV_INSERT_SQL).bind(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now()).run();
-      return "ok";
+      const inserted = await db.prepare(FAVORITE_INSERT_SQL)
+        .bind(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now(), userSub, aid, userSub, MAX_FAVORITES)
+        .run();
+      const changes = Number(inserted?.meta?.changes ?? 0);
+      if (changes === 1) return "ok";
+      const existing = await db.prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
+        .bind(userSub, aid).first();
+      const row = (await db.prepare("SELECT COUNT(DISTINCT aid) AS n FROM favorites WHERE user_sub = ?")
+        .bind(userSub).first()) as { n: number } | null;
+      return favoriteInsertResult(changes, Boolean(existing), Number(row?.n ?? 0));
     },
-    async remove(userSub, aid, identity) {
-      const id = favoriteIdentity(identity);
-      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").bind(userSub, id.mode, id.cycleId, aid).run();
+    async remove(userSub, aid) {
+      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").bind(userSub, aid).run();
     },
-    async setNote(userSub, aid, note, identity) {
-      const id = favoriteIdentity(identity);
+    async setNote(userSub, aid, note) {
       await db
-        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
-        .bind(note, userSub, id.mode, id.cycleId, aid)
+        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?")
+        .bind(note, userSub, aid)
         .run();
     },
-    async setMain(userSub, aid, identity) {
-      const id = favoriteIdentity(identity);
-      await db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").bind(userSub).run();
-      await db
-        .prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
-        .bind(userSub, id.mode, id.cycleId, aid)
-        .run();
+    async setMain(userSub, aid) {
+      await db.prepare(FAVORITE_SET_MAIN_SQL).bind(aid, userSub, userSub, aid).run();
     },
-    async updateNickname(userSub, aid, nickname, identity) {
-      const id = favoriteIdentity(identity);
+    async updateNickname(userSub, aid, nickname) {
       await db
-        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
-        .bind(nickname, userSub, id.mode, id.cycleId, aid)
+        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?")
+        .bind(nickname, userSub, aid)
         .run();
     },
   };
@@ -1871,33 +1887,25 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
     },
     async add(userSub, aid, nickname, note, identity) {
       const id = favoriteIdentity(identity);
-      const existing = db
-        .prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?")
-        .get(userSub, id.mode, id.cycleId, aid);
-      if (existing) return "exists";
-      const row = db
-        .prepare("SELECT COUNT(*) AS n FROM favorites WHERE user_sub = ?")
+      const inserted = db.prepare(FAVORITE_INSERT_SQL)
+        .run(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now(), userSub, aid, userSub, MAX_FAVORITES);
+      if (inserted.changes === 1) return "ok";
+      const existing = db.prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?").get(userSub, aid);
+      const row = db.prepare("SELECT COUNT(DISTINCT aid) AS n FROM favorites WHERE user_sub = ?")
         .get(userSub) as { n: number };
-      if (row && row.n >= MAX_FAVORITES) return "limit";
-      db.prepare(FAV_INSERT_SQL).run(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now());
-      return "ok";
+      return favoriteInsertResult(inserted.changes, Boolean(existing), Number(row?.n ?? 0));
     },
-    async remove(userSub, aid, identity) {
-      const id = favoriteIdentity(identity);
-      db.prepare("DELETE FROM favorites WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(userSub, id.mode, id.cycleId, aid);
+    async remove(userSub, aid) {
+      db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").run(userSub, aid);
     },
-    async setNote(userSub, aid, note, identity) {
-      const id = favoriteIdentity(identity);
-      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(note, userSub, id.mode, id.cycleId, aid);
+    async setNote(userSub, aid, note) {
+      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
     },
-    async setMain(userSub, aid, identity) {
-      const id = favoriteIdentity(identity);
-      db.prepare("UPDATE favorites SET is_main = 0 WHERE user_sub = ?").run(userSub);
-      db.prepare("UPDATE favorites SET is_main = 1 WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(userSub, id.mode, id.cycleId, aid);
+    async setMain(userSub, aid) {
+      db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid);
     },
-    async updateNickname(userSub, aid, nickname, identity) {
-      const id = favoriteIdentity(identity);
-      db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND mode = ? AND cycle_id = ? AND aid = ?").run(nickname, userSub, id.mode, id.cycleId, aid);
+    async updateNickname(userSub, aid, nickname) {
+      db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
     },
   };
 }
