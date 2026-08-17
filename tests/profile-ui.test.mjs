@@ -163,6 +163,22 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
   assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !fromCache \}\)/);
   assert.doesNotMatch(route, /await persistRegularProfileSnapshot/);
+  assert.match(route, /const cachedAchievements = result\.ok \? getCachedAchievements\(\) : null/);
+  assert.match(route, /after\(\(\) => getAchievements\(\)\.catch/);
+  assert.doesNotMatch(route, /await getAchievements\(\)/);
+  assert.match(route, /metadata\?\.get\(achievement\.id\)/);
+});
+
+test("profile navigation exposes the shell immediately and overlaps regular API work", async () => {
+  const loading = await readFile("app/player/loading.tsx", "utf8");
+  const search = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.match(loading, /usePathname/);
+  assert.match(loading, /parsePlayerId/);
+  assert.match(loading, /<ProfileShellLoading mode=\{mode\} aid=\{aid\} \/>/);
+  assert.match(search, /const profileParams = new URLSearchParams\(\{ aid: String\(player\.aid\), mode: player\.mode \}\)/);
+  assert.match(search, /fetch\(`\/api\/player\/profile\?\$\{profileParams\}`, \{ cache: "default" \}\)/);
+  assert.match(search, /router\.push\(href\)/);
 });
 
 test("visitor help is hidden from home without deleting its implementation", async () => {

@@ -7,7 +7,7 @@ import { ProfileShellLoading } from "@/components/ProfileShell";
 import SeasonalPlayer from "@/components/SeasonalPlayer";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
-import { getPlayerLevels } from "@/lib/tarkov-api";
+import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";
 import { parsePlayerId } from "@/lib/player-id";
 import { gameModeFromAppRoute } from "@/types/seasonal";
 
@@ -16,9 +16,17 @@ interface Props {
   searchParams: Promise<{ cycle?: string | string[]; radarDemo?: string | string[] }>;
 }
 
-async function SeasonalPlayerRoute({ aid, cycleId }: { aid: number; cycleId: string }) {
-  const levels = await getPlayerLevels().catch(() => []);
-  return <SeasonalPlayer aid={aid} cycleId={cycleId} levelBands={cumulativeLevelBands(levels)} />;
+function SeasonalPlayerRoute({ aid, cycleId }: { aid: number; cycleId: string }) {
+  // Level bands are presentation metadata. Keep the remote reference fetch
+  // out of the mode-switch critical path; this versioned table is also the
+  // parser's validated fallback.
+  return (
+    <SeasonalPlayer
+      aid={aid}
+      cycleId={cycleId}
+      levelBands={cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22)}
+    />
+  );
 }
 
 export default async function CanonicalPlayerPage({ params, searchParams }: Props) {

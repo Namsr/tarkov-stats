@@ -374,6 +374,12 @@ export interface AchievementMeta {
 let achievementsCache: { data: Map<string, AchievementMeta>; ts: number } | null = null;
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 
+/** Return fresh in-process achievement metadata without starting a network request. */
+export function getCachedAchievements(): Map<string, AchievementMeta> | null {
+  if (!achievementsCache || Date.now() - achievementsCache.ts >= ACHIEVEMENTS_TTL_MS) return null;
+  return achievementsCache.data;
+}
+
 function percentage(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
     throw new Error(`${field} must be a percentage`);
@@ -450,9 +456,10 @@ export function parseAchievements(
 /** Achievement id -> metadata, cached in-isolate. Rarely changes (per wipe). */
 export async function getAchievements(): Promise<Map<string, AchievementMeta>> {
   const now = Date.now();
-  if (achievementsCache && now - achievementsCache.ts < ACHIEVEMENTS_TTL_MS) {
+  const cached = getCachedAchievements();
+  if (cached) {
     console.info("tarkov reference", { reference: "achievements", source: "memory-cache" });
-    return achievementsCache.data;
+    return cached;
   }
   let tasks: unknown;
   try {

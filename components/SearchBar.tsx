@@ -91,7 +91,17 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     setError("");
     setNotFound(false);
     setResults([]);
-    router.push(`/player/${appRouteMode(player.mode)}/${player.aid}`);
+    const href = `/player/${appRouteMode(player.mode)}/${player.aid}`;
+    // Start the profile request before the route transition. Normal profile
+    // responses are browser-cacheable, so the hydrated page can reuse this
+    // request instead of opening a second waterfall after navigation.
+    if (player.mode !== "seasonal") {
+      const profileParams = new URLSearchParams({ aid: String(player.aid), mode: player.mode });
+      void fetch(`/api/player/profile?${profileParams}`, { cache: "default" }).catch(() => {
+        // Navigation still owns the visible error state.
+      });
+    }
+    router.push(href);
   }
 
   return (

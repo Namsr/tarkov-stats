@@ -1,7 +1,8 @@
 import { after, NextRequest, NextResponse } from "next/server";
 import {
   getPublicProfile,
-  getPlayerLevels,
+  PLAYER_LEVELS_V2026_07_22,
+  getCachedAchievements,
   getAchievements,
   parseArenaProfileStats,
   parseProfileStats,
@@ -39,14 +40,14 @@ import {
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
+  metadata: Awaited<ReturnType<typeof getAchievements>> | null,
 ) {
-  const [baseline, metadata] = await Promise.all([
-    getPublishedSeasonalAchievementBaseline(profile.cycleId),
-    getAchievements().catch(() => new Map()),
-  ]);
+  // The profile response may use only the already-warm metadata. A cold
+  // achievement reference fetch belongs after first paint, not this path.
+  const baseline = await getPublishedSeasonalAchievementBaseline(profile.cycleId);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
-    const meta = metadata.get(achievement.id);
+    const meta = metadata?.get(achievement.id);
     const row = baselineById.get(achievement.id);
     const eligibleN = baseline?.eligibleN ?? null;
     return {
@@ -144,7 +145,11 @@ export async function GET(request: NextRequest) {
         fetchPayload: ({ aid: seasonalAid, force: shouldForce }) =>
           fetchSeasonalPayload(seasonalAid, { force: shouldForce }),
         afterCapture: async ({ cycle, profile, capture, observedAt }) => {
-          await recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt);
+          // Queue capture bookkeeping after the profile response. It updates
+          // scanner state, not the profile payload needed for first paint.
+          after(() => recordSeasonalCaptureLifecycle(cycle, profile, capture, "profile_open", observedAt).catch((error) => {
+            console.error("seasonal profile-open lifecycle failed", error);
+          }));
         },
       }
     );
@@ -153,11 +158,24 @@ export async function GET(request: NextRequest) {
         console.error("seasonal admin risk evaluation failed", error);
       }));
     }
+    const cachedAchievements = result.ok ? getCachedAchievements() : null;
+    if (result.ok && !cachedAchievements) {
+      after(() => getAchievements().catch((error) => {
+        console.error("seasonal achievement metadata warmup failed", error);
+      }));
+    }
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
     const publicRisk = result.ok
       ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
+      : null;
+    const enrichedSeasonalViewModel = result.ok
+      ? await enrichSeasonalViewModel(
+          result.profile,
+          buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
+          cachedAchievements,
+        )
       : null;
     const response = NextResponse.json(
       result.ok
@@ -167,10 +185,7 @@ export async function GET(request: NextRequest) {
             identity: { aid, mode, cycleId },
             risk: publicRisk,
             comparisonStats: buildSeasonalComparisonStats(result.profile),
-            viewModel: await enrichSeasonalViewModel(
-              result.profile,
-              buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
-            ),
+            viewModel: enrichedSeasonalViewModel,
           }
         : result.status === 404
           ? { identity: { aid, mode, cycleId }, code: "mode_profile_unavailable", error: result.error }
@@ -280,13 +295,10 @@ export async function GET(request: NextRequest) {
         });
         return response;
       }
-      const levelsStarted = timing.now();
-      const levels = mode === "pve" ? await getPlayerLevels().catch(() => []) : [];
-      levelsMs = mode === "pve" ? timing.elapsedMs(levelsStarted) : undefined;
       const parseStarted = timing.now();
       const stats = mode === "arena"
         ? parseArenaProfileStats(profile)
-        : parseProfileStats(profile, levels);
+        : parseProfileStats(profile, mode === "pve" ? [...PLAYER_LEVELS_V2026_07_22] : []);
       parseMs = timing.elapsedMs(parseStarted);
       stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
@@ -387,11 +399,8 @@ export async function GET(request: NextRequest) {
       return response;
     }
 
-    const levelsStarted = timing.now();
-    const levels = await getPlayerLevels().catch(() => []);
-    levelsMs = timing.elapsedMs(levelsStarted);
     const parseStarted = timing.now();
-    const stats = parseProfileStats(profile, levels);
+    const stats = parseProfileStats(profile, [...PLAYER_LEVELS_V2026_07_22]);
     parseMs = timing.elapsedMs(parseStarted);
 
     const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
