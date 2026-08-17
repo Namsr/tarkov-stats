@@ -19,6 +19,7 @@ import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
 import type { CrossSectionMode } from "@/lib/db";
 import { isProfileStale } from "@/lib/profile-refresh-policy";
 import type { PublicRiskView } from "@/types/profile-view";
+import { upsertRecentPlayer } from "@/lib/recent-players";
 
 interface Props {
   params: Promise<{ aid: string }>;
@@ -159,6 +160,8 @@ export default function RegularPlayer({
       })
       .then((data) => {
         if (cancelled || !data) return;
+        const nickname = data.stats.nickname.trim();
+        if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode });
         setProfile(data.profile ?? null);
         setStats(data.stats);
         setAchievementIds(
@@ -225,6 +228,8 @@ export default function RegularPlayer({
           !previousStats ||
           updatedAt !== previousUpdatedAt ||
           JSON.stringify(data.stats) !== JSON.stringify(previousStats);
+        const nickname = data.stats.nickname.trim();
+        if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode });
         setProfile(data.profile ?? null);
         setStats(data.stats);
         setAchievementIds(

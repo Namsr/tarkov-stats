@@ -17,6 +17,7 @@ import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
 import type { PlayerProfileViewModel, ProfileViewAchievement } from "@/types/player-profile-view";
+import { upsertRecentPlayer } from "@/lib/recent-players";
 
 interface SeasonalProfileResponse {
   code?: string;
@@ -166,6 +167,7 @@ export default function SeasonalPlayer({
   useEffect(() => {
     const controller = new AbortController();
     requestGeneration.current += 1;
+    const generation = requestGeneration.current;
     refreshPromise.current = null;
     setLoading(true);
     setError("");
@@ -199,12 +201,15 @@ export default function SeasonalPlayer({
         ) {
           throw new Error(t("seasonal.profileUnavailable"));
         }
+        if (controller.signal.aborted || generation !== requestGeneration.current) return null;
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(body.profile));
         return body.profile;
       })
       .then((nextProfile) => {
-        if (!nextProfile) return;
+        if (controller.signal.aborted || generation !== requestGeneration.current || !nextProfile) return;
+        const nickname = nextProfile.nickname.trim();
+        if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode: "pvp-season", cycle: cycleId });
         setProfile(nextProfile);
         setDisplayNickname(nextProfile.nickname);
         setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
@@ -246,6 +251,8 @@ export default function SeasonalPlayer({
         }
         const nextProfile = body.profile;
         const changed = !previousProfile || previousProfile.profileUpdatedAt !== nextProfile.profileUpdatedAt || JSON.stringify(previousProfile) !== JSON.stringify(nextProfile);
+        const nickname = nextProfile.nickname.trim();
+        if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode: "pvp-season", cycle: cycleId });
         setProfile(nextProfile);
         setDisplayNickname(nextProfile.nickname);
         setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(nextProfile));
