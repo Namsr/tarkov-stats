@@ -39,6 +39,47 @@ export function metricCollisionRingRadius(
   return Math.ceil(distance + referenceRadius + strokeWidth / 2 + gap);
 }
 
+export interface MarkerCollisionSample {
+  id: string;
+  x: number | null;
+  y: number;
+  outerRadiusPx?: number;
+}
+
+/** Assign nested rings in render order while keeping every marker at its exact value. */
+export function markerCollisionRingRadii(
+  samples: readonly MarkerCollisionSample[],
+  clearancePx = 14,
+  strokeWidthPx = 1.75,
+  gapPx = 1,
+): Record<string, number> {
+  const rings: Record<string, number> = {};
+  const placed: Array<MarkerCollisionSample & { outerRadiusPx: number }> = [];
+  const clearance = Number.isFinite(clearancePx) ? Math.max(0, clearancePx) : 14;
+  const strokeWidth = Number.isFinite(strokeWidthPx) ? Math.max(0, strokeWidthPx) : 0;
+  const gap = Number.isFinite(gapPx) ? Math.max(0, gapPx) : 0;
+
+  for (const sample of samples) {
+    if (sample.x == null || !Number.isFinite(sample.x) || !Number.isFinite(sample.y)) continue;
+    const references = placed.filter((candidate) =>
+      Math.hypot(sample.x! - candidate.x!, sample.y - candidate.y) < clearance,
+    );
+    let outerRadius = Number.isFinite(sample.outerRadiusPx)
+      ? Math.max(0, Number(sample.outerRadiusPx))
+      : 7;
+    if (references.length > 0) {
+      const requiredInnerRadius = Math.max(...references.map((candidate) =>
+        Math.hypot(sample.x! - candidate.x!, sample.y - candidate.y) + candidate.outerRadiusPx));
+      const ringRadius = Math.ceil(requiredInnerRadius + strokeWidth / 2 + gap);
+      rings[sample.id] = ringRadius;
+      outerRadius = ringRadius + strokeWidth / 2;
+    }
+    placed.push({ ...sample, outerRadiusPx: outerRadius });
+  }
+
+  return rings;
+}
+
 /**
  * Choose the smallest deterministic shared metric domain that separates player
  * metric samples from their left-axis reference points. Aggregate series are

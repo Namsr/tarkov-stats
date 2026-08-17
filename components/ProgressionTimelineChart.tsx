@@ -9,7 +9,7 @@ import {
 } from "@/lib/seasonal/ui";
 import {
   compactProgressionPoints,
-  metricCollisionRingRadius,
+  markerCollisionRingRadii,
   progressionLineSegments,
   progressionDayDomain,
   progressionDayTicks,
@@ -28,6 +28,7 @@ import type {
 } from "@/types/seasonal";
 
 type SeriesKey = "player" | "nearby" | "overall";
+type HoverSeriesKey = SeriesKey | "selected";
 type ForegroundMetricKey = "pvp_kd" | "ai_kd" | "survival";
 type HorizontalAxis = "raids" | "days";
 type LeftAxis = "level" | "raids";
@@ -61,6 +62,7 @@ const SERIES_STYLES: Record<SeriesKey, { dash?: string; opacity: number; width: 
   nearby: { dash: "8 5", opacity: .72, width: 2.25 },
   overall: { dash: "1 5", opacity: .5, width: 1.5 },
 };
+const SELECTED_SERIES_STYLE = { dash: "7 4 1 4", opacity: 1, width: 2.75 };
 
 const WIDTH = 920;
 const HEIGHT = 360;
@@ -198,19 +200,6 @@ function finiteRenderablePoints(points: readonly TimelinePoint[], horizontalAxis
   return finitePoints(points).filter((point) => pointCoordinate(point, horizontalAxis) != null);
 }
 
-/** Match player metric and left-axis snapshots without involving aggregate series. */
-function pointWithSameCoordinate(
-  points: readonly TimelinePoint[],
-  point: TimelinePoint,
-  horizontalAxis: HorizontalAxis,
-): TimelinePoint | null {
-  const coordinate = pointCoordinate(point, horizontalAxis);
-  if (coordinate == null) return null;
-  return points.find((candidate) =>
-    pointCoordinate(candidate, horizontalAxis) === coordinate && candidate.seriesId === point.seriesId,
-  ) ?? points.find((candidate) => pointCoordinate(candidate, horizontalAxis) === coordinate) ?? null;
-}
-
 function seriesPath(
   points: readonly TimelinePoint[],
   horizontalAxis: HorizontalAxis,
@@ -247,9 +236,15 @@ function seriesAreaPath(
 export default function ProgressionTimelineChart({
   data,
   title,
+  comparison,
 }: {
   data: ProgressionTimelineResponse;
   title?: string;
+  comparison?: {
+    aid: number;
+    nickname: string;
+    timeline: ProgressionTimelineResponse;
+  };
 }) {
   const { t } = useI18n();
   const clipId = useId().replaceAll(":", "");
@@ -263,17 +258,17 @@ export default function ProgressionTimelineChart({
   const [horizontalAxis, setHorizontalAxis] = useState<HorizontalAxis>("raids");
   const [leftAxis, setLeftAxis] = useState<LeftAxis>("level");
   const [hoveredLayer, setHoveredLayer] = useState<TimelineLayer | null>(null);
-  const [hoveredSeries, setHoveredSeries] = useState<SeriesKey | null>(null);
+  const [hoveredSeries, setHoveredSeries] = useState<HoverSeriesKey | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<{
     metric: MetricDefinition | null;
-    series: SeriesKey;
+    series: HoverSeriesKey;
     point: TimelinePoint;
     anchor: { x: number; y: number };
   } | null>(null);
   const [hoveredInterval, setHoveredInterval] = useState<{
     layer: TimelineLayer;
     metric: MetricDefinition | null;
-    series: SeriesKey;
+    series: HoverSeriesKey;
     from: TimelinePoint;
     to: TimelinePoint;
     anchor: { x: number; y: number };
@@ -298,9 +293,22 @@ export default function ProgressionTimelineChart({
     () => pointSeries(data.metrics[selectedMetric], comparisonEnabled && compareNearby, comparisonEnabled && compareOverall),
     [compareNearby, compareOverall, comparisonEnabled, data.metrics, selectedMetric],
   );
+  const selectedXpSource = useMemo(
+    () => (comparison?.timeline.metrics.xp?.player ?? []) as TimelinePoint[],
+    [comparison],
+  );
+  const selectedMetricSource = useMemo(
+    () => (comparison?.timeline.metrics[selectedMetric]?.player ?? []) as TimelinePoint[],
+    [comparison, selectedMetric],
+  );
   const allPoints = useMemo(
-    () => [...Object.values(xpSets), ...Object.values(metricSets)].flatMap((items) => [...items]),
-    [metricSets, xpSets],
+    () => [
+      ...Object.values(xpSets),
+      ...Object.values(metricSets),
+      selectedXpSource,
+      selectedMetricSource,
+    ].flatMap((items) => [...items]),
+    [metricSets, selectedMetricSource, selectedXpSource, xpSets],
   );
   const playerPoints = xpSets.player.length ? xpSets.player : metricSets.player;
   const allPlayerPoints = useMemo(() => finitePoints(playerPoints), [playerPoints]);
@@ -370,12 +378,12 @@ export default function ProgressionTimelineChart({
   };
   const metricRevealRaids = useMemo(
     () => Array.from(new Set(
-      Object.values(metricSets)
+      [...Object.values(metricSets), selectedMetricSource]
         .flatMap((points) => finiteRenderablePoints(points, timelineAxis)
           .map((point) => pointCoordinate(point, timelineAxis))
           .filter((coordinate): coordinate is number => coordinate != null)),
     )).sort((a, b) => a - b),
-    [metricSets, timelineAxis],
+    [metricSets, selectedMetricSource, timelineAxis],
   );
   const safeMetricReveal = Number.isFinite(metricReveal) ? Math.min(1, Math.max(0, metricReveal)) : 0;
   const metricRevealIndex = Math.max(0, Math.min(metricRevealRaids.length - 1, Math.round(safeMetricReveal * (metricRevealRaids.length - 1))));
@@ -399,6 +407,8 @@ export default function ProgressionTimelineChart({
     nearby: inDomain(metricSets.nearby),
     overall: inDomain(metricSets.overall),
   } satisfies Record<SeriesKey, TimelinePoint[]>;
+  const selectedXpPoints = inDomain(selectedXpSource);
+  const selectedForegroundPoints = inDomain(selectedMetricSource);
   const inTargetDomain = (points: readonly TimelinePoint[]) => (timelineAxis === "raids"
     ? progressionPointsInRaidDomain(points, axisDomain)
     : progressionPointsInDayDomain(points, axisDomain)) as TimelinePoint[];
@@ -412,30 +422,41 @@ export default function ProgressionTimelineChart({
     nearby: inTargetDomain(metricSets.nearby),
     overall: inTargetDomain(metricSets.overall),
   } satisfies Record<SeriesKey, TimelinePoint[]>;
-  const targetXpValues = Object.values(targetXpPoints).flat();
-  const targetMetricValues = Object.values(targetForegroundPoints).flat();
+  const targetSelectedXpPoints = inTargetDomain(selectedXpSource);
+  const targetSelectedForegroundPoints = inTargetDomain(selectedMetricSource);
+  const targetXpValues = [...Object.values(targetXpPoints).flat(), ...targetSelectedXpPoints];
+  const targetMetricValues = [...Object.values(targetForegroundPoints).flat(), ...targetSelectedForegroundPoints];
+  const targetPlayerXpPoints = [...targetXpPoints.player, ...targetSelectedXpPoints];
+  const targetPlayerMetricPoints = [...targetForegroundPoints.player, ...targetSelectedForegroundPoints];
   const leftLayer: "xp" | "raids" = activeLeftAxis === "level" ? "xp" : "raids";
   const leftColor = activeLeftAxis === "level" ? XP_COLOR : RAIDS_COLOR;
   const leftValueForPoint = (point: TimelinePoint) => activeLeftAxis === "level" ? point.value : point.pmcRaids;
   const targetXpDomain = focusPlayer
-    ? progressionValueDomain(targetXpValues, false)
+    ? progressionValueDomain(targetPlayerXpPoints, false)
     : niceXpDomain(targetXpValues);
   const targetLeftDomain = activeLeftAxis === "level"
     ? targetXpDomain
-    : niceRaidsDomain(targetXpValues, focusPlayer);
+    : niceRaidsDomain(focusPlayer ? targetPlayerXpPoints : targetXpValues, focusPlayer);
   const targetMetricDomain = focusPlayer
-    ? progressionValueDomain(targetMetricValues, metric.percent)
+    ? progressionValueDomain(targetPlayerMetricPoints, metric.percent)
     : niceMetricDomain(targetMetricValues.map((point) => point.value), metric.percent);
-  const playerMetricDomainSamples = targetForegroundPoints.player.map((point) => {
-    const leftPoint = pointWithSameCoordinate(targetXpPoints.player, point, timelineAxis);
-    if (!leftPoint) return { value: point.value, referenceY: null };
-    const leftValue = activeLeftAxis === "level" ? leftPoint.value : leftPoint.pmcRaids;
-    const referenceY = PAD.top + plotHeight - ((leftValue - targetLeftDomain.min) / Math.max(1, targetLeftDomain.max - targetLeftDomain.min)) * plotHeight;
-    return { value: point.value, referenceY: referenceY - PAD.top };
-  });
+  const metricDomainSamplesFor = (
+    metricPoints: readonly TimelinePoint[],
+  ) => metricPoints.map((point) => {
+    const coordinate = pointCoordinate(point, timelineAxis);
+    const leftPoints = coordinate == null
+      ? []
+      : targetPlayerXpPoints.filter((candidate) => pointCoordinate(candidate, timelineAxis) === coordinate);
+    if (leftPoints.length === 0) return [{ value: point.value, referenceY: null }];
+    return leftPoints.map((leftPoint) => {
+      const leftValue = activeLeftAxis === "level" ? leftPoint.value : leftPoint.pmcRaids;
+      const referenceY = PAD.top + plotHeight - ((leftValue - targetLeftDomain.min) / Math.max(1, targetLeftDomain.max - targetLeftDomain.min)) * plotHeight;
+      return { value: point.value, referenceY: referenceY - PAD.top };
+    });
+  }).flat();
   const metricDomainResolution = resolveMetricDomain(
     targetMetricDomain,
-    playerMetricDomainSamples,
+    metricDomainSamplesFor(targetPlayerMetricPoints),
     plotHeight,
     { percent: metric.percent, clearancePx: PLAYER_MARKER_CLEARANCE },
   );
@@ -483,6 +504,30 @@ export default function ProgressionTimelineChart({
   };
   const yLeft = (value: number) => PAD.top + plotHeight - ((value - leftDomain.min) / Math.max(1, leftDomain.max - leftDomain.min)) * plotHeight;
   const yMetric = (value: number) => PAD.top + plotHeight - ((value - metricDomain.min) / Math.max(1e-9, metricDomain.max - metricDomain.min)) * plotHeight;
+  const markerKey = (layer: TimelineLayer, series: "player" | "selected", point: TimelinePoint) =>
+    `${layer}\0${series}\0${point.pointId}`;
+  const playerMarkerRings = markerCollisionRingRadii([
+    ...xpPoints.player.map((point) => ({
+      id: markerKey(leftLayer, "player", point),
+      x: xForPoint(point),
+      y: yLeft(leftValueForPoint(point)),
+    })),
+    ...selectedXpPoints.map((point) => ({
+      id: markerKey(leftLayer, "selected", point),
+      x: xForPoint(point),
+      y: yLeft(leftValueForPoint(point)),
+    })),
+    ...foregroundPoints.player.map((point) => ({
+      id: markerKey(selectedMetric, "player", point),
+      x: xForPoint(point),
+      y: yMetric(point.value),
+    })),
+    ...selectedForegroundPoints.map((point) => ({
+      id: markerKey(selectedMetric, "selected", point),
+      x: xForPoint(point),
+      y: yMetric(point.value),
+    })),
+  ], PLAYER_MARKER_CLEARANCE);
   const xTicks = timelineAxis === "raids"
     ? raidTicks(animatedAxisDomain.min, animatedAxisDomain.max)
     : progressionDayTicks(animatedAxisDomain.min, animatedAxisDomain.max);
@@ -518,12 +563,12 @@ export default function ProgressionTimelineChart({
     setHoveredInterval(null);
   };
 
-  const setSeriesHover = (layer: TimelineLayer, series: SeriesKey) => {
+  const setSeriesHover = (layer: TimelineLayer, series: HoverSeriesKey) => {
     setLayerHover(layer);
     setHoveredSeries(series);
   };
 
-  const legendItemState = (layer: TimelineLayer, series?: SeriesKey) => {
+  const legendItemState = (layer: TimelineLayer, series?: HoverSeriesKey) => {
     const highlighted = highlightedLayer === layer && (!series || !hoveredSeries || hoveredSeries === series);
     const dimmed = Boolean(
       highlightedLayer
@@ -532,12 +577,25 @@ export default function ProgressionTimelineChart({
     return { highlighted, dimmed };
   };
 
-  const tooltipPointText = (point: TimelinePoint, selected: MetricDefinition | null) => {
+  const seriesLabel = (series: HoverSeriesKey) => series === "selected"
+    ? comparison?.nickname ?? t("progression.series.player")
+    : t(SERIES_LABELS[series]);
+
+  const pointsForSeries = (series: HoverSeriesKey) => series === "selected"
+    ? selectedXpPoints
+    : xpPoints[series];
+
+  const tooltipPointText = (
+    point: TimelinePoint,
+    selected: MetricDefinition | null,
+    series: HoverSeriesKey = "player",
+  ) => {
     const level = levelFor(point);
     const base = selected
       ? valueAtPoint(point, selected)
       : activeLeftAxis === "level" ? numberLabel(point.value) : numberLabel(point.pmcRaids);
     return [
+      seriesLabel(series),
       dateLabel(point.date),
       t("progression.timeline.tooltip.raids", { raids: point.pmcRaids }),
       t("progression.timeline.tooltip.value", { value: base }),
@@ -545,18 +603,27 @@ export default function ProgressionTimelineChart({
     ].join(" · ");
   };
 
-  const tooltipPointAriaLabel = (point: TimelinePoint, series: SeriesKey, selected: MetricDefinition | null) => [
+  const tooltipPointAriaLabel = (point: TimelinePoint, series: HoverSeriesKey, selected: MetricDefinition | null) => [
     t("progression.timeline.tooltip.pointTitle", {
       metric: selected ? t(selected.labelKey) : t("progression.timeline.metric.xp"),
-      series: t(SERIES_LABELS[series]),
+      series: seriesLabel(series),
     }),
-    tooltipPointText(point, selected),
+    tooltipPointText(point, selected, series),
   ].join(" В· ");
 
-  const tooltipIntervalText = (from: TimelinePoint, to: TimelinePoint, selected: MetricDefinition | null, series: SeriesKey) => {
+  const tooltipIntervalText = (from: TimelinePoint, to: TimelinePoint, selected: MetricDefinition | null, series: HoverSeriesKey) => {
     const valueDelta = to.value - from.value;
-    const xpFrom = pointWithClosestRaid(xpSets[series], from.pmcRaids);
-    const xpTo = pointWithClosestRaid(xpSets[series], to.pmcRaids);
+    const xpSeries = pointsForSeries(series);
+    const sameCoordinate = (candidate: TimelinePoint, target: TimelinePoint) => {
+      const candidateCoordinate = pointCoordinate(candidate, timelineAxis);
+      return candidateCoordinate != null && candidateCoordinate === pointCoordinate(target, timelineAxis);
+    };
+    const xpFrom = timelineAxis === "days"
+      ? xpSeries.find((candidate) => sameCoordinate(candidate, from)) ?? pointWithClosestRaid(xpSeries, from.pmcRaids)
+      : pointWithClosestRaid(xpSeries, from.pmcRaids);
+    const xpTo = timelineAxis === "days"
+      ? xpSeries.find((candidate) => sameCoordinate(candidate, to)) ?? pointWithClosestRaid(xpSeries, to.pmcRaids)
+      : pointWithClosestRaid(xpSeries, to.pmcRaids);
     const levelDelta = xpFrom && xpTo ? levelFor(xpTo) - levelFor(xpFrom) : 0;
     const includeLevelDelta = selected === null;
     const coordinateLabel = timelineAxis === "days"
@@ -571,6 +638,7 @@ export default function ProgressionTimelineChart({
         delta: deltaLabel(valueDelta, selected?.percent),
       });
     return [
+      seriesLabel(series),
       coordinateLabel,
       ...(includeLevelDelta
         ? [activeLeftAxis === "level"
@@ -580,9 +648,9 @@ export default function ProgressionTimelineChart({
     ].join(" · ");
   };
 
-  const tooltipIntervalAriaLabel = (from: TimelinePoint, to: TimelinePoint, selected: MetricDefinition | null, series: SeriesKey) => [
+  const tooltipIntervalAriaLabel = (from: TimelinePoint, to: TimelinePoint, selected: MetricDefinition | null, series: HoverSeriesKey) => [
     selected ? t(selected.labelKey) : t("progression.timeline.metric.xp"),
-    t(SERIES_LABELS[series]),
+    seriesLabel(series),
     tooltipIntervalText(from, to, selected, series),
   ].join(" В· ");
 
@@ -592,13 +660,20 @@ export default function ProgressionTimelineChart({
     selected: MetricDefinition | null,
     y: (value: number) => number,
     color: string,
-  ) => (['player', 'nearby', 'overall'] as const).flatMap((seriesKey) => {
-    const sourcePoints = points[seriesKey];
-    const seriesPoints = seriesKey === "player"
+    selectedPoints: readonly TimelinePoint[] = [],
+  ) => ([
+    "player",
+    "nearby",
+    "overall",
+    ...(selectedPoints.length > 0 ? ["selected" as const] : []),
+  ] as const).flatMap((seriesKey) => {
+    const isSelectedSeries = seriesKey === "selected";
+    const sourcePoints = isSelectedSeries ? selectedPoints : points[seriesKey];
+    const seriesPoints = seriesKey === "player" || isSelectedSeries
       ? sourcePoints
       : compactProgressionPoints(sourcePoints, MAX_AGGREGATE_POINTS);
     if (seriesPoints.length === 0) return [];
-    const style = SERIES_STYLES[seriesKey];
+    const style = isSelectedSeries ? SELECTED_SERIES_STYLE : SERIES_STYLES[seriesKey];
     const metricLayer = layer !== leftLayer;
     const rawYForPoint = (point: TimelinePoint) => metricLayer
       ? y(point.value)
@@ -705,14 +780,10 @@ export default function ProgressionTimelineChart({
         {seriesPoints.map((point) => {
           const pointX = xForPoint(point);
           const pointY = rawYForPoint(point);
-          const leftPoint = metricLayer && seriesKey === "player"
-            ? pointWithSameCoordinate(xpPoints.player, point, timelineAxis)
-            : null;
-          const markerDistance = leftPoint
-            ? Math.abs(pointY - yLeft(leftValueForPoint(leftPoint)))
-            : null;
-          const markerRing = markerDistance != null && markerDistance < PLAYER_MARKER_CLEARANCE;
-          const markerRingRadius = markerRing ? metricCollisionRingRadius(markerDistance) : 0;
+          const markerRingRadius = seriesKey === "player" || isSelectedSeries
+            ? playerMarkerRings[markerKey(layer, isSelectedSeries ? "selected" : "player", point)] ?? 0
+            : 0;
+          const markerRing = markerRingRadius > 0;
           const dimPoint = dimLayer || dimSeries;
           const pointLabel = tooltipPointAriaLabel(point, seriesKey, selected);
           const active = hoveredPoint?.point.pointId === point.pointId && hoveredPoint.series === seriesKey && highlightedLayer === layer;
@@ -721,11 +792,11 @@ export default function ProgressionTimelineChart({
               key={`${layer}-${seriesKey}-${point.pointId}`}
               cx={pointX}
               cy={pointY}
-              r={markerRing ? markerRingRadius + (active ? 1 : 0) : active ? 7 : seriesKey === "player" ? 5 : 3.5}
-              fill={markerRing ? "none" : seriesColor}
-              stroke={markerRing ? seriesColor : undefined}
-              strokeWidth={markerRing ? 1.75 : undefined}
-              style={markerRing
+              r={markerRing ? markerRingRadius + (active ? 1 : 0) : active ? 7 : seriesKey === "player" || isSelectedSeries ? 5 : 3.5}
+              fill={markerRing || isSelectedSeries ? "none" : seriesColor}
+              stroke={markerRing || isSelectedSeries ? seriesColor : undefined}
+              strokeWidth={markerRing || isSelectedSeries ? 1.75 : undefined}
+              style={markerRing || isSelectedSeries
                 ? { ...seriesColorStyle, fill: "none", stroke: seriesColor, strokeWidth: 1.75, pointerEvents: "stroke" }
                 : seriesColorStyle}
               className={`progression-timeline__point progression-timeline__point--${layer} progression-timeline__point--${seriesKey} ${markerRing ? "progression-timeline__point--ring" : ""} ${dimPoint ? "progression-timeline__point--dim" : ""} ${active ? "progression-timeline__point--highlight" : ""}`}
@@ -767,6 +838,7 @@ export default function ProgressionTimelineChart({
   const playerLegendState = legendItemState(selectedMetric, "player");
   const overallLegendState = legendItemState(selectedMetric, "overall");
   const nearbyLegendState = legendItemState(selectedMetric, "nearby");
+  const selectedLegendState = legendItemState(selectedMetric, "selected");
 
   return (
     <section className="data-panel progression-timeline" aria-labelledby={`${clipId}-title`}>
@@ -831,6 +903,21 @@ export default function ProgressionTimelineChart({
             <i className="progression-timeline__legend-swatch progression-timeline__legend-swatch--player" />
             {t("progression.timeline.legend.metricPlayer", { metric: t(metric.labelKey) })}
           </button>
+          {comparison && (
+          <button
+            type="button"
+            className={`progression-timeline__legend-item progression-timeline__legend-item--selected ${selectedLegendState.highlighted ? "is-highlighted" : ""} ${selectedLegendState.dimmed ? "is-dimmed" : ""}`}
+            style={{ "--legend-color": metric.color } as React.CSSProperties}
+            aria-label={t("progression.timeline.legend.metricSelected", { metric: t(metric.labelKey), nickname: comparison.nickname })}
+            onPointerEnter={() => setSeriesHover(selectedMetric, "selected")}
+            onPointerLeave={() => setLayerHover(null)}
+            onFocus={() => setSeriesHover(selectedMetric, "selected")}
+            onBlur={() => setLayerHover(null)}
+          >
+            <i className="progression-timeline__legend-swatch progression-timeline__legend-swatch--selected" />
+            {t("progression.timeline.legend.selected", { nickname: comparison.nickname })}
+          </button>
+          )}
           {comparisonEnabled && compareOverall && (
           <button
             type="button"
@@ -975,9 +1062,9 @@ export default function ProgressionTimelineChart({
                     className={`progression-timeline__area progression-timeline__area--xp ${leftLayer === "raids" ? "progression-timeline__area--raids" : ""} ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`}
                   />
                 )}
-                {renderSeries(xpPoints, leftLayer, null, yLeft, leftColor)}
+                {renderSeries(xpPoints, leftLayer, null, yLeft, leftColor, selectedXpPoints)}
                 <g className="progression-timeline__metric-reveal" clipPath={`url(#${clipId}-metric-reveal)`}>
-                  {renderSeries(foregroundPoints, selectedMetric, metric, yMetric, metric.color)}
+                  {renderSeries(foregroundPoints, selectedMetric, metric, yMetric, metric.color, selectedForegroundPoints)}
                 </g>
               </g>
               {hoveredPoint && <line x1={hoveredPoint.anchor.x} x2={hoveredPoint.anchor.x} y1={PAD.top} y2={HEIGHT - PAD.bottom} className="progression-timeline__hover-guide" />}
@@ -992,7 +1079,7 @@ export default function ProgressionTimelineChart({
                 style={{ left: tooltipAnchor.left, top: tooltipAnchor.top }}
               >
                 {hoveredPoint
-                  ? tooltipPointText(hoveredPoint.point, hoveredPoint.metric)
+                  ? tooltipPointText(hoveredPoint.point, hoveredPoint.metric, hoveredPoint.series)
                   : tooltipIntervalText(hoveredInterval!.from, hoveredInterval!.to, hoveredInterval!.metric, hoveredInterval!.series)}
               </div>
             )}

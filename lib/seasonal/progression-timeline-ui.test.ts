@@ -3,6 +3,7 @@ import test from "node:test";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import {
   compactProgressionPoints,
+  markerCollisionRingRadii,
   metricCollisionRingRadius,
   progressionDayDomain,
   progressionDayTicks,
@@ -97,6 +98,24 @@ test("player metric domain uses the smallest deterministic expansion that clears
   ).domain.min, result.domain.min, "candidate order must be stable");
 });
 
+test("metric domain resolver evaluates both main and selected player samples", () => {
+  const onePlayer = resolveMetricDomain(
+    { min: 0, max: 10 },
+    [{ value: 1, referenceY: 90 }],
+    100,
+    { clearancePx: 14 },
+  );
+  const bothPlayers = resolveMetricDomain(
+    { min: 0, max: 10 },
+    [{ value: 1, referenceY: 90 }, { value: 9, referenceY: 10 }],
+    100,
+    { clearancePx: 14 },
+  );
+  assert.notDeepEqual(bothPlayers.domain, onePlayer.domain);
+  assert.deepEqual(bothPlayers.domain, { min: 0, max: 12 });
+  assert.deepEqual(bothPlayers.unresolved, [0], "the selected player's sample must participate in candidate scoring");
+});
+
 test("metric domain resolver preserves focused percent bounds and clamps candidates", () => {
   const result = resolveMetricDomain(
     { min: 20, max: 80 },
@@ -115,6 +134,30 @@ test("fallback metric rings clear nearby reference markers without moving their 
   assert.equal(metricCollisionRingRadius(0), 9);
   assert.equal(radius, 22);
   assert.ok(radius - 1.75 / 2 > centerDistance + 7);
+});
+
+test("collision rings nest deterministically when several player markers share a coordinate", () => {
+  const rings = markerCollisionRingRadii([
+    { id: "main-xp", x: 50, y: 100 },
+    { id: "selected-xp", x: 50, y: 100 },
+    { id: "main-metric", x: 50, y: 100 },
+    { id: "selected-metric", x: 50, y: 100 },
+  ]);
+  assert.deepEqual(rings, {
+    "selected-xp": 9,
+    "main-metric": 12,
+    "selected-metric": 15,
+  });
+  assert.ok(rings["main-metric"] - 1.75 / 2 > rings["selected-xp"] + 1.75 / 2);
+  assert.ok(rings["selected-metric"] - 1.75 / 2 > rings["main-metric"] + 1.75 / 2);
+});
+
+test("collision rings use screen distance for nearby day-axis markers", () => {
+  const rings = markerCollisionRingRadii([
+    { id: "main", x: 50, y: 100 },
+    { id: "selected", x: 55, y: 112 },
+  ]);
+  assert.equal(rings.selected, 22);
 });
 
 test("timeline lines split on resets and drop non-finite points", () => {
