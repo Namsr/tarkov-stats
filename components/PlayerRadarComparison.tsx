@@ -426,9 +426,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
         const payload = (await response.json()) as {
           identity?: { aid?: number; mode?: GameMode; cycleId?: string };
           stats?: ParsedPlayerStats;
-          viewModel?: { comparison?: ProfileComparisonStats };
+          comparisonStats?: ProfileComparisonStats;
         };
-        const nextStats = payload.viewModel?.comparison ?? payload.stats;
+        const nextStats = payload.comparisonStats ?? payload.stats;
         const identityMatches = mode !== "regular" && mode !== "seasonal"
           ? true
           : payload.identity?.aid === effectiveFavoriteAid

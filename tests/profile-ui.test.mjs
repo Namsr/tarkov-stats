@@ -40,6 +40,8 @@ test("favorites are global by AID while mode widgets project the preferred link 
   }
   assert.match(panel, /mode,\s*cycle: cycleId,\s*aid: String\(favorite\.aid\)/);
   assert.match(radar, /aid: String\(effectiveFavoriteAid\),\s*mode,\s*cycle: cycleId/);
+  assert.match(radar, /const nextStats = payload\.comparisonStats \?\? payload\.stats/);
+  assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
 });
 
 test("missing mode keeps the profile shell without mounting data sections", async () => {

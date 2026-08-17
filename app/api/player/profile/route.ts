@@ -31,6 +31,10 @@ import {
   buildSeasonalProfileViewModel,
   toPublicRiskView,
 } from "@/lib/player-profile-view";
+import {
+  buildRegularComparisonStats,
+  buildSeasonalComparisonStats,
+} from "@/lib/profile-comparison";
 
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
@@ -162,6 +166,7 @@ export async function GET(request: NextRequest) {
             capture: result.capture,
             identity: { aid, mode, cycleId },
             risk: publicRisk,
+            comparisonStats: buildSeasonalComparisonStats(result.profile),
             viewModel: await enrichSeasonalViewModel(
               result.profile,
               buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
@@ -417,6 +422,7 @@ export async function GET(request: NextRequest) {
         profileUpdatedAt: Number(profile.updated) || null,
         identity: { aid, mode, cycleId },
         risk: publicRiskView,
+        comparisonStats: buildRegularComparisonStats(stats),
         viewModel: buildRegularProfileViewModel({
           aid,
           mode: "regular",
