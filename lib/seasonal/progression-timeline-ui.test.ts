@@ -3,6 +3,7 @@ import test from "node:test";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import {
   compactProgressionPoints,
+  metricCollisionRingRadius,
   progressionDayDomain,
   progressionDayTicks,
   progressionLineSegments,
@@ -11,6 +12,7 @@ import {
   progressionPointsInRaidDomain,
   progressionRaidDomain,
   progressionValueDomain,
+  resolveMetricDomain,
 } from "./progression-timeline-ui.ts";
 
 const point = (pmcRaids: number, value: number, seriesId: number | null = 1) => ({
@@ -76,6 +78,43 @@ test("focused comparison filtering keeps out-of-window values out of the metric 
 test("value domains add readable padding and clamp survival to percent", () => {
   assert.deepEqual(progressionValueDomain([point(1, 100), point(2, 200)]), { min: 92, max: 208 });
   assert.deepEqual(progressionValueDomain([point(1, 99), point(2, 100)], true), { min: 98.92, max: 100 });
+});
+
+test("player metric domain uses the smallest deterministic expansion that clears marker collisions", () => {
+  const result = resolveMetricDomain(
+    { min: 0, max: 10 },
+    [{ value: 1, referenceY: 90 }],
+    100,
+    { clearancePx: 14 },
+  );
+  assert.deepEqual(result.domain, { min: -2, max: 10 });
+  assert.deepEqual(result.unresolved, []);
+  assert.equal(resolveMetricDomain(
+    { min: 0, max: 10 },
+    [{ value: 1, referenceY: 90 }],
+    100,
+    { clearancePx: 14 },
+  ).domain.min, result.domain.min, "candidate order must be stable");
+});
+
+test("metric domain resolver preserves focused percent bounds and clamps candidates", () => {
+  const result = resolveMetricDomain(
+    { min: 20, max: 80 },
+    [{ value: 50, referenceY: 50 }],
+    100,
+    { percent: true, clearancePx: 14 },
+  );
+  assert.deepEqual(result.domain, { min: 20, max: 80 });
+  assert.deepEqual(result.unresolved, [0]);
+  assert.ok(result.domain.min >= 0 && result.domain.max <= 100);
+});
+
+test("fallback metric rings clear nearby reference markers without moving their center", () => {
+  const centerDistance = 13;
+  const radius = metricCollisionRingRadius(centerDistance);
+  assert.equal(metricCollisionRingRadius(0), 9);
+  assert.equal(radius, 22);
+  assert.ok(radius - 1.75 / 2 > centerDistance + 7);
 });
 
 test("timeline lines split on resets and drop non-finite points", () => {

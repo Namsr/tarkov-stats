@@ -9,6 +9,7 @@ import {
 } from "@/lib/seasonal/ui";
 import {
   compactProgressionPoints,
+  metricCollisionRingRadius,
   progressionLineSegments,
   progressionDayDomain,
   progressionDayTicks,
@@ -17,6 +18,7 @@ import {
   progressionPointsInRaidDomain,
   progressionRaidDomain,
   progressionValueDomain,
+  resolveMetricDomain,
 } from "@/lib/seasonal/progression-timeline-ui";
 import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";
 import type {
@@ -63,7 +65,7 @@ const SERIES_STYLES: Record<SeriesKey, { dash?: string; opacity: number; width: 
 const WIDTH = 920;
 const HEIGHT = 360;
 const PAD = { top: 32, right: 84, bottom: 62, left: 64 };
-const MIN_LINE_GAP = 12;
+const PLAYER_MARKER_CLEARANCE = 14;
 const MAX_AGGREGATE_POINTS = 48;
 const TICKS = [0, 0.25, 0.5, 0.75, 1] as const;
 const LEVEL_BANDS = cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22);
@@ -196,74 +198,17 @@ function finiteRenderablePoints(points: readonly TimelinePoint[], horizontalAxis
   return finitePoints(points).filter((point) => pointCoordinate(point, horizontalAxis) != null);
 }
 
-/** Coordinates may be raids or days; the legacy name is kept for the PvP chart contract. */
-function interpolatedYAtRaid(
+/** Match player metric and left-axis snapshots without involving aggregate series. */
+function pointWithSameCoordinate(
   points: readonly TimelinePoint[],
-  coordinate: number,
+  point: TimelinePoint,
   horizontalAxis: HorizontalAxis,
-  yForValue: (value: number) => number,
-  valueForPoint: (point: TimelinePoint) => number = (point) => point.value,
-): number | null {
-  const finite = finiteRenderablePoints(points, horizontalAxis);
-  if (finite.length === 0) return null;
-  const exact = finite.find((point) => pointCoordinate(point, horizontalAxis) === coordinate);
-  if (exact) return yForValue(valueForPoint(exact));
-  for (let index = 1; index < finite.length; index += 1) {
-    const from = finite[index - 1];
-    const to = finite[index];
-    if (from.seriesId !== to.seriesId && (from.seriesId != null || to.seriesId != null)) continue;
-    const fromCoordinate = pointCoordinate(from, horizontalAxis);
-    const toCoordinate = pointCoordinate(to, horizontalAxis);
-    if (fromCoordinate == null || toCoordinate == null) continue;
-    const minCoordinate = Math.min(fromCoordinate, toCoordinate);
-    const maxCoordinate = Math.max(fromCoordinate, toCoordinate);
-    if (coordinate < minCoordinate || coordinate > maxCoordinate) continue;
-    const span = toCoordinate - fromCoordinate;
-    const ratio = span === 0 ? 0 : (coordinate - fromCoordinate) / span;
-    const fromValue = valueForPoint(from);
-    const toValue = valueForPoint(to);
-    return yForValue(fromValue) + (yForValue(toValue) - yForValue(fromValue)) * ratio;
-  }
-  const closest = finite.reduce((current, point) => {
-    if (!current) return point;
-    const currentCoordinate = pointCoordinate(current, horizontalAxis);
-    const nextCoordinate = pointCoordinate(point, horizontalAxis);
-    return currentCoordinate == null || nextCoordinate == null ||
-      Math.abs(nextCoordinate - coordinate) < Math.abs(currentCoordinate - coordinate)
-      ? point
-      : current;
-  }, null as TimelinePoint | null);
-  return closest ? yForValue(valueForPoint(closest)) : null;
-}
-
-/** Compare a foreground metric with the selected left-axis series. */
-function metricLineShouldBeAboveXp(
-  metricPoints: readonly TimelinePoint[],
-  leftPoints: readonly TimelinePoint[],
-  horizontalAxis: HorizontalAxis,
-  yMetric: (value: number) => number,
-  yLeft: (value: number) => number,
-  leftValueForPoint: (point: TimelinePoint) => number,
-): boolean {
-  let deltaSum = 0;
-  let samples = 0;
-  for (const point of finitePoints(metricPoints)) {
-    const coordinate = pointCoordinate(point, horizontalAxis);
-    if (coordinate == null) continue;
-    const leftY = interpolatedYAtRaid(
-      leftPoints,
-      coordinate,
-      horizontalAxis,
-      (value) => yLeft(value),
-      leftValueForPoint,
-    );
-    if (leftY == null) continue;
-    const pointValue = leftValueForPoint(point);
-    if (!Number.isFinite(pointValue)) continue;
-    deltaSum += yMetric(point.value) - leftY;
-    samples += 1;
-  }
-  return samples === 0 || deltaSum / samples <= 0;
+): TimelinePoint | null {
+  const coordinate = pointCoordinate(point, horizontalAxis);
+  if (coordinate == null) return null;
+  return points.find((candidate) =>
+    pointCoordinate(candidate, horizontalAxis) === coordinate && candidate.seriesId === point.seriesId,
+  ) ?? points.find((candidate) => pointCoordinate(candidate, horizontalAxis) === coordinate) ?? null;
 }
 
 function seriesPath(
@@ -481,11 +426,25 @@ export default function ProgressionTimelineChart({
   const targetMetricDomain = focusPlayer
     ? progressionValueDomain(targetMetricValues, metric.percent)
     : niceMetricDomain(targetMetricValues.map((point) => point.value), metric.percent);
-  const animatedYDomainsRef = useRef({ left: targetLeftDomain, metric: targetMetricDomain });
-  const [animatedYDomains, setAnimatedYDomains] = useState(() => ({ left: targetLeftDomain, metric: targetMetricDomain }));
+  const playerMetricDomainSamples = targetForegroundPoints.player.map((point) => {
+    const leftPoint = pointWithSameCoordinate(targetXpPoints.player, point, timelineAxis);
+    if (!leftPoint) return { value: point.value, referenceY: null };
+    const leftValue = activeLeftAxis === "level" ? leftPoint.value : leftPoint.pmcRaids;
+    const referenceY = PAD.top + plotHeight - ((leftValue - targetLeftDomain.min) / Math.max(1, targetLeftDomain.max - targetLeftDomain.min)) * plotHeight;
+    return { value: point.value, referenceY: referenceY - PAD.top };
+  });
+  const metricDomainResolution = resolveMetricDomain(
+    targetMetricDomain,
+    playerMetricDomainSamples,
+    plotHeight,
+    { percent: metric.percent, clearancePx: PLAYER_MARKER_CLEARANCE },
+  );
+  const resolvedMetricDomain = metricDomainResolution.domain;
+  const animatedYDomainsRef = useRef({ left: targetLeftDomain, metric: resolvedMetricDomain });
+  const [animatedYDomains, setAnimatedYDomains] = useState(() => ({ left: targetLeftDomain, metric: resolvedMetricDomain }));
   useEffect(() => {
     const start = animatedYDomainsRef.current;
-    const end = { left: targetLeftDomain, metric: targetMetricDomain };
+    const end = { left: targetLeftDomain, metric: resolvedMetricDomain };
     const unchanged = start.left.min === end.left.min && start.left.max === end.left.max && start.metric.min === end.metric.min && start.metric.max === end.metric.max;
     if (unchanged) return;
     if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -516,9 +475,12 @@ export default function ProgressionTimelineChart({
     return () => window.cancelAnimationFrame(animationFrame);
   // Use scalar domain values so each animation frame does not restart the RAF loop on object identity changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetLeftDomain.max, targetLeftDomain.min, targetMetricDomain.max, targetMetricDomain.min]);
+  }, [resolvedMetricDomain.max, resolvedMetricDomain.min, targetLeftDomain.max, targetLeftDomain.min]);
   const leftDomain = animatedYDomains.left;
-  const metricDomain = animatedYDomains.metric;
+  const metricDomain = {
+    min: Math.min(animatedYDomains.metric.min, resolvedMetricDomain.min),
+    max: Math.max(animatedYDomains.metric.max, resolvedMetricDomain.max),
+  };
   const yLeft = (value: number) => PAD.top + plotHeight - ((value - leftDomain.min) / Math.max(1, leftDomain.max - leftDomain.min)) * plotHeight;
   const yMetric = (value: number) => PAD.top + plotHeight - ((value - metricDomain.min) / Math.max(1e-9, metricDomain.max - metricDomain.min)) * plotHeight;
   const xTicks = timelineAxis === "raids"
@@ -638,37 +600,15 @@ export default function ProgressionTimelineChart({
     if (seriesPoints.length === 0) return [];
     const style = SERIES_STYLES[seriesKey];
     const metricLayer = layer !== leftLayer;
-    const metricAboveXp = metricLayer && metricLineShouldBeAboveXp(
-      seriesPoints,
-      xpPoints[seriesKey],
-      timelineAxis,
-      y,
-      yLeft,
-      leftValueForPoint,
-    );
-    const visualYForPoint = (point: TimelinePoint) => {
-      if (!metricLayer) return y(leftValueForPoint(point));
-      const rawY = y(point.value);
-      const coordinate = pointCoordinate(point, timelineAxis);
-      const xpY = coordinate == null
-        ? null
-        : interpolatedYAtRaid(xpPoints[seriesKey], coordinate, timelineAxis, yLeft, leftValueForPoint);
-      if (xpY == null) return rawY;
-      if (metricAboveXp) {
-        return rawY <= xpY - MIN_LINE_GAP
-          ? rawY
-          : Math.max(PAD.top, xpY - MIN_LINE_GAP);
-      }
-      return rawY >= xpY + MIN_LINE_GAP
-        ? rawY
-        : Math.min(PAD.top + plotHeight, xpY + MIN_LINE_GAP);
-    };
+    const rawYForPoint = (point: TimelinePoint) => metricLayer
+      ? y(point.value)
+      : y(leftValueForPoint(point));
     const segments = progressionLineSegments(seriesPoints).flatMap((lineSegment) =>
       lineSegment.length > 1
         ? lineSegment.slice(1).map((point, index) => [lineSegment[index], point] as const)
         : [],
     );
-    const fullPath = seriesPath(seriesPoints, timelineAxis, xForPoint, visualYForPoint, PAD.top);
+    const fullPath = seriesPath(seriesPoints, timelineAxis, xForPoint, rawYForPoint, PAD.top);
     if (!fullPath) return [];
     const dimLayer = Boolean(highlightedLayer && highlightedLayer !== layer);
     const dimSeries = Boolean(hoveredSeries && hoveredSeries !== seriesKey);
@@ -711,7 +651,7 @@ export default function ProgressionTimelineChart({
           pointerEvents="none"
         />
         {segments.map(([from, to], index) => {
-          const segmentPath = seriesPath([from, to], timelineAxis, xForPoint, visualYForPoint, PAD.top);
+          const segmentPath = seriesPath([from, to], timelineAxis, xForPoint, rawYForPoint, PAD.top);
           if (!segmentPath) return null;
           const activeInterval = hoveredInterval?.layer === layer
             && hoveredInterval.series === seriesKey
@@ -749,13 +689,13 @@ export default function ProgressionTimelineChart({
                 onPointerEnter={() => {
                   onEnter();
                   setHoveredPoint(null);
-                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
+                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (rawYForPoint(from) + rawYForPoint(to)) / 2 } });
                 }}
                 onPointerLeave={onLeave}
                 onFocus={() => {
                   onEnter();
                   setHoveredPoint(null);
-                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (visualYForPoint(from) + visualYForPoint(to)) / 2 } });
+                    setHoveredInterval({ layer, metric: selected, series: seriesKey, from, to, anchor: { x: (xForPoint(from) + xForPoint(to)) / 2, y: (rawYForPoint(from) + rawYForPoint(to)) / 2 } });
                 }}
                 onBlur={onLeave}
               />
@@ -764,7 +704,15 @@ export default function ProgressionTimelineChart({
         })}
         {seriesPoints.map((point) => {
           const pointX = xForPoint(point);
-          const pointY = visualYForPoint(point);
+          const pointY = rawYForPoint(point);
+          const leftPoint = metricLayer && seriesKey === "player"
+            ? pointWithSameCoordinate(xpPoints.player, point, timelineAxis)
+            : null;
+          const markerDistance = leftPoint
+            ? Math.abs(pointY - yLeft(leftValueForPoint(leftPoint)))
+            : null;
+          const markerRing = markerDistance != null && markerDistance < PLAYER_MARKER_CLEARANCE;
+          const markerRingRadius = markerRing ? metricCollisionRingRadius(markerDistance) : 0;
           const dimPoint = dimLayer || dimSeries;
           const pointLabel = tooltipPointAriaLabel(point, seriesKey, selected);
           const active = hoveredPoint?.point.pointId === point.pointId && hoveredPoint.series === seriesKey && highlightedLayer === layer;
@@ -773,10 +721,14 @@ export default function ProgressionTimelineChart({
               key={`${layer}-${seriesKey}-${point.pointId}`}
               cx={pointX}
               cy={pointY}
-              r={active ? 7 : seriesKey === "player" ? 5 : 3.5}
-              fill={seriesColor}
-              style={seriesColorStyle}
-              className={`progression-timeline__point progression-timeline__point--${layer} progression-timeline__point--${seriesKey} ${dimPoint ? "progression-timeline__point--dim" : ""} ${active ? "progression-timeline__point--highlight" : ""}`}
+              r={markerRing ? markerRingRadius + (active ? 1 : 0) : active ? 7 : seriesKey === "player" ? 5 : 3.5}
+              fill={markerRing ? "none" : seriesColor}
+              stroke={markerRing ? seriesColor : undefined}
+              strokeWidth={markerRing ? 1.75 : undefined}
+              style={markerRing
+                ? { ...seriesColorStyle, fill: "none", stroke: seriesColor, strokeWidth: 1.75, pointerEvents: "stroke" }
+                : seriesColorStyle}
+              className={`progression-timeline__point progression-timeline__point--${layer} progression-timeline__point--${seriesKey} ${markerRing ? "progression-timeline__point--ring" : ""} ${dimPoint ? "progression-timeline__point--dim" : ""} ${active ? "progression-timeline__point--highlight" : ""}`}
               tabIndex={0}
               aria-label={pointLabel}
               aria-describedby={active ? tooltipId : undefined}

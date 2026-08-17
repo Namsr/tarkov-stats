@@ -10,6 +10,90 @@ export interface ValueDomain {
   max: number;
 }
 
+export interface MetricDomainSample {
+  value: number;
+  referenceY: number | null;
+}
+
+export interface MetricDomainResolution {
+  domain: ValueDomain;
+  unresolved: number[];
+}
+
+const METRIC_DOMAIN_EXPANSION_STEPS = [0, 0.05, 0.1, 0.15, 0.2, 0.25] as const;
+
+function metricYForDomain(value: number, domain: ValueDomain, plotHeight: number): number {
+  return plotHeight - ((value - domain.min) / Math.max(1e-9, domain.max - domain.min)) * plotHeight;
+}
+
+export function metricCollisionRingRadius(
+  centerDistancePx: number,
+  referenceRadiusPx = 7,
+  strokeWidthPx = 1.75,
+  gapPx = 1,
+): number {
+  const distance = Number.isFinite(centerDistancePx) ? Math.max(0, centerDistancePx) : 0;
+  const referenceRadius = Number.isFinite(referenceRadiusPx) ? Math.max(0, referenceRadiusPx) : 0;
+  const strokeWidth = Number.isFinite(strokeWidthPx) ? Math.max(0, strokeWidthPx) : 0;
+  const gap = Number.isFinite(gapPx) ? Math.max(0, gapPx) : 0;
+  return Math.ceil(distance + referenceRadius + strokeWidth / 2 + gap);
+}
+
+/**
+ * Choose the smallest deterministic shared metric domain that separates player
+ * metric samples from their left-axis reference points. Aggregate series are
+ * intentionally absent from the input so they cannot move the player's axis.
+ */
+export function resolveMetricDomain(
+  baseDomain: ValueDomain,
+  samples: readonly MetricDomainSample[],
+  plotHeight: number,
+  options: { percent?: boolean; clearancePx?: number } = {},
+): MetricDomainResolution {
+  const finiteSamples = samples
+    .map((sample, index) => ({ sample, index }))
+    .filter(({ sample }) => Number.isFinite(sample.value));
+  const finiteValues = finiteSamples.map(({ sample }) => sample.value);
+  const percent = options.percent === true;
+  const clearancePx = Number.isFinite(options.clearancePx) ? Math.max(0, Number(options.clearancePx)) : 14;
+  const safeHeight = Number.isFinite(plotHeight) && plotHeight > 0 ? plotHeight : 1;
+  const min = percent
+    ? Math.max(0, Math.min(baseDomain.min, ...finiteValues))
+    : Math.min(baseDomain.min, ...finiteValues);
+  const max = percent
+    ? Math.min(100, Math.max(baseDomain.max, ...finiteValues))
+    : Math.max(baseDomain.max, ...finiteValues);
+  const span = max > min ? max - min : 1;
+  const candidates = METRIC_DOMAIN_EXPANSION_STEPS.flatMap((lowerExpansion) =>
+    METRIC_DOMAIN_EXPANSION_STEPS.map((upperExpansion) => ({
+      domain: {
+        min: percent ? Math.max(0, min - span * lowerExpansion) : min - span * lowerExpansion,
+        max: percent ? Math.min(100, max + span * upperExpansion) : max + span * upperExpansion,
+      },
+      expansion: lowerExpansion + upperExpansion,
+      lowerExpansion,
+      upperExpansion,
+    })),
+  );
+
+  const score = (candidate: (typeof candidates)[number]) => {
+    const unresolved = finiteSamples
+      .filter(({ sample }) => sample.referenceY != null && Math.abs(metricYForDomain(sample.value, candidate.domain, safeHeight) - sample.referenceY!) < clearancePx)
+      .map(({ index }) => index);
+    return { candidate, unresolved };
+  };
+  const best = candidates.map(score).reduce((current, next) => {
+    if (next.unresolved.length < current.unresolved.length) return next;
+    if (next.unresolved.length > current.unresolved.length) return current;
+    if (next.candidate.expansion < current.candidate.expansion) return next;
+    if (next.candidate.expansion > current.candidate.expansion) return current;
+    if (next.candidate.lowerExpansion < current.candidate.lowerExpansion) return next;
+    return current;
+  });
+
+  return { domain: best.candidate.domain, unresolved: best.unresolved };
+}
+
 export const PROGRESSION_DAY_MS = 86_400_000;
 
 function average(values: readonly (number | null | undefined)[]): number | null {
