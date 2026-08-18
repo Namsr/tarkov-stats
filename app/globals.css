@@ -1272,9 +1272,33 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-notice--error { border-left-color: var(--danger); color: var(--danger); }
 .admin-notice button { margin-left: 8px; text-decoration: underline; text-underline-offset: 3px; }
 .admin-empty { padding: 42px 20px; color: var(--muted); text-align: center; }
-.admin-chart { width: 100%; height: 220px; margin-top: 22px; color: var(--foreground); }
-.admin-chart-values { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: .72rem; }
-.admin-chart-values strong { color: var(--muted-strong); }
+.admin-chart-wrap { position: relative; min-height: 258px; margin-top: 22px; padding-bottom: 22px; touch-action: pan-y; }
+.admin-chart-description { margin-top: 6px; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.admin-chart-stage { position: relative; height: 220px; }
+.admin-chart { display: block; width: 100%; height: 100%; color: var(--foreground); overflow: visible; }
+.admin-chart-overlay { position: absolute; inset: 0; pointer-events: none; }
+.admin-chart-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 5px; }
+.admin-chart__grid { stroke: var(--card-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.admin-chart__axis { position: absolute; left: 0; width: 7%; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; line-height: 1; text-align: right; transform: translateY(-50%); }
+.admin-chart__line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.admin-chart__line--pageviews { stroke: var(--accent); }
+.admin-chart__line--visits { stroke: var(--success); stroke-dasharray: 5 3; }
+.admin-chart__crosshair { stroke: var(--muted-strong); stroke-width: 1; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; opacity: .75; pointer-events: none; }
+.admin-chart__marker { position: absolute; display: block; width: 10px; height: 10px; border: 2px solid var(--card-bg); transform: translate(-50%, -50%); }
+.admin-chart__marker--pageviews { border-radius: 50%; background: var(--accent); }
+.admin-chart__marker--visits { background: var(--success); }
+.admin-chart__value { position: absolute; color: var(--foreground); font-size: .68rem; font-variant-numeric: tabular-nums; font-weight: 800; line-height: 1; white-space: nowrap; text-shadow: 0 0 3px var(--card-bg), 0 0 3px var(--card-bg); }
+.admin-chart__value--visits { color: var(--success); }
+.admin-chart__hit-area { cursor: crosshair; }
+.admin-chart-axis { position: relative; height: 18px; color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; }
+.admin-chart-axis span { position: absolute; top: 0; white-space: nowrap; }
+.admin-chart-date { position: absolute; bottom: 0; max-width: 100%; color: var(--muted-strong); font-size: .68rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.admin-chart-selection { min-height: 1.25rem; margin-top: 6px; color: var(--muted-strong); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.admin-chart-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 9px; color: var(--muted); font-size: .7rem; }
+.admin-chart-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.admin-chart-legend__swatch { display: inline-block; width: 19px; height: 0; border-top: 2px solid var(--accent); }
+.admin-chart-legend__swatch--visits { border-top-color: var(--success); border-top-style: dashed; }
+.admin-chart-hint { min-height: 1.1rem; margin-top: 8px; color: var(--muted); font-size: .67rem; }
 .admin-ranks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .admin-rank-list { display: grid; gap: 14px; margin-top: 20px; }
 .admin-rank-list li { min-width: 0; }
@@ -1312,6 +1336,19 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-danger:hover { border-color: var(--danger); color: var(--danger); }
 .admin-form-message { grid-column: 1 / -1; color: var(--muted-strong); font-size: .76rem; }
 .admin-health-dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 16px; }
+.admin-audit-panel { overflow: visible; }
+.admin-audit-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.admin-audit-heading .tactical-button { flex: 0 0 auto; }
+.admin-audit-table-wrap { margin-top: 18px; overflow-x: auto; }
+.admin-audit-table { width: 100%; min-width: 920px; border-collapse: collapse; font-size: .72rem; }
+.admin-audit-table th, .admin-audit-table td { border-top: 1px solid var(--card-border); padding: 10px 8px; text-align: left; vertical-align: top; }
+.admin-audit-table thead th { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.admin-audit-table tbody th { font-weight: 700; white-space: nowrap; }
+.admin-audit-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.admin-audit-table td small { display: block; margin-top: 4px; color: var(--muted); font-size: .61rem; font-variant-numeric: normal; }
+.admin-audit-status--ok { color: var(--success); }
+.admin-audit-status--unavailable { color: var(--muted); }
+.admin-audit-note { margin-top: 12px; color: var(--muted); font-size: .68rem; line-height: 1.45; }
 
 @media (max-width: 1100px) {
   .admin-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1411,13 +1448,16 @@ a.help-card:hover { border-color: var(--foreground); }
   .admin-filters label { min-width: 0; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-ranks { grid-template-columns: 1fr; }
-  .admin-chart { height: 150px; }
+  .admin-chart-wrap { min-height: 188px; }
+  .admin-chart-stage { height: 150px; }
   .admin-account summary { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .admin-account summary > span:first-child, .admin-signals { grid-column: 1 / -1; }
   .admin-account summary > span[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: .58rem; font-weight: 800; text-transform: uppercase; }
   .admin-moderation, .admin-ban { grid-template-columns: 1fr; }
   .admin-moderation .ghost-button { width: 100%; }
   .admin-health-dates { grid-template-columns: 1fr; }
+  .admin-audit-heading { align-items: stretch; flex-direction: column; }
+  .admin-audit-heading .tactical-button { width: 100%; }
 }
 
 @media (max-width: 420px) {

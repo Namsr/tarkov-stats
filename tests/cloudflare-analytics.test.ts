@@ -9,7 +9,11 @@ const group = (count, visits, dimensions, sampleInterval = 1) => ({ count, sum: 
 test("Cloudflare RUM parser restricts domains, bots via query filter, admin paths, and dynamic account paths", () => {
   const account = {
     domains: [group(9, 4, { requestHost: "www.tarkovstats.ru" }), group(100, 50, { requestHost: "other.example" })],
-    series: [group(5, 2, { requestHost: "tarkovstats.ru", requestPath: "/", datetimeHour: "2026-08-01T10:00:00Z" })],
+    series: [
+      group(5, 2, { requestHost: "tarkovstats.ru", requestPath: "/", datetimeHour: "2026-08-01T10:00:00Z" }),
+      group(4, 3, { requestHost: "www.tarkovstats.ru", requestPath: "/player/regular/123", datetimeHour: "2026-08-01T10:00:00Z" }),
+      group(2, 1, { requestHost: "tarkovstats.online", requestPath: "/", datetimeHour: "2026-08-01T11:00:00Z" }),
+    ],
     pages: [
       group(3, 1, { requestHost: "tarkovstats.ru", requestPath: "/player/123" }),
       group(2, 1, { requestHost: "tarkovstats.ru", requestPath: "/player/regular/456" }),
@@ -22,6 +26,10 @@ test("Cloudflare RUM parser restricts domains, bots via query filter, admin path
   assert.equal(parsed.pageviews, 9);
   assert.equal(parsed.sampled, true);
   assert.deepEqual(parsed.pages, [{ key: "/player/:account", pageviews: 5, visits: 2 }]);
+  assert.deepEqual(parsed.series, [
+    { at: "2026-08-01T10:00:00Z", domains: { "tarkovstats.ru": { pageviews: 9, visits: 5 } } },
+    { at: "2026-08-01T11:00:00Z", domains: { "tarkovstats.online": { pageviews: 2, visits: 1 } } },
+  ]);
   assert.equal(normalizeTrafficPath("/admin/stats"), "/admin");
 });
 

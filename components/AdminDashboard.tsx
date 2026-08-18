@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n/context";
@@ -15,6 +15,8 @@ type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
 type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number };
 type Summary = { metrics: Metrics; previous: Metrics; series: SeriesPoint[]; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string } };
+type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localMatchingCount: number | null; localCurrentCount: number | null; missingCount: number | null; staleCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
+type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
 type Rank = { key: string; pageviews: number; visits: number };
 type Traffic = { available: boolean; reason?: string; sampled: boolean; pageviews: number; visits: number; series: SeriesPoint[]; domains: Rank[]; pages: Rank[]; referrers: Rank[]; countries: Rank[]; devices: Rank[]; browsers: Rank[] };
 type Account = { aid: number; nickname: string | null; modes: string[]; requestCount: number; snapshotCount: number; lastRequestedAt: number; reportedAt?: number; outcomes: Record<string, number>; refreshCount: number; sources: string[]; moderation?: AccountModeration; risk?: AccountModeration["risk"]; reportCount?: number; confirmedBan?: boolean; review?: AccountModeration["review"]; canRestoreManualBan?: boolean };
@@ -53,6 +55,9 @@ export default function AdminDashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
+  const [audit, setAudit] = useState<DataAudit | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -71,6 +76,11 @@ export default function AdminDashboard() {
     try {
       if (tab === "overview" || tab === "health") {
         setSummary(await getJson<Summary>(`/api/admin/summary?${params}`));
+        if (tab === "health") {
+          setAuditError("");
+          try { setAudit(await getJson<DataAudit>("/api/admin/data-audit")); }
+          catch { setAuditError(t("admin.error.load")); }
+        }
       } else if (tab === "traffic") {
         setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
       } else {
@@ -83,6 +93,23 @@ export default function AdminDashboard() {
     } catch { setError(t("admin.error.load")); }
     finally { setLoading(false); }
   }, [domain, mode, period, search, sort, tab, t]);
+
+  const runAudit = useCallback(async () => {
+    setAuditBusy(true); setAuditError("");
+    try {
+      const response = await fetch("/api/admin/data-audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: "{}",
+      });
+      const body = await response.json() as DataAudit;
+      if (!response.ok && response.status !== 409) throw new Error(String(response.status));
+      setAudit(body);
+      if (response.status === 409) setAuditError(t("admin.audit.running"));
+    } catch { setAuditError(t("admin.error.load")); }
+    finally { setAuditBusy(false); }
+  }, [t]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
 
@@ -120,10 +147,10 @@ export default function AdminDashboard() {
 
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {!error && loading && <AdminLoading />}
-      {!error && !loading && tab === "overview" && <Overview summary={summary} t={t} />}
-      {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} t={t} />}
+      {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
+      {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
-      {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} />}
+      {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
     </main>
   );
 }
@@ -132,7 +159,7 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 
 function AdminLoading() { return <div className="admin-metrics" aria-hidden>{Array.from({ length: 6 }, (_, index) => <div key={index} className="h-28 skeleton rounded-xl" />)}</div>; }
 
-function Overview({ summary, t }: { summary: Summary | null; t: T }) {
+function Overview({ summary, lang, t }: { summary: Summary | null; lang: string; t: T }) {
   if (!summary) return <Empty t={t} />;
   const metrics = summary.metrics ?? EMPTY_METRICS;
   const previous = summary.previous ?? EMPTY_METRICS;
@@ -140,23 +167,103 @@ function Overview({ summary, t }: { summary: Summary | null; t: T }) {
     {(!summary.traffic?.available || !summary.storageAvailable) && <div className="admin-notice">{t(!summary.traffic?.available ? "admin.warning.traffic" : "admin.warning.storage")}</div>}
     {summary.traffic?.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}
     <div className="admin-metrics">{(["visits", "pageviews", "accountRequests", "newSuspicious", "severeRisk", "errors"] as MetricName[]).map((name) => <StatCard key={name} label={t("admin.metric." + name)} value={formatNumber(finite(metrics[name]))} benchmarkDiff={metricDiff(finite(metrics[name]), finite(previous[name]))} />)}</div>
-    <TrendChart series={summary.series ?? []} t={t} />
+    <TrendChart series={summary.series ?? []} lang={lang} t={t} />
     {summary.auth && <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.auth.heading")}</h2><div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.auth.activeUsers")} value={formatNumber(summary.auth.activeUsers)} /><StatCard label={t("admin.auth.signIns")} value={formatNumber(summary.auth.signIns)} /></div></section>}
   </div>;
 }
 
-function TrendChart({ series, t }: { series: SeriesPoint[]; t: T }) {
-  const values = series.map((point) => Object.values(point.domains ?? {}).reduce((sum, value) => sum + finite(value.pageviews), 0));
-  const max = Math.max(1, ...values);
-  if (!series.length) return <Empty t={t} />;
-  const points = values.map((value, index) => `${series.length === 1 ? 50 : index / (series.length - 1) * 100},${38 - value / max * 36}`).join(" ");
-  return <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.chart.heading")}</h2><svg className="admin-chart" viewBox="0 0 100 40" role="img" aria-label={t("admin.chart.aria")} preserveAspectRatio="none"><polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg><div className="admin-chart-values"><span>{new Date(series[0].at).toLocaleDateString()}</span><strong>{t("admin.chart.peak", { n: formatNumber(max) })}</strong><span>{new Date(series.at(-1)!.at).toLocaleDateString()}</span></div></section>;
+function TrendChart({ series, lang, t }: { series: SeriesPoint[]; lang: string; t: T }) {
+  const points = useMemo(() => {
+    const buckets = new Map<number, { at: string; time: number; pageviews: number; visits: number }>();
+    for (const point of series) {
+      const time = Date.parse(point.at);
+      if (!Number.isFinite(time)) continue;
+      const current = buckets.get(time) ?? { at: new Date(time).toISOString(), time, pageviews: 0, visits: 0 };
+      for (const value of Object.values(point.domains ?? {})) {
+        current.pageviews += finite(value.pageviews);
+        current.visits += finite(value.visits);
+      }
+      buckets.set(time, current);
+    }
+    return [...buckets.values()].sort((a, b) => a.time - b.time);
+  }, [series]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  useEffect(() => { setSelectedIndex(points.length ? points.length - 1 : 0); }, [points]);
+  if (!points.length) return <Empty t={t} />;
+
+  const left = 8;
+  const right = 92;
+  const top = 7;
+  const bottom = 43;
+  const chartHeight = 58;
+  const firstTime = points[0].time;
+  const lastTime = points.at(-1)!.time;
+  const timeSpan = Math.max(1, lastTime - firstTime);
+  const max = Math.max(1, ...points.flatMap((point) => [point.pageviews, point.visits]));
+  const xFor = (time: number) => points.length === 1 ? 50 : left + (time - firstTime) / timeSpan * (right - left);
+  const yFor = (value: number) => bottom - value / max * (bottom - top);
+  const selected = points[Math.min(selectedIndex, points.length - 1)];
+  const selectedX = xFor(selected.time);
+  const date = formatChartDate(selected.time, lang);
+  const pageviewsPath = points.map((point) => `${xFor(point.time)},${yFor(point.pageviews)}`).join(" ");
+  const visitsPath = points.map((point) => `${xFor(point.time)},${yFor(point.visits)}`).join(" ");
+  const tickIndexes = points.length < 3 ? points.map((_, index) => index) : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+  const anchorFor = (x: number) => x < 20 ? "start" : x > 80 ? "end" : "middle";
+  const moveToPointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const targetX = Math.min(right, Math.max(left, (event.clientX - rect.left) / Math.max(1, rect.width) * 100));
+    let nearest = 0;
+    for (let index = 1; index < points.length; index += 1) {
+      if (Math.abs(xFor(points[index].time) - targetX) < Math.abs(xFor(points[nearest].time) - targetX)) nearest = index;
+    }
+    setSelectedIndex(nearest);
+  };
+  const moveByKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    setSelectedIndex((index) => event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : Math.max(0, Math.min(points.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1))));
+  };
+  const selectedPageviewsY = yFor(selected.pageviews);
+  const selectedVisitsY = yFor(selected.visits);
+  let pageviewsLabelY = Math.max(top + 3, Math.min(bottom - 2, selectedPageviewsY - 2));
+  let visitsLabelY = Math.max(top + 3, Math.min(bottom - 2, selectedVisitsY + 4));
+  if (Math.abs(pageviewsLabelY - visitsLabelY) < 4) {
+    if (Math.max(pageviewsLabelY, visitsLabelY) < top + 9) {
+      pageviewsLabelY = top + 3;
+      visitsLabelY = top + 8;
+    } else {
+      pageviewsLabelY = bottom - 7;
+      visitsLabelY = bottom - 2;
+    }
+  }
+  const dateTransform = selectedX < 20 ? "translateX(0)" : selectedX > 80 ? "translateX(-100%)" : "translateX(-50%)";
+
+  const labelTransform = anchorFor(selectedX) === "start" ? "translate(8px, -50%)" : anchorFor(selectedX) === "end" ? "translate(calc(-100% - 8px), -50%)" : "translate(-50%, -50%)";
+  return <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.chart.heading")}</h2><p className="admin-chart-description">{t("admin.chart.description")}</p><div className="admin-chart-wrap" tabIndex={0} role="group" aria-label={t("admin.chart.aria")} aria-keyshortcuts="ArrowLeft ArrowRight Home End" onKeyDown={moveByKeyboard}>
+    <div className="admin-chart-stage">
+      <svg className="admin-chart" viewBox="0 0 100 58" preserveAspectRatio="none" aria-hidden="true" onPointerMove={moveToPointer} onPointerDown={moveToPointer}>
+      <line className="admin-chart__grid" x1={left} x2={right} y1={top} y2={top} /><line className="admin-chart__grid" x1={left} x2={right} y1={bottom} y2={bottom} />
+      <polyline className="admin-chart__line admin-chart__line--pageviews" points={pageviewsPath} /><polyline className="admin-chart__line admin-chart__line--visits" points={visitsPath} />
+      <line className="admin-chart__crosshair" x1={selectedX} x2={selectedX} y1={top} y2={bottom} />
+      <rect className="admin-chart__hit-area" x={left} y={top} width={right - left} height={bottom - top} fill="transparent" pointerEvents="all" />
+      </svg>
+      <div className="admin-chart-overlay" aria-hidden="true">
+        <span className="admin-chart__axis admin-chart__axis--max" style={{ top: `${(top + 1) / chartHeight * 100}%` }}>{formatNumber(max)}</span><span className="admin-chart__axis admin-chart__axis--zero" style={{ top: `${(bottom + 1) / chartHeight * 100}%` }}>0</span>
+        <span className="admin-chart__marker admin-chart__marker--pageviews" style={{ left: `${selectedX}%`, top: `${selectedPageviewsY / chartHeight * 100}%` }} />
+        <span className="admin-chart__marker admin-chart__marker--visits" style={{ left: `${selectedX}%`, top: `${selectedVisitsY / chartHeight * 100}%` }} />
+        <span className="admin-chart__value admin-chart__value--pageviews" style={{ left: `${selectedX}%`, top: `${pageviewsLabelY / chartHeight * 100}%`, transform: labelTransform }}>{formatNumber(selected.pageviews)}</span>
+        <span className="admin-chart__value admin-chart__value--visits" style={{ left: `${selectedX}%`, top: `${visitsLabelY / chartHeight * 100}%`, transform: labelTransform }}>{formatNumber(selected.visits)}</span>
+      </div>
+    </div>
+    <div className="admin-chart-axis" aria-hidden="true">{tickIndexes.map((index) => { const x = xFor(points[index].time); return <span key={points[index].time} style={{ left: `${x}%`, transform: `translateX(${anchorFor(x) === "start" ? "0" : anchorFor(x) === "end" ? "-100%" : "-50%"})` }}>{formatChartAxis(points[index].time, lang, timeSpan)}</span>; })}</div>
+    <div className="admin-chart-date" style={{ left: `${selectedX}%`, transform: dateTransform }} aria-hidden="true">{date}</div>
+  </div><div className="admin-chart-selection" aria-live="polite">{t("admin.chart.selection", { date, pageviews: formatNumber(selected.pageviews), visits: formatNumber(selected.visits) })}</div><div className="admin-chart-legend" aria-label={t("admin.chart.legend")}><span><i className="admin-chart-legend__swatch admin-chart-legend__swatch--pageviews" />{t("admin.metric.pageviews")}</span><span><i className="admin-chart-legend__swatch admin-chart-legend__swatch--visits" />{t("admin.metric.visits")}</span></div><p className="admin-chart-hint">{t("admin.chart.keyboard")}</p></section>;
 }
 
-function TrafficPanel({ traffic, t }: { traffic: Traffic | null; t: T }) {
+function TrafficPanel({ traffic, lang, t }: { traffic: Traffic | null; lang: string; t: T }) {
   if (!traffic) return <Empty t={t} />;
   if (!traffic.available) return <div className="admin-notice">{t("admin.warning.traffic")}</div>;
-  return <div className="admin-stack">{traffic.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}<div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.metric.visits")} value={formatNumber(traffic.visits)} /><StatCard label={t("admin.metric.pageviews")} value={formatNumber(traffic.pageviews)} /></div><TrendChart series={traffic.series ?? []} t={t} /><div className="admin-ranks">{(["domains", "pages", "referrers", "countries", "devices", "browsers"] as const).map((name) => <RankList key={name} title={t("admin.rank." + name)} rows={traffic[name] ?? []} t={t} />)}</div></div>;
+  return <div className="admin-stack">{traffic.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}<div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.metric.visits")} value={formatNumber(traffic.visits)} /><StatCard label={t("admin.metric.pageviews")} value={formatNumber(traffic.pageviews)} /></div><TrendChart series={traffic.series ?? []} lang={lang} t={t} /><div className="admin-ranks">{(["domains", "pages", "referrers", "countries", "devices", "browsers"] as const).map((name) => <RankList key={name} title={t("admin.rank." + name)} rows={traffic[name] ?? []} t={t} />)}</div></div>;
 }
 
 function RankList({ title, rows, t }: { title: string; rows: Rank[]; t: T }) {
@@ -226,11 +333,28 @@ function ModerationForm({ account, moderation, t, reload }: { account: Account; 
   </div>;
 }
 
-function HealthPanel({ summary, lang, t }: { summary: Summary | null; lang: string; t: T }) {
+function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudit }: { summary: Summary | null; lang: string; t: T; audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void> }) {
   const health = summary?.health;
-  if (!health) return <Empty t={t} />;
+  if (!health) return <div className="admin-stack"><Empty t={t} /><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
   const values: Array<[string, string]> = [["requests", formatNumber(health.requests)], ["success", formatNumber(health.success)], ["notFound", formatNumber(health.notFound)], ["rateLimited", formatNumber(health.rateLimited)], ["serverErrors", formatNumber(health.serverErrors)], ["p50", health.p50Ms == null ? t("common.notAvailable") : `${health.p50Ms} ms`], ["p95", health.p95Ms == null ? t("common.notAvailable") : `${health.p95Ms} ms`], ["cacheHits", formatNumber(health.cacheHits)], ["cacheMisses", formatNumber(health.cacheMisses)]];
-  return <div className="admin-stack"><p className="admin-notice">{t("admin.health.scope")}</p><div className="admin-metrics">{values.map(([key, value]) => <StatCard key={key} label={t("admin.health." + key)} value={value} />)}</div><section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.freshness")}</h2><dl className="admin-health-dates"><div><dt>{t("admin.health.lastSuccess")}</dt><dd>{formatDate(health.lastSuccessAt, lang, t)}</dd></div><div><dt>{t("admin.health.lastEvent")}</dt><dd>{formatDate(summary?.freshness?.lastEventAt ?? null, lang, t)}</dd></div><div><dt>{t("admin.health.lastProfile")}</dt><dd>{formatDate(summary?.freshness?.lastProfileRequestAt ?? null, lang, t)}</dd></div></dl></section></div>;
+  return <div className="admin-stack"><p className="admin-notice">{t("admin.health.scope")}</p><div className="admin-metrics">{values.map(([key, value]) => <StatCard key={key} label={t("admin.health." + key)} value={value} />)}</div><section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.freshness")}</h2><dl className="admin-health-dates"><div><dt>{t("admin.health.lastSuccess")}</dt><dd>{formatDate(health.lastSuccessAt, lang, t)}</dd></div><div><dt>{t("admin.health.lastEvent")}</dt><dd>{formatDate(summary?.freshness?.lastEventAt ?? null, lang, t)}</dd></div><div><dt>{t("admin.health.lastProfile")}</dt><dd>{formatDate(summary?.freshness?.lastProfileRequestAt ?? null, lang, t)}</dd></div></dl></section><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
+}
+
+const auditModes = ["regular", "pve", "arena", "pvp-season"] as const;
+const auditDatasets = ["index", "updated"] as const;
+
+function auditValue(value: number | null, t: T): string { return value == null ? t("common.notAvailable") : formatNumber(value); }
+function auditPercent(value: number | null, lang: string, t: T): string {
+  if (value == null) return t("common.notAvailable");
+  return t("admin.audit.percent", { n: new Intl.NumberFormat(lang === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 }).format(value) });
+}
+
+function DataAuditPanel({ audit, auditBusy, auditError, onRunAudit, lang, t }: { audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void>; lang: string; t: T }) {
+  const datasets = audit?.snapshot?.datasets ?? [];
+  const resultFor = (mode: AuditDataset["mode"], dataset: AuditDataset["dataset"]) => datasets.find((row) => row.mode === mode && row.dataset === dataset) ?? null;
+  return <section className="data-panel admin-panel admin-audit-panel"><div className="admin-audit-heading"><div><h2 className="section-heading">{t("admin.audit.heading")}</h2><p className="admin-chart-description">{t("admin.audit.description")}</p></div><button type="button" className="tactical-button" disabled={auditBusy || audit?.running === true} onClick={() => { void onRunAudit(); }}>{auditBusy || audit?.running ? t("common.loading") : t("admin.audit.button")}</button></div>{auditError && <div className="admin-notice admin-notice--error" role="alert">{auditError}</div>}{audit?.running && <div className="admin-notice">{t("admin.audit.running")}</div>}{!audit?.snapshot && !audit?.running && <p className="admin-empty">{t("admin.audit.notRun")}</p>}{audit?.snapshot && <div className="admin-audit-table-wrap"><table className="admin-audit-table"><thead><tr><th scope="col">{t("admin.audit.mode")}</th><th scope="col">{t("admin.audit.dataset")}</th><th scope="col">{t("admin.audit.upstream")}</th><th scope="col">{t("admin.audit.local")}</th><th scope="col">{t("admin.audit.missingStale")}</th><th scope="col">{t("admin.audit.coverage")}</th><th scope="col">{t("admin.audit.lastChecked")}</th><th scope="col">{t("admin.audit.lastReceived")}</th><th scope="col">{t("admin.audit.lastLocalApply")}</th><th scope="col">{t("admin.audit.latestUpdated")}</th></tr></thead><tbody>{auditModes.flatMap((mode) => auditDatasets.map((dataset) => { const row = resultFor(mode, dataset); const status = row?.status ?? "unavailable"; return <tr key={`${mode}-${dataset}`}><th scope="row">{t("admin.audit.mode." + mode)}</th><td><span>{t("admin.audit.dataset." + dataset)}</span><small className={`admin-audit-status admin-audit-status--${status}`}>{t("admin.audit.status." + status)}</small></td><td>{auditValue(row?.upstreamRecordCount ?? null, t)}</td><td>{row ? <>{auditValue(row.localMatchingCount, t)} / {auditValue(row.localCurrentCount, t)}</> : t("common.notAvailable")}</td><td>{row ? <>{auditValue(row.missingCount, t)} / {auditValue(row.staleCount, t)}</> : t("common.notAvailable")}</td><td>{auditPercent(row?.coveragePercent ?? null, lang, t)}</td><td>{formatDate(row?.lastCheckedAt ?? null, lang, t)}</td><td>{formatDate(row?.lastReceivedAt ?? null, lang, t)}</td><td>{formatDate(row?.lastLocalApplyAt ?? null, lang, t)}</td><td>{formatDate(row?.latestUpstreamUpdatedAt ?? null, lang, t)}</td></tr>; }))}</tbody></table><p className="admin-audit-note">{t("admin.audit.localLegend")}</p></div>}</section>;
 }
 function formatDate(value: number | null, lang: string, t: T) { return value ? new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" }) : t("common.notAvailable"); }
+function formatChartAxis(value: number, lang: string, span: number) { return new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", span <= 2 * 86_400_000 ? { timeZone: "Europe/Moscow", day: "2-digit", month: "short", hour: "2-digit" } : { timeZone: "Europe/Moscow", day: "2-digit", month: "short" }); }
+function formatChartDate(value: number, lang: string) { return new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow", dateStyle: "medium", timeStyle: "short" }); }
 function Empty({ t }: { t: T }) { return <div className="surface admin-empty">{t("admin.empty")}</div>; }
