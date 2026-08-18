@@ -101,6 +101,12 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
         // Navigation still owns the visible error state.
       });
     }
+    if (player.mode === "regular") {
+      const timelineParams = new URLSearchParams({ mode: "regular", cycle: "persistent", aid: String(player.aid) });
+      void fetch(`/api/progression/timeline?${timelineParams}`, { cache: "default" }).catch(() => {
+        // The mounted progression panel retries and owns its visible error state.
+      });
+    }
     router.push(href);
   }
 

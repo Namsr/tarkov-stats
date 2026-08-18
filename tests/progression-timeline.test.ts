@@ -1,7 +1,12 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's native TypeScript runner does not type-check test fixtures.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 // @ts-expect-error Node's strip-types test runner requires the extension.
@@ -23,6 +28,10 @@ import {
   progressionRaidDomain,
   progressionValueDomain,
 } from "../lib/seasonal/progression-timeline-ui.ts";
+// @ts-expect-error Node's strip-types test runner requires the extension.
+import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+
+const execFileAsync = promisify(execFile);
 
 const identity = { mode: "seasonal", cycleId: "s1", aid: 1 } as const;
 
@@ -105,6 +114,68 @@ test("timeline route returns the combined response and keeps mode-specific cachi
   assert.match(source, /PROGRESSION_CACHE_CONTROL/);
   assert.match(source, /getCachedProgressionTimeline\(input\.mode, input\.cycleId, input\.aid\)/);
   assert.doesNotMatch(source, /input\.mode === "regular"[\s\S]*?private, no-store/);
+});
+
+test("regular timeline reads an initialized SQLite database without waiting for a writer", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "progression-read-"));
+  const databasePath = join(directory, "progression.db");
+  const db = new DatabaseSync(databasePath);
+  try {
+    initializeSeasonalSchema(db);
+    db.prepare(`INSERT INTO progression_snapshots (
+      mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
+      experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc
+    ) VALUES ('regular', 'persistent', 2203669, 1, 1, 1, '2026-08-18', 1, 1, 0, 0, 0, 0, 0)`).run();
+    db.exec("BEGIN IMMEDIATE");
+
+    const startedAt = performance.now();
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "-e",
+      `import('./lib/seasonal/progression-db.ts').then(async ({ getProgressionTimelineRevisions }) => {
+        console.log(JSON.stringify(await getProgressionTimelineRevisions({ mode: 'regular', cycleId: 'persistent', aid: 2203669 })));
+      })`,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, PROGRESSION_SQLITE_PATH: databasePath },
+      timeout: 2_000,
+    });
+    assert.ok(performance.now() - startedAt < 2_000, "read path should not wait on schema DDL locks");
+    assert.deepEqual(JSON.parse(stdout.trim()), { personalRevision: 1, populationGeneration: 0 });
+  } finally {
+    try { db.exec("ROLLBACK"); } catch {}
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("regular timeline read initializes a fresh SQLite database", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "progression-fresh-"));
+  const databasePath = join(directory, "progression.db");
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "-e",
+      `import('./lib/seasonal/progression-db.ts').then(async ({ getProgressionTimelineRevisions }) => {
+        console.log(JSON.stringify(await getProgressionTimelineRevisions({ mode: 'regular', cycleId: 'persistent', aid: 2203669 })));
+      })`,
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, PROGRESSION_SQLITE_PATH: databasePath },
+      timeout: 5_000,
+    });
+    assert.deepEqual(JSON.parse(stdout.trim()), { personalRevision: 0, populationGeneration: 0 });
+    const db = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM player_profiles").get().n, 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("timeline exposes ten unique selectable metrics and a stable per-metric series shape", () => {

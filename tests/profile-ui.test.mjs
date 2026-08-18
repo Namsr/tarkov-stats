@@ -178,6 +178,9 @@ test("profile navigation exposes the shell immediately and overlaps regular API 
   assert.match(loading, /<ProfileShellLoading mode=\{mode\} aid=\{aid\} \/>/);
   assert.match(search, /const profileParams = new URLSearchParams\(\{ aid: String\(player\.aid\), mode: player\.mode \}\)/);
   assert.match(search, /fetch\(`\/api\/player\/profile\?\$\{profileParams\}`, \{ cache: "default" \}\)/);
+  assert.match(search, /player\.mode === "regular"/);
+  assert.match(search, /const timelineParams = new URLSearchParams\(\{ mode: "regular", cycle: "persistent", aid: String\(player\.aid\) \}\)/);
+  assert.match(search, /fetch\(`\/api\/progression\/timeline\?\$\{timelineParams\}`, \{ cache: "default" \}\)/);
   assert.match(search, /router\.push\(href\)/);
 });
 

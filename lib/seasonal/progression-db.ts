@@ -30,6 +30,18 @@ import type {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let database: any = null;
 
+const SQLITE_READ_SCHEMA_PROBE = `SELECT
+  (SELECT mode FROM progression_snapshots LIMIT 1) AS snapshot_mode,
+  (SELECT confirmed_banned FROM player_profiles LIMIT 1) AS profile_ban,
+  (SELECT tempo_score FROM progression_intervals LIMIT 1) AS interval_tempo,
+  (SELECT generation FROM progression_materializations LIMIT 1) AS materialization_generation,
+  (SELECT generation FROM progression_population_current LIMIT 1) AS population_generation,
+  (SELECT payload FROM progression_population_generations LIMIT 1) AS population_payload,
+  (SELECT payload FROM progression_population_chunks LIMIT 1) AS population_chunk,
+  (SELECT revision FROM progression_personal_revisions LIMIT 1) AS personal_revision,
+  (SELECT starts_at FROM season_cycles LIMIT 1) AS cycle_start,
+  (SELECT aid FROM excluded_players LIMIT 1) AS excluded_aid`;
+
 type ProgressionQueryResult = (ProgressionSeriesResponse & SeasonalProgressionDetails) | null;
 type ProgressionIdentity = Omit<ProgressionRequest, "kind">;
 export type ProgressionBundle = Record<ProgressionKind, Exclude<ProgressionQueryResult, null>>;
@@ -38,8 +50,25 @@ async function getSqliteProgressionDatabase() {
   if (!database) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
-    database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-    initializeSeasonalSchema(database);
+    const opened = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+    opened.exec("PRAGMA busy_timeout = 250");
+    try {
+      // The full initializer contains DDL/backfill writes; probe first so a
+      // public read cannot contend with post-response profile capture.
+      opened.prepare(SQLITE_READ_SCHEMA_PROBE).get();
+    } catch (error) {
+      if (!/no such table|no such column/i.test((error as Error).message)) {
+        opened.close();
+        throw error;
+      }
+      try {
+        initializeSeasonalSchema(opened);
+      } catch (initializationError) {
+        opened.close();
+        throw initializationError;
+      }
+    }
+    database = opened;
   }
   return database;
 }
