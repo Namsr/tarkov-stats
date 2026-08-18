@@ -153,11 +153,6 @@ export async function GET(request: NextRequest) {
         },
       }
     );
-    if (result.ok) {
-      after(() => evaluateAndStoreSeasonalRisk(result.profile).catch((error) => {
-        console.error("seasonal admin risk evaluation failed", error);
-      }));
-    }
     const cachedAchievements = result.ok ? getCachedAchievements() : null;
     if (result.ok && !cachedAchievements) {
       after(() => getAchievements().catch((error) => {
@@ -167,6 +162,18 @@ export async function GET(request: NextRequest) {
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
+    const seasonalRiskIsFresh = result.ok && storedRisk &&
+      storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
+      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    if (result.ok && !seasonalRiskIsFresh) {
+      after(async () => {
+        // Keep a stale population-wide scan behind an immediate mode switch.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await evaluateAndStoreSeasonalRisk(result.profile).catch((error) => {
+          console.error("seasonal admin risk evaluation failed", error);
+        });
+      });
+    }
     const publicRisk = result.ok
       ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
       : null;
