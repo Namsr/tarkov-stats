@@ -4,7 +4,7 @@ import { recordRequestEvent } from "../admin/request-events.ts";
 
 type Mode = GameMode;
 type Outcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
-type Source = "upstream" | "cache" | "stored";
+type Source = "upstream" | "cache" | "stored" | "index";
 type Cache = "hit" | "miss" | "bypass";
 type Storage = "sqlite" | "unavailable";
 type Memo = "hit" | "miss";
@@ -27,7 +27,7 @@ type TimingInput = {
 };
 
 export type RequestTimingInput = TimingInput & {
-  operation: "player_profile" | "average" | "average_cohort" | "baseline" | "average_achievements";
+  operation: "player_profile" | "player_search" | "average" | "average_cohort" | "baseline" | "average_achievements";
   mode?: Mode;
   outcome: Outcome;
   status: number;

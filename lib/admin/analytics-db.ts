@@ -179,8 +179,12 @@ function attachProgressionDatabase(db: any, file: string | null | undefined): vo
 // snapshots keep both a materialized counter and the raw rows, while older
 // installations may have only one of them. This avoids double-counting while
 // still making the admin column useful during a rolling schema upgrade.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function snapshotCountExpression(db: any, mode: string | null | undefined): { sql: string; args: unknown[] } {
+function snapshotCountExpression(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  mode: string | null | undefined,
+  aidReference = "request_events.aid",
+): { sql: string; args: unknown[] } {
   const expressions: string[] = [];
   const args: unknown[] = [];
   const modeClause = (alias: string, supportsMode: boolean) => {
@@ -196,12 +200,12 @@ function snapshotCountExpression(db: any, mode: string | null | undefined): { sq
   if (profileColumns.has("snapshot_count") && profileColumns.has("aid")) {
     expressions.push(`COALESCE((SELECT SUM(COALESCE(p.snapshot_count, 0))
       FROM progression_db.player_profiles p
-      WHERE p.aid = request_events.aid${modeClause("p", profileColumns.has("mode"))}), 0)`);
+      WHERE p.aid = ${aidReference}${modeClause("p", profileColumns.has("mode"))}), 0)`);
   }
   if (snapshotColumns.has("aid")) {
     expressions.push(`COALESCE((SELECT COUNT(*)
       FROM progression_db.progression_snapshots s
-      WHERE s.aid = request_events.aid${modeClause("s", snapshotColumns.has("mode"))}), 0)`);
+      WHERE s.aid = ${aidReference}${modeClause("s", snapshotColumns.has("mode"))}), 0)`);
   }
   if (!expressions.length) return { sql: "0", args: [] };
   return { sql: expressions.length === 1 ? expressions[0] : `MAX(${expressions.join(", ")})`, args };
@@ -272,7 +276,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       const { sql, args } = whereFor(period, domain, now);
       const row = db.prepare(`SELECT
         COUNT(*) AS requests,
-        SUM(CASE WHEN aid IS NOT NULL AND operation = 'player_profile' THEN 1 ELSE 0 END) AS account_requests,
+        SUM(CASE WHEN operation = 'player_search' AND outcome = 'success' AND aid IS NOT NULL THEN 1 ELSE 0 END) AS account_requests,
         SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS success,
         SUM(CASE WHEN outcome = 'not_found' OR status = 404 THEN 1 ELSE 0 END) AS not_found,
         SUM(CASE WHEN outcome = 'rate_limited' OR status = 429 THEN 1 ELSE 0 END) AS rate_limited,
@@ -307,44 +311,68 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
     accounts(options) {
       if (options.aids?.length === 0) return { accounts: [], nextCursor: null };
       const now = options.now ?? Date.now();
-      const base = whereFor(options.period, options.domain, now);
-      const conditions = [base.sql, "aid IS NOT NULL", "operation = 'player_profile'"];
-      const snapshotCount = snapshotCountExpression(db, options.mode);
-      const args = [...snapshotCount.args, ...base.args];
-      if (options.mode) { conditions.push("mode = ?"); args.push(options.mode); }
-      if (options.source) { conditions.push("source = ?"); args.push(options.source); }
+      const searchBase = whereFor(options.period, options.domain, now);
+      const profileBase = whereFor(options.period, options.domain, now);
+      const searchConditions = [searchBase.sql, "aid IS NOT NULL", "operation = 'player_search'", "outcome = 'success'"];
+      const profileConditions = [profileBase.sql, "aid IS NOT NULL", "operation = 'player_profile'"];
+      const searchArgs = [...searchBase.args];
+      const profileArgs = [...profileBase.args];
+      if (options.mode) { profileConditions.push("mode = ?"); profileArgs.push(options.mode); }
+      if (options.source) { profileConditions.push("source = ?"); profileArgs.push(options.source); }
       if (options.aids) {
         const aids = [...new Set(options.aids.filter((aid) => Number.isSafeInteger(aid) && aid > 0))];
         if (aids.length === 0) return { accounts: [], nextCursor: null };
-        conditions.push(`aid IN (${aids.map(() => "?").join(",")})`);
-        args.push(...aids);
+        searchConditions.push(`aid IN (${aids.map(() => "?").join(",")})`);
+        searchArgs.push(...aids);
       }
-      const search = options.search?.trim();
-      if (search) {
-        if (/^\d+$/.test(search)) { conditions.push("aid = ?"); args.push(Number(search)); }
-        else { conditions.push("nickname LIKE ? ESCAPE '\\'"); args.push(`%${search.replace(/[\\%_]/g, "\\$&")}%`); }
-      }
+
+      const snapshotCount = snapshotCountExpression(db, options.mode, "searched.aid");
       const sort = options.sort ?? "last";
       const valueColumn = sort === "requests"
         ? "request_count"
         : sort === "snapshots" ? "snapshot_count" : "last_requested_at";
+      const outerConditions = ["1 = 1"];
+      const outerArgs: unknown[] = [];
+      const search = options.search?.trim();
+      if (search) {
+        if (/^\d+$/.test(search)) { outerConditions.push("listed.aid = ?"); outerArgs.push(Number(search)); }
+        else { outerConditions.push("listed.nickname LIKE ? ESCAPE '\\'"); outerArgs.push(`%${search.replace(/[\\%_]/g, "\\$&")}%`); }
+      }
+      if (options.mode || options.source) outerConditions.push("listed.profile_aid IS NOT NULL");
       const cursor = decodeCursor(options.cursor);
       const limit = Math.min(100, Math.max(1, options.limit ?? 50));
-      const having = cursor ? `HAVING ${valueColumn} < ? OR (${valueColumn} = ? AND aid < ?)` : "";
-      if (cursor) args.push(cursor[0], cursor[0], cursor[1]);
-      const rows = db.prepare(`SELECT aid,
-        (SELECT nickname FROM request_events latest WHERE latest.aid = request_events.aid AND latest.nickname IS NOT NULL ORDER BY occurred_at DESC LIMIT 1) AS nickname,
-        GROUP_CONCAT(DISTINCT mode) AS modes, COUNT(*) AS request_count, MAX(occurred_at) AS last_requested_at,
-        SUM(CASE WHEN force = 1 THEN 1 ELSE 0 END) AS refresh_count,
-        GROUP_CONCAT(DISTINCT source) AS sources,
-        ${snapshotCount.sql} AS snapshot_count,
-        SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS success_count,
-        SUM(CASE WHEN outcome = 'not_found' THEN 1 ELSE 0 END) AS not_found_count,
-        SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS error_count,
-        SUM(CASE WHEN outcome = 'rate_limited' THEN 1 ELSE 0 END) AS rate_limited_count,
-        SUM(CASE WHEN outcome = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_count
-        FROM request_events WHERE ${conditions.join(" AND ")} GROUP BY aid ${having}
-        ORDER BY ${valueColumn} DESC, aid DESC LIMIT ?`).all(...args, limit + 1) as Record<string, unknown>[];
+      if (cursor) {
+        outerConditions.push(`(listed.${valueColumn} < ? OR (listed.${valueColumn} = ? AND listed.aid < ?))`);
+        outerArgs.push(cursor[0], cursor[0], cursor[1]);
+      }
+      const rows = db.prepare(`WITH searched_events AS (
+          SELECT aid, nickname, occurred_at, outcome,
+            ROW_NUMBER() OVER (PARTITION BY aid ORDER BY occurred_at DESC, id DESC) AS rn
+          FROM request_events WHERE ${searchConditions.join(" AND ")}
+        ), searched AS (
+          SELECT aid,
+            MAX(CASE WHEN rn = 1 THEN nickname END) AS nickname,
+            COUNT(*) AS request_count,
+            MAX(occurred_at) AS last_requested_at,
+            SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS success_count
+          FROM searched_events GROUP BY aid
+        ), profiles AS (
+          SELECT aid,
+            GROUP_CONCAT(DISTINCT mode) AS modes,
+            SUM(CASE WHEN force = 1 THEN 1 ELSE 0 END) AS refresh_count,
+            GROUP_CONCAT(DISTINCT source) AS sources
+          FROM request_events WHERE ${profileConditions.join(" AND ")} GROUP BY aid
+        ), listed AS (
+          SELECT searched.aid, searched.nickname, searched.request_count, searched.last_requested_at,
+            searched.success_count, profiles.aid AS profile_aid, profiles.modes,
+            profiles.refresh_count, profiles.sources,
+            ${snapshotCount.sql} AS snapshot_count
+          FROM searched LEFT JOIN profiles ON profiles.aid = searched.aid
+        )
+        SELECT * FROM listed WHERE ${outerConditions.join(" AND ")}
+        ORDER BY listed.${valueColumn} DESC, listed.aid DESC LIMIT ?`).all(
+        ...searchArgs, ...profileArgs, ...snapshotCount.args, ...outerArgs, limit + 1,
+      ) as Record<string, unknown>[];
       const page = rows.slice(0, limit);
       const accounts = page.map((row) => ({
         aid: Number(row.aid), nickname: row.nickname == null ? null : String(row.nickname),
@@ -353,8 +381,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         sources: row.sources ? String(row.sources).split(",") : [],
         snapshotCount: Number(row.snapshot_count ?? 0),
         outcomes: Object.fromEntries([
-          ["success", row.success_count], ["not_found", row.not_found_count], ["error", row.error_count],
-          ["rate_limited", row.rate_limited_count], ["unavailable", row.unavailable_count],
+          ["success", row.success_count],
         ].filter(([, value]) => Number(value) > 0).map(([key, value]) => [key, Number(value)])),
       }));
       const last = accounts.at(-1);

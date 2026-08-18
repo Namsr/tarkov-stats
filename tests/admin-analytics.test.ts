@@ -14,6 +14,7 @@ test("analytics store retains only anonymous request/account facts and aggregate
   const store = createAnalyticsStore(db);
   const now = 200 * DAY;
   store.record({ occurredAt: now - 1_000, host: "tarkovstats.ru", operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", cycleId: "persistent", outcome: "success", status: 200, force: true, source: "upstream", cache: "miss", latencyMs: 12.6 });
+  store.record({ occurredAt: now - 900, host: "tarkovstats.ru", operation: "player_search", aid: 42, nickname: "Bear", outcome: "success", status: 200, source: "index", latencyMs: 2 });
   store.record({ occurredAt: now - 2_000, host: "tarkovstats.online", operation: "average", outcome: "error", status: 503, latencyMs: 100 });
   store.record({ occurredAt: now - 8 * DAY, host: "tarkovstats.ru", operation: "player_profile", aid: 99, outcome: "success", status: 200, latencyMs: 1 });
 
@@ -39,7 +40,10 @@ test("account analytics filters, sorts, and cursor-paginates", () => {
     { occurredAt: now - 10, aid: 3, nickname: "Third", mode: "pve", outcome: "success", status: 200, source: "cache" },
     { occurredAt: now - 20, aid: 2, nickname: "Second", mode: "regular", outcome: "not_found", status: 404, source: "upstream" },
     { occurredAt: now - 30, aid: 1, nickname: "First", mode: "regular", outcome: "success", status: 200, source: "upstream" },
-  ]) store.record({ operation: "player_profile", latencyMs: 1, ...event });
+  ]) {
+    store.record({ operation: "player_search", latencyMs: 1, ...event, outcome: "success", status: 200 });
+    store.record({ operation: "player_profile", latencyMs: 1, ...event });
+  }
 
   const first = store.accounts({ period: "24h", domain: "all", limit: 2, now });
   assert.deepEqual(first.accounts.map((row) => row.aid), [3, 2]);
@@ -53,6 +57,34 @@ test("account analytics filters, sorts, and cursor-paginates", () => {
   assert.ok(suspicious.nextCursor);
   assert.deepEqual(store.accounts({ period: "24h", domain: "all", aids: [1, 3], limit: 1, cursor: suspicious.nextCursor, now }).accounts.map((row) => row.aid), [1]);
   assert.deepEqual(store.accounts({ period: "24h", domain: "all", aids: [], now }).accounts, []);
+});
+
+test("account requests count successful nickname searches once and keep profile metadata separate", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createAnalyticsStore(db);
+  const now = 350 * DAY;
+  store.record({ occurredAt: now - 40, operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", outcome: "success", status: 200, force: true, source: "upstream", latencyMs: 1 });
+  store.record({ occurredAt: now - 30, operation: "player_profile", aid: 42, nickname: "Bear", mode: "pve", outcome: "success", status: 200, force: false, source: "stored", latencyMs: 1 });
+  store.record({ occurredAt: now - 20, operation: "player_search", aid: 42, nickname: "Bear", outcome: "success", status: 200, source: "index", latencyMs: 1 });
+  store.record({ occurredAt: now - 15, operation: "player_search", aid: 42, nickname: "Bear", outcome: "success", status: 200, source: "index", latencyMs: 1 });
+  // Prefix results are intentionally not assigned to any one account.
+  store.record({ occurredAt: now - 10, operation: "player_search", outcome: "success", status: 200, source: "index", latencyMs: 1 });
+  store.record({ occurredAt: now - 5, operation: "player_search", outcome: "not_found", status: 200, source: "index", latencyMs: 1 });
+
+  assert.equal(store.summary("24h", "all", now).accountRequests, 2);
+  const accounts = store.accounts({ period: "24h", domain: "all", now }).accounts;
+  assert.equal(accounts.length, 1);
+  assert.deepEqual(accounts[0], {
+    aid: 42,
+    nickname: "Bear",
+    modes: ["regular", "pve"],
+    requestCount: 2,
+    lastRequestedAt: now - 15,
+    outcomes: { success: 2 },
+    refreshCount: 1,
+    sources: ["upstream", "stored"],
+    snapshotCount: 0,
+  });
 });
 
 test("account analytics exposes and sorts progression snapshot totals", () => {
@@ -75,7 +107,10 @@ test("account analytics exposes and sorts progression snapshot totals", () => {
     { aid: 7, nickname: "Seven", mode: "regular" },
     { aid: 42, nickname: "Forty Two", mode: "regular" },
     { aid: 42, nickname: "Forty Two", mode: "seasonal" },
-  ]) store.record({ occurredAt: now - event.aid, operation: "player_profile", outcome: "success", status: 200, latencyMs: 1, ...event });
+  ]) {
+    store.record({ occurredAt: now - event.aid, operation: "player_search", outcome: "success", status: 200, latencyMs: 1, ...event });
+    store.record({ occurredAt: now - event.aid, operation: "player_profile", outcome: "success", status: 200, latencyMs: 1, ...event });
+  }
 
   const allModes = store.accounts({ period: "24h", domain: "all", sort: "snapshots", now });
   assert.deepEqual(allModes.accounts.map((row) => [row.aid, row.snapshotCount]), [[42, 4], [7, 1]]);
