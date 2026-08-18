@@ -2,7 +2,6 @@ import { after, NextRequest, NextResponse } from "next/server";
 import {
   getPublicProfile,
   PLAYER_LEVELS_V2026_07_22,
-  getCachedAchievements,
   getAchievements,
   parseArenaProfileStats,
   parseProfileStats,
@@ -40,14 +39,14 @@ import {
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
-  metadata: Awaited<ReturnType<typeof getAchievements>> | null,
 ) {
-  // The profile response may use only the already-warm metadata. A cold
-  // achievement reference fetch belongs after first paint, not this path.
-  const baseline = await getPublishedSeasonalAchievementBaseline(profile.cycleId);
+  const [baseline, metadata] = await Promise.all([
+    getPublishedSeasonalAchievementBaseline(profile.cycleId),
+    getAchievements().catch(() => new Map()),
+  ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
-    const meta = metadata?.get(achievement.id);
+    const meta = metadata.get(achievement.id);
     const row = baselineById.get(achievement.id);
     const eligibleN = baseline?.eligibleN ?? null;
     return {
@@ -153,12 +152,6 @@ export async function GET(request: NextRequest) {
         },
       }
     );
-    const cachedAchievements = result.ok ? getCachedAchievements() : null;
-    if (result.ok && !cachedAchievements) {
-      after(() => getAchievements().catch((error) => {
-        console.error("seasonal achievement metadata warmup failed", error);
-      }));
-    }
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
@@ -181,7 +174,6 @@ export async function GET(request: NextRequest) {
       ? await enrichSeasonalViewModel(
           result.profile,
           buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
-          cachedAchievements,
         )
       : null;
     const response = NextResponse.json(

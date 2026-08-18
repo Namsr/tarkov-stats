@@ -125,8 +125,7 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
   assert.match(profileRouteSource, /viewModel: buildRegularProfileViewModel/);
   assert.match(profileRouteSource, /const enrichedSeasonalViewModel = result\.ok[\s\S]*?await enrichSeasonalViewModel/);
   assert.match(profileRouteSource, /viewModel: enrichedSeasonalViewModel/);
-  assert.match(profileRouteSource, /const cachedAchievements = result\.ok \? getCachedAchievements\(\) : null/);
-  assert.doesNotMatch(profileRouteSource, /await getAchievements\(\)/);
+  assert.match(profileRouteSource, /getAchievements\(\)\.catch\(\(\) => new Map\(\)\)/);
   assert.match(profileRouteSource, /comparisonStats: buildRegularComparisonStats\(stats\)/);
   assert.match(profileRouteSource, /comparisonStats: buildSeasonalComparisonStats\(result\.profile\)/);
   assert.match(profileRouteSource, /getPublishedSeasonalAchievementBaseline/);
