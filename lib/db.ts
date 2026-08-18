@@ -106,6 +106,32 @@ CREATE TABLE IF NOT EXISTS player_index_meta (
 );
 `;
 
+const CURRENT_PLAYER_SCHEMA_OBJECTS = [
+  "players", "idx_players_bracket", "idx_players_hours", "idx_players_pmc_raids",
+  "idx_players_nickname_nocase", "idx_players_profile_updated_at", "mode_players",
+  "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids",
+  "pve_players", "arena_players", "excluded_players", "favorites",
+  "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
+] as const;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function currentSqlitePlayerSchema(db: any): boolean {
+  const objects = new Set((db.prepare("SELECT name FROM sqlite_master").all() as { name: string }[])
+    .map((row) => row.name));
+  if (!CURRENT_PLAYER_SCHEMA_OBJECTS.every((name) => objects.has(name))) return false;
+
+  for (const table of ["players", "mode_players"]) {
+    const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
+      .map((column) => column.name));
+    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known"]
+      .every((name) => columns.has(name))) return false;
+  }
+  const favorites = db.prepare("PRAGMA table_info(favorites)").all() as { name: string; pk: number }[];
+  const primaryKey = favorites.filter((column) => column.pk > 0)
+    .sort((a, b) => a.pk - b.pk).map((column) => column.name).join(",");
+  return favorites.some((column) => column.name === "mode") && primaryKey === "user_sub,aid";
+}
+
 const COLS = [
   "aid", "nickname", "side", "prestige", "level", "experience", "hours", "bracket_key",
   "total_raids", "pmc_raids", "scav_raids", "survived", "deaths", "pmc_deaths",
@@ -1272,36 +1298,38 @@ async function getSqliteDb(): Promise<any | null> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
       sqliteDb = new sqlite.DatabaseSync(file);
-      const hasFavorites = sqliteDb.prepare(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
-      ).get();
-      if (hasFavorites) initializeFavoritesSchema(sqliteDb);
-      sqliteDb.exec(SCHEMA);
-      initializeFavoritesSchema(sqliteDb);
-      // Lightweight migration for DBs created before the PMC score columns existed.
-      // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
-      // them here; a duplicate-column error on already-migrated DBs is expected.
-      for (const [table, col, type] of [
-        ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
-        ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
-        ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
-        ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
-        ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
-        ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
-      ]) {
-        try {
-          sqliteDb.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
-        } catch {
-          /* column already exists */
+      if (!currentSqlitePlayerSchema(sqliteDb)) {
+        const hasFavorites = sqliteDb.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
+        ).get();
+        if (hasFavorites) initializeFavoritesSchema(sqliteDb);
+        sqliteDb.exec(SCHEMA);
+        initializeFavoritesSchema(sqliteDb);
+        // Lightweight migration for DBs created before the PMC score columns existed.
+        // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
+        // them here; a duplicate-column error on already-migrated DBs is expected.
+        for (const [table, col, type] of [
+          ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
+          ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
+          ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
+          ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+          ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
+          ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+        ]) {
+          try {
+            sqliteDb.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+          } catch {
+            /* column already exists */
+          }
         }
+        sqliteDb.exec(
+          "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
+        );
+        sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
+          WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
+        sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
+          WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
-      sqliteDb.exec(
-        "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
-      );
-      sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
-        WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
-      sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
-        WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
     }
     return sqliteDb;
   } catch (e) {

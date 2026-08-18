@@ -147,13 +147,18 @@ async function getSqliteDb(): Promise<any | null> {
     const db = new sqlite.DatabaseSync(files.progression);
     initializeSeasonalSchema(db);
     db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS players_db.excluded_players (
-        aid INTEGER PRIMARY KEY,
-        reason TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `);
+    try {
+      db.prepare("SELECT aid FROM players_db.excluded_players LIMIT 0").get();
+    } catch (error) {
+      if (!/no such table/i.test((error as Error).message)) throw error;
+      db.exec(`
+        CREATE TABLE players_db.excluded_players (
+          aid INTEGER PRIMARY KEY,
+          reason TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `);
+    }
     sqliteDb = db;
     return db;
   } catch (error) {

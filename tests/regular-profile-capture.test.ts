@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -78,6 +79,51 @@ test("Regular persistence is resilient publicly, strict operationally, and captu
   const progression = new DatabaseSync(progressionPath);
   assert.equal(players.prepare("SELECT profile_updated_at FROM players WHERE aid = ?").get(first.aid).profile_updated_at, first.upstreamUpdatedAt);
   assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = ?").get(first.aid).n, 2);
+});
+
+test("cold player store opens a current schema without waiting for migration writes", async () => {
+  const { currentSqlitePlayerSchema, getStore } = await import("../lib/db.ts");
+  assert.ok(await getStore());
+  const db = new DatabaseSync(playersPath);
+  assert.equal(currentSqlitePlayerSchema({ prepare: db.prepare.bind(db) }), true);
+  const empty = new DatabaseSync(":memory:");
+  try {
+    assert.equal(currentSqlitePlayerSchema({ prepare: empty.prepare.bind(empty) }), false);
+  } finally {
+    empty.close();
+  }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const output = execFileSync(process.execPath, [
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "--input-type=module",
+      "-e",
+      `import { registerHooks } from 'node:module';
+       import { resolve } from 'node:path';
+       import { pathToFileURL } from 'node:url';
+       registerHooks({ resolve(specifier, context, nextResolve) {
+         if (specifier.startsWith('@/')) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + '.ts')).href };
+         return nextResolve(specifier, context);
+       }});
+       const { getStore } = await import('./lib/db.ts');
+       console.log(Boolean(await getStore()));`,
+    ], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        SQLITE_PATH: playersPath,
+        PROGRESSION_SQLITE_PATH: progressionPath,
+      },
+      timeout: 2_000,
+    });
+    assert.equal(output.trim(), "true");
+  } finally {
+    db.exec("ROLLBACK");
+    db.close();
+  }
 });
 
 test("embedded Regular profiles without an upstream version fail closed every time", async () => {

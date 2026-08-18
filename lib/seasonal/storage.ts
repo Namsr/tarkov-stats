@@ -342,9 +342,48 @@ function columns(db: SqliteDatabase, table: string): Set<string> {
   return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((r) => r.name));
 }
 
+const CURRENT_SCHEMA_OBJECTS = [
+  "excluded_players", "season_cycles", "player_profiles", "idx_player_profiles_cycle_access",
+  "idx_player_profiles_progression_hours", "idx_player_profiles_average_freshness",
+  "upstream_ban_confirmations", "idx_upstream_ban_confirmations_aid", "progression_snapshots",
+  "idx_progression_snapshots_identity_time", "idx_progression_snapshots_cycle_date",
+  "idx_progression_snapshots_cycle_raids_latest", "progression_intervals",
+  "idx_progression_intervals_cycle_date", "idx_progression_intervals_cycle_valid_end",
+  "daily_aggregates", "progression_materializations", "progression_population_generations",
+  "progression_population_current", "progression_population_chunks", "progression_personal_revisions",
+  "progression_snapshot_revision_insert", "progression_snapshot_revision_update",
+  "progression_profile_revision_update", "scan_cohorts", "scan_candidates", "scan_discovery_state",
+  "scan_daily_requeues", "scan_members", "scan_tasks", "idx_scan_tasks_claim", "scan_runs",
+  "idx_scan_runs_active_owner", "helper_sessions",
+] as const;
+
+function currentSeasonalSchema(db: SqliteDatabase): boolean {
+  const objects = new Set((db.prepare("SELECT name FROM sqlite_master").all() as { name: string }[])
+    .map((row) => row.name));
+  if (!CURRENT_SCHEMA_OBJECTS.every((name) => objects.has(name))) return false;
+
+  const snapshots = db.prepare("PRAGMA table_info(progression_snapshots)").all() as { name: string; notnull: number }[];
+  const snapshotColumns = new Map(snapshots.map((column) => [column.name, Number(column.notnull)]));
+  const nullablePortrait = [
+    "prestige", "level", "hours", "total_raids", "survived", "deaths", "total_kills",
+    "run_through", "longest_win_streak", "achv_count", "achievements",
+  ];
+  if (!snapshotColumns.has("mode") || nullablePortrait.some((name) => snapshotColumns.get(name) !== 0)) return false;
+
+  const profileColumns = columns(db, "player_profiles");
+  if (!["progression_eligible", "linked_pvp_achievements", "linked_pvp_profile_updated_at",
+    "linked_pvp_achievement_count"].every((name) => profileColumns.has(name))) return false;
+  if (!columns(db, "progression_intervals").has("score_sample_n")) return false;
+
+  const cycle = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'season_cycles'")
+    .get() as { sql?: string } | undefined;
+  return Boolean(cycle?.sql?.includes("direct_profile"));
+}
+
 /** Upgrade the original aid-only snapshot table without losing its history. */
 export function initializeSeasonalSchema(db: SqliteDatabase): void {
   db.exec("PRAGMA busy_timeout = 30000");
+  if (currentSeasonalSchema(db)) return;
   const snapshotColumns = columns(db, "progression_snapshots");
   if (snapshotColumns.size > 0 && !snapshotColumns.has("mode")) {
     db.exec("BEGIN IMMEDIATE");

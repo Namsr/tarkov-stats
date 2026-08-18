@@ -61,6 +61,20 @@ test("migrates the aid-only snapshot table to regular/persistent", () => {
   assert.equal((db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get() as { n: number }).n, 1);
 });
 
+test("current progression schema initialization performs no migration writes", () => {
+  const db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(db);
+  const writes: string[] = [];
+  initializeSeasonalSchema({
+    prepare: db.prepare.bind(db),
+    exec(sql: string) {
+      writes.push(sql);
+      db.exec(sql);
+    },
+  });
+  assert.deepEqual(writes, ["PRAGMA busy_timeout = 30000"]);
+});
+
 test("migrates favorites to one global AID membership", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE favorites (

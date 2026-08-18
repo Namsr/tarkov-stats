@@ -161,8 +161,10 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
-  assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !fromCache \}\)/);
+  assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
   assert.doesNotMatch(route, /await persistRegularProfileSnapshot/);
+  assert.match(route, /const riskIsFresh = publicRisk &&[\s\S]*Date\.now\(\) - publicRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
+  assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
   assert.match(route, /const cachedAchievements = result\.ok \? getCachedAchievements\(\) : null/);
   assert.match(route, /after\(\(\) => getAchievements\(\)\.catch/);
   assert.doesNotMatch(route, /await getAchievements\(\)/);

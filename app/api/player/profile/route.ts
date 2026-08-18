@@ -404,24 +404,32 @@ export async function GET(request: NextRequest) {
     parseMs = timing.elapsedMs(parseStarted);
 
     const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
-    if (stats.pvpStatsKnown !== false) {
-      after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
-        console.error("regular admin risk evaluation failed", error);
-      }));
-    }
     const regularSnapshot = makePlayerSnapshot(
       aid,
       stats,
       achievementIds,
       Number(stats.profileUpdatedAt),
     );
-    after(() => persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !fromCache }).catch((error) => {
+    after(() => persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !(fromCache || fromEdgeCache) }).catch((error) => {
       console.error("regular profile capture after response failed", error);
     }));
 
     const publicRisk = stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+    const riskIsFresh = publicRisk &&
+      publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
+      Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    if (stats.pvpStatsKnown !== false && !riskIsFresh) {
+      after(async () => {
+        // Let the browser's personal-timeline request finish before the
+        // population-wide achievement/risk baseline scan occupies node:sqlite.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
+          console.error("regular admin risk evaluation failed", error);
+        });
+      });
+    }
     const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
     const response = NextResponse.json(
       {
