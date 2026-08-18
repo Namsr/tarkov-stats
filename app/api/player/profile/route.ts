@@ -42,7 +42,7 @@ async function enrichSeasonalViewModel(
 ) {
   const [baseline, metadata] = await Promise.all([
     getPublishedSeasonalAchievementBaseline(profile.cycleId),
-    getAchievements().catch(() => new Map()),
+    getAchievements("seasonal").catch(() => new Map()),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {

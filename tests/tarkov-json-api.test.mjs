@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   expToLevel,
+  getAchievements,
   loadPlayerLevels,
   parseAchievements,
   parsePlayerLevels,
@@ -105,4 +106,41 @@ test("server sources contain no GraphQL calls and use the shared project identit
   assert.match(index, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
   assert.match(seasonalProfiles, /fetchTarkovJson/);
   assert.match(seasonalIndex, /fetchTarkovJson/);
+});
+
+test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () => {
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  const payload = {
+    data: { achievements: {
+      seasonal: {
+        id: "seasonal", name: "seasonal title", normalizedName: "seasonal-title",
+        side: "All", normalizedRarity: "rare", playersCompletedPercent: 1,
+        adjustedPlayersCompletedPercent: 2,
+      },
+    } },
+  };
+  globalThis.fetch = async (input) => {
+    requested.push(String(input));
+    if (String(input).endsWith("/tasks")) return new Response(JSON.stringify(payload));
+    if (String(input).endsWith("/tasks_en")) {
+      return new Response(JSON.stringify({ data: { "seasonal title": "Seasonal title" } }));
+    }
+    if (String(input).endsWith("/tasks_ru")) {
+      return new Response(JSON.stringify({ data: { "seasonal title": "Сезонное достижение" } }));
+    }
+    return new Response(null, { status: 404 });
+  };
+  try {
+    const map = await getAchievements("seasonal");
+    assert.equal(map.get("seasonal")?.nameEn, "Seasonal title");
+    assert.equal(map.get("seasonal")?.nameRu, "Сезонное достижение");
+    assert.deepEqual(requested, [
+      "https://json.tarkov.dev/pvp-season/tasks",
+      "https://json.tarkov.dev/pvp-season/tasks_en",
+      "https://json.tarkov.dev/pvp-season/tasks_ru",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

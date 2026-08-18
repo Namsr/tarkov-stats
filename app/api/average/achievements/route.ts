@@ -128,7 +128,7 @@ export async function GET(request: NextRequest) {
 
     // Cheap (own 6h cache); failure falls back to id-as-name and recovers next request.
     const metadataStarted = timing.now();
-    const meta = await getAchievements().catch(() => new Map()).finally(() => {
+    const meta = await getAchievements(rawMode === "seasonal" ? "seasonal" : "regular").catch(() => new Map()).finally(() => {
       metadataMs = timing.elapsedMs(metadataStarted);
     });
 

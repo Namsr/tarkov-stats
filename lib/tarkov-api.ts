@@ -23,9 +23,18 @@ const PLAYER_API_BASE = "https://player.tarkov.dev";
 /** Captcha-free static cache of already-viewed profiles, keyed by account id. */
 const PUBLIC_PROFILE_BASE = "https://players.tarkov.dev";
 const ITEMS_URL = "https://json.tarkov.dev/regular/items";
-const TASKS_URL = "https://json.tarkov.dev/regular/tasks";
-const TASKS_EN_URL = "https://json.tarkov.dev/regular/tasks_en";
-const TASKS_RU_URL = "https://json.tarkov.dev/regular/tasks_ru";
+const ACHIEVEMENT_ENDPOINTS = {
+  regular: {
+    tasks: "https://json.tarkov.dev/regular/tasks",
+    english: "https://json.tarkov.dev/regular/tasks_en",
+    russian: "https://json.tarkov.dev/regular/tasks_ru",
+  },
+  seasonal: {
+    tasks: "https://json.tarkov.dev/pvp-season/tasks",
+    english: "https://json.tarkov.dev/pvp-season/tasks_en",
+    russian: "https://json.tarkov.dev/pvp-season/tasks_ru",
+  },
+} as const;
 
 /**
  * Nickname search. Requires a valid Cloudflare Turnstile token bound to
@@ -371,13 +380,16 @@ export interface AchievementMeta {
   adjustedPlayersCompletedPercent: number;
 }
 
-let achievementsCache: { data: Map<string, AchievementMeta>; ts: number } | null = null;
+export type AchievementMode = keyof typeof ACHIEVEMENT_ENDPOINTS;
+type AchievementCache = { data: Map<string, AchievementMeta>; ts: number };
+const achievementsCache = new Map<AchievementMode, AchievementCache>();
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 
 /** Return fresh in-process achievement metadata without starting a network request. */
-export function getCachedAchievements(): Map<string, AchievementMeta> | null {
-  if (!achievementsCache || Date.now() - achievementsCache.ts >= ACHIEVEMENTS_TTL_MS) return null;
-  return achievementsCache.data;
+export function getCachedAchievements(mode: AchievementMode = "regular"): Map<string, AchievementMeta> | null {
+  const cached = achievementsCache.get(mode);
+  if (!cached || Date.now() - cached.ts >= ACHIEVEMENTS_TTL_MS) return null;
+  return cached.data;
 }
 
 function percentage(value: unknown, field: string): number {
@@ -454,68 +466,75 @@ export function parseAchievements(
 }
 
 /** Achievement id -> metadata, cached in-isolate. Rarely changes (per wipe). */
-export async function getAchievements(): Promise<Map<string, AchievementMeta>> {
+export async function getAchievements(mode: AchievementMode = "regular"): Promise<Map<string, AchievementMeta>> {
   const now = Date.now();
-  const cached = getCachedAchievements();
+  const cached = getCachedAchievements(mode);
   if (cached) {
-    console.info("tarkov reference", { reference: "achievements", source: "memory-cache" });
+    console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
     return cached;
   }
+  const endpoints = ACHIEVEMENT_ENDPOINTS[mode];
   let tasks: unknown;
   try {
-    const response = await fetchTarkovJson(TASKS_URL, { cache: "no-store" });
+    const response = await fetchTarkovJson(endpoints.tasks, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     tasks = await response.json();
   } catch (error) {
     console.error("tarkov reference validation failed", {
       reference: "achievements",
+      mode,
       error: error instanceof Error ? error.message : "unknown",
     });
-    const fallback = achievementsCache?.data ?? new Map();
+    const fallback = achievementsCache.get(mode)?.data ?? new Map();
     console.info("tarkov reference", {
       reference: "achievements",
-      source: achievementsCache ? "memory-cache" : "local-fallback",
+      mode,
+      source: achievementsCache.has(mode) ? "memory-cache" : "local-fallback",
     });
     return fallback;
   }
 
   try {
-    const response = await fetchTarkovJson(TASKS_EN_URL, { cache: "no-store" });
+    const response = await fetchTarkovJson(endpoints.english, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const english = await response.json();
     let russian: unknown;
     try {
-      const russianResponse = await fetchTarkovJson(TASKS_RU_URL, { cache: "no-store" });
+      const russianResponse = await fetchTarkovJson(endpoints.russian, { cache: "no-store" });
       if (russianResponse.ok) russian = await russianResponse.json();
     } catch (error) {
       console.warn("tarkov reference validation failed", {
         reference: "achievements-ru-translations",
+        mode,
         error: error instanceof Error ? error.message : "unknown",
       });
     }
     const map = parseAchievements(tasks, english, russian);
-    achievementsCache = { data: map, ts: now };
-    console.info("tarkov reference", { reference: "achievements", source: "json" });
+    achievementsCache.set(mode, { data: map, ts: now });
+    console.info("tarkov reference", { reference: "achievements", mode, source: "json" });
     return map;
   } catch (error) {
     console.error("tarkov reference validation failed", {
       reference: "achievements-translations",
+      mode,
       error: error instanceof Error ? error.message : "unknown",
     });
-    if (achievementsCache) {
-      console.info("tarkov reference", { reference: "achievements", source: "memory-cache" });
-      return achievementsCache.data;
+    const cachedAfterError = achievementsCache.get(mode);
+    if (cachedAfterError) {
+      console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
+      return cachedAfterError.data;
     }
     try {
       const fallback = parseAchievements(tasks);
-      console.info("tarkov reference", { reference: "achievements", source: "local-fallback" });
+      console.info("tarkov reference", { reference: "achievements", mode, source: "local-fallback" });
       return fallback;
     } catch (tasksError) {
       console.error("tarkov reference validation failed", {
         reference: "achievements",
+        mode,
         error: tasksError instanceof Error ? tasksError.message : "unknown",
       });
-      console.info("tarkov reference", { reference: "achievements", source: "local-fallback" });
+      console.info("tarkov reference", { reference: "achievements", mode, source: "local-fallback" });
       return new Map();
     }
   }
