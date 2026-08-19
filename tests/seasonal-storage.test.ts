@@ -1,10 +1,13 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate } from "../lib/seasonal/storage.ts";
+import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 import {
   FAVORITE_INSERT_SQL,
   FAVORITE_SET_MAIN_SQL,
@@ -73,6 +76,27 @@ test("current progression schema initialization performs no migration writes", (
     },
   });
   assert.deepEqual(writes, ["PRAGMA busy_timeout = 30000"]);
+});
+
+test("an unchanged Seasonal cycle stays read-only under a concurrent writer", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-cycle-"));
+  const file = join(directory, "progression.db");
+  const db = new DatabaseSync(file);
+  const cycle = { mode: "seasonal", cycleId: "s1", startsAt: 1, endsAt: null,
+    enabled: true, upstreamContract: "game_mode" } as const;
+  initializeSeasonalSchema(db);
+  upsertSqliteSeasonCycle(db, cycle);
+  const locker = new DatabaseSync(file);
+  locker.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("PRAGMA busy_timeout = 50");
+    assert.doesNotThrow(() => upsertSqliteSeasonCycle(db, cycle));
+  } finally {
+    locker.exec("ROLLBACK");
+    locker.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("migrates favorites to one global AID membership", () => {

@@ -553,6 +553,14 @@ function ensureSeasonalContractConstraint(db: SqliteDatabase): void {
 }
 
 export function upsertSqliteSeasonCycle(db: SqliteDatabase, cycle: import("@/types/seasonal").SeasonCycle): void {
+  const current = db.prepare(`SELECT starts_at, ends_at, enabled, upstream_contract
+    FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?`).get(cycle.cycleId) as
+    | { starts_at: number; ends_at: number | null; enabled: number; upstream_contract: string | null }
+    | undefined;
+  if (current && Number(current.starts_at) === cycle.startsAt &&
+      (current.ends_at == null ? null : Number(current.ends_at)) === cycle.endsAt &&
+      Number(current.enabled) === (cycle.enabled ? 1 : 0) &&
+      current.upstream_contract === cycle.upstreamContract) return;
   db.prepare(`INSERT INTO season_cycles (mode, cycle_id, starts_at, ends_at, enabled, upstream_contract)
     VALUES ('seasonal', ?, ?, ?, ?, ?)
     ON CONFLICT(mode, cycle_id) DO UPDATE SET starts_at = excluded.starts_at,

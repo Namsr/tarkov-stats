@@ -513,6 +513,18 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
 
 let sqliteDb: SqliteDatabase | null = null;
 let sqliteStoreInstance: ModerationStore | null = null;
+let sqliteRiskReadDb: SqliteDatabase | null = null;
+let sqliteRiskReadFile: string | null = null;
+let sqliteRiskReadIdentity: string | null = null;
+
+function closeRiskReadDb(): void {
+  try {
+    sqliteRiskReadDb?.close();
+  } catch {}
+  sqliteRiskReadDb = null;
+  sqliteRiskReadFile = null;
+  sqliteRiskReadIdentity = null;
+}
 
 async function getModerationDb(): Promise<SqliteDatabase> {
   if (sqliteDb) return sqliteDb;
@@ -563,5 +575,29 @@ export async function getRiskEvaluation(input: {
   mode: GameMode;
   cycleId: string;
 }): Promise<StoredRiskEvaluation | null> {
-  return (await getModerationStore()).riskFor(input);
+  validateAid(input.aid);
+  try {
+    const file = adminPath();
+    const fs = await import("node:fs");
+    const stat = fs.statSync(/* turbopackIgnore: true */ file);
+    const identity = `${stat.dev}:${stat.ino}`;
+    if (sqliteRiskReadDb && (sqliteRiskReadFile !== file || sqliteRiskReadIdentity !== identity)) {
+      closeRiskReadDb();
+    }
+    if (!sqliteRiskReadDb) {
+      // Public profile reads must not run moderation migrations or attach four
+      // writable databases. Admin/write paths still use getModerationStore().
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sqlite = (await import("node:sqlite" as string)) as any;
+      sqliteRiskReadDb = new sqlite.DatabaseSync(file, { readOnly: true });
+      sqliteRiskReadDb.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 250;");
+      sqliteRiskReadFile = file;
+      sqliteRiskReadIdentity = identity;
+    }
+    return riskFromRow(sqliteRiskReadDb.prepare(`SELECT * FROM risk_evaluations
+      WHERE aid = ? AND mode = ? AND cycle_id = ?`).get(input.aid, input.mode, input.cycleId));
+  } catch {
+    closeRiskReadDb();
+    return null;
+  }
 }

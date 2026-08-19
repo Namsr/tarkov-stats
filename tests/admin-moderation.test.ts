@@ -1,17 +1,93 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { createSqliteModerationStore, ModerationConflictError } from "../lib/admin/moderation-db.ts";
+import { createSqliteModerationStore, getRiskEvaluation, ModerationConflictError } from "../lib/admin/moderation-db.ts";
 import { isValidMutationOrigin } from "../lib/admin/origin.ts";
 import { createSqliteBanStore } from "../lib/ban-db.ts";
 import { createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 import { materializeRegularProgression } from "../lib/regular-progression.ts";
+
+test("cold public risk read does not wait for moderation migration writes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "risk-read-"));
+  const file = join(directory, "admin.db");
+  const setup = new DatabaseSync(file);
+  createSqliteModerationStore(setup, { attachExternal: false }).saveRisk({
+    aid: 42, mode: "seasonal", cycleId: "s1", score: 45, tier: "high", factors: [],
+    scoreVersion: 1, profileUpdatedAt: 10, evaluatedAt: 20, sampleN: 30,
+    confidence: 1, freshnessAt: 19,
+  });
+  setup.close();
+  const locker = new DatabaseSync(file);
+  locker.exec("BEGIN IMMEDIATE");
+  try {
+    const output = execFileSync(process.execPath, [
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "--input-type=module",
+      "-e",
+      `const { getRiskEvaluation } = await import('./lib/admin/moderation-db.ts');
+       const risk = await getRiskEvaluation({ aid: 42, mode: 'seasonal', cycleId: 's1' });
+       console.log(JSON.stringify({ score: risk?.score, profileUpdatedAt: risk?.profileUpdatedAt,
+         evaluatedAt: risk?.evaluatedAt, sampleN: risk?.sampleN, confidence: risk?.confidence,
+         freshnessAt: risk?.freshnessAt }));`,
+    ], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, NODE_NO_WARNINGS: "1", ADMIN_ANALYTICS_SQLITE_PATH: file },
+      timeout: 2_000,
+    });
+    assert.deepEqual(JSON.parse(output), {
+      score: 45, profileUpdatedAt: 10, evaluatedAt: 20, sampleN: 30, confidence: 1, freshnessAt: 19,
+    });
+  } finally {
+    locker.exec("ROLLBACK");
+    locker.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("public risk read fails soft for missing and legacy storage", () => {
+  const directory = mkdtempSync(join(tmpdir(), "risk-read-legacy-"));
+  const missing = join(directory, "missing.db");
+  const legacy = join(directory, "legacy.db");
+  const legacyDb = new DatabaseSync(legacy);
+  legacyDb.exec(`CREATE TABLE risk_evaluations (
+    aid INTEGER NOT NULL, mode TEXT NOT NULL, cycle_id TEXT NOT NULL, score INTEGER NOT NULL,
+    tier TEXT NOT NULL, factors_json TEXT NOT NULL, score_version INTEGER NOT NULL,
+    profile_updated_at INTEGER NOT NULL, evaluated_at INTEGER NOT NULL,
+    PRIMARY KEY (aid, mode, cycle_id));
+    INSERT INTO risk_evaluations VALUES (42, 'seasonal', 's1', 25, 'medium', '[]', 1, 10, 20);`);
+  legacyDb.close();
+  try {
+    const output = execFileSync(process.execPath, [
+      "--experimental-strip-types", "--experimental-sqlite", "--input-type=module", "-e",
+      `const { getRiskEvaluation } = await import('./lib/admin/moderation-db.ts');
+       process.env.ADMIN_ANALYTICS_SQLITE_PATH = ${JSON.stringify(missing)};
+       const missingRisk = await getRiskEvaluation({ aid: 42, mode: 'seasonal', cycleId: 's1' });
+       process.env.ADMIN_ANALYTICS_SQLITE_PATH = ${JSON.stringify(legacy)};
+       const legacyRisk = await getRiskEvaluation({ aid: 42, mode: 'seasonal', cycleId: 's1' });
+       console.log(JSON.stringify({ missingRisk, score: legacyRisk?.score,
+         sampleN: legacyRisk?.sampleN, freshnessAt: legacyRisk?.freshnessAt }));`,
+    ], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_NO_WARNINGS: "1" }, timeout: 2_000 });
+    assert.deepEqual(JSON.parse(output), { missingRisk: null, score: 25, sampleN: null, freshnessAt: null });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("public risk read still rejects an invalid account id", async () => {
+  await assert.rejects(
+    getRiskEvaluation({ aid: 0, mode: "seasonal", cycleId: "s1" }),
+    /invalid aid/,
+  );
+});
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "admin-moderation-"));
