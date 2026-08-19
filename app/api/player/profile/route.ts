@@ -2,6 +2,7 @@ import { after, NextRequest, NextResponse } from "next/server";
 import {
   getPublicProfile,
   PLAYER_LEVELS_V2026_07_22,
+  getCachedAchievements,
   getAchievements,
   parseArenaProfileStats,
   parseProfileStats,
@@ -39,14 +40,12 @@ import {
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
+  metadata: Awaited<ReturnType<typeof getAchievements>> | null,
 ) {
-  const [baseline, metadata] = await Promise.all([
-    getPublishedSeasonalAchievementBaseline(profile.cycleId),
-    getAchievements("seasonal").catch(() => new Map()),
-  ]);
+  const baseline = await getPublishedSeasonalAchievementBaseline(profile.cycleId);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
-    const meta = metadata.get(achievement.id);
+    const meta = metadata?.get(achievement.id);
     const row = baselineById.get(achievement.id);
     const eligibleN = baseline?.eligibleN ?? null;
     return {
@@ -152,6 +151,12 @@ export async function GET(request: NextRequest) {
         },
       }
     );
+    const cachedAchievements = result.ok ? getCachedAchievements("seasonal") : null;
+    if (result.ok && !cachedAchievements) {
+      after(() => getAchievements("seasonal").catch((error) => {
+        console.error("seasonal achievement metadata warmup failed", error);
+      }));
+    }
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
@@ -174,6 +179,7 @@ export async function GET(request: NextRequest) {
       ? await enrichSeasonalViewModel(
           result.profile,
           buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
+          cachedAchievements,
         )
       : null;
     const response = NextResponse.json(

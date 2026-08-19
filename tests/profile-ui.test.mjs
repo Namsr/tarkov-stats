@@ -168,8 +168,9 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /const seasonalRiskIsFresh = result\.ok && storedRisk &&[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreSeasonalRisk/);
   assert.ok(route.indexOf("const storedRisk = result.ok") < route.indexOf("if (result.ok && !seasonalRiskIsFresh)"));
-  assert.match(route, /getAchievements\("seasonal"\)\.catch\(\(\) => new Map\(\)\)/);
-  assert.match(route, /metadata\.get\(achievement\.id\)/);
+  assert.match(route, /after\(\(\) => getAchievements\("seasonal"\)\.catch/);
+  assert.doesNotMatch(route, /await getAchievements\("seasonal"\)/);
+  assert.match(route, /metadata\?\.get\(achievement\.id\)/);
 });
 
 test("profile navigation exposes the shell immediately and overlaps regular API work", async () => {
