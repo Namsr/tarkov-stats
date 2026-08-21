@@ -231,7 +231,7 @@ export async function GET(request: NextRequest) {
             ...snapshot,
             profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null,
           },
-          { headers: noStore }
+          { headers: profileHeaders }
         );
         timing.finish({
           operation: "player_profile",
@@ -321,7 +321,7 @@ export async function GET(request: NextRequest) {
           achievementIds,
           profileUpdatedAt: Number(profile.updated) || null,
         },
-        { headers: noStore }
+        { headers: profileHeaders }
       );
       timing.setRequestContext({ nickname: stats.nickname });
       timing.finish({

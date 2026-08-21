@@ -127,6 +127,13 @@ test("profile mode switch stays below profile actions and is available before pr
   assert.doesNotMatch(pageBody, /await getPlayerLevels/);
   assert.match(shell, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
   assert.match(header, /profile-header__actions[\s\S]*profile-header__mode[\s\S]*<ProfileModeSwitch/);
+  assert.match(shell, /seasonalCycleId=\{mode === "seasonal" \? cycleId : undefined\}/);
+  assert.match(header, /seasonalCycleId=\{seasonalCycleId\}/);
+  assert.match(modes, /const activeSeasonalCycleId = seasonalCycleForNavigation\(current, seasonalCycleId, null, null\)/);
+  assert.match(modes, /if \(activeSeasonalCycleId\) latestSeasonalCycleId = activeSeasonalCycleId/);
+  assert.match(modes, /if \(mode === "seasonal"\) \{\s*params\.delete\("cycle"\)/);
+  assert.match(modes, /seasonalCycleForNavigation\([\s\S]*latestSeasonalCycleId,[\s\S]*searchParams\.get\("cycle"\)/);
+  assert.doesNotMatch(shell, /seasonalCycleId=\{cycleId\}/);
   assert.match(shell, /ProfileShellLoading[\s\S]*<ProfileModeSwitch current=\{mode\}/);
   assert.match(modes, /prefetch/);
   assert.match(modes, /scroll=\{false\}/);
@@ -135,7 +142,8 @@ test("profile mode switch stays below profile actions and is available before pr
   assert.match(modes, /const pathname = usePathname\(\)/);
   assert.match(modes, /pendingNavigation\.fromMode === current &&[\s\S]*pendingNavigation\.pathname === pathname/);
   assert.match(modes, /window\.setTimeout\(\(\) => setPendingNavigation\(null\), PENDING_TIMEOUT_MS\)/);
-  assert.match(modes, /onNavigate=\{\(\) => \{[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.match(modes, /onNavigate=\{\(\) => \{[\s\S]*warmProfile\(mode\)[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
+  assert.match(modes, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`\)/);
   assert.doesNotMatch(modes, /event\.preventDefault\(\)[\s\S]*router\.push\(target/);
   assert.equal((modes.match(/profile-mode-navigate/g) ?? []).length, 1);
   assert.match(styles, /\.profile-header__mode \.mode-switch/);
@@ -144,10 +152,19 @@ test("profile mode switch stays below profile actions and is available before pr
 
 test("profile mode switching is available during loading and capture is post-response", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
   const route = await readFile("app/api/player/profile/route.ts", "utf8");
 
   assert.match(regular, /const forceRefresh = isReload\(\)/);
-  assert.match(regular, /cache: forceRefresh \? "no-store" : "default"/);
+  assert.match(regular, /getCachedPlayerProfileResponse<RegularProfileResponse>\(profileRequestUrl\)/);
+  assert.match(regular, /loadPlayerProfileResponse<RegularProfileResponse>/);
+  assert.match(regular, /const \[loading, setLoading\] = useState\(!initialResponse\?\.stats\)/);
+  assert.match(seasonal, /getCachedPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
+  assert.match(seasonal, /loadPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
+  assert.match(seasonal, /const \[loading, setLoading\] = useState\(!initialProfile\)/);
+  assert.doesNotMatch(regular, /(?:res|response)\.json\(\)/);
+  assert.doesNotMatch(seasonal, /(?:res|response)\.json\(\)/);
+  assert.doesNotMatch(seasonal, /new AbortController\(\)/);
   assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
   const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
   assert.match(progression, /cache: forceRefresh \|\| refreshRevision > 0 \? "no-store" : "default"/);
@@ -160,6 +177,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
+  assert.ok((route.match(/\{ headers: profileHeaders \}/g) ?? []).length >= 2);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
   assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
   assert.doesNotMatch(route, /await persistRegularProfileSnapshot/);
@@ -178,10 +196,14 @@ test("profile navigation exposes the shell immediately and overlaps regular API 
   const search = await readFile("components/SearchBar.tsx", "utf8");
 
   assert.match(loading, /usePathname/);
+  assert.match(loading, /useSearchParams/);
   assert.match(loading, /parsePlayerId/);
+  assert.match(loading, /<RegularPlayer[\s\S]*aid=\{String\(aid\)\}/);
+  assert.match(loading, /<SeasonalPlayer[\s\S]*cycleId=\{cycleId\}/);
+  assert.match(loading, /levelBands=\{cumulativeLevelBands\(PLAYER_LEVELS_V2026_07_22\)\}/);
   assert.match(loading, /<ProfileShellLoading mode=\{mode\} aid=\{aid\} \/>/);
   assert.match(search, /const profileParams = new URLSearchParams\(\{ aid: String\(player\.aid\), mode: player\.mode \}\)/);
-  assert.match(search, /fetch\(`\/api\/player\/profile\?\$\{profileParams\}`, \{ cache: "default" \}\)/);
+  assert.match(search, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{profileParams\}`\)/);
   assert.match(search, /player\.mode === "regular"/);
   assert.match(search, /const timelineParams = new URLSearchParams\(\{ mode: "regular", cycle: "persistent", aid: String\(player\.aid\) \}\)/);
   assert.match(search, /fetch\(`\/api\/progression\/timeline\?\$\{timelineParams\}`, \{ cache: "default" \}\)/);

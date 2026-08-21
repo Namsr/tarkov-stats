@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
@@ -20,16 +20,34 @@ import type { CrossSectionMode } from "@/lib/db";
 import { isProfileStale } from "@/lib/profile-refresh-policy";
 import type { PublicRiskView } from "@/types/profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
+import {
+  getCachedPlayerProfileResponse,
+  loadPlayerProfileResponse,
+  PlayerProfileResponseError,
+} from "@/lib/client-profile-request";
 
 interface Props {
-  params: Promise<{ aid: string }>;
-  searchParams: Promise<{ radarDemo?: string | string[] }>;
+  aid: string;
+  radarDemo?: string | string[];
 }
 
 interface ProfileSummary {
   nickname: string;
   side?: string;
   prestige?: number;
+}
+
+interface RegularProfileResponse {
+  code?: string;
+  error?: string;
+  profile?: PlayerProfile;
+  stats?: ParsedPlayerStats;
+  achievementIds?: string[];
+  profileUpdatedAt?: number | null;
+  profileSummary?: ProfileSummary;
+  identity?: { aid?: number; mode?: string; cycleId?: string };
+  risk?: PublicRiskView | null;
+  viewModel?: { risk?: PublicRiskView | null };
 }
 
 function ProfileActions({
@@ -77,26 +95,32 @@ function ProfileActions({
 }
 
 export default function RegularPlayer({
-  params,
-  searchParams,
+  aid,
+  radarDemo: radarDemoValue,
   mode = "regular",
 }: Props & { mode?: CrossSectionMode }) {
   const { t } = useI18n();
-  const { aid } = use(params);
-  const query = use(searchParams);
-  const radarDemoParam = Array.isArray(query.radarDemo) ? query.radarDemo[0] : query.radarDemo;
+  const radarDemoParam = Array.isArray(radarDemoValue) ? radarDemoValue[0] : radarDemoValue;
   const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
-  const [profile, setProfile] = useState<PlayerProfile | null>(null);
-  const [stats, setStats] = useState<ParsedPlayerStats | null>(null);
-  const [achievementIds, setAchievementIds] = useState<string[]>([]);
-  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(null);
-  const [profileIsStale, setProfileIsStale] = useState(false);
+  const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode })}`;
+  const initialResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+  const initialUpdatedAt = initialResponse?.profileUpdatedAt ?? null;
+  const [profile, setProfile] = useState<PlayerProfile | null>(initialResponse?.profile ?? null);
+  const [stats, setStats] = useState<ParsedPlayerStats | null>(initialResponse?.stats ?? null);
+  const [achievementIds, setAchievementIds] = useState<string[]>(
+    initialResponse?.achievementIds ??
+      (initialResponse?.profile?.achievements ? Object.keys(initialResponse.profile.achievements) : []),
+  );
+  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(initialUpdatedAt);
+  const [profileIsStale, setProfileIsStale] = useState(isProfileStale(initialUpdatedAt));
   const [modeUnavailable, setModeUnavailable] = useState(false);
   const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialResponse?.stats);
   const [error, setError] = useState("");
   const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
-  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(null);
+  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(
+    initialResponse?.viewModel?.risk ?? initialResponse?.risk ?? null,
+  );
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
@@ -106,39 +130,32 @@ export default function RegularPlayer({
     let cancelled = false;
     requestGeneration.current += 1;
     refreshPromise.current = null;
-    // Reset the route-level request state whenever the account changes.
-    setLoading(true);
+    const cached = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+    setLoading(!cached?.stats);
     setError("");
-    setProfileUpdatedAt(null);
-    setProfileIsStale(false);
     setModeUnavailable(false);
     setProfileSummary(null);
     setProgressionRisk(null);
-    setServerRisk(null);
     setForceProgressionRefresh(false);
+    if (!cached?.stats) {
+      setProfile(null);
+      setStats(null);
+      setAchievementIds([]);
+      setProfileUpdatedAt(null);
+      setProfileIsStale(false);
+      setServerRisk(null);
+    }
 
     // На перезагрузке (F5) обходим 5-мин кэш — «обновил на tarkov.dev → F5 → свежее».
     const forceRefresh = isReload();
     setForceProgressionRefresh(forceRefresh);
     const requestParams = new URLSearchParams({ aid, mode });
     if (forceRefresh) requestParams.set("refresh", "1");
-    fetch(`/api/player/profile?${requestParams}`, {
-      cache: forceRefresh ? "no-store" : "default",
+    loadPlayerProfileResponse<RegularProfileResponse>(`/api/player/profile?${requestParams}`, {
+      force: forceRefresh,
     })
-      .then(async (res) => {
-        const data = (await res.json()) as {
-          code?: string;
-          error?: string;
-          profile?: PlayerProfile;
-          stats?: ParsedPlayerStats;
-          achievementIds?: string[];
-          profileUpdatedAt?: number | null;
-          profileSummary?: ProfileSummary;
-          identity?: { aid?: number; mode?: string; cycleId?: string };
-          risk?: PublicRiskView | null;
-          viewModel?: { risk?: PublicRiskView | null };
-        };
-        if (!res.ok || !data.stats) {
+      .then(({ ok, body: data }) => {
+        if (!ok || !data.stats) {
           const unavailable = data.code === "mode_profile_unavailable";
           if (unavailable) {
             if (!cancelled) {
@@ -173,7 +190,11 @@ export default function RegularPlayer({
         setServerRisk(data.viewModel?.risk ?? data.risk ?? null);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : t("player.loadError"));
+        if (!cancelled) {
+          setError(err instanceof PlayerProfileResponseError
+            ? t("player.loadError")
+            : err instanceof Error ? err.message : t("player.loadError"));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -182,7 +203,7 @@ export default function RegularPlayer({
     return () => {
       cancelled = true;
     };
-  }, [aid, mode, t]);
+  }, [aid, mode, profileRequestUrl, t]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
@@ -191,22 +212,13 @@ export default function RegularPlayer({
     const previousStats = stats;
     const previousUpdatedAt = profileUpdatedAt;
     const requestParams = new URLSearchParams({ aid, mode, refresh: "1" });
-    const request = fetch(`/api/player/profile?${requestParams}`)
-      .then(async (res): Promise<RefreshCheckResult> => {
-        const data = (await res.json()) as {
-          code?: string;
-          error?: string;
-          profile?: PlayerProfile;
-          stats?: ParsedPlayerStats;
-          achievementIds?: string[];
-          profileUpdatedAt?: number | null;
-          profileSummary?: ProfileSummary;
-          identity?: { aid?: number; mode?: string; cycleId?: string };
-          risk?: PublicRiskView | null;
-          viewModel?: { risk?: PublicRiskView | null };
-        };
+    const request = loadPlayerProfileResponse<RegularProfileResponse>(
+      `/api/player/profile?${requestParams}`,
+      { force: true },
+    )
+      .then(({ ok, body: data }): Promise<RefreshCheckResult> | RefreshCheckResult => {
         if (generation !== requestGeneration.current) return "unchanged";
-        if (!res.ok || !data.stats) {
+        if (!ok || !data.stats) {
           if (data.code === "mode_profile_unavailable") {
             setModeUnavailable(true);
             setProfileSummary(data.profileSummary ?? null);
@@ -243,6 +255,10 @@ export default function RegularPlayer({
         setError("");
         setProgressionRefreshRevision((current) => current + 1);
         return changed ? "updated" : "unchanged";
+      })
+      .catch((error: unknown) => {
+        if (error instanceof PlayerProfileResponseError) throw new Error(t("player.loadError"));
+        throw error;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;

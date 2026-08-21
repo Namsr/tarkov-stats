@@ -18,6 +18,11 @@ import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
 import type { PlayerProfileViewModel, ProfileViewAchievement } from "@/types/player-profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
+import {
+  getCachedPlayerProfileResponse,
+  loadPlayerProfileResponse,
+  PlayerProfileResponseError,
+} from "@/lib/client-profile-request";
 
 interface SeasonalProfileResponse {
   code?: string;
@@ -150,46 +155,73 @@ export default function SeasonalPlayer({
   levelBands: LevelBand[];
 }) {
   const { t, lang } = useI18n();
-  const [profile, setProfile] = useState<SeasonalProfile | null>(null);
-  const [achievements, setAchievements] = useState<SeasonalAchievementView[] | null>(null);
-  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(null);
+  const profileRequestUrl = `/api/player/profile?${new URLSearchParams({
+    aid: String(aid),
+    mode: "seasonal",
+    cycle: cycleId,
+  })}`;
+  const cachedBody = getCachedPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)?.body;
+  const initialProfile = cachedBody?.profile &&
+    cachedBody.identity?.aid === aid &&
+    cachedBody.identity.mode === "seasonal" &&
+    cachedBody.identity.cycleId === cycleId
+    ? cachedBody.profile
+    : null;
+  const [profile, setProfile] = useState<SeasonalProfile | null>(initialProfile);
+  const [achievements, setAchievements] = useState<SeasonalAchievementView[] | null>(
+    initialProfile
+      ? achievementsFromViewModel(cachedBody?.viewModel, lang) ?? achievementsFor(initialProfile)
+      : null,
+  );
+  const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(
+    initialProfile ? cachedBody?.viewModel?.risk ?? cachedBody?.risk ?? null : null,
+  );
   const [progressionRisk, setProgressionRisk] = useState<ProgressionRiskPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialProfile);
   const [error, setError] = useState("");
   const [modeUnavailable, setModeUnavailable] = useState(false);
-  const [profileIsStale, setProfileIsStale] = useState(false);
+  const [profileIsStale, setProfileIsStale] = useState(
+    initialProfile ? isProfileStale(initialProfile.profileUpdatedAt) : false,
+  );
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
-  const [displayNickname, setDisplayNickname] = useState<string | undefined>();
+  const [displayNickname, setDisplayNickname] = useState<string | undefined>(initialProfile?.nickname);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let cancelled = false;
     requestGeneration.current += 1;
     const generation = requestGeneration.current;
     refreshPromise.current = null;
-    setLoading(true);
+    const cached = getCachedPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)?.body;
+    const cachedProfile = cached?.profile &&
+      cached.identity?.aid === aid &&
+      cached.identity.mode === "seasonal" &&
+      cached.identity.cycleId === cycleId
+      ? cached.profile
+      : null;
+    setLoading(!cachedProfile);
     setError("");
-    setProfile((current) => {
-      if (current?.nickname) setDisplayNickname(current.nickname);
-      return null;
-    });
-    setAchievements(null);
-    setServerRisk(null);
     setProgressionRisk(null);
     setModeUnavailable(false);
-    setProfileIsStale(false);
     setProgressionRefreshRevision(0);
     setForceProgressionRefresh(isReload());
+    if (!cachedProfile) {
+      setProfile((current) => {
+        if (current?.nickname) setDisplayNickname(current.nickname);
+        return null;
+      });
+      setAchievements(null);
+      setServerRisk(null);
+      setProfileIsStale(false);
+    }
 
-    const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId });
-    fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "default" })
-      .then(async (response) => {
-        const body = (await response.json()) as SeasonalProfileResponse;
-        if (!response.ok || !body.profile) {
+    loadPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)
+      .then(({ ok, body }) => {
+        if (!ok || !body.profile) {
           if (body.code === "mode_profile_unavailable") {
-            setModeUnavailable(true);
+            if (!cancelled && generation === requestGeneration.current) setModeUnavailable(true);
             return null;
           }
           throw new Error(body.error ?? t("seasonal.profileUnavailable"));
@@ -201,13 +233,13 @@ export default function SeasonalPlayer({
         ) {
           throw new Error(t("seasonal.profileUnavailable"));
         }
-        if (controller.signal.aborted || generation !== requestGeneration.current) return null;
+        if (cancelled || generation !== requestGeneration.current) return null;
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(body.profile));
         return body.profile;
       })
       .then((nextProfile) => {
-        if (controller.signal.aborted || generation !== requestGeneration.current || !nextProfile) return;
+        if (cancelled || generation !== requestGeneration.current || !nextProfile) return;
         const nickname = nextProfile.nickname.trim();
         if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode: "pvp-season", cycle: cycleId });
         setProfile(nextProfile);
@@ -216,25 +248,31 @@ export default function SeasonalPlayer({
         setModeUnavailable(false);
       })
       .catch((caught: unknown) => {
-        if (caught instanceof Error && caught.name === "AbortError") return;
-        setError(caught instanceof Error ? caught.message : t("seasonal.profileUnavailable"));
+        if (cancelled || generation !== requestGeneration.current) return;
+        setError(caught instanceof PlayerProfileResponseError
+          ? t("seasonal.profileUnavailable")
+          : caught instanceof Error ? caught.message : t("seasonal.profileUnavailable"));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!cancelled && generation === requestGeneration.current) setLoading(false);
       });
-    return () => controller.abort();
-  }, [aid, cycleId, lang, t]);
+    return () => {
+      cancelled = true;
+    };
+  }, [aid, cycleId, lang, profileRequestUrl, t]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
     const generation = requestGeneration.current;
     const previousProfile = profile;
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId, refresh: "1" });
-    const request = fetch(`/api/player/profile?${params}`, { cache: "no-store" })
-      .then(async (response): Promise<RefreshCheckResult> => {
-        const body = (await response.json()) as SeasonalProfileResponse;
+    const request = loadPlayerProfileResponse<SeasonalProfileResponse>(
+      `/api/player/profile?${params}`,
+      { force: true },
+    )
+      .then(({ ok, body }): Promise<RefreshCheckResult> | RefreshCheckResult => {
         if (generation !== requestGeneration.current) return "unchanged";
-        if (!response.ok || !body.profile) {
+        if (!ok || !body.profile) {
           if (body.code === "mode_profile_unavailable") {
             setModeUnavailable(true);
             setError("");
@@ -262,6 +300,10 @@ export default function SeasonalPlayer({
         setError("");
         setProgressionRefreshRevision((current) => current + 1);
         return changed ? "updated" : "unchanged";
+      })
+      .catch((error: unknown) => {
+        if (error instanceof PlayerProfileResponseError) throw new Error(t("seasonal.profileUnavailable"));
+        throw error;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;

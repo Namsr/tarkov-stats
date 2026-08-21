@@ -43,9 +43,10 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   if (mode !== "seasonal") {
     return (
       <RegularPlayer
+        key={`${mode}:${aid}`}
+        aid={aid}
+        radarDemo={query.radarDemo}
         mode={mode}
-        params={Promise.resolve({ aid })}
-        searchParams={Promise.resolve({ radarDemo: query.radarDemo })}
       />
     );
   }
@@ -56,7 +57,7 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   }
   return (
     <Suspense fallback={<ProfileShellLoading mode="seasonal" aid={parsedAid} />}>
-      <SeasonalPlayerRoute aid={parsedAid} cycleId={cycle.cycleId} />
+      <SeasonalPlayerRoute key={`seasonal:${parsedAid}:${cycle.cycleId}`} aid={parsedAid} cycleId={cycle.cycleId} />
     </Suspense>
   );
 }

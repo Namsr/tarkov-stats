@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useState, type MouseEvent as ReactMouseEvent
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
+import { loadPlayerProfileResponse, PlayerProfileResponseError } from "@/lib/client-profile-request";
 import CompactDetails from "@/components/CompactDetails";
 import SegmentedRadio from "@/components/SegmentedRadio";
 import type { ParsedPlayerStats } from "@/types/tarkov";
@@ -410,7 +411,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     ) {
       return;
     }
-    const controller = new AbortController();
+    let cancelled = false;
     setFavoriteLoading(true);
     setFavoriteError("");
     setFavoriteProfile(null);
@@ -419,40 +420,41 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       mode,
       cycle: cycleId,
     });
-    fetch(`/api/player/profile?${favoriteParams}`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = (await response.json()) as {
+    loadPlayerProfileResponse<{
           identity?: { aid?: number; mode?: GameMode; cycleId?: string };
           stats?: ParsedPlayerStats;
           comparisonStats?: ProfileComparisonStats;
-        };
+        }>(`/api/player/profile?${favoriteParams}`)
+      .then(({ ok, body: payload }) => {
         const nextStats = payload.comparisonStats ?? payload.stats;
         const identityMatches = mode !== "regular" && mode !== "seasonal"
           ? true
           : payload.identity?.aid === effectiveFavoriteAid
             && payload.identity.mode === mode
             && payload.identity.cycleId === cycleId;
-        if (!response.ok || !nextStats || !identityMatches) {
+        if (!ok || !nextStats || !identityMatches) {
           throw new Error(t("radar.error.favorite"));
         }
         return nextStats;
       })
       .then((payload) => {
-        if (!controller.signal.aborted) {
+        if (!cancelled) {
           setFavoriteProfile({ requestId: favoriteRequestId, stats: payload });
         }
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setFavoriteError(error instanceof Error ? error.message : t("radar.error.favorite"));
+        if (!cancelled) {
+          setFavoriteError(error instanceof PlayerProfileResponseError
+            ? t("radar.error.favorite")
+            : error instanceof Error ? error.message : t("radar.error.favorite"));
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) setFavoriteLoading(false);
+        if (!cancelled) setFavoriteLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+    };
   }, [authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t]);
 
   const cohort = demo

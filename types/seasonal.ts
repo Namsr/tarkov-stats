@@ -414,3 +414,21 @@ export function normalizeCycleId(value: unknown, mode: GameMode): CycleId | null
   const normalized = value.trim();
   return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized) ? normalized : null;
 }
+
+function normalizeSeasonalNavigationCycle(value: unknown): CycleId | null {
+  const cycleId = normalizeCycleId(value, "seasonal");
+  return cycleId === LEGACY_IDENTITY.cycleId ? null : cycleId;
+}
+
+export function seasonalCycleForNavigation(
+  current: GameMode,
+  suppliedCycleId: unknown,
+  rememberedCycleId: unknown,
+  urlCycleId: unknown,
+): CycleId | null {
+  const supplied = current === "seasonal"
+    ? normalizeSeasonalNavigationCycle(suppliedCycleId)
+    : null;
+  return supplied ?? normalizeSeasonalNavigationCycle(rememberedCycleId) ??
+    (current === "seasonal" ? normalizeSeasonalNavigationCycle(urlCycleId) : null);
+}

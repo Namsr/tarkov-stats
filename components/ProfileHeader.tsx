@@ -5,6 +5,7 @@ import type { GameMode } from "@/types/seasonal";
 export default function ProfileHeader({
   aid,
   mode,
+  seasonalCycleId,
   kicker,
   title,
   meta,
@@ -13,6 +14,7 @@ export default function ProfileHeader({
 }: {
   aid: number;
   mode: GameMode;
+  seasonalCycleId?: string;
   kicker: string;
   title?: string;
   meta?: ReactNode;
@@ -32,7 +34,7 @@ export default function ProfileHeader({
             {actions}
           </div>
           <div className="profile-header__mode">
-            <ProfileModeSwitch current={mode} page="player" aid={aid} />
+            <ProfileModeSwitch current={mode} page="player" aid={aid} seasonalCycleId={seasonalCycleId} />
           </div>
         </div>
       </div>

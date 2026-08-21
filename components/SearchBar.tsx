@@ -13,6 +13,7 @@ import {
 import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchResult } from "@/types/tarkov";
 import { appRouteMode } from "@/types/seasonal";
+import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 
@@ -97,9 +98,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
     // request instead of opening a second waterfall after navigation.
     if (player.mode !== "seasonal") {
       const profileParams = new URLSearchParams({ aid: String(player.aid), mode: player.mode });
-      void fetch(`/api/player/profile?${profileParams}`, { cache: "default" }).catch(() => {
-        // Navigation still owns the visible error state.
-      });
+      warmPlayerProfileResponse(`/api/player/profile?${profileParams}`);
     }
     if (player.mode === "regular") {
       const timelineParams = new URLSearchParams({ mode: "regular", cycle: "persistent", aid: String(player.aid) });

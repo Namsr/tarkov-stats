@@ -3,7 +3,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parsePlayerId, parsePlayerInput } from "../lib/player-id.ts";
-import { appRouteMode, gameModeFromAppRoute } from "../types/seasonal.ts";
+import {
+  appRouteMode,
+  gameModeFromAppRoute,
+  seasonalCycleForNavigation,
+} from "../types/seasonal.ts";
 
 test("profile links preserve their game mode", () => {
   assert.deepEqual(parsePlayerInput("https://tarkov.dev/players/arena/5869253"), {
@@ -37,4 +41,22 @@ test("application routes expose only the canonical pvp-season slug", () => {
   assert.equal(gameModeFromAppRoute("pvp-season"), "seasonal");
   assert.equal(gameModeFromAppRoute("season"), null);
   assert.equal(gameModeFromAppRoute("seasonal"), null);
+});
+
+test("regular profile identity never becomes a Seasonal cycle", () => {
+  assert.equal(seasonalCycleForNavigation("regular", "persistent", null, "persistent"), null);
+  assert.equal(seasonalCycleForNavigation("pve", "persistent", null, null), null);
+  assert.equal(seasonalCycleForNavigation("seasonal", "persistent", null, null), null);
+  assert.equal(
+    seasonalCycleForNavigation("seasonal", "kord-breach-s1", null, null),
+    "kord-breach-s1",
+  );
+  assert.equal(
+    seasonalCycleForNavigation("regular", "persistent", "kord-breach-s1", null),
+    "kord-breach-s1",
+  );
+  assert.equal(
+    seasonalCycleForNavigation("seasonal", undefined, null, "kord-breach-s1"),
+    "kord-breach-s1",
+  );
 });

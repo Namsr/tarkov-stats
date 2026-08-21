@@ -115,6 +115,7 @@ export default function ProfileShell({
       <ProfileHeader
         aid={aid}
         mode={mode}
+        seasonalCycleId={mode === "seasonal" ? cycleId : undefined}
         kicker={kicker}
         title={title}
         meta={meta}
