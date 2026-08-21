@@ -129,6 +129,38 @@ test("profile omits empty skills anchors and keeps achievements full width", asy
   assert.doesNotMatch(achievements, /<aside>[\s\S]*<EarlyUnlocks/);
 });
 
+test("profile achievements use sortable desktop columns and readable mobile cards", async () => {
+  const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
+  const styles = await readFile("app/globals.css", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  assert.match(achievements, /<table className="achievement-table">/);
+  assert.match(achievements, /achievement\.col\.description/);
+  assert.match(achievements, /aria-sort=\{sortAriaValue/);
+  assert.match(achievements, /import Image from "next\/image"/);
+  assert.match(achievements, /<Image[\s\S]*?alt=""/);
+  assert.match(achievements, /width=\{56\}[\s\S]*?height=\{56\}/);
+  assert.match(achievements, /loading="lazy"/);
+  assert.match(achievements, /referrerPolicy="no-referrer"/);
+  assert.match(achievements, /achievement\.samplePrimary/);
+  assert.match(achievements, /achievement\.bsgLine/);
+  assert.match(achievements, /const \[sortKey, setSortKey\] = useState<AchievementSortKey>\("date"\)/);
+  assert.match(achievements, /key: "percent"/);
+  assert.match(achievements, /<div className="achievement-cards" role="list">/);
+  assert.match(styles, /\.achievement-table-wrap \{[^}]*overflow-x: auto/);
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-table-wrap \{ display: none; \}/);
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-cards \{ display: grid/);
+  assert.match(dictionary, /"achievement\.col\.name": "Name"/);
+  assert.match(dictionary, /"achievement\.col\.name": "Название"/);
+  assert.match(dictionary, /"achievement\.sortBy":/);
+});
+
+test("achievement icon host is allowed by the production CSP", async () => {
+  const config = await readFile("next.config.ts", "utf8");
+  assert.match(config, /img-src 'self' blob: data: https:\/\/lh3\.googleusercontent\.com https:\/\/assets\.tarkov\.dev/);
+  assert.match(config, /remotePatterns:[\s\S]*?protocol: "https"[\s\S]*?hostname: "assets\.tarkov\.dev"[\s\S]*?pathname: "\/\*\*"/);
+});
+
 test("profile mode switch stays below profile actions and is available before profile data", async () => {
   const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");

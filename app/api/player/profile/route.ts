@@ -3,6 +3,7 @@ import {
   getPublicProfile,
   PLAYER_LEVELS_V2026_07_22,
   getAchievements,
+  safeAchievementImageUrl,
   parseArenaProfileStats,
   parseProfileStats,
   pveProfileDecision,
@@ -94,8 +95,13 @@ async function enrichSeasonalViewModel(
       rarity: meta?.rarity ?? achievement.rarity ?? "common",
       owners: row?.owners ?? null,
       eligibleN,
+      description: meta?.descriptionEn ?? achievement.description ?? null,
+      descriptionRu: meta?.descriptionRu ?? achievement.descriptionRu ?? null,
+      imageUrl: safeAchievementImageUrl(meta?.imageUrl ?? achievement.imageUrl),
       percentage: row && eligibleN !== null && eligibleN >= 30 ? row.samplePct : null,
-      officialPercentage: meta?.playersCompletedPercent ?? null,
+      officialPercentage: meta?.adjustedPlayersCompletedPercent
+        ?? meta?.playersCompletedPercent
+        ?? null,
     };
   });
   return {
@@ -122,11 +128,16 @@ async function enrichRegularViewModel(
       ...achievement,
       name: meta?.nameEn ?? meta?.name ?? achievement.name ?? achievement.id,
       nameRu: meta?.nameRu ?? achievement.nameRu ?? null,
+      description: meta?.descriptionEn ?? achievement.description ?? null,
+      descriptionRu: meta?.descriptionRu ?? achievement.descriptionRu ?? null,
+      imageUrl: safeAchievementImageUrl(meta?.imageUrl ?? achievement.imageUrl),
       rarity: meta?.rarity ?? achievement.rarity ?? "common",
       owners: row?.owners ?? null,
       eligibleN,
       percentage: row && eligibleN !== null && eligibleN >= 30 ? row.owners / eligibleN * 100 : null,
-      officialPercentage: meta?.playersCompletedPercent ?? null,
+      officialPercentage: meta?.adjustedPlayersCompletedPercent
+        ?? meta?.playersCompletedPercent
+        ?? null,
     };
   });
   return {

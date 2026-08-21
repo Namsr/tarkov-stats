@@ -8,6 +8,7 @@ import {
 } from "@/types/player-profile-view";
 import type { ProfileIdentity, SeasonalProfile } from "@/types/seasonal";
 import type { StoredRiskEvaluation } from "@/lib/admin/moderation-db";
+import { safeAchievementImageUrl } from "@/lib/tarkov-api";
 
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -28,6 +29,9 @@ function achievementRows(value: unknown): ProfileViewAchievement[] {
         unlockedAt: null,
         name: null,
         nameRu: null,
+        description: null,
+        descriptionRu: null,
+        imageUrl: null,
         rarity: null,
         owners: null,
         eligibleN: null,
@@ -52,6 +56,11 @@ function achievementRows(value: unknown): ProfileViewAchievement[] {
       unlockedAt: timestampOrNull(row.unlockedAt),
       name: typeof row.name === "string" ? row.name : null,
       nameRu: typeof row.nameRu === "string" ? row.nameRu : null,
+      description: typeof row.description === "string"
+        ? row.description
+        : typeof row.descriptionEn === "string" ? row.descriptionEn : null,
+      descriptionRu: typeof row.descriptionRu === "string" ? row.descriptionRu : null,
+      imageUrl: safeAchievementImageUrl(row.imageUrl ?? row.imageLink),
       rarity: typeof row.rarity === "string" ? row.rarity : null,
       owners,
       eligibleN,
@@ -118,6 +127,9 @@ export function buildRegularProfileViewModel(
     unlockedAt: timestampOrNull(unlockedAt),
     name: null,
     nameRu: null,
+    description: null,
+    descriptionRu: null,
+    imageUrl: null,
     rarity: null,
     owners: null,
     eligibleN: null,

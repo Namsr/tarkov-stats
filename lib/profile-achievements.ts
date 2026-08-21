@@ -1,4 +1,4 @@
-export type AchievementSortKey = "date" | "alphabet" | "rarity";
+export type AchievementSortKey = "date" | "alphabet" | "percent" | "rarity";
 export type AchievementSortDirection = "asc" | "desc";
 
 export interface ProfileAchievementItem {
@@ -6,6 +6,9 @@ export interface ProfileAchievementItem {
   unlockedAt: number | null;
   name: string | null;
   nameRu: string | null;
+  description: string | null;
+  descriptionRu: string | null;
+  imageUrl: string | null;
   rarity: string | null;
   owners: number | null;
   eligibleN: number | null;
@@ -24,11 +27,57 @@ export function localizedAchievementName(
     ?? achievement.id;
 }
 
-const RARITY_ORDER = ["seasonal", "legendary", "epic", "rare", "uncommon", "common"];
+export function localizedAchievementDescription(
+  achievement: Pick<ProfileAchievementItem, "description" | "descriptionRu">,
+  lang: "en" | "ru",
+): string | null {
+  const value = lang === "ru" ? achievement.descriptionRu : achievement.description;
+  if (value?.trim()) return value;
+  if (achievement.description?.trim()) return achievement.description;
+  if (achievement.descriptionRu?.trim()) return achievement.descriptionRu;
+  return null;
+}
+
+// Sort from the least to the most difficult category. Unknown categories
+// remain sortable after the complete supported set.
+const RARITY_ORDER = ["common", "uncommon", "rare", "epic", "legendary", "seasonal"];
+
+const RARITY_ALIASES: Record<string, string> = {
+  seasonal: "seasonal",
+  season: "seasonal",
+  event: "seasonal",
+  legendary: "legendary",
+  "легендарное": "legendary",
+  "легендарная": "legendary",
+  "легендарный": "legendary",
+  epic: "epic",
+  "эпическое": "epic",
+  "эпическая": "epic",
+  "эпический": "epic",
+  rare: "rare",
+  "редкое": "rare",
+  "редкая": "rare",
+  "редкий": "rare",
+  uncommon: "uncommon",
+  "необычное": "uncommon",
+  "необычная": "uncommon",
+  "необычный": "uncommon",
+  common: "common",
+  "обычное": "common",
+  "обычная": "common",
+  "обычный": "common",
+};
+
+export function achievementRarityKey(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  return RARITY_ALIASES[normalized] ?? (normalized.replace(/[^a-z0-9_-]/g, "") || null);
+}
 
 function rarityRank(value: string | null): number | null {
-  if (!value) return null;
-  const rank = RARITY_ORDER.indexOf(value.toLowerCase());
+  const key = achievementRarityKey(value);
+  if (!key) return null;
+  const rank = RARITY_ORDER.indexOf(key);
   return rank < 0 ? RARITY_ORDER.length : rank;
 }
 
@@ -55,17 +104,21 @@ export function sortProfileAchievements(
     let result = 0;
     if (key === "date") {
       result = compareNullable(left.unlockedAt, right.unlockedAt, (a, b) => a - b, direction);
-    } else if (key === "rarity") {
+    } else if (key === "percent") {
       const leftPercentage = left.percentage ?? left.officialPercentage;
       const rightPercentage = right.percentage ?? right.officialPercentage;
       result = compareNullable(leftPercentage, rightPercentage, (a, b) => a - b, direction);
-      if (result === 0 && leftPercentage == null && rightPercentage == null) {
-        result = compareNullable(
-          rarityRank(left.officialCategory ?? left.rarity),
-          rarityRank(right.officialCategory ?? right.rarity),
-          (a, b) => a - b,
-          direction,
-        );
+    } else if (key === "rarity") {
+      result = compareNullable(
+        rarityRank(left.rarity ?? left.officialCategory),
+        rarityRank(right.rarity ?? right.officialCategory),
+        (a, b) => a - b,
+        direction,
+      );
+      if (result === 0) {
+        const leftPercentage = left.percentage ?? left.officialPercentage;
+        const rightPercentage = right.percentage ?? right.officialPercentage;
+        result = compareNullable(leftPercentage, rightPercentage, (a, b) => a - b, direction);
       }
     } else {
       result = compareNullable(

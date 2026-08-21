@@ -35,6 +35,11 @@ export interface ProfileViewAchievement {
   unlockedAt: number | null;
   name: string | null;
   nameRu: string | null;
+  /** Localized BSG description from the achievement reference data. */
+  description: string | null;
+  descriptionRu: string | null;
+  /** Official BSG asset URL, or null when the upstream value is unsafe/missing. */
+  imageUrl: string | null;
   rarity: string | null;
   owners: number | null;
   eligibleN: number | null;

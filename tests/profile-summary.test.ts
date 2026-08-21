@@ -13,6 +13,10 @@ const profileRouteSource = await readFile(
   new URL("../app/api/player/profile/route.ts", import.meta.url),
   "utf8",
 );
+const profileViewSource = await readFile(
+  new URL("../lib/player-profile-view.ts", import.meta.url),
+  "utf8",
+);
 
 test("profile summary uses regular, PVE, Arena priority and excludes unavailable mode", async () => {
   const calls: ProfileSummaryMode[] = [];
@@ -135,4 +139,13 @@ test("cold Seasonal profile metadata loads before the response", () => {
   assert.match(profileRouteSource, /const \[baseline, metadata\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
   assert.doesNotMatch(profileRouteSource, /getCachedAchievements\("seasonal"\)/);
   assert.match(profileRouteSource, /metadata\.get\(achievement\.id\)/);
+});
+
+test("profile achievement fallbacks sanitize images and prefer BSG adjusted completion", () => {
+  assert.match(profileViewSource, /imageUrl: safeAchievementImageUrl\(row\.imageUrl \?\? row\.imageLink\)/);
+  assert.match(profileRouteSource, /safeAchievementImageUrl\(meta\?\.imageUrl \?\? achievement\.imageUrl\)/g);
+  assert.match(
+    profileRouteSource,
+    /officialPercentage: meta\?\.adjustedPlayersCompletedPercent\s*\n\s*\?\? meta\?\.playersCompletedPercent\s*\n\s*\?\? null/,
+  );
 });

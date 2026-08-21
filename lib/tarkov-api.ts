@@ -372,6 +372,11 @@ export interface AchievementMeta {
   /** Explicit language fields for server ViewModels; `name` remains English for legacy callers. */
   nameEn: string;
   nameRu: string | null;
+  /** Explicit language fields for server ViewModels. */
+  descriptionEn: string | null;
+  descriptionRu: string | null;
+  /** Sanitized official achievement asset URL. */
+  imageUrl: string | null;
   side: string;
   rarity: string;
   /** BSG's official share of ALL players who have it. */
@@ -384,6 +389,25 @@ export type AchievementMode = keyof typeof ACHIEVEMENT_ENDPOINTS;
 type AchievementCache = { data: Map<string, AchievementMeta>; ts: number };
 const achievementsCache = new Map<AchievementMode, AchievementCache>();
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const ACHIEVEMENT_IMAGE_HOSTS = new Set(["assets.tarkov.dev"]);
+
+/**
+ * Keep externally supplied image URLs inside the official Tarkov asset host.
+ * Invalid or unknown values are intentionally dropped instead of being
+ * persisted or rendered as an arbitrary remote resource.
+ */
+export function safeAchievementImageUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !ACHIEVEMENT_IMAGE_HOSTS.has(url.hostname.toLowerCase())) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The VPS image is read-only apart from /data. Keep the last valid reference
@@ -409,6 +433,7 @@ function parsePersistedAchievements(payload: unknown, mode: AchievementMode): Ac
     throw new Error("invalid persisted achievement cache");
   }
   const data = new Map<string, AchievementMeta>();
+  let hasLegacyEntry = false;
   for (const value of root.entries) {
     const row = record(value);
     if (
@@ -422,19 +447,35 @@ function parsePersistedAchievements(payload: unknown, mode: AchievementMode): Ac
     ) {
       throw new Error("invalid persisted achievement entry");
     }
+    if (
+      !Object.prototype.hasOwnProperty.call(row, "descriptionEn") ||
+      !Object.prototype.hasOwnProperty.call(row, "descriptionRu") ||
+      !Object.prototype.hasOwnProperty.call(row, "imageUrl")
+    ) {
+      hasLegacyEntry = true;
+    }
     const nameRu = row.nameRu === null ? null : row.nameRu;
     data.set(row.id, {
       id: row.id,
       name: row.name,
       nameEn: row.nameEn,
       nameRu,
+      descriptionEn: row.descriptionEn === undefined || row.descriptionEn === null
+        ? null
+        : typeof row.descriptionEn === "string" ? row.descriptionEn : null,
+      descriptionRu: row.descriptionRu === undefined || row.descriptionRu === null
+        ? null
+        : typeof row.descriptionRu === "string" ? row.descriptionRu : null,
+      imageUrl: safeAchievementImageUrl(row.imageUrl),
       side: row.side,
       rarity: row.rarity,
       playersCompletedPercent: percentage(row.playersCompletedPercent, `achievement ${row.id}.playersCompletedPercent`),
       adjustedPlayersCompletedPercent: percentage(row.adjustedPlayersCompletedPercent, `achievement ${row.id}.adjustedPlayersCompletedPercent`),
     });
   }
-  return { data, ts: root.savedAt };
+  // v1 caches written before descriptions/images were added remain valid
+  // outage fallbacks, but must refresh on the next healthy request.
+  return { data, ts: hasLegacyEntry ? 0 : root.savedAt };
 }
 
 async function readPersistedAchievements(mode: AchievementMode): Promise<AchievementCache | null> {
@@ -539,6 +580,9 @@ export function parseAchievements(
     const translationKey = typeof row.name === "string" ? row.name : "";
     const translated = translations[translationKey]?.trim();
     const translatedRu = russianTranslations[translationKey]?.trim();
+    const descriptionKey = typeof row.description === "string" ? row.description : "";
+    const translatedDescription = translations[descriptionKey]?.trim() || null;
+    const translatedDescriptionRu = russianTranslations[descriptionKey]?.trim() || null;
     const normalizedName = typeof row.normalizedName === "string"
       ? row.normalizedName.trim()
       : "";
@@ -551,6 +595,9 @@ export function parseAchievements(
       name: translated || normalizedName || key,
       nameEn: translated || normalizedName || key,
       nameRu: translatedRu || null,
+      descriptionEn: translatedDescription,
+      descriptionRu: translatedDescriptionRu,
+      imageUrl: safeAchievementImageUrl(row.imageLink),
       side: typeof row.side === "string" ? row.side : "",
       rarity,
       playersCompletedPercent: percentage(

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import {
   getAchievements,
   loadPlayerLevels,
   parseAchievements,
+  safeAchievementImageUrl,
   parsePlayerLevels,
   fetchTarkovJson,
   TARKOV_JSON_USER_AGENT,
@@ -110,6 +111,55 @@ test("server sources contain no GraphQL calls and use the shared project identit
   assert.match(seasonalIndex, /fetchTarkovJson/);
 });
 
+test("achievement metadata translates descriptions and accepts only official HTTPS images", () => {
+  const payload = { data: { achievements: {
+    complete: {
+      id: "complete", name: "complete name", description: "complete description",
+      normalizedName: "complete", side: "All", normalizedRarity: "rare",
+      playersCompletedPercent: 10, adjustedPlayersCompletedPercent: 20,
+      imageLink: "https://assets.tarkov.dev/achievement/complete.png",
+    },
+    unsafe: {
+      id: "unsafe", name: "unsafe name", description: "unsafe description",
+      normalizedName: "unsafe", side: "All", normalizedRarity: "common",
+      playersCompletedPercent: 5, adjustedPlayersCompletedPercent: 8,
+      imageLink: "https://example.invalid/achievement/unsafe.png",
+    },
+    missing: {
+      id: "missing", name: "missing name", normalizedName: "missing",
+      side: "All", normalizedRarity: "common", playersCompletedPercent: 1,
+      adjustedPlayersCompletedPercent: 2,
+    },
+  } } };
+  const map = parseAchievements(
+    payload,
+    { data: {
+      "complete name": "Complete", "complete description": "Complete description",
+      "unsafe name": "Unsafe", "unsafe description": "Unsafe description",
+      "missing name": "Missing",
+    } },
+    { data: {
+      "complete name": "Завершено", "complete description": "Описание завершённого",
+      "unsafe name": "Небезопасное", "unsafe description": "Описание небезопасного",
+      "missing name": "Отсутствует",
+    } },
+  );
+  assert.deepEqual({
+    descriptionEn: map.get("complete")?.descriptionEn,
+    descriptionRu: map.get("complete")?.descriptionRu,
+    imageUrl: map.get("complete")?.imageUrl,
+  }, {
+    descriptionEn: "Complete description",
+    descriptionRu: "Описание завершённого",
+    imageUrl: "https://assets.tarkov.dev/achievement/complete.png",
+  });
+  assert.equal(map.get("unsafe")?.imageUrl, null);
+  assert.equal(map.get("missing")?.descriptionEn, null);
+  assert.equal(safeAchievementImageUrl("http://assets.tarkov.dev/a.png"), null);
+  assert.equal(safeAchievementImageUrl("https://assets.tarkov.dev/a.png"), "https://assets.tarkov.dev/a.png");
+  assert.equal(safeAchievementImageUrl("not a URL"), null);
+});
+
 test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () => {
   const originalFetch = globalThis.fetch;
   const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
@@ -199,6 +249,99 @@ test("last-good achievement metadata survives an upstream outage", async () => {
   } finally {
     globalThis.fetch = originalFetch;
     Date.now = originalNow;
+    if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("v1 persisted achievement rows without descriptions or images remain readable", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
+  await writeFile(join(cacheDir, "achievements-regular.json"), JSON.stringify({
+    version: 1,
+    mode: "regular",
+    savedAt: Date.now(),
+    entries: [{
+      id: "legacy", name: "Legacy", nameEn: "Legacy", nameRu: null,
+      side: "All", rarity: "common", playersCompletedPercent: 1,
+      adjustedPlayersCompletedPercent: 2,
+    }],
+  }), "utf8");
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls += 1; throw new Error("upstream unavailable"); };
+  try {
+    const restartedApi = await import(`../lib/tarkov-api.ts?legacy=${Date.now()}`);
+    const map = await restartedApi.getAchievements("regular");
+    assert.equal(fetchCalls, 1, "legacy cache should attempt a refresh before falling back");
+    assert.equal(map.get("legacy")?.descriptionEn, null);
+    assert.equal(map.get("legacy")?.descriptionRu, null);
+    assert.equal(map.get("legacy")?.imageUrl, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("fresh legacy achievement cache is refreshed from JSON when upstream is healthy", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
+  await writeFile(join(cacheDir, "achievements-regular.json"), JSON.stringify({
+    version: 1,
+    mode: "regular",
+    savedAt: Date.now(),
+    entries: [{
+      id: "legacy", name: "legacy title", nameEn: "Legacy", nameRu: null,
+      side: "All", rarity: "common", playersCompletedPercent: 1,
+      adjustedPlayersCompletedPercent: 2,
+    }],
+  }), "utf8");
+  const requested = [];
+  const payload = { data: { achievements: {
+    legacy: {
+      id: "legacy", name: "legacy title", description: "legacy description",
+      normalizedName: "legacy", side: "All", normalizedRarity: "common",
+      playersCompletedPercent: 1, adjustedPlayersCompletedPercent: 2,
+      imageLink: "https://assets.tarkov.dev/achievement/legacy.png",
+    },
+  } } };
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.endsWith("/tasks")) return new Response(JSON.stringify(payload));
+    if (url.endsWith("/tasks_en")) {
+      return new Response(JSON.stringify({ data: {
+        "legacy title": "Fresh legacy",
+        "legacy description": "Fresh description",
+      } }));
+    }
+    if (url.endsWith("/tasks_ru")) {
+      return new Response(JSON.stringify({ data: {
+        "legacy title": "Свежее достижение",
+        "legacy description": "Свежее описание",
+      } }));
+    }
+    return new Response(null, { status: 404 });
+  };
+  try {
+    const restartedApi = await import(`../lib/tarkov-api.ts?legacy-refresh=${Date.now()}`);
+    const map = await restartedApi.getAchievements("regular");
+    assert.deepEqual(requested, [
+      "https://json.tarkov.dev/regular/tasks",
+      "https://json.tarkov.dev/regular/tasks_en",
+      "https://json.tarkov.dev/regular/tasks_ru",
+    ]);
+    assert.equal(map.get("legacy")?.nameEn, "Fresh legacy");
+    assert.equal(map.get("legacy")?.descriptionEn, "Fresh description");
+    assert.equal(map.get("legacy")?.imageUrl, "https://assets.tarkov.dev/achievement/legacy.png");
+  } finally {
+    globalThis.fetch = originalFetch;
     if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
     else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
     await rm(cacheDir, { recursive: true, force: true });
