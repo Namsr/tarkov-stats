@@ -55,10 +55,12 @@ export default function EarlyUnlocks({
   playerHours,
   ownedIds,
   mode = "regular",
+  cycleId,
 }: {
   playerHours: number;
-  ownedIds: string[];
-  mode?: CrossSectionMode;
+  ownedIds: readonly string[];
+  mode?: CrossSectionMode | "seasonal";
+  cycleId?: string;
 }) {
   const { t } = useI18n();
   const [unlocks, setUnlocks] = useState<EarlyUnlock[] | null>(null);
@@ -72,7 +74,9 @@ export default function EarlyUnlocks({
       };
     }
     const owned = new Set(ownedIds);
-    fetch(`/api/average/achievements?mode=${mode}`)
+    const params = new URLSearchParams({ mode });
+    if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
+    fetch(`/api/average/achievements?${params}`)
       .then((res) => (res.ok ? (res.json() as Promise<Payload>) : null))
       .then((data) => {
         if (cancelled || !data || data.total < MIN_SAMPLE) {
@@ -107,7 +111,7 @@ export default function EarlyUnlocks({
     return () => {
       cancelled = true;
     };
-  }, [mode, playerHours, ownedIds]);
+  }, [cycleId, mode, playerHours, ownedIds]);
 
   // Hide entirely until we have something noteworthy to show.
   if (!unlocks || unlocks.length === 0) return null;

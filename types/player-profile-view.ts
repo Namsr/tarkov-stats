@@ -6,6 +6,7 @@ export const PROFILE_SECTION_ORDER = [
   "risk",
   "comparison",
   "statistics",
+  "achievements",
   "skills",
 ] as const;
 
@@ -38,6 +39,15 @@ export interface ProfileViewAchievement {
   owners: number | null;
   eligibleN: number | null;
   percentage: number | null;
+  /** BSG's official completion percentage for this achievement. */
+  officialPercentage: number | null;
+}
+
+export interface ProfileViewSkill {
+  id: string;
+  progress: number | null;
+  pointsEarnedDuringSession: number | null;
+  lastAccess: number | null;
 }
 
 export interface ProfileViewRisk {
@@ -86,8 +96,13 @@ export interface PlayerProfileViewModel {
     level: number | null;
     prestige: number | null;
   };
+  achievements: {
+    items: ProfileViewAchievement[];
+  };
   skills: {
     kind: "pvp" | "seasonal";
+    items: ProfileViewSkill[];
+    /** Legacy alias retained for the existing profile shell. */
     achievements: ProfileViewAchievement[];
   };
   /** Convenience alias used by the shared client shell. */

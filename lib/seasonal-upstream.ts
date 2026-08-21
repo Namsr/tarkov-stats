@@ -4,6 +4,7 @@ import type {
   SeasonalStats,
   SeasonalProfile,
   SeasonalAchievementUnlock,
+  SeasonalCommonSkill,
   SeasonalUpstreamContract as SeasonalUpstreamContractType,
 } from "@/types/seasonal";
 // Relative import keeps this parser usable by the strip-types test runner and
@@ -259,6 +260,22 @@ function parseSeasonalAchievements(profile: UnknownRecord): SeasonalAchievementU
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
+/**
+ * Keep the latest Common-skills payload for the profile view.  The parser only
+ * validates the array/object boundary here; individual skill fields are kept
+ * open because EFT adds and removes fields between wipes.
+ */
+function parseSeasonalCommonSkills(profile: UnknownRecord): SeasonalCommonSkill[] | null {
+  if (profile.skills === undefined) return null;
+  const skills = requiredRecord(profile.skills, "profile.skills");
+  if (!Array.isArray(skills.Common)) {
+    throw new SeasonalValidationError("invalid_payload", "profile.skills.Common must be an array");
+  }
+  return skills.Common.map((value, index) => ({
+    ...requiredRecord(value, `profile.skills.Common[${index}]`),
+  }));
+}
+
 function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters): SeasonalStats {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
@@ -428,6 +445,7 @@ export function parseSeasonalProfile(
 
   const counters = parseCounters(extracted.profile);
   const seasonalAchievements = parseSeasonalAchievements(extracted.profile);
+  const commonSkills = parseSeasonalCommonSkills(extracted.profile);
   const seasonalStats = parseSeasonalStats(extracted.profile, counters);
   validateCounterRelationships(counters);
 
@@ -475,6 +493,10 @@ export function parseSeasonalProfile(
   Object.defineProperty(result, "seasonalStats", { value: seasonalStats, enumerable: false });
   Object.defineProperty(result, "seasonalAchievements", {
     value: seasonalAchievements,
+    enumerable: false,
+  });
+  Object.defineProperty(result, "commonSkills", {
+    value: commonSkills,
     enumerable: false,
   });
   Object.defineProperty(result, "pvpEnrichment", {

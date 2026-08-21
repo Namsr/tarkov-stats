@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
 import PlayerRadarComparison from "@/components/PlayerRadarComparison";
-import SeasonalAchievements from "@/components/SeasonalAchievements";
+import ProfileAchievements from "@/components/ProfileAchievements";
+import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
 import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
@@ -16,7 +17,6 @@ import { isProfileStale } from "@/lib/profile-refresh-policy";
 import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
-import type { PlayerProfileViewModel, ProfileViewAchievement } from "@/types/player-profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
 import {
   getCachedPlayerProfileResponse,
@@ -30,7 +30,13 @@ interface SeasonalProfileResponse {
   identity?: { aid?: number; mode?: string; cycleId?: string };
   profile?: SeasonalProfile;
   risk?: PublicRiskView | null;
-  viewModel?: PlayerProfileViewModel;
+  viewModel?: ProfileCollectionsViewModel;
+}
+
+interface ProfileCollectionsViewModel {
+  risk?: PublicRiskView | null;
+  achievements?: { items?: unknown[] };
+  skills?: { items?: unknown[]; achievements?: unknown[]; kind?: string };
 }
 
 function displayNumber(value: number | null | undefined, digits = 1, fallback = ""): string {
@@ -93,20 +99,15 @@ function achievementsFor(profile: SeasonalProfile): SeasonalAchievementView[] {
 }
 
 function achievementsFromViewModel(
-  viewModel: PlayerProfileViewModel | undefined,
-  lang: "en" | "ru",
-): SeasonalAchievementView[] | null {
-  if (!viewModel || viewModel.skills.kind !== "seasonal") return null;
-  return viewModel.skills.achievements.map((achievement: ProfileViewAchievement) => ({
-    id: achievement.id,
-    name: (lang === "ru" ? achievement.nameRu : achievement.name) ?? achievement.id,
-    nameRu: achievement.nameRu,
-    rarity: achievement.rarity ?? "common",
-    unlockedAt: achievement.unlockedAt,
-    owners: achievement.owners,
-    eligibleN: achievement.eligibleN,
-    percentage: achievement.percentage,
-  }));
+  viewModel: ProfileCollectionsViewModel | undefined,
+): unknown[] | null {
+  if (Array.isArray(viewModel?.achievements?.items)) return viewModel.achievements.items;
+  if (Array.isArray(viewModel?.skills?.achievements)) return viewModel.skills.achievements;
+  return null;
+}
+
+function skillsFromViewModel(viewModel: ProfileCollectionsViewModel | undefined): unknown[] | null {
+  return Array.isArray(viewModel?.skills?.items) ? viewModel.skills.items : null;
 }
 
 function SeasonalProfileActions({
@@ -168,10 +169,13 @@ export default function SeasonalPlayer({
     ? cachedBody.profile
     : null;
   const [profile, setProfile] = useState<SeasonalProfile | null>(initialProfile);
-  const [achievements, setAchievements] = useState<SeasonalAchievementView[] | null>(
+  const [achievements, setAchievements] = useState<unknown[] | null>(
     initialProfile
-      ? achievementsFromViewModel(cachedBody?.viewModel, lang) ?? achievementsFor(initialProfile)
+      ? achievementsFromViewModel(cachedBody?.viewModel) ?? achievementsFor(initialProfile)
       : null,
+  );
+  const [skillItems, setSkillItems] = useState<unknown[] | null>(
+    initialProfile ? skillsFromViewModel(cachedBody?.viewModel) : null,
   );
   const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(
     initialProfile ? cachedBody?.viewModel?.risk ?? cachedBody?.risk ?? null : null,
@@ -213,6 +217,7 @@ export default function SeasonalPlayer({
         return null;
       });
       setAchievements(null);
+      setSkillItems(null);
       setServerRisk(null);
       setProfileIsStale(false);
     }
@@ -235,7 +240,8 @@ export default function SeasonalPlayer({
         }
         if (cancelled || generation !== requestGeneration.current) return null;
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
-        setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(body.profile));
+        setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(body.profile));
+        setSkillItems(skillsFromViewModel(body.viewModel));
         return body.profile;
       })
       .then((nextProfile) => {
@@ -293,7 +299,8 @@ export default function SeasonalPlayer({
         if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode: "pvp-season", cycle: cycleId });
         setProfile(nextProfile);
         setDisplayNickname(nextProfile.nickname);
-        setAchievements(achievementsFromViewModel(body.viewModel, lang) ?? achievementsFor(nextProfile));
+        setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(nextProfile));
+        setSkillItems(skillsFromViewModel(body.viewModel));
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setModeUnavailable(false);
         setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
@@ -310,7 +317,7 @@ export default function SeasonalPlayer({
       });
     refreshPromise.current = request;
     return request;
-  }, [aid, cycleId, lang, profile, t]);
+  }, [aid, cycleId, profile, t]);
 
   if (loading) return <ProfileShellLoading mode="seasonal" aid={aid} title={displayNickname} />;
 
@@ -332,6 +339,7 @@ export default function SeasonalPlayer({
         risk={emptySlot}
         comparison={emptySlot}
         statistics={emptySlot}
+        achievements={emptySlot}
         skills={emptySlot}
         statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</div>}
       />
@@ -355,17 +363,31 @@ export default function SeasonalPlayer({
     level: stats.level,
   };
   const statistics = (
-    <div className="data-ledger">
-      <StatCard label={t("player.totalRaids")} value={stats.totalRaids ?? unknownValue} />
-      <StatCard label={t("player.pmcRaids")} value={profile.counters.pmcRaids} />
-      <StatCard label={t("player.scavRaids")} value={profile.counters.scavRaids} />
-      <StatCard label={t("player.pmcKills")} value={profile.counters.pmcKills} />
-      <StatCard label={t("player.deaths")} value={stats.deaths ?? unknownValue} />
-      <StatCard label={t("seasonal.metric.pvpKd")} value={displayNumber(stats.pmcKdRatio, 2, unknownValue)} />
-      <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix="%" />
-      <StatCard label={t("player.level")} value={stats.level ?? unknownValue} />
-      <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
-      <StatCard label={t("player.achievements")} value={stats.achievementsCount ?? unknownValue} />
+    <div className="space-y-5">
+      <section>
+        <div className="mb-3 flex items-baseline justify-between gap-4">
+          <h2 className="section-heading">{t("player.raidStats")}</h2>
+          <span className="section-kicker">{t("player.coreStats")}</span>
+        </div>
+        <div className="data-ledger">
+          <StatCard label={t("player.totalRaids")} value={stats.totalRaids ?? unknownValue} />
+          <StatCard label={t("player.pmcRaids")} value={profile.counters.pmcRaids} />
+          <StatCard label={t("player.scavRaids")} value={profile.counters.scavRaids} />
+          <StatCard label={t("player.pmcKills")} value={profile.counters.pmcKills} />
+          <StatCard label={t("player.deaths")} value={stats.deaths ?? unknownValue} />
+          <StatCard label={t("seasonal.metric.pvpKd")} value={displayNumber(stats.pmcKdRatio, 2, unknownValue)} />
+          <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix="%" />
+        </div>
+      </section>
+      <section>
+        <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+        <div className="detail-grid detail-grid--compact">
+          <StatCard label={t("player.level")} value={stats.level ?? unknownValue} />
+          <StatCard label={t("player.prestige")} value={stats.prestige ?? unknownValue} />
+          <StatCard label={t("player.achievements")} value={stats.achievementsCount ?? unknownValue} />
+          <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
+        </div>
+      </section>
     </div>
   );
 
@@ -407,7 +429,21 @@ export default function SeasonalPlayer({
       risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="seasonal" cycleId={cycleId} /></div>}
       comparison={<PlayerRadarComparison aid={aid} stats={comparisonStats} mode="seasonal" cycleId={cycleId} />}
       statistics={statistics}
-      skills={<SeasonalAchievements achievements={achievements ?? []} loading={achievements === null} />}
+      achievements={
+        <ProfileAchievements
+          items={achievements}
+          loading={achievements === null}
+          playerHours={profile.lifetimePvpHours ?? 0}
+          ownedIds={(achievements ?? []).flatMap((item) => {
+            if (typeof item === "string") return [item];
+            if (item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string") return [(item as { id: string }).id];
+            return [];
+          })}
+          mode="seasonal"
+          cycleId={cycleId}
+        />
+      }
+      skills={hasVisibleSkills(skillItems) ? <ProfileSkills skills={skillItems} /> : undefined}
     />
   );
 }

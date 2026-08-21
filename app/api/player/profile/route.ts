@@ -10,7 +10,7 @@ import {
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
-import { getStore } from "@/lib/db";
+import { getStore, type AchievementBaseline } from "@/lib/db";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
@@ -36,6 +36,44 @@ import {
   buildSeasonalComparisonStats,
 } from "@/lib/profile-comparison";
 
+const REGULAR_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
+let regularAchievementBaselineCache: {
+  value: AchievementBaseline | null;
+  expiresAt: number;
+} | null = null;
+let regularAchievementBaselineInFlight: Promise<AchievementBaseline | null> | null = null;
+
+async function loadRegularAchievementBaseline(): Promise<AchievementBaseline | null> {
+  const now = Date.now();
+  if (regularAchievementBaselineCache && regularAchievementBaselineCache.expiresAt > now) {
+    return regularAchievementBaselineCache.value;
+  }
+  if (regularAchievementBaselineInFlight) return regularAchievementBaselineInFlight;
+
+  const request = (async () => {
+    try {
+      const store = await getStore("regular");
+      return store ? await store.achievementBaseline() : null;
+    } catch {
+      return null;
+    }
+  })();
+  regularAchievementBaselineInFlight = request;
+
+  try {
+    const baseline = await request;
+    regularAchievementBaselineCache = {
+      value: baseline,
+      expiresAt: Date.now() + REGULAR_ACHIEVEMENT_BASELINE_TTL_MS,
+    };
+    return baseline;
+  } finally {
+    if (regularAchievementBaselineInFlight === request) {
+      regularAchievementBaselineInFlight = null;
+    }
+  }
+}
+
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
@@ -57,11 +95,43 @@ async function enrichSeasonalViewModel(
       owners: row?.owners ?? null,
       eligibleN,
       percentage: row && eligibleN !== null && eligibleN >= 30 ? row.samplePct : null,
+      officialPercentage: meta?.playersCompletedPercent ?? null,
     };
   });
   return {
     ...viewModel,
+    achievements: { items: achievements },
     seasonalAchievements: achievements,
+    skills: { ...viewModel.skills, achievements },
+  };
+}
+
+async function enrichRegularViewModel(
+  viewModel: ReturnType<typeof buildRegularProfileViewModel>,
+) {
+  const [baseline, metadata] = await Promise.all([
+    loadRegularAchievementBaseline(),
+    getAchievements("regular").catch(() => new Map()),
+  ]);
+  const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
+  const eligibleN = baseline?.total ?? null;
+  const achievements = viewModel.achievements.items.map((achievement) => {
+    const meta = metadata.get(achievement.id);
+    const row = baselineById.get(achievement.id);
+    return {
+      ...achievement,
+      name: meta?.nameEn ?? meta?.name ?? achievement.name ?? achievement.id,
+      nameRu: meta?.nameRu ?? achievement.nameRu ?? null,
+      rarity: meta?.rarity ?? achievement.rarity ?? "common",
+      owners: row?.owners ?? null,
+      eligibleN,
+      percentage: row && eligibleN !== null && eligibleN >= 30 ? row.owners / eligibleN * 100 : null,
+      officialPercentage: meta?.playersCompletedPercent ?? null,
+    };
+  });
+  return {
+    ...viewModel,
+    achievements: { items: achievements },
     skills: { ...viewModel.skills, achievements },
   };
 }
@@ -430,6 +500,15 @@ export async function GET(request: NextRequest) {
       });
     }
     const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
+    const regularViewModel = await enrichRegularViewModel(
+      buildRegularProfileViewModel({
+        aid,
+        mode: "regular",
+        cycleId,
+        profile,
+        stats,
+      }, publicRiskView),
+    );
     const response = NextResponse.json(
       {
         profile,
@@ -439,13 +518,8 @@ export async function GET(request: NextRequest) {
         identity: { aid, mode, cycleId },
         risk: publicRiskView,
         comparisonStats: buildRegularComparisonStats(stats),
-        viewModel: buildRegularProfileViewModel({
-          aid,
-          mode: "regular",
-          cycleId,
-          profile,
-          stats,
-        }, publicRiskView),
+        // viewModel: buildRegularProfileViewModel(...) is enriched above.
+        viewModel: regularViewModel,
       },
       { headers: profileHeaders }
     );

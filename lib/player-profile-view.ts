@@ -4,6 +4,7 @@ import {
   type PlayerProfileViewModel,
   type ProfileViewAchievement,
   type ProfileViewRisk,
+  type ProfileViewSkill,
 } from "@/types/player-profile-view";
 import type { ProfileIdentity, SeasonalProfile } from "@/types/seasonal";
 import type { StoredRiskEvaluation } from "@/lib/admin/moderation-db";
@@ -31,6 +32,7 @@ function achievementRows(value: unknown): ProfileViewAchievement[] {
         owners: null,
         eligibleN: null,
         percentage: null,
+        officialPercentage: null,
       }];
     }
     if (!item || typeof item !== "object") return [];
@@ -42,6 +44,9 @@ function achievementRows(value: unknown): ProfileViewAchievement[] {
     const eligibleN = finiteOrNull(row.eligibleN ?? row.eligible);
     const owners = finiteOrNull(row.owners);
     const percentage = finiteOrNull(row.percentage ?? row.samplePct);
+    const officialPercentage = finiteOrNull(
+      row.officialPercentage ?? row.officialPct ?? row.playersCompletedPercent,
+    );
     return [{
       id,
       unlockedAt: timestampOrNull(row.unlockedAt),
@@ -51,6 +56,33 @@ function achievementRows(value: unknown): ProfileViewAchievement[] {
       owners,
       eligibleN,
       percentage: percentage ?? (owners != null && eligibleN ? owners / eligibleN * 100 : null),
+      officialPercentage,
+    }];
+  });
+}
+
+function skillRows(value: unknown): ProfileViewSkill[] {
+  let raw: unknown[] = [];
+  if (Array.isArray(value)) {
+    raw = value;
+  } else if (value && typeof value === "object") {
+    const common = (value as Record<string, unknown>).Common;
+    if (Array.isArray(common)) raw = common;
+  }
+  return raw.flatMap((item): ProfileViewSkill[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    const id = typeof row.Id === "string"
+      ? row.Id
+      : typeof row.id === "string" ? row.id : null;
+    if (!id) return [];
+    return [{
+      id,
+      progress: finiteOrNull(row.Progress ?? row.progress),
+      pointsEarnedDuringSession: finiteOrNull(
+        row.PointsEarnedDuringSession ?? row.pointsEarnedDuringSession,
+      ),
+      lastAccess: timestampOrNull(row.LastAccess ?? row.lastAccess),
     }];
   });
 }
@@ -90,6 +122,7 @@ export function buildRegularProfileViewModel(
     owners: null,
     eligibleN: null,
     percentage: null,
+    officialPercentage: null,
   }));
   return {
     identity: identity(identityValue, stats.nickname),
@@ -131,7 +164,8 @@ export function buildRegularProfileViewModel(
       level: finiteOrNull(stats.level),
       prestige: finiteOrNull(stats.prestige),
     },
-    skills: { kind: "pvp", achievements: ownAchievements },
+    achievements: { items: ownAchievements },
+    skills: { kind: "pvp", items: skillRows(profile.skills), achievements: ownAchievements },
   };
 }
 
@@ -167,6 +201,7 @@ export function buildSeasonalProfileViewModel(
     (profile as SeasonalProfile & { seasonalAchievements?: unknown }).seasonalAchievements
       ?? (profile as SeasonalProfile & { achievements?: unknown }).achievements,
   );
+  const commonSkills = (profile as SeasonalProfile & { commonSkills?: unknown }).commonSkills;
   const identityValue = { aid: profile.aid, mode: "seasonal" as const, cycleId: profile.cycleId };
   return {
     identity: identity(identityValue, profile.nickname),
@@ -212,7 +247,8 @@ export function buildSeasonalProfileViewModel(
       level: finiteOrNull(stats?.level),
       prestige: finiteOrNull(stats?.prestige ?? profile.staticSignals?.prestige),
     },
-    skills: { kind: "seasonal", achievements: ownAchievements },
+    achievements: { items: ownAchievements },
+    skills: { kind: "seasonal", items: skillRows(commonSkills), achievements: ownAchievements },
     seasonalAchievements: ownAchievements.map((achievement) => ({
       ...achievement,
       name: achievement.name ?? achievement.id,

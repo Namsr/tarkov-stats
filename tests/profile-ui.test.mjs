@@ -115,6 +115,20 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.doesNotMatch(report, /signedOut && <span className="profile-action__status"/);
 });
 
+test("profile omits empty skills anchors and keeps achievements full width", async () => {
+  const skills = await readFile("components/ProfileSkills.tsx", "utf8");
+  const regular = await readFile("components/RegularPlayer.tsx", "utf8");
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
+
+  assert.match(skills, /export function hasVisibleSkills\(skills: readonly unknown\[\] \| null \| undefined\)/);
+  assert.match(skills, /Number\.isFinite\(progress\) && progress > 0/);
+  assert.match(regular, /hasVisibleSkills\(regularSkillItems\)\s*\?\s*<ProfileSkills/);
+  assert.match(seasonal, /hasVisibleSkills\(skillItems\)\s*\?\s*<ProfileSkills/);
+  assert.match(achievements, /<div className="space-y-5">[\s\S]*<EarlyUnlocks/);
+  assert.doesNotMatch(achievements, /<aside>[\s\S]*<EarlyUnlocks/);
+});
+
 test("profile mode switch stays below profile actions and is available before profile data", async () => {
   const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");

@@ -8,6 +8,8 @@ import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import CheaterScore from "@/components/CheaterScore";
 import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
+import ProfileAchievements from "@/components/ProfileAchievements";
+import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
@@ -37,6 +39,12 @@ interface ProfileSummary {
   prestige?: number;
 }
 
+interface ProfileCollectionsViewModel {
+  risk?: PublicRiskView | null;
+  achievements?: { items?: unknown[] };
+  skills?: { items?: unknown[]; achievements?: unknown[] };
+}
+
 interface RegularProfileResponse {
   code?: string;
   error?: string;
@@ -47,7 +55,13 @@ interface RegularProfileResponse {
   profileSummary?: ProfileSummary;
   identity?: { aid?: number; mode?: string; cycleId?: string };
   risk?: PublicRiskView | null;
-  viewModel?: { risk?: PublicRiskView | null };
+  viewModel?: ProfileCollectionsViewModel;
+}
+
+function viewModelAchievementItems(viewModel: ProfileCollectionsViewModel | null | undefined): unknown[] | null {
+  if (Array.isArray(viewModel?.achievements?.items)) return viewModel.achievements.items;
+  if (Array.isArray(viewModel?.skills?.achievements)) return viewModel.skills.achievements;
+  return null;
 }
 
 function ProfileActions({
@@ -121,6 +135,7 @@ export default function RegularPlayer({
   const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(
     initialResponse?.viewModel?.risk ?? initialResponse?.risk ?? null,
   );
+  const [viewModel, setViewModel] = useState<ProfileCollectionsViewModel | null>(initialResponse?.viewModel ?? null);
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
@@ -137,6 +152,7 @@ export default function RegularPlayer({
     setProfileSummary(null);
     setProgressionRisk(null);
     setForceProgressionRefresh(false);
+    setViewModel(cached?.viewModel ?? null);
     if (!cached?.stats) {
       setProfile(null);
       setStats(null);
@@ -181,6 +197,7 @@ export default function RegularPlayer({
         if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode });
         setProfile(data.profile ?? null);
         setStats(data.stats);
+        setViewModel(data.viewModel ?? null);
         setAchievementIds(
           data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
         );
@@ -244,6 +261,7 @@ export default function RegularPlayer({
         if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode });
         setProfile(data.profile ?? null);
         setStats(data.stats);
+        setViewModel(data.viewModel ?? null);
         setAchievementIds(
           data.achievementIds ?? (data.profile?.achievements ? Object.keys(data.profile.achievements) : []),
         );
@@ -303,6 +321,7 @@ export default function RegularPlayer({
           risk={unavailableSlot}
           comparison={unavailableSlot}
           statistics={unavailableSlot}
+          achievements={unavailableSlot}
           skills={unavailableSlot}
           statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{t("player.modeUnavailable")}</div>}
         />
@@ -383,6 +402,7 @@ export default function RegularPlayer({
           risk={errorSlot}
           comparison={errorSlot}
           statistics={errorSlot}
+          achievements={errorSlot}
           skills={errorSlot}
           statusNotice={<div className="data-panel mt-5 p-5 text-center">{error || t("player.unknownError")}</div>}
         />
@@ -506,25 +526,11 @@ export default function RegularPlayer({
         </section>
       </div>
     );
-    const regularSkills = skills.length > 0 ? (
-      <div className="page-grid">
-        <section className="data-panel min-h-[240px] p-5">
-          <h2 className="section-heading text-base mb-4">{t("player.skills")}</h2>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1 max-h-80 overflow-y-auto pr-1">
-            {skills
-              .filter((skill) => skill.Progress > 0)
-              .sort((a, b) => b.Progress - a.Progress)
-              .map((skill) => (
-                <div key={skill.Id} className="flex min-w-0 justify-between gap-2 border-b border-[var(--card-border)] py-2 text-sm">
-                  <span className="text-[var(--muted-strong)] truncate">{skill.Id.replace(/([A-Z])/g, " $1").trim()}</span>
-                  <span className="text-[var(--accent)] tabular-nums">{Math.floor(skill.Progress)}</span>
-                </div>
-              ))}
-          </div>
-        </section>
-        <aside><EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode="regular" /></aside>
-      </div>
-    ) : <EarlyUnlocks playerHours={stats.hoursPlayed} ownedIds={achievementIds} mode="regular" />;
+    const regularAchievementItems = viewModelAchievementItems(viewModel) ?? Object.entries(profile?.achievements ?? {}).map(([id, unlockedAt]) => ({
+      id,
+      unlockedAt,
+    }));
+    const regularSkillItems = viewModel?.skills?.items ?? skills;
 
     return (
       <ProfileShell
@@ -557,7 +563,16 @@ export default function RegularPlayer({
         risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="regular" cycleId="persistent" statsKnown={pvpStatsKnown} /></div>}
         comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode="regular" cycleId="persistent" demo={radarDemo} />}
         statistics={regularStatistics}
-        skills={regularSkills}
+        achievements={
+          <ProfileAchievements
+            items={regularAchievementItems}
+            playerHours={stats.hoursPlayed}
+            ownedIds={achievementIds}
+            mode="regular"
+            cycleId="persistent"
+          />
+        }
+          skills={hasVisibleSkills(regularSkillItems) ? <ProfileSkills skills={regularSkillItems} /> : undefined}
       />
     );
   }

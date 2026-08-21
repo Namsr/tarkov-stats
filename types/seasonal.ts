@@ -99,6 +99,13 @@ export interface SeasonalAchievementUnlock {
   unlockedAt: number | null;
 }
 
+/**
+ * The upstream `skills.Common` rows are retained as JSON.  Skill fields have
+ * changed between wipes, so the storage boundary deliberately keeps unknown
+ * fields instead of projecting a brittle fixed schema.
+ */
+export type SeasonalCommonSkill = Record<string, unknown>;
+
 /** Runtime-validated representation produced by either supported upstream shape. */
 export interface SeasonalProfile extends ProfileIdentity {
   nickname: string;
@@ -110,6 +117,8 @@ export interface SeasonalProfile extends ProfileIdentity {
   counters: SeasonalCounters;
   /** null = the upstream payload was present but had no achievement data. */
   seasonalAchievements?: SeasonalAchievementUnlock[] | null;
+  /** null = the upstream payload did not include a Common-skills array. */
+  commonSkills?: SeasonalCommonSkill[] | null;
   seasonalStats?: SeasonalStats;
   pvpEnrichment?: SeasonalPvpEnrichment;
   /** Optional single-profile signals consumed by the existing static risk model. */
@@ -136,6 +145,8 @@ export interface ProgressionSnapshotRecord extends ProfileIdentity {
   counters: SeasonalCounters;
   /** Dual-read representation of the snapshot's own Seasonal achievements. */
   achievements: SeasonalAchievementUnlock[] | null;
+  /** Latest raw upstream `skills.Common` JSON; old rows legitimately contain NULL. */
+  commonSkills: SeasonalCommonSkill[] | null;
 }
 
 export type IntervalStatus = "valid" | "reset" | "schema_anomaly";

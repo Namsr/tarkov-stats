@@ -9,7 +9,8 @@ import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
 import type { ProfileShellMode, ProfileViewMetric } from "@/types/profile-view";
 
-const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
+const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "achievements", "skills"] as const;
+const LEGACY_SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
 
 export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?: string }) {
   return <div className={`data-panel ${className} skeleton rounded-xl`} aria-hidden="true" />;
@@ -17,12 +18,13 @@ export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?:
 
 export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?: number; title?: string }) {
   const { t } = useI18n();
+  const sectionIds = mode === "regular" || mode === "seasonal" ? SECTION_IDS : LEGACY_SECTION_IDS;
   return (
     <main className="page-frame" data-profile-shell-mode={mode}>
       <div className="mb-8 h-5 w-20 skeleton rounded" />
       <ProfileSectionNav
         label={t("profile.sectionNav")}
-        items={SECTION_IDS.map((id) => ({ id, label: t("profile.section." + id) }))}
+        items={sectionIds.map((id) => ({ id, label: t("profile.section." + id) }))}
       />
       <section id="overview" tabIndex={-1} className="profile-header surface profile-anchor-section">
         <div className="profile-header__top">
@@ -54,6 +56,9 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
         <ProfileShellLoadingSection id="risk" height="min-h-[280px]" />
         <ProfileShellLoadingSection id="comparison" height="min-h-[560px]" />
         <ProfileShellLoadingSection id="statistics" height="min-h-[360px]" />
+        {(mode === "regular" || mode === "seasonal") && (
+          <ProfileShellLoadingSection id="achievements" height="min-h-[360px]" />
+        )}
         <ProfileShellLoadingSection id="skills" height="min-h-[240px]" />
       </div>
     </main>
@@ -77,6 +82,7 @@ export default function ProfileShell({
   risk,
   comparison,
   statistics,
+  achievements,
   skills,
   statusNotice,
 }: {
@@ -92,11 +98,18 @@ export default function ProfileShell({
   risk: ReactNode;
   comparison: ReactNode;
   statistics: ReactNode;
-  skills: ReactNode;
+  achievements?: ReactNode;
+  skills?: ReactNode;
   statusNotice?: ReactNode;
 }) {
   const { t } = useI18n();
-  const sectionLinks = SECTION_IDS.map((id) => ({
+  const baseSectionIds = achievements === undefined
+    ? LEGACY_SECTION_IDS
+    : SECTION_IDS;
+  const sectionIds = skills === undefined
+    ? baseSectionIds.filter((id) => id !== "skills")
+    : baseSectionIds;
+  const sectionLinks = sectionIds.map((id) => ({
     id,
     label: t("profile.section." + id),
   }));
@@ -147,7 +160,8 @@ export default function ProfileShell({
         <ProfileShellSection id="risk">{risk}</ProfileShellSection>
         <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
         <ProfileShellSection id="statistics">{statistics}</ProfileShellSection>
-        <ProfileShellSection id="skills">{skills}</ProfileShellSection>
+        {achievements !== undefined && <ProfileShellSection id="achievements">{achievements}</ProfileShellSection>}
+        {skills !== undefined && <ProfileShellSection id="skills">{skills}</ProfileShellSection>}
       </div>
     </main>
   );

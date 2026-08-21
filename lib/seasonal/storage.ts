@@ -9,6 +9,7 @@ import type {
   ScanTaskRecord,
   SeasonalCounters,
   SeasonalAchievementUnlock,
+  SeasonalCommonSkill,
   SeasonalProfile,
   SeasonalStore,
   SeasonCycle,
@@ -126,6 +127,7 @@ CREATE TABLE IF NOT EXISTS progression_snapshots (
   longest_win_streak INTEGER,
   achv_count INTEGER,
   achievements TEXT,
+  common_skills TEXT,
   stats_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(mode, cycle_id, aid, profile_updated_at)
 );
@@ -365,8 +367,8 @@ function currentSeasonalSchema(db: SqliteDatabase): boolean {
   const snapshots = db.prepare("PRAGMA table_info(progression_snapshots)").all() as { name: string; notnull: number }[];
   const snapshotColumns = new Map(snapshots.map((column) => [column.name, Number(column.notnull)]));
   const nullablePortrait = [
-    "prestige", "level", "hours", "total_raids", "survived", "deaths", "total_kills",
-    "run_through", "longest_win_streak", "achv_count", "achievements",
+  "prestige", "level", "hours", "total_raids", "survived", "deaths", "total_kills",
+    "run_through", "longest_win_streak", "achv_count", "achievements", "common_skills",
   ];
   if (!snapshotColumns.has("mode") || nullablePortrait.some((name) => snapshotColumns.get(name) !== 0)) return false;
 
@@ -396,14 +398,14 @@ export function initializeSeasonalSchema(db: SqliteDatabase): void {
           local_date, series_id, nickname, side, prestige, level, experience, hours,
           total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
           pmc_kills, total_kills, killed_pmc, run_through, longest_win_streak, achv_count,
-          achievements, stats_json
+          achievements, common_skills, stats_json
         )
         SELECT id, 'regular', 'persistent', aid, upstream_updated_at, upstream_updated_at,
           captured_at, strftime('%Y-%m-%d', upstream_updated_at / 1000, 'unixepoch', '+3 hours'), series_id,
           nickname, side, prestige, level, experience, hours, total_raids, pmc_raids,
           scav_raids, survived, COALESCE(json_extract(stats_json, '$.pmcSurvived'), survived),
           deaths, pmc_deaths, COALESCE(json_extract(stats_json, '$.pmcKills'), total_kills), total_kills,
-          killed_pmc, run_through, longest_win_streak, achv_count, achievements, stats_json
+          killed_pmc, run_through, longest_win_streak, achv_count, achievements, NULL, stats_json
         FROM progression_snapshots_legacy;
         DROP TABLE progression_snapshots_legacy;
       `);
@@ -417,6 +419,9 @@ export function initializeSeasonalSchema(db: SqliteDatabase): void {
   }
   ensureSeasonalContractConstraint(db);
   ensureNullablePortraitColumns(db);
+  if (!columns(db, "progression_snapshots").has("common_skills")) {
+    db.exec("ALTER TABLE progression_snapshots ADD COLUMN common_skills TEXT");
+  }
   if (!columns(db, "player_profiles").has("progression_eligible")) {
     db.exec("ALTER TABLE player_profiles ADD COLUMN progression_eligible INTEGER NOT NULL DEFAULT 0");
   }
@@ -449,7 +454,7 @@ function ensureNullablePortraitColumns(db: SqliteDatabase): void {
   }[];
   const portrait = new Set([
     "prestige", "level", "hours", "total_raids", "survived", "deaths", "total_kills",
-    "run_through", "longest_win_streak", "achv_count", "achievements",
+    "run_through", "longest_win_streak", "achv_count", "achievements", "common_skills",
   ]);
   if (!info.length || !info.some((column) => portrait.has(column.name) && Number(column.notnull) === 1)) return;
 
@@ -460,6 +465,7 @@ function ensureNullablePortraitColumns(db: SqliteDatabase): void {
     "pmc_kills", "total_kills", "killed_pmc", "run_through", "longest_win_streak", "achv_count",
     "achievements", "stats_json",
   ];
+  const legacyHasCommonSkills = info.some((column) => column.name === "common_skills");
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(`
@@ -497,11 +503,13 @@ function ensureNullablePortraitColumns(db: SqliteDatabase): void {
         longest_win_streak INTEGER,
         achv_count INTEGER,
         achievements TEXT,
+        common_skills TEXT,
         stats_json TEXT NOT NULL DEFAULT '{}',
         UNIQUE(mode, cycle_id, aid, profile_updated_at)
       );
-      INSERT INTO progression_snapshots (${columnsToCopy.join(", ")})
-        SELECT ${columnsToCopy.join(", ")} FROM progression_snapshots_legacy;
+      INSERT INTO progression_snapshots (${columnsToCopy.slice(0, -1).join(", ")}, common_skills, stats_json)
+        SELECT ${columnsToCopy.slice(0, -1).join(", ")}, ${legacyHasCommonSkills ? "common_skills" : "NULL"}, stats_json
+        FROM progression_snapshots_legacy;
       DROP TABLE progression_snapshots_legacy;
       CREATE INDEX idx_progression_snapshots_identity_time
         ON progression_snapshots(mode, cycle_id, aid, profile_updated_at);
@@ -648,6 +656,35 @@ export function serializeSeasonalAchievementUnlocks(
   return achievements === null ? null : JSON.stringify(achievements);
 }
 
+/** Reads the latest Common-skills JSON while treating old NULL rows as valid. */
+export function parseSeasonalCommonSkills(
+  value: unknown,
+): SeasonalCommonSkill[] | null {
+  if (value == null) return null;
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    if (value.trim() === "") return null;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed)) return null;
+  const result: SeasonalCommonSkill[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+    result.push({ ...(item as SeasonalCommonSkill) });
+  }
+  return result;
+}
+
+export function serializeSeasonalCommonSkills(
+  skills: SeasonalCommonSkill[] | null,
+): string | null {
+  return skills === null ? null : JSON.stringify(skills);
+}
+
 /** Converts an ingested profile into the snapshot payload without erasing legacy data. */
 export function seasonalAchievementSnapshotValue(profile: SeasonalProfile): {
   value: string | null;
@@ -670,6 +707,12 @@ export function seasonalAchievementSnapshotValue(profile: SeasonalProfile): {
   return { value: null, count: null };
 }
 
+/** Converts profile Common skills to a nullable snapshot JSON value. */
+export function seasonalCommonSkillsSnapshotValue(profile: SeasonalProfile): string | null | undefined {
+  if (profile.commonSkills !== undefined) return serializeSeasonalCommonSkills(profile.commonSkills);
+  return undefined;
+}
+
 export function toSnapshot(row: Record<string, unknown> | undefined): ProgressionSnapshotRecord | null {
   if (!row) return null;
   return {
@@ -677,6 +720,7 @@ export function toSnapshot(row: Record<string, unknown> | undefined): Progressio
     aid: Number(row.aid), profileUpdatedAt: Number(row.profile_updated_at), capturedAt: Number(row.captured_at),
     localDate: String(row.local_date), seriesId: Number(row.series_id), counters: rowCounters(row),
     achievements: parseSeasonalAchievementUnlocks(row.achievements),
+    commonSkills: parseSeasonalCommonSkills(row.common_skills),
   };
 }
 
@@ -734,6 +778,7 @@ export function toProfile(
   // data from an older capture.
   if (snapshot && Number(snapshot.profile_updated_at) === profile.profileUpdatedAt) {
     const achievements = parseSeasonalAchievementUnlocks(snapshot.achievements);
+    const commonSkills = parseSeasonalCommonSkills(snapshot.common_skills);
     const totalRaids = nullableNumber(snapshot.total_raids);
     const survivedRaids = nullableNumber(snapshot.survived);
     const totalKills = nullableNumber(snapshot.total_kills);
@@ -755,6 +800,7 @@ export function toProfile(
       achievementsCount: nullableNumber(snapshot.achv_count) ?? (achievements === null ? null : achievements.length),
     };
     profile.seasonalAchievements = achievements;
+    profile.commonSkills = commonSkills;
     profile.staticSignals = {
       prestige: nullableNumber(snapshot.prestige) ?? 0,
       longestWinStreak: nullableNumber(snapshot.longest_win_streak) ?? 0,
@@ -862,22 +908,34 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
       db.exec("BEGIN IMMEDIATE");
       try {
         const previous = toSnapshot(db.prepare(`SELECT * FROM progression_snapshots WHERE ${identityWhere} ORDER BY profile_updated_at DESC LIMIT 1`).get(...identity));
+        const commonSkillsSnapshot = seasonalCommonSkillsSnapshotValue(profile);
         if (previous && profile.profileUpdatedAt <= previous.profileUpdatedAt) {
           // A replayed JSON payload is also the idempotent portrait backfill
           // path: refresh only Seasonal-derived fields on the existing row and
           // never create a second progression point.
-          if (profile.profileUpdatedAt === previous.profileUpdatedAt && profile.seasonalStats !== undefined) {
+          if (profile.profileUpdatedAt === previous.profileUpdatedAt && (
+            profile.seasonalStats !== undefined ||
+            profile.seasonalAchievements !== undefined ||
+            commonSkillsSnapshot !== undefined ||
+            profile.side !== undefined
+          )) {
             const stats = profile.seasonalStats;
             const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
+            const portraitAssignments = stats === undefined ? "" : `
+              total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
+              level = ?, prestige = ?, longest_win_streak = ?,`;
             db.prepare(`UPDATE progression_snapshots SET
-              side = COALESCE(?, side), total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
-              level = ?, prestige = ?, longest_win_streak = ?,
-              achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements)
+              side = COALESCE(?, side),${portraitAssignments}
+              achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements),
+              common_skills = COALESCE(?, common_skills)
               WHERE ${identityWhere} AND profile_updated_at = ?`).run(
               profile.side ?? null,
-              stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
-              stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
+              ...(stats === undefined ? [] : [
+                stats.totalRaids, stats.survivedRaids, stats.deaths, stats.totalKills,
+                stats.runThrough, stats.level, stats.prestige, stats.longestWinStreak,
+              ]),
               achievementSnapshot.count, achievementSnapshot.value,
+              commonSkillsSnapshot ?? null,
               ...identity, profile.profileUpdatedAt,
             );
           }
@@ -907,8 +965,9 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         const inserted = db.prepare(`INSERT INTO progression_snapshots (
           mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
           side, experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
-          pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements
-        ) VALUES (${Array.from({ length: 26 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
+          pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements,
+          common_skills
+        ) VALUES (${Array.from({ length: 27 }, () => "?").join(", ")})`).run(...identity, profile.profileUpdatedAt,
           profile.profileUpdatedAt, capturedAt, moscowDate(profile.profileUpdatedAt), seriesId,
           profile.side ?? null,
           profile.counters.experience, seasonalStats?.totalRaids ?? null, profile.counters.pmcRaids,
@@ -923,7 +982,8 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
             ? seasonalStats.longestWinStreak
             : hasStaticSignals ? staticSignals.longestWinStreak : null,
           achievementSnapshot.count,
-          achievementSnapshot.value);
+          achievementSnapshot.value,
+          commonSkillsSnapshot ?? null);
         const snapshot = toSnapshot(db.prepare("SELECT * FROM progression_snapshots WHERE id = ?").get(Number(inserted.lastInsertRowid)))!;
         let interval: ProgressionIntervalRecord | null = null;
         if (previous && changes) {
