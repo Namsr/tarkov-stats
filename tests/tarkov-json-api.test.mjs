@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   expToLevel,
@@ -110,12 +112,17 @@ test("server sources contain no GraphQL calls and use the shared project identit
 
 test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () => {
   const originalFetch = globalThis.fetch;
+  const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
   const requested = [];
   const payload = {
     data: { achievements: {
-      seasonal: {
-        id: "seasonal", name: "seasonal title", normalizedName: "seasonal-title",
-        side: "All", normalizedRarity: "rare", playersCompletedPercent: 1,
+      "6a5df324129316dcbe0da3da": {
+        id: "6a5df324129316dcbe0da3da",
+        name: "6a5df324129316dcbe0da3da name",
+        normalizedName: "i-had-a-plan",
+        side: "All", normalizedRarity: "seasonal", playersCompletedPercent: 1,
         adjustedPlayersCompletedPercent: 2,
       },
     } },
@@ -124,17 +131,21 @@ test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () 
     requested.push(String(input));
     if (String(input).endsWith("/tasks")) return new Response(JSON.stringify(payload));
     if (String(input).endsWith("/tasks_en")) {
-      return new Response(JSON.stringify({ data: { "seasonal title": "Seasonal title" } }));
+      return new Response(JSON.stringify({ data: { "6a5df324129316dcbe0da3da name": "I Had a Plan" } }));
     }
     if (String(input).endsWith("/tasks_ru")) {
-      return new Response(JSON.stringify({ data: { "seasonal title": "Сезонное достижение" } }));
+      return new Response(JSON.stringify({ data: { "6a5df324129316dcbe0da3da name": "У меня был план и я его придерживался" } }));
     }
     return new Response(null, { status: 404 });
   };
   try {
-    const map = await getAchievements("seasonal");
-    assert.equal(map.get("seasonal")?.nameEn, "Seasonal title");
-    assert.equal(map.get("seasonal")?.nameRu, "Сезонное достижение");
+    const coldApi = await import(`../lib/tarkov-api.ts?seasonal-rarity=${Date.now()}`);
+    assert.equal(coldApi.getCachedAchievements("seasonal"), null);
+    const map = await coldApi.getAchievements("seasonal");
+    const achievement = map.get("6a5df324129316dcbe0da3da");
+    assert.equal(achievement?.nameEn, "I Had a Plan");
+    assert.equal(achievement?.nameRu, "У меня был план и я его придерживался");
+    assert.equal(achievement?.rarity, "seasonal");
     assert.deepEqual(requested, [
       "https://json.tarkov.dev/pvp-season/tasks",
       "https://json.tarkov.dev/pvp-season/tasks_en",
@@ -142,5 +153,54 @@ test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () 
     ]);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("last-good achievement metadata survives an upstream outage", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const originalNow = Date.now;
+  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  const payload = { data: { achievements: {
+    persisted: {
+      id: "persisted", name: "persisted title", normalizedName: "persisted-title",
+      side: "All", normalizedRarity: "common", playersCompletedPercent: 3,
+      adjustedPlayersCompletedPercent: 4,
+    },
+  } } };
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/tasks")) return new Response(JSON.stringify(payload));
+    if (url.endsWith("/tasks_en")) {
+      return new Response(JSON.stringify({ data: { "persisted title": "Persisted title" } }));
+    }
+    if (url.endsWith("/tasks_ru")) {
+      return new Response(JSON.stringify({ data: { "persisted title": "Сохранённое достижение" } }));
+    }
+    return new Response(null, { status: 404 });
+  };
+  try {
+    const first = await getAchievements("regular");
+    assert.equal(first.get("persisted")?.nameEn, "Persisted title");
+    now += 7 * 60 * 60 * 1000;
+    globalThis.fetch = async () => { throw new Error("upstream unavailable"); };
+    // A cache-busted module import gives this test a fresh in-process cache,
+    // matching the state after a container restart.
+    const restartedApi = await import(`../lib/tarkov-api.ts?restart=${now}`);
+    const fallback = await restartedApi.getAchievements("regular");
+    assert.equal(fallback.get("persisted")?.nameEn, "Persisted title");
+    assert.equal(fallback.get("persisted")?.nameRu, "Сохранённое достижение");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+    if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });

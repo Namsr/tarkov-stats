@@ -4,11 +4,13 @@ import { useMemo } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { SeasonalAchievementView } from "@/types/profile-view";
 
-const RARITY_ORDER = ["legendary", "epic", "rare", "uncommon", "common"];
+const RARITY_ORDER = ["seasonal", "legendary", "epic", "rare", "uncommon", "common"];
 
-function rarityKey(value: string): "common" | "rare" | "legendary" {
+function rarityKey(value: string): "common" | "rare" | "legendary" | "seasonal" {
   const normalized = value.toLowerCase();
-  return normalized === "rare" || normalized === "legendary" ? normalized : "common";
+  return normalized === "rare" || normalized === "legendary" || normalized === "seasonal"
+    ? normalized
+    : "common";
 }
 
 function formatDate(value: number | null, locale: string): string | null {

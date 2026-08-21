@@ -131,8 +131,8 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
   assert.doesNotMatch(profileRouteSource, /getSeasonalAchievementBaseline/);
 });
 
-test("cold Seasonal profile metadata warmup does not block the response", () => {
-  assert.match(profileRouteSource, /const cachedAchievements = result\.ok \? getCachedAchievements\("seasonal"\) : null/);
-  assert.match(profileRouteSource, /after\(\(\) => getAchievements\("seasonal"\)\.catch/);
-  assert.doesNotMatch(profileRouteSource, /await getAchievements\("seasonal"\)/);
+test("cold Seasonal profile metadata loads before the response", () => {
+  assert.match(profileRouteSource, /const \[baseline, metadata\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
+  assert.doesNotMatch(profileRouteSource, /getCachedAchievements\("seasonal"\)/);
+  assert.match(profileRouteSource, /metadata\.get\(achievement\.id\)/);
 });

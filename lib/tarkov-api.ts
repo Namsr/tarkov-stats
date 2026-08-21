@@ -385,6 +385,107 @@ type AchievementCache = { data: Map<string, AchievementMeta>; ts: number };
 const achievementsCache = new Map<AchievementMode, AchievementCache>();
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 
+/**
+ * The VPS image is read-only apart from /data. Keep the last valid reference
+ * response there so an upstream restart does not turn every achievement into
+ * its raw id after the web container is recreated. Cloudflare/other runtimes
+ * simply skip this optional Node filesystem cache.
+ */
+function achievementCacheFile(mode: AchievementMode): string {
+  const directory = process.env.ACHIEVEMENTS_CACHE_DIR || "/data";
+  return `${directory.replace(/[\\/]+$/, "")}/achievements-${mode}.json`;
+}
+
+function parsePersistedAchievements(payload: unknown, mode: AchievementMode): AchievementCache {
+  const root = record(payload);
+  if (
+    root?.version !== 1 ||
+    root.mode !== mode ||
+    typeof root.savedAt !== "number" ||
+    !Number.isFinite(root.savedAt) ||
+    !Array.isArray(root.entries) ||
+    root.entries.length === 0
+  ) {
+    throw new Error("invalid persisted achievement cache");
+  }
+  const data = new Map<string, AchievementMeta>();
+  for (const value of root.entries) {
+    const row = record(value);
+    if (
+      !row ||
+      typeof row.id !== "string" ||
+      typeof row.name !== "string" ||
+      typeof row.nameEn !== "string" ||
+      (row.nameRu !== null && typeof row.nameRu !== "string") ||
+      typeof row.side !== "string" ||
+      (row.rarity !== "common" && row.rarity !== "rare" && row.rarity !== "legendary" && row.rarity !== "seasonal")
+    ) {
+      throw new Error("invalid persisted achievement entry");
+    }
+    const nameRu = row.nameRu === null ? null : row.nameRu;
+    data.set(row.id, {
+      id: row.id,
+      name: row.name,
+      nameEn: row.nameEn,
+      nameRu,
+      side: row.side,
+      rarity: row.rarity,
+      playersCompletedPercent: percentage(row.playersCompletedPercent, `achievement ${row.id}.playersCompletedPercent`),
+      adjustedPlayersCompletedPercent: percentage(row.adjustedPlayersCompletedPercent, `achievement ${row.id}.adjustedPlayersCompletedPercent`),
+    });
+  }
+  return { data, ts: root.savedAt };
+}
+
+async function readPersistedAchievements(mode: AchievementMode): Promise<AchievementCache | null> {
+  try {
+    const fs = await import("node:fs/promises" as string) as {
+      readFile(file: string, encoding: "utf8"): Promise<string>;
+    };
+    const payload = JSON.parse(await fs.readFile(achievementCacheFile(mode), "utf8"));
+    return parsePersistedAchievements(payload, mode);
+  } catch {
+    return null;
+  }
+}
+
+async function writePersistedAchievements(mode: AchievementMode, cache: AchievementCache): Promise<void> {
+  const file = achievementCacheFile(mode);
+  let temporary = "";
+  try {
+    const fs = await import("node:fs/promises" as string) as {
+      mkdir(directory: string, options: { recursive: true }): Promise<void>;
+      writeFile(file: string, data: string, options: { encoding: "utf8"; mode: number }): Promise<void>;
+      rename(oldPath: string, newPath: string): Promise<void>;
+      unlink(file: string): Promise<void>;
+    };
+    const path = await import("node:path" as string) as { dirname(file: string): string };
+    temporary = `${file}.${Date.now()}.tmp`;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(temporary, JSON.stringify({
+      version: 1,
+      mode,
+      savedAt: cache.ts,
+      entries: [...cache.data.values()],
+    }), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temporary, file);
+  } catch (error) {
+    if (temporary) {
+      try {
+        const fs = await import("node:fs/promises" as string) as { unlink(file: string): Promise<void> };
+        await fs.unlink(temporary);
+      } catch {
+        // Best-effort cleanup only; persistence is an optimization.
+      }
+    }
+    console.warn("tarkov reference cache write failed", {
+      reference: "achievements",
+      mode,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+  }
+}
+
 /** Return fresh in-process achievement metadata without starting a network request. */
 export function getCachedAchievements(mode: AchievementMode = "regular"): Map<string, AchievementMeta> | null {
   const cached = achievementsCache.get(mode);
@@ -442,7 +543,7 @@ export function parseAchievements(
       ? row.normalizedName.trim()
       : "";
     const rarity = row.normalizedRarity;
-    if (rarity !== "common" && rarity !== "rare" && rarity !== "legendary") {
+    if (rarity !== "common" && rarity !== "rare" && rarity !== "legendary" && rarity !== "seasonal") {
       throw new Error(`achievement ${key} has an invalid normalizedRarity`);
     }
     result.set(key, {
@@ -473,6 +574,15 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
     console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
     return cached;
   }
+  // A stale disk snapshot is still a better fallback than raw IDs. A fresh
+  // snapshot can be returned immediately and avoids an unnecessary upstream
+  // hit after a normal container restart.
+  const persisted = await readPersistedAchievements(mode);
+  if (persisted && now - persisted.ts < ACHIEVEMENTS_TTL_MS) {
+    achievementsCache.set(mode, persisted);
+    console.info("tarkov reference", { reference: "achievements", mode, source: "persistent-cache" });
+    return persisted.data;
+  }
   const endpoints = ACHIEVEMENT_ENDPOINTS[mode];
   let tasks: unknown;
   try {
@@ -485,11 +595,12 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
       mode,
       error: error instanceof Error ? error.message : "unknown",
     });
-    const fallback = achievementsCache.get(mode)?.data ?? new Map();
+    const cachedFallback = achievementsCache.get(mode);
+    const fallback = cachedFallback?.data ?? persisted?.data ?? new Map();
     console.info("tarkov reference", {
       reference: "achievements",
       mode,
-      source: achievementsCache.has(mode) ? "memory-cache" : "local-fallback",
+      source: cachedFallback ? "memory-cache" : persisted ? "persistent-cache" : "local-fallback",
     });
     return fallback;
   }
@@ -510,7 +621,9 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
       });
     }
     const map = parseAchievements(tasks, english, russian);
-    achievementsCache.set(mode, { data: map, ts: now });
+    const cache = { data: map, ts: now };
+    achievementsCache.set(mode, cache);
+    await writePersistedAchievements(mode, cache);
     console.info("tarkov reference", { reference: "achievements", mode, source: "json" });
     return map;
   } catch (error) {
@@ -519,9 +632,13 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
       mode,
       error: error instanceof Error ? error.message : "unknown",
     });
-    const cachedAfterError = achievementsCache.get(mode);
+    const cachedAfterError = achievementsCache.get(mode) ?? persisted;
     if (cachedAfterError) {
-      console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
+      console.info("tarkov reference", {
+        reference: "achievements",
+        mode,
+        source: achievementsCache.has(mode) ? "memory-cache" : "persistent-cache",
+      });
       return cachedAfterError.data;
     }
     try {
