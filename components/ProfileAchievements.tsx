@@ -302,7 +302,12 @@ export default function ProfileAchievements({
                     ))}
                     <th scope="col">{t("achievement.col.description")}</th>
                     {SORTABLE_COLUMNS.filter((column) => column.key !== "alphabet").map((column) => (
-                      <th key={column.key} scope="col" aria-sort={sortAriaValue(sortKey === column.key, direction)}>
+                      <th
+                        key={column.key}
+                        className={column.key === "percent" || column.key === "date" ? "achievement-table__number-header" : undefined}
+                        scope="col"
+                        aria-sort={sortAriaValue(sortKey === column.key, direction)}
+                      >
                         <SortButton
                           column={column}
                           active={sortKey === column.key}

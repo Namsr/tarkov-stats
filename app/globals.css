@@ -607,12 +607,14 @@ html:not([data-theme="light"]) .home-socials__link--github .home-socials__icon {
 .achievement-table thead th:nth-child(3) { width: 15%; }
 .achievement-table thead th:nth-child(4) { width: 17%; }
 .achievement-table thead th:nth-child(5) { width: 12%; }
+.achievement-table thead th.achievement-table__number-header { text-align: right; }
 .achievement-table tbody tr { background: color-mix(in srgb, var(--foreground) 4%, var(--card-bg)); }
 .achievement-table tbody th,
 .achievement-table tbody td { border-top: 1px solid var(--card-border); border-bottom: 1px solid var(--card-border); }
 .achievement-table tbody th:first-child { border-left: 1px solid var(--card-border); border-radius: 8px 0 0 8px; }
 .achievement-table tbody td:last-child { border-right: 1px solid var(--card-border); border-radius: 0 8px 8px 0; }
 .achievement-table__sort { display: inline-flex; min-height: 44px; align-items: center; gap: 6px; border: 0; background: transparent; color: inherit; padding: 7px 0; font: inherit; font-weight: 800; letter-spacing: inherit; text-align: left; text-transform: inherit; }
+.achievement-table__number-header .achievement-table__sort { width: 100%; justify-content: flex-end; text-align: right; }
 .achievement-table__sort:hover,
 .achievement-table__sort:focus-visible { color: var(--foreground); }
 .achievement-table__sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }

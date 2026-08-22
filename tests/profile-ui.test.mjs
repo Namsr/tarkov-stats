@@ -146,8 +146,11 @@ test("profile achievements use sortable desktop columns and readable mobile card
   assert.match(achievements, /achievement\.bsgLine/);
   assert.match(achievements, /const \[sortKey, setSortKey\] = useState<AchievementSortKey>\("date"\)/);
   assert.match(achievements, /key: "percent"/);
+  assert.match(achievements, /achievement-table__number-header/);
   assert.match(achievements, /<div className="achievement-cards" role="list">/);
   assert.match(styles, /\.achievement-table-wrap \{[^}]*overflow-x: auto/);
+  assert.match(styles, /\.achievement-table thead th\.achievement-table__number-header \{ text-align: right; \}/);
+  assert.match(styles, /\.achievement-table__number-header \.achievement-table__sort \{ width: 100%; justify-content: flex-end; text-align: right; \}/);
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-table-wrap \{ display: none; \}/);
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-cards \{ display: grid/);
   assert.match(dictionary, /"achievement\.col\.name": "Name"/);
