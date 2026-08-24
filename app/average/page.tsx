@@ -304,7 +304,7 @@ function AveragePageContent({
   const statisticLabel = t(
     statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
   );
-  const showAverageProgression = mode === "regular" || mode === "seasonal";
+  const showAverageProgression = mode === "regular" || mode === "pve" || mode === "seasonal";
   const focusMetrics = METRICS.slice(0, 4);
   const detailMetrics = METRICS.slice(4).map((metric) =>
     dimension === "pmc_raids" && metric.key === "total_raids"
@@ -688,7 +688,7 @@ function AveragePageContent({
       {showAverageProgression && levelBands.length > 0 && (
         <RegularAverageProgression
           levelBands={levelBands}
-          mode={mode === "seasonal" ? "seasonal" : "regular"}
+          mode={mode === "seasonal" ? "seasonal" : mode === "pve" ? "pve" : "regular"}
           cycleId={cycleId}
           requestRef={progressionRequestRef}
         />

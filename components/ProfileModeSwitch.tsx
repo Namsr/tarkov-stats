@@ -96,6 +96,23 @@ export default function ProfileModeSwitch({
     warmPlayerProfileResponse(`/api/player/profile?${params}`);
   }
 
+  function warmTimeline(mode: GameMode): void {
+    if (
+      page !== "player" ||
+      aid == null ||
+      (mode !== "regular" && mode !== "pve" && mode !== "seasonal")
+    ) return;
+    const params = new URLSearchParams({
+      aid: String(aid),
+      mode,
+      cycle: mode === "seasonal" ? activeSeasonalCycleId ?? "" : "persistent",
+    });
+    if (mode === "seasonal" && !activeSeasonalCycleId) return;
+    void fetch(`/api/progression/timeline?${params}`, { cache: "default" }).catch(() => {
+      // The destination profile owns the visible progression error state.
+    });
+  }
+
   return (
     <nav className="mode-switch" aria-label={t("mode.selectorAria")}>
       {GAME_MODES.map((mode) => {
@@ -116,6 +133,7 @@ export default function ProfileModeSwitch({
             onNavigate={() => {
               if (mode !== current) {
                 warmProfile(mode);
+                warmTimeline(mode);
                 setPendingNavigation({ mode, fromMode: current, pathname });
                 onBeforeNavigate?.(mode);
                 window.dispatchEvent(new Event("profile-mode-navigate"));

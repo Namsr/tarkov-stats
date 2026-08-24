@@ -22,7 +22,7 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   // chart can render from the known-good local snapshot while the average
   // profile request starts immediately.
   const levelBands = cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22);
-  if (mode === "regular") {
+  if (mode === "regular" || mode === "pve") {
     return <LegacyAveragePage mode={mode} levelBands={levelBands} />;
   }
   if (mode !== "seasonal") return <LegacyAveragePage mode={mode} />;

@@ -378,6 +378,29 @@ function localDataFor(
     }
   }
 
+  if ((mode === "pve" || mode === "arena") && dataset === "index") {
+    const table = `${mode}_player_index`;
+    const meta = `${mode}_player_index_meta`;
+    const columns = tableColumns(playersDb, table);
+    if (!playersDb || !columns.has("aid") || !columns.has("nickname")) {
+      return { available: false, rows: [], lastLocalApplyAt: null, error: `${mode}_index_unavailable` };
+    }
+    try {
+      const rows = playersDb.prepare(`SELECT aid, nickname FROM ${table} WHERE mode = ?`)
+        .all(mode).map((row) => ({
+          aid: Number(row.aid),
+          nickname: row.nickname == null ? null : String(row.nickname),
+        }));
+      return {
+        available: true,
+        rows,
+        lastLocalApplyAt: metadataTimestamp(playersDb, meta, "synced_at"),
+      };
+    } catch {
+      return { available: false, rows: [], lastLocalApplyAt: null, error: `${mode}_index_unavailable` };
+    }
+  }
+
   const table = mode === "regular" ? "players" : "mode_players";
   const columns = tableColumns(playersDb, table);
   const required = dataset === "index" ? ["aid", "nickname"] : ["aid", "profile_updated_at"];

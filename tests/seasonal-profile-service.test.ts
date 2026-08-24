@@ -37,7 +37,10 @@ const cycleDependencies = {
 test("legacy profile identity remains regular/persistent when mode and cycle are omitted", () => {
   assert.deepEqual(LEGACY_IDENTITY, { mode: "regular", cycleId: "persistent" });
   assert.equal(normalizeCycleId(null, "regular"), "persistent");
+  assert.equal(normalizeCycleId("persistent", "pve"), "persistent");
+  assert.equal(normalizeCycleId("season-1", "pve"), null);
   assert.equal(normalizeCycleId(null, "seasonal"), null);
+  assert.equal(normalizeCycleId("persistent", "seasonal"), null);
 });
 
 test("Seasonal profile fails closed without a confirmed network adapter", async () => {

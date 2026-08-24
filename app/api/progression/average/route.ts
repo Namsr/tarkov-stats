@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { unstable_cache } from "next/cache";
-import { getRegularProgressionAverage } from "@/lib/seasonal/progression-db";
+import { getPersistentProgressionAverage, getRegularProgressionAverage } from "@/lib/seasonal/progression-db";
 import { getSeasonalAverageQuery } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
@@ -8,6 +8,12 @@ import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-
 const loadCachedRegularAverageProgression = unstable_cache(
   () => getRegularProgressionAverage(),
   ["average-progression-regular-v2"],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
+
+const loadCachedPveAverageProgression = unstable_cache(
+  () => getPersistentProgressionAverage("pve"),
+  ["average-progression-pve-v1"],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS },
 );
 
@@ -35,16 +41,20 @@ export async function GET(request: Request) {
       if (!result) return NextResponse.json({ error: "Seasonal progression unavailable" }, { status: 503 });
       return NextResponse.json(result, { headers: { "Cache-Control": AVERAGE_CACHE_CONTROL } });
     }
-    if (mode !== "regular") return NextResponse.json({ error: "Invalid progression mode" }, { status: 400 });
-    const result = await loadCachedRegularAverageProgression();
+    if (mode !== "regular" && mode !== "pve") {
+      return NextResponse.json({ error: "Invalid progression mode" }, { status: 400 });
+    }
+    const result = mode === "regular"
+      ? await loadCachedRegularAverageProgression()
+      : await loadCachedPveAverageProgression();
     if (!result) {
-      return NextResponse.json({ error: "PvP progression unavailable" }, { status: 503 });
+      return NextResponse.json({ error: `${mode === "pve" ? "PvE" : "PvP"} progression unavailable` }, { status: 503 });
     }
     return NextResponse.json(result, {
       headers: { "Cache-Control": AVERAGE_CACHE_CONTROL },
     });
   } catch (error) {
-    console.error("regular progression average failed", error);
-    return NextResponse.json({ error: "Failed to query PvP progression" }, { status: 500 });
+    console.error("persistent progression average failed", error);
+    return NextResponse.json({ error: "Failed to query persistent progression" }, { status: 500 });
   }
 }

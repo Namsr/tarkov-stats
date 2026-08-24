@@ -1,6 +1,15 @@
 export interface PlayerSearchResult {
   aid: number;
   name: string;
+  profiles: PlayerSearchProfileResult[];
+}
+
+export interface PlayerSearchProfileResult {
+  mode: "regular" | "pve" | "arena" | "seasonal";
+  cycleId: string;
+  name: string;
+  /** Unix-ms version of the cached profile; null when the profile store is unavailable. */
+  updatedAt?: number | null;
 }
 
 /**
@@ -183,7 +192,7 @@ export interface ParsedPlayerStats {
   avgLifespan: number;
   totalLootValue: number;
   arena?: ArenaStats;
-  /** Normalized profile.skills.Mastering rows retained for stored profile views. */
+  /** Normalized profile.skills.Mastering rows retained for stored PvE views. */
   weaponMastery?: WeaponMasteryProgress[];
   [key: string]: unknown;
 }

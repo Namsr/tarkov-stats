@@ -19,6 +19,19 @@ interface MetricDef {
   dec: number;
 }
 
+type CompareMode = Extract<Favorite["mode"], "regular" | "pve">;
+
+const COMPARE_MODES = ["regular", "pve"] as const satisfies readonly CompareMode[];
+const MODE_LABEL_KEYS: Record<CompareMode, string> = {
+  regular: "fav.mode.regular",
+  pve: "fav.mode.pve",
+};
+
+interface CompareColumn {
+  fav: Favorite;
+  stats: ParsedPlayerStats;
+}
+
 // All metrics here are higher-is-better, so the row max is the winner. Labels
 // reuse the existing compare.* dictionary keys.
 const METRICS: MetricDef[] = [
@@ -37,70 +50,97 @@ function fmt(v: number, dec: number): string {
   return v.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
-export default function FavoritesCompare({ favorites, statsByFavorite }: Props) {
+function ComparisonTable({ mode, cols }: { mode: CompareMode; cols: CompareColumn[] }) {
   const { t } = useI18n();
 
-  // Only accounts whose public profile actually loaded can be compared.
-  const cols = favorites
-    .filter((favorite) => favorite.mode === "regular")
-    .map((favorite) => ({ fav: favorite, stats: statsByFavorite.get(favoriteKey(favorite)) ?? null }))
-    .filter((c): c is { fav: Favorite; stats: ParsedPlayerStats } => c.stats !== null);
+  return (
+    <section className="space-y-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted-strong)]">
+        {t(MODE_LABEL_KEYS[mode])}
+      </h3>
+      <div className="overflow-x-auto border border-[var(--card-border)] rounded-xl">
+        <table className="w-full border-collapse min-w-[28rem]">
+          <thead>
+            <tr className="border-b border-[var(--card-border)]">
+              <th className="py-3 px-3 text-left text-xs uppercase tracking-wider text-[var(--muted)]">
+                {t("cmp.metric")}
+              </th>
+              {cols.map((c) => (
+                <th
+                  key={favoriteKey(c.fav)}
+                  className="py-3 px-3 text-right text-xs uppercase tracking-wider text-[var(--accent)]"
+                >
+                  <Link href={favoriteHref(c.fav)} className="hover:underline">
+                    {c.stats.nickname}
+                  </Link>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {METRICS.map((m) => {
+              const values = cols.map((c) => m.get(c.stats));
+              const best = Math.max(...values);
+              const allEqual = values.every((v) => v === best);
+              return (
+                <tr
+                  key={m.key}
+                  className="border-b border-[var(--card-border)]/70 hover:bg-[var(--input-bg)] transition-colors"
+                >
+                  <td className="py-3 px-3 text-sm text-[var(--muted-strong)]">{t(m.labelKey)}</td>
+                  {cols.map((c, i) => {
+                    const v = values[i];
+                    const isBest = !allEqual && v === best;
+                    return (
+                      <td
+                        key={favoriteKey(c.fav)}
+                        className={`py-3 px-3 text-right font-medium ${
+                          isBest ? "text-[var(--success)]" : "text-[var(--muted-strong)]"
+                        }`}
+                      >
+                        {fmt(v, m.dec)}
+                        {m.suffix ?? ""}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
 
-  if (cols.length < 2) {
+export default function FavoritesCompare({ favorites, statsByFavorite }: Props) {
+  const { t } = useI18n();
+  const groups = COMPARE_MODES.map((mode) => ({
+    mode,
+    cols: favorites
+      .filter((favorite) => favorite.mode === mode)
+      .map((favorite) => ({ fav: favorite, stats: statsByFavorite.get(favoriteKey(favorite)) ?? null }))
+      .filter((c): c is CompareColumn => c.stats !== null),
+  }));
+  const visibleGroups = groups.filter((group) => group.cols.length > 0);
+  const comparableGroups = visibleGroups.filter((group) => group.cols.length >= 2);
+
+  if (visibleGroups.length === 0) {
     return <p className="text-sm text-[var(--muted)]">{t("profile.compareNeedTwo")}</p>;
   }
 
   return (
-    <div className="overflow-x-auto border border-[var(--card-border)] rounded-xl">
-      <table className="w-full border-collapse min-w-[28rem]">
-        <thead>
-          <tr className="border-b border-[var(--card-border)]">
-            <th className="py-3 px-3 text-left text-xs uppercase tracking-wider text-[var(--muted)]">
-              {t("cmp.metric")}
-            </th>
-            {cols.map((c) => (
-              <th
-                key={favoriteKey(c.fav)}
-                className="py-3 px-3 text-right text-xs uppercase tracking-wider text-[var(--accent)]"
-              >
-                <Link href={favoriteHref(c.fav)} className="hover:underline">
-                  {c.stats.nickname}
-                </Link>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {METRICS.map((m) => {
-            const values = cols.map((c) => m.get(c.stats));
-            const best = Math.max(...values);
-            const allEqual = values.every((v) => v === best);
-            return (
-              <tr
-                key={m.key}
-                className="border-b border-[var(--card-border)]/70 hover:bg-[var(--input-bg)] transition-colors"
-              >
-                <td className="py-3 px-3 text-sm text-[var(--muted-strong)]">{t(m.labelKey)}</td>
-                {cols.map((c, i) => {
-                  const v = values[i];
-                  const isBest = !allEqual && v === best;
-                  return (
-                    <td
-                      key={favoriteKey(c.fav)}
-                      className={`py-3 px-3 text-right font-medium ${
-                        isBest ? "text-[var(--success)]" : "text-[var(--muted-strong)]"
-                      }`}
-                    >
-                      {fmt(v, m.dec)}
-                      {m.suffix ?? ""}
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-6">
+      {comparableGroups.map((group) => (
+        <ComparisonTable key={group.mode} mode={group.mode} cols={group.cols} />
+      ))}
+      {visibleGroups
+        .filter((group) => group.cols.length < 2)
+        .map((group) => (
+          <p key={group.mode} className="text-sm text-[var(--muted)]">
+            {t("profile.compareNeedTwo")} ({t(MODE_LABEL_KEYS[group.mode])})
+          </p>
+        ))}
     </div>
   );
 }

@@ -251,15 +251,20 @@ test("profile mode switching is available during loading and capture is post-res
   assert.ok((route.match(/\{ headers: profileHeaders \}/g) ?? []).length >= 2);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
   assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
-  assert.doesNotMatch(route, /await persistRegularProfileSnapshot/);
+  const regularRoute = route.slice(route.indexOf("    const regularSnapshot = makePlayerSnapshot"));
+  assert.doesNotMatch(regularRoute, /await persistRegularProfileSnapshot/);
+  assert.match(route, /if \(mode === "pve"\)[\s\S]*await persistRegularProfileSnapshot\(pveSnapshot, \{/);
   assert.match(route, /const riskIsFresh = publicRisk &&[\s\S]*Date\.now\(\) - publicRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
   assert.match(route, /const seasonalRiskIsFresh = result\.ok && storedRisk &&[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreSeasonalRisk/);
   assert.ok(route.indexOf("const storedRisk = result.ok") < route.indexOf("if (result.ok && !seasonalRiskIsFresh)"));
-  assert.match(route, /const \[baseline, metadata\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
+  assert.match(route, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
   assert.doesNotMatch(route, /getCachedAchievements\("seasonal"\)/);
   assert.match(route, /metadata\.get\(achievement\.id\)/);
+  assert.match(route, /buildWeaponMasteryRows\(viewModel\.mastering\.items, masteryReferences\)/);
+  assert.match(seasonal, /masteryFromViewModel/);
+  assert.match(seasonal, /<ProfileMastering items=\{masteryItems\}/);
 });
 
 test("profile navigation exposes the shell immediately and overlaps regular API work", async () => {
@@ -273,12 +278,28 @@ test("profile navigation exposes the shell immediately and overlaps regular API 
   assert.match(loading, /<SeasonalPlayer[\s\S]*cycleId=\{cycleId\}/);
   assert.match(loading, /levelBands=\{cumulativeLevelBands\(PLAYER_LEVELS_V2026_07_22\)\}/);
   assert.match(loading, /<ProfileShellLoading mode=\{mode\} aid=\{aid\} \/>/);
-  assert.match(search, /const profileParams = new URLSearchParams\(\{ aid: String\(player\.aid\), mode: player\.mode \}\)/);
+  assert.match(search, /const profileParams = new URLSearchParams\(\{ aid: String\(player\.aid\), mode: selectedMode \}\)/);
   assert.match(search, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{profileParams\}`\)/);
-  assert.match(search, /player\.mode === "regular"/);
-  assert.match(search, /const timelineParams = new URLSearchParams\(\{ mode: "regular", cycle: "persistent", aid: String\(player\.aid\) \}\)/);
+  assert.match(search, /selectedMode === "regular" \|\| selectedMode === "pve"/);
+  assert.match(search, /const timelineParams = new URLSearchParams\(\{ mode: selectedMode, cycle: "persistent", aid: String\(player\.aid\) \}\)/);
   assert.match(search, /fetch\(`\/api\/progression\/timeline\?\$\{timelineParams\}`, \{ cache: "default" \}\)/);
   assert.match(search, /router\.push\(href\)/);
+});
+
+test("search keeps its mode picker inline and dismisses the animated history outside", async () => {
+  const search = await readFile("components/SearchBar.tsx", "utf8");
+  const styles = await readFile("app/globals.css", "utf8");
+
+  assert.match(search, /className="search-unit__field"[\s\S]*className="search-unit__mode-trigger"/);
+  assert.match(search, /aria-haspopup="listbox"[\s\S]*data-open=\{modeMenuOpen\}/);
+  assert.doesNotMatch(search, /aria-pressed=\{searchMode === mode\}/);
+  assert.match(search, /document\.addEventListener\("pointerdown", closeOutside, true\)/);
+  assert.match(search, /document\.addEventListener\("focusin", closeOutside, true\)/);
+  assert.match(search, /className="search-unit__history"[\s\S]*data-open=\{showRecent\}[\s\S]*inert=\{!showRecent\}/);
+  assert.match(search, /player\.profiles\.map[\s\S]*search-unit__result-mode[\s\S]*search-unit__result-id/);
+  assert.match(styles, /\.search-unit__history \{[^}]*position: absolute/s);
+  assert.match(styles, /\.search-unit__mode-menu,[\s\S]*transform: translateY\(-8px\)/);
+  assert.match(styles, /prefers-reduced-motion: reduce[\s\S]*\.search-unit__history/);
 });
 
 test("visitor help is hidden from home without deleting its implementation", async () => {
@@ -503,7 +524,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(profile, /risk=\{<div><h2 className="section-heading mb-3">\{t\("cheater\.heading"\)\}<\/h2><CheaterScore/);
   assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
   assert.doesNotMatch(score, /section-kicker">\{t\("cheater\.heading"\)\}/);
-  assert.match(profile, /<ProgressionPanel[\s\S]*?mode="regular"[\s\S]*?cycleId="persistent"/);
+  assert.match(profile, /<ProgressionPanel[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
   assert.match(profile, /<ProgressionPanel[\s\S]*?profileUpdatedAt=\{profileUpdatedAt\}/);
   assert.match(profile, /refreshRevision=\{progressionRefreshRevision\}/);
   assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
@@ -787,7 +808,7 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
 });
-test("average dashboard warms every mode and skips PvP progression for PvE/Arena", async () => {
+test("average dashboard warms mode-local PvP and PvE progression", async () => {
   const cache = await readFile("lib/average-cache.ts", "utf8");
   const average = await readFile("app/api/average/route.ts", "utf8");
   const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
@@ -803,11 +824,13 @@ test("average dashboard warms every mode and skips PvP progression for PvE/Arena
   assert.match(average, /mode: CrossSectionMode/);
   assert.match(seasonal, /\["average-seasonal-dashboard-v2"\]/);
   assert.match(progression, /\["average-progression-regular-v2"\]/);
-  assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "seasonal"/);
+  assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
   assert.match(page, /showAverageProgression && levelBands\.length > 0/);
   for (const mode of ["regular", "pve", "arena"]) assert.match(warmer, new RegExp(`"${mode}"`));
   assert.match(warmer, /SEASONAL_CYCLE_ID/);
+  assert.match(warmer, /api\/progression\/average\?mode=pve/);
   assert.match(warmer, /api\/average\/achievements\?mode=regular/);
+  assert.match(warmer, /api\/average\/achievements\?mode=pve/);
   assert.match(warmer, /api\/average\/achievements\?mode=seasonal&cycle=/);
   assert.match(dockerfile, /warm-average-cache\.mjs/);
   assert.match(dockerfile, /start-web\.mjs/);
@@ -851,4 +874,43 @@ test("PVP Season uses one canonical public route and keeps the internal seasonal
   assert.match(switcher, /const routeMode = appRouteMode\(mode\)/);
   assert.match(dictionary, /"fav\.mode\.seasonal": "PVP-SEASON"/);
   assert.match(dictionary, /"fav\.mode\.seasonal": "PVP-СЕЗОН"/);
+});
+
+test("PvE profiles use the persistent shell and mode-scoped UI data", async () => {
+  const regular = await readFile("components/RegularPlayer.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
+  const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+  const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)/);
+  assert.match(regular, /<ProfileShell[\s\S]*?mode=\{mode\}[\s\S]*?overviewCards=\{regularOverviewCards\}/);
+  assert.match(regular, /<ProgressionPanel[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
+  assert.match(regular, /<CheaterScore risk=\{serverRisk \?\? progressionRisk\}[\s\S]*?mode=\{mode\}[\s\S]*?statsKnown=\{mode === "regular" \? pvpStatsKnown : true\}/);
+  assert.match(regular, /<PlayerRadarComparison[\s\S]*?stats=\{stats\} mode=\{mode\} cycleId="persistent"/);
+  assert.match(regular, /<ProfileAchievements[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
+  assert.match(regular, /hasVisibleSkills\(regularSkillItems\)/);
+  assert.match(shell, /mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
+  assert.match(shell, /\(mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"\) &&/);
+  assert.match(progression, /mode\?: "regular" \| "pve" \| "seasonal"/);
+  assert.match(radar, /if \(mode === "arena"\)/);
+  assert.doesNotMatch(radar, /if \(mode !== "regular" && mode !== "seasonal"\)/);
+  assert.match(achievements, /mode: "regular" \| "pve" \| "seasonal"/);
+  assert.match(dictionary, /"progression\.kicker\.pve": "PvE history"/);
+  assert.match(dictionary, /"progression\.kicker\.pve": "История PvE"/);
+});
+
+test("PvE averages include the persistent progression charts", async () => {
+  const page = await readFile("app/average/page.tsx", "utf8");
+  const route = await readFile("app/average/[mode]/page.tsx", "utf8");
+  const averageProgression = await readFile("components/RegularAverageProgression.tsx", "utf8");
+  const chart = await readFile("components/SeasonalProgressionChart.tsx", "utf8");
+
+  assert.match(page, /mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
+  assert.match(page, /mode=\{mode === "seasonal" \? "seasonal" : mode === "pve" \? "pve" : "regular"\}/);
+  assert.match(route, /if \(mode === "regular" \|\| mode === "pve"\)/);
+  assert.match(averageProgression, /mode\?: "regular" \| "pve" \| "seasonal"/);
+  assert.match(averageProgression, /if \(mode !== "regular"\)/);
+  assert.match(chart, /const persistent = mode !== "seasonal"/);
 });

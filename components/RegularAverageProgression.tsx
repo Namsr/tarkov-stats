@@ -13,7 +13,7 @@ export default function RegularAverageProgression({
   requestRef,
 }: {
   levelBands: LevelBand[];
-  mode?: "regular" | "seasonal";
+  mode?: "regular" | "pve" | "seasonal";
   cycleId?: string;
   requestRef?: { current: AbortController | null };
 }) {
@@ -27,7 +27,7 @@ export default function RegularAverageProgression({
     setError("");
     if (requestRef) requestRef.current = controller;
     const params = new URLSearchParams();
-    if (mode === "seasonal") {
+    if (mode !== "regular") {
       params.set("mode", mode);
       params.set("cycle", cycleId);
     }

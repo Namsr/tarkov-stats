@@ -141,7 +141,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
   const period = parseAveragePeriod(params.get("period"));
-  if (!period || (rawMode !== "regular" && period !== "all")) {
+  if (!period || (rawMode !== "regular" && rawMode !== "pve" && period !== "all")) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid period" }, { status: 400 });
   }

@@ -330,10 +330,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       statistic,
       period,
     });
-    // PVE/Arena keep the legacy one-dimensional endpoint until their own
-    // profile migration. Regular/Seasonal comparison never accepts client
-    // supplied centers or baselines.
-    if (mode !== "regular" && mode !== "seasonal") {
+    // Arena remains on the legacy endpoint; persistent PvE now uses the same
+    // server-derived two-dimensional cohort as regular PvP.
+    if (mode === "arena") {
       params.set("dimension", "hours");
       params.set("center", String(hoursCenter));
       params.set("excludeAid", String(aid));

@@ -49,7 +49,7 @@ function seasonalAveragePath(cycle, statistic, period) {
 async function warmAverageCache() {
   for (const statistic of statistics) {
     for (const mode of modes) {
-      for (const period of mode === "regular" ? periods : ["all"]) {
+      for (const period of mode === "regular" || mode === "pve" ? periods : ["all"]) {
         await request(averagePath(mode, statistic, period));
       }
     }
@@ -65,7 +65,9 @@ async function warmAverageCache() {
   }
 
   await request("/api/progression/average?mode=regular");
+  await request("/api/progression/average?mode=pve");
   await request("/api/average/achievements?mode=regular");
+  await request("/api/average/achievements?mode=pve");
   if (process.env.SEASONAL_ENABLED === "true" && cycle) {
     await request(`/api/progression/average?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
     await request(`/api/average/achievements?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);

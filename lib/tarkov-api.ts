@@ -1,5 +1,4 @@
 import type {
-  PlayerSearchResult,
   PlayerProfile,
   ParsedPlayerStats,
   ArenaCounterItem,
@@ -46,7 +45,7 @@ const ACHIEVEMENT_ENDPOINTS = {
 export async function searchPlayer(
   nickname: string,
   turnstileToken?: string
-): Promise<PlayerSearchResult[]> {
+): Promise<{ aid: number; name: string }[]> {
   const params = new URLSearchParams();
   if (turnstileToken) params.set("token", turnstileToken);
   const qs = params.toString();

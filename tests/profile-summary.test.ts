@@ -136,7 +136,7 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
 });
 
 test("cold Seasonal profile metadata loads before the response", () => {
-  assert.match(profileRouteSource, /const \[baseline, metadata\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
+  assert.match(profileRouteSource, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
   assert.doesNotMatch(profileRouteSource, /getCachedAchievements\("seasonal"\)/);
   assert.match(profileRouteSource, /metadata\.get\(achievement\.id\)/);
 });

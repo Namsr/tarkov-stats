@@ -8,6 +8,23 @@ CREATE TABLE IF NOT EXISTS excluded_players (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS seasonal_player_index (
+  cycle_id TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL,
+  PRIMARY KEY (cycle_id, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_seasonal_player_index_name
+  ON seasonal_player_index(cycle_id, nickname_lower, aid);
+CREATE TABLE IF NOT EXISTS seasonal_player_index_meta (
+  cycle_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (cycle_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS season_cycles (
   mode TEXT NOT NULL CHECK (mode = 'seasonal'), cycle_id TEXT NOT NULL,
   starts_at INTEGER NOT NULL, ends_at INTEGER, enabled INTEGER NOT NULL DEFAULT 0,

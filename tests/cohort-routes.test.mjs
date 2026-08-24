@@ -6,12 +6,12 @@ const regularRoute = readFileSync(new URL("../app/api/average/cohort/route.ts", 
 const seasonalRoute = readFileSync(new URL("../app/api/seasonal/cohort/route.ts", import.meta.url), "utf8");
 const seasonalHelper = readFileSync(new URL("../lib/seasonal/comparison-cohort.ts", import.meta.url), "utf8");
 
-test("regular cohort route derives both centers from the server profile", () => {
+test("persistent cohort route derives both centers from the server profile", () => {
   const regularBranch = regularRoute.slice(
-    regularRoute.indexOf('if (rawMode === "regular")'),
-    regularRoute.indexOf("  const centerValue", regularRoute.indexOf('if (rawMode === "regular")')),
+    regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")'),
+    regularRoute.indexOf("  const centerValue", regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")')),
   );
-  assert.match(regularBranch, /getPublicProfile\(aid, \{ mode: "regular" \}\)/);
+  assert.match(regularBranch, /getPublicProfile\(aid, \{ mode \}\)/);
   assert.match(regularBranch, /Number\(stats\.hoursPlayed\)/);
   assert.match(regularBranch, /Number\(stats\.pmcRaids\)/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);

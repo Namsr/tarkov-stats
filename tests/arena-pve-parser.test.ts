@@ -3,15 +3,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
 import type { PlayerProfile } from "../types/tarkov.ts";
+import * as tested from "../lib/tarkov-api.ts";
 
-const source = await readFile(new URL("../lib/tarkov-api.ts", import.meta.url), "utf8");
 const profileRouteSource = await readFile(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
-const javascript = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const tested = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
 const {
   getPublicProfile,
   lastSkillAccessSeconds,
@@ -171,6 +166,27 @@ test("regular profile version accepts one-second feed skew but rejects anything 
   }
 });
 
+test("PVE profile version accepts the same one-second feed skew", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ...base,
+    aid: 5869257,
+    updated: 1_800_000_000_000 - 1000,
+    pmcStats: { eft: { totalInGameTime: 0, overAllCounters: { Items: [] } } },
+    skills: { Common: [] },
+  }), { status: 200 });
+  try {
+    const accepted = await getPublicProfile(5869257, {
+      force: true,
+      mode: "pve",
+      expectedUpdatedAt: 1_800_000_000_000,
+    });
+    assert.equal(accepted.profile.updated, 1_800_000_000_000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("explicit zero PMC kills is known while a missing counter remains unknown", () => {
   const profile = (items) => ({
     ...base,
@@ -183,6 +199,6 @@ test("explicit zero PMC kills is known while a missing counter remains unknown",
 });
 
 test("mode profile refresh falls back to the last stored snapshot", () => {
-  assert.match(profileRouteSource, /catch \(error\) \{\s*if \(stored\) return storedResponse\(stored\)/);
-  assert.match(profileRouteSource, /if \(!profile\) \{\s*if \(stored\) return storedResponse\(stored\)/);
+  assert.match(profileRouteSource, /catch \(error\) \{\s*if \(stored\) return await storedResponse\(stored\)/);
+  assert.match(profileRouteSource, /if \(!profile\) \{\s*if \(stored\) return await storedResponse\(stored\)/);
 });

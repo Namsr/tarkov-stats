@@ -4,7 +4,7 @@ export const COMPARISON_COHORT_TARGET = 20;
 export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
-export type ComparisonCohortMode = "regular" | "seasonal";
+export type ComparisonCohortMode = "regular" | "pve" | "seasonal";
 
 export interface ComparisonAxisBounds {
   min: number;

@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
   const period = parseAveragePeriod(params.get("period"));
-  if (!period || (rawMode !== "regular" && period !== "all")) {
+  if (!period || (rawMode !== "regular" && rawMode !== "pve" && period !== "all")) {
     timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid period" }, { status: 400 });
   }
@@ -68,7 +68,8 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (rawMode === "regular") {
+  if (rawMode === "regular" || rawMode === "pve") {
+    const mode = rawMode;
     const requestedAid = params.get("aid");
     const aid = Number(requestedAid);
     if (!requestedAid || !Number.isSafeInteger(aid) || aid <= 0) {
@@ -79,21 +80,21 @@ export async function GET(request: NextRequest) {
       );
     }
     try {
-      const profileResult = await getPublicProfile(aid, { mode: "regular" });
+      const profileResult = await getPublicProfile(aid, { mode });
       if (!profileResult.profile) {
-        timing.finish({ operation: "average_cohort", mode: "regular", outcome: "not_found", status: 404 });
+        timing.finish({ operation: "average_cohort", mode, outcome: "not_found", status: 404 });
         return NextResponse.json({
-          identity: { aid, mode: "regular", cycleId: "persistent" },
+          identity: { aid, mode, cycleId: "persistent" },
           code: "profile_unavailable",
           error: "Profile is not available for comparison",
         }, { status: 404, headers: { "Cache-Control": "no-store" } });
       }
       const stats = parseProfileStats(profileResult.profile, []);
-      const store = await getStore("regular");
+      const store = await getStore(mode);
       if (!store) {
-        timing.finish({ operation: "average_cohort", mode: "regular", outcome: "unavailable", status: 503 });
+        timing.finish({ operation: "average_cohort", mode, outcome: "unavailable", status: 503 });
         return NextResponse.json({
-          identity: { aid, mode: "regular", cycleId: "persistent" },
+          identity: { aid, mode, cycleId: "persistent" },
           code: "comparison_unavailable",
           error: "Comparison storage is unavailable",
         }, { status: 503, headers: { "Cache-Control": "no-store" } });
@@ -106,15 +107,15 @@ export async function GET(request: NextRequest) {
         statistic,
         period,
       );
-      timing.finish({ operation: "average_cohort", mode: "regular", outcome: "success", status: 200 });
+      timing.finish({ operation: "average_cohort", mode, outcome: "success", status: 200 });
       return NextResponse.json({ ...cohort, statistic, period }, {
         headers: { "Cache-Control": "private, no-store" },
       });
     } catch (error) {
-      console.error("regular comparison cohort failed", error);
+      console.error("persistent comparison cohort failed", error);
       timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "error", status: 503 });
       return NextResponse.json({
-        identity: { aid, mode: "regular", cycleId: "persistent" },
+        identity: { aid, mode, cycleId: "persistent" },
         code: "comparison_unavailable",
         error: "Failed to compute comparison cohort",
       }, { status: 503, headers: { "Cache-Control": "no-store" } });

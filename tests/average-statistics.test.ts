@@ -403,9 +403,11 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   assert.equal((await getAverage(new NextRequest(
     "http://local/api/average?period=recent",
   ))).status, 400);
-  assert.equal((await getAverage(new NextRequest(
+  const pveRecent = await getAverage(new NextRequest(
     "http://local/api/average?mode=pve&period=90d",
-  ))).status, 400);
+  ));
+  assert.equal(pveRecent.status, 200);
+  assert.equal((await pveRecent.json()).period, "90d");
 
   reset();
   const emptyAverage = await getAverage(new NextRequest(

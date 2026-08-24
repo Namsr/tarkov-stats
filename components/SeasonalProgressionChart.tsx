@@ -94,9 +94,10 @@ export default function SeasonalProgressionChart({
   levelBands?: LevelBand[];
   riskMarkers?: RiskMarker[];
   averageOnly?: boolean;
-  mode?: "regular" | "seasonal";
+  mode?: "regular" | "pve" | "seasonal";
 }) {
   const { t } = useI18n();
+  const persistent = mode !== "seasonal";
   const [visible, setVisible] = useState<Record<SeriesKey, boolean>>({
     player: !averageOnly,
     nearby: !averageOnly,
@@ -161,7 +162,7 @@ export default function SeasonalProgressionChart({
           <p className="section-kicker">{t("seasonal.kind." + data.kind)}</p>
           <h2 className="section-heading">{title}</h2>
         </div>
-        <div className="seasonal-chart__toggles" aria-label={t(mode === "regular" ? "progression.series.toggleAria" : "seasonal.series.toggleAria")}>
+        <div className="seasonal-chart__toggles" aria-label={t(persistent ? "progression.series.toggleAria" : "seasonal.series.toggleAria")}>
           {keys.map((key) => (
             <button
               type="button"
@@ -171,14 +172,14 @@ export default function SeasonalProgressionChart({
               className={visible[key] ? "is-active" : ""}
             >
               <span style={{ background: COLORS[key] }} aria-hidden="true" />
-              {t((mode === "regular" ? "progression.series." : "seasonal.series.") + key)}
+              {t((persistent ? "progression.series." : "seasonal.series.") + key)}
             </button>
           ))}
         </div>
       </div>
 
       {shown.every((key) => displayedPointsFor(key).length === 0) ? (
-        <p className="seasonal-chart__empty">{t(mode === "regular" ? "progression.noHistory" : "seasonal.noHistory")}</p>
+        <p className="seasonal-chart__empty">{t(persistent ? "progression.noHistory" : "seasonal.noHistory")}</p>
       ) : (
         <div className="seasonal-chart__scroll">
           <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={title}>
@@ -235,7 +236,7 @@ export default function SeasonalProgressionChart({
                         level: levelAtExperience(point.value, levelBands),
                       })
                     : fmt(point.value, data.kind);
-                  const series = t((mode === "regular" ? "progression.series." : "seasonal.series.") + key);
+                  const series = t((persistent ? "progression.series." : "seasonal.series.") + key);
                   const periodStart = point.periodStartAt == null ? null : moscowTimestamp(point.periodStartAt);
                   const period = periodStart ? `${periodStart} → ${moscowDate(point.date)}` : moscowDate(point.date);
                   const scoreTooltipValues = {

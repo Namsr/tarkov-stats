@@ -104,6 +104,39 @@ CREATE TABLE IF NOT EXISTS player_index_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- PvE keeps a separate nickname directory. The explicit mode key prevents a
+-- future mode-aware reader from accidentally mixing it with the PvP index.
+CREATE TABLE IF NOT EXISTS pve_player_index (
+  mode TEXT NOT NULL CHECK (mode = 'pve'),
+  aid INTEGER NOT NULL,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL,
+  PRIMARY KEY (mode, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_pve_player_index_nickname_lower
+  ON pve_player_index(mode, nickname_lower, aid);
+CREATE TABLE IF NOT EXISTS pve_player_index_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Arena keeps the same isolated nickname-directory contract as PvE.
+CREATE TABLE IF NOT EXISTS arena_player_index (
+  mode TEXT NOT NULL CHECK (mode = 'arena'),
+  aid INTEGER NOT NULL,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL,
+  PRIMARY KEY (mode, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_arena_player_index_nickname_lower
+  ON arena_player_index(mode, nickname_lower, aid);
+CREATE TABLE IF NOT EXISTS arena_player_index_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 const CURRENT_PLAYER_SCHEMA_OBJECTS = [
@@ -112,6 +145,8 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids",
   "pve_players", "arena_players", "excluded_players", "favorites",
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
+  "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
+  "arena_player_index", "idx_arena_player_index_nickname_lower", "arena_player_index_meta",
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -230,7 +265,7 @@ function averagePeriodWhere(
     where,
     "NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)"
   );
-  if (mode !== "regular" || period === "all") return active;
+  if (period === "all") return active;
   const resolvedCutoff = cutoff ?? Math.floor(Date.now() - 90 * 86_400_000);
   return appendCondition(active, `profile_updated_at >= ${resolvedCutoff}`);
 }
@@ -616,7 +651,7 @@ function unavailableCohort(
 type CohortFirstReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown> | null>;
 
 function twoDimensionalRangeWhere(
-  mode: "regular",
+  mode: Extract<CrossSectionMode, "regular" | "pve">,
   center: { hours: number; pmcRaids: number },
   percent: ComparisonCohortPercent,
   excludeAid: number,
@@ -649,7 +684,8 @@ function twoDimensionalRangeWhere(
   };
 }
 
-async function computeRegularTwoDimensionalCohort(input: {
+async function computePersistentTwoDimensionalCohort(input: {
+  mode: Extract<CrossSectionMode, "regular" | "pve">;
   center: { hours: number; pmcRaids: number };
   excludeAid: number;
   dimension: "hours" | "pmc_raids";
@@ -660,7 +696,7 @@ async function computeRegularTwoDimensionalCohort(input: {
   const { center } = input;
   if (center.hours <= 0 || center.pmcRaids <= 0) {
     return makeComparisonCohortResult({
-      mode: "regular",
+      mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
       aid: input.excludeAid,
       center,
@@ -676,7 +712,7 @@ async function computeRegularTwoDimensionalCohort(input: {
     COMPARISON_COHORT_PERCENTAGES.map((percent) => [percent, 0])
   ) as Record<ComparisonCohortPercent, number>;
   for (const percent of COMPARISON_COHORT_PERCENTAGES) {
-    const range = twoDimensionalRangeWhere("regular", center, percent, input.excludeAid, input.period);
+    const range = twoDimensionalRangeWhere(input.mode, center, percent, input.excludeAid, input.period);
     const row = await input.readFirst(
       `SELECT COUNT(*) AS n FROM players ${range.where}`,
       range.params,
@@ -687,7 +723,7 @@ async function computeRegularTwoDimensionalCohort(input: {
     counts[percent] >= COMPARISON_COHORT_TARGET
   ) ?? 30;
   const selected = twoDimensionalRangeWhere(
-    "regular",
+    input.mode,
     center,
     selectedPercent,
     input.excludeAid,
@@ -714,7 +750,7 @@ async function computeRegularTwoDimensionalCohort(input: {
   };
   if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
     return makeComparisonCohortResult({
-      mode: "regular",
+      mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
       aid: input.excludeAid,
       center,
@@ -728,7 +764,7 @@ async function computeRegularTwoDimensionalCohort(input: {
 
   const averages = emptyComparisonAverages();
   for (const metric of COMPARISON_RADAR_METRICS) {
-    const metricWhere = populatedMetricClause("regular", metric, selected.where);
+    const metricWhere = populatedMetricClause(input.mode, metric, selected.where);
     const countRow = metricWhere === selected.where
       ? { n }
       : await input.readFirst(`SELECT COUNT(*) AS n FROM players ${metricWhere}`, selected.params);
@@ -749,7 +785,7 @@ async function computeRegularTwoDimensionalCohort(input: {
     averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
   }
   return makeComparisonCohortResult({
-    mode: "regular",
+    mode: input.mode,
     cycleId: LEGACY_IDENTITY.cycleId,
     aid: input.excludeAid,
     center,
@@ -879,7 +915,11 @@ export interface BaselineResult {
 
 export interface PlayerStore {
   upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
-  stored(aid: number): Promise<{ stats: ParsedPlayerStats; achievementIds: string[] } | null>;
+  stored(aid: number): Promise<{
+    stats: ParsedPlayerStats;
+    achievementIds: string[];
+    capturedAt: number | null;
+  } | null>;
   profileSummary(aid: number): Promise<ProfileSummary | null>;
   averages(
     range: StatRange,
@@ -908,7 +948,7 @@ export interface PlayerStore {
     statistic?: AverageStatistic,
     period?: AveragePeriod,
   ): Promise<CohortResult>;
-  /** Server-derived two-axis cohort for the regular profile comparison view. */
+  /** Server-derived two-axis cohort for persistent profile comparison. */
   cohort2d(
     centerHours: number,
     centerPmcRaids: number,
@@ -942,6 +982,8 @@ export interface PlayerStore {
 export interface PlayerIndexResult {
   aid: number;
   name: string;
+  /** Unix-ms profile version from the cached profile table, when available. */
+  updatedAt?: number | null;
 }
 
 export interface PlayerIndexStore {
@@ -950,8 +992,8 @@ export interface PlayerIndexStore {
 }
 
 function parseStoredPlayer(
-  row: { stats_json?: string; achievements?: string } | null | undefined,
-): { stats: ParsedPlayerStats; achievementIds: string[] } | null {
+  row: { stats_json?: string; achievements?: string; fetched_at?: unknown } | null | undefined,
+): { stats: ParsedPlayerStats; achievementIds: string[]; capturedAt: number | null } | null {
   if (!row?.stats_json) return null;
   try {
     const stats = JSON.parse(row.stats_json) as ParsedPlayerStats;
@@ -962,6 +1004,7 @@ function parseStoredPlayer(
       achievementIds: Array.isArray(achievementIds)
         ? achievementIds.filter((id): id is string => typeof id === "string")
         : [],
+      capturedAt: Number.isFinite(Number(row.fetched_at)) ? Number(row.fetched_at) : null,
     };
   } catch {
     return null;
@@ -1061,8 +1104,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
       async stored(aid) {
         if (mode === "regular") return null;
         const row = await db.prepare(q(
-          "SELECT stats_json, achievements FROM players WHERE aid = ?"
-        )).bind(aid).first() as { stats_json?: string; achievements?: string } | null;
+          "SELECT stats_json, achievements, fetched_at FROM players WHERE aid = ?"
+        )).bind(aid).first() as { stats_json?: string; achievements?: string; fetched_at?: unknown } | null;
         return parseStoredPlayer(row);
       },
       async profileSummary(aid) {
@@ -1228,7 +1271,9 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         statistic = "trimmed_mean",
         period = "all",
       ) {
-        return computeRegularTwoDimensionalCohort({
+        if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
+        return computePersistentTwoDimensionalCohort({
+          mode,
           center: { hours: centerHours, pmcRaids: centerPmcRaids },
           excludeAid,
           dimension,
@@ -1387,8 +1432,8 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       async stored(aid) {
         if (mode === "regular") return null;
         const row = db.prepare(
-          "SELECT stats_json, achievements FROM players WHERE aid = ?"
-        ).get(aid) as { stats_json?: string; achievements?: string } | undefined;
+          "SELECT stats_json, achievements, fetched_at FROM players WHERE aid = ?"
+        ).get(aid) as { stats_json?: string; achievements?: string; fetched_at?: unknown } | undefined;
         return parseStoredPlayer(row);
       },
       async profileSummary(aid) {
@@ -1552,7 +1597,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         statistic = "trimmed_mean",
         period = "all",
       ) {
-        return computeRegularTwoDimensionalCohort({
+        if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
+        return computePersistentTwoDimensionalCohort({
+          mode,
           center: { hours: centerHours, pmcRaids: centerPmcRaids },
           excludeAid,
           dimension,
@@ -1604,8 +1651,15 @@ function normalizeNickname(s: string): string {
   return s.trim().toLowerCase();
 }
 
-function toIndexResults(rows: { aid: number; name: string }[]): PlayerIndexResult[] {
-  return rows.map((row) => ({ aid: Number(row.aid), name: String(row.name) }));
+function toIndexResults(rows: { aid: number; name: string; updated_at?: unknown }[]): PlayerIndexResult[] {
+  return rows.map((row) => {
+    const updatedAt = row.updated_at == null ? null : Number(row.updated_at);
+    return {
+      aid: Number(row.aid),
+      name: String(row.name),
+      updatedAt: Number.isFinite(updatedAt) ? updatedAt : null,
+    };
+  });
 }
 
 function pushUniqueIndexResults(
@@ -1622,39 +1676,86 @@ function pushUniqueIndexResults(
   }
 }
 
-const INDEX_READY_SQL = "SELECT value FROM player_index_meta WHERE key = 'synced_at'";
-const INDEX_EXACT_SQL =
-  "SELECT aid, nickname AS name FROM player_index WHERE nickname_lower = ? " +
-  "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = player_index.aid) " +
-  "ORDER BY aid LIMIT ?";
-const INDEX_PREFIX_SQL =
-  "SELECT aid, nickname AS name FROM player_index " +
-  "WHERE nickname_lower >= ? AND nickname_lower < ? " +
-  "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = player_index.aid) " +
-  "ORDER BY nickname_lower, aid LIMIT ?";
+export type PersistentPlayerIndexMode = "regular" | "pve" | "arena";
+
+const PLAYER_INDEX_SPECS: Record<PersistentPlayerIndexMode, {
+  table: string;
+  meta: string;
+  modeWhere: string;
+}> = {
+  regular: { table: "player_index", meta: "player_index_meta", modeWhere: "" },
+  pve: { table: "pve_player_index", meta: "pve_player_index_meta", modeWhere: "i.mode = 'pve' AND " },
+  arena: { table: "arena_player_index", meta: "arena_player_index_meta", modeWhere: "i.mode = 'arena' AND " },
+};
+
+function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean) {
+  const { table, meta, modeWhere } = PLAYER_INDEX_SPECS[mode];
+  const profileTable = mode === "regular" ? "players" : "mode_players";
+  const profileMode = mode === "regular" ? "" : ` AND p.mode = '${mode}'`;
+  const profileSelect = includeProfileMetadata ? "p.profile_updated_at" : "NULL";
+  const profileJoin = includeProfileMetadata
+    ? ` LEFT JOIN ${profileTable} AS p ON p.aid = i.aid${profileMode}`
+    : "";
+  return {
+    ready: `SELECT value FROM ${meta} WHERE key = 'synced_at'`,
+    exact: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
+      `WHERE ${modeWhere}i.nickname_lower = ? ` +
+      "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid) " +
+      "ORDER BY i.aid LIMIT ?",
+    prefix: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
+      `WHERE ${modeWhere}i.nickname_lower >= ? AND i.nickname_lower < ? ` +
+      "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid) " +
+      "ORDER BY i.nickname_lower, i.aid LIMIT ?",
+  };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1PlayerIndexStore(db: any): PlayerIndexStore {
+async function d1ProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode): Promise<boolean> {
+  const table = mode === "regular" ? "players" : "mode_players";
+  const modeColumn = mode === "regular" ? "" : ", mode";
+  try {
+    await db.prepare(`SELECT profile_updated_at${modeColumn} FROM ${table} LIMIT 1`).first();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sqliteProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode): boolean {
+  const table = mode === "regular" ? "players" : "mode_players";
+  const modeColumn = mode === "regular" ? "" : ", mode";
+  try {
+    db.prepare(`SELECT profile_updated_at${modeColumn} FROM ${table} LIMIT 1`).get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function d1PlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean): PlayerIndexStore {
+  const sql = playerIndexSql(mode, includeProfileMetadata);
   return {
     async isReady() {
-      return Boolean(await db.prepare(INDEX_READY_SQL).first());
+      return Boolean(await db.prepare(sql.ready).first());
     },
     async search(nickname, limit) {
       const q = normalizeNickname(nickname);
-      const exact = await db.prepare(INDEX_EXACT_SQL).bind(q, limit).all();
-      const prefix = await db.prepare(INDEX_PREFIX_SQL).bind(q, `${q}\uffff`, limit * 2).all();
+      const exact = await db.prepare(sql.exact).bind(q, limit).all();
+      const prefix = await db.prepare(sql.prefix).bind(q, `${q}\uffff`, limit * 2).all();
       const out: PlayerIndexResult[] = [];
       const seen = new Set<number>();
       pushUniqueIndexResults(
         out,
         seen,
-        toIndexResults((exact.results ?? []) as { aid: number; name: string }[]),
+        toIndexResults((exact.results ?? []) as { aid: number; name: string; updated_at?: unknown }[]),
         limit
       );
       pushUniqueIndexResults(
         out,
         seen,
-        toIndexResults((prefix.results ?? []) as { aid: number; name: string }[]),
+        toIndexResults((prefix.results ?? []) as { aid: number; name: string; updated_at?: unknown }[]),
         limit
       );
       return out;
@@ -1663,20 +1764,22 @@ function d1PlayerIndexStore(db: any): PlayerIndexStore {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sqlitePlayerIndexStore(db: any): PlayerIndexStore {
+function sqlitePlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean): PlayerIndexStore {
+  const sql = playerIndexSql(mode, includeProfileMetadata);
   return {
     async isReady() {
-      return Boolean(db.prepare(INDEX_READY_SQL).get());
+      return Boolean(db.prepare(sql.ready).get());
     },
     async search(nickname, limit) {
       const q = normalizeNickname(nickname);
       const exact = toIndexResults(
-        db.prepare(INDEX_EXACT_SQL).all(q, limit) as { aid: number; name: string }[]
+        db.prepare(sql.exact).all(q, limit) as { aid: number; name: string; updated_at?: unknown }[]
       );
       const prefix = toIndexResults(
-        db.prepare(INDEX_PREFIX_SQL).all(q, `${q}\uffff`, limit * 2) as {
+        db.prepare(sql.prefix).all(q, `${q}\uffff`, limit * 2) as {
           aid: number;
           name: string;
+          updated_at?: unknown;
         }[]
       );
       const out: PlayerIndexResult[] = [];
@@ -1689,11 +1792,13 @@ function sqlitePlayerIndexStore(db: any): PlayerIndexStore {
 }
 
 /** Returns the synced public nickname index, or null if no DB backend exists. */
-export async function getPlayerIndexStore(): Promise<PlayerIndexStore | null> {
+export async function getPlayerIndexStore(
+  mode: PersistentPlayerIndexMode = "regular",
+): Promise<PlayerIndexStore | null> {
   const d1 = await getD1();
-  if (d1) return d1PlayerIndexStore(d1);
+  if (d1) return d1PlayerIndexStore(d1, mode, await d1ProfileMetadataAvailable(d1, mode));
   const sqlite = await getSqliteDb();
-  if (sqlite) return sqlitePlayerIndexStore(sqlite);
+  if (sqlite) return sqlitePlayerIndexStore(sqlite, mode, sqliteProfileMetadataAvailable(sqlite, mode));
   return null;
 }
 
@@ -1736,6 +1841,7 @@ export async function getDeterministicPlayerIndexPage(
   const players = rows.map((row) => ({
     aid: Number(row.aid),
     name: String(row.name),
+    updatedAt: null,
     orderKey: Number(row.order_key),
     trustedHours: row.trusted_hours == null ? null : Number(row.trusted_hours),
   }));
