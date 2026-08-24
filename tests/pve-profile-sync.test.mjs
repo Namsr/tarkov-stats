@@ -143,6 +143,67 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
   }
 });
 
+test("PvE collector retries a terminated updated feed without retaining its partial state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
+  const feed = JSON.stringify({ 20: cutoff });
+  let feedRequests = 0;
+  let syncRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pve/updated.json")) {
+      feedRequests += 1;
+      if (feedRequests === 1) {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(feed) + 1),
+          connection: "close",
+        });
+        response.end(feed);
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(feed);
+      return;
+    }
+    if (request.url !== "/api/operator/pve/profile-sync") return response.writeHead(404).end();
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid, expectedUpdatedAt } = JSON.parse(raw);
+    syncRequests += 1;
+    players.prepare(`INSERT INTO mode_players
+      (mode, aid, profile_updated_at, fetched_at, stats_json, achievements) VALUES ('pve', ?, ?, ?, ?, '[]')`)
+      .run(aid, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    progression.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, stats_json)
+      VALUES ('pve', 'persistent', ?, ?, ?, ?, 'x', ?)`).run(aid, expectedUpdatedAt, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ profileUpdatedAt: expectedUpdatedAt }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const { stdout } = await runCollector(dbPath, progressionDbPath, port, 1);
+    const summaryLine = stdout.split(/\r?\n/).find((line) => line.includes(" SUMMARY "));
+    assert.ok(summaryLine, "collector writes a summary");
+    const summary = JSON.parse(summaryLine.slice(summaryLine.indexOf(" SUMMARY ") + " SUMMARY ".length));
+    assert.equal(feedRequests, 2);
+    assert.equal(summary.sourceEntries, 1);
+    assert.equal(summary.queuedVersions, 1);
+    assert.equal(syncRequests, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("PvE collector uses the JSON helper and a distinct mode queue", async () => {
   const fs = await import("node:fs/promises");
   const [source, route] = await Promise.all([

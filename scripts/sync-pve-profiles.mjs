@@ -209,63 +209,7 @@ async function loadFeed() {
     });
   }
   const savedWatermark = normalizeUpdatedAt(getMeta("feed_watermark"));
-  const counters = {
-    pvePlayers: [...tracked.keys()].filter((aid) => !excluded.has(aid)).length,
-    sourceEntries: 0, invalidEntries: 0, beforeFeedCutoff: 0, trackedInFeed: 0, unknownInFeed: 0,
-    excluded: 0, upToDate: 0, oldUnknownIgnored: 0, eligible: 0, newProfiles: 0, updatedProfiles: 0,
-    queuedVersions: 0, queuedNewProfiles: 0, queuedUpdatedProfiles: 0,
-    bootstrapping: savedWatermark === null, previousWatermark: savedWatermark, maxFeedUpdatedAt: 0, polledAt: 0,
-  };
-  const pendingVersions = new Map();
-  const response = await requestWithRetry(feedUrlForRun());
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("PvE updated feed response has no readable body");
-  const decoder = new TextDecoder();
-  const parser = createTimestampObjectParser((aidRaw, updatedRaw) => {
-    counters.sourceEntries += 1;
-    const aid = Number(aidRaw);
-    const feedUpdatedAt = normalizeUpdatedAt(updatedRaw);
-    if (!Number.isSafeInteger(aid) || aid <= 0 || feedUpdatedAt === null) {
-      counters.invalidEntries += 1;
-      return;
-    }
-    counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, feedUpdatedAt);
-    // The cutoff is inclusive: updated exactly at Moscow midnight is eligible.
-    if (feedUpdatedAt < PVE_FEED_CUTOFF_MS) {
-      counters.beforeFeedCutoff += 1;
-      return;
-    }
-    const current = tracked.get(aid);
-    if (current === undefined) counters.unknownInFeed += 1;
-    else counters.trackedInFeed += 1;
-    if (excluded.has(aid)) {
-      counters.excluded += 1;
-      return;
-    }
-    if (current !== undefined && feedUpdatedAt <= (current.snapshotUpdatedAt ?? 0)) {
-      counters.upToDate += 1;
-      return;
-    }
-    if (current === undefined && !isEligibleUnknown(feedUpdatedAt, savedWatermark)) {
-      counters.oldUnknownIgnored += 1;
-      return;
-    }
-    counters.eligible += 1;
-    const kind = current === undefined ? "new" : "updated";
-    if (kind === "new") counters.newProfiles += 1;
-    else counters.updatedProfiles += 1;
-    const pending = pendingVersions.get(aid);
-    if (!pending || feedUpdatedAt > pending.feedUpdatedAt) {
-      pendingVersions.set(aid, { feedUpdatedAt, kind, snapshotUpdatedAt: current?.snapshotUpdatedAt ?? null });
-    }
-  });
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    parser.append(decoder.decode(value, { stream: true }));
-  }
-  parser.finish(decoder.decode());
-  counters.polledAt = Date.now();
+  const { counters, pendingVersions } = await loadFeedWithRetry(feedUrlForRun(), tracked, excluded, savedWatermark);
 
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -421,17 +365,75 @@ function latestSnapshotVersion(aid) {
   return Number(row?.updated_at) || 0;
 }
 
-async function requestWithRetry(url) {
+async function loadFeedWithRetry(url, tracked, excluded, savedWatermark) {
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
     try {
       const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal });
-      if (response.ok) return response;
-      const error = new Error(`PvE updated feed HTTP ${response.status}`);
-      error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-      throw error;
+      if (!response.ok) {
+        const error = new Error(`PvE updated feed HTTP ${response.status}`);
+        error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("PvE updated feed response has no readable body");
+      const counters = {
+        pvePlayers: [...tracked.keys()].filter((aid) => !excluded.has(aid)).length,
+        sourceEntries: 0, invalidEntries: 0, beforeFeedCutoff: 0, trackedInFeed: 0, unknownInFeed: 0,
+        excluded: 0, upToDate: 0, oldUnknownIgnored: 0, eligible: 0, newProfiles: 0, updatedProfiles: 0,
+        queuedVersions: 0, queuedNewProfiles: 0, queuedUpdatedProfiles: 0,
+        bootstrapping: savedWatermark === null, previousWatermark: savedWatermark, maxFeedUpdatedAt: 0, polledAt: 0,
+      };
+      const pendingVersions = new Map();
+      const decoder = new TextDecoder();
+      const parser = createTimestampObjectParser((aidRaw, updatedRaw) => {
+        counters.sourceEntries += 1;
+        const aid = Number(aidRaw);
+        const feedUpdatedAt = normalizeUpdatedAt(updatedRaw);
+        if (!Number.isSafeInteger(aid) || aid <= 0 || feedUpdatedAt === null) {
+          counters.invalidEntries += 1;
+          return;
+        }
+        counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, feedUpdatedAt);
+        // The cutoff is inclusive: updated exactly at Moscow midnight is eligible.
+        if (feedUpdatedAt < PVE_FEED_CUTOFF_MS) {
+          counters.beforeFeedCutoff += 1;
+          return;
+        }
+        const current = tracked.get(aid);
+        if (current === undefined) counters.unknownInFeed += 1;
+        else counters.trackedInFeed += 1;
+        if (excluded.has(aid)) {
+          counters.excluded += 1;
+          return;
+        }
+        if (current !== undefined && feedUpdatedAt <= (current.snapshotUpdatedAt ?? 0)) {
+          counters.upToDate += 1;
+          return;
+        }
+        if (current === undefined && !isEligibleUnknown(feedUpdatedAt, savedWatermark)) {
+          counters.oldUnknownIgnored += 1;
+          return;
+        }
+        counters.eligible += 1;
+        const kind = current === undefined ? "new" : "updated";
+        if (kind === "new") counters.newProfiles += 1;
+        else counters.updatedProfiles += 1;
+        const pending = pendingVersions.get(aid);
+        if (!pending || feedUpdatedAt > pending.feedUpdatedAt) {
+          pendingVersions.set(aid, { feedUpdatedAt, kind, snapshotUpdatedAt: current?.snapshotUpdatedAt ?? null });
+        }
+      });
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parser.append(decoder.decode(value, { stream: true }));
+      }
+      parser.finish(decoder.decode());
+      counters.polledAt = Date.now();
+      return { counters, pendingVersions };
     } catch (error) {
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
