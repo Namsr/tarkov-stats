@@ -182,6 +182,13 @@ async function loadFeed() {
 
   await writeTransaction(() => {
     const queuedAt = Date.now();
+    if (getMeta("verified_not_found_v1") !== "1") {
+      counters.requeuedUnverifiedNotFound = Number(db.prepare(`UPDATE arena_profile_sync_queue
+        SET status = 'pending', attempts = 0, http_status = NULL, error = NULL,
+          last_run_id = NULL, updated_at = ?
+        WHERE status = 'not_found'`).run(queuedAt).changes);
+      setMeta("verified_not_found_v1", "1");
+    }
     const queuedRows = new Map(db.prepare(
       "SELECT aid, feed_updated_at, status FROM arena_profile_sync_queue"
     ).all().map((row) => [Number(row.aid), row]));
@@ -242,6 +249,7 @@ function emptyFeedCounters(tracked, error) {
     maxFeedUpdatedAt: 0,
     polledAt: Date.now(),
     feedError: message(error),
+    requeuedUnverifiedNotFound: 0,
   };
 }
 
@@ -305,7 +313,19 @@ async function syncProfile(aid, expectedUpdatedAt) {
         body: JSON.stringify({ aid, mode: "arena", expectedUpdatedAt }),
         signal: controller.signal,
       });
-      if (response.status === 404) return { kind: "not_found", attempts: attempt, status: 404 };
+      if (response.status === 404) {
+        const detail = (await response.text().catch(() => "")).slice(0, 300);
+        let payload;
+        try {
+          payload = JSON.parse(detail);
+        } catch {}
+        if (payload?.state === "not_found") {
+          return { kind: "not_found", attempts: attempt, status: 404 };
+        }
+        const error = new Error(`sync endpoint returned an unexpected HTTP 404${detail ? `: ${detail}` : ""}`);
+        error.fatal = true;
+        throw error;
+      }
       if (response.status === 409) return { kind: "stale", attempts: attempt, status: 409 };
       if (response.status === 401 || response.status === 403) {
         const error = new Error(`sync endpoint rejected credentials: HTTP ${response.status}`);

@@ -73,10 +73,8 @@ test("public profile fetch uses the mode-specific static cache path", async () =
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.deepEqual(urls, [
-    "https://players.tarkov.dev/pve/5869253.json",
-    "https://players.tarkov.dev/arena/5869253.json",
-  ]);
+  assert.equal(urls[0], "https://players.tarkov.dev/pve/5869253.json");
+  assert.match(urls[1] ?? "", /^https:\/\/players\.tarkov\.dev\/arena\/5869253\.json\?v=\d+$/);
 });
 
 test("public profile cache is isolated by mode and aid while force stays fresh", async () => {

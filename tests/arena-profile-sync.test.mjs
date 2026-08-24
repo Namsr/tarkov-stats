@@ -76,7 +76,8 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     const body = JSON.parse(raw);
     calls.push(body.aid);
     if (body.aid === 3) {
-      response.writeHead(404).end();
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ state: "not_found" }));
       return;
     }
     players.prepare(`
@@ -120,12 +121,14 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
 });
 
 test("Arena collector uses the JSON helper, one-request default, and an isolated queue", async () => {
-  const [source, packageSource, dockerfile, service, timer] = await Promise.all([
+  const [source, packageSource, dockerfile, service, timer, syncRoute, operatorProfile] = await Promise.all([
     readFile("scripts/sync-arena-profiles.mjs", "utf8"),
     readFile("package.json", "utf8"),
     readFile("Dockerfile", "utf8"),
     readFile("ops/systemd/tarkovstats-arena-profile-sync.service", "utf8"),
     readFile("ops/systemd/tarkovstats-arena-profile-sync.timer", "utf8"),
+    readFile("app/api/operator/profile-refresh/sync/route.ts", "utf8"),
+    readFile("lib/operator-profile.ts", "utf8"),
   ]);
   assert.match(source, /fetchTarkovJson/);
   assert.match(source, /https:\/\/players\.tarkov\.dev\/arena\/updated\.json/);
@@ -134,9 +137,14 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.match(source, /arena_player_index/);
   assert.doesNotMatch(source, /DELETE FROM arena_player_index\b/);
   assert.match(source, /processQueue\(startedAt\)/);
+  assert.match(source, /payload\?\.state === "not_found"/);
+  assert.match(source, /verified_not_found_v1/);
   assert.match(packageSource, /"sync:arena-profiles": "node --experimental-strip-types --experimental-sqlite scripts\/sync-arena-profiles\.mjs"/);
   assert.match(dockerfile, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:00,15,30,45:00 Europe\/Moscow/);
+  assert.match(syncRoute, /isOperatorRequest/);
+  assert.match(syncRoute, /resolved\.payload\.mode === "arena"/);
+  assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
 });
