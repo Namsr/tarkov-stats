@@ -248,12 +248,16 @@ function parseCounters(profile: UnknownRecord): SeasonalCounters {
 
 /**
  * Reads the Seasonal profile's own achievement payload once at the trust
- * boundary. Missing `achievements` is different from an empty object: the
- * former is an unknown payload and must be excluded from prevalence
- * denominators, while the latter is a known player with no achievements.
+ * boundary. Missing `achievements` is different from an empty object or empty
+ * array: the former is an unknown payload and must be excluded from prevalence
+ * denominators, while the latter are known players with no achievements.
  */
 function parseSeasonalAchievements(profile: UnknownRecord): SeasonalAchievementUnlock[] | null {
   if (profile.achievements === undefined) return null;
+  if (Array.isArray(profile.achievements)) {
+    if (profile.achievements.length === 0) return [];
+    throw new SeasonalValidationError("invalid_payload", "profile.achievements must be an object");
+  }
   const achievements = requiredRecord(profile.achievements, "profile.achievements");
   return Object.entries(achievements)
     .map(([id, timestamp]) => ({
@@ -402,10 +406,16 @@ export function seasonalLastAccess(profile: unknown): number {
   }
 
   if (root.achievements !== undefined) {
-    const achievements = requiredRecord(root.achievements, "profile.achievements");
-    Object.entries(achievements).forEach(([id, timestamp]) => {
-      candidates.push(unixMilliseconds(timestamp, `profile.achievements.${id}`));
-    });
+    if (Array.isArray(root.achievements)) {
+      if (root.achievements.length > 0) {
+        throw new SeasonalValidationError("invalid_payload", "profile.achievements must be an object");
+      }
+    } else {
+      const achievements = requiredRecord(root.achievements, "profile.achievements");
+      Object.entries(achievements).forEach(([id, timestamp]) => {
+        candidates.push(unixMilliseconds(timestamp, `profile.achievements.${id}`));
+      });
+    }
   }
 
   // Fresh accounts can have no completed raids and no unlocked achievements

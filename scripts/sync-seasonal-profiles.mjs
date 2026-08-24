@@ -271,7 +271,7 @@ async function processQueue(startedAt) {
     SELECT aid, feed_updated_at FROM seasonal_profile_sync_queue
     WHERE cycle_id = ? AND status IN ('pending', 'error')
       AND (last_run_id IS NULL OR last_run_id <> ?)
-    ORDER BY feed_updated_at, aid LIMIT 1
+    ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, feed_updated_at, aid LIMIT 1
   `);
   const update = db.prepare(`
     UPDATE seasonal_profile_sync_queue

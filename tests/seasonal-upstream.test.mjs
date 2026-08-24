@@ -139,6 +139,33 @@ test("uses account time from the Seasonal JSON when linked PvP hours are missing
   assert.equal(profile.lifetimePvpHours, 1_343.4);
 });
 
+test("accepts an empty achievements array as known absence but rejects non-empty arrays", async () => {
+  const payload = await loadFixture("seasonal-game-mode.json");
+  payload.profile.achievements = [];
+  const profile = parseSeasonalProfile(payload, {
+    ...baseOptions,
+    confirmedContract: "game_mode",
+  });
+  assert.deepEqual(profile.seasonalAchievements, []);
+  assert.deepEqual(profile.staticSignals?.achievementIds, []);
+  assert.equal(profile.seasonalStats?.achievementsCount, 0);
+  assert.equal(seasonalLastAccess(payload.profile), 1_783_500_000_000);
+
+  const nonEmpty = structuredClone(payload);
+  nonEmpty.profile.achievements = [1_783_500_000];
+  assert.equal(validateSeasonalProfile(nonEmpty, {
+    ...baseOptions,
+    confirmedContract: "game_mode",
+  }).code, "invalid_payload");
+
+  const wrongType = structuredClone(payload);
+  wrongType.profile.achievements = "none";
+  assert.equal(validateSeasonalProfile(wrongType, {
+    ...baseOptions,
+    confirmedContract: "game_mode",
+  }).code, "invalid_payload");
+});
+
 test("explicit linked PvP hours override the Seasonal account-time fallback", async () => {
   const payload = await loadFixture("seasonal-direct-profile.json");
   payload.pmcStats.eft.totalInGameTime = 4_836_316;

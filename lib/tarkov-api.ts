@@ -164,11 +164,11 @@ export async function getPublicProfile(
   }
 
   const canonicalUrl = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
-  const expectedUpdatedAt = mode === "regular" || mode === "pve"
+  const expectedUpdatedAt = mode === "regular" || mode === "pve" || mode === "arena"
     ? profileUpdatedAt(opts.expectedUpdatedAt)
     : null;
   const cacheBust = expectedUpdatedAt ?? now;
-  const url = opts.force && (mode === "regular" || expectedUpdatedAt !== null)
+  const url = opts.force && (mode === "regular" || mode === "arena" || expectedUpdatedAt !== null)
     ? `${canonicalUrl}?v=${cacheBust}`
     : canonicalUrl;
   const edgeCache = opts.force ? null : getEdgeProfileCache();

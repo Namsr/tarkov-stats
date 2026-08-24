@@ -40,6 +40,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./s
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./scripts/sync-pve-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-index.mjs ./scripts/sync-arena-index.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-profiles.mjs ./scripts/sync-arena-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/lib/pve-progression-seed-core.ts ./lib/pve-progression-seed-core.ts
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/regular-profile-sync-core.mjs ./scripts/regular-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs ./scripts/sync-regular-profiles.mjs

@@ -84,6 +84,7 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
   assert.match(profileSource, /feed_updated_at/);
   assert.match(profileSource, /enqueueMissingSeasonalIndexProfiles/);
   assert.match(profileSource, /superseded/);
+  assert.match(profileSource, /ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, feed_updated_at, aid LIMIT 1/);
   assert.match(profileSource + indexSource, /isSeasonalCollectorReady/);
   assert.doesNotMatch(profileSource + indexSource, /isSeasonalRolloutReady/);
   assert.doesNotMatch(profileSource + indexSource, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
