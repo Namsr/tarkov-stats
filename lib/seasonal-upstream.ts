@@ -7,6 +7,7 @@ import type {
   SeasonalCommonSkill,
   SeasonalUpstreamContract as SeasonalUpstreamContractType,
 } from "@/types/seasonal";
+import type { WeaponMasteryProgress } from "@/types/tarkov";
 // Relative import keeps this parser usable by the strip-types test runner and
 // by the Next server bundle without relying on tsconfig path aliases. The
 // explicit extension is required by Node's strip-types ESM loader; Next's
@@ -14,6 +15,8 @@ import type {
 // positive for this cross-runtime import.
 // @ts-expect-error Node strip-types requires the explicit .ts extension here.
 import { expToLevel, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
+// @ts-expect-error Node strip-types requires the explicit .ts extension here.
+import { normalizeWeaponMastery } from "./profile-mastery.ts";
 
 export type SeasonalUpstreamContract = SeasonalUpstreamContractType;
 
@@ -276,6 +279,17 @@ function parseSeasonalCommonSkills(profile: UnknownRecord): SeasonalCommonSkill[
   }));
 }
 
+/** Keep normalized Mastering rows while allowing older seasonal payloads to omit them. */
+function parseSeasonalWeaponMastery(profile: UnknownRecord): WeaponMasteryProgress[] | null {
+  if (profile.skills === undefined) return null;
+  const skills = requiredRecord(profile.skills, "profile.skills");
+  if (skills.Mastering === undefined) return null;
+  if (!Array.isArray(skills.Mastering)) {
+    throw new SeasonalValidationError("invalid_payload", "profile.skills.Mastering must be an array");
+  }
+  return normalizeWeaponMastery(skills.Mastering);
+}
+
 function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters): SeasonalStats {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
@@ -446,6 +460,7 @@ export function parseSeasonalProfile(
   const counters = parseCounters(extracted.profile);
   const seasonalAchievements = parseSeasonalAchievements(extracted.profile);
   const commonSkills = parseSeasonalCommonSkills(extracted.profile);
+  const weaponMastery = parseSeasonalWeaponMastery(extracted.profile);
   const seasonalStats = parseSeasonalStats(extracted.profile, counters);
   validateCounterRelationships(counters);
 
@@ -497,6 +512,10 @@ export function parseSeasonalProfile(
   });
   Object.defineProperty(result, "commonSkills", {
     value: commonSkills,
+    enumerable: false,
+  });
+  Object.defineProperty(result, "weaponMastery", {
+    value: weaponMastery,
     enumerable: false,
   });
   Object.defineProperty(result, "pvpEnrichment", {

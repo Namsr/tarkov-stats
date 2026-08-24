@@ -1,3 +1,5 @@
+import type { WeaponMasteryProgress } from "@/types/tarkov";
+
 export const GAME_MODES = ["regular", "pve", "arena", "seasonal"] as const;
 
 export type GameMode = (typeof GAME_MODES)[number];
@@ -119,6 +121,8 @@ export interface SeasonalProfile extends ProfileIdentity {
   seasonalAchievements?: SeasonalAchievementUnlock[] | null;
   /** null = the upstream payload did not include a Common-skills array. */
   commonSkills?: SeasonalCommonSkill[] | null;
+  /** null = the upstream payload did not include a Mastering-skills array. */
+  weaponMastery?: WeaponMasteryProgress[] | null;
   seasonalStats?: SeasonalStats;
   pvpEnrichment?: SeasonalPvpEnrichment;
   /** Optional single-profile signals consumed by the existing static risk model. */
@@ -147,6 +151,8 @@ export interface ProgressionSnapshotRecord extends ProfileIdentity {
   achievements: SeasonalAchievementUnlock[] | null;
   /** Latest raw upstream `skills.Common` JSON; old rows legitimately contain NULL. */
   commonSkills: SeasonalCommonSkill[] | null;
+  /** Latest normalized upstream `skills.Mastering`; old rows legitimately contain NULL. */
+  weaponMastery: WeaponMasteryProgress[] | null;
 }
 
 export type IntervalStatus = "valid" | "reset" | "schema_anomaly";

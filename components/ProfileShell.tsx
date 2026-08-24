@@ -18,11 +18,9 @@ export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?:
 
 export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?: number; title?: string }) {
   const { t } = useI18n();
-  const sectionIds = mode === "regular"
+  const sectionIds = mode === "regular" || mode === "pve" || mode === "seasonal"
     ? SECTION_IDS
-    : mode === "seasonal"
-      ? SECTION_IDS.filter((id) => id !== "mastering")
-      : LEGACY_SECTION_IDS;
+    : LEGACY_SECTION_IDS;
   return (
     <main className="page-frame" data-profile-shell-mode={mode}>
       <div className="mb-8 h-5 w-20 skeleton rounded" />
@@ -60,10 +58,10 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
         <ProfileShellLoadingSection id="risk" height="min-h-[280px]" />
         <ProfileShellLoadingSection id="comparison" height="min-h-[560px]" />
         <ProfileShellLoadingSection id="statistics" height="min-h-[360px]" />
-        {(mode === "regular" || mode === "seasonal") && (
+        {(mode === "regular" || mode === "pve" || mode === "seasonal") && (
           <ProfileShellLoadingSection id="achievements" height="min-h-[360px]" />
         )}
-        {mode === "regular" && (
+        {(mode === "regular" || mode === "pve" || mode === "seasonal") && (
           <ProfileShellLoadingSection id="mastering" height="min-h-[240px]" />
         )}
         <ProfileShellLoadingSection id="skills" height="min-h-[240px]" />

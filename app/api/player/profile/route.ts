@@ -30,49 +30,57 @@ import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
+  buildPersistentProfileViewModel,
   buildRegularProfileViewModel,
   buildSeasonalProfileViewModel,
   toPublicRiskView,
 } from "@/lib/player-profile-view";
 import {
+  buildPersistentComparisonStats,
   buildRegularComparisonStats,
   buildSeasonalComparisonStats,
 } from "@/lib/profile-comparison";
 
-const REGULAR_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
-let regularAchievementBaselineCache: {
+const PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
+type PersistentMode = "regular" | "pve";
+const persistentAchievementBaselineCache = new Map<PersistentMode, {
   value: AchievementBaseline | null;
   expiresAt: number;
-} | null = null;
-let regularAchievementBaselineInFlight: Promise<AchievementBaseline | null> | null = null;
+}>();
+const persistentAchievementBaselineInFlight = new Map<
+  PersistentMode,
+  Promise<AchievementBaseline | null>
+>();
 
-async function loadRegularAchievementBaseline(): Promise<AchievementBaseline | null> {
+async function loadPersistentAchievementBaseline(mode: PersistentMode): Promise<AchievementBaseline | null> {
   const now = Date.now();
-  if (regularAchievementBaselineCache && regularAchievementBaselineCache.expiresAt > now) {
-    return regularAchievementBaselineCache.value;
+  const cached = persistentAchievementBaselineCache.get(mode);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
-  if (regularAchievementBaselineInFlight) return regularAchievementBaselineInFlight;
+  const inFlight = persistentAchievementBaselineInFlight.get(mode);
+  if (inFlight) return inFlight;
 
   const request = (async () => {
     try {
-      const store = await getStore("regular");
+      const store = await getStore(mode);
       return store ? await store.achievementBaseline() : null;
     } catch {
       return null;
     }
   })();
-  regularAchievementBaselineInFlight = request;
+  persistentAchievementBaselineInFlight.set(mode, request);
 
   try {
     const baseline = await request;
-    regularAchievementBaselineCache = {
+    persistentAchievementBaselineCache.set(mode, {
       value: baseline,
-      expiresAt: Date.now() + REGULAR_ACHIEVEMENT_BASELINE_TTL_MS,
-    };
+      expiresAt: Date.now() + PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS,
+    });
     return baseline;
   } finally {
-    if (regularAchievementBaselineInFlight === request) {
-      regularAchievementBaselineInFlight = null;
+    if (persistentAchievementBaselineInFlight.get(mode) === request) {
+      persistentAchievementBaselineInFlight.delete(mode);
     }
   }
 }
@@ -81,9 +89,10 @@ async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
 ) {
-  const [baseline, metadata] = await Promise.all([
+  const [baseline, metadata, masteryReferences] = await Promise.all([
     getPublishedSeasonalAchievementBaseline(profile.cycleId),
     getAchievements("seasonal").catch(() => new Map()),
+    viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
@@ -111,14 +120,17 @@ async function enrichSeasonalViewModel(
     achievements: { items: achievements },
     seasonalAchievements: achievements,
     skills: { ...viewModel.skills, achievements },
+    mastering: { items: buildWeaponMasteryRows(viewModel.mastering.items, masteryReferences) },
   };
 }
 
-async function enrichRegularViewModel(
-  viewModel: ReturnType<typeof buildRegularProfileViewModel>,
+async function enrichPersistentViewModel(
+  mode: PersistentMode,
+  viewModel: ReturnType<typeof buildPersistentProfileViewModel>,
 ) {
   const [baseline, metadata, masteryReferences] = await Promise.all([
-    loadRegularAchievementBaseline(),
+    loadPersistentAchievementBaseline(mode),
+    // Achievement definitions are shared. Ownership stays in the mode store.
     getAchievements("regular").catch(() => new Map()),
     viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
   ]);
@@ -149,6 +161,12 @@ async function enrichRegularViewModel(
     skills: { ...viewModel.skills, achievements },
     mastering: { items: buildWeaponMasteryRows(viewModel.mastering.items, masteryReferences) },
   };
+}
+
+async function enrichRegularViewModel(
+  viewModel: ReturnType<typeof buildRegularProfileViewModel>,
+) {
+  return enrichPersistentViewModel("regular", viewModel);
 }
 
 export async function GET(request: NextRequest) {
@@ -306,7 +324,74 @@ export async function GET(request: NextRequest) {
       const stored = store ? await store.stored(aid) : undefined;
       if (storeReadStarted !== undefined) storeReadMs = timing.elapsedMs(storeReadStarted);
       storage = store ? "sqlite" : "unavailable";
-      const storedResponse = (snapshot: NonNullable<typeof stored>) => {
+      const pveResponse = async (input: {
+        profile?: PlayerProfile | null;
+        stats: NonNullable<typeof stored>["stats"];
+        achievementIds: string[];
+        capturedAt: number | null;
+        capture: { inserted: boolean; status: string };
+      }) => {
+        const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
+        const riskIsFresh = storedRisk &&
+          storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
+          Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+        if (!riskIsFresh) {
+          after(() => evaluateAndStoreRisk({
+            aid,
+            mode: "pve",
+            cycleId,
+            stats: input.stats,
+            achievementIds: input.achievementIds,
+          }).catch((error) => {
+            console.error("PvE admin risk evaluation failed", error);
+          }));
+        }
+        const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId });
+        const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({
+          aid,
+          mode: "pve",
+          cycleId,
+          profile: input.profile ?? undefined,
+          stats: input.stats,
+          achievementIds: input.achievementIds,
+          capturedAt: input.capturedAt,
+        }, publicRisk));
+        return NextResponse.json({
+          profile: input.profile ?? null,
+          stats: input.stats,
+          achievementIds: input.achievementIds,
+          profileUpdatedAt: Number(input.stats.profileUpdatedAt) || null,
+          identity: { aid, mode: "pve", cycleId },
+          risk: publicRisk,
+          comparisonStats: buildPersistentComparisonStats(input.stats),
+          capture: input.capture,
+          freshness: viewModel.freshness,
+          viewModel,
+        }, { headers: profileHeaders });
+      };
+      const storedResponse = async (snapshot: NonNullable<typeof stored>) => {
+        if (mode === "pve") {
+          const response = await pveResponse({
+            ...snapshot,
+            capturedAt: null,
+            capture: { inserted: false, status: "stored" },
+          });
+          timing.setRequestContext({ nickname: snapshot.stats.nickname });
+          timing.finish({
+            operation: "player_profile",
+            mode,
+            outcome: "success",
+            status: 200,
+            force,
+            source: "stored",
+            cache: force ? "bypass" : "hit",
+            storage,
+            storeOpenMs,
+            storeReadMs,
+            profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
+          });
+          return response;
+        }
         after(() => evaluateAndStoreRisk({ aid, mode, cycleId, ...snapshot }).catch((error) => {
           console.error("stored admin risk evaluation failed", error);
         }));
@@ -334,7 +419,7 @@ export async function GET(request: NextRequest) {
         return response;
       };
       if (stored && !force) {
-        return storedResponse(stored);
+        return await storedResponse(stored);
       }
 
       let profile: PlayerProfile | null;
@@ -345,13 +430,13 @@ export async function GET(request: NextRequest) {
         source = result.fromCache ? "cache" : "upstream";
         cache = force ? "bypass" : result.fromCache ? "hit" : "miss";
       } catch (error) {
-        if (stored) return storedResponse(stored);
+        if (stored) return await storedResponse(stored);
         profileMs = timing.elapsedMs(profileStarted);
         throw error;
       }
       profileMs = timing.elapsedMs(profileStarted);
       if (!profile) {
-        if (stored) return storedResponse(stored);
+        if (stored) return await storedResponse(stored);
         const profileSummary = await findProfileSummary(aid, mode, async (candidateMode, candidateAid) => {
           const candidateStore = await getStore(candidateMode);
           return candidateStore?.profileSummary(candidateAid) ?? null;
@@ -386,10 +471,62 @@ export async function GET(request: NextRequest) {
       parseMs = timing.elapsedMs(parseStarted);
       stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
+      if (mode === "pve") {
+        const decision = pveProfileDecision(profile);
+        let capture: { inserted: boolean; status: string };
+        let capturedAt: number | null = null;
+        if (decision.state === "store") {
+          if (!store) throw new Error("player store unavailable");
+          const pveSnapshot = makePlayerSnapshot(
+            aid,
+            stats,
+            achievementIds,
+            Number(stats.profileUpdatedAt),
+          );
+          capturedAt = pveSnapshot.capturedAt;
+          const storeWriteStarted = timing.now();
+          try {
+            const persisted = await persistRegularProfileSnapshot(pveSnapshot, {
+              mode: "pve",
+              playerStore: store,
+            });
+            capture = persisted ?? { inserted: false, status: "unavailable" };
+          } finally {
+            storeWriteMs = timing.elapsedMs(storeWriteStarted);
+          }
+        } else {
+          capture = { inserted: false, status: decision.state };
+        }
+        const response = await pveResponse({
+          profile,
+          stats,
+          achievementIds,
+          capturedAt,
+          capture,
+        });
+        timing.setRequestContext({ nickname: stats.nickname });
+        timing.finish({
+          operation: "player_profile",
+          mode,
+          outcome: "success",
+          status: 200,
+          force,
+          source,
+          cache,
+          storage,
+          storeOpenMs,
+          storeReadMs,
+          storeWriteMs,
+          profileMs,
+          levelsMs,
+          parseMs,
+        });
+        return response;
+      }
       after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
         console.error("mode admin risk evaluation failed", error);
       }));
-      const shouldStore = mode === "arena" || pveProfileDecision(profile).state === "store";
+      const shouldStore = mode === "arena";
       if (shouldStore) {
         if (!store) throw new Error("player store unavailable");
         const storeWriteStarted = timing.now();

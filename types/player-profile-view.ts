@@ -12,7 +12,7 @@ export const PROFILE_SECTION_ORDER = [
 ] as const;
 
 export type ProfileSectionId = (typeof PROFILE_SECTION_ORDER)[number];
-export type ProfileViewMode = Extract<GameMode, "regular" | "seasonal">;
+export type ProfileViewMode = Extract<GameMode, "regular" | "pve" | "seasonal">;
 
 export interface ProfileViewFreshness {
   profileUpdatedAt: number | null;
@@ -113,7 +113,7 @@ export interface PlayerProfileViewModel {
     items: ProfileViewAchievement[];
   };
   skills: {
-    kind: "pvp" | "seasonal";
+    kind: "pvp" | "pve" | "seasonal";
     items: ProfileViewSkill[];
     /** Legacy alias retained for the existing profile shell. */
     achievements: ProfileViewAchievement[];

@@ -5,6 +5,7 @@ import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
 import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import ProfileAchievements from "@/components/ProfileAchievements";
 import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
+import ProfileMastering, { hasVisibleMastery } from "@/components/ProfileMastering";
 import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import StatCard from "@/components/StatCard";
 import FavoriteButton from "@/components/FavoriteButton";
@@ -36,6 +37,7 @@ interface SeasonalProfileResponse {
 interface ProfileCollectionsViewModel {
   risk?: PublicRiskView | null;
   achievements?: { items?: unknown[] };
+  mastering?: { items?: unknown[] };
   skills?: { items?: unknown[]; achievements?: unknown[]; kind?: string };
 }
 
@@ -110,6 +112,10 @@ function skillsFromViewModel(viewModel: ProfileCollectionsViewModel | undefined)
   return Array.isArray(viewModel?.skills?.items) ? viewModel.skills.items : null;
 }
 
+function masteryFromViewModel(viewModel: ProfileCollectionsViewModel | undefined): unknown[] | null {
+  return Array.isArray(viewModel?.mastering?.items) ? viewModel.mastering.items : null;
+}
+
 function SeasonalProfileActions({
   aid,
   cycleId,
@@ -177,6 +183,9 @@ export default function SeasonalPlayer({
   const [skillItems, setSkillItems] = useState<unknown[] | null>(
     initialProfile ? skillsFromViewModel(cachedBody?.viewModel) : null,
   );
+  const [masteryItems, setMasteryItems] = useState<unknown[] | null>(
+    initialProfile ? masteryFromViewModel(cachedBody?.viewModel) : null,
+  );
   const [serverRisk, setServerRisk] = useState<PublicRiskView | null>(
     initialProfile ? cachedBody?.viewModel?.risk ?? cachedBody?.risk ?? null : null,
   );
@@ -218,6 +227,7 @@ export default function SeasonalPlayer({
       });
       setAchievements(null);
       setSkillItems(null);
+      setMasteryItems(null);
       setServerRisk(null);
       setProfileIsStale(false);
     }
@@ -242,6 +252,7 @@ export default function SeasonalPlayer({
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(body.profile));
         setSkillItems(skillsFromViewModel(body.viewModel));
+        setMasteryItems(masteryFromViewModel(body.viewModel));
         return body.profile;
       })
       .then((nextProfile) => {
@@ -301,6 +312,7 @@ export default function SeasonalPlayer({
         setDisplayNickname(nextProfile.nickname);
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(nextProfile));
         setSkillItems(skillsFromViewModel(body.viewModel));
+        setMasteryItems(masteryFromViewModel(body.viewModel));
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setModeUnavailable(false);
         setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
@@ -340,6 +352,7 @@ export default function SeasonalPlayer({
         comparison={emptySlot}
         statistics={emptySlot}
         achievements={emptySlot}
+        mastering={emptySlot}
         skills={emptySlot}
         statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</div>}
       />
@@ -443,6 +456,7 @@ export default function SeasonalPlayer({
           cycleId={cycleId}
         />
       }
+      mastering={hasVisibleMastery(masteryItems) ? <ProfileMastering items={masteryItems} /> : undefined}
       skills={hasVisibleSkills(skillItems) ? <ProfileSkills skills={skillItems} /> : undefined}
     />
   );

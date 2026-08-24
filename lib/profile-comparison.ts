@@ -6,7 +6,7 @@ function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export function buildRegularComparisonStats(stats: ParsedPlayerStats): ProfileComparisonStats {
+export function buildPersistentComparisonStats(stats: ParsedPlayerStats): ProfileComparisonStats {
   return {
     hoursPlayed: finiteOrNull(stats.hoursPlayed),
     pmcRaids: finiteOrNull(stats.pmcRaids),
@@ -18,6 +18,11 @@ export function buildRegularComparisonStats(stats: ParsedPlayerStats): ProfileCo
     level: finiteOrNull(stats.level),
     pvpStatsKnown: stats.pvpStatsKnown,
   };
+}
+
+/** Backward-compatible regular name for callers that only render PvP. */
+export function buildRegularComparisonStats(stats: ParsedPlayerStats): ProfileComparisonStats {
+  return buildPersistentComparisonStats(stats);
 }
 
 export function buildSeasonalComparisonStats(profile: SeasonalProfile): ProfileComparisonStats {

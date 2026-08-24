@@ -109,7 +109,7 @@ export default function ProgressionPanel({
   hours: number;
   pmcRaids: number;
   onRiskChange?: (risk: ProgressionRiskPayload | null) => void;
-  mode?: "regular" | "seasonal";
+  mode?: "regular" | "pve" | "seasonal";
   cycleId?: string;
   levelBands?: LevelBand[];
   profileUpdatedAt?: number | null;
@@ -157,10 +157,10 @@ export default function ProgressionPanel({
           signal: controller.signal,
           cache: forceRefresh || refreshRevision > 0 ? "no-store" : "default",
         });
-        if (!response.ok) throw new Error(t("progression.unavailable"));
+        if (!response.ok) throw new Error(t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
         const result: unknown = await response.json();
         if (!response.ok || !validTimelineResponse(result, { aid, mode, cycleId })) {
-          throw new Error(t("progression.unavailable"));
+          throw new Error(t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
         }
         if (controller.signal.aborted) return;
         timelineCache.set(cacheKey, result);
@@ -328,7 +328,11 @@ export default function ProgressionPanel({
     <section className="mt-5" aria-labelledby="progression-heading">
       <div className="seasonal-controls">
         <div>
-          <span className="section-kicker">{t(mode === "regular" ? "progression.kicker" : "seasonal.kind.cumulative")}</span>
+          <span className="section-kicker">{t(
+            mode === "regular"
+              ? "progression.kicker"
+              : mode === "pve" ? "progression.kicker.pve" : "seasonal.kind.cumulative",
+          )}</span>
           <h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
         </div>
       </div>
@@ -391,7 +395,7 @@ export default function ProgressionPanel({
 
       {error && (
         <div className="data-panel mt-4 p-5" role="status">
-          <p className="text-sm text-[var(--muted)]">{t("progression.unavailable")}</p>
+          <p className="text-sm text-[var(--muted)]">{t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable")}</p>
         </div>
       )}
 

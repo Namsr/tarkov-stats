@@ -1,6 +1,6 @@
 import type { GameMode, ProfileIdentity } from "@/types/seasonal";
 
-export type ProfileShellMode = Extract<GameMode, "regular" | "seasonal">;
+export type ProfileShellMode = Extract<GameMode, "regular" | "pve" | "seasonal">;
 
 export interface ProfileViewMetric {
   label: string;

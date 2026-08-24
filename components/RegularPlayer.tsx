@@ -184,9 +184,9 @@ export default function RegularPlayer({
           }
           throw new Error(data.error ?? t("player.loadError"));
         }
-        if (mode === "regular" && (
+        if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
-          data.identity?.mode !== "regular" ||
+          data.identity?.mode !== mode ||
           data.identity?.cycleId !== "persistent"
         )) {
           throw new Error(t("player.loadError"));
@@ -246,9 +246,9 @@ export default function RegularPlayer({
           throw new Error(data.error ?? t("player.loadError"));
         }
 
-        if (mode === "regular" && (
+        if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
-          data.identity?.mode !== "regular" ||
+          data.identity?.mode !== mode ||
           data.identity?.cycleId !== "persistent"
         )) {
           throw new Error(t("player.loadError"));
@@ -292,28 +292,28 @@ export default function RegularPlayer({
   }
 
   if (modeUnavailable) {
-    if (mode === "regular") {
+    if (mode === "regular" || mode === "pve") {
       const unknownValue = t("common.unknown");
       const overviewCards = [
         t("player.hoursPlayed"),
-        t("player.pmcKd"),
+        mode === "pve" ? t("player.kdAll") : t("player.pmcKd"),
         t("player.survivalRate"),
-        t("player.pmcRaids"),
+        mode === "pve" ? t("player.totalRaids") : t("player.pmcRaids"),
       ].map((label) => ({ label, value: unknownValue }));
       const unavailableSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
       return (
         <ProfileShell
           aid={Number(aid)}
-          mode="regular"
+          mode={mode}
           cycleId="persistent"
           kicker={`#${aid}`}
-          title={profileSummary?.nickname}
-          meta={profileSummary?.side ? <div className="profile-header__meta">{t("player.sideLabel", { side: profileSummary.side })}</div> : undefined}
+          title={mode === "regular" ? profileSummary?.nickname : undefined}
+          meta={mode === "regular" && profileSummary?.side ? <div className="profile-header__meta">{t("player.sideLabel", { side: profileSummary.side })}</div> : undefined}
           actions={
             <ProfileActions
               aid={Number(aid)}
-              mode="regular"
-              nickname={profileSummary?.nickname}
+              mode={mode}
+              nickname={mode === "regular" ? profileSummary?.nickname : undefined}
               missing
               onCheck={refreshProfile}
             />
@@ -384,21 +384,21 @@ export default function RegularPlayer({
   }
 
   if (error || !stats) {
-    if (mode === "regular") {
+    if (mode === "regular" || mode === "pve") {
       const errorSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--danger)]">{error || t("player.unknownError")}</div>;
       return (
         <ProfileShell
           aid={Number(aid)}
-          mode="regular"
+          mode={mode}
           cycleId="persistent"
           kicker={`#${aid}`}
-          title={profileSummary?.nickname}
-          actions={<ProfileActions aid={Number(aid)} mode="regular" nickname={profileSummary?.nickname} onCheck={refreshProfile} />}
+          title={mode === "regular" ? profileSummary?.nickname : undefined}
+          actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={mode === "regular" ? profileSummary?.nickname : undefined} onCheck={refreshProfile} />}
           overviewCards={[
             t("player.hoursPlayed"),
-            t("player.pmcKd"),
+            mode === "pve" ? t("player.kdAll") : t("player.pmcKd"),
             t("player.survivalRate"),
-            t("player.pmcRaids"),
+            mode === "pve" ? t("player.totalRaids") : t("player.pmcRaids"),
           ].map((label) => ({ label, value: t("common.unknown") }))}
           progression={errorSlot}
           risk={errorSlot}
@@ -443,6 +443,13 @@ export default function RegularPlayer({
           { label: t("arena.totalDeaths"), value: arena?.totalDeaths.toLocaleString() ?? "—" },
           { label: t("arena.kdRatio"), value: arena?.kdRatio ?? "—" },
         ]
+      : mode === "pve"
+        ? [
+            { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+            { label: t("player.kdAll"), value: stats.kdRatio },
+            { label: t("player.survivalRate"), value: `${stats.survivalRate}`, suffix: "%" },
+            { label: t("player.killsPerRaid"), value: stats.killsPerRaid },
+          ]
       : [
           { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
           { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
@@ -502,13 +509,20 @@ export default function RegularPlayer({
           : []),
       ];
 
-  if (mode === "regular") {
-    const regularOverviewCards = [
-      { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
-      { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
-      { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: "%" },
-      { label: t("player.pmcRaids"), value: stats.pmcRaids },
-    ];
+  if (mode === "regular" || mode === "pve") {
+    const regularOverviewCards = mode === "pve"
+      ? [
+          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+          { label: t("player.kdAll"), value: stats.kdRatio },
+          { label: t("player.survivalRate"), value: stats.survivalRate, suffix: "%" },
+          { label: t("player.totalRaids"), value: stats.totalRaids },
+        ]
+      : [
+          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
+          { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
+          { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: "%" },
+          { label: t("player.pmcRaids"), value: stats.pmcRaids },
+        ];
     const regularStatistics = (
       <div className="space-y-5">
         <section>
@@ -538,7 +552,7 @@ export default function RegularPlayer({
     return (
       <ProfileShell
         aid={Number(aid)}
-        mode="regular"
+        mode={mode}
         cycleId="persistent"
         kicker={`#${aid}`}
         title={stats.nickname}
@@ -550,33 +564,33 @@ export default function RegularPlayer({
             {lastPlayedAt !== null && <span>{t("player.lastPlayed", { date: dateTimeFormatter.format(lastPlayedAt) })}</span>}
           </div>
         }
-        actions={<ProfileActions aid={Number(aid)} mode="regular" nickname={stats.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
+        actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={stats.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
         overviewCards={regularOverviewCards}
         progression={<ProgressionPanel
           aid={Number(aid)}
           hours={stats.hoursPlayed}
           pmcRaids={stats.pmcRaids}
-          mode="regular"
+          mode={mode}
           cycleId="persistent"
           profileUpdatedAt={profileUpdatedAt}
           refreshRevision={progressionRefreshRevision}
           forceRefresh={forceProgressionRefresh}
           onRiskChange={setProgressionRisk}
         />}
-        risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="regular" cycleId="persistent" statsKnown={pvpStatsKnown} /></div>}
-        comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode="regular" cycleId="persistent" demo={radarDemo} />}
+        risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" statsKnown={mode === "regular" ? pvpStatsKnown : true} /></div>}
+        comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} cycleId="persistent" demo={radarDemo} />}
         statistics={regularStatistics}
         achievements={
           <ProfileAchievements
             items={regularAchievementItems}
             playerHours={stats.hoursPlayed}
             ownedIds={achievementIds}
-            mode="regular"
+            mode={mode}
             cycleId="persistent"
           />
         }
         mastering={hasVisibleMastery(masteryItems) ? <ProfileMastering items={masteryItems} /> : undefined}
-          skills={hasVisibleSkills(regularSkillItems) ? <ProfileSkills skills={regularSkillItems} /> : undefined}
+        skills={hasVisibleSkills(regularSkillItems) ? <ProfileSkills skills={regularSkillItems} /> : undefined}
       />
     );
   }

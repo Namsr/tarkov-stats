@@ -249,7 +249,9 @@ export default function ProgressionTimelineChart({
   const { t } = useI18n();
   const clipId = useId().replaceAll(":", "");
   const tooltipId = `${clipId}-tooltip`;
-  const [selectedMetric, setSelectedMetric] = useState<ForegroundMetricKey>("pvp_kd");
+  const [selectedMetric, setSelectedMetric] = useState<ForegroundMetricKey>(
+    data.identity.mode === "pve" ? "ai_kd" : "pvp_kd",
+  );
   const [metricReveal, setMetricReveal] = useState(1);
   const metricRevealPreviousMetricRef = useRef(selectedMetric);
   const [compareNearby, setCompareNearby] = useState(false);
@@ -275,7 +277,15 @@ export default function ProgressionTimelineChart({
   } | null>(null);
 
   const isSeasonal = data.identity.mode === "seasonal";
+  const isPve = data.identity.mode === "pve";
   const timelineAxis: HorizontalAxis = isSeasonal ? horizontalAxis : "raids";
+  useEffect(() => {
+    setSelectedMetric((current) => {
+      if (isPve && current === "pvp_kd") return "ai_kd";
+      if (!isPve && current === "ai_kd") return "pvp_kd";
+      return current;
+    });
+  }, [isPve]);
   useEffect(() => {
     if (!isSeasonal) {
       setHorizontalAxis("raids");
@@ -579,7 +589,13 @@ export default function ProgressionTimelineChart({
 
   const seriesLabel = (series: HoverSeriesKey) => series === "selected"
     ? comparison?.nickname ?? t("progression.series.player")
-    : t(SERIES_LABELS[series]);
+    : t(
+      isPve && series === "nearby"
+        ? "progression.series.nearby.pve"
+        : isPve && series === "overall"
+          ? "progression.series.overall.pve"
+          : SERIES_LABELS[series],
+    );
 
   const pointsForSeries = (series: HoverSeriesKey) => series === "selected"
     ? selectedXpPoints
@@ -1129,7 +1145,7 @@ export default function ProgressionTimelineChart({
           onFocus={() => setSeriesHover(selectedMetric, "nearby")}
           onBlur={() => setLayerHover(null)}
         >
-          {t("progression.timeline.compare.nearby")}
+          {t(isPve ? "progression.timeline.compare.nearby.pve" : "progression.timeline.compare.nearby")}
         </button>
         <button
           type="button"
@@ -1141,7 +1157,7 @@ export default function ProgressionTimelineChart({
           onFocus={() => setSeriesHover(selectedMetric, "overall")}
           onBlur={() => setLayerHover(null)}
         >
-          {t("progression.timeline.compare.overall")}
+          {t(isPve ? "progression.timeline.compare.overall.pve" : "progression.timeline.compare.overall")}
         </button>
       </div> : (
         <p className="progression-timeline__comparison-hint">{t("progression.timeline.comparisonUnavailable")}</p>

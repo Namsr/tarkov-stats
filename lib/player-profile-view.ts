@@ -116,13 +116,27 @@ function emptyRisk(): null {
   return null;
 }
 
-export function buildRegularProfileViewModel(
-  input: { aid: number; mode: "regular"; cycleId: string; profile: PlayerProfile; stats: ParsedPlayerStats },
+export type PersistentProfileViewInput = {
+  aid: number;
+  mode: "regular" | "pve";
+  cycleId: string;
+  /** Stored PvE portraits intentionally retain parsed stats, not raw upstream JSON. */
+  profile?: PlayerProfile;
+  stats: ParsedPlayerStats;
+  achievementIds?: string[];
+  capturedAt?: number | null;
+};
+
+export function buildPersistentProfileViewModel(
+  input: PersistentProfileViewInput,
   risk?: ProfileViewRisk | null,
 ): PlayerProfileViewModel {
   const { profile, stats } = input;
   const identityValue = { aid: input.aid, mode: input.mode, cycleId: input.cycleId } as const;
-  const ownAchievements = Object.entries(profile.achievements ?? {}).map(([id, unlockedAt]) => ({
+  const ownAchievements = (profile?.achievements
+    ? Object.entries(profile.achievements)
+    : (input.achievementIds ?? []).map((id) => [id, null] as const)
+  ).map(([id, unlockedAt]) => ({
     id,
     unlockedAt: timestampOrNull(unlockedAt),
     name: null,
@@ -138,10 +152,14 @@ export function buildRegularProfileViewModel(
   }));
   return {
     identity: identity(identityValue, stats.nickname),
-    mode: "regular",
+    mode: input.mode,
     cycleId: input.cycleId,
     sectionOrder: PROFILE_SECTION_ORDER,
-    freshness: { profileUpdatedAt: timestampOrNull(stats.profileUpdatedAt), lastAccessAt: timestampOrNull(stats.lastPlayedAt), capturedAt: null },
+    freshness: {
+      profileUpdatedAt: timestampOrNull(stats.profileUpdatedAt),
+      lastAccessAt: timestampOrNull(stats.lastPlayedAt),
+      capturedAt: timestampOrNull(input.capturedAt),
+    },
     overview: {
       lifetimePvpHours: finiteOrNull(stats.hoursPlayed),
       pmcKdRatio: stats.pvpStatsKnown === false ? null : finiteOrNull(stats.pmcKdRatio),
@@ -158,7 +176,7 @@ export function buildRegularProfileViewModel(
     comparison: {
       lifetimePvpHours: finiteOrNull(stats.hoursPlayed),
       pmcRaids: finiteOrNull(stats.pmcRaids),
-      cohortMode: "regular",
+      cohortMode: input.mode,
       cohortCycleId: input.cycleId,
     },
     statistics: {
@@ -177,6 +195,11 @@ export function buildRegularProfileViewModel(
       prestige: finiteOrNull(stats.prestige),
     },
     achievements: { items: ownAchievements },
+    skills: {
+      kind: input.mode === "pve" ? "pve" : "pvp",
+      items: skillRows(profile?.skills),
+      achievements: ownAchievements,
+    },
     mastering: {
       items: (stats.weaponMastery ?? []).map((row) => ({
         id: row.id,
@@ -185,8 +208,14 @@ export function buildRegularProfileViewModel(
         level: null,
       })),
     },
-    skills: { kind: "pvp", items: skillRows(profile.skills), achievements: ownAchievements },
   };
+}
+
+export function buildRegularProfileViewModel(
+  input: { aid: number; mode: "regular"; cycleId: string; profile: PlayerProfile; stats: ParsedPlayerStats },
+  risk?: ProfileViewRisk | null,
+): PlayerProfileViewModel {
+  return buildPersistentProfileViewModel(input, risk);
 }
 
 export function toPublicRiskView(
@@ -268,8 +297,15 @@ export function buildSeasonalProfileViewModel(
       prestige: finiteOrNull(stats?.prestige ?? profile.staticSignals?.prestige),
     },
     achievements: { items: ownAchievements },
-    mastering: { items: [] },
     skills: { kind: "seasonal", items: skillRows(commonSkills), achievements: ownAchievements },
+    mastering: {
+      items: (profile.weaponMastery ?? []).map((row) => ({
+        id: row.id,
+        progress: row.progress,
+        weapon: null,
+        level: null,
+      })),
+    },
     seasonalAchievements: ownAchievements.map((achievement) => ({
       ...achievement,
       name: achievement.name ?? achievement.id,

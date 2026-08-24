@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS progression_snapshots (
   pmc_deaths INTEGER NOT NULL DEFAULT 0, pmc_kills INTEGER NOT NULL DEFAULT 0,
   total_kills INTEGER, killed_pmc INTEGER NOT NULL DEFAULT 0,
   run_through INTEGER, longest_win_streak INTEGER,
-  achv_count INTEGER, achievements TEXT, common_skills TEXT,
+  achv_count INTEGER, achievements TEXT, common_skills TEXT, weapon_mastery TEXT,
   stats_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(mode, cycle_id, aid, profile_updated_at)
 );

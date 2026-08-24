@@ -83,3 +83,20 @@ test("mastery rows use the displayed rounded value for zero partitioning", () =>
   assert.equal(displayedWeaponMasteryProgress(0.49), 0);
   assert.equal(displayedWeaponMasteryProgress(0.5), 1);
 });
+
+test("all profile modes wire mastery from API through their UI shells", () => {
+  const route = readFileSync("app/api/player/profile/route.ts", "utf8");
+  const regular = readFileSync("components/RegularPlayer.tsx", "utf8");
+  const seasonal = readFileSync("components/SeasonalPlayer.tsx", "utf8");
+  const shell = readFileSync("components/ProfileShell.tsx", "utf8");
+
+  assert.match(route, /enrichRegularViewModel[\s\S]*?enrichPersistentViewModel\("regular"/);
+  assert.match(route, /enrichPersistentViewModel\("pve"/);
+  assert.match(route, /async function enrichSeasonalViewModel[\s\S]*?buildWeaponMasteryRows\(viewModel\.mastering\.items, masteryReferences\)/);
+  assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
+  assert.match(seasonal, /masteryFromViewModel[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
+
+  const sectionOrder = shell.match(/const SECTION_IDS = \[(.*?)\] as const/s)?.[1] ?? "";
+  assert.ok(sectionOrder.indexOf("\"achievements\"") < sectionOrder.indexOf("\"mastering\""));
+  assert.ok(sectionOrder.indexOf("\"mastering\"") < sectionOrder.indexOf("\"skills\""));
+});
