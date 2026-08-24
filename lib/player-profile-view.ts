@@ -177,6 +177,14 @@ export function buildRegularProfileViewModel(
       prestige: finiteOrNull(stats.prestige),
     },
     achievements: { items: ownAchievements },
+    mastering: {
+      items: (stats.weaponMastery ?? []).map((row) => ({
+        id: row.id,
+        progress: row.progress,
+        weapon: null,
+        level: null,
+      })),
+    },
     skills: { kind: "pvp", items: skillRows(profile.skills), achievements: ownAchievements },
   };
 }
@@ -260,6 +268,7 @@ export function buildSeasonalProfileViewModel(
       prestige: finiteOrNull(stats?.prestige ?? profile.staticSignals?.prestige),
     },
     achievements: { items: ownAchievements },
+    mastering: { items: [] },
     skills: { kind: "seasonal", items: skillRows(commonSkills), achievements: ownAchievements },
     seasonalAchievements: ownAchievements.map((achievement) => ({
       ...achievement,

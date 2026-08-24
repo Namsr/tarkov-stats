@@ -105,6 +105,7 @@ export interface CounterItem {
 
 export interface SkillData {
   Common: SkillEntry[];
+  Mastering?: MasteryEntry[];
   [key: string]: unknown;
 }
 
@@ -113,6 +114,16 @@ export interface SkillEntry {
   Progress: number;
   PointsEarnedDuringSession: number;
   LastAccess: number;
+}
+
+export interface MasteryEntry {
+  Id: string;
+  Progress: number;
+}
+
+export interface WeaponMasteryProgress {
+  id: string;
+  progress: number;
 }
 
 export interface WeaponStat {
@@ -172,5 +183,7 @@ export interface ParsedPlayerStats {
   avgLifespan: number;
   totalLootValue: number;
   arena?: ArenaStats;
+  /** Normalized profile.skills.Mastering rows retained for stored profile views. */
+  weaponMastery?: WeaponMasteryProgress[];
   [key: string]: unknown;
 }

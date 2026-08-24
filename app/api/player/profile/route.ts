@@ -3,6 +3,7 @@ import {
   getPublicProfile,
   PLAYER_LEVELS_V2026_07_22,
   getAchievements,
+  getWeaponMastery,
   safeAchievementImageUrl,
   parseArenaProfileStats,
   parseProfileStats,
@@ -27,6 +28,7 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
+import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
   buildRegularProfileViewModel,
   buildSeasonalProfileViewModel,
@@ -115,9 +117,10 @@ async function enrichSeasonalViewModel(
 async function enrichRegularViewModel(
   viewModel: ReturnType<typeof buildRegularProfileViewModel>,
 ) {
-  const [baseline, metadata] = await Promise.all([
+  const [baseline, metadata, masteryReferences] = await Promise.all([
     loadRegularAchievementBaseline(),
     getAchievements("regular").catch(() => new Map()),
+    viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
   const eligibleN = baseline?.total ?? null;
@@ -144,6 +147,7 @@ async function enrichRegularViewModel(
     ...viewModel,
     achievements: { items: achievements },
     skills: { ...viewModel.skills, achievements },
+    mastering: { items: buildWeaponMasteryRows(viewModel.mastering.items, masteryReferences) },
   };
 }
 

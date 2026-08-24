@@ -9,7 +9,7 @@ import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
 import type { ProfileShellMode, ProfileViewMetric } from "@/types/profile-view";
 
-const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "achievements", "skills"] as const;
+const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "achievements", "mastering", "skills"] as const;
 const LEGACY_SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
 
 export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?: string }) {
@@ -18,7 +18,11 @@ export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?:
 
 export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?: number; title?: string }) {
   const { t } = useI18n();
-  const sectionIds = mode === "regular" || mode === "seasonal" ? SECTION_IDS : LEGACY_SECTION_IDS;
+  const sectionIds = mode === "regular"
+    ? SECTION_IDS
+    : mode === "seasonal"
+      ? SECTION_IDS.filter((id) => id !== "mastering")
+      : LEGACY_SECTION_IDS;
   return (
     <main className="page-frame" data-profile-shell-mode={mode}>
       <div className="mb-8 h-5 w-20 skeleton rounded" />
@@ -59,6 +63,9 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
         {(mode === "regular" || mode === "seasonal") && (
           <ProfileShellLoadingSection id="achievements" height="min-h-[360px]" />
         )}
+        {mode === "regular" && (
+          <ProfileShellLoadingSection id="mastering" height="min-h-[240px]" />
+        )}
         <ProfileShellLoadingSection id="skills" height="min-h-[240px]" />
       </div>
     </main>
@@ -83,6 +90,7 @@ export default function ProfileShell({
   comparison,
   statistics,
   achievements,
+  mastering,
   skills,
   statusNotice,
 }: {
@@ -99,6 +107,7 @@ export default function ProfileShell({
   comparison: ReactNode;
   statistics: ReactNode;
   achievements?: ReactNode;
+  mastering?: ReactNode;
   skills?: ReactNode;
   statusNotice?: ReactNode;
 }) {
@@ -106,9 +115,9 @@ export default function ProfileShell({
   const baseSectionIds = achievements === undefined
     ? LEGACY_SECTION_IDS
     : SECTION_IDS;
-  const sectionIds = skills === undefined
-    ? baseSectionIds.filter((id) => id !== "skills")
-    : baseSectionIds;
+  const sectionIds = baseSectionIds.filter((id) =>
+    (id !== "mastering" || mastering !== undefined) && (id !== "skills" || skills !== undefined),
+  );
   const sectionLinks = sectionIds.map((id) => ({
     id,
     label: t("profile.section." + id),
@@ -161,6 +170,7 @@ export default function ProfileShell({
         <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
         <ProfileShellSection id="statistics">{statistics}</ProfileShellSection>
         {achievements !== undefined && <ProfileShellSection id="achievements">{achievements}</ProfileShellSection>}
+        {mastering !== undefined && <ProfileShellSection id="mastering">{mastering}</ProfileShellSection>}
         {skills !== undefined && <ProfileShellSection id="skills">{skills}</ProfileShellSection>}
       </div>
     </main>

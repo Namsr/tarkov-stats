@@ -7,6 +7,7 @@ export const PROFILE_SECTION_ORDER = [
   "comparison",
   "statistics",
   "achievements",
+  "mastering",
   "skills",
 ] as const;
 
@@ -53,6 +54,13 @@ export interface ProfileViewSkill {
   progress: number | null;
   pointsEarnedDuringSession: number | null;
   lastAccess: number | null;
+}
+
+export interface ProfileViewMastery {
+  id: string;
+  weapon: string | null;
+  progress: number;
+  level: 1 | 2 | 3 | null;
 }
 
 export interface ProfileViewRisk {
@@ -109,6 +117,9 @@ export interface PlayerProfileViewModel {
     items: ProfileViewSkill[];
     /** Legacy alias retained for the existing profile shell. */
     achievements: ProfileViewAchievement[];
+  };
+  mastering: {
+    items: ProfileViewMastery[];
   };
   /** Convenience alias used by the shared client shell. */
   seasonalAchievements?: Array<ProfileViewAchievement & { name: string; rarity: string }>;

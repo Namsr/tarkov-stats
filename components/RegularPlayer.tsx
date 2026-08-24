@@ -10,6 +10,7 @@ import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/Prog
 import EarlyUnlocks from "@/components/EarlyUnlocks";
 import ProfileAchievements from "@/components/ProfileAchievements";
 import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
+import ProfileMastering, { hasVisibleMastery } from "@/components/ProfileMastering";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
@@ -42,6 +43,7 @@ interface ProfileSummary {
 interface ProfileCollectionsViewModel {
   risk?: PublicRiskView | null;
   achievements?: { items?: unknown[] };
+  mastering?: { items?: unknown[] };
   skills?: { items?: unknown[]; achievements?: unknown[] };
 }
 
@@ -531,6 +533,7 @@ export default function RegularPlayer({
       unlockedAt,
     }));
     const regularSkillItems = viewModel?.skills?.items ?? skills;
+    const masteryItems = viewModel?.mastering?.items ?? [];
 
     return (
       <ProfileShell
@@ -572,6 +575,7 @@ export default function RegularPlayer({
             cycleId="persistent"
           />
         }
+        mastering={hasVisibleMastery(masteryItems) ? <ProfileMastering items={masteryItems} /> : undefined}
           skills={hasVisibleSkills(regularSkillItems) ? <ProfileSkills skills={regularSkillItems} /> : undefined}
       />
     );

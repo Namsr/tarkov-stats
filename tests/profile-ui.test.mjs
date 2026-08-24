@@ -131,6 +131,7 @@ test("profile omits empty skills anchors and keeps achievements full width", asy
 
 test("profile achievements use sortable desktop columns and readable mobile cards", async () => {
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
+  const collapsible = await readFile("components/ProfileCollapsible.tsx", "utf8");
   const styles = await readFile("app/globals.css", "utf8");
   const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
 
@@ -148,11 +149,32 @@ test("profile achievements use sortable desktop columns and readable mobile card
   assert.match(achievements, /key: "percent"/);
   assert.match(achievements, /achievement-table__number-header/);
   assert.match(achievements, /<div className="achievement-cards" role="list">/);
+  assert.match(achievements, /const ACHIEVEMENT_PREVIEW_COUNT = 3/);
+  assert.match(achievements, /aria-expanded=\{expanded\}/);
+  assert.match(achievements, /aria-controls=\{collapseId\}/);
+  assert.match(achievements, /profile-collapsible__preview-tail/);
+  assert.match(achievements, /achievement\.expand/);
+  assert.match(collapsible, /content\.scrollHeight/);
+  assert.match(collapsible, /const measuredHeight = useRef<number \| null>\(null\)/);
+  assert.match(collapsible, /if \(measuredHeight\.current === height\) return/);
+  assert.match(collapsible, /observer\.observe\(content\)/);
+  assert.doesNotMatch(collapsible, /observer\.observe\(node\)/);
   assert.match(styles, /\.achievement-table-wrap \{[^}]*overflow-x: auto/);
   assert.match(styles, /\.achievement-table thead th\.achievement-table__number-header \{ text-align: right; \}/);
   assert.match(styles, /\.achievement-table__number-header \.achievement-table__sort \{ width: 100%; justify-content: flex-end; text-align: right; \}/);
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-table-wrap \{ display: none; \}/);
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.achievement-cards \{ display: grid/);
+  assert.match(styles, /\.achievement-collapsible__content \{[^}]*--profile-collapsible-collapsed-height: 360px;/);
+  assert.match(styles, /\.achievement-collapsible__content \{[^}]*overflow-anchor: none;/);
+  assert.match(styles, /\.achievement-collapsible__content \.profile-collapsible__inner \{ overflow-anchor: none; \}/);
+  assert.match(styles, /\.achievement-collapsible__content \{[^}]*transition: max-height 760ms/);
+  assert.match(styles, /\.achievement-collapsible__content\.is-collapsed \{[^}]*transition: max-height 920ms/);
+  assert.doesNotMatch(styles, /\.mastering-collapsible__content \{[^}]*transition:/);
+  assert.match(styles, /@media \(max-width: 767px\)[\s\S]*\.mastering-collapsible__content \{ --profile-collapsible-collapsed-height: 640px; \}/);
+  assert.match(styles, /\.profile-collapsible__content\.is-collapsed::after \{[^}]*height: 64px/);
+  assert.match(styles, /\.profile-collapsible__content\.is-collapsed::after/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*profile-collapsible__content/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.achievement-collapsible__content\.is-collapsed \{ transition-duration: \.01ms; \}/);
   assert.match(dictionary, /"achievement\.col\.name": "Name"/);
   assert.match(dictionary, /"achievement\.col\.name": "Название"/);
   assert.match(dictionary, /"achievement\.sortBy":/);

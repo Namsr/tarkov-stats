@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import Image from "next/image";
 import EarlyUnlocks from "@/components/EarlyUnlocks";
+import ProfileCollapsible from "@/components/ProfileCollapsible";
 import { useI18n } from "@/lib/i18n/context";
 import {
   achievementRarityKey,
@@ -37,6 +38,7 @@ const SORTABLE_COLUMNS: ReadonlyArray<{ key: AchievementSortKey; labelKey: strin
   { key: "date", labelKey: "achievement.col.completed" },
   { key: "rarity", labelKey: "achievement.col.rarity" },
 ];
+const ACHIEVEMENT_PREVIEW_COUNT = 3;
 
 function finiteOrNull(value: unknown): number | null {
   const number = Number(value);
@@ -230,12 +232,14 @@ export default function ProfileAchievements({
   loading?: boolean;
   playerHours?: number;
   ownedIds?: readonly string[];
-  mode: "regular" | "seasonal";
+  mode: "regular" | "pve" | "seasonal";
   cycleId: string;
 }) {
   const { t, lang } = useI18n();
   const [sortKey, setSortKey] = useState<AchievementSortKey>("date");
   const [direction, setDirection] = useState<AchievementSortDirection>("desc");
+  const [expanded, setExpanded] = useState(false);
+  const collapseId = `profile-achievements-${useId().replace(/:/g, "")}`;
   const achievements = useMemo(
     () => (items ?? []).flatMap((item) => {
       const normalized = normalizeAchievement(item);
@@ -247,6 +251,7 @@ export default function ProfileAchievements({
     () => sortProfileAchievements(achievements, sortKey, direction, lang),
     [achievements, direction, lang, sortKey],
   );
+  const canCollapse = sorted.length > ACHIEVEMENT_PREVIEW_COUNT;
   const owned = ownedIds ?? achievements.map((achievement) => achievement.id);
   const changeSort = (key: AchievementSortKey) => {
     if (sortKey === key) {
@@ -284,6 +289,11 @@ export default function ProfileAchievements({
           <p className="text-sm text-[var(--muted)]">{t("achievement.empty")}</p>
         ) : (
           <>
+            <ProfileCollapsible
+              id={collapseId}
+              className="achievement-collapsible__content"
+              expanded={!canCollapse || expanded}
+            >
             <div className="achievement-table-wrap">
               <table className="achievement-table">
                 <caption className="sr-only">{t("achievement.tableCaption")}</caption>
@@ -320,13 +330,19 @@ export default function ProfileAchievements({
                   </tr>
                 </thead>
                 <tbody>
-                  {sorted.map((achievement) => {
+                  {sorted.map((achievement, index) => {
                     const name = localizedAchievementName(achievement, lang);
                     const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                     const completed = formatDate(achievement.unlockedAt, lang);
                     const rarity = rarityLabel(achievement, t);
                     return (
-                      <tr key={achievement.id}>
+                      <tr
+                        key={achievement.id}
+                        aria-hidden={canCollapse && !expanded && index > ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
+                        className={canCollapse && !expanded && index === ACHIEVEMENT_PREVIEW_COUNT
+                          ? "profile-collapsible__preview-tail"
+                          : undefined}
+                      >
                         <th scope="row" className="achievement-table__name-cell">
                           <div className="achievement-table__name">
                             <AchievementIcon imageUrl={achievement.imageUrl} />
@@ -351,13 +367,18 @@ export default function ProfileAchievements({
             </div>
 
             <div className="achievement-cards" role="list">
-              {sorted.map((achievement) => {
+              {sorted.map((achievement, index) => {
                 const name = localizedAchievementName(achievement, lang);
                 const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                 const completed = formatDate(achievement.unlockedAt, lang);
                 const rarity = rarityLabel(achievement, t);
                 return (
-                  <article key={achievement.id} className="achievement-card" role="listitem">
+                  <article
+                    key={achievement.id}
+                    aria-hidden={canCollapse && !expanded && index > ACHIEVEMENT_PREVIEW_COUNT ? true : undefined}
+                    className={`achievement-card ${canCollapse && !expanded && index === ACHIEVEMENT_PREVIEW_COUNT ? "profile-collapsible__preview-tail" : ""}`}
+                    role="listitem"
+                  >
                     <div className="achievement-card__heading">
                       <AchievementIcon imageUrl={achievement.imageUrl} />
                       <div className="min-w-0">
@@ -385,6 +406,19 @@ export default function ProfileAchievements({
                 );
               })}
             </div>
+            </ProfileCollapsible>
+            {canCollapse && (
+              <button
+                type="button"
+                className="profile-collapsible__toggle achievement-collapsible__toggle"
+                aria-expanded={expanded}
+                aria-controls={collapseId}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                <span>{t(expanded ? "achievement.collapse" : "achievement.expand")}</span>
+                <span aria-hidden="true">{expanded ? "↑" : "↓"}</span>
+              </button>
+            )}
           </>
         )}
       </section>

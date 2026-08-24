@@ -7,6 +7,8 @@ import type {
   ArenaModeKey,
   ArenaModeStats,
 } from "@/types/tarkov";
+// @ts-expect-error Node's strip-types runner needs the extension; Next can bundle it.
+import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
 
 export const TARKOV_JSON_USER_AGENT = "TarkovStats/0.1 (+https://tarkovstats.ru)";
 
@@ -389,7 +391,9 @@ export type AchievementMode = keyof typeof ACHIEVEMENT_ENDPOINTS;
 type AchievementCache = { data: Map<string, AchievementMeta>; ts: number };
 const achievementsCache = new Map<AchievementMode, AchievementCache>();
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const MASTERY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const ACHIEVEMENT_IMAGE_HOSTS = new Set(["assets.tarkov.dev"]);
+let masteryCache: { data: WeaponMasteryReference[]; ts: number } | null = null;
 
 /**
  * Keep externally supplied image URLs inside the official Tarkov asset host.
@@ -704,6 +708,29 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
   }
 }
 
+/** Handbook mastery thresholds and display names, cached for the isolate. */
+export async function getWeaponMastery(): Promise<WeaponMasteryReference[]> {
+  const now = Date.now();
+  if (masteryCache && now - masteryCache.ts < MASTERY_TTL_MS) {
+    console.info("tarkov reference", { reference: "mastering", source: "memory-cache" });
+    return masteryCache.data;
+  }
+  try {
+    const response = await fetchTarkovJson(ITEMS_URL, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = parseWeaponMastery(await response.json());
+    masteryCache = { data, ts: now };
+    console.info("tarkov reference", { reference: "mastering", source: "json" });
+    return data;
+  } catch (error) {
+    console.error("tarkov reference validation failed", {
+      reference: "mastering",
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    return masteryCache?.data ?? [];
+  }
+}
+
 function getCounterValue(
   items: { Key: string[]; Value: number }[],
   ...keys: string[]
@@ -972,5 +999,6 @@ export function parseProfileStats(
     lastPlayedAt: (lastSkillAccessSeconds(profile) ?? 0) * 1000,
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
+    weaponMastery: normalizeWeaponMastery(profile.skills?.Mastering),
   };
 }

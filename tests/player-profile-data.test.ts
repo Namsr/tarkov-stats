@@ -22,7 +22,7 @@ const parserOptions = {
   seasonEndsAt: 1_784_000_000_000,
 };
 
-test("profile DTO keeps achievements between statistics and skills", () => {
+test("profile DTO keeps mastery between achievements and skills", () => {
   assert.deepEqual(PROFILE_SECTION_ORDER, [
     "overview",
     "progression",
@@ -30,6 +30,7 @@ test("profile DTO keeps achievements between statistics and skills", () => {
     "comparison",
     "statistics",
     "achievements",
+    "mastering",
     "skills",
   ]);
 });
