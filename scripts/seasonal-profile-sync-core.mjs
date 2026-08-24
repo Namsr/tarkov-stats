@@ -138,6 +138,10 @@ export function normalizeNickname(value) {
   return /^[a-zA-Z0-9_-]{1,15}$/.test(nickname) ? nickname : null;
 }
 
+export function isClearlyTruncatedIndex(previousRows, nextRows) {
+  return previousRows > 0 && nextRows * 2 < previousRows;
+}
+
 export function enqueueMissingSeasonalIndexProfiles(db, cycleId, fallbackUpdatedAt, queuedAt = Date.now()) {
   const indexEntries = Number(db.prepare(
     "SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?",

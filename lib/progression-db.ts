@@ -1,8 +1,13 @@
 import type { PlayerSnapshotInput } from "@/lib/ban-db";
 import { initializeSeasonalSchema } from "@/lib/seasonal/storage";
-import { materializeRegularProgression } from "@/lib/regular-progression";
+import {
+  materializePersistentProgression,
+  PERSISTENT_CYCLE_ID,
+  type PersistentProgressionMode,
+} from "@/lib/regular-progression";
 import { raidBucket } from "@/lib/seasonal/progression";
-import { LEGACY_IDENTITY } from "@/types/seasonal";
+// @ts-expect-error Node's strip-types runtime requires the explicit extension.
+export { seedPveProgressionBaselines, type PveProgressionSeedResult } from "./pve-progression-seed-core.ts";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
 
@@ -23,6 +28,7 @@ export interface CaptureSnapshotResult {
 
 export interface ProgressionSnapshot {
   id: number;
+  mode: PersistentProgressionMode;
   aid: number;
   upstreamUpdatedAt: number;
   capturedAt: number;
@@ -66,21 +72,26 @@ function validate(input: PlayerSnapshotInput) {
   }
 }
 
-function args(input: PlayerSnapshotInput, seriesId: number): unknown[] {
+function args(
+  input: PlayerSnapshotInput,
+  mode: PersistentProgressionMode,
+  seriesId: number,
+): unknown[] {
   const s = input.stats;
   return [
-    LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, input.aid, input.upstreamUpdatedAt,
+    mode, PERSISTENT_CYCLE_ID, input.aid, input.upstreamUpdatedAt,
     input.upstreamUpdatedAt, input.capturedAt,
-    new Date(input.upstreamUpdatedAt).toISOString().slice(0, 10), seriesId, s.nickname, s.side,
-    s.prestige, s.level, s.experience, s.hoursPlayed, s.totalRaids, s.pmcRaids,
-    s.scavRaids, s.survivedRaids, s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc,
-    s.runThrough, s.longestWinStreak, s.achievementsCount,
+    new Date(input.upstreamUpdatedAt).toISOString().slice(0, 10), seriesId, s.nickname ?? null, s.side ?? null,
+    s.prestige ?? null, s.level ?? null, s.experience, s.hoursPlayed ?? null, s.totalRaids ?? null, s.pmcRaids,
+    s.scavRaids, s.survivedRaids ?? null, s.deaths ?? null, s.pmcDeaths, s.totalKills ?? null, s.killedPmc,
+    s.runThrough ?? null, s.longestWinStreak ?? null, s.achievementsCount ?? null,
     JSON.stringify(input.achievementIds), JSON.stringify(s),
   ];
 }
 
 interface SnapshotRow {
   id: number;
+  mode: string;
   aid: number;
   upstream_updated_at: number;
   captured_at: number;
@@ -96,6 +107,7 @@ function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
   if (!row) return null;
   return {
     id: Number(row.id),
+    mode: String(row.mode) as PersistentProgressionMode,
     aid: Number(row.aid),
     upstreamUpdatedAt: Number(row.upstream_updated_at),
     capturedAt: Number(row.captured_at),
@@ -170,8 +182,12 @@ async function getSqliteDb(): Promise<any | null> {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sqliteStore(db: any): ProgressionStore {
+export function createSqliteProgressionStore(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  mode: PersistentProgressionMode = "regular",
+): ProgressionStore {
+  initializeSeasonalSchema(db);
   return {
     async recordSnapshot(input) {
       validate(input);
@@ -183,7 +199,7 @@ function sqliteStore(db: any): ProgressionStore {
       }
       const previous = toSnapshot(db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, input.aid) as SnapshotRow | undefined);
+      ).get(mode, PERSISTENT_CYCLE_ID, input.aid) as SnapshotRow | undefined);
       if (previous && input.upstreamUpdatedAt === previous.upstreamUpdatedAt) {
         return {
           inserted: false, status: "duplicate", previousUpdatedAt: previous.upstreamUpdatedAt,
@@ -204,15 +220,15 @@ function sqliteStore(db: any): ProgressionStore {
       );
       const isAnomaly = Boolean(comparison?.resetFields.length) && !isReset;
       const seriesId = previous ? previous.seriesId + (isReset ? 1 : 0) : 1;
-      db.exec("SAVEPOINT record_regular_snapshot");
+      db.exec("SAVEPOINT record_persistent_snapshot");
       try {
-        db.prepare(INSERT_SQL).run(...args(input, seriesId));
+        db.prepare(INSERT_SQL).run(...args(input, mode, seriesId));
         const targetBucket = raidBucket(input.stats.pmcRaids);
-        materializeRegularProgression(db, input.aid, { targetBucket, refreshAggregates: false });
-        db.exec("RELEASE record_regular_snapshot");
+        materializePersistentProgression(db, mode, input.aid, { targetBucket, refreshAggregates: false });
+        db.exec("RELEASE record_persistent_snapshot");
       } catch (error) {
-        db.exec("ROLLBACK TO record_regular_snapshot");
-        db.exec("RELEASE record_regular_snapshot");
+        db.exec("ROLLBACK TO record_persistent_snapshot");
+        db.exec("RELEASE record_persistent_snapshot");
         throw error;
       }
       return {
@@ -227,15 +243,16 @@ function sqliteStore(db: any): ProgressionStore {
     async latest(aid) {
       return toSnapshot(db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, aid) as SnapshotRow | undefined);
+      ).get(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow | undefined);
     },
     async history(aid) {
       const rows = db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at ASC"
-      ).all(LEGACY_IDENTITY.mode, LEGACY_IDENTITY.cycleId, aid) as SnapshotRow[];
+      ).all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
       return rows.map((row) => toSnapshot(row)).filter((row): row is ProgressionSnapshot => row != null);
     },
     async nextCandidate(excludeAids = []) {
+      if (mode !== "regular") return null;
       const safeExcludes = [...new Set(excludeAids)].filter(
         (aid) => Number.isSafeInteger(aid) && aid > 0
       );
@@ -271,13 +288,18 @@ function sqliteStore(db: any): ProgressionStore {
   };
 }
 
-export async function getProgressionStore(): Promise<ProgressionStore | null> {
+export async function getProgressionStore(
+  mode: PersistentProgressionMode = "regular",
+): Promise<ProgressionStore | null> {
   const db = await getSqliteDb();
-  return db ? sqliteStore(db) : null;
+  return db ? createSqliteProgressionStore(db, mode) : null;
 }
 
-export async function captureSnapshot(input: PlayerSnapshotInput): Promise<CaptureSnapshotResult> {
-  const store = await getProgressionStore();
+export async function captureSnapshot(
+  input: PlayerSnapshotInput,
+  mode: PersistentProgressionMode = "regular",
+): Promise<CaptureSnapshotResult> {
+  const store = await getProgressionStore(mode);
   if (!store) throw new Error("progression store unavailable");
   return store.recordSnapshot(input);
 }

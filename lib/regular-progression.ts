@@ -4,9 +4,12 @@ import { refreshSqliteProgressionAggregates } from "./seasonal/daily-aggregates.
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { isRaidProgressionInterval } from "./seasonal/analytics.ts";
+import type { PersistentProgressionMode } from "../types/seasonal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SqliteDatabase = any;
+export type { PersistentProgressionMode } from "../types/seasonal";
+export const PERSISTENT_CYCLE_ID = "persistent";
 type Counters = Record<"experience" | "pmcRaids" | "scavRaids" | "pmcSurvived" | "pmcDeaths" | "pmcKills" | "killedPmc", number>;
 interface SnapshotRow {
   id: number; aid: number; profile_updated_at: number; upstream_updated_at: number; captured_at: number;
@@ -19,6 +22,8 @@ export interface RegularMaterializationOptions {
   /** Capture paths only maintain this player's normalized rows and intervals. */
   refreshAggregates?: boolean;
 }
+
+export type PersistentMaterializationOptions = RegularMaterializationOptions;
 
 const KEYS = ["experience", "pmcRaids", "scavRaids", "pmcSurvived", "pmcDeaths", "pmcKills", "killedPmc"] as const;
 const DAY_MS = 86_400_000;
@@ -38,20 +43,25 @@ function parse(row: SnapshotRow): { counters: Counters | null; valid: boolean; n
   }
 }
 
-/** Idempotently upgrades legacy regular snapshots into the shared progression model. */
-export function materializeRegularProgression(
+/** Rebuilds one persistent mode without crossing PvP/PvE identities. */
+export function materializePersistentProgression(
   db: SqliteDatabase,
+  mode: PersistentProgressionMode,
   onlyAid?: number,
-  options: RegularMaterializationOptions = {},
+  options: PersistentMaterializationOptions = {},
 ): { snapshots: number; intervals: number } {
   initializeSeasonalSchema(db);
-  db.exec("SAVEPOINT materialize_regular_progression");
+  db.exec("SAVEPOINT materialize_persistent_progression");
   try {
   const rows = db.prepare(`SELECT * FROM progression_snapshots
-    WHERE mode = 'regular' AND cycle_id = 'persistent'
+    WHERE mode = ? AND cycle_id = ?
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = progression_snapshots.aid)
       ${onlyAid == null ? "" : "AND aid = ?"}
-    ORDER BY aid, profile_updated_at, id`).all(...(onlyAid == null ? [] : [onlyAid])) as SnapshotRow[];
+    ORDER BY aid, profile_updated_at, id`).all(
+      mode,
+      PERSISTENT_CYCLE_ID,
+      ...(onlyAid == null ? [] : [onlyAid]),
+    ) as SnapshotRow[];
   const byAid = new Map<number, SnapshotRow[]>();
   for (const row of rows) byAid.set(Number(row.aid), [...(byAid.get(Number(row.aid)) ?? []), row]);
   let intervalCount = 0;
@@ -62,7 +72,7 @@ export function materializeRegularProgression(
       mode, cycle_id, aid, from_snapshot_id, to_snapshot_id, ended_at, local_date, elapsed_days,
       status, experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
       confidence, score_version
-    ) VALUES ('regular', 'persistent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ) VALUES (${Array.from({ length: 17 }, () => "?").join(", ")}, 1)
     ON CONFLICT(mode, cycle_id, aid, from_snapshot_id, to_snapshot_id) DO UPDATE SET
       ended_at = excluded.ended_at, local_date = excluded.local_date, elapsed_days = excluded.elapsed_days,
       status = excluded.status, experience = excluded.experience, pmc_raids = excluded.pmc_raids,
@@ -73,7 +83,7 @@ export function materializeRegularProgression(
       mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
       experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
       first_seen_at, last_seen_at, snapshot_count, progression_eligible
-    ) VALUES ('regular', 'persistent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (${Array.from({ length: 18 }, () => "?").join(", ")})
     ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET nickname = excluded.nickname,
       profile_updated_at = excluded.profile_updated_at, last_access_at = excluded.last_access_at,
       lifetime_pvp_hours = excluded.lifetime_pvp_hours, experience = excluded.experience,
@@ -100,7 +110,7 @@ export function materializeRegularProgression(
           if (status !== "valid") seriesId += 1;
           const elapsedDays = (updatedAt - Number(previous.row.profile_updated_at || previous.row.upstream_updated_at)) / DAY_MS;
           if (isRaidProgressionInterval(status, changes.pmcRaids)) raidIntervals += 1;
-          insertInterval.run(aid, previous.row.id, row.id, updatedAt, date, elapsedDays, status,
+          insertInterval.run(mode, PERSISTENT_CYCLE_ID, aid, previous.row.id, row.id, updatedAt, date, elapsedDays, status,
             ...KEYS.map((key) => changes[key]), status === "valid" && elapsedDays > 0 ? Math.min(1, 1 / elapsedDays) : 0);
           intervalCount += 1;
         }
@@ -110,19 +120,28 @@ export function materializeRegularProgression(
       }
       const latest = history.at(-1)!;
       const parsed = parse(latest);
-      if (parsed.counters) upsertProfile.run(aid, parsed.nickname,
+      if (parsed.counters) upsertProfile.run(mode, PERSISTENT_CYCLE_ID, aid, parsed.nickname,
         Number(latest.profile_updated_at || latest.upstream_updated_at), Number(latest.captured_at),
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
         Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0);
     }
     if (options.refreshAggregates !== false) {
-      refreshSqliteProgressionAggregates(db, "regular", "persistent", options.targetBucket);
+      refreshSqliteProgressionAggregates(db, mode, PERSISTENT_CYCLE_ID, options.targetBucket);
     }
-    db.exec("RELEASE materialize_regular_progression");
+    db.exec("RELEASE materialize_persistent_progression");
     return { snapshots: rows.length, intervals: intervalCount };
   } catch (error) {
-    db.exec("ROLLBACK TO materialize_regular_progression");
-    db.exec("RELEASE materialize_regular_progression");
+    db.exec("ROLLBACK TO materialize_persistent_progression");
+    db.exec("RELEASE materialize_persistent_progression");
     throw error;
   }
+}
+
+/** Idempotently upgrades legacy regular snapshots into the shared progression model. */
+export function materializeRegularProgression(
+  db: SqliteDatabase,
+  onlyAid?: number,
+  options: RegularMaterializationOptions = {},
+): { snapshots: number; intervals: number } {
+  return materializePersistentProgression(db, "regular", onlyAid, options);
 }

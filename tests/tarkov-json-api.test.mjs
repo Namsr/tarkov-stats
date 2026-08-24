@@ -106,7 +106,7 @@ test("server sources contain no GraphQL calls and use the shared project identit
   assert.equal((api.match(/\bfetch\s*\(/g) ?? []).length, 1);
   assert.doesNotMatch(seasonal, /\bfetch\s*\(/);
   assert.match(api, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
-  assert.match(index, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
+  assert.match(index, /fetchTarkovJson/);
   assert.match(seasonalProfiles, /fetchTarkovJson/);
   assert.match(seasonalIndex, /fetchTarkovJson/);
 });

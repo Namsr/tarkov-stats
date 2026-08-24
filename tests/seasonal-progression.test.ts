@@ -42,10 +42,12 @@ test("progression request validation rejects missing, repeated, and unknown para
   assert.equal(parseProgressionRequest(new URLSearchParams("cycle=s1&aid=42&aid=43&kind=cumulative")), null);
   assert.equal(parseProgressionRequest(new URLSearchParams("cycle=s1&aid=42&kind=cumulative&dimension=hours")), null);
   assert.equal(parseProgressionRequest(new URLSearchParams("cycle=s1&aid=1.5&kind=cumulative")), null);
+  assert.equal(parseProgressionRequest(new URLSearchParams("cycle=persistent&aid=42&kind=cumulative")), null);
 });
 
 test("Seasonal average request accepts only one valid cycle", () => {
   assert.equal(parseSeasonalAverageRequest(new URLSearchParams("cycle=s1")), "s1");
+  assert.equal(parseSeasonalAverageRequest(new URLSearchParams("cycle=persistent")), null);
   assert.equal(parseSeasonalAverageRequest(new URLSearchParams("cycle=s1&cycle=s2")), null);
   assert.equal(parseSeasonalAverageRequest(new URLSearchParams("cycle=s1&aid=1")), null);
 });

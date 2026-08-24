@@ -37,11 +37,14 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-player-index.mjs ./scripts/sync-player-index.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-index.mjs ./scripts/sync-pve-index.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./scripts/sync-pve-profiles.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-index.mjs ./scripts/sync-arena-index.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/lib/pve-progression-seed-core.ts ./lib/pve-progression-seed-core.ts
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/regular-profile-sync-core.mjs ./scripts/regular-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs ./scripts/sync-regular-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-profiles.mjs ./scripts/sync-seasonal-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs ./scripts/sync-seasonal-index.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-feed-loop.mjs ./scripts/sync-seasonal-feed-loop.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs

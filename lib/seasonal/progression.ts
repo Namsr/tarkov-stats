@@ -30,10 +30,19 @@ export interface ProgressionTimelineRequest {
 
 export const PROGRESSION_KINDS = ["cumulative", "tempo", "form"] as const satisfies readonly ProgressionKind[];
 const KINDS = new Set<ProgressionKind>(PROGRESSION_KINDS);
+const CYCLE_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 export const PROGRESSION_BASE_RAID_STEP = 10;
 export const PROGRESSION_TARGET_SAMPLE = 200;
 export const PROGRESSION_MAX_RAID_WIDTH = 400;
 export const PROGRESSION_MIN_SAMPLE = 100;
+
+function parseCycleForMode(value: string | null, mode: ProgressionMode): string | null {
+  if (!value) return null;
+  const cycleId = value.trim();
+  if (!cycleId || !CYCLE_PATTERN.test(cycleId)) return null;
+  const persistent = mode === "regular" || mode === "pve";
+  return persistent === (cycleId === "persistent") ? cycleId : null;
+}
 
 /** Strict public API validation: required, single-valued parameters only. */
 export function parseProgressionRequest(
@@ -44,15 +53,13 @@ export function parseProgressionRequest(
   if ([...params.keys()].some((key) => !allowed.has(key))) return null;
   if ([...allowed].some((key) => params.getAll(key).length !== 1)) return null;
   const mode = legacyMode ?? params.get("mode");
-  if (mode !== "regular" && mode !== "seasonal") return null;
-  const cycle = params.get("cycle")!.trim();
-  const cycleId = /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(cycle) ? cycle : null;
+  if (mode !== "regular" && mode !== "pve" && mode !== "seasonal") return null;
+  const cycleId = parseCycleForMode(params.get("cycle"), mode);
   const aidText = params.get("aid")!;
   const aid = Number(aidText);
   const kind = params.get("kind") as ProgressionKind;
   if (!cycleId || !/^[1-9]\d*$/.test(aidText) || !Number.isSafeInteger(aid)) return null;
   if (!KINDS.has(kind)) return null;
-  if ((mode === "regular") !== (cycleId === "persistent")) return null;
   return { mode, cycleId, aid, kind };
 }
 
@@ -64,13 +71,11 @@ export function parseProgressionTimelineRequest(
   if ([...params.keys()].some((key) => !allowed.has(key))) return null;
   if ([...allowed].some((key) => params.getAll(key).length !== 1)) return null;
   const mode = params.get("mode");
-  const cycle = params.get("cycle")?.trim() ?? "";
-  const cycleId = /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(cycle) ? cycle : null;
+  if (mode !== "regular" && mode !== "pve" && mode !== "seasonal") return null;
+  const cycleId = parseCycleForMode(params.get("cycle"), mode);
   const aidText = params.get("aid") ?? "";
   const aid = Number(aidText);
-  if ((mode !== "regular" && mode !== "seasonal") || !cycleId ||
-    !/^[1-9]\d*$/.test(aidText) || !Number.isSafeInteger(aid)) return null;
-  if ((mode === "regular") !== (cycleId === "persistent")) return null;
+  if (!cycleId || !/^[1-9]\d*$/.test(aidText) || !Number.isSafeInteger(aid)) return null;
   return { mode, cycleId, aid };
 }
 
@@ -193,8 +198,7 @@ export function seasonalPopulationSummary(
 
 export function parseSeasonalAverageRequest(params: URLSearchParams): string | null {
   if ([...params.keys()].some((key) => key !== "cycle") || params.getAll("cycle").length !== 1) return null;
-  const cycleId = params.get("cycle")!.trim();
-  return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(cycleId) ? cycleId : null;
+  return parseCycleForMode(params.get("cycle"), "seasonal");
 }
 
 export function raidBucket(raids: number): number {
@@ -452,8 +456,10 @@ export function buildSeasonalAverageSeries(
   };
 }
 
-export function queryRegularProgressionAverage(db: SqliteDatabase): ProgressionAverageResponse {
-  const mode = "regular";
+export function queryPersistentProgressionAverage(
+  db: SqliteDatabase,
+  mode: Extract<ProgressionMode, "regular" | "pve"> = "regular",
+): ProgressionAverageResponse {
   const cycleId = "persistent";
   const kinds = ["cumulative", "tempo", "form"] as const satisfies readonly ProgressionKind[];
   const series = Object.fromEntries(kinds.map((kind) => [
@@ -466,6 +472,10 @@ export function queryRegularProgressionAverage(db: SqliteDatabase): ProgressionA
     ),
   ])) as ProgressionAverageResponse["series"];
   return { mode, cycleId, axis: "pmc_raids", series };
+}
+
+export function queryRegularProgressionAverage(db: SqliteDatabase): ProgressionAverageResponse {
+  return queryPersistentProgressionAverage(db, "regular");
 }
 
 export function buildProgressionSeries(

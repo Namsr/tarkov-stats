@@ -88,6 +88,10 @@ test("timeline request parser enforces one valid profile identity", () => {
     { mode: "regular", cycleId: "persistent", aid: 42 },
   );
   assert.deepEqual(
+    parseProgressionTimelineRequest(new URLSearchParams("mode=pve&cycle=persistent&aid=42")),
+    { mode: "pve", cycleId: "persistent", aid: 42 },
+  );
+  assert.deepEqual(
     parseProgressionTimelineRequest(new URLSearchParams("mode=seasonal&cycle=s1&aid=42")),
     { mode: "seasonal", cycleId: "s1", aid: 42 },
   );
@@ -97,6 +101,7 @@ test("timeline request parser enforces one valid profile identity", () => {
     "mode=seasonal&cycle=s1&aid=42&aid=43",
     "mode=seasonal&cycle=s1&aid=42&kind=tempo",
     "mode=regular&cycle=s1&aid=42",
+    "mode=pve&cycle=s1&aid=42",
     "mode=seasonal&cycle=persistent&aid=42",
     "mode=seasonal&cycle=s1&aid=0",
     "mode=seasonal&cycle=s1&aid=1.5",

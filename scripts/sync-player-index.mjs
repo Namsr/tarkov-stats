@@ -3,8 +3,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+const { isClearlyTruncatedIndex } = await import("./seasonal-profile-sync-core.mjs");
+
 const DEFAULT_URL = "https://players.tarkov.dev/profile/index.json";
-const DEFAULT_UA = "TarkovStats/0.1 (+https://tarkovstats.ru)";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 
 function hasArg(name) {
@@ -24,7 +26,7 @@ function argValue(name, fallback) {
 
 function usage() {
   console.log(`Usage:
-  node --experimental-sqlite scripts/sync-player-index.mjs [options]
+  node --experimental-strip-types --experimental-sqlite scripts/sync-player-index.mjs [options]
 
 Options:
   --db <path>       SQLite DB path. Default: SQLITE_PATH or /data/players.db
@@ -51,7 +53,19 @@ function setMeta(db, key, value) {
   db.prepare(
     "INSERT INTO player_index_meta (key, value) VALUES (?, ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(key, value);
+  ).run(key, String(value));
+}
+
+function deleteMeta(db, key) {
+  db.prepare("DELETE FROM player_index_meta WHERE key = ?").run(key);
+}
+
+function currentRowCount(db) {
+  try {
+    return Number(db.prepare("SELECT COUNT(*) AS n FROM player_index").get()?.n) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function initMeta(db) {
@@ -77,8 +91,6 @@ CREATE TABLE player_index_next (
 
 async function requestIndex(url, db, force) {
   const headers = {
-    accept: "application/json",
-    "user-agent": DEFAULT_UA,
   };
 
   if (!force) {
@@ -88,7 +100,7 @@ async function requestIndex(url, db, force) {
     if (lastModified) headers["if-modified-since"] = lastModified;
   }
 
-  const res = await fetch(url, { headers });
+  const res = await fetchTarkovJson(url, { headers, cache: "no-store" });
   if (res.status === 304) return { unchanged: true };
   if (!res.ok) {
     throw new Error(`index download failed: HTTP ${res.status}`);
@@ -260,7 +272,7 @@ async function streamIndex(response, onEntry) {
   return bytes;
 }
 
-async function consumeIndex(db, response, syncedAt, dryRun) {
+async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
   let insert = null;
   if (!dryRun) {
     initImportTable(db);
@@ -292,8 +304,15 @@ async function consumeIndex(db, response, syncedAt, dryRun) {
         console.log(`loaded ${inserted.toLocaleString("en-US")} rows...`);
       }
     });
+    const rowCount = dryRun
+      ? inserted
+      : Number(db.prepare("SELECT COUNT(*) AS n FROM player_index_next").get()?.n) || 0;
+    if (rowCount === 0) throw new Error("player index contains no valid players");
+    if (isClearlyTruncatedIndex(previousRows, rowCount)) {
+      throw new Error(`player index appears truncated: ${rowCount} rows would replace ${previousRows}`);
+    }
     if (!dryRun) db.exec("COMMIT");
-    return { inserted, skipped, sourceRows, bytes };
+    return { inserted: rowCount, skipped, sourceRows, bytes };
   } catch (error) {
     if (!dryRun) db.exec("ROLLBACK");
     throw error;
@@ -312,8 +331,16 @@ CREATE INDEX IF NOT EXISTS idx_player_index_nickname_lower
     setMeta(db, "synced_at", String(meta.syncedAt));
     setMeta(db, "source_url", meta.url);
     setMeta(db, "row_count", String(meta.inserted));
+    setMeta(db, "source_rows", String(meta.sourceRows));
+    setMeta(db, "skipped", String(meta.skipped));
+    setMeta(db, "bytes", String(meta.bytes));
+    setMeta(db, "duration_ms", String(meta.durationMs));
+    setMeta(db, "last_poll_at", String(meta.polledAt));
+    setMeta(db, "last_status", "updated");
     if (meta.etag) setMeta(db, "etag", meta.etag);
+    else deleteMeta(db, "etag");
     if (meta.lastModified) setMeta(db, "last_modified", meta.lastModified);
+    else deleteMeta(db, "last_modified");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -346,13 +373,18 @@ async function main() {
 
   const downloaded = await requestIndex(url, db, force);
   if (downloaded.unchanged) {
+    if (!dryRun) {
+      setMeta(db, "last_poll_at", Date.now());
+      setMeta(db, "last_status", "unchanged");
+      setMeta(db, "duration_ms", Date.now() - started);
+    }
     console.log("player index is unchanged");
     db.close();
     return;
   }
 
   const syncedAt = Date.now();
-  const result = await consumeIndex(db, downloaded.res, syncedAt, dryRun);
+  const result = await consumeIndex(db, downloaded.res, syncedAt, dryRun, currentRowCount(db));
   console.log(
     `downloaded ${(result.bytes / 1024 / 1024).toFixed(1)} MiB, ` +
       `${result.sourceRows.toLocaleString("en-US")} source rows`
@@ -368,6 +400,11 @@ async function main() {
     syncedAt,
     url,
     inserted: result.inserted,
+    sourceRows: result.sourceRows,
+    skipped: result.skipped,
+    bytes: result.bytes,
+    durationMs: Date.now() - started,
+    polledAt: Date.now(),
     etag: downloaded.etag,
     lastModified: downloaded.lastModified,
   });

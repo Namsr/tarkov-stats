@@ -107,21 +107,16 @@ test("Seasonal capture invalidates the average cache only after an inserted prof
 test("Docker runtime contains the Seasonal collectors and their source imports", async () => {
   const dockerfile = await readFile("Dockerfile", "utf8");
   const startup = await readFile("scripts/start-web.mjs", "utf8");
-  const loop = await readFile("scripts/sync-seasonal-feed-loop.mjs", "utf8");
   for (const path of [
     "scripts/sync-seasonal-profiles.mjs",
     "scripts/sync-seasonal-index.mjs",
-    "scripts/sync-seasonal-feed-loop.mjs",
     "scripts/seasonal-profile-sync-core.mjs",
     "scripts/regular-profile-sync-core.mjs",
     "lib/tarkov-api.ts",
     "lib/seasonal/config.ts",
     "lib/seasonal/storage.ts",
   ]) assert.match(dockerfile, new RegExp(path.replaceAll("/", "\\/")), path);
-  assert.match(startup, /sync-seasonal-feed-loop\.mjs/);
-  assert.match(loop, /15 \* 60_000/);
-  assert.ok(loop.indexOf("sync-seasonal-index.mjs") < loop.indexOf("sync-seasonal-profiles.mjs"));
-  assert.match(loop, /if \(running \|\| stopping\) return/);
+  assert.doesNotMatch(startup, /sync-seasonal-feed-loop\.mjs|sync-player-indexes-loop\.mjs/);
 });
 
 test("Seasonal timers use the requested Moscow cadence and shared waiting lock", async () => {

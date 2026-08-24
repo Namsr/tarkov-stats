@@ -23,10 +23,6 @@ const progressionMaterializer = spawn(process.execPath, [
   env: childEnvironment,
   stdio: "inherit",
 });
-const seasonalFeedSync = spawn(process.execPath, ["scripts/sync-seasonal-feed-loop.mjs"], {
-  env: childEnvironment,
-  stdio: "inherit",
-});
 
 function stop(signal) {
   if (stopping) return;
@@ -34,7 +30,6 @@ function stop(signal) {
   server.kill(signal);
   warmer.kill(signal);
   progressionMaterializer.kill(signal);
-  seasonalFeedSync.kill(signal);
 }
 
 process.on("SIGTERM", () => stop("SIGTERM"));
@@ -43,7 +38,6 @@ process.on("SIGINT", () => stop("SIGINT"));
 server.once("exit", (code, signal) => {
   if (!stopping) warmer.kill("SIGTERM");
   if (!stopping) progressionMaterializer.kill("SIGTERM");
-  if (!stopping) seasonalFeedSync.kill("SIGTERM");
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);
 });

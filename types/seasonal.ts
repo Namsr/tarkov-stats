@@ -169,7 +169,9 @@ export interface ProgressionIntervalRecord extends ProfileIdentity {
 
 export type ProgressionKind = "cumulative" | "tempo" | "form";
 export type CohortDimension = "hours" | "pmc_raids";
-export type ProgressionMode = "regular" | "seasonal";
+/** Modes backed by the persistent progression stream. */
+export type PersistentProgressionMode = "regular" | "pve";
+export type ProgressionMode = PersistentProgressionMode | "seasonal";
 
 export interface DailyAggregateRecord {
   mode: ProgressionMode;
@@ -298,7 +300,7 @@ export interface SeasonalAverageSeries {
 }
 
 export interface ProgressionAverageResponse {
-  mode: "regular" | "seasonal";
+  mode: ProgressionMode;
   cycleId: CycleId;
   axis: "pmc_raids";
   series: Record<ProgressionKind, SeasonalAverageSeries>;
@@ -423,7 +425,12 @@ export function normalizeCycleId(value: unknown, mode: GameMode): CycleId | null
   if (value == null || value === "") return mode === "seasonal" ? null : LEGACY_IDENTITY.cycleId;
   if (typeof value !== "string") return null;
   const normalized = value.trim();
-  return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized) ? normalized : null;
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized)) return null;
+  if (mode === "seasonal") return normalized === LEGACY_IDENTITY.cycleId ? null : normalized;
+  if (mode === "regular" || mode === "pve") {
+    return normalized === LEGACY_IDENTITY.cycleId ? LEGACY_IDENTITY.cycleId : null;
+  }
+  return normalized;
 }
 
 function normalizeSeasonalNavigationCycle(value: unknown): CycleId | null {

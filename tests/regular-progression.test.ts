@@ -1,22 +1,43 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import { resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-import { materializeRegularProgression } from "../lib/regular-progression.ts";
+import {
+  materializePersistentProgression,
+  materializeRegularProgression,
+} from "../lib/regular-progression.ts";
 import {
   progressionFlightKey,
   singleFlight,
 } from "../lib/seasonal/progression-flight.ts";
 import {
   parseProgressionRequest,
+  queryPersistentProgressionAverage,
   queryProgressionSeriesBundle,
   queryProgressionSeries,
   queryRegularProgressionAverage,
 } from "../lib/seasonal/progression.ts";
 
 const day = 86_400_000;
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/")) {
+      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const {
+  createSqliteProgressionStore,
+  seedPveProgressionBaselines,
+} = await import("../lib/progression-db.ts");
 
 test("progression single-flight coalesces one identity and separates different keys", async () => {
   const inFlight = new Map<string, Promise<number>>();
@@ -59,6 +80,10 @@ test("progression single-flight coalesces one identity and separates different k
     progressionFlightKey("regular", "persistent", 42),
     progressionFlightKey("seasonal", "persistent", 42),
   );
+  assert.notEqual(
+    progressionFlightKey("regular", "persistent", 42),
+    progressionFlightKey("pve", "persistent", 42),
+  );
 });
 
 test("progression single-flight removes rejected work", async () => {
@@ -73,13 +98,31 @@ test("progression single-flight removes rejected work", async () => {
   assert.equal(await singleFlight(inFlight, "profile", async () => 7), 7);
 });
 
-test("general progression request accepts regular/persistent and rejects crossed identities", () => {
+test("general progression request accepts persistent regular and PvE identities", () => {
   const valid = new URLSearchParams("mode=regular&cycle=persistent&aid=42&kind=tempo");
   assert.deepEqual(parseProgressionRequest(valid, null), {
     mode: "regular", cycleId: "persistent", aid: 42, kind: "tempo",
   });
+  assert.deepEqual(parseProgressionRequest(
+    new URLSearchParams("mode=pve&cycle=persistent&aid=42&kind=tempo"),
+    null,
+  ), {
+    mode: "pve", cycleId: "persistent", aid: 42, kind: "tempo",
+  });
+  assert.deepEqual(parseProgressionRequest(
+    new URLSearchParams("cycle=persistent&aid=42&kind=tempo"),
+    "pve",
+  ), {
+    mode: "pve", cycleId: "persistent", aid: 42, kind: "tempo",
+  });
   assert.equal(parseProgressionRequest(new URLSearchParams(
     "mode=regular&cycle=s1&aid=42&kind=tempo",
+  ), null), null);
+  assert.equal(parseProgressionRequest(new URLSearchParams(
+    "mode=pve&cycle=s1&aid=42&kind=tempo",
+  ), null), null);
+  assert.equal(parseProgressionRequest(new URLSearchParams(
+    "mode=seasonal&cycle=persistent&aid=42&kind=tempo",
   ), null), null);
   assert.equal(parseProgressionRequest(new URLSearchParams(
     "mode=regular&cycle=persistent&aid=42&kind=tempo&revision=123",
@@ -187,6 +230,83 @@ test("regular reset starts a new series and remains distinct from an anomaly", (
   );
 });
 
+test("persistent captures isolate equal AIDs by mode and reject PvE duplicates and stale versions", async () => {
+  const db = new DatabaseSync(":memory:");
+  const regular = createSqliteProgressionStore(db, "regular");
+  const pve = createSqliteProgressionStore(db, "pve");
+  const capture = (updatedAt: number, experience: number, pmcRaids: number) => ({
+    aid: 42,
+    upstreamUpdatedAt: updatedAt,
+    capturedAt: updatedAt + 1,
+    achievementIds: [],
+    stats: JSON.parse(stats(experience, pmcRaids)),
+  });
+
+  assert.equal((await regular.recordSnapshot(capture(day, 100, 1))).status, "baseline");
+  assert.equal((await pve.recordSnapshot(capture(day, 500, 5))).status, "baseline");
+  assert.equal((await pve.recordSnapshot(capture(day, 500, 5))).status, "duplicate");
+  assert.equal((await pve.recordSnapshot(capture(day - 1, 400, 4))).status, "stale");
+  assert.equal((await pve.recordSnapshot(capture(2 * day, 600, 6))).status, "progression");
+
+  assert.equal((await regular.history(42)).length, 1);
+  assert.equal((await pve.history(42)).length, 2);
+  assert.deepEqual(
+    db.prepare(`SELECT mode, COUNT(*) AS n FROM progression_intervals
+      WHERE aid = 42 GROUP BY mode ORDER BY mode`).all().map((row) => ({ ...row })),
+    [{ mode: "pve", n: 1 }],
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT mode, pmc_raids FROM player_profiles
+      WHERE aid = 42 ORDER BY mode`).all().map((row) => ({ ...row })),
+    [{ mode: "pve", pmc_raids: 6 }, { mode: "regular", pmc_raids: 1 }],
+  );
+  assert.equal(queryProgressionSeries(db, {
+    mode: "pve", cycleId: "persistent", aid: 42, kind: "cumulative",
+  })?.identity.mode, "pve");
+  const revisions = db.prepare(`SELECT mode, revision FROM progression_personal_revisions
+    WHERE aid = 42 ORDER BY mode`).all().map((row) => ({ ...row }));
+  assert.deepEqual(revisions.map((row) => row.mode), ["pve", "regular"]);
+  assert.ok(revisions.every((row) => row.revision > 0));
+});
+
+test("PvE baseline seed imports current stored profiles once without fabricating intervals", () => {
+  const progression = new DatabaseSync(":memory:");
+  const players = new DatabaseSync(":memory:");
+  players.exec(`CREATE TABLE mode_players (
+    mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT
+  )`);
+  const insert = players.prepare(`INSERT INTO mode_players
+    (mode, aid, profile_updated_at, fetched_at, stats_json, achievements) VALUES (?, ?, ?, ?, ?, ?)`);
+  insert.run("pve", 42, day, day + 1, stats(100, 1), '["first"]');
+  insert.run("pve", 43, 0, day + 1, stats(100, 1), "[]");
+  insert.run("arena", 44, day, day + 1, stats(100, 1), "[]");
+
+  assert.deepEqual(seedPveProgressionBaselines(progression, players), {
+    scanned: 2, inserted: 1, skipped: 1,
+  });
+  assert.deepEqual(
+    progression.prepare(`SELECT mode, cycle_id, aid, profile_updated_at, captured_at, achievements
+      FROM progression_snapshots ORDER BY aid`).all().map((row) => ({ ...row })),
+    [{ mode: "pve", cycle_id: "persistent", aid: 42, profile_updated_at: day, captured_at: day + 1, achievements: '["first"]' }],
+  );
+  assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_intervals").get().n, 0);
+  assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM player_profiles WHERE mode = 'regular'").get().n, 0);
+  const generation = progression.prepare(`SELECT generation FROM progression_materializations
+    WHERE mode = 'pve' AND cycle_id = 'persistent'`).get().generation;
+
+  assert.deepEqual(seedPveProgressionBaselines(progression, players), {
+    scanned: 2, inserted: 0, skipped: 2,
+  });
+  assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 1);
+  assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_intervals").get().n, 0);
+  assert.equal(progression.prepare(`SELECT generation FROM progression_materializations
+    WHERE mode = 'pve' AND cycle_id = 'persistent'`).get().generation, generation);
+
+  materializePersistentProgression(progression, "pve");
+  assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_intervals").get().n, 0);
+});
+
 test("regular materialization rolls back profiles and intervals when aggregate refresh fails", () => {
   const db = new DatabaseSync(":memory:");
   materializeRegularProgression(db);
@@ -224,4 +344,8 @@ test("regular average progression exposes the median PvP raid series without a t
   assert.equal(result.series.cumulative.overall[0].n, 200);
   assert.deepEqual(result.series.cumulative.overall[0].raidMin, 1);
   assert.deepEqual(result.series.cumulative.overall[0].raidMax, 10);
+
+  const pve = queryPersistentProgressionAverage(db, "pve");
+  assert.equal(pve.mode, "pve");
+  assert.deepEqual(pve.series.cumulative.overall, []);
 });

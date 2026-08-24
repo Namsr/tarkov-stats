@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
-import { buildProgressionMetricSeries, buildProgressionSeries, PROGRESSION_KINDS, progressionDailySql, queryRegularProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
+import { buildProgressionMetricSeries, buildProgressionSeries, PROGRESSION_KINDS, progressionDailySql, queryPersistentProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildSequentialIntervals, DAY_MS, quantile } from "./analytics.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
@@ -1046,7 +1046,9 @@ export async function getProgressionBundleQuery(): Promise<((input: ProgressionI
     if (d1) {
       if (configuredCycle) await upsertD1SeasonCycle(d1, configuredCycle);
       return async (input) => {
-        if (input.mode === "regular") return null;
+        // D1 only owns the seasonal dataset. Returning null keeps persistent
+        // modes from ever reading Seasonal population rows as a fallback.
+        if (input.mode !== "seasonal") return null;
         const cycle = await d1.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?")
           .bind(input.cycleId).first() as { starts_at: number } | null;
         if (!cycle) return null;
@@ -1186,11 +1188,17 @@ export async function getProgressionQuery(): Promise<((input: ProgressionRequest
 }
 
 export async function getRegularProgressionAverage(): Promise<ProgressionAverageResponse | null> {
+  return getPersistentProgressionAverage("regular");
+}
+
+export async function getPersistentProgressionAverage(
+  mode: Extract<import("../../types/seasonal").ProgressionMode, "regular" | "pve">,
+): Promise<ProgressionAverageResponse | null> {
   try {
     if (await getSeasonalD1()) return null;
-    return queryRegularProgressionAverage(await getSqliteProgressionDatabase());
+    return queryPersistentProgressionAverage(await getSqliteProgressionDatabase(), mode);
   } catch (error) {
-    console.warn("regular progression average unavailable: " + (error as Error).message);
+    console.warn("persistent progression average unavailable: " + (error as Error).message);
     return null;
   }
 }

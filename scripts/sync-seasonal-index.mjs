@@ -2,7 +2,13 @@
 
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
-import { createStringObjectParser, normalizeAid, normalizeNickname, seasonalIndexCacheUrl } from "./seasonal-profile-sync-core.mjs";
+import {
+  createStringObjectParser,
+  isClearlyTruncatedIndex,
+  normalizeAid,
+  normalizeNickname,
+  seasonalIndexCacheUrl,
+} from "./seasonal-profile-sync-core.mjs";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { isSeasonalCollectorReady, loadSeasonalCycleConfig, seasonalUpstreamMode } = await import("../lib/seasonal/config.ts");
@@ -12,9 +18,11 @@ const cycle = loadSeasonalCycleConfig();
 if (!cycle || !isSeasonalCollectorReady()) {
   throw new Error("Seasonal JSON feed is not configured or is not collector-ready");
 }
-const sourceUrl = (process.env.SEASONAL_PROFILE_INDEX_URL || "").trim().replaceAll("{mode}", seasonalUpstreamMode());
+const configuredSourceUrl = (process.env.SEASONAL_PROFILE_INDEX_URL || "").trim().replaceAll("{mode}", seasonalUpstreamMode());
+const sourceUrl = argValue("--url", configuredSourceUrl);
 if (!sourceUrl) throw new Error("SEASONAL_PROFILE_INDEX_URL is required");
-const dbPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
+const dbPath = argValue("--db", process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+const force = hasArg("--force");
 const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA busy_timeout = 30000");
 db.exec("PRAGMA journal_mode = WAL");
@@ -33,21 +41,21 @@ async function main() {
   if (downloaded.unchanged) {
     saveMeta("last_poll_at", Date.now());
     saveMeta("last_status", "unchanged");
+    saveMeta("duration_ms", Date.now() - startedAt);
     console.log("Seasonal player index is unchanged");
     return;
   }
   const syncedAt = Date.now();
-  const result = await consumeIndex(downloaded.response, syncedAt);
-  replaceIndex(syncedAt, downloaded);
-  saveMeta("last_poll_at", Date.now());
-  saveMeta("last_status", "updated");
+  const result = await consumeIndex(downloaded.response, syncedAt, currentRowCount());
+  const durationMs = Date.now() - startedAt;
+  replaceIndex({ ...result, syncedAt, durationMs, ...downloaded });
   console.log(JSON.stringify({
     cycleId: cycle.cycleId,
     sourceRows: result.sourceRows,
     inserted: result.inserted,
     skipped: result.skipped,
     bytes: result.bytes,
-    durationMs: Date.now() - startedAt,
+    durationMs,
   }));
 }
 
@@ -82,10 +90,12 @@ function initSchema() {
 
 async function requestIndex() {
   const headers = {};
-  const etag = getMeta("etag");
-  const lastModified = getMeta("last_modified");
-  if (etag) headers["if-none-match"] = etag;
-  if (lastModified) headers["if-modified-since"] = lastModified;
+  if (!force) {
+    const etag = getMeta("etag");
+    const lastModified = getMeta("last_modified");
+    if (etag) headers["if-none-match"] = etag;
+    if (lastModified) headers["if-modified-since"] = lastModified;
+  }
   const response = await fetchTarkovJson(seasonalIndexCacheUrl(sourceUrl), { headers, cache: "no-store" });
   if (response.status === 304) return { unchanged: true };
   if (!response.ok) throw new Error(`Seasonal index download failed: HTTP ${response.status}`);
@@ -97,14 +107,13 @@ async function requestIndex() {
   };
 }
 
-async function consumeIndex(response, syncedAt) {
+async function consumeIndex(response, syncedAt, previousRows) {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM seasonal_player_index_next WHERE cycle_id = ?").run(cycle.cycleId);
     const insert = db.prepare(`INSERT OR REPLACE INTO seasonal_player_index_next
       (cycle_id, aid, nickname, nickname_lower, synced_at) VALUES (?, ?, ?, ?, ?)`);
     let sourceRows = 0;
-    let inserted = 0;
     let skipped = 0;
     const parser = createStringObjectParser((aidRaw, nicknameRaw) => {
       sourceRows += 1;
@@ -115,7 +124,6 @@ async function consumeIndex(response, syncedAt) {
         return;
       }
       insert.run(cycle.cycleId, aid, nickname, nickname.toLowerCase(), syncedAt);
-      inserted += 1;
     });
     const reader = response.body?.getReader();
     if (!reader) throw new Error("Seasonal index response has no readable body");
@@ -128,15 +136,22 @@ async function consumeIndex(response, syncedAt) {
       parser.append(decoder.decode(value, { stream: true }));
     }
     parser.finish(decoder.decode());
+    const rowCount = Number(db.prepare(
+      "SELECT COUNT(*) AS n FROM seasonal_player_index_next WHERE cycle_id = ?",
+    ).get(cycle.cycleId)?.n) || 0;
+    if (rowCount === 0) throw new Error("Seasonal index contains no valid players");
+    if (isClearlyTruncatedIndex(previousRows, rowCount)) {
+      throw new Error(`Seasonal index appears truncated: ${rowCount} rows would replace ${previousRows}`);
+    }
     db.exec("COMMIT");
-    return { sourceRows, inserted, skipped, bytes };
+    return { sourceRows, inserted: rowCount, skipped, bytes };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
 }
 
-function replaceIndex(syncedAt, downloaded) {
+function replaceIndex(metadata) {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM seasonal_player_index WHERE cycle_id = ?").run(cycle.cycleId);
@@ -144,11 +159,21 @@ function replaceIndex(syncedAt, downloaded) {
       SELECT cycle_id, aid, nickname, nickname_lower, synced_at
       FROM seasonal_player_index_next WHERE cycle_id = ?`).run(cycle.cycleId);
     db.prepare(`INSERT INTO seasonal_player_index_meta (cycle_id, key, value) VALUES (?, ?, ?)
-      ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value`).run(cycle.cycleId, "synced_at", syncedAt);
-    db.prepare(`INSERT INTO seasonal_player_index_meta (cycle_id, key, value) VALUES (?, ?, ?)
-      ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value`).run(cycle.cycleId, "source_url", sourceUrl);
-    if (downloaded.etag) setMeta("etag", downloaded.etag);
-    if (downloaded.lastModified) setMeta("last_modified", downloaded.lastModified);
+      ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value`).run(cycle.cycleId, "synced_at", metadata.syncedAt);
+    for (const [key, value] of Object.entries({
+      source_url: sourceUrl,
+      row_count: metadata.inserted,
+      source_rows: metadata.sourceRows,
+      skipped: metadata.skipped,
+      bytes: metadata.bytes,
+      duration_ms: metadata.durationMs,
+      last_poll_at: Date.now(),
+      last_status: "updated",
+    })) setMeta(key, value);
+    if (metadata.etag) setMeta("etag", metadata.etag);
+    else deleteMeta("etag");
+    if (metadata.lastModified) setMeta("last_modified", metadata.lastModified);
+    else deleteMeta("last_modified");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -165,6 +190,32 @@ function getMeta(key) {
 function setMeta(key, value) {
   db.prepare(`INSERT INTO seasonal_player_index_meta (cycle_id, key, value) VALUES (?, ?, ?)
     ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value`).run(cycle.cycleId, key, String(value));
+}
+
+function deleteMeta(key) {
+  db.prepare("DELETE FROM seasonal_player_index_meta WHERE cycle_id = ? AND key = ?")
+    .run(cycle.cycleId, key);
+}
+
+function currentRowCount() {
+  return Number(db.prepare(
+    "SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?",
+  ).get(cycle.cycleId)?.n) || 0;
+}
+
+function hasArg(name) {
+  return process.argv.includes(name);
+}
+
+function argValue(name, fallback) {
+  const prefix = `${name}=`;
+  const inline = process.argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = process.argv.indexOf(name);
+  if (index >= 0 && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
+    return process.argv[index + 1];
+  }
+  return fallback;
 }
 
 function saveMeta(key, value) { setMeta(key, value); }
