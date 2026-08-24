@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
 const cutoff = Date.parse("2025-11-15T00:00:00+03:00");
 
-function runCollector(dbPath, progressionDbPath, port, retries = 0) {
+function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}) {
   return execFileAsync(process.execPath, [
     "--experimental-strip-types",
     "--experimental-sqlite",
@@ -29,6 +29,7 @@ function runCollector(dbPath, progressionDbPath, port, retries = 0) {
       PVE_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
       PVE_PROFILE_SYNC_RPS: "20",
       PVE_PROFILE_SYNC_MAX_RETRIES: String(retries),
+      ...extraEnv,
     },
   });
 }
@@ -133,7 +134,24 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
     assert.equal(players.prepare("SELECT COUNT(*) AS n FROM mode_players WHERE mode = 'pve' AND aid = 10").get().n, 1);
 
     feed = { 18: cutoff + 8_000 };
-    await runCollector(dbPath, progressionDbPath, port);
+    const locker = new DatabaseSync(dbPath);
+    locker.exec("BEGIN IMMEDIATE");
+    let released = false;
+    const release = setTimeout(() => {
+      locker.exec("COMMIT");
+      released = true;
+    }, 500);
+    try {
+      const { stdout } = await runCollector(dbPath, progressionDbPath, port, 0, {
+        PVE_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS: "50",
+        PVE_PROFILE_SYNC_DB_BUSY_RETRIES: "1",
+      });
+      assert.match(stdout, /DB_BUSY_RETRY/);
+    } finally {
+      clearTimeout(release);
+      if (!released) locker.exec("ROLLBACK");
+      locker.close();
+    }
     assert.equal(calls.get(18), 1, "updated.json does not require a matching PvE index row");
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -219,6 +237,8 @@ test("PvE collector uses the JSON helper and a distinct mode queue", async () =>
   assert.match(source, /maxRunMs: envInteger\("PVE_PROFILE_SYNC_MAX_RUN_MS", 12 \* 60_000, 60_000, 13 \* 60_000\)/);
   assert.match(source, /processQueue\(startedAt\)/);
   assert.match(source, /Date\.now\(\) - startedAt >= config\.maxRunMs/);
+  assert.match(source, /PVE_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS/);
+  assert.match(source, /withDatabaseBusyRetry/);
   assert.doesNotMatch(source, /pve_player_index/);
   assert.match(route, /isOperatorRequest/);
   assert.match(route, /getPublicProfile\(input\.aid, \{[\s\S]*?mode: "pve"[\s\S]*?expectedUpdatedAt: input\.expectedUpdatedAt/);

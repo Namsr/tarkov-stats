@@ -28,13 +28,15 @@ const config = {
   requestsPerSecond: envNumber("PVE_PROFILE_SYNC_RPS", 2, 0.1, 20),
   maxRetries: envInteger("PVE_PROFILE_SYNC_MAX_RETRIES", 3, 0, 10),
   requestTimeoutMs: envInteger("PVE_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
+  dbBusyTimeoutMs: envInteger("PVE_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS", 30_000, 10, 300_000),
+  dbBusyRetries: envInteger("PVE_PROFILE_SYNC_DB_BUSY_RETRIES", 2, 0, 10),
   maxRunMs: envInteger("PVE_PROFILE_SYNC_MAX_RUN_MS", 12 * 60_000, 60_000, 13 * 60_000),
   leaseMs: envInteger("PVE_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
   overlapMs: envInteger("PVE_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
 };
 
 const db = new DatabaseSync(config.dbPath);
-db.exec("PRAGMA busy_timeout = 30000");
+db.exec(`PRAGMA busy_timeout = ${config.dbBusyTimeoutMs}`);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA synchronous = NORMAL");
 
@@ -47,8 +49,14 @@ process.once("SIGTERM", () => { stopping = true; });
 main().catch((error) => {
   log("FATAL", { error: message(error) });
   process.exitCode = 1;
-}).finally(() => {
-  if (leaseHeld) db.prepare("DELETE FROM pve_profile_sync_lease WHERE id = 1 AND owner = ?").run(runId);
+}).finally(async () => {
+  if (leaseHeld) {
+    try {
+      await withDatabaseBusyRetry(() => db.prepare("DELETE FROM pve_profile_sync_lease WHERE id = 1 AND owner = ?").run(runId));
+    } catch (error) {
+      log("LEASE_RELEASE_FAILED", { error: message(error) });
+    }
+  }
   db.close();
 });
 
@@ -56,12 +64,12 @@ async function main() {
   const startedAt = Date.now();
   validateConfig();
   attachProgressionDb();
-  initSchema();
-  acquireLease();
+  await initSchema();
+  await acquireLease();
   leaseHeld = true;
 
   const bootstrapping = normalizeUpdatedAt(getMeta("feed_watermark")) === null;
-  const baseline = bootstrapping ? seedBaselines() : { scanned: 0, inserted: 0, skipped: 0 };
+  const baseline = bootstrapping ? await seedBaselines() : { scanned: 0, inserted: 0, skipped: 0 };
   const feed = await loadFeed();
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
@@ -100,7 +108,7 @@ async function main() {
     stopped: stopping,
     durationMs: Date.now() - startedAt,
   };
-  saveRunMeta(summary);
+  await saveRunMeta(summary);
   log("SUMMARY", summary);
 }
 
@@ -127,12 +135,12 @@ function attachProgressionDb() {
   }
 }
 
-function initSchema() {
+async function initSchema() {
   const columns = new Set(db.prepare("PRAGMA table_info(mode_players)").all().map((row) => String(row.name)));
   for (const column of ["aid", "mode", "profile_updated_at", "fetched_at", "stats_json", "achievements"]) {
     if (!columns.has(column)) throw new Error(`mode_players.${column} is missing; apply the player-mode migration first`);
   }
-  db.exec(`
+  await withDatabaseBusyRetry(() => db.exec(`
     CREATE TABLE IF NOT EXISTS pve_profile_sync_queue (
       aid INTEGER PRIMARY KEY,
       feed_updated_at INTEGER NOT NULL,
@@ -154,40 +162,36 @@ function initSchema() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-  `);
+  `));
 }
 
-function acquireLease() {
+async function acquireLease() {
   const now = Date.now();
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = db.prepare(`
+  const result = await writeTransaction(() => db.prepare(`
       INSERT INTO pve_profile_sync_lease (id, owner, heartbeat_at) VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, heartbeat_at = excluded.heartbeat_at
       WHERE pve_profile_sync_lease.heartbeat_at < ?
-    `).run(runId, now, now - config.leaseMs);
-    if (Number(result.changes) !== 1) throw new Error("another PvE profile sync is active");
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+    `).run(runId, now, now - config.leaseMs));
+  if (Number(result.changes) !== 1) throw new Error("another PvE profile sync is active");
 }
 
-function heartbeat() {
-  const result = db.prepare("UPDATE pve_profile_sync_lease SET heartbeat_at = ? WHERE id = 1 AND owner = ?")
-    .run(Date.now(), runId);
+async function heartbeat() {
+  const result = await withDatabaseBusyRetry(() => db.prepare(
+    "UPDATE pve_profile_sync_lease SET heartbeat_at = ? WHERE id = 1 AND owner = ?"
+  ).run(Date.now(), runId));
   if (Number(result.changes) !== 1) throw new Error("PvE profile sync lease was lost");
 }
 
-function seedBaselines() {
-  const progressionDb = new DatabaseSync(config.progressionDbPath);
-  progressionDb.exec("PRAGMA busy_timeout = 30000");
-  try {
-    return seedPveProgressionBaselines(progressionDb, db);
-  } finally {
-    progressionDb.close();
-  }
+async function seedBaselines() {
+  return withDatabaseBusyRetry(() => {
+    const progressionDb = new DatabaseSync(config.progressionDbPath);
+    progressionDb.exec(`PRAGMA busy_timeout = ${config.dbBusyTimeoutMs}`);
+    try {
+      return seedPveProgressionBaselines(progressionDb, db);
+    } finally {
+      progressionDb.close();
+    }
+  });
 }
 
 function isEligibleUnknown(feedUpdatedAt, savedWatermark) {
@@ -211,8 +215,7 @@ async function loadFeed() {
   const savedWatermark = normalizeUpdatedAt(getMeta("feed_watermark"));
   const { counters, pendingVersions } = await loadFeedWithRetry(feedUrlForRun(), tracked, excluded, savedWatermark);
 
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  await writeTransaction(() => {
     const queuedAt = Date.now();
     const queuedRows = new Map(db.prepare("SELECT aid, feed_updated_at, status FROM pve_profile_sync_queue").all()
       .map((row) => [Number(row.aid), row]));
@@ -244,18 +247,14 @@ async function loadFeed() {
     } else counters.watermark = savedWatermark;
     setMeta("last_poll_at", String(counters.polledAt));
     setMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  db.prepare(`DELETE FROM pve_profile_sync_queue
-    WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = pve_profile_sync_queue.aid)`).run();
-  db.prepare(`UPDATE pve_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL, updated_at = ?
+  });
+  await withDatabaseBusyRetry(() => db.prepare(`DELETE FROM pve_profile_sync_queue
+    WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = pve_profile_sync_queue.aid)`).run());
+  await withDatabaseBusyRetry(() => db.prepare(`UPDATE pve_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL, updated_at = ?
     WHERE EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
       WHERE s.mode = 'pve' AND s.cycle_id = 'persistent' AND s.aid = pve_profile_sync_queue.aid
-        AND s.profile_updated_at >= pve_profile_sync_queue.feed_updated_at)`).run(Date.now());
-  heartbeat();
+        AND s.profile_updated_at >= pve_profile_sync_queue.feed_updated_at)`).run(Date.now()));
+  await heartbeat();
   return counters;
 }
 
@@ -294,8 +293,10 @@ async function processQueue(startedAt) {
     else if (result.kind === "stale") counters.stale += 1;
     else if (result.kind === "skipped") counters.skipped += 1;
     else counters.errors += 1;
-    update.run(result.kind, result.attempts, result.status, result.error ?? null, runId, Date.now(), aid, expectedUpdatedAt);
-    heartbeat();
+    await withDatabaseBusyRetry(() => update.run(
+      result.kind, result.attempts, result.status, result.error ?? null, runId, Date.now(), aid, expectedUpdatedAt
+    ));
+    await heartbeat();
     if (counters.attempted % 100 === 0) log("PROGRESS", counters);
   }
   return counters;
@@ -460,7 +461,7 @@ function setMeta(key, value) {
     .run(key, String(value));
 }
 
-function saveRunMeta(summary) {
+async function saveRunMeta(summary) {
   const values = {
     last_poll_at: summary.polledAt,
     last_feed_max_updated_at: summary.maxFeedUpdatedAt,
@@ -474,14 +475,47 @@ function saveRunMeta(summary) {
     last_duration_ms: summary.durationMs,
     last_summary: JSON.stringify({ at: Date.now(), ...summary }),
   };
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  await writeTransaction(() => {
     for (const [key, value] of Object.entries(values)) setMeta(key, String(value));
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
+  });
+}
+
+async function withDatabaseBusyRetry(work) {
+  let lastError;
+  for (let attempt = 1; attempt <= config.dbBusyRetries + 1; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      lastError = error;
+      if (!isDatabaseBusy(error) || attempt > config.dbBusyRetries) break;
+      const waitMs = backoff(attempt);
+      log("DB_BUSY_RETRY", { attempt, waitMs, error: message(error) });
+      await delay(waitMs);
+    }
   }
+  throw lastError;
+}
+
+async function writeTransaction(work) {
+  return withDatabaseBusyRetry(() => {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = work();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // BEGIN IMMEDIATE itself can fail before a transaction exists.
+      }
+      throw error;
+    }
+  });
+}
+
+function isDatabaseBusy(error) {
+  return /database is (?:locked|busy)|SQLITE_BUSY/i.test(message(error));
 }
 
 async function rateLimit() {
