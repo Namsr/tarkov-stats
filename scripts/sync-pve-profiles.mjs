@@ -70,13 +70,13 @@ async function main() {
 
   const bootstrapping = normalizeUpdatedAt(getMeta("feed_watermark")) === null;
   const baseline = bootstrapping ? await seedBaselines() : { scanned: 0, inserted: 0, skipped: 0 };
-  const feed = await loadFeed();
+  const { counters: feed, coverage: preProcessingCoverage } = await loadFeed();
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM pve_profile_sync_queue GROUP BY status")
       .all().map((row) => [String(row.status), Number(row.n)]),
   );
-  const coverage = db.prepare(`
+  const coverage = processed.attempted === 0 ? preProcessingCoverage : db.prepare(`
     WITH latest AS (
       SELECT aid, MAX(profile_updated_at) AS snapshot_updated_at
       FROM progression_sync.progression_snapshots
@@ -254,8 +254,17 @@ async function loadFeed() {
     WHERE EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
       WHERE s.mode = 'pve' AND s.cycle_id = 'persistent' AND s.aid = pve_profile_sync_queue.aid
         AND s.profile_updated_at >= pve_profile_sync_queue.feed_updated_at)`).run(Date.now()));
+  const coverage = { total: 0, missing: 0, lagging: 0, current: 0 };
+  for (const [aid, profile] of tracked) {
+    if (excluded.has(aid)) continue;
+    coverage.total += 1;
+    const snapshotUpdatedAt = profile.snapshotUpdatedAt;
+    if (snapshotUpdatedAt === null) coverage.missing += 1;
+    else if (snapshotUpdatedAt < profile.playerUpdatedAt) coverage.lagging += 1;
+    else coverage.current += 1;
+  }
   await heartbeat();
-  return counters;
+  return { counters, coverage };
 }
 
 async function processQueue(startedAt) {

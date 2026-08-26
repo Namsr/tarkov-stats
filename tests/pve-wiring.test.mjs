@@ -29,7 +29,8 @@ test("PvE systemd units use offset Moscow schedules and the shared writer lock",
   const profileService = await readFile("ops/systemd/tarkovstats-pve-profile-sync.service", "utf8");
   const indexService = await readFile("ops/systemd/tarkovstats-pve-index-sync.service", "utf8");
 
-  assert.match(profileTimer, /OnCalendar=\*-\*-\* \*:10,25,40,55:00 Europe\/Moscow/);
+  assert.match(profileTimer, /Description=Hourly TarkovStats PvE profile sync/);
+  assert.match(profileTimer, /OnCalendar=\*-\*-\* \*:40:00 Europe\/Moscow/);
   assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:20:00 Europe\/Moscow/);
   assert.doesNotMatch(profileTimer + indexTimer, /RandomizedDelaySec/);
   assert.match(profileService, /Description=TarkovStats PvE profile feed sync/);
@@ -48,4 +49,10 @@ test("PvE systemd units use offset Moscow schedules and the shared writer lock",
   assert.doesNotMatch(indexService, /flock -n/);
   assert.match(profileService, /scripts\/sync-pve-profiles\.mjs/);
   assert.match(indexService, /scripts\/sync-pve-index\.mjs/);
+});
+
+test("PvE no-attempt runs reuse the pre-processing coverage snapshot", async () => {
+  const source = await readFile("scripts/sync-pve-profiles.mjs", "utf8");
+  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = await loadFeed\(\);/);
+  assert.match(source, /processed\.attempted === 0 \? preProcessingCoverage : db\.prepare/);
 });

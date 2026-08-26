@@ -120,12 +120,13 @@ test("Docker runtime contains the Seasonal collectors and their source imports",
   assert.doesNotMatch(startup, /sync-seasonal-feed-loop\.mjs|sync-player-indexes-loop\.mjs/);
 });
 
-test("Seasonal timers use the requested Moscow cadence and shared waiting lock", async () => {
+test("Seasonal timer uses the hourly Moscow cadence and shared waiting lock", async () => {
   const feedTimer = await readFile("ops/systemd/tarkovstats-seasonal-profile-sync.timer", "utf8");
   const indexTimer = await readFile("ops/systemd/tarkovstats-seasonal-index-sync.timer", "utf8");
   const feedService = await readFile("ops/systemd/tarkovstats-seasonal-profile-sync.service", "utf8");
   const indexService = await readFile("ops/systemd/tarkovstats-seasonal-index-sync.service", "utf8");
-  assert.match(feedTimer, /OnCalendar=\*-\*-\* \*:07,22,37,52:00 Europe\/Moscow/);
+  assert.match(feedTimer, /Description=Hourly TarkovStats Seasonal JSON profile sync/);
+  assert.match(feedTimer, /OnCalendar=\*-\*-\* \*:15:00 Europe\/Moscow/);
   assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:10:00 Europe\/Moscow/);
   assert.match(feedService, /flock -n \/run\/tarkovstats-seasonal-sync\.lock/);
   assert.match(indexService, /flock \/run\/tarkovstats-seasonal-sync\.lock/);

@@ -199,8 +199,16 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     await run();
     assert.equal(apiDb.prepare("SELECT profile_updated_at FROM players WHERE aid = 2").get().profile_updated_at, initial + 1_000);
     const callsAfterNewAid = calls.get(2);
-    await run();
+    const { stdout: noAttemptStdout } = await run();
     assert.equal(calls.get(2), callsAfterNewAid);
+    const noAttemptSummaryLine = noAttemptStdout.split(/\r?\n/).find((line) => line.includes(" SUMMARY "));
+    assert.ok(noAttemptSummaryLine, "collector writes a no-attempt summary");
+    const noAttemptSummary = JSON.parse(
+      noAttemptSummaryLine.slice(noAttemptSummaryLine.indexOf(" SUMMARY ") + " SUMMARY ".length),
+    );
+    assert.equal(noAttemptSummary.attempted, 0);
+    assert.equal(noAttemptSummary.coverageTotal, 2);
+    assert.equal(noAttemptSummary.snapshotCurrent, 2);
 
     apiDb.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1").run(initial + 500);
     await run();
@@ -261,11 +269,12 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   }
 });
 
-test("VPS timers use Moscow midnight and quarter-hour feed slots with a waiting index lock", async () => {
+test("VPS timers use hourly Moscow feed slots with a waiting index lock", async () => {
   const regularTimer = await readFile(new URL("../ops/systemd/tarkovstats-regular-profile-sync.timer", import.meta.url), "utf8");
   const indexTimer = await readFile(new URL("../ops/systemd/tarkovstats-player-index-sync.timer", import.meta.url), "utf8");
   const indexService = await readFile(new URL("../ops/systemd/tarkovstats-player-index-sync.service", import.meta.url), "utf8");
-  assert.match(regularTimer, /OnCalendar=\*-\*-\* \*:05,20,35,50:00 Europe\/Moscow/);
+  assert.match(regularTimer, /Description=Hourly TarkovStats regular profile sync/);
+  assert.match(regularTimer, /OnCalendar=\*-\*-\* \*:05:00 Europe\/Moscow/);
   assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:00:00 Europe\/Moscow/);
   assert.doesNotMatch(regularTimer + indexTimer, /RandomizedDelaySec/);
   assert.match(indexService, /ExecStart=\/usr\/bin\/flock \/run\/tarkovstats-data-sync\.lock/);
@@ -280,6 +289,12 @@ test("coverage uses every tracked non-excluded regular profile", async () => {
   assert.match(source, /snapshotCurrent/);
   assert.match(source, /missingFromFeed: Math\.max\(0, coverageSummary\.coverageTotal - trackedNonExcludedInFeed\)/);
   assert.doesNotMatch(source, /const coverageTotal = feed\.trackedInFeed/);
+});
+
+test("regular no-attempt runs reuse the pre-processing coverage snapshot", async () => {
+  const source = await readFile(new URL("../scripts/sync-regular-profiles.mjs", import.meta.url), "utf8");
+  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = await loadFeed\(\);/);
+  assert.match(source, /processed\.attempted === 0 \? preProcessingCoverage : db\.prepare/);
 });
 
 test("coverage summary keeps exact unresolved counts below one hundred percent", () => {

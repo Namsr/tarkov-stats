@@ -129,9 +129,17 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
 
     const firstCalls = new Map(calls);
     feed = { 11: String((cutoff + 1_000) / 1_000) };
-    await runCollector(dbPath, progressionDbPath, port);
+    const { stdout: noAttemptStdout } = await runCollector(dbPath, progressionDbPath, port);
     assert.deepEqual(calls, firstCalls, "same terminal versions and disappearing AIDs are never reprocessed or deleted");
     assert.equal(players.prepare("SELECT COUNT(*) AS n FROM mode_players WHERE mode = 'pve' AND aid = 10").get().n, 1);
+    const noAttemptSummaryLine = noAttemptStdout.split(/\r?\n/).find((line) => line.includes(" SUMMARY "));
+    assert.ok(noAttemptSummaryLine, "collector writes a no-attempt summary");
+    const noAttemptSummary = JSON.parse(
+      noAttemptSummaryLine.slice(noAttemptSummaryLine.indexOf(" SUMMARY ") + " SUMMARY ".length),
+    );
+    assert.equal(noAttemptSummary.attempted, 0);
+    assert.equal(noAttemptSummary.coverageTotal, 4);
+    assert.equal(noAttemptSummary.snapshotCurrent, 4);
 
     feed = { 18: cutoff + 8_000 };
     const locker = new DatabaseSync(dbPath);

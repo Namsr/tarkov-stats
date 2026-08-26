@@ -69,13 +69,13 @@ async function main() {
     overlapMs: config.overlapMs,
   });
 
-  const feed = await loadFeed();
+  const { counters: feed, coverage: preProcessingCoverage } = await loadFeed();
   const processed = await processQueue();
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM regular_profile_sync_queue GROUP BY status")
       .all().map((row) => [String(row.status), Number(row.n)])
   );
-  const coverage = db.prepare(`
+  const coverage = processed.attempted === 0 ? preProcessingCoverage : db.prepare(`
     WITH latest AS (
       SELECT aid, MAX(profile_updated_at) AS snapshot_updated_at
       FROM progression_sync.progression_snapshots
@@ -321,6 +321,7 @@ async function loadFeed() {
   parser.finish(decoder.decode());
   counters.polledAt = Date.now();
 
+  let queuedRows;
   db.exec("BEGIN IMMEDIATE");
   try {
     const queuedAt = Date.now();
@@ -340,7 +341,7 @@ async function loadFeed() {
         });
       }
     }
-    const queuedRows = new Map(
+    queuedRows = new Map(
       db.prepare("SELECT aid, feed_updated_at, status FROM regular_profile_sync_queue").all()
         .map((row) => [Number(row.aid), row])
     );
@@ -350,8 +351,10 @@ async function loadFeed() {
       let changed = 0;
       if (!queued) {
         changed = Number(insertQueue.run(aid, feedUpdatedAt, queuedAt).changes);
+        if (changed === 1) queuedRows.set(aid, { aid, feed_updated_at: feedUpdatedAt, status: "pending" });
       } else if (feedUpdatedAt > Number(queued.feed_updated_at)) {
         changed = Number(replaceQueueTarget.run(feedUpdatedAt, queuedAt, aid).changes);
+        if (changed === 1) queued.feed_updated_at = feedUpdatedAt;
       } else if (
         queued.status === "completed" &&
         (pending.snapshotUpdatedAt ?? latestSnapshotVersion(aid)) < Number(queued.feed_updated_at)
@@ -393,8 +396,18 @@ async function loadFeed() {
         AND s.profile_updated_at >= regular_profile_sync_queue.feed_updated_at
     )
   `).run(Date.now());
+  const coverage = { total: 0, missing: 0, lagging: 0, current: 0 };
+  for (const [aid, profile] of tracked) {
+    if (excluded.has(aid)) continue;
+    coverage.total += 1;
+    const snapshotUpdatedAt = profile.snapshotUpdatedAt;
+    const targetUpdatedAt = Math.max(profile.playerUpdatedAt, Number(queuedRows.get(aid)?.feed_updated_at) || 0);
+    if (snapshotUpdatedAt === null) coverage.missing += 1;
+    else if (snapshotUpdatedAt < targetUpdatedAt) coverage.lagging += 1;
+    else coverage.current += 1;
+  }
   heartbeat();
-  return counters;
+  return { counters, coverage };
 }
 
 async function processQueue() {

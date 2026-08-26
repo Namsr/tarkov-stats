@@ -143,7 +143,8 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.match(dockerfile, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
-  assert.match(timer, /OnCalendar=\*-\*-\* \*:00,15,30,45:00 Europe\/Moscow/);
+  assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
+  assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);
   assert.match(syncRoute, /isOperatorRequest/);
   assert.match(syncRoute, /resolved\.payload\.mode === "arena"/);
   assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
