@@ -115,3 +115,15 @@ test("saved nickname results hide on blur and reopen before recent history", asy
   assert.match(styles, /\.search-unit__results\[data-open="true"\][\s\S]*grid-template-rows: 1fr[\s\S]*opacity: 1[\s\S]*transform: translateY\(0\)[\s\S]*opacity 240ms ease-out/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.search-unit__results[\s\S]*transition-duration: \.01ms/);
 });
+
+test("search and recent profile lists stay bounded without truncating rows", async () => {
+  const [component, styles] = await Promise.all([
+    readFile("components/SearchBar.tsx", "utf8"),
+    readFile("app/globals.css", "utf8"),
+  ]);
+
+  assert.match(component, /className="search-unit__recent-list space-y-1"[\s\S]*recentMatches\.map/);
+  assert.match(component, /className="search-unit__results-list space-y-1"[\s\S]*results\.map/);
+  assert.match(styles, /\.search-unit__recent-list\s*\{[\s\S]*max-height: min\(256px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
+  assert.match(styles, /\.search-unit__results-list\s*\{[\s\S]*max-height: min\(276px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
+});

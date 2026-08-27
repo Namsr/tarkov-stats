@@ -437,7 +437,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
               <p className="px-2 pb-2 text-xs uppercase tracking-wider text-[var(--muted)]">
                 {t("search.recentlyViewed")}
               </p>
-              <div className="space-y-1">
+              <div className="search-unit__recent-list space-y-1">
                 {recentMatches.map((entry) => (
                   <div key={entry.aid} className="search-unit__recent-row">
                     <button
@@ -515,7 +515,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
             <p className="px-2 pb-2 text-xs uppercase tracking-wider text-[var(--muted)]">
               {t("search.resultsHeading")}
             </p>
-            <div className="space-y-1">
+            <div className="search-unit__results-list space-y-1">
               {results.map((player) => {
                 const selectedProfile = selectPlayerSearchProfile(
                   player.aid,
