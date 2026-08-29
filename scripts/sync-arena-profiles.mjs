@@ -32,8 +32,9 @@ const config = {
   requestTimeoutMs: envInteger("ARENA_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
   dbBusyTimeoutMs: envInteger("ARENA_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS", 30_000, 10, 300_000),
   dbBusyRetries: envInteger("ARENA_PROFILE_SYNC_DB_BUSY_RETRIES", 2, 0, 10),
-  maxRunMs: envInteger("ARENA_PROFILE_SYNC_MAX_RUN_MS", 12 * 60_000, 60_000, 13 * 60_000),
+  maxRunMs: envInteger("ARENA_PROFILE_SYNC_MAX_RUN_MS", 12 * 60_000, 60_000, 12 * 60 * 60_000),
   maxCompleted: envOptionalPositiveInteger("ARENA_PROFILE_SYNC_MAX_COMPLETED"),
+  progressEvery: envInteger("ARENA_PROFILE_SYNC_PROGRESS_EVERY", 100, 1, 10_000),
   leaseMs: envInteger("ARENA_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
   schemaVersion: ARENA_PARSER_VERSION,
 };
@@ -395,7 +396,7 @@ async function processQueue(startedAt) {
       stopReason = "max_completed";
       break;
     }
-    if (counters.attempted % 100 === 0) log("PROGRESS", counters);
+    if (counters.attempted % config.progressEvery === 0) log("PROGRESS", counters);
   }
   return counters;
 }

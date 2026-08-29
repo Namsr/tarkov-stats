@@ -350,6 +350,8 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.match(source, /syncArenaIndex/);
   assert.match(source, /arena_profile_sync_(queue|meta|lease)/);
   assert.match(source, /requestsPerSecond: envNumber\("ARENA_PROFILE_SYNC_RPS", 1,/);
+  assert.match(source, /ARENA_PROFILE_SYNC_MAX_RUN_MS", 12 \* 60_000, 60_000, 12 \* 60 \* 60_000/);
+  assert.match(source, /ARENA_PROFILE_SYNC_PROGRESS_EVERY/);
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
   assert.match(source, /arena_player_index/);
   assert.doesNotMatch(source, /DELETE FROM arena_player_index\b/);
