@@ -9,16 +9,19 @@ import {
   normalizeUpdatedAt,
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
+import { syncArenaIndex } from "./sync-arena-index.mjs";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 // Keep this queue target in lockstep with lib/arena/storage.ts. The collector
 // runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
 const ARENA_PARSER_VERSION = 1;
+const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
 const runId = randomUUID();
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
   updatedUrl: process.env.ARENA_PROFILE_UPDATED_URL || "https://players.tarkov.dev/arena/updated.json",
+  indexUrl: process.env.ARENA_PLAYER_INDEX_URL || "https://players.tarkov.dev/arena/index.json",
   endpoint: new URL(
     "/api/operator/profile-refresh/sync",
     process.env.ARENA_PROFILE_SYNC_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
@@ -70,6 +73,7 @@ async function main() {
   await acquireLease();
   leaseHeld = true;
 
+  const index = await refreshIndexIfDue();
   const feed = await loadFeed();
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
@@ -93,6 +97,7 @@ async function main() {
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.current);
   const summary = {
+    index,
     ...feed,
     ...processed,
     indexMissing: Number(coverage.missing) || 0,
@@ -110,9 +115,40 @@ async function main() {
 
 function validateConfig() {
   if (config.secret.length < 32) throw new Error("PROFILE_REFRESH_SECRET must contain at least 32 characters");
-  for (const [name, value] of [["ARENA_PROFILE_UPDATED_URL", config.updatedUrl], ["sync endpoint", config.endpoint]]) {
+  for (const [name, value] of [
+    ["ARENA_PROFILE_UPDATED_URL", config.updatedUrl],
+    ["ARENA_PLAYER_INDEX_URL", config.indexUrl],
+    ["sync endpoint", config.endpoint],
+  ]) {
     const url = new URL(value);
     if (!/^https?:$/.test(url.protocol)) throw new Error(`${name} must use http or https`);
+  }
+}
+
+function lastIndexPollAt() {
+  const meta = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_player_index_meta'"
+  ).get();
+  const saved = meta
+    ? Number(db.prepare("SELECT value FROM arena_player_index_meta WHERE key = 'last_poll_at'").get()?.value)
+    : 0;
+  if (Number.isFinite(saved) && saved > 0) return saved;
+  return Number(db.prepare(
+    "SELECT MAX(synced_at) AS synced_at FROM arena_player_index WHERE mode = 'arena'"
+  ).get()?.synced_at) || 0;
+}
+
+async function refreshIndexIfDue() {
+  const previousPollAt = lastIndexPollAt();
+  if (previousPollAt > Date.now() - INDEX_POLL_INTERVAL_MS) {
+    return { checked: false, previousPollAt };
+  }
+  try {
+    const result = await syncArenaIndex(db, { url: config.indexUrl });
+    return { checked: true, previousPollAt, ...result };
+  } catch (error) {
+    log("INDEX_FAILED", { error: message(error), previousPollAt });
+    return { checked: true, previousPollAt, error: message(error) };
   }
 }
 

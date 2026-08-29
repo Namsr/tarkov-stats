@@ -3,6 +3,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
@@ -184,41 +185,52 @@ function replaceIndex(db, metadata) {
   }
 }
 
+export async function syncArenaIndex(db, options = {}) {
+  const url = options.url || process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL;
+  const force = options.force === true;
+  const dryRun = options.dryRun === true;
+  const startedAt = Date.now();
+  initSchema(db);
+  const downloaded = await requestIndex(db, url, force);
+  if (downloaded.unchanged) {
+    if (!dryRun) {
+      setMeta(db, "last_poll_at", Date.now());
+      setMeta(db, "last_status", "unchanged");
+      setMeta(db, "duration_ms", Date.now() - startedAt);
+    }
+    return { unchanged: true, dryRun, url, durationMs: Date.now() - startedAt };
+  }
+  const syncedAt = Date.now();
+  const result = await consumeIndex(db, downloaded.response, syncedAt, dryRun, currentRowCount(db));
+  if (!dryRun) replaceIndex(db, { ...result, syncedAt, durationMs: Date.now() - startedAt, url, ...downloaded });
+  return { ...result, unchanged: false, dryRun, url, durationMs: Date.now() - startedAt };
+}
+
 async function main() {
   if (hasArg("--help") || hasArg("-h")) return usage();
   const dbPath = argValue("--db", process.env.SQLITE_PATH || DEFAULT_DB);
-  const url = argValue("--url", process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL);
-  const force = hasArg("--force");
-  const dryRun = hasArg("--dry-run");
-  const startedAt = Date.now();
   const resolved = path.resolve(dbPath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new DatabaseSync(resolved);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
-  initSchema(db);
   try {
-    const downloaded = await requestIndex(db, url, force);
-    if (downloaded.unchanged) {
-      if (!dryRun) {
-        setMeta(db, "last_poll_at", Date.now());
-        setMeta(db, "last_status", "unchanged");
-        setMeta(db, "duration_ms", Date.now() - startedAt);
-      }
-      console.log("Arena player index is unchanged");
-      return;
-    }
-    const syncedAt = Date.now();
-    const result = await consumeIndex(db, downloaded.response, syncedAt, dryRun, currentRowCount(db));
-    if (!dryRun) replaceIndex(db, { ...result, syncedAt, durationMs: Date.now() - startedAt, url, ...downloaded });
-    console.log(JSON.stringify({ ...result, dryRun, url }));
+    const result = await syncArenaIndex(db, {
+      url: argValue("--url", process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL),
+      force: hasArg("--force"),
+      dryRun: hasArg("--dry-run"),
+    });
+    if (result.unchanged) console.log("Arena player index is unchanged");
+    else console.log(JSON.stringify(result));
   } finally {
     db.close();
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

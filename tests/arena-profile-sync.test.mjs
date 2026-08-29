@@ -22,6 +22,7 @@ function launch(dbPath, baseUrl, feedUrl, maxCompleted = null) {
       SQLITE_PATH: dbPath,
       PROFILE_REFRESH_SECRET: secret,
       ARENA_PROFILE_UPDATED_URL: feedUrl,
+      ARENA_PLAYER_INDEX_URL: new URL("/arena/index.json", feedUrl).href,
       ARENA_PROFILE_SYNC_BASE_URL: baseUrl,
       ARENA_PROFILE_SYNC_RPS: "20",
       ARENA_PROFILE_SYNC_MAX_RETRIES: "0",
@@ -154,6 +155,71 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
   }
 });
 
+test("Arena profile sync refreshes a stale index before reading updated.json", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-daily-index-"));
+  const dbPath = join(directory, "players.db");
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE arena_mode_stats (
+      aid INTEGER NOT NULL, arena_mode TEXT NOT NULL, upstream_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL, PRIMARY KEY (aid, arena_mode)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+      VALUES ('arena', 1, 'OldName', 'oldname', 1);
+  `);
+  let indexRequests = 0;
+  let updatedRequests = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/arena/index.json")) {
+      indexRequests += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ 1: "CurrentName", 2: "NewName" }));
+      return;
+    }
+    if (request.url?.startsWith("/arena/updated.json")) {
+      updatedRequests += 1;
+      response.setHeader("content-type", "application/json");
+      response.end("{}");
+      return;
+    }
+    if (request.url === "/api/operator/profile-refresh/sync") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ state: "not_found" }));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const run = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`);
+    const summary = summaryFrom(run.stdout);
+    assert.equal(summary.index.checked, true);
+    assert.equal(indexRequests, 1);
+    assert.equal(updatedRequests, 1);
+    assert.deepEqual(players.prepare("SELECT aid, nickname FROM arena_player_index ORDER BY aid").all()
+      .map((row) => ({ ...row })), [
+      { aid: 1, nickname: "CurrentName" },
+      { aid: 2, nickname: "NewName" },
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Arena profile sync caps successful completions, not errors, and resumes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-cap-"));
   const dbPath = join(directory, "players.db");
@@ -279,6 +345,9 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   ]);
   assert.match(source, /fetchTarkovJson/);
   assert.match(source, /https:\/\/players\.tarkov\.dev\/arena\/updated\.json/);
+  assert.match(source, /https:\/\/players\.tarkov\.dev\/arena\/index\.json/);
+  assert.match(source, /INDEX_POLL_INTERVAL_MS = 24 \* 60 \* 60_000/);
+  assert.match(source, /syncArenaIndex/);
   assert.match(source, /arena_profile_sync_(queue|meta|lease)/);
   assert.match(source, /requestsPerSecond: envNumber\("ARENA_PROFILE_SYNC_RPS", 1,/);
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
@@ -301,5 +370,6 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.match(syncRoute, /resolved\.payload\.mode === "arena"/);
   assert.match(syncRoute, /persistArenaProfile/);
   assert.match(syncRoute, /schemaVersion: ARENA_PARSER_VERSION/);
+  assert.match(syncRoute, /revalidateTag\(ARENA_AVERAGE_CACHE_TAG, \{ expire: 0 \}\)/);
   assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
 });

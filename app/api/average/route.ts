@@ -13,7 +13,11 @@ import {
 import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
-import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
+import {
+  ARENA_AVERAGE_CACHE_TAG,
+  AVERAGE_CACHE_CONTROL,
+  AVERAGE_CACHE_TTL_SECONDS,
+} from "@/lib/average-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
 import { ARENA_METRIC_KEYS, ARENA_MODE_KEYS, type ArenaDimension, type ArenaMetricKey, type ArenaModeKey, type ArenaStatistic } from "@/types/arena";
@@ -140,7 +144,7 @@ const loadCachedArenaAverage = unstable_cache(
     maxMatches: number | null,
   ) => getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches }),
   ["arena-average-v2", String(ARENA_PARSER_VERSION)],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
 );
 
 function isArenaMode(value: string | null): value is ArenaModeKey {
@@ -200,7 +204,9 @@ async function arenaAverageResponse(
     }
     timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite" });
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
-      headers: { "Cache-Control": AVERAGE_CACHE_CONTROL, "X-Average-Cache": "next-data" },
+      // The server cache is tagged and invalidated by the collector. Do not let
+      // a browser or reverse proxy retain the first tiny backfill sample.
+      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data" },
     });
   } catch (error) {
     console.error("Arena average stats failed", error);

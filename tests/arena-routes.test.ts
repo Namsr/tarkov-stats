@@ -122,6 +122,7 @@ test("Arena average validates its isolated query contract and defaults to matche
     "http://local/api/average?mode=arena&arenaMode=teamFight",
   ));
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
   assert.equal(body.mode, "arena");
   assert.equal(body.schemaVersion, 1);
