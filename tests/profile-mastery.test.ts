@@ -96,7 +96,7 @@ test("all profile modes wire mastery from API through their UI shells", () => {
   assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
   assert.match(seasonal, /masteryFromViewModel[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
 
-  const sectionOrder = shell.match(/const SECTION_IDS = \[(.*?)\] as const/s)?.[1] ?? "";
+  const sectionOrder = shell.match(/const SECTION_IDS = \[([\s\S]*?)\] as const/)?.[1] ?? "";
   assert.ok(sectionOrder.indexOf("\"achievements\"") < sectionOrder.indexOf("\"mastering\""));
   assert.ok(sectionOrder.indexOf("\"mastering\"") < sectionOrder.indexOf("\"skills\""));
 });

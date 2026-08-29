@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef, type PointerEvent } from "react";
+
 interface RangeSliderProps {
   min: number;
   max: number;
@@ -8,6 +10,7 @@ interface RangeSliderProps {
   lowLabel: string;
   highLabel: string;
   onChange: (low: number, high: number) => void;
+  onChangeComplete?: (low: number, high: number) => void;
   disabled?: boolean;
   minSpan?: number;
   minVisualGap?: number;
@@ -34,18 +37,36 @@ export default function RangeSlider({
   lowLabel,
   highLabel,
   onChange,
+  onChangeComplete,
   disabled = false,
   minSpan = 0,
   minVisualGap = 0,
   toPosition,
   fromPosition,
 }: RangeSliderProps) {
+  const latest = useRef({ low, high });
+  useEffect(() => {
+    latest.current = { low, high };
+  }, [high, low]);
   const positionOf = (value: number, edge: "low" | "high") =>
     toPosition ? Math.min(1, Math.max(0, toPosition(value, edge))) : percent(value, min, max) / 100;
   const valueAt = (position: number, edge: "low" | "high") =>
     fromPosition
       ? fromPosition(Math.min(1, Math.max(0, position)), edge)
       : Math.round(min + position * (max - min));
+  const change = (nextLow: number, nextHigh: number) => {
+    latest.current = { low: nextLow, high: nextHigh };
+    onChange(nextLow, nextHigh);
+  };
+  const complete = () => onChangeComplete?.(latest.current.low, latest.current.high);
+  const capturePointer = (event: PointerEvent<HTMLInputElement>) => {
+    if (onChangeComplete) event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const releasePointer = (event: PointerEvent<HTMLInputElement>) => {
+    if (!onChangeComplete) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    complete();
+  };
   const lowPosition = positionOf(low, "low");
   const highPosition = positionOf(high, "high");
   const lowPercent = lowPosition * 100;
@@ -89,14 +110,19 @@ export default function RangeSlider({
           const delta = arrowDelta(event.key);
           if (delta == null) return;
           event.preventDefault();
-          onChange(Math.max(min, Math.min(low + delta, high - minSpan)), high);
+          change(Math.max(min, Math.min(low + delta, high - minSpan)), high);
         }}
         onChange={(event) => {
           const requestedPosition = Number(event.target.value) / sliderMax;
           const position = Math.min(requestedPosition, highPosition - minVisualGap);
           const next = Math.min(valueAt(position, "low"), high - minSpan);
-          onChange(Math.max(min, next), high);
+          change(Math.max(min, next), high);
         }}
+        onPointerDown={onChangeComplete ? capturePointer : undefined}
+        onPointerUp={onChangeComplete ? releasePointer : undefined}
+        onPointerCancel={onChangeComplete ? releasePointer : undefined}
+        onKeyUp={onChangeComplete ? complete : undefined}
+        onBlur={onChangeComplete ? complete : undefined}
         className={`${sharedInputClasses} ${low >= max - (max - min) * 0.05 ? "z-30" : "z-20"}`}
       />
       <input
@@ -114,14 +140,19 @@ export default function RangeSlider({
           const delta = arrowDelta(event.key);
           if (delta == null) return;
           event.preventDefault();
-          onChange(low, Math.min(max, Math.max(high + delta, low + minSpan)));
+          change(low, Math.min(max, Math.max(high + delta, low + minSpan)));
         }}
         onChange={(event) => {
           const requestedPosition = Number(event.target.value) / sliderMax;
           const position = Math.max(requestedPosition, lowPosition + minVisualGap);
           const next = Math.max(valueAt(position, "high"), low + minSpan);
-          onChange(low, Math.min(max, next));
+          change(low, Math.min(max, next));
         }}
+        onPointerDown={onChangeComplete ? capturePointer : undefined}
+        onPointerUp={onChangeComplete ? releasePointer : undefined}
+        onPointerCancel={onChangeComplete ? releasePointer : undefined}
+        onKeyUp={onChangeComplete ? complete : undefined}
+        onBlur={onChangeComplete ? complete : undefined}
         className={`${sharedInputClasses} z-20`}
       />
     </div>

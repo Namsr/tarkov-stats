@@ -7,8 +7,11 @@ import { useFavorites } from "@/lib/favorites/context";
 import FavoritesList from "@/components/FavoritesList";
 import FavoritesCompare from "@/components/FavoritesCompare";
 import StatCard from "@/components/StatCard";
+import ArenaAccountCard from "@/components/ArenaAccountCard";
 import { isReload } from "@/lib/is-reload";
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { isArenaProfile, parsedStats, toArenaProfile, type ArenaCardStats } from "@/components/arena-ui";
+import type { ArenaProfile } from "@/types/arena";
 import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
 
 interface FavStatsResponse {
@@ -17,13 +20,14 @@ interface FavStatsResponse {
     cycleId: string;
     aid: number;
     stats: ParsedPlayerStats | null;
+    arena?: ArenaProfile | null;
   }[];
 }
 
 export default function ProfilePage() {
   const { t } = useI18n();
   const { enabled, loading, favorites } = useFavorites();
-  const [statsByFavorite, setStatsByFavorite] = useState<Map<string, ParsedPlayerStats | null>>(new Map());
+  const [statsByFavorite, setStatsByFavorite] = useState<Map<string, ArenaCardStats>>(new Map());
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
@@ -44,8 +48,11 @@ export default function ProfilePage() {
       const res = await fetch(`/api/favorites/stats${force ? "?refresh=1" : ""}`);
       if (!res.ok) throw new Error();
       const data = (await res.json()) as FavStatsResponse;
-      const map = new Map<string, ParsedPlayerStats | null>();
-      for (const favorite of data.favorites) map.set(favoriteKey(favorite), favorite.stats);
+      const map = new Map<string, ArenaCardStats>();
+      for (const favorite of data.favorites) {
+        const raw = favorite.mode === "arena" ? favorite.arena ?? favorite.stats : favorite.stats;
+        map.set(favoriteKey(favorite), raw);
+      }
       setStatsByFavorite(map);
     } catch {
       setStatsError(t("profile.loadError"));
@@ -102,6 +109,10 @@ export default function ProfilePage() {
 
   const main = favorites.find((f) => f.isMain);
   const mainStats = main ? statsByFavorite.get(favoriteKey(main)) ?? null : null;
+  const normalizedMainArena = main?.mode === "arena" && isArenaProfile(mainStats) ? mainStats : null;
+  const legacyMainArena = main?.mode === "arena" && !normalizedMainArena ? toArenaProfile(mainStats, main.aid) : null;
+  const mainArena = normalizedMainArena ?? legacyMainArena;
+  const mainLegacy = main?.mode === "arena" ? null : parsedStats(mainStats);
 
   return (
     <main className="page-frame max-w-5xl space-y-10">
@@ -145,16 +156,18 @@ export default function ProfilePage() {
                 </Link>
               </div>
               <div className="font-[var(--heading-font)] text-3xl font-extrabold tracking-wide text-[var(--foreground)]">
-                {mainStats?.nickname || main.nickname || `#${main.aid}`}
+                {mainArena?.nickname || mainLegacy?.nickname || main.nickname || `#${main.aid}`}
               </div>
-              {mainStats ? (
+              {mainArena ? (
+                <ArenaAccountCard profile={mainArena} />
+              ) : mainLegacy ? (
                 <div className="detail-grid detail-grid--compact">
-                  <StatCard label={t("player.hoursPlayed")} value={Math.round(mainStats.hoursPlayed).toLocaleString()} />
-                  <StatCard label={t("player.level")} value={mainStats.level} />
-                  <StatCard label={t("player.survivalRate")} value={String(mainStats.survivalRate)} suffix="%" />
-                  <StatCard label={t("player.kdAll")} value={mainStats.kdRatio} />
-                  <StatCard label={t("player.killsPerRaid")} value={mainStats.killsPerRaid} />
-                  <StatCard label={t("player.totalKills")} value={mainStats.totalKills.toLocaleString()} />
+                  <StatCard label={t("player.hoursPlayed")} value={Math.round(mainLegacy.hoursPlayed).toLocaleString()} />
+                  <StatCard label={t("player.level")} value={mainLegacy.level} />
+                  <StatCard label={t("player.survivalRate")} value={String(mainLegacy.survivalRate)} suffix="%" />
+                  <StatCard label={t("player.kdAll")} value={mainLegacy.kdRatio} />
+                  <StatCard label={t("player.killsPerRaid")} value={mainLegacy.killsPerRaid} />
+                  <StatCard label={t("player.totalKills")} value={mainLegacy.totalKills.toLocaleString()} />
                 </div>
               ) : (
                 <p className="text-sm text-[var(--muted)]">

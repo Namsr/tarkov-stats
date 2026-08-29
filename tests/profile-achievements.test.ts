@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's strip-types test runner resolves the explicit .ts module.
 import {
   localizedAchievementDescription,
   localizedAchievementName,
   sortProfileAchievements,
   type ProfileAchievementItem,
+// @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts module.
 } from "../lib/profile-achievements.ts";
 
 const achievement = (id: string, unlockedAt: number | null, name: string, rarity = "common"): ProfileAchievementItem => ({

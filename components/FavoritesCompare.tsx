@@ -5,10 +5,18 @@ import { useI18n } from "@/lib/i18n/context";
 import type { Favorite } from "@/lib/db";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
+import {
+  ARENA_METRIC_KEYS,
+  ARENA_MODE_KEYS,
+  formatArenaMetric,
+  isArenaProfile,
+  type ArenaCardStats,
+} from "@/components/arena-ui";
+import type { ArenaModeStats, ArenaProfile } from "@/types/arena";
 
 interface Props {
   favorites: Favorite[];
-  statsByFavorite: Map<string, ParsedPlayerStats | null>;
+  statsByFavorite: Map<string, ArenaCardStats>;
 }
 
 interface MetricDef {
@@ -30,6 +38,11 @@ const MODE_LABEL_KEYS: Record<CompareMode, string> = {
 interface CompareColumn {
   fav: Favorite;
   stats: ParsedPlayerStats;
+}
+
+interface ArenaCompareColumn {
+  fav: Favorite;
+  profile: ArenaProfile;
 }
 
 // All metrics here are higher-is-better, so the row max is the winner. Labels
@@ -113,6 +126,48 @@ function ComparisonTable({ mode, cols }: { mode: CompareMode; cols: CompareColum
   );
 }
 
+function ArenaComparisonTable({ mode, cols }: { mode: ArenaModeStats["mode"]; cols: ArenaCompareColumn[] }) {
+  const { t } = useI18n();
+  return (
+    <section className="space-y-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted-strong)]">
+        {t("arena.mode." + mode)}
+      </h3>
+      <div className="overflow-x-auto rounded-xl border border-[var(--card-border)]">
+        <table className="w-full min-w-[32rem] border-collapse">
+          <thead>
+            <tr className="border-b border-[var(--card-border)]">
+              <th scope="col" className="px-3 py-3 text-left text-xs uppercase tracking-wider text-[var(--muted)]">{t("arena.radar.metric")}</th>
+              {cols.map(({ fav, profile }) => (
+                <th key={favoriteKey(fav)} scope="col" className="px-3 py-3 text-right text-xs uppercase tracking-wider text-[var(--accent)]">
+                  <Link href={favoriteHref(fav)} className="hover:underline">{profile.nickname || `#${fav.aid}`}</Link>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ARENA_METRIC_KEYS.map((metric) => {
+              const values = cols.map(({ profile }) => profile.modes[mode].metrics[metric]);
+              const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
+              const best = finite.length > 0 ? Math.max(...finite) : null;
+              return (
+                <tr key={metric} className="border-b border-[var(--card-border)]/70 transition-colors hover:bg-[var(--input-bg)]">
+                  <th scope="row" className="px-3 py-3 text-left text-sm text-[var(--muted-strong)]">{t("arena.metric." + metric)}</th>
+                  {values.map((value, index) => (
+                    <td key={favoriteKey(cols[index].fav)} className={`px-3 py-3 text-right font-medium ${best !== null && value === best ? "text-[var(--success)]" : "text-[var(--muted-strong)]"}`}>
+                      {value === null ? t("common.notAvailable") : formatArenaMetric(value, metric)}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export default function FavoritesCompare({ favorites, statsByFavorite }: Props) {
   const { t } = useI18n();
   const groups = COMPARE_MODES.map((mode) => ({
@@ -122,10 +177,24 @@ export default function FavoritesCompare({ favorites, statsByFavorite }: Props) 
       .map((favorite) => ({ fav: favorite, stats: statsByFavorite.get(favoriteKey(favorite)) ?? null }))
       .filter((c): c is CompareColumn => c.stats !== null),
   }));
+  const arenaGroups = ARENA_MODE_KEYS.map((mode) => ({
+    mode,
+    cols: favorites
+      .filter((favorite) => favorite.mode === "arena")
+      .map((favorite) => ({
+        fav: favorite,
+        profile: isArenaProfile(statsByFavorite.get(favoriteKey(favorite)))
+          ? statsByFavorite.get(favoriteKey(favorite)) as ArenaProfile
+          : null,
+      }))
+      .filter((column): column is ArenaCompareColumn => column.profile !== null),
+  }));
   const visibleGroups = groups.filter((group) => group.cols.length > 0);
   const comparableGroups = visibleGroups.filter((group) => group.cols.length >= 2);
+  const visibleArenaGroups = arenaGroups.filter((group) => group.cols.length > 0);
+  const comparableArenaGroups = visibleArenaGroups.filter((group) => group.cols.length >= 2);
 
-  if (visibleGroups.length === 0) {
+  if (visibleGroups.length === 0 && visibleArenaGroups.length === 0) {
     return <p className="text-sm text-[var(--muted)]">{t("profile.compareNeedTwo")}</p>;
   }
 
@@ -134,11 +203,21 @@ export default function FavoritesCompare({ favorites, statsByFavorite }: Props) 
       {comparableGroups.map((group) => (
         <ComparisonTable key={group.mode} mode={group.mode} cols={group.cols} />
       ))}
+      {comparableArenaGroups.map((group) => (
+        <ArenaComparisonTable key={group.mode} mode={group.mode} cols={group.cols} />
+      ))}
       {visibleGroups
         .filter((group) => group.cols.length < 2)
         .map((group) => (
           <p key={group.mode} className="text-sm text-[var(--muted)]">
             {t("profile.compareNeedTwo")} ({t(MODE_LABEL_KEYS[group.mode])})
+          </p>
+        ))}
+      {visibleArenaGroups
+        .filter((group) => group.cols.length < 2)
+        .map((group) => (
+          <p key={group.mode} className="text-sm text-[var(--muted)]">
+            {t("profile.compareNeedTwo")} ({t("arena.mode." + group.mode)})
           </p>
         ))}
     </div>

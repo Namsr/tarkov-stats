@@ -9,6 +9,8 @@ import {
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
+import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -41,11 +43,61 @@ function boundsAtThirtyPercent(dimension: RangeDimension, center: number) {
   return { min: Math.max(0, Math.floor(center * 0.7)), max: Math.ceil(center * 1.3) };
 }
 
+function isArenaMode(value: string | null): value is ArenaStoredMode {
+  return value === "overall" || (value !== null && (ARENA_MODE_KEYS as readonly string[]).includes(value));
+}
+
+async function arenaCohortResponse(
+  request: NextRequest,
+  timing: ReturnType<typeof createRequestTiming>,
+) {
+  const params = request.nextUrl.searchParams;
+  const requestedAid = params.get("aid");
+  const aid = Number(requestedAid);
+  const arenaMode = params.get("arenaMode");
+  const statistic = parseAverageStatistic(params.get("statistic"));
+  const period = params.get("period");
+  if (
+    !requestedAid || !Number.isSafeInteger(aid) || aid <= 0 ||
+    !isArenaMode(arenaMode) ||
+    (statistic !== "trimmed_mean" && statistic !== "median") ||
+    (period !== null && period !== "all") ||
+    params.has("center") || params.has("excludeAid") || params.has("dimension")
+  ) {
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid Arena cohort query" }, { status: 400 });
+  }
+  try {
+    const cohort = await getArenaCohort(aid, arenaMode, statistic);
+    if (!cohort) {
+      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503 });
+      return NextResponse.json({
+        identity: { aid, mode: "arena", cycleId: "persistent" },
+        code: "comparison_unavailable",
+        error: "Arena comparison storage is unavailable",
+      }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, storage: "sqlite" });
+    return NextResponse.json({ gameMode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...cohort }, {
+      headers: { "Cache-Control": "private, no-store" },
+    });
+  } catch (error) {
+    console.error("Arena comparison cohort failed", error);
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503 });
+    return NextResponse.json({
+      identity: { aid, mode: "arena", cycleId: "persistent" },
+      code: "comparison_unavailable",
+      error: "Failed to compute Arena comparison cohort",
+    }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  }
+}
+
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
+  if (rawMode === "arena") return arenaCohortResponse(request, timing);
   if (!isGameMode(rawMode)) {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });

@@ -15,6 +15,8 @@ import { DEFAULT_Y, resolveY } from "@/lib/metrics";
 import { isGameMode } from "@/types/seasonal";
 import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
+import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
+import { ARENA_METRIC_KEYS, ARENA_MODE_KEYS, type ArenaDimension, type ArenaMetricKey, type ArenaModeKey, type ArenaStatistic } from "@/types/arena";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -126,11 +128,93 @@ const loadCachedAverage = unstable_cache(
   { revalidate: AVERAGE_CACHE_TTL_SECONDS },
 );
 
+const loadCachedArenaAverage = unstable_cache(
+  async (
+    arenaMode: ArenaModeKey,
+    statistic: ArenaStatistic,
+    dimension: ArenaDimension,
+    metric: "players" | ArenaMetricKey,
+    minHours: number | null,
+    maxHours: number | null,
+    minMatches: number | null,
+    maxMatches: number | null,
+  ) => getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches }),
+  ["arena-average-v2", String(ARENA_PARSER_VERSION)],
+  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+);
+
+function isArenaMode(value: string | null): value is ArenaModeKey {
+  return value !== null && (ARENA_MODE_KEYS as readonly string[]).includes(value);
+}
+
+function isArenaMetric(value: string | null): value is "players" | ArenaMetricKey {
+  return value === "players" || (value !== null && (ARENA_METRIC_KEYS as readonly string[]).includes(value));
+}
+
+function arenaRange(params: URLSearchParams, key: "minHours" | "maxHours" | "minMatches" | "maxMatches") {
+  return parseNonNegative(params.get(key));
+}
+
+async function arenaAverageResponse(
+  request: NextRequest,
+  timing: ReturnType<typeof createRequestTiming>,
+) {
+  const params = request.nextUrl.searchParams;
+  const arenaMode = params.get("arenaMode");
+  const statistic = parseAverageStatistic(params.get("statistic"));
+  const dimension = params.get("dimension") ?? "matches";
+  const metric = params.get("metric") ?? "players";
+  const period = params.get("period");
+  const ranges = [
+    arenaRange(params, "minHours"), arenaRange(params, "maxHours"),
+    arenaRange(params, "minMatches"), arenaRange(params, "maxMatches"),
+  ];
+  if (
+    !isArenaMode(arenaMode) ||
+    (statistic !== "trimmed_mean" && statistic !== "median") ||
+    (dimension !== "hours" && dimension !== "matches") ||
+    !isArenaMetric(metric) ||
+    (period !== null && period !== "all") ||
+    params.has("min") || params.has("max") ||
+    ranges.some((range) => !range.valid) ||
+    (ranges[0].value !== null && ranges[1].value !== null && ranges[0].value > ranges[1].value) ||
+    (ranges[2].value !== null && ranges[3].value !== null && ranges[2].value > ranges[3].value)
+  ) {
+    timing.finish({ operation: "average", mode: "arena", outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid Arena average query" }, { status: 400 });
+  }
+  try {
+    const result = await loadCachedArenaAverage(
+      arenaMode,
+      statistic,
+      dimension,
+      metric,
+      ranges[0].value,
+      ranges[1].value,
+      ranges[2].value,
+      ranges[3].value,
+    );
+    if (!result) {
+      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503 });
+      return NextResponse.json({ error: "Arena averages are unavailable" }, { status: 503 });
+    }
+    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite" });
+    return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
+      headers: { "Cache-Control": AVERAGE_CACHE_CONTROL, "X-Average-Cache": "next-data" },
+    });
+  } catch (error) {
+    console.error("Arena average stats failed", error);
+    timing.finish({ operation: "average", mode: "arena", outcome: "error", status: 500 });
+    return NextResponse.json({ error: "Failed to compute Arena averages" }, { status: 500 });
+  }
+}
+
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
+  if (rawMode === "arena") return arenaAverageResponse(request, timing);
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
     timing.finish({ operation: "average", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });

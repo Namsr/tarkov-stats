@@ -48,7 +48,7 @@ test("profile-version migration preserves explicit positive PvP data and leaves 
 
   assert.deepEqual(
     db.prepare("SELECT aid, profile_updated_at, pvp_stats_known FROM players ORDER BY aid")
-      .all().map((row) => ({ ...row })),
+      .all().map((row: Record<string, unknown>) => ({ ...row })),
     [
       { aid: 1, profile_updated_at: 0, pvp_stats_known: 0 },
       { aid: 2, profile_updated_at: 0, pvp_stats_known: 1 },
@@ -62,7 +62,7 @@ test("profile-version migration preserves explicit positive PvP data and leaves 
   );
   assert.deepEqual(
     db.prepare("SELECT aid, profile_updated_at, pvp_stats_known FROM mode_players ORDER BY aid")
-      .all().map((row) => ({ ...row })),
+      .all().map((row: Record<string, unknown>) => ({ ...row })),
     [
       { aid: 1, profile_updated_at: 0, pvp_stats_known: 0 },
       { aid: 2, profile_updated_at: 0, pvp_stats_known: 1 },

@@ -197,7 +197,7 @@ test("score sample size follows the shared PMC-raid predicate", () => {
   const base = {
     local_date: "2026-07-02", ended_at: 2, elapsed_days: 1, status: "valid",
     experience: 100, pmc_raids: 1, scav_raids: 0, pmc_survived: 1, pmc_deaths: 1,
-    pmc_kills: 2, killed_pmc: 1, confidence: 1, lifetime_pvp_hours: 100, dimension_raids: 1,
+    pmc_kills: 2, killed_pmc: 1, pmc_killed_pmc: null, score_sample_n: null, confidence: 1, lifetime_pvp_hours: 100, dimension_raids: 1,
   };
   const updates = scoreIntervals([
     { ...base, id: 1, aid: 1 },

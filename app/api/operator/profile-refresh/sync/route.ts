@@ -2,6 +2,7 @@ import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
 import { resolveTrackedProfilePayload, snapshotFromOperatorProfile } from "@/lib/operator-profile";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { PublicProfileVersionConflictError, pveProfileDecision } from "@/lib/tarkov-api";
+import { ARENA_PARSER_VERSION, persistArenaProfile } from "@/lib/arena/service";
 
 export const runtime = "nodejs";
 
@@ -28,10 +29,11 @@ export async function POST(request: Request) {
     }
 
     if (resolved.payload.mode === "arena") {
-      const snapshot = await snapshotFromOperatorProfile(resolved.payload);
+      const arena = await persistArenaProfile(resolved.payload.profile);
       return Response.json({
         state: "updated",
-        profileUpdatedAt: snapshot.upstreamUpdatedAt,
+        profileUpdatedAt: arena.profileUpdatedAt,
+        schemaVersion: ARENA_PARSER_VERSION,
       }, { headers });
     }
     const snapshot = await snapshotFromOperatorProfile(resolved.payload, { upsertPlayer: false });

@@ -6,6 +6,18 @@ import type {
   ArenaModeKey,
   ArenaModeStats,
 } from "@/types/tarkov";
+import {
+  ARENA_MODE_KEYS,
+  ARENA_RAW_COUNTERS,
+  type ArenaCounters,
+  type ArenaMetrics,
+  type ArenaModeKey as PublicArenaModeKey,
+  type ArenaModeStats as PublicArenaModeStats,
+  type ArenaOverallStats,
+  type ArenaProfile,
+}
+// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
+from "../types/arena.ts";
 // @ts-expect-error Node's strip-types runner needs the extension; Next can bundle it.
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
 
@@ -787,22 +799,28 @@ export function pveProfileDecision(profile: PlayerProfile): PveProfileDecision {
   };
 }
 
-function arenaCounter(group: ArenaCounterGroup | undefined, key: string): number {
+function arenaCounterValue(group: ArenaCounterGroup | undefined, key: string): number | null {
   const counters = group?.Counters;
-  if (!counters) return 0;
+  if (!counters) return null;
+  const valid = (value: unknown): number | null => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+    return key === "DamageDealt" || Number.isSafeInteger(value) ? value : null;
+  };
   const fromItems = (items: ArenaCounterItem[]) => {
     const item = items.find(
       ({ Key }) => Key === key || (Array.isArray(Key) && Key.length === 1 && Key[0] === key)
     );
-    const value = Number(item?.Value);
-    return Number.isFinite(value) ? value : 0;
+    return item ? valid(item.Value) : null;
   };
   if (Array.isArray(counters)) return fromItems(counters);
-  if (typeof counters !== "object") return 0;
+  if (typeof counters !== "object") return null;
   const items = (counters as { Items?: unknown }).Items;
   if (Array.isArray(items)) return fromItems(items as ArenaCounterItem[]);
-  const value = Number((counters as Record<string, unknown>)[key]);
-  return Number.isFinite(value) ? value : 0;
+  return valid((counters as Record<string, unknown>)[key]);
+}
+
+function arenaCounter(group: ArenaCounterGroup | undefined, key: string): number {
+  return arenaCounterValue(group, key) ?? 0;
 }
 
 const ARENA_MODES: readonly [ArenaModeKey, string][] = [
@@ -810,7 +828,131 @@ const ARENA_MODES: readonly [ArenaModeKey, string][] = [
   ["lastHero", "UnrankedLastHero"],
   ["checkpoint", "UnrankedCheckPoint"],
   ["blastGang", "UnrankedBlastGang"],
+  ["shootOutDuo", "UnrankedShootOutDuo"],
 ];
+
+const ARENA_COUNTER_KEYS = [
+  "matches",
+  "wins",
+  "losses",
+  "kills",
+  "deaths",
+  "assists",
+  "headshots",
+  "damage",
+  "round_mvp",
+  "match_mvp",
+  "current_kill_streak",
+  "max_kill_streak",
+  "current_win_streak",
+  "max_win_streak",
+  "current_loss_streak",
+  "max_loss_streak",
+] as const satisfies readonly (keyof ArenaCounters)[];
+
+const ARENA_ADDITIVE_COUNTER_KEYS = [
+  "matches", "wins", "losses", "kills", "deaths", "assists", "headshots", "damage", "round_mvp", "match_mvp",
+] as const satisfies readonly (keyof ArenaCounters)[];
+
+const ARENA_MAX_COUNTER_KEYS = [
+  "max_kill_streak", "max_win_streak", "max_loss_streak",
+] as const satisfies readonly (keyof ArenaCounters)[];
+
+function firstArenaCounter(group: ArenaCounterGroup | undefined, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = arenaCounterValue(group, key);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function arenaCounters(group: ArenaCounterGroup | undefined): ArenaCounters {
+  const matches = firstArenaCounter(group, ["GamesCount"]);
+  const wins = firstArenaCounter(group, ["ArenaWins"]);
+  const losses = firstArenaCounter(group, ["ArenaLoses"]);
+  return {
+    matches,
+    wins,
+    losses,
+    kills: firstArenaCounter(group, ["Kills"]),
+    deaths: firstArenaCounter(group, ["Deaths"]),
+    assists: firstArenaCounter(group, ["Assists"]),
+    headshots: firstArenaCounter(group, ["Headshots"]),
+    damage: firstArenaCounter(group, ["DamageDealt"]),
+    round_mvp: firstArenaCounter(group, ["RoundMvpCount"]),
+    match_mvp: firstArenaCounter(group, ["MatchMvpCount"]),
+    current_kill_streak: firstArenaCounter(group, ["KillsWithoutDeaths"]),
+    max_kill_streak: firstArenaCounter(group, ["MaxKillsWithoutDeaths"]),
+    current_win_streak: firstArenaCounter(group, ["WinStreak"]),
+    max_win_streak: firstArenaCounter(group, ["LongestWinStreak"]),
+    current_loss_streak: firstArenaCounter(group, ["LoseStreak"]),
+    max_loss_streak: firstArenaCounter(group, ["LongestLoseStreak"]),
+  };
+}
+
+function rate(numerator: number | null, denominator: number | null, percent = false): number | null {
+  if (numerator === null || denominator === null || denominator <= 0) return null;
+  const value = numerator / denominator * (percent ? 100 : 1);
+  if (!Number.isFinite(value) || value < 0 || (percent && value > 100)) return null;
+  return value;
+}
+
+function arenaMetrics(counters: ArenaCounters): ArenaMetrics {
+  return {
+    kd_ratio: rate(counters.kills, counters.deaths),
+    win_rate: rate(counters.wins, counters.matches, true),
+    headshot_rate: rate(counters.headshots, counters.kills, true),
+    kills_per_match: rate(counters.kills, counters.matches),
+    damage_per_match: rate(counters.damage, counters.matches),
+  };
+}
+
+function completeCounterSum(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
+  const values = modes.map((mode) => mode.counters[key]);
+  if (!values.every((value): value is number => value !== null)) return null;
+  const sum = values.reduce((total, value) => total + value, 0);
+  return Number.isFinite(sum) && sum >= 0 && (key === "damage" || Number.isSafeInteger(sum)) ? sum : null;
+}
+
+function completeCounterMax(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
+  const values = modes.map((mode) => mode.counters[key]);
+  if (!values.every((value): value is number => value !== null)) return null;
+  const max = Math.max(...values);
+  return Number.isFinite(max) && max >= 0 && (key === "damage" || Number.isSafeInteger(max)) ? max : null;
+}
+
+function completeModeCounters(modes: PublicArenaModeStats[]): ArenaCounters {
+  const counters = Object.fromEntries(ARENA_COUNTER_KEYS.map((key) => [key, null])) as unknown as ArenaCounters;
+  for (const key of ARENA_ADDITIVE_COUNTER_KEYS) counters[key] = completeCounterSum(modes, key);
+  for (const key of ARENA_MAX_COUNTER_KEYS) counters[key] = completeCounterMax(modes, key);
+  return counters;
+}
+
+function completeModeOverall(modes: PublicArenaModeStats[], hours: number | null): ArenaOverallStats {
+  const counters = completeModeCounters(modes);
+  const complete = ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] !== null);
+  return {
+    hours,
+    counters,
+    metrics: arenaMetrics(counters),
+    source: complete ? "complete_mode_sum" : "unavailable",
+  };
+}
+
+function overallWithFallback(
+  direct: ArenaCounterGroup | undefined,
+  modes: PublicArenaModeStats[],
+  hours: number | null,
+): ArenaOverallStats {
+  const summed = completeModeCounters(modes);
+  if (!direct) return completeModeOverall(modes, hours);
+  const directCounters = arenaCounters(direct);
+  const counters = Object.fromEntries(ARENA_COUNTER_KEYS.map((key) => [
+    key,
+    directCounters[key] ?? summed[key],
+  ])) as unknown as ArenaCounters;
+  return { hours, counters, metrics: arenaMetrics(counters), source: "upstream" };
+}
 
 /** Parses Arena's separate counter tree into the shared stored-stat envelope. */
 export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStats {
@@ -833,9 +975,13 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
   const totalKills = modes.reduce((sum, mode) => sum + mode.kills, 0);
   const totalDeaths = modes.reduce((sum, mode) => sum + mode.deaths, 0);
   const overall = counters?.UnrankedOverall;
-  const totalInGameTime = Number(profile.stat?.totalInGameTime);
+  const totalInGameTime = profile.stat?.totalInGameTime;
+  const validArenaTime = typeof totalInGameTime === "number" && Number.isFinite(totalInGameTime) && totalInGameTime >= 0;
+  const arenaHours = validArenaTime
+    ? totalInGameTime / 3600
+    : null;
   const hoursPlayed = round(
-    Number.isFinite(totalInGameTime) && totalInGameTime > 0 ? totalInGameTime / 3600 : 0,
+    validArenaTime && totalInGameTime > 0 ? totalInGameTime / 3600 : 0,
     1
   );
   const arena = {
@@ -850,6 +996,37 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     kdRatio: round(totalDeaths > 0 ? totalKills / totalDeaths : totalKills),
     modes,
   };
+  const publicModes = Object.fromEntries(
+    ARENA_MODES.map(([mode, upstreamKey]) => {
+      const modeCounters = arenaCounters(counters?.[upstreamKey] as ArenaCounterGroup | undefined);
+      const value: PublicArenaModeStats = {
+        mode: mode as PublicArenaModeKey,
+        hours: null,
+        counters: modeCounters,
+        metrics: arenaMetrics(modeCounters),
+      };
+      return [mode, value];
+    })
+  ) as Record<PublicArenaModeKey, PublicArenaModeStats>;
+  const directOverall = counters?.UnrankedOverall;
+  const publicOverall = overallWithFallback(
+    directOverall,
+    ARENA_MODE_KEYS.map((mode) => publicModes[mode]),
+    arenaHours,
+  );
+  const arenaProfile: ArenaProfile = {
+    aid: Number(profile.aid) || 0,
+    nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
+    profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
+    fetchedAt: null,
+    parserVersion: 1,
+    overall: publicOverall,
+    modes: publicModes,
+  };
+  arenaProfile[ARENA_RAW_COUNTERS] = Object.fromEntries([
+    ["overall", directOverall ?? null],
+    ...ARENA_MODES.map(([mode, upstreamKey]) => [mode, counters?.[upstreamKey] ?? null]),
+  ]);
 
   return {
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
@@ -889,6 +1066,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     avgLifespan: 0,
     totalLootValue: 0,
     arena,
+    arenaProfile,
   };
 }
 

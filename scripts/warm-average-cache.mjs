@@ -5,7 +5,8 @@ const intervalMs = Number.isFinite(configuredInterval) && configuredInterval > 0
   : 25 * 60_000;
 const retryDelayMs = 2_000;
 const maxAttempts = 60;
-const modes = ["regular", "pve", "arena"];
+const modes = ["regular", "pve"];
+const arenaModes = ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"];
 const statistics = ["trimmed_mean", "median"];
 const periods = ["all", "90d"];
 let running = false;
@@ -46,12 +47,26 @@ function seasonalAveragePath(cycle, statistic, period) {
   return `/api/seasonal/average?${params}`;
 }
 
+function arenaAveragePath(arenaMode, statistic) {
+  const params = new URLSearchParams({
+    mode: "arena",
+    arenaMode,
+    dimension: "matches",
+    metric: "players",
+    statistic,
+  });
+  return `/api/average?${params}`;
+}
+
 async function warmAverageCache() {
   for (const statistic of statistics) {
     for (const mode of modes) {
-      for (const period of mode === "regular" || mode === "pve" ? periods : ["all"]) {
+      for (const period of periods) {
         await request(averagePath(mode, statistic, period));
       }
+    }
+    for (const arenaMode of arenaModes) {
+      await request(arenaAveragePath(arenaMode, statistic));
     }
   }
 

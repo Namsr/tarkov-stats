@@ -95,7 +95,7 @@ test("D1 population storage publishes the same versioned snapshot contract", asy
   assert.equal(current!.generation, 200);
   assert.equal(current!.generated_at, 200);
   assert.match(String(db.prepare("SELECT payload FROM progression_population_generations").get()!.payload), /^chunks:\d+$/);
-  const chunks = db.prepare("SELECT payload FROM progression_population_chunks ORDER BY chunk_index").all();
+  const chunks = db.prepare("SELECT payload FROM progression_population_chunks ORDER BY chunk_index").all() as { payload: unknown }[];
   assert.ok(chunks.length > 0);
   assert.ok(chunks.every((row) => String(row.payload).length <= D1_POPULATION_CHUNK_CHARS));
   assert.ok(chunks.every((row) => Buffer.byteLength(String(row.payload), "utf8") < 2_000_000));
@@ -233,14 +233,12 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
     { all_intervals: 1, changed_intervals: 1, raid_intervals: 1, tempo_points: 1, form_points: 1 },
     1, population,
   ] as const;
-  // @ts-expect-error Compact fixture intentionally uses the private database row shapes.
   const ready = await assembleProgressionTimeline(...args);
   assert.ok((ready.risk.progression ?? 0) > 0, "shared percentiles rank the extreme interval above its population");
   assert.ok(ready.risk.markers.length > 0);
 
   const withoutAchievement = structuredClone(args);
   withoutAchievement[4].achievements = "[]";
-  // @ts-expect-error Compact fixture intentionally uses the private database row shapes.
   const plain = await assembleProgressionTimeline(...withoutAchievement);
   assert.ok(ready.risk.static > plain.risk.static, "materialized achievement baseline remains part of static risk");
 });

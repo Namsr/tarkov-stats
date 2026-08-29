@@ -80,7 +80,7 @@ test("global AID D1 migration deterministically merges existing identity duplica
     ('user-1', 'arena', 'persistent', 42, NULL, NULL, 0, 300)`).run(), /UNIQUE constraint failed/);
   assert.deepEqual(
     db.prepare("SELECT aid FROM favorites WHERE user_sub = 'user-1' AND is_main = 1").all()
-      .map((entry) => Number((entry as { aid: number }).aid)),
+      .map((entry: { aid: number }) => Number(entry.aid)),
     [43],
   );
   assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'favorites_global'").get(), undefined);

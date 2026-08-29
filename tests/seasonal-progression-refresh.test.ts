@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
+// @ts-expect-error -- Node's strip-types runner resolves the explicit .ts module.
 import { createSqliteSeasonalOperatorStore, normalizeProgressionRefreshCandidates } from "../lib/seasonal/operator.ts";
+// @ts-expect-error -- Node's strip-types runner resolves the explicit .ts module.
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
+// @ts-expect-error -- Node's strip-types runner resolves the explicit .ts module.
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 
 class FakeD1Statement {

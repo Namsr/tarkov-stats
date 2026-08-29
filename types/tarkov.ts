@@ -1,3 +1,7 @@
+import type { ArenaModeKey as ArenaModeKeyValue, ArenaProfile } from "./arena";
+
+export type ArenaModeKey = ArenaModeKeyValue;
+
 export interface PlayerSearchResult {
   aid: number;
   name: string;
@@ -50,8 +54,6 @@ export interface PlayerProfile {
   [key: string]: unknown;
 }
 
-export type ArenaModeKey = "teamFight" | "lastHero" | "checkpoint" | "blastGang";
-
 export interface ArenaCounterGroup {
   Counters?: Record<string, unknown> | ArenaCounterItem[] | { Items?: ArenaCounterItem[] };
   [key: string]: unknown;
@@ -68,6 +70,7 @@ export interface ArenaOverallCounters {
   UnrankedLastHero?: ArenaCounterGroup;
   UnrankedCheckPoint?: ArenaCounterGroup;
   UnrankedBlastGang?: ArenaCounterGroup;
+  UnrankedShootOutDuo?: ArenaCounterGroup;
   [key: string]: unknown;
 }
 
@@ -192,6 +195,8 @@ export interface ParsedPlayerStats {
   avgLifespan: number;
   totalLootValue: number;
   arena?: ArenaStats;
+  /** Arena's independent public model. `arena` above remains for older readers. */
+  arenaProfile?: ArenaProfile;
   /** Normalized profile.skills.Mastering rows retained for stored PvE views. */
   weaponMastery?: WeaponMasteryProgress[];
   [key: string]: unknown;

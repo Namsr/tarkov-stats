@@ -284,7 +284,9 @@ function banSources(db: SqliteDatabase, aid: number): string[] {
 
 function automaticSuspiciousAids(db: SqliteDatabase): number[] {
   const aids = new Set<number>();
-  for (const row of db.prepare("SELECT DISTINCT aid FROM risk_evaluations WHERE score >= 20").all() as { aid: number }[]) {
+  // Arena scores use a separate display-only model. Keep old rows readable,
+  // but never let them create a legacy automatic moderation candidate.
+  for (const row of db.prepare("SELECT DISTINCT aid FROM risk_evaluations WHERE mode <> 'arena' AND score >= 20").all() as { aid: number }[]) {
     aids.add(Number(row.aid));
   }
   if (tableExists(db, "bans_db", "banned_accounts")) {
@@ -364,7 +366,7 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       const latestRisks = db.prepare(`SELECT * FROM (
           SELECT r.*, ROW_NUMBER() OVER (
             PARTITION BY aid ORDER BY score DESC, evaluated_at DESC, mode, cycle_id
-          ) rank FROM risk_evaluations r WHERE aid IN (${placeholders})
+          ) rank FROM risk_evaluations r WHERE aid IN (${placeholders}) AND mode <> 'arena'
         ) WHERE rank = 1`)
         .all(...valid) as Record<string, unknown>[];
       const riskByAid = new Map(latestRisks.map((row) => [Number(row.aid), riskFromRow(row)]));

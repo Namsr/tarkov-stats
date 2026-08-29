@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// @ts-expect-error Node's strip-types test runner resolves the explicit .ts extension.
 import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
   comparisonRangeFor,
   makeComparisonCohortResult,
   selectComparisonPercent,
+// @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts extension.
 } from "../lib/profile-cohort.ts";
 
 test("comparison cohort uses the same mandatory two-dimensional ranges", () => {

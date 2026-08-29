@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import LegacyAveragePage from "@/app/average/page";
+import ArenaAverage from "@/components/ArenaAverage";
 import ModeUnavailable from "@/components/ModeUnavailable";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { cumulativeLevelBands } from "@/lib/seasonal/ui";
@@ -25,6 +26,7 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   if (mode === "regular" || mode === "pve") {
     return <LegacyAveragePage mode={mode} levelBands={levelBands} />;
   }
+  if (mode === "arena") return <ArenaAverage />;
   if (mode !== "seasonal") return <LegacyAveragePage mode={mode} />;
   const cycle = loadSeasonalCycleConfig();
   const requestedCycle = (await searchParams).cycle;

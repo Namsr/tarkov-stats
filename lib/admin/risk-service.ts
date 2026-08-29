@@ -9,6 +9,14 @@ import type { AchievementBaseline } from "@/lib/db";
 
 export const ADMIN_RISK_SCORE_VERSION = 1;
 
+/** Arena risk has its own display-only model and must not enter legacy moderation. */
+export class ArenaRiskUnsupportedError extends TypeError {
+  constructor() {
+    super("Arena risk is display-only");
+    this.name = "ArenaRiskUnsupportedError";
+  }
+}
+
 /** Computes and stores one profile risk snapshot; callers may safely run this via Next after(). */
 export async function evaluateAndStoreRisk(input: {
   aid: number;
@@ -21,6 +29,7 @@ export async function evaluateAndStoreRisk(input: {
   evaluatedAt?: number;
 }): Promise<CheaterScoreResult> {
   if (!Number.isSafeInteger(input.aid) || input.aid <= 0) throw new TypeError("invalid aid");
+  if (input.mode === "arena") throw new ArenaRiskUnsupportedError();
   const bracket = bracketFor(input.stats.hoursPlayed);
   let baseline: Baseline | null = null;
   let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;

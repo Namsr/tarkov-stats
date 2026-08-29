@@ -28,6 +28,7 @@ import {
   loadPlayerProfileResponse,
   PlayerProfileResponseError,
 } from "@/lib/client-profile-request";
+import ArenaPlayer from "@/components/ArenaPlayer";
 
 interface Props {
   aid: string;
@@ -110,7 +111,7 @@ function ProfileActions({
   );
 }
 
-export default function RegularPlayer({
+function LegacyPlayer({
   aid,
   radarDemo: radarDemoValue,
   mode = "regular",
@@ -779,4 +780,9 @@ export default function RegularPlayer({
       )}
     </main>
   );
+}
+
+export default function RegularPlayer(props: Props & { mode?: CrossSectionMode }) {
+  if (props.mode === "arena") return <ArenaPlayer aid={props.aid} radarDemo={props.radarDemo} />;
+  return <LegacyPlayer {...props} />;
 }

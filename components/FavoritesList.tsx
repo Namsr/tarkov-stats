@@ -7,10 +7,11 @@ import { useFavorites } from "@/lib/favorites/context";
 import RefreshButton from "@/components/RefreshButton";
 import type { Favorite, FavoriteIdentity } from "@/lib/db";
 import { favoriteHref, favoriteKey } from "@/lib/favorites/identity";
-import type { ParsedPlayerStats } from "@/types/tarkov";
+import type { ArenaCardStats } from "@/components/arena-ui";
+import { arenaMetricValue, formatArenaMetric, parsedStats, toArenaProfile } from "@/components/arena-ui";
 
 interface Props {
-  statsByFavorite: Map<string, ParsedPlayerStats | null>;
+  statsByFavorite: Map<string, ArenaCardStats>;
   /** True until the first /favorites/stats load resolves. */
   statsLoading: boolean;
 }
@@ -48,7 +49,7 @@ function FavoriteRow({
   onSetMain,
 }: {
   fav: Favorite;
-  stats: ParsedPlayerStats | null;
+  stats: ArenaCardStats;
   statsLoading: boolean;
   onRemove: (aid: number, identity?: FavoriteIdentity) => void;
   onSetNote: (aid: number, note: string | null, identity?: FavoriteIdentity) => void;
@@ -71,11 +72,24 @@ function FavoriteRow({
     onSetNote(fav.aid, next || null, identity);
   }
 
-  const quick = stats
-    ? `${t("compare.kdRatio")} ${stats.kdRatio.toFixed(2)} · ${Math.round(stats.hoursPlayed).toLocaleString()} ${t("unit.h")} · ${stats.survivalRate}%`
-    : statsLoading
-    ? t("common.loading")
-    : t("profile.statsUnavailable");
+  const legacy = parsedStats(stats);
+  const arena = fav.mode === "arena" ? toArenaProfile(stats, fav.aid) : null;
+  const arenaIsLegacy = arena?.parserVersion === 0;
+  const arenaKdRatio = arena ? arenaMetricValue(arena.overall, "kd_ratio") : null;
+  const arenaKdLabel = arenaIsLegacy && (arenaKdRatio == null || arenaKdRatio <= 0)
+    ? t("common.notAvailable")
+    : formatArenaMetric(arenaKdRatio, "kd_ratio");
+  const quick = arena
+    ? `${arenaIsLegacy ? `${t("arena.profile.legacyIncomplete")} · ` : ""}${t("arena.metric.kd_ratio")} ${arenaKdLabel} · ${arena.overall.counters.matches == null ? t("common.notAvailable") : arena.overall.counters.matches.toLocaleString()} ${t("arena.counter.matches")} · ${arena.overall.hours == null ? t("common.notAvailable") : Math.round(arena.overall.hours).toLocaleString()} ${t("unit.h")}`
+    : fav.mode === "arena"
+      ? statsLoading
+        ? t("common.loading")
+        : t("profile.statsUnavailable")
+      : legacy
+      ? `${t("compare.kdRatio")} ${legacy.kdRatio.toFixed(2)} · ${Math.round(legacy.hoursPlayed).toLocaleString()} ${t("unit.h")} · ${legacy.survivalRate}%`
+      : statsLoading
+        ? t("common.loading")
+        : t("profile.statsUnavailable");
 
   return (
     <li className="data-panel p-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -102,7 +116,7 @@ function FavoriteRow({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 shrink-0">
-        {fav.mode === "regular" && <RefreshButton aid={fav.aid} />}
+        {(fav.mode === "regular" || fav.mode === "arena") && <RefreshButton aid={fav.aid} mode={fav.mode} />}
         <input
           value={note}
           onChange={(e) => setNoteLocal(e.target.value)}

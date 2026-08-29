@@ -12,6 +12,7 @@ export {
   type PveProfileDecision,
 } from "@/lib/tarkov-api";
 import { getStore } from "@/lib/db";
+import { persistArenaProfile } from "@/lib/arena/service";
 import { makePlayerSnapshot, type PlayerSnapshotInput } from "@/lib/ban-db";
 import { isGameMode } from "@/types/seasonal";
 import type { CrossSectionMode } from "@/lib/db";
@@ -116,7 +117,9 @@ export async function snapshotFromOperatorProfile(
     : [];
 
   const shouldStore = payload.mode !== "pve" || pveProfileDecision(payload.profile).state === "store";
-  if (options.upsertPlayer !== false && shouldStore) {
+  if (payload.mode === "arena" && options.upsertPlayer !== false) {
+    await persistArenaProfile(payload.profile);
+  } else if (options.upsertPlayer !== false && shouldStore) {
     const store = await getStore(payload.mode);
     if (!store) throw new Error("player store unavailable");
     await store.upsert(payload.aid, stats, achievementIds);

@@ -1,12 +1,11 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
 import RangeSlider from "@/components/RangeSlider";
 import RegularAverageProgression from "@/components/RegularAverageProgression";
-import CompactDetails from "@/components/CompactDetails";
+import AveragePageHeader from "@/components/AveragePageHeader";
 import SegmentedRadio from "@/components/SegmentedRadio";
 import StatCard from "@/components/StatCard";
 import {
@@ -18,7 +17,6 @@ import {
 } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY, Y_METRICS } from "@/lib/metrics";
-import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { LevelBand } from "@/lib/seasonal/ui";
 import type { GameMode } from "@/types/seasonal";
@@ -388,66 +386,14 @@ function AveragePageContent({
 
   return (
     <main className="page-frame">
-      <Link
-        href="/"
-        className="inline-block text-sm text-[var(--muted)] transition-colors hover:text-[var(--foreground)]"
-      >
-        {t("common.back")}
-      </Link>
-      <p className="page-kicker mt-7">{t("average.summary")}</p>
-      <h1 className="page-title">{t("nav.average")}</h1>
-
-      <section className="average-settings data-panel" aria-label={t("average.settings")}>
-        <div className="average-settings__top">
-          <div className="average-settings__groups">
-            <SegmentedRadio
-              name="average-statistic"
-              legend={t("average.statistic.label")}
-              value={statistic}
-              options={[
-                { value: "trimmed_mean", label: t("average.statistic.trimmedMean") },
-                { value: "median", label: t("average.statistic.median") },
-              ]}
-              onChange={changeStatistic}
-            />
-            <SegmentedRadio
-                name="average-period"
-                legend={t("average.period.label")}
-                value={period}
-                options={[
-                  { value: "all", label: t("average.period.all") },
-                  { value: "90d", label: t("average.period.last90Days") },
-                ]}
-                onChange={changePeriod}
-            />
-          </div>
-          <div className="average-settings__mode">
-            <span>{t("mode.selectorAria")}</span>
-            <ProfileModeSwitch
-              current={mode}
-              page="average"
-              onBeforeNavigate={cancelAverageRequests}
-            />
-          </div>
-        </div>
-        <CompactDetails summary={t("average.calculation.help")}>
-          <div className="grid gap-3">
-            <p>
-              <strong className="block text-[var(--foreground)]">
-                {t("average.statistic.trimmedMean")}
-              </strong>
-              {t("average.trimmedMeanNote")}
-            </p>
-            <p>
-              <strong className="block text-[var(--foreground)]">
-                {t("average.statistic.median")}
-              </strong>
-              {t("average.medianNote")}
-            </p>
-            <p>{t("average.period.note")}</p>
-          </div>
-        </CompactDetails>
-      </section>
+      <AveragePageHeader
+        current={mode}
+        statistic={statistic}
+        onStatisticChange={changeStatistic}
+        period={period}
+        onPeriodChange={changePeriod}
+        onBeforeNavigate={cancelAverageRequests}
+      />
 
       <section className="summary-strip surface">
         <div className="summary-strip__copy">

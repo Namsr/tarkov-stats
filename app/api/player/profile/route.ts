@@ -5,7 +5,6 @@ import {
   getAchievements,
   getWeaponMastery,
   safeAchievementImageUrl,
-  parseArenaProfileStats,
   parseProfileStats,
   pveProfileDecision,
 } from "@/lib/tarkov-api";
@@ -40,9 +39,11 @@ import {
   buildRegularComparisonStats,
   buildSeasonalComparisonStats,
 } from "@/lib/profile-comparison";
+import { getArenaProfile, getArenaProfileRisk, persistArenaProfile } from "@/lib/arena/service";
 
 const PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
 type PersistentMode = "regular" | "pve";
+type ArenaLegacySnapshot = Awaited<ReturnType<NonNullable<Awaited<ReturnType<typeof getStore>>>["stored"]>>;
 const persistentAchievementBaselineCache = new Map<PersistentMode, {
   value: AchievementBaseline | null;
   expiresAt: number;
@@ -167,6 +168,129 @@ async function enrichRegularViewModel(
   viewModel: ReturnType<typeof buildRegularProfileViewModel>,
 ) {
   return enrichPersistentViewModel("regular", viewModel);
+}
+
+async function arenaProfileResponse(input: {
+  aid: number;
+  cycleId: string;
+  force: boolean;
+  profileHeaders: HeadersInit;
+  noStore: HeadersInit;
+  timing: ReturnType<typeof createRequestTiming>;
+}) {
+  const { aid, cycleId, force, profileHeaders, noStore, timing } = input;
+  let source: "stored" | "upstream" | "cache" = "stored";
+  let profile: PlayerProfile | null = null;
+  let capture = { inserted: false, status: "stored" };
+  let profileMs: number | undefined;
+  let stored: Awaited<ReturnType<typeof getArenaProfile>> = null;
+  let legacy: ArenaLegacySnapshot = null;
+  const legacyResponse = (snapshot: NonNullable<ArenaLegacySnapshot>) => {
+    timing.setRequestContext({ nickname: snapshot.stats.nickname });
+    timing.finish({
+      operation: "player_profile", mode: "arena", outcome: "success", status: 200, force,
+      source: "stored", cache: "hit", storage: "sqlite", profileMs,
+    });
+    return NextResponse.json({
+      profile: null,
+      stats: snapshot.stats,
+      achievementIds: snapshot.achievementIds,
+      arena: null,
+      arenaStatus: "legacy_incomplete",
+      risk: null,
+      identity: { aid, mode: "arena", cycleId },
+      profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null,
+      capture: { inserted: false, status: "legacy_incomplete" },
+      freshness: {
+        fetchedAt: snapshot.capturedAt,
+        profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null,
+      },
+    }, { headers: force ? noStore : profileHeaders });
+  };
+
+  try {
+    stored = await getArenaProfile(aid);
+    if (!stored) {
+      const store = await getStore("arena");
+      legacy = store ? await store.stored(aid) : null;
+      // A legacy row cannot fill the normalized Arena DTO, but it remains a
+      // useful display snapshot until the collector (or an explicit refresh)
+      // reparses it. Never make this non-forced read wait on upstream.
+      if (legacy && !force) return legacyResponse(legacy);
+    }
+    if (force || !stored) {
+      const started = timing.now();
+      const fetched = await getPublicProfile(aid, { force, mode: "arena" });
+      profileMs = timing.elapsedMs(started);
+      profile = fetched.profile;
+      source = fetched.fromCache || fetched.fromEdgeCache ? "cache" : "upstream";
+      if (profile) {
+        await persistArenaProfile(profile);
+        stored = await getArenaProfile(aid);
+        if (!stored) throw new Error("Arena profile was not stored");
+        capture = { inserted: !fetched.fromCache && !fetched.fromEdgeCache, status: "updated" };
+      }
+    }
+    if (!stored) {
+      if (legacy) return legacyResponse(legacy);
+      timing.finish({ operation: "player_profile", mode: "arena", outcome: "not_found", status: 404, force, source, profileMs });
+      return NextResponse.json({
+        identity: { aid, mode: "arena", cycleId },
+        code: "mode_profile_unavailable",
+        error: "Arena profile is not available in the public cache",
+      }, { status: 404, headers: noStore });
+    }
+    const risk = await getArenaProfileRisk(aid).catch((error) => {
+      console.error("Arena display risk failed", error);
+      return null;
+    });
+    timing.setRequestContext({ nickname: stored.nickname });
+    timing.finish({
+      operation: "player_profile", mode: "arena", outcome: "success", status: 200, force, source,
+      cache: force ? "bypass" : source === "stored" ? "hit" : source === "cache" ? "hit" : "miss",
+      storage: "sqlite", profileMs,
+    });
+    return NextResponse.json({
+      profile,
+      arena: stored,
+      risk,
+      identity: { aid, mode: "arena", cycleId },
+      profileUpdatedAt: stored.profileUpdatedAt || null,
+      capture,
+      freshness: {
+        fetchedAt: stored.fetchedAt,
+        profileUpdatedAt: stored.profileUpdatedAt || null,
+      },
+    }, { headers: profileHeaders });
+  } catch (error) {
+    console.error("Arena profile load failed", error);
+    if (stored) {
+      const risk = await getArenaProfileRisk(aid).catch(() => null);
+      timing.setRequestContext({ nickname: stored.nickname });
+      timing.finish({
+        operation: "player_profile", mode: "arena", outcome: "success", status: 200, force,
+        source: "stored", cache: "hit", storage: "sqlite", profileMs,
+      });
+      return NextResponse.json({
+        profile: null,
+        arena: stored,
+        risk,
+        identity: { aid, mode: "arena", cycleId },
+        profileUpdatedAt: stored.profileUpdatedAt || null,
+        capture: { inserted: false, status: "refresh_failed" },
+        freshness: {
+          fetchedAt: stored.fetchedAt,
+          profileUpdatedAt: stored.profileUpdatedAt || null,
+        },
+      }, { headers: noStore });
+    }
+    if (legacy) return legacyResponse(legacy);
+    timing.finish({ operation: "player_profile", mode: "arena", outcome: "error", status: 503, force, source, profileMs });
+    return NextResponse.json({ error: "Failed to load Arena profile", identity: { aid, mode: "arena", cycleId } }, {
+      status: 503,
+      headers: noStore,
+    });
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -305,7 +429,10 @@ export async function GET(request: NextRequest) {
     });
     return response;
   }
-  if (mode === "pve" || mode === "arena") {
+  if (mode === "arena") {
+    return arenaProfileResponse({ aid, cycleId, force, profileHeaders, noStore, timing });
+  }
+  if (mode === "pve") {
     let storeOpenMs: number | undefined;
     let storeReadMs: number | undefined;
     let storeWriteMs: number | undefined;
@@ -370,39 +497,12 @@ export async function GET(request: NextRequest) {
         }, { headers: profileHeaders });
       };
       const storedResponse = async (snapshot: NonNullable<typeof stored>) => {
-        if (mode === "pve") {
-          const response = await pveResponse({
-            ...snapshot,
-            capturedAt: null,
-            capture: { inserted: false, status: "stored" },
-          });
-          timing.setRequestContext({ nickname: snapshot.stats.nickname });
-          timing.finish({
-            operation: "player_profile",
-            mode,
-            outcome: "success",
-            status: 200,
-            force,
-            source: "stored",
-            cache: force ? "bypass" : "hit",
-            storage,
-            storeOpenMs,
-            storeReadMs,
-            profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
-          });
-          return response;
-        }
-        after(() => evaluateAndStoreRisk({ aid, mode, cycleId, ...snapshot }).catch((error) => {
-          console.error("stored admin risk evaluation failed", error);
-        }));
+        const response = await pveResponse({
+          ...snapshot,
+          capturedAt: null,
+          capture: { inserted: false, status: "stored" },
+        });
         timing.setRequestContext({ nickname: snapshot.stats.nickname });
-        const response = NextResponse.json(
-          {
-            ...snapshot,
-            profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || null,
-          },
-          { headers: profileHeaders }
-        );
         timing.finish({
           operation: "player_profile",
           mode,
@@ -465,86 +565,36 @@ export async function GET(request: NextRequest) {
         return response;
       }
       const parseStarted = timing.now();
-      const stats = mode === "arena"
-        ? parseArenaProfileStats(profile)
-        : parseProfileStats(profile, mode === "pve" ? [...PLAYER_LEVELS_V2026_07_22] : []);
+      const stats = parseProfileStats(profile, [...PLAYER_LEVELS_V2026_07_22]);
       parseMs = timing.elapsedMs(parseStarted);
       stats.profileUpdatedAt = Number(profile.updated) || 0;
       const achievementIds = profile.achievements ? Object.keys(profile.achievements) : [];
-      if (mode === "pve") {
-        const decision = pveProfileDecision(profile);
-        let capture: { inserted: boolean; status: string };
-        let capturedAt: number | null = null;
-        if (decision.state === "store") {
-          if (!store) throw new Error("player store unavailable");
-          const pveSnapshot = makePlayerSnapshot(
-            aid,
-            stats,
-            achievementIds,
-            Number(stats.profileUpdatedAt),
-          );
-          capturedAt = pveSnapshot.capturedAt;
-          const storeWriteStarted = timing.now();
-          try {
-            const persisted = await persistRegularProfileSnapshot(pveSnapshot, {
-              mode: "pve",
-              playerStore: store,
-            });
-            capture = persisted ?? { inserted: false, status: "unavailable" };
-          } finally {
-            storeWriteMs = timing.elapsedMs(storeWriteStarted);
-          }
-        } else {
-          capture = { inserted: false, status: decision.state };
-        }
-        const response = await pveResponse({
-          profile,
+      const decision = pveProfileDecision(profile);
+      let capture: { inserted: boolean; status: string };
+      let capturedAt: number | null = null;
+      if (decision.state === "store") {
+        if (!store) throw new Error("player store unavailable");
+        const pveSnapshot = makePlayerSnapshot(
+          aid,
           stats,
           achievementIds,
-          capturedAt,
-          capture,
-        });
-        timing.setRequestContext({ nickname: stats.nickname });
-        timing.finish({
-          operation: "player_profile",
-          mode,
-          outcome: "success",
-          status: 200,
-          force,
-          source,
-          cache,
-          storage,
-          storeOpenMs,
-          storeReadMs,
-          storeWriteMs,
-          profileMs,
-          levelsMs,
-          parseMs,
-        });
-        return response;
-      }
-      after(() => evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
-        console.error("mode admin risk evaluation failed", error);
-      }));
-      const shouldStore = mode === "arena";
-      if (shouldStore) {
-        if (!store) throw new Error("player store unavailable");
+          Number(stats.profileUpdatedAt),
+        );
+        capturedAt = pveSnapshot.capturedAt;
         const storeWriteStarted = timing.now();
         try {
-          await store.upsert(aid, stats, achievementIds);
+          const persisted = await persistRegularProfileSnapshot(pveSnapshot, {
+            mode: "pve",
+            playerStore: store,
+          });
+          capture = persisted ?? { inserted: false, status: "unavailable" };
         } finally {
           storeWriteMs = timing.elapsedMs(storeWriteStarted);
         }
+      } else {
+        capture = { inserted: false, status: decision.state };
       }
-      const response = NextResponse.json(
-        {
-          profile,
-          stats,
-          achievementIds,
-          profileUpdatedAt: Number(profile.updated) || null,
-        },
-        { headers: profileHeaders }
-      );
+      const response = await pveResponse({ profile, stats, achievementIds, capturedAt, capture });
       timing.setRequestContext({ nickname: stats.nickname });
       timing.finish({
         operation: "player_profile",

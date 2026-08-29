@@ -142,7 +142,8 @@ if (playersDb) {
       scored += 1;
     }
     for (const row of playersDb.prepare(`SELECT p.* FROM mode_players p
-      WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
+      WHERE p.mode = 'pve'
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
       await scoreRow(row, String(row.mode), "persistent");
       scored += 1;
     }

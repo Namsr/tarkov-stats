@@ -11,6 +11,9 @@ import {
 } from "./regular-profile-sync-core.mjs";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+// Keep this queue target in lockstep with lib/arena/storage.ts. The collector
+// runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
+const ARENA_PARSER_VERSION = 1;
 
 const runId = randomUUID();
 const config = {
@@ -27,7 +30,9 @@ const config = {
   dbBusyTimeoutMs: envInteger("ARENA_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS", 30_000, 10, 300_000),
   dbBusyRetries: envInteger("ARENA_PROFILE_SYNC_DB_BUSY_RETRIES", 2, 0, 10),
   maxRunMs: envInteger("ARENA_PROFILE_SYNC_MAX_RUN_MS", 12 * 60_000, 60_000, 13 * 60_000),
+  maxCompleted: envOptionalPositiveInteger("ARENA_PROFILE_SYNC_MAX_COMPLETED"),
   leaseMs: envInteger("ARENA_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
+  schemaVersion: ARENA_PARSER_VERSION,
 };
 
 const db = new DatabaseSync(config.dbPath);
@@ -37,9 +42,10 @@ db.exec("PRAGMA synchronous = NORMAL");
 
 let leaseHeld = false;
 let stopping = false;
+let stopReason = null;
 let nextRequestAt = 0;
-process.once("SIGINT", () => { stopping = true; });
-process.once("SIGTERM", () => { stopping = true; });
+process.once("SIGINT", () => { stopping = true; stopReason = "signal"; });
+process.once("SIGTERM", () => { stopping = true; stopReason = "signal"; });
 
 main().catch((error) => {
   log("FATAL", { error: message(error) });
@@ -76,7 +82,13 @@ async function main() {
       SUM(CASE WHEN p.aid IS NOT NULL THEN 1 ELSE 0 END) AS current
     FROM arena_player_index i
     LEFT JOIN excluded_players e ON e.aid = i.aid
-    LEFT JOIN mode_players p ON p.mode = 'arena' AND p.aid = i.aid
+    LEFT JOIN (
+      SELECT aid FROM arena_mode_stats
+      GROUP BY aid
+      HAVING COUNT(DISTINCT arena_mode) = 6
+        AND SUM(CASE WHEN arena_mode = 'overall' THEN 1 ELSE 0 END) = 1
+        AND MIN(parser_version) >= ${config.schemaVersion}
+    ) p ON p.aid = i.aid
     WHERE i.mode = 'arena' AND e.aid IS NULL
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.current);
@@ -89,6 +101,7 @@ async function main() {
     statuses,
     backlog: Number(statuses.pending ?? 0) + Number(statuses.error ?? 0),
     stopped: stopping,
+    stopReason,
     durationMs: Date.now() - startedAt,
   };
   await saveRunMeta(summary);
@@ -114,6 +127,7 @@ function initSchema() {
     CREATE TABLE IF NOT EXISTS arena_profile_sync_queue (
       aid INTEGER PRIMARY KEY,
       feed_updated_at INTEGER NOT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'not_found', 'stale', 'error')),
       attempts INTEGER NOT NULL DEFAULT 0,
       http_status INTEGER,
@@ -133,6 +147,11 @@ function initSchema() {
       value TEXT NOT NULL
     );
   `);
+  const queueColumns = new Set(db.prepare("PRAGMA table_info(arena_profile_sync_queue)").all()
+    .map((row) => String(row.name)));
+  if (!queueColumns.has("schema_version")) {
+    db.exec("ALTER TABLE arena_profile_sync_queue ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 async function acquireLease() {
@@ -152,11 +171,32 @@ async function heartbeat() {
   if (Number(result.changes) !== 1) throw new Error("Arena profile sync lease was lost");
 }
 
+function trackedArenaProfiles() {
+  const normalized = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_mode_stats'"
+  ).get();
+  if (normalized) {
+    return new Map(db.prepare(`SELECT aid, MAX(upstream_version) AS upstream_version,
+      MIN(parser_version) AS parser_version
+      FROM arena_mode_stats
+      GROUP BY aid
+      HAVING COUNT(DISTINCT arena_mode) = 6
+        AND SUM(CASE WHEN arena_mode = 'overall' THEN 1 ELSE 0 END) = 1`).all().map((row) => [Number(row.aid), {
+      updatedAt: Number(row.upstream_version) || 0,
+      schemaVersion: Number(row.parser_version) || 0,
+    }]));
+  }
+  // Legacy rows have no complete raw Arena counter tree. Treat them as an old
+  // parser so the next indexed or feed-discovered profile is fetched again.
+  return new Map(db.prepare(`SELECT aid, profile_updated_at FROM mode_players WHERE mode = 'arena'`)
+    .all().map((row) => [Number(row.aid), {
+      updatedAt: Number(row.profile_updated_at) || 0,
+      schemaVersion: 0,
+    }]));
+}
+
 async function loadFeed() {
-  const tracked = new Map(db.prepare(`
-    SELECT aid, profile_updated_at
-    FROM mode_players WHERE mode = 'arena'
-  `).all().map((row) => [Number(row.aid), Number(row.profile_updated_at) || 0]));
+  const tracked = trackedArenaProfiles();
   const excluded = new Set(db.prepare("SELECT aid FROM excluded_players").all().map((row) => Number(row.aid)));
   let counters;
   let pendingVersions;
@@ -174,8 +214,14 @@ async function loadFeed() {
   for (const row of indexRows) {
     const aid = Number(row.aid);
     if (!Number.isSafeInteger(aid) || aid <= 0 || excluded.has(aid)) continue;
-    if ((tracked.get(aid) ?? 0) <= 0 && !pendingVersions.has(aid)) {
-      pendingVersions.set(aid, { feedUpdatedAt: 1, kind: "index", snapshotUpdatedAt: tracked.get(aid) ?? null });
+    const snapshot = tracked.get(aid);
+    if ((!snapshot || snapshot.updatedAt <= 0 || snapshot.schemaVersion < config.schemaVersion) && !pendingVersions.has(aid)) {
+      pendingVersions.set(aid, {
+        feedUpdatedAt: Math.max(1, snapshot?.updatedAt ?? 0),
+        schemaVersion: config.schemaVersion,
+        kind: "index",
+        snapshotUpdatedAt: snapshot?.updatedAt ?? null,
+      });
       counters.indexProfiles += 1;
     }
   }
@@ -190,24 +236,28 @@ async function loadFeed() {
       setMeta("verified_not_found_v1", "1");
     }
     const queuedRows = new Map(db.prepare(
-      "SELECT aid, feed_updated_at, status FROM arena_profile_sync_queue"
+      "SELECT aid, feed_updated_at, schema_version, status FROM arena_profile_sync_queue"
     ).all().map((row) => [Number(row.aid), row]));
     const insert = db.prepare(`INSERT INTO arena_profile_sync_queue
-      (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
-      VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)`);
-    const replace = db.prepare(`UPDATE arena_profile_sync_queue SET feed_updated_at = ?, status = 'pending', attempts = 0,
+      (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
+      VALUES (?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?)`);
+    const replace = db.prepare(`UPDATE arena_profile_sync_queue SET feed_updated_at = ?, schema_version = ?, status = 'pending', attempts = 0,
       http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ?`);
     const reopen = db.prepare(`UPDATE arena_profile_sync_queue SET status = 'pending', attempts = 0,
-      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ? AND status IN ('completed', 'stale')`);
+      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ?
+      AND status IN ('completed', 'stale') AND schema_version <= ?`);
     for (const [aid, pending] of pendingVersions) {
       const queued = queuedRows.get(aid);
       let changed = 0;
-      if (!queued) changed = Number(insert.run(aid, pending.feedUpdatedAt, queuedAt).changes);
-      else if (pending.feedUpdatedAt > Number(queued.feed_updated_at)) {
-        changed = Number(replace.run(pending.feedUpdatedAt, queuedAt, aid).changes);
+      const snapshot = tracked.get(aid);
+      if (!queued) changed = Number(insert.run(aid, pending.feedUpdatedAt, pending.schemaVersion, queuedAt).changes);
+      else if (pending.feedUpdatedAt > Number(queued.feed_updated_at) ||
+        pending.schemaVersion > Number(queued.schema_version)) {
+        changed = Number(replace.run(pending.feedUpdatedAt, pending.schemaVersion, queuedAt, aid).changes);
       } else if ((queued.status === "completed" || queued.status === "stale") &&
-        (tracked.get(aid) ?? 0) < Number(queued.feed_updated_at)) {
-        changed = Number(reopen.run(queuedAt, aid).changes);
+        ((snapshot?.updatedAt ?? 0) < Number(queued.feed_updated_at) ||
+          (snapshot?.schemaVersion ?? 0) < Number(queued.schema_version))) {
+        changed = Number(reopen.run(queuedAt, aid, Number(queued.schema_version)).changes);
       }
       counters.queuedVersions += changed;
       if (changed) {
@@ -225,9 +275,13 @@ async function loadFeed() {
     WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = arena_profile_sync_queue.aid)`).run());
   await withDatabaseBusyRetry(() => db.prepare(`UPDATE arena_profile_sync_queue SET status = 'completed', error = NULL,
       http_status = NULL, updated_at = ?
-    WHERE EXISTS (SELECT 1 FROM mode_players p
-      WHERE p.mode = 'arena' AND p.aid = arena_profile_sync_queue.aid
-        AND p.profile_updated_at >= arena_profile_sync_queue.feed_updated_at)`).run(Date.now()));
+    WHERE EXISTS (SELECT 1 FROM arena_mode_stats p
+      WHERE p.aid = arena_profile_sync_queue.aid
+      GROUP BY p.aid
+      HAVING COUNT(DISTINCT p.arena_mode) = 6
+        AND SUM(CASE WHEN p.arena_mode = 'overall' THEN 1 ELSE 0 END) = 1
+        AND SUM(CASE WHEN p.upstream_version >= arena_profile_sync_queue.feed_updated_at THEN 1 ELSE 0 END) = 6
+        AND SUM(CASE WHEN p.parser_version >= arena_profile_sync_queue.schema_version THEN 1 ELSE 0 END) = 6)`).run(Date.now()));
   await heartbeat();
   return counters;
 }
@@ -255,30 +309,39 @@ function emptyFeedCounters(tracked, error) {
 
 async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, stale: 0, errors: 0 };
-  const next = db.prepare(`SELECT q.aid, q.feed_updated_at FROM arena_profile_sync_queue q
+  const next = db.prepare(`SELECT q.aid, q.feed_updated_at, q.schema_version FROM arena_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
-      AND NOT EXISTS (SELECT 1 FROM mode_players p
-        WHERE p.mode = 'arena' AND p.aid = q.aid
-          AND p.profile_updated_at >= q.feed_updated_at)
+      AND NOT EXISTS (SELECT 1 FROM arena_mode_stats p
+        WHERE p.aid = q.aid
+        GROUP BY p.aid
+        HAVING COUNT(DISTINCT p.arena_mode) = 6
+          AND SUM(CASE WHEN p.arena_mode = 'overall' THEN 1 ELSE 0 END) = 1
+          AND SUM(CASE WHEN p.upstream_version >= q.feed_updated_at THEN 1 ELSE 0 END) = 6
+          AND SUM(CASE WHEN p.parser_version >= q.schema_version THEN 1 ELSE 0 END) = 6)
       AND COALESCE(q.last_run_id, '') <> ?
     ORDER BY q.aid`);
   const update = db.prepare(`UPDATE arena_profile_sync_queue
     SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, last_run_id = ?, updated_at = ?
-    WHERE aid = ? AND feed_updated_at = ?`);
+    WHERE aid = ? AND feed_updated_at = ? AND schema_version = ?`);
   while (!stopping) {
     if (Date.now() - startedAt >= config.maxRunMs) {
       stopping = true;
+      stopReason = "max_run_ms";
       break;
     }
     const row = next.get(runId);
-    if (!row) break;
+    if (!row) {
+      stopReason ??= "queue_exhausted";
+      break;
+    }
     const aid = Number(row.aid);
     const expectedUpdatedAt = Number(row.feed_updated_at);
+    const schemaVersion = Number(row.schema_version);
     counters.attempted += 1;
     let result;
     try {
-      result = await syncProfile(aid, expectedUpdatedAt);
+      result = await syncProfile(aid, expectedUpdatedAt, schemaVersion);
     } catch (error) {
       if (error?.fatal) throw error;
       result = { kind: "error", attempts: error?.attempts ?? 1, status: error?.status ?? null, error: message(error) };
@@ -288,15 +351,20 @@ async function processQueue(startedAt) {
     else if (result.kind === "stale") counters.stale += 1;
     else counters.errors += 1;
     await withDatabaseBusyRetry(() => update.run(
-      result.kind, result.attempts, result.status, result.error ?? null, runId, Date.now(), aid, expectedUpdatedAt
+      result.kind, result.attempts, result.status, result.error ?? null, runId, Date.now(), aid, expectedUpdatedAt, schemaVersion
     ));
     await heartbeat();
+    if (config.maxCompleted !== null && counters.completed >= config.maxCompleted) {
+      stopping = true;
+      stopReason = "max_completed";
+      break;
+    }
     if (counters.attempted % 100 === 0) log("PROGRESS", counters);
   }
   return counters;
 }
 
-async function syncProfile(aid, expectedUpdatedAt) {
+async function syncProfile(aid, expectedUpdatedAt, schemaVersion) {
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     await rateLimit();
@@ -310,7 +378,7 @@ async function syncProfile(aid, expectedUpdatedAt) {
           "content-type": "application/json",
           "x-profile-refresh-run-id": runId,
         },
-        body: JSON.stringify({ aid, mode: "arena", expectedUpdatedAt }),
+        body: JSON.stringify({ aid, mode: "arena", expectedUpdatedAt, schemaVersion }),
         signal: controller.signal,
       });
       if (response.status === 404) {
@@ -337,6 +405,9 @@ async function syncProfile(aid, expectedUpdatedAt) {
         const storedUpdatedAt = normalizeUpdatedAt(body?.profileUpdatedAt);
         if (storedUpdatedAt === null || storedUpdatedAt < expectedUpdatedAt) {
           throw retryableError("sync endpoint stored an older Arena profile version", response.status);
+        }
+        if (Number(body?.schemaVersion) < schemaVersion) {
+          throw retryableError("sync endpoint stored an older Arena schema version", response.status);
         }
         return { kind: "completed", attempts: attempt, status: response.status };
       }
@@ -402,17 +473,23 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
         }
         counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, feedUpdatedAt);
         if (excluded.has(aid)) return;
-        const snapshotUpdatedAt = tracked.get(aid);
-        if (snapshotUpdatedAt === undefined) counters.unknownInFeed += 1;
+        const snapshot = tracked.get(aid);
+        if (snapshot === undefined) counters.unknownInFeed += 1;
         else counters.trackedInFeed += 1;
-        if (snapshotUpdatedAt !== undefined && snapshotUpdatedAt >= feedUpdatedAt) return;
+        if (snapshot !== undefined && snapshot.updatedAt >= feedUpdatedAt &&
+          snapshot.schemaVersion >= config.schemaVersion) return;
         counters.eligible += 1;
-        const kind = snapshotUpdatedAt === undefined ? "new" : "updated";
+        const kind = snapshot === undefined ? "new" : "updated";
         if (kind === "new") counters.newProfiles += 1;
         else counters.updatedProfiles += 1;
         const pending = pendingVersions.get(aid);
         if (!pending || feedUpdatedAt > pending.feedUpdatedAt) {
-          pendingVersions.set(aid, { feedUpdatedAt, kind, snapshotUpdatedAt: snapshotUpdatedAt ?? null });
+          pendingVersions.set(aid, {
+            feedUpdatedAt,
+            schemaVersion: config.schemaVersion,
+            kind,
+            snapshotUpdatedAt: snapshot?.updatedAt ?? null,
+          });
         }
       });
       for (;;) {
@@ -507,6 +584,11 @@ function backoff(attempt) { return Math.min(30_000, 1000 * 2 ** (attempt - 1)); 
 function envInteger(name, fallback, minimum, maximum) {
   const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
   if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  return value;
+}
+function envOptionalPositiveInteger(name) {
+  const value = process.env[name] == null || process.env[name] === "" ? null : Number(process.env[name]);
+  if (value !== null && (!Number.isSafeInteger(value) || value <= 0)) throw new Error(`${name} must be a positive integer`);
   return value;
 }
 function envNumber(name, fallback, minimum, maximum) {

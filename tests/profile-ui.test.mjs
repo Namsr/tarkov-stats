@@ -311,6 +311,7 @@ test("visitor help is hidden from home without deleting its implementation", asy
 
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
+  const header = await readFile("components/AveragePageHeader.tsx", "utf8");
   const styles = await readFile("app/globals.css", "utf8");
   const segmented = await readFile("components/SegmentedRadio.tsx", "utf8");
 
@@ -324,8 +325,8 @@ test("average statistic switch keeps URL state and masks stale portrait values",
   assert.match(source, /const terminalError = Boolean\(error\) && !loading && currentData === null/);
   assert.match(source, /\{terminalError \? null : !currentData \? \(/);
   assert.match(source, /\{!terminalError && \(\s*<div ref=\{chartRef\}/);
-  assert.match(source, /name="average-statistic"/);
-  assert.match(source, /average-settings__top[\s\S]*average-settings__groups[\s\S]*average-settings__mode/);
+  assert.match(header, /name="average-statistic"/);
+  assert.match(header, /average-settings__top[\s\S]*average-settings__groups[\s\S]*average-settings__mode/);
   assert.match(styles, /\.average-settings__top \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(340px, 520px\)/);
   assert.match(segmented, /<fieldset className=\{`segmented-control/);
   assert.match(segmented, /type="radio"/);
@@ -381,6 +382,7 @@ test("active navigation links go back only for an unmodified click at their dest
 
 test("regular average period switch keeps URL state and masks stale responses", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
+  const header = await readFile("components/AveragePageHeader.tsx", "utf8");
 
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
   assert.match(source, /data\?\.mode === mode &&/);
@@ -393,7 +395,7 @@ test("regular average period switch keeps URL state and masks stale responses", 
   assert.doesNotMatch(source, /setSelection\(\(current\)/);
   assert.match(source, /data\?\.statistic === statistic &&[\s\S]*?data\.period === period/);
   assert.match(source, /mode === "regular" && \(/);
-  assert.match(source, /name="average-period"/);
+  assert.match(header, /name="average-period"/);
 });
 
 test("radar statistic switch identifies requests by method", async () => {

@@ -23,6 +23,11 @@ import {
   type ComparisonCohortPercent,
   type ComparisonCohortResult,
 } from "@/lib/profile-cohort";
+import {
+  arenaUpsertStatements,
+  initializeArenaSchema,
+  upsertArenaSqlite,
+} from "@/lib/arena/storage";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -1097,8 +1102,13 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
             await player.run();
           }
         } else {
-          await rawDb.prepare(MODE_UPSERT_SQL)
-            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid).run();
+          const legacy = rawDb.prepare(MODE_UPSERT_SQL)
+            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+          if (mode === "arena" && stats.arenaProfile) {
+            await rawDb.batch([legacy, ...arenaUpsertStatements(rawDb, stats.arenaProfile, now)]);
+          } else {
+            await legacy.run();
+          }
         }
       },
       async stored(aid) {
@@ -1375,12 +1385,22 @@ async function getSqliteDb(): Promise<any | null> {
         sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
+      initializeArenaSchema(sqliteDb);
     }
     return sqliteDb;
   } catch (e) {
     warn("sqlite unavailable: " + (e as Error).message);
     return null;
   }
+}
+
+/** Arena analytics uses the same D1-or-SQLite selection as the profile store. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getArenaBackend(): Promise<{ kind: "d1" | "sqlite"; db: any } | null> {
+  const d1 = await getD1();
+  if (d1) return { kind: "d1", db: d1 };
+  const sqlite = await getSqliteDb();
+  return sqlite ? { kind: "sqlite", db: sqlite } : null;
 }
 
 async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> {
@@ -1425,8 +1445,21 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
             throw error;
           }
         } else {
-          rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-            .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+          if (mode === "arena" && stats.arenaProfile) {
+            rawDb.exec("BEGIN IMMEDIATE");
+            try {
+              rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+              upsertArenaSqlite(rawDb, stats.arenaProfile, now);
+              rawDb.exec("COMMIT");
+            } catch (error) {
+              rawDb.exec("ROLLBACK");
+              throw error;
+            }
+          } else {
+            rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+              .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+          }
         }
       },
       async stored(aid) {

@@ -8,6 +8,7 @@ import {
   createD1CommunityReportsStore,
   createSqliteCommunityReportsStore,
   type CommunityReportsStore,
+// @ts-ignore -- Node's strip-types runner resolves the explicit .ts module.
 } from "../lib/community-reports-db.ts";
 
 function d1Style(db: DatabaseSync) {
