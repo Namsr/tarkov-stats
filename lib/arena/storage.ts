@@ -49,6 +49,42 @@ CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_hours
 CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_aid_version
   ON arena_mode_stats(aid, upstream_version);
 
+CREATE TABLE IF NOT EXISTS arena_mode_stats_history (
+  aid INTEGER NOT NULL,
+  arena_mode TEXT NOT NULL CHECK (arena_mode IN ('overall', 'teamFight', 'lastHero', 'checkpoint', 'blastGang', 'shootOutDuo')),
+  hours REAL,
+  games_count INTEGER,
+  arena_wins INTEGER,
+  arena_losses INTEGER,
+  kills INTEGER,
+  deaths INTEGER,
+  assists INTEGER,
+  headshots INTEGER,
+  damage_dealt REAL,
+  round_mvp_count INTEGER,
+  match_mvp_count INTEGER,
+  current_kill_streak INTEGER,
+  max_kill_streak INTEGER,
+  current_win_streak INTEGER,
+  max_win_streak INTEGER,
+  current_loss_streak INTEGER,
+  max_loss_streak INTEGER,
+  kd_ratio REAL,
+  win_rate REAL,
+  headshot_rate REAL,
+  kills_per_match REAL,
+  damage_per_match REAL,
+  upstream_version INTEGER NOT NULL,
+  parser_version INTEGER NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (aid, arena_mode, upstream_version, parser_version)
+);
+CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_history_aid_version
+  ON arena_mode_stats_history(aid, upstream_version);
+CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_history_mode_version
+  ON arena_mode_stats_history(arena_mode, upstream_version);
+
 CREATE TABLE IF NOT EXISTS arena_risk_evaluations (
   aid INTEGER PRIMARY KEY,
   upstream_version INTEGER NOT NULL,
@@ -92,6 +128,13 @@ export const ARENA_UPSERT_SQL = `INSERT INTO arena_mode_stats (${ARENA_COLUMNS.j
   WHERE excluded.upstream_version > arena_mode_stats.upstream_version
     OR (excluded.upstream_version = arena_mode_stats.upstream_version
       AND excluded.parser_version >= arena_mode_stats.parser_version)`;
+
+export const ARENA_HISTORY_INSERT_SQL = `INSERT OR IGNORE INTO arena_mode_stats_history (${ARENA_COLUMNS.join(", ")})
+  SELECT ${ARENA_COLUMNS.map(() => "?").join(", ")}
+  WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)`;
+
+export const ARENA_HISTORY_BACKFILL_SQL = `INSERT OR IGNORE INTO arena_mode_stats_history
+  SELECT current.* FROM arena_mode_stats current`;
 
 export const ARENA_RISK_UPSERT_SQL = `INSERT INTO arena_risk_evaluations
   (aid, upstream_version, parser_version, evaluated_at, risk_json)
@@ -160,8 +203,17 @@ function valuesFor(profile: ArenaProfile, snapshot: ArenaStoredSnapshot, now: nu
   ];
 }
 
-export function initializeArenaSchema(db: { exec(sql: string): void }): void {
+export function initializeArenaSchema(db: {
+  exec(sql: string): void;
+  prepare(sql: string): { get(...values: unknown[]): unknown };
+}): void {
+  const historyExists = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_mode_stats_history'"
+  ).get());
   db.exec(ARENA_STORAGE_SCHEMA);
+  // Only the schema upgrade performs this write. Later cold starts remain
+  // read-only and every new profile writes its own immutable history row.
+  if (!historyExists) db.exec(ARENA_HISTORY_BACKFILL_SQL);
 }
 
 export function arenaUpsertStatements(
@@ -169,9 +221,13 @@ export function arenaUpsertStatements(
   profile: ArenaProfile,
   now = Date.now(),
 ): unknown[] {
-  return storedSnapshots(profile).map((snapshot) =>
-    db.prepare(ARENA_UPSERT_SQL).bind(...valuesFor(profile, snapshot, now))
-  );
+  return storedSnapshots(profile).flatMap((snapshot) => {
+    const values = valuesFor(profile, snapshot, now);
+    return [
+      db.prepare(ARENA_UPSERT_SQL).bind(...values),
+      db.prepare(ARENA_HISTORY_INSERT_SQL).bind(...values),
+    ];
+  });
 }
 
 export function upsertArenaSqlite(
@@ -180,7 +236,9 @@ export function upsertArenaSqlite(
   now = Date.now(),
 ): void {
   for (const snapshot of storedSnapshots(profile)) {
-    db.prepare(ARENA_UPSERT_SQL).run(...valuesFor(profile, snapshot, now));
+    const values = valuesFor(profile, snapshot, now);
+    db.prepare(ARENA_UPSERT_SQL).run(...values);
+    db.prepare(ARENA_HISTORY_INSERT_SQL).run(...values);
   }
 }
 
