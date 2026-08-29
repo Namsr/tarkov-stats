@@ -1,18 +1,11 @@
 import { spawn } from "node:child_process";
+import { setPriority } from "node:os";
 
 const childEnvironment = { ...process.env };
-const warmEnvironment = {
-  ...childEnvironment,
-  AVERAGE_WARM_BASE_URL: process.env.AVERAGE_WARM_BASE_URL || "http://127.0.0.1:3000",
-};
 let stopping = false;
 
 const server = spawn(process.execPath, ["--experimental-sqlite", "server.js"], {
   env: childEnvironment,
-  stdio: "inherit",
-});
-const warmer = spawn(process.execPath, ["scripts/warm-average-cache.mjs"], {
-  env: warmEnvironment,
   stdio: "inherit",
 });
 const progressionMaterializer = spawn(process.execPath, [
@@ -23,12 +16,18 @@ const progressionMaterializer = spawn(process.execPath, [
   env: childEnvironment,
   stdio: "inherit",
 });
+if (progressionMaterializer.pid) {
+  try {
+    setPriority(progressionMaterializer.pid, 19);
+  } catch (error) {
+    console.warn(`failed to lower progression materializer priority: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 function stop(signal) {
   if (stopping) return;
   stopping = true;
   server.kill(signal);
-  warmer.kill(signal);
   progressionMaterializer.kill(signal);
 }
 
@@ -36,7 +35,6 @@ process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 
 server.once("exit", (code, signal) => {
-  if (!stopping) warmer.kill("SIGTERM");
   if (!stopping) progressionMaterializer.kill("SIGTERM");
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);

@@ -810,7 +810,7 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
 });
-test("average dashboard warms mode-local PvP and PvE progression", async () => {
+test("average dashboard keeps cache warming out of the web runtime", async () => {
   const cache = await readFile("lib/average-cache.ts", "utf8");
   const average = await readFile("app/api/average/route.ts", "utf8");
   const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
@@ -836,8 +836,8 @@ test("average dashboard warms mode-local PvP and PvE progression", async () => {
   assert.match(warmer, /api\/average\/achievements\?mode=seasonal&cycle=/);
   assert.match(dockerfile, /warm-average-cache\.mjs/);
   assert.match(dockerfile, /start-web\.mjs/);
-  assert.match(startup, /warm-average-cache\.mjs/);
-  assert.match(startup, /AVERAGE_WARM_BASE_URL/);
+  assert.doesNotMatch(startup, /warm-average-cache\.mjs/);
+  assert.doesNotMatch(startup, /AVERAGE_WARM_BASE_URL/);
 });
 
 test("Seasonal average invalidation keeps the server cache tagged and the JSON response uncached", async () => {

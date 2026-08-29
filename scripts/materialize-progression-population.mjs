@@ -6,7 +6,11 @@ import {
 } from "../lib/seasonal/progression-db.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 
-const intervalMs = 7_200_000;
+const intervalMs = 21_600_000;
+const configuredInitialDelayMs = Number(process.env.PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS);
+const initialDelayMs = Number.isFinite(configuredInitialDelayMs) && configuredInitialDelayMs >= 0
+  ? configuredInitialDelayMs
+  : 300_000;
 const databasePath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
 let running = false;
 
@@ -42,5 +46,6 @@ export async function materializeProgressionPopulation(reason = "manual") {
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/scripts/materialize-progression-population.mjs")) {
   setInterval(() => void materializeProgressionPopulation("interval"), intervalMs);
+  if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
   await materializeProgressionPopulation("startup");
 }

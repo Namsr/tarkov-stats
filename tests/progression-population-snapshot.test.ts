@@ -155,14 +155,18 @@ test("public timeline SQL is aid-scoped and never queries risk population live",
   assert.match(source, /sqlitePopulationSnapshot\(sqliteDb, input\.mode, input\.cycleId\)/);
 });
 
-test("VPS starts the isolated population worker with a two-hour overlap guard", async () => {
+test("VPS delays and deprioritizes the isolated population worker", async () => {
   const { readFile } = await import("node:fs/promises");
   const start = await readFile("scripts/start-web.mjs", "utf8");
   const worker = await readFile("scripts/materialize-progression-population.mjs", "utf8");
   assert.match(start, /spawn\(process\.execPath,[\s\S]*materialize-progression-population\.mjs/);
-  assert.match(worker, /const intervalMs = 7_200_000/);
+  assert.match(start, /setPriority\(progressionMaterializer\.pid, 19\)/);
+  assert.match(worker, /const intervalMs = 21_600_000/);
+  assert.match(worker, /PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS/);
+  assert.match(worker, /: 300_000/);
   assert.match(worker, /if \(running\) return \{ skipped: true \}/);
   assert.match(worker, /setInterval\(\(\) => void materializeProgressionPopulation\("interval"\), intervalMs\)/);
+  assert.match(worker, /setTimeout\(resolve, initialDelayMs\)/);
   assert.match(worker, /await materializeProgressionPopulation\("startup"\)/);
 });
 
