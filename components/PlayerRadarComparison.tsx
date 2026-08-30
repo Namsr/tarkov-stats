@@ -356,10 +356,12 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       .then((payload) => {
         if (!controller.signal.aborted && payload.requestId === cohortRequestId) setRemoteCohort(payload);
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (controller.signal.aborted) return;
         setRemoteCohort(null);
-        setCohortError(error instanceof Error ? error.message : t("radar.error.cohort"));
+        // Browser fetch errors are implementation details (for example,
+        // "Failed to fetch"). Keep them behind the localized app message.
+        setCohortError(t("radar.error.cohort"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setCohortLoading(false);
