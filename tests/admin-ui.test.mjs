@@ -25,7 +25,7 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
     readFile("lib/i18n/dictionary.ts", "utf8"),
     readFile("app/globals.css", "utf8"),
   ]);
-  for (const tab of ["overview", "traffic", "accounts", "suspicious", "health"]) assert.match(dashboard, new RegExp(`"${tab}"`));
+  for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
   assert.match(dashboard, /setRefreshKey\(\(key\) => key \+ 1\)/);
   assert.match(dashboard, /role="tablist"/);
@@ -97,4 +97,17 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(styles, /\.admin-chart-wrap/);
   assert.match(styles, /\.admin-chart__line--visits[\s\S]*?stroke-dasharray/);
   assert.match(styles, /\.admin-chart-legend__swatch--visits[\s\S]*?border-top-style: dashed/);
+  assert.match(dashboard, /\/api\/admin\/system-metrics/);
+  assert.match(dashboard, /function SystemMonitoringPanel/);
+  assert.match(dashboard, /function SystemMetricChart/);
+  assert.match(dashboard, /function SystemMetricsTable/);
+  assert.match(dashboard, /admin\.monitoring\.notConfigured/);
+  assert.match(dashboard, /tab !== "monitoring"/);
+  assert.match(dictionary, /"admin\.tab\.monitoring": "Monitoring"/);
+  assert.match(dictionary, /"admin\.tab\.monitoring": "Мониторинг"/);
+  assert.match(dictionary, /"admin\.monitoring\.chart\.diskIo": "Disk activity"/);
+  assert.match(dictionary, /"admin\.monitoring\.chart\.diskIo": "Нагрузка на диск"/);
+  assert.match(styles, /\.admin-monitoring-grid/);
+  assert.match(styles, /\.admin-monitoring-chart__line--2[\s\S]*?stroke-dasharray/);
+  assert.match(styles, /\.admin-monitoring-table > summary[\s\S]*?min-height: 44px/);
 });

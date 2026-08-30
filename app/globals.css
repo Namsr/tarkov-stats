@@ -1494,7 +1494,7 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-chart-overlay { position: absolute; inset: 0; pointer-events: none; }
 .admin-chart-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 5px; }
 .admin-chart__grid { stroke: var(--card-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.admin-chart__axis { position: absolute; left: 0; width: 7%; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; line-height: 1; text-align: right; transform: translateY(-50%); }
+.admin-chart__axis { position: absolute; left: 0; width: 7%; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; line-height: 1; text-align: right; transform: translateY(-50%); white-space: nowrap; }
 .admin-chart__line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
 .admin-chart__line--pageviews { stroke: var(--accent); }
 .admin-chart__line--visits { stroke: var(--success); stroke-dasharray: 5 3; }
@@ -1514,6 +1514,36 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-chart-legend__swatch { display: inline-block; width: 19px; height: 0; border-top: 2px solid var(--accent); }
 .admin-chart-legend__swatch--visits { border-top-color: var(--success); border-top-style: dashed; }
 .admin-chart-hint { min-height: 1.1rem; margin-top: 8px; color: var(--muted); font-size: .67rem; }
+.admin-monitoring-status { display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--card-border); border-left: 3px solid var(--success); border-radius: 8px; background: var(--card-bg); padding: 12px 15px; color: var(--muted-strong); font-size: .78rem; }
+.admin-monitoring-status.is-stale { border-left-color: var(--danger); }
+.admin-monitoring-status span { color: var(--foreground); font-weight: 800; }
+.admin-monitoring-status time { font-variant-numeric: tabular-nums; }
+.admin-monitoring-metric .metric-card__value { font-size: clamp(1.5rem, 2vw, 2rem); }
+.admin-monitoring-metric--rate .metric-card__value { white-space: nowrap; }
+.admin-monitoring-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-monitoring-chart { min-width: 0; }
+.admin-monitoring-chart__wrap { min-height: 224px; margin-top: 14px; }
+.admin-monitoring-chart__stage { height: 184px; }
+.admin-monitoring-chart .admin-chart__axis { width: 15%; }
+.admin-monitoring-chart__line--1 { stroke: var(--accent); }
+.admin-monitoring-chart__line--2 { stroke: var(--success); stroke-dasharray: 6 4; }
+.admin-monitoring-chart__line--3 { stroke: var(--muted-strong); stroke-dasharray: 2 4; }
+.admin-monitoring-chart__marker--1 { border-radius: 50%; background: var(--accent); }
+.admin-monitoring-chart__marker--2 { background: var(--success); }
+.admin-monitoring-chart__marker--3 { border-radius: 1px; background: var(--muted-strong); transform: translate(-50%, -50%) rotate(45deg); }
+.admin-monitoring-chart__swatch--1 { border-top-color: var(--accent); }
+.admin-monitoring-chart__swatch--2 { border-top-color: var(--success); border-top-style: dashed; }
+.admin-monitoring-chart__swatch--3 { border-top-color: var(--muted-strong); border-top-style: dotted; }
+.admin-monitoring-table { overflow: hidden; }
+.admin-monitoring-table > summary { min-height: 44px; cursor: pointer; padding: 14px 18px; color: var(--foreground); font-size: .74rem; font-weight: 800; letter-spacing: .06em; list-style-position: inside; text-transform: uppercase; }
+.admin-monitoring-table > summary:hover { background: color-mix(in srgb, var(--foreground) 4%, transparent); }
+.admin-monitoring-table > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.admin-monitoring-table__scroll { max-height: 520px; overflow: auto; border-top: 1px solid var(--card-border); }
+.admin-monitoring-table table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: .7rem; }
+.admin-monitoring-table th, .admin-monitoring-table td { border-bottom: 1px solid var(--card-border); padding: 9px 10px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.admin-monitoring-table th:first-child { position: sticky; left: 0; z-index: 1; background: var(--card-bg); text-align: left; }
+.admin-monitoring-table thead th { position: sticky; top: 0; z-index: 2; background: var(--card-bg); color: var(--muted); font-size: .61rem; letter-spacing: .05em; text-transform: uppercase; }
+.admin-monitoring-table thead th:first-child { z-index: 3; }
 .admin-ranks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .admin-rank-list { display: grid; gap: 14px; margin-top: 20px; }
 .admin-rank-list li { min-width: 0; }
@@ -1681,6 +1711,10 @@ a.help-card:hover { border-color: var(--foreground); }
   .admin-filter-search { grid-column: 1 / -1; }
   .admin-filters label { min-width: 0; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-monitoring-grid { grid-template-columns: 1fr; }
+  .admin-monitoring-status { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .admin-monitoring-chart__wrap { min-height: 204px; }
+  .admin-monitoring-chart__stage { height: 164px; }
   .admin-ranks { grid-template-columns: 1fr; }
   .admin-chart-wrap { min-height: 188px; }
   .admin-chart-stage { height: 150px; }

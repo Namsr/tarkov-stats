@@ -9,7 +9,7 @@ import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
-type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health";
+type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
@@ -21,8 +21,11 @@ type Rank = { key: string; pageviews: number; visits: number };
 type Traffic = { available: boolean; reason?: string; sampled: boolean; pageviews: number; visits: number; series: SeriesPoint[]; domains: Rank[]; pages: Rank[]; referrers: Rank[]; countries: Rank[]; devices: Rank[]; browsers: Rank[] };
 type Account = { aid: number; nickname: string | null; modes: string[]; requestCount: number; snapshotCount: number; lastRequestedAt: number; reportedAt?: number; outcomes: Record<string, number>; refreshCount: number; sources: string[]; moderation?: AccountModeration; risk?: AccountModeration["risk"]; reportCount?: number; confirmedBan?: boolean; review?: AccountModeration["review"]; canRestoreManualBan?: boolean };
 type Accounts = { available: boolean; accounts: Account[]; nextCursor: string | null };
+type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedBytes: number; memoryPercent: number; swapUsedBytes: number; swapPercent: number | null; diskUsedBytes: number; diskPercent: number; diskReadBytesPerSecond: number | null; diskWriteBytesPerSecond: number | null; networkRxBytesPerSecond: number | null; networkTxBytesPerSecond: number | null; load1: number; load5: number; load15: number; uptimeSeconds: number };
+type SystemMetricSnapshot = SystemMetricPoint & { memoryTotalBytes: number; swapTotalBytes: number; diskTotalBytes: number; diskAvailableBytes: number };
+type SystemMetrics = { available: boolean; configured: boolean; reason?: string; latest: SystemMetricSnapshot | null; points: SystemMetricPoint[]; sampleCount?: number; from?: number; to?: number };
 
-const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health"];
+const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"];
 const periods: AdminPeriod[] = ["24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
@@ -55,6 +58,7 @@ export default function AdminDashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [audit, setAudit] = useState<DataAudit | null>(null);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditError, setAuditError] = useState("");
@@ -83,6 +87,8 @@ export default function AdminDashboard() {
         }
       } else if (tab === "traffic") {
         setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
+      } else if (tab === "monitoring") {
+        setSystemMetrics(await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`));
       } else {
         if (mode) params.set("mode", mode);
         if (search.trim()) params.set("search", search.trim());
@@ -137,7 +143,7 @@ export default function AdminDashboard() {
 
       <section className="admin-filters" aria-label={t("admin.filters") }>
         <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>
-        <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>
+        {tab !== "monitoring" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
         {(tab === "accounts" || tab === "suspicious") && <>
           <label className="admin-filter-search"><span>{t("admin.search")}</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("admin.searchPlaceholder")} /></label>
           <label><span>{t("admin.mode")}</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">{t("admin.mode.all")}</option>{["regular", "pve", "arena", "seasonal"].map((item) => <option key={item} value={item}>{t("admin.mode." + item)}</option>)}</select></label>
@@ -151,6 +157,7 @@ export default function AdminDashboard() {
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
+      {!error && !loading && tab === "monitoring" && <SystemMonitoringPanel data={systemMetrics} lang={lang} t={t} />}
     </main>
   );
 }
@@ -264,6 +271,163 @@ function TrafficPanel({ traffic, lang, t }: { traffic: Traffic | null; lang: str
   if (!traffic) return <Empty t={t} />;
   if (!traffic.available) return <div className="admin-notice">{t("admin.warning.traffic")}</div>;
   return <div className="admin-stack">{traffic.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}<div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.metric.visits")} value={formatNumber(traffic.visits)} /><StatCard label={t("admin.metric.pageviews")} value={formatNumber(traffic.pageviews)} /></div><TrendChart series={traffic.series ?? []} lang={lang} t={t} /><div className="admin-ranks">{(["domains", "pages", "referrers", "countries", "devices", "browsers"] as const).map((name) => <RankList key={name} title={t("admin.rank." + name)} rows={traffic[name] ?? []} t={t} />)}</div></div>;
+}
+
+type SystemSeriesKey = keyof Pick<SystemMetricPoint,
+  "cpuPercent" | "memoryPercent" | "swapPercent" | "diskPercent" |
+  "diskReadBytesPerSecond" | "diskWriteBytesPerSecond" |
+  "networkRxBytesPerSecond" | "networkTxBytesPerSecond" |
+  "load1" | "load5" | "load15">;
+type SystemChartSeries = { key: SystemSeriesKey; label: string; format: (value: number) => string };
+
+function SystemMonitoringPanel({ data, lang, t }: { data: SystemMetrics | null; lang: string; t: T }) {
+  if (!data?.available) return <div className="admin-notice">{t("admin.monitoring.storageUnavailable")}</div>;
+  const latest = data.latest;
+  if (!latest) return <div className="admin-stack">{!data.configured && <div className="admin-notice">{t("admin.monitoring.notConfigured")}</div>}<Empty t={t} /></div>;
+  const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const percentValue = (value: number | null) => value == null ? t("common.notAvailable") : formatPercent(value, locale);
+  const byteValue = (value: number) => formatBytes(value, locale, t);
+  const rateValue = (value: number | null) => value == null ? t("common.notAvailable") : t("admin.monitoring.perSecond", { value: byteValue(value) });
+  const points = data.points ?? [];
+  const stale = (data.to ?? latest.at) - latest.at > 3 * 60_000;
+  const memoryValue = t("admin.monitoring.usedOf", { used: byteValue(latest.memoryUsedBytes), total: byteValue(latest.memoryTotalBytes) });
+  const diskValue = t("admin.monitoring.usedOf", { used: byteValue(latest.diskUsedBytes), total: byteValue(latest.diskTotalBytes) });
+  const percentage = (key: SystemSeriesKey) => ({ key, label: t("admin.monitoring.series." + key), format: (value: number) => formatPercent(value, locale) });
+  const throughput = (key: SystemSeriesKey) => ({ key, label: t("admin.monitoring.series." + key), format: (value: number) => t("admin.monitoring.perSecond", { value: byteValue(value) }) });
+  const load = (key: SystemSeriesKey) => ({ key, label: t("admin.monitoring.series." + key), format: (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(value) });
+
+  return <div className="admin-stack">
+    {!data.configured && <div className="admin-notice">{t("admin.monitoring.notConfigured")}</div>}
+    <div className={`admin-monitoring-status ${stale ? "is-stale" : "is-current"}`} role="status">
+      <span>{t(stale ? "admin.monitoring.stale" : "admin.monitoring.current")}</span>
+      <time dateTime={new Date(latest.at).toISOString()}>{formatDate(latest.at, lang, t)}</time>
+    </div>
+    <div className="admin-metrics">
+      <StatCard className="admin-monitoring-metric" label={t("admin.monitoring.cpu")} value={percentValue(latest.cpuPercent)} />
+      <StatCard className="admin-monitoring-metric" label={t("admin.monitoring.memory")} value={memoryValue} />
+      <StatCard className="admin-monitoring-metric" label={t("admin.monitoring.disk")} value={diskValue} />
+      <StatCard className="admin-monitoring-metric admin-monitoring-metric--rate" label={t("admin.monitoring.networkIn")} value={rateValue(latest.networkRxBytesPerSecond)} />
+      <StatCard className="admin-monitoring-metric admin-monitoring-metric--rate" label={t("admin.monitoring.networkOut")} value={rateValue(latest.networkTxBytesPerSecond)} />
+      <StatCard className="admin-monitoring-metric" label={t("admin.monitoring.uptime")} value={formatUptime(latest.uptimeSeconds, t)} />
+    </div>
+    <div className="admin-monitoring-grid">
+      <SystemMetricChart title={t("admin.monitoring.chart.cpu")} points={points} series={[percentage("cpuPercent")]} fixedMax={100} lang={lang} t={t} />
+      <SystemMetricChart title={t("admin.monitoring.chart.memory")} points={points} series={[percentage("memoryPercent"), percentage("swapPercent")]} fixedMax={100} lang={lang} t={t} />
+      <SystemMetricChart title={t("admin.monitoring.chart.diskIo")} points={points} series={[throughput("diskReadBytesPerSecond"), throughput("diskWriteBytesPerSecond")]} lang={lang} t={t} />
+      <SystemMetricChart title={t("admin.monitoring.chart.network")} points={points} series={[throughput("networkRxBytesPerSecond"), throughput("networkTxBytesPerSecond")]} lang={lang} t={t} />
+      <SystemMetricChart title={t("admin.monitoring.chart.diskUsage")} points={points} series={[percentage("diskPercent")]} fixedMax={100} lang={lang} t={t} />
+      <SystemMetricChart title={t("admin.monitoring.chart.load")} points={points} series={[load("load1"), load("load5"), load("load15")]} lang={lang} t={t} />
+    </div>
+    <SystemMetricsTable points={points} lang={lang} t={t} />
+  </div>;
+}
+
+function SystemMetricChart({ title, points, series, fixedMax, lang, t }: { title: string; points: SystemMetricPoint[]; series: SystemChartSeries[]; fixedMax?: number; lang: string; t: T }) {
+  const visibleSeries = series.filter((item) => points.some((point) => typeof point[item.key] === "number"));
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  useEffect(() => { setSelectedIndex(points.length ? points.length - 1 : 0); }, [points]);
+  if (!points.length || !visibleSeries.length) return <section className="data-panel admin-panel admin-monitoring-chart"><h2 className="section-heading">{title}</h2><p className="admin-empty">{t("admin.empty")}</p></section>;
+
+  const left = 17;
+  const right = 96;
+  const top = 6;
+  const bottom = 43;
+  const chartHeight = 58;
+  const firstTime = points[0].at;
+  const lastTime = points.at(-1)!.at;
+  const timeSpan = Math.max(1, lastTime - firstTime);
+  const values = points.flatMap((point) => visibleSeries.map((item) => point[item.key]).filter((value): value is number => typeof value === "number"));
+  const rawMax = Math.max(1, ...values);
+  const max = fixedMax ?? rawMax * 1.08;
+  const xFor = (time: number) => points.length === 1 ? 50 : left + (time - firstTime) / timeSpan * (right - left);
+  const yFor = (value: number) => bottom - Math.min(max, Math.max(0, value)) / max * (bottom - top);
+  const pathFor = (key: SystemSeriesKey) => {
+    let drawing = false;
+    return points.map((point) => {
+      const value = point[key];
+      if (typeof value !== "number") { drawing = false; return ""; }
+      const command = drawing ? "L" : "M";
+      drawing = true;
+      return `${command}${xFor(point.at).toFixed(2)},${yFor(value).toFixed(2)}`;
+    }).filter(Boolean).join(" ");
+  };
+  const selected = points[Math.min(selectedIndex, points.length - 1)];
+  const selectedX = xFor(selected.at);
+  const selectedText = visibleSeries.map((item) => {
+    const value = selected[item.key];
+    return `${item.label}: ${typeof value === "number" ? item.format(value) : t("common.notAvailable")}`;
+  }).join(" · ");
+  const moveToPointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const targetX = Math.min(right, Math.max(left, (event.clientX - rect.left) / Math.max(1, rect.width) * 100));
+    let nearest = 0;
+    for (let index = 1; index < points.length; index += 1) if (Math.abs(xFor(points[index].at) - targetX) < Math.abs(xFor(points[nearest].at) - targetX)) nearest = index;
+    setSelectedIndex(nearest);
+  };
+  const moveByKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    setSelectedIndex((index) => event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : Math.max(0, Math.min(points.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1))));
+  };
+  const tickIndexes = points.length < 3 ? points.map((_, index) => index) : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+  const anchorFor = (x: number) => x < 20 ? "start" : x > 80 ? "end" : "middle";
+  const dateTransform = selectedX < 20 ? "translateX(0)" : selectedX > 80 ? "translateX(-100%)" : "translateX(-50%)";
+
+  return <section className="data-panel admin-panel admin-monitoring-chart">
+    <h2 className="section-heading">{title}</h2>
+    <div className="admin-chart-wrap admin-monitoring-chart__wrap" tabIndex={0} role="group" aria-label={t("admin.monitoring.chartAria", { title })} aria-keyshortcuts="ArrowLeft ArrowRight Home End" onKeyDown={moveByKeyboard}>
+      <div className="admin-chart-stage admin-monitoring-chart__stage">
+        <svg className="admin-chart" viewBox="0 0 100 58" preserveAspectRatio="none" aria-hidden="true" onPointerMove={moveToPointer} onPointerDown={moveToPointer}>
+          {[top, (top + bottom) / 2, bottom].map((y) => <line key={y} className="admin-chart__grid" x1={left} x2={right} y1={y} y2={y} />)}
+          {visibleSeries.map((item, index) => <path key={item.key} className={`admin-chart__line admin-monitoring-chart__line admin-monitoring-chart__line--${index + 1}`} d={pathFor(item.key)} />)}
+          <line className="admin-chart__crosshair" x1={selectedX} x2={selectedX} y1={top} y2={bottom} />
+          <rect className="admin-chart__hit-area" x={left} y={top} width={right - left} height={bottom - top} fill="transparent" pointerEvents="all" />
+        </svg>
+        <div className="admin-chart-overlay" aria-hidden="true">
+          <span className="admin-chart__axis admin-chart__axis--max" style={{ top: `${top / chartHeight * 100}%` }}>{visibleSeries[0].format(max)}</span>
+          <span className="admin-chart__axis admin-chart__axis--zero" style={{ top: `${bottom / chartHeight * 100}%` }}>{visibleSeries[0].format(0)}</span>
+          {visibleSeries.map((item, index) => {
+            const value = selected[item.key];
+            return typeof value === "number" ? <span key={item.key} className={`admin-chart__marker admin-monitoring-chart__marker admin-monitoring-chart__marker--${index + 1}`} style={{ left: `${selectedX}%`, top: `${yFor(value) / chartHeight * 100}%` }} /> : null;
+          })}
+        </div>
+      </div>
+      <div className="admin-chart-axis" aria-hidden="true">{tickIndexes.map((index) => { const x = xFor(points[index].at); return <span key={points[index].at} style={{ left: `${x}%`, transform: `translateX(${anchorFor(x) === "start" ? "0" : anchorFor(x) === "end" ? "-100%" : "-50%"})` }}>{formatChartAxis(points[index].at, lang, timeSpan)}</span>; })}</div>
+      <div className="admin-chart-date" style={{ left: `${selectedX}%`, transform: dateTransform }} aria-hidden="true">{formatChartDate(selected.at, lang)}</div>
+    </div>
+    <div className="admin-chart-selection" aria-live="polite">{formatChartDate(selected.at, lang)} · {selectedText}</div>
+    <div className="admin-chart-legend" aria-label={t("admin.monitoring.legend")}>{visibleSeries.map((item, index) => <span key={item.key}><i className={`admin-chart-legend__swatch admin-monitoring-chart__swatch--${index + 1}`} />{item.label}</span>)}</div>
+    <p className="admin-chart-hint">{t("admin.chart.keyboard")}</p>
+  </section>;
+}
+
+function SystemMetricsTable({ points, lang, t }: { points: SystemMetricPoint[]; lang: string; t: T }) {
+  const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const percentage = (value: number | null) => value == null ? t("common.notAvailable") : formatPercent(value, locale);
+  const rate = (value: number | null) => value == null ? t("common.notAvailable") : t("admin.monitoring.perSecond", { value: formatBytes(value, locale, t) });
+  return <details className="data-panel admin-monitoring-table"><summary>{t("admin.monitoring.table.show")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr>
+    <th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.monitoring.cpu")}</th><th scope="col">{t("admin.monitoring.memory")}</th><th scope="col">{t("admin.monitoring.table.swap")}</th><th scope="col">{t("admin.monitoring.disk")}</th><th scope="col">{t("admin.monitoring.table.read")}</th><th scope="col">{t("admin.monitoring.table.write")}</th><th scope="col">{t("admin.monitoring.networkIn")}</th><th scope="col">{t("admin.monitoring.networkOut")}</th><th scope="col">{t("admin.monitoring.table.load")}</th>
+  </tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{percentage(point.cpuPercent)}</td><td>{percentage(point.memoryPercent)}</td><td>{percentage(point.swapPercent)}</td><td>{percentage(point.diskPercent)}</td><td>{rate(point.diskReadBytesPerSecond)}</td><td>{rate(point.diskWriteBytesPerSecond)}</td><td>{rate(point.networkRxBytesPerSecond)}</td><td>{rate(point.networkTxBytesPerSecond)}</td><td>{new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(point.load1)}</td></tr>)}</tbody></table></div></details>;
+}
+
+function formatPercent(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value) + "%";
+}
+
+function formatBytes(value: number, locale: string, t: T): string {
+  const units = ["b", "kb", "mb", "gb", "tb"] as const;
+  let amount = Math.max(0, value);
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  const digits = unit === 0 || amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(amount)} ${t("admin.monitoring.unit." + units[unit])}`;
+}
+
+function formatUptime(seconds: number, t: T): string {
+  const totalHours = Math.floor(Math.max(0, seconds) / 3600);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return days > 0 ? t("admin.monitoring.uptimeDays", { days, hours }) : t("admin.monitoring.uptimeHours", { hours });
 }
 
 function RankList({ title, rows, t }: { title: string; rows: Rank[]; t: T }) {
