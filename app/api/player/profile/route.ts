@@ -340,6 +340,13 @@ async function arenaProfileResponse(input: {
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   const ip = getClientIp(request);
+  const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
+  const rawMode = request.nextUrl.searchParams.get("mode");
+  const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
+  timing.setRequestContext({
+    aid: aid ?? undefined,
+    host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),
+  });
 
   // Строгий лимит: роут делает upstream-fetch к tarkov.dev и пишет строку в БД
   // (датасет /average), поэтому жёстче общего лимита.
@@ -347,14 +354,16 @@ export async function GET(request: NextRequest) {
   // Профиль не кэшируем у браузера/CDN — иначе «Обновить»/F5 показывал бы старое.
   const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {
-    timing.finish({ operation: "player_profile", outcome: "rate_limited", status: 429 });
+    timing.finish({
+      operation: "player_profile", outcome: "rate_limited", status: 429,
+      ...(isGameMode(mode) ? { mode } : {}),
+    });
     return NextResponse.json(
       { error: "Rate limit exceeded" },
       { status: 429, headers: noStore }
     );
   }
 
-  const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
   if (aid === null) {
     timing.finish({ operation: "player_profile", outcome: "invalid", status: 400 });
     return NextResponse.json(
@@ -363,8 +372,6 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const rawMode = request.nextUrl.searchParams.get("mode");
-  const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
   if (!isGameMode(mode)) {
     timing.finish({ operation: "player_profile", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400, headers: noStore });
@@ -375,11 +382,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
   }
 
-  timing.setRequestContext({
-    aid,
-    cycleId,
-    host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),
-  });
+  timing.setRequestContext({ cycleId });
 
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";

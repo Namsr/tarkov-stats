@@ -71,6 +71,21 @@ test("15 minute analytics period excludes older events", () => {
   assert.equal(store.summary("15m", "all", now).health.requests, 1);
 });
 
+test("profile issues are grouped by AID while unrelated issues remain anonymous", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createAnalyticsStore(db);
+  const now = 280 * DAY;
+  store.record({ occurredAt: now - 30, operation: "player_profile", aid: 42, mode: "regular", outcome: "rate_limited", status: 429, latencyMs: 1 });
+  store.record({ occurredAt: now - 20, operation: "player_profile", aid: 42, mode: "regular", outcome: "rate_limited", status: 429, latencyMs: 1 });
+  store.record({ occurredAt: now - 10, operation: "player_profile", aid: 43, mode: "regular", outcome: "rate_limited", status: 429, latencyMs: 1 });
+  store.record({ occurredAt: now - 5, operation: "average", aid: 99, mode: "regular", outcome: "error", status: 503, latencyMs: 1 });
+
+  assert.deepEqual(
+    store.summary("24h", "all", now).health.issues.map((issue) => [issue.operation, issue.aid, issue.count]),
+    [["average", null, 1], ["player_profile", 43, 1], ["player_profile", 42, 2]],
+  );
+});
+
 test("diagnostic columns migrate in place and p99 uses the nearest-rank definition", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE request_events (

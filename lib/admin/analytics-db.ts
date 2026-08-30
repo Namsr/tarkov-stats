@@ -67,6 +67,7 @@ export interface HealthOperationSummary {
 export interface HealthIssueSummary {
   operation: string;
   mode: string | null;
+  aid: number | null;
   stage: string;
   code: string;
   status: number;
@@ -547,14 +548,16 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         };
       });
       const issueRows = includeDiagnostics ? db.prepare(`SELECT
-        operation, mode, ${diagnosticStageSql()} AS stage, ${diagnosticCodeSql()} AS code, status,
+        operation, mode,
+        CASE WHEN operation = 'player_profile' THEN aid ELSE NULL END AS diagnostic_aid,
+        ${diagnosticStageSql()} AS stage, ${diagnosticCodeSql()} AS code, status,
         COUNT(*) AS count,
         SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS active_count,
         MIN(occurred_at) AS first_seen_at,
         MAX(occurred_at) AS last_seen_at,
         MAX(latency_ms) AS max_latency_ms
         FROM request_events WHERE ${sql} AND ${problemSql()}
-        GROUP BY operation, mode, stage, code, status
+        GROUP BY operation, mode, CASE WHEN operation = 'player_profile' THEN aid ELSE NULL END, stage, code, status
         ORDER BY last_seen_at DESC LIMIT 50`).all(activeCutoff, ...args) as Record<string, unknown>[] : [];
       const issues: HealthIssueSummary[] = issueRows.map((issueRow) => {
         const stage = String(issueRow.stage);
@@ -562,6 +565,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         const lastSeenAt = Number(issueRow.last_seen_at);
         return {
           operation: String(issueRow.operation), mode: issueRow.mode == null ? null : String(issueRow.mode),
+          aid: issueRow.diagnostic_aid == null ? null : Number(issueRow.diagnostic_aid),
           stage, code: String(issueRow.code), status, count: Number(issueRow.count),
           activeCount: Number(issueRow.active_count),
           firstSeenAt: Number(issueRow.first_seen_at), lastSeenAt,
