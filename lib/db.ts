@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
+CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(hours, pmc_raids, aid);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS mode_players (
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS mode_players (
 CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
 CREATE INDEX IF NOT EXISTS idx_mode_players_hours ON mode_players(mode, hours);
 CREATE INDEX IF NOT EXISTS idx_mode_players_pmc_raids ON mode_players(mode, pmc_raids);
+CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, hours, pmc_raids, aid);
 CREATE VIEW IF NOT EXISTS pve_players AS SELECT * FROM mode_players WHERE mode = 'pve';
 CREATE VIEW IF NOT EXISTS arena_players AS SELECT * FROM mode_players WHERE mode = 'arena';
 
@@ -151,9 +153,9 @@ ${ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA}
 `;
 
 const CURRENT_PLAYER_SCHEMA_OBJECTS = [
-  "players", "idx_players_bracket", "idx_players_hours", "idx_players_pmc_raids",
+  "players", "idx_players_bracket", "idx_players_hours", "idx_players_pmc_raids", "idx_players_cohort",
   "idx_players_nickname_nocase", "idx_players_profile_updated_at", "mode_players",
-  "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids",
+  "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids", "idx_mode_players_cohort",
   "pve_players", "arena_players", "excluded_players", "favorites",
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
@@ -638,6 +640,7 @@ function unavailableCohort(
 }
 
 type CohortFirstReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown> | null>;
+type CohortAllReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
 
 function twoDimensionalRangeWhere(
   mode: Extract<CrossSectionMode, "regular" | "pve">,
@@ -673,6 +676,33 @@ function twoDimensionalRangeWhere(
   };
 }
 
+function persistentComparisonMetricsSql(where: string, statistic: AverageStatistic): string {
+  const selected = statistic === "median"
+    ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
+    : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
+       AND rn <= n - CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
+  const values = COMPARISON_RADAR_METRICS.map((metric) =>
+    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL${
+      metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
+    }`
+  ).join(" UNION ALL ");
+  return `WITH cohort AS (
+    SELECT * FROM players ${where}
+  ), metric_values AS (${values}), ranked AS (
+    SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
+      COUNT(*) OVER (PARTITION BY metric) AS n
+    FROM metric_values
+  )
+  SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
+    MIN(hours) AS hours_min, MAX(hours) AS hours_max,
+    MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
+  FROM cohort
+  UNION ALL
+  SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
+    NULL, NULL, NULL, NULL
+  FROM ranked GROUP BY metric`;
+}
+
 async function computePersistentTwoDimensionalCohort(input: {
   mode: Extract<CrossSectionMode, "regular" | "pve">;
   center: { hours: number; pmcRaids: number };
@@ -681,6 +711,7 @@ async function computePersistentTwoDimensionalCohort(input: {
   statistic: AverageStatistic;
   period: AveragePeriod;
   readFirst: CohortFirstReader;
+  readAll: CohortAllReader;
 }): Promise<ComparisonCohortResult> {
   const { center } = input;
   if (center.hours <= 0 || center.pmcRaids <= 0) {
@@ -697,17 +728,21 @@ async function computePersistentTwoDimensionalCohort(input: {
     });
   }
 
-  const counts = Object.fromEntries(
-    COMPARISON_COHORT_PERCENTAGES.map((percent) => [percent, 0])
-  ) as Record<ComparisonCohortPercent, number>;
-  for (const percent of COMPARISON_COHORT_PERCENTAGES) {
-    const range = twoDimensionalRangeWhere(input.mode, center, percent, input.excludeAid, input.period);
-    const row = await input.readFirst(
-      `SELECT COUNT(*) AS n FROM players ${range.where}`,
-      range.params,
-    );
-    counts[percent] = Number(row?.n ?? 0);
-  }
+  const widest = twoDimensionalRangeWhere(input.mode, center, 30, input.excludeAid, input.period);
+  const countRanges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(center, percent));
+  const countRow = await input.readFirst(
+    `SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent) =>
+      `SUM(CASE WHEN hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
+    ).join(", ")} FROM players ${widest.where}`,
+    [
+      ...countRanges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]),
+      ...widest.params,
+    ],
+  );
+  const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
+    percent,
+    Number(countRow?.[`count_${percent}`] ?? 0),
+  ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
     counts[percent] >= COMPARISON_COHORT_TARGET
   ) ?? 30;
@@ -718,13 +753,8 @@ async function computePersistentTwoDimensionalCohort(input: {
     input.excludeAid,
     input.period,
   );
-  const group = await input.readFirst(
-    `SELECT COUNT(*) AS n,
-      MIN(hours) AS hours_min, MAX(hours) AS hours_max,
-      MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
-      FROM players ${selected.where}`,
-    selected.params,
-  );
+  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
+  const group = selectedRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
@@ -751,26 +781,16 @@ async function computePersistentTwoDimensionalCohort(input: {
     });
   }
 
+  const metricRows = new Map(selectedRows.map((row) => [String(row.metric), row]));
   const averages = emptyComparisonAverages();
   for (const metric of COMPARISON_RADAR_METRICS) {
-    const metricWhere = populatedMetricClause(input.mode, metric, selected.where);
-    const countRow = metricWhere === selected.where
-      ? { n }
-      : await input.readFirst(`SELECT COUNT(*) AS n FROM players ${metricWhere}`, selected.params);
-    const count = Number(countRow?.n ?? 0);
+    const row = metricRows.get(metric);
+    const count = Number(row?.n ?? 0);
     const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
     if (count < minimumPopulatedCount) {
       averages[metric] = { value: null, count };
       continue;
     }
-    const { trim, off, lim } = trimWindow(count);
-    const queryParams = input.statistic === "trimmed_mean" && trim
-      ? [...selected.params, lim, off]
-      : selected.params;
-    const row = await input.readFirst(
-      metricStatisticSql(metric, metricWhere, input.statistic, trim),
-      queryParams,
-    );
     averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
   }
   return makeComparisonCohortResult({
@@ -1274,6 +1294,10 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           statistic,
           period,
           readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
+          readAll: async (sql, params) => {
+            const result = await db.prepare(sql).bind(...params).all() as { results?: Record<string, unknown>[] };
+            return result.results ?? [];
+          },
         });
       },
       async histogramAverages(column, ranges, period = "all") {
@@ -1621,6 +1645,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           statistic,
           period,
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+          readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });
       },
       async histogramAverages(column, ranges, period = "all") {

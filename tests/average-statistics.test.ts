@@ -48,6 +48,8 @@ for (const name of [
   "idx_players_average_kd_ratio",
   "idx_mode_players_average_kd_ratio",
   "idx_players_average_longest_win_streak",
+  "idx_players_cohort",
+  "idx_mode_players_cohort",
 ]) {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name));
 }
@@ -174,6 +176,31 @@ test("cohort median preserves target/expansion, excludes the open aid, and filte
   assert.equal(cohort.n, 20);
   assert.equal(cohort.averages.kd_ratio.value, 10.5);
   assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+});
+
+test("persistent two-axis cohort computes all radar metrics in the selected group", async () => {
+  reset();
+  for (let aid = 1; aid <= 20; aid++) {
+    add(aid, {
+      hours: 100,
+      raids: 100,
+      value: aid,
+      survival: aid === 1 ? 40 : aid === 2 ? 60 : 0,
+    });
+  }
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+
+  const cohort = await store.cohort2d(100, 100, 999, "hours", "median", "all");
+  assert.equal(cohort.quality, "sufficient");
+  assert.equal(cohort.percent, 10);
+  assert.equal(cohort.n, 20);
+  assert.equal(cohort.averages.kd_ratio.value, 10.5);
+  assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+  assert.deepEqual(cohort.actualRanges, {
+    hours: { min: 100, max: 100 },
+    pmcRaids: { min: 100, max: 100 },
+    raids: { min: 100, max: 100 },
+  });
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {

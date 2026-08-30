@@ -11,6 +11,8 @@ import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
+import { getProgressionStore } from "@/lib/progression-db";
+import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -131,41 +133,77 @@ export async function GET(request: NextRequest) {
         { status: 400 },
       );
     }
+    timing.setRequestContext({ aid });
+    let source: "stored" | "upstream" | undefined;
+    let cache: "hit" | "miss" | undefined;
+    let profileMs: number | undefined;
+    let storeOpenMs: number | undefined;
+    let storeReadMs: number | undefined;
+    let cohortMs: number | undefined;
     try {
-      const profileResult = await getPublicProfile(aid, { mode });
-      if (!profileResult.profile) {
-        timing.finish({ operation: "average_cohort", mode, outcome: "not_found", status: 404 });
-        return NextResponse.json({
-          identity: { aid, mode, cycleId: "persistent" },
-          code: "profile_unavailable",
-          error: "Profile is not available for comparison",
-        }, { status: 404, headers: { "Cache-Control": "no-store" } });
-      }
-      const stats = parseProfileStats(profileResult.profile, []);
-      const store = await getStore(mode);
+      const storeOpenStarted = timing.now();
+      const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
+      storeOpenMs = timing.elapsedMs(storeOpenStarted);
       if (!store) {
-        timing.finish({ operation: "average_cohort", mode, outcome: "unavailable", status: 503 });
+        timing.finish({
+          operation: "average_cohort", mode, outcome: "unavailable", status: 503,
+          storage: "unavailable", storeOpenMs,
+        });
         return NextResponse.json({
           identity: { aid, mode, cycleId: "persistent" },
           code: "comparison_unavailable",
           error: "Comparison storage is unavailable",
         }, { status: 503, headers: { "Cache-Control": "no-store" } });
       }
-      const cohort = await store.cohort2d(
-        Number(stats.hoursPlayed),
-        Number(stats.pmcRaids),
-        aid,
-        "hours",
-        statistic,
-        period,
+
+      const storeReadStarted = timing.now();
+      const snapshot = progressionStore ? await progressionStore.latest(aid).catch(() => null) : null;
+      storeReadMs = timing.elapsedMs(storeReadStarted);
+      let stats = snapshot?.stats;
+      if (stats) {
+        source = "stored";
+      } else {
+        source = "upstream";
+        const profileStarted = timing.now();
+        const profileResult = await getPublicProfile(aid, { mode });
+        profileMs = timing.elapsedMs(profileStarted);
+        if (!profileResult.profile) {
+          timing.finish({
+            operation: "average_cohort", mode, outcome: "not_found", status: 404,
+            source, storage: "sqlite", profileMs, storeOpenMs, storeReadMs,
+          });
+          return NextResponse.json({
+            identity: { aid, mode, cycleId: "persistent" },
+            code: "profile_unavailable",
+            error: "Profile is not available for comparison",
+          }, { status: 404, headers: { "Cache-Control": "no-store" } });
+        }
+        stats = parseProfileStats(profileResult.profile, []);
+      }
+
+      const centerHours = Number(stats.hoursPlayed);
+      const centerPmcRaids = Number(stats.pmcRaids);
+      const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
+      const cohortStarted = timing.now();
+      const loaded = await loadDynamicAverage(
+        ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
+        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period),
       );
-      timing.finish({ operation: "average_cohort", mode, outcome: "success", status: 200 });
-      return NextResponse.json({ ...cohort, statistic, period }, {
+      cohortMs = timing.elapsedMs(cohortStarted);
+      cache = loaded.cache;
+      timing.finish({
+        operation: "average_cohort", mode, outcome: "success", status: 200,
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+      });
+      return NextResponse.json({ ...loaded.value, statistic, period }, {
         headers: { "Cache-Control": "private, no-store" },
       });
     } catch (error) {
       console.error("persistent comparison cohort failed", error);
-      timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "error", status: 503 });
+      timing.finish({
+        operation: "average_cohort", mode: rawMode, outcome: "error", status: 503,
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+      });
       return NextResponse.json({
         identity: { aid, mode, cycleId: "persistent" },
         code: "comparison_unavailable",

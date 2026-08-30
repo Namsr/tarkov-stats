@@ -455,7 +455,7 @@ interface PopulationSnapshotPayload {
     eligibleN: number;
     seasonStartsAt: number | null;
     achievements: Array<{
-      id: string; owners: number; samplePct: number; meanHours: number; earlyHours: number;
+      id: string; owners: number; samplePct: number; meanHours: number; stdHours: number; earlyHours: number;
       eligibleN: number; unlockDayP20: number | null; timestampOwners: number;
     }>;
   } | null;
@@ -558,10 +558,13 @@ function buildAchievementBaseline(
     seasonStartsAt,
     achievements: [...byAchievement.entries()].map(([id, value]) => {
       const meanHours = value.hours.length ? value.hours.reduce((sum, hours) => sum + hours, 0) / value.hours.length : 0;
+      const variance = value.hours.length
+        ? value.hours.reduce((sum, hours) => sum + (hours - meanHours) ** 2, 0) / value.hours.length
+        : 0;
       return {
         id, owners: value.owners.size, eligibleN: eligible.length,
         samplePct: value.owners.size / eligible.length * 100,
-        meanHours, earlyHours: percentile20(value.hours) ?? meanHours,
+        meanHours, stdHours: Math.sqrt(Math.max(0, variance)), earlyHours: percentile20(value.hours) ?? meanHours,
         unlockDayP20: percentile20(value.unlockDays), timestampOwners: value.unlockDays.length,
       };
     }),
@@ -753,6 +756,9 @@ export interface PublishedSeasonalAchievementBaseline {
     id: string;
     owners: number;
     samplePct: number;
+    meanHours: number;
+    stdHours: number;
+    earlyHours: number;
   }>;
 }
 
@@ -769,7 +775,14 @@ export async function getPublishedSeasonalAchievementBaseline(
     if (!baseline) return null;
     return {
       eligibleN: baseline.eligibleN,
-      achievements: baseline.achievements.map(({ id, owners, samplePct }) => ({ id, owners, samplePct })),
+      achievements: baseline.achievements.map((achievement) => ({
+        id: achievement.id,
+        owners: achievement.owners,
+        samplePct: achievement.samplePct,
+        meanHours: Number(achievement.meanHours) || 0,
+        stdHours: Number(achievement.stdHours) || 0,
+        earlyHours: Number(achievement.earlyHours) || Number(achievement.meanHours) || 0,
+      })),
     };
   } catch (error) {
     console.warn("published Seasonal achievement baseline unavailable: " + (error as Error).message);

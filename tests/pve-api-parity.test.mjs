@@ -31,9 +31,12 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
     cohort.indexOf('if (rawMode === "regular" || rawMode === "pve")'),
     cohort.indexOf("  const dimension", cohort.indexOf('if (rawMode === "regular" || rawMode === "pve")')),
   );
+  assert.match(persistentBranch, /getProgressionStore\(mode\)/);
   assert.match(persistentBranch, /getPublicProfile\(aid, \{ mode \}\)/);
+  assert.match(persistentBranch, /source = "stored"/);
   assert.match(persistentBranch, /getStore\(mode\)/);
   assert.match(persistentBranch, /store\.cohort2d\(/);
+  assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);

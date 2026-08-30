@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStore, type PlayerStore } from "@/lib/db";
-import { getSeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
+import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
 import { getAchievements } from "@/lib/tarkov-api";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
@@ -104,13 +104,13 @@ export async function GET(request: NextRequest) {
       if (!load) {
         load = (async () => {
           if (rawMode === "seasonal") {
-            const baseline = await getSeasonalAchievementBaseline(cycleId!);
+            const baseline = await getPublishedSeasonalAchievementBaseline(cycleId!);
             return {
-              total: baseline?.total ?? 0,
+              total: baseline?.eligibleN ?? 0,
               rows: (baseline?.achievements ?? []).map((a) => ({
-                id: a.ach_id,
+                id: a.id,
                 owners: a.owners,
-                samplePct: baseline && baseline.total > 0 ? (a.owners / baseline.total) * 100 : 0,
+                samplePct: a.samplePct,
                 meanHours: a.meanHours,
                 stdHours: a.stdHours,
                 earlyHours: a.earlyHours,

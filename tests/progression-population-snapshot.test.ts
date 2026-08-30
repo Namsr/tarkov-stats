@@ -36,6 +36,8 @@ test("SQLite population publication is atomic and preserves the last good genera
   const db = new DatabaseSync(":memory:");
   initializeSeasonalSchema(db);
   seed(db);
+  db.prepare(`UPDATE progression_snapshots
+    SET achievements = '[{"id":"seasonal-ach","unlockedAt":100}]'`).run();
   const first = materializeSqlitePopulationSnapshot(db, "regular", "persistent", 100);
   assert.equal(first.generation, 100);
   const payload = JSON.parse(String(db.prepare("SELECT payload FROM progression_population_generations").get()!.payload));
@@ -43,6 +45,7 @@ test("SQLite population publication is atomic and preserves the last good genera
   assert.ok(payload.metrics.xp.overall.length > 0);
   assert.equal(payload.metrics.xp.byHours.length, 8);
   assert.equal(payload.riskBaselines.length, 8);
+  assert.equal(payload.achievementBaseline.achievements[0].stdHours, 0);
   assert.equal(payload.progressionPercentiles["2026-08-12"].pmcRaidsPerDay.length, 101);
 
   db.exec(`CREATE TRIGGER reject_population_publish BEFORE UPDATE ON progression_population_current
@@ -218,7 +221,7 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
         eligibleN: 30,
         seasonStartsAt: 1,
         achievements: [{ id: "seasonal-ach", owners: 10, eligibleN: 30, samplePct: 1,
-          meanHours: 1_000, earlyHours: 500, unlockDayP20: 10, timestampOwners: 10 }],
+          meanHours: 1_000, stdHours: 100, earlyHours: 500, unlockDayP20: 10, timestampOwners: 10 }],
       },
     },
   };

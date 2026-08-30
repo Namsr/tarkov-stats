@@ -29,4 +29,7 @@ test("achievement-heavy SQL is absent from request paths", async () => {
     assert.doesNotMatch(source, /json_each\s*\(/i, path);
     assert.doesNotMatch(source, /WITH\s+expanded\s+AS/i, path);
   }
+  const averageAchievements = await readFile("app/api/average/achievements/route.ts", "utf8");
+  assert.match(averageAchievements, /getPublishedSeasonalAchievementBaseline/);
+  assert.doesNotMatch(averageAchievements, /getSeasonalAchievementBaseline/);
 });

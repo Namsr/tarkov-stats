@@ -6,16 +6,30 @@ const regularRoute = readFileSync(new URL("../app/api/average/cohort/route.ts", 
 const seasonalRoute = readFileSync(new URL("../app/api/seasonal/cohort/route.ts", import.meta.url), "utf8");
 const seasonalHelper = readFileSync(new URL("../lib/seasonal/comparison-cohort.ts", import.meta.url), "utf8");
 
-test("persistent cohort route derives both centers from the server profile", () => {
+test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
   const regularBranch = regularRoute.slice(
     regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")'),
     regularRoute.indexOf("  const centerValue", regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")')),
   );
+  assert.match(regularBranch, /getProgressionStore\(mode\)/);
+  assert.match(regularBranch, /progressionStore\.latest\(aid\)/);
+  assert.match(regularBranch, /if \(stats\) \{[\s\S]*?source = "stored"/);
   assert.match(regularBranch, /getPublicProfile\(aid, \{ mode \}\)/);
-  assert.match(regularBranch, /Number\(stats\.hoursPlayed\)/);
-  assert.match(regularBranch, /Number\(stats\.pmcRaids\)/);
+  assert.match(regularBranch, /const centerHours = Number\(stats\.hoursPlayed\)/);
+  assert.match(regularBranch, /const centerPmcRaids = Number\(stats\.pmcRaids\)/);
+  assert.match(regularBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);
   assert.doesNotMatch(regularBranch, /centerValue/);
+});
+
+test("persistent cohort SQL combines range counts and all metric distributions", () => {
+  const db = readFileSync(new URL("../lib/db.ts", import.meta.url), "utf8");
+  const compute = db.slice(db.indexOf("async function computePersistentTwoDimensionalCohort"), db.indexOf("function argsFor"));
+  assert.match(compute, /SUM\(CASE WHEN hours >= \?/);
+  assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
+  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 1);
+  assert.match(db, /metric_values AS/);
+  assert.match(db, /PARTITION BY metric/);
 });
 
 test("seasonal route delegates center lookup to the identity-scoped helper", () => {
