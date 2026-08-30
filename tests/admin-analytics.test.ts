@@ -13,7 +13,7 @@ test("analytics store retains only anonymous request/account facts and aggregate
   const db = new DatabaseSync(":memory:");
   const store = createAnalyticsStore(db);
   const now = 200 * DAY;
-  store.record({ occurredAt: now - 1_000, host: "tarkovstats.ru", operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", cycleId: "persistent", outcome: "success", status: 200, force: true, source: "upstream", cache: "miss", latencyMs: 12.6, profileMs: 8, baselineMs: 2, metadataMs: 1, cohortMs: 3, storeReadMs: 1, storeWriteMs: 2 });
+  store.record({ occurredAt: now - 1_000, host: "tarkovstats.ru", operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", cycleId: "persistent", outcome: "success", status: 200, force: true, source: "upstream", cache: "miss", latencyMs: 12.6, profileMs: 8, baselineMs: 2, metadataMs: 1, masteryMs: 4, cohortMs: 3, storeReadMs: 1, storeWriteMs: 2 });
   store.record({ occurredAt: now - 900, host: "tarkovstats.ru", operation: "player_search", aid: 42, nickname: "Bear", outcome: "success", status: 200, source: "index", latencyMs: 2 });
   store.record({ occurredAt: now - 2_000, host: "tarkovstats.online", operation: "average", outcome: "error", status: 503, latencyMs: 100 });
   store.record({ occurredAt: now - 8 * DAY, host: "tarkovstats.ru", operation: "player_profile", aid: 99, outcome: "success", status: 200, latencyMs: 1 });
@@ -31,6 +31,16 @@ test("analytics store retains only anonymous request/account facts and aggregate
   assert.deepEqual(summary.health.operations.map((operation) => [operation.operation, operation.p99Ms]), [["average", null], ["player_profile", 13], ["player_search", 2]]);
   assert.deepEqual(summary.health.operations.find((operation) => operation.operation === "player_profile")?.variants,
     [{ source: "upstream", cache: "miss", force: true, requests: 1, p50Ms: 13, p95Ms: 13, p99Ms: 13 }]);
+  assert.deepEqual(summary.health.operations.find((operation) => operation.operation === "player_profile")?.phases,
+    [
+      { phase: "profile", samples: 1, p50Ms: 8, p95Ms: 8, p99Ms: 8 },
+      { phase: "baseline", samples: 1, p50Ms: 2, p95Ms: 2, p99Ms: 2 },
+      { phase: "metadata", samples: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+      { phase: "mastery", samples: 1, p50Ms: 4, p95Ms: 4, p99Ms: 4 },
+      { phase: "cohort", samples: 1, p50Ms: 3, p95Ms: 3, p99Ms: 3 },
+      { phase: "store_read", samples: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+      { phase: "store_write", samples: 1, p50Ms: 2, p95Ms: 2, p99Ms: 2 },
+    ]);
   assert.equal(summary.health.series.reduce((total, point) => total + point.requests, 0), 3);
   assert.equal(summary.freshness.lastProfileRequestAt, now - 1_000);
   assert.deepEqual(store.healthSignal("all", now), {
@@ -44,12 +54,21 @@ test("analytics store retains only anonymous request/account facts and aggregate
   assert.equal(columns.includes("search_text"), false);
   assert.equal(columns.includes("failure_stage"), true);
   assert.equal(columns.includes("error_code"), true);
-  for (const name of ["profile_ms", "baseline_ms", "metadata_ms", "cohort_ms", "store_read_ms", "store_write_ms"]) {
+  for (const name of ["profile_ms", "baseline_ms", "metadata_ms", "mastery_ms", "cohort_ms", "store_read_ms", "store_write_ms"]) {
     assert.equal(columns.includes(name), true);
   }
-  assert.deepEqual({ ...db.prepare(`SELECT profile_ms, baseline_ms, metadata_ms, cohort_ms,
+  assert.deepEqual({ ...db.prepare(`SELECT profile_ms, baseline_ms, metadata_ms, mastery_ms, cohort_ms,
     store_read_ms, store_write_ms FROM request_events WHERE operation = 'player_profile' AND aid = 42`).get() },
-  { profile_ms: 8, baseline_ms: 2, metadata_ms: 1, cohort_ms: 3, store_read_ms: 1, store_write_ms: 2 });
+  { profile_ms: 8, baseline_ms: 2, metadata_ms: 1, mastery_ms: 4, cohort_ms: 3, store_read_ms: 1, store_write_ms: 2 });
+});
+
+test("15 minute analytics period excludes older events", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createAnalyticsStore(db);
+  const now = 275 * DAY;
+  store.record({ occurredAt: now - 14 * 60_000, operation: "average", outcome: "success", status: 200, latencyMs: 1 });
+  store.record({ occurredAt: now - 16 * 60_000, operation: "average", outcome: "success", status: 200, latencyMs: 2 });
+  assert.equal(store.summary("15m", "all", now).health.requests, 1);
 });
 
 test("diagnostic columns migrate in place and p99 uses the nearest-rank definition", () => {

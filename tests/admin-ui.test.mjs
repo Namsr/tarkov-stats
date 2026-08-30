@@ -42,6 +42,10 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dashboard, /moderation\.risk\.mode/);
   assert.match(dashboard, /moderation\?\.risk\?\.profileUpdatedAt/);
   assert.match(dashboard, /admin\.health\.scope/);
+  assert.match(dashboard, /\["15m", "24h", "7d", "30d", "90d"\]/);
+  assert.match(dashboard, /healthPhaseLabel/);
+  assert.match(dictionary, /"admin\.period\.15m": "15 minutes"/);
+  assert.match(dictionary, /"admin\.period\.15m": "15 минут"/);
   assert.match(profile, /isAdmin && <Link href="\/admin"/);
   assert.match(dictionary, /"profile\.admin": "Admin console"/);
   assert.match(dictionary, /"admin\.account\.openProfile": "Open \{mode\} profile"/);

@@ -420,8 +420,11 @@ const achievementLoads = new Map<AchievementMode, Promise<Map<string, Achievemen
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const ACHIEVEMENT_REQUEST_TIMEOUT_MS = 8_000;
 const MASTERY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const MASTERY_REQUEST_TIMEOUT_MS = 8_000;
 const ACHIEVEMENT_IMAGE_HOSTS = new Set(["assets.tarkov.dev"]);
-let masteryCache: { data: WeaponMasteryReference[]; ts: number } | null = null;
+type MasteryCache = { data: WeaponMasteryReference[]; ts: number };
+let masteryCache: MasteryCache | null = null;
+let masteryLoad: Promise<WeaponMasteryReference[]> | null = null;
 
 /**
  * Keep externally supplied image URLs inside the official Tarkov asset host.
@@ -450,6 +453,74 @@ export function safeAchievementImageUrl(value: unknown): string | null {
 function achievementCacheFile(mode: AchievementMode): string {
   const directory = process.env.ACHIEVEMENTS_CACHE_DIR || "/data";
   return `${directory.replace(/[\\/]+$/, "")}/achievements-${mode}.json`;
+}
+
+function masteryCacheFile(): string {
+  const directory = process.env.ACHIEVEMENTS_CACHE_DIR || "/data";
+  return `${directory.replace(/[\\/]+$/, "")}/weapon-mastery.json`;
+}
+
+function parsePersistedMastery(payload: unknown): MasteryCache {
+  const root = record(payload);
+  if (
+    root?.version !== 1 ||
+    typeof root.savedAt !== "number" ||
+    !Number.isFinite(root.savedAt) ||
+    !Array.isArray(root.entries) ||
+    root.entries.length === 0
+  ) {
+    throw new Error("invalid persisted mastery cache");
+  }
+  return {
+    ts: root.savedAt,
+    data: parseWeaponMastery({ data: { mastering: root.entries } }),
+  };
+}
+
+async function readPersistedMastery(): Promise<MasteryCache | null> {
+  try {
+    const fs = await import("node:fs/promises" as string) as {
+      readFile(file: string, encoding: "utf8"): Promise<string>;
+    };
+    return parsePersistedMastery(JSON.parse(await fs.readFile(masteryCacheFile(), "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+async function writePersistedMastery(cache: MasteryCache): Promise<void> {
+  const file = masteryCacheFile();
+  let temporary = "";
+  try {
+    const fs = await import("node:fs/promises" as string) as {
+      mkdir(directory: string, options: { recursive: true }): Promise<void>;
+      writeFile(file: string, data: string, options: { encoding: "utf8"; mode: number }): Promise<void>;
+      rename(oldPath: string, newPath: string): Promise<void>;
+      unlink(file: string): Promise<void>;
+    };
+    const path = await import("node:path" as string) as { dirname(file: string): string };
+    temporary = `${file}.${Date.now()}.tmp`;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(temporary, JSON.stringify({
+      version: 1,
+      savedAt: cache.ts,
+      entries: cache.data,
+    }), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temporary, file);
+  } catch (error) {
+    if (temporary) {
+      try {
+        const fs = await import("node:fs/promises" as string) as { unlink(file: string): Promise<void> };
+        await fs.unlink(temporary);
+      } catch {
+        // Best-effort cleanup only; persistence is an optimization.
+      }
+    }
+    console.warn("tarkov reference cache write failed", {
+      reference: "mastering",
+      error: error instanceof Error ? error.message : "unknown",
+    });
+  }
 }
 
 function parsePersistedAchievements(payload: unknown, mode: AchievementMode): AchievementCache {
@@ -736,27 +807,57 @@ export async function getAchievements(mode: AchievementMode = "regular"): Promis
   return refreshAchievements(mode, null);
 }
 
-/** Handbook mastery thresholds and display names, cached for the isolate. */
-export async function getWeaponMastery(): Promise<WeaponMasteryReference[]> {
+async function refreshWeaponMastery(fallback: MasteryCache | null): Promise<WeaponMasteryReference[]> {
+  if (masteryLoad) return masteryLoad;
+  masteryLoad = (async () => {
+    try {
+      const response = await fetchTarkovJson(ITEMS_URL, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(MASTERY_REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const cache = { data: parseWeaponMastery(await response.json()), ts: Date.now() };
+      masteryCache = cache;
+      await writePersistedMastery(cache);
+      console.info("tarkov reference", { reference: "mastering", source: "json" });
+      return cache.data;
+    } catch (error) {
+      console.error("tarkov reference validation failed", {
+        reference: "mastering",
+        error: error instanceof Error ? error.message : "unknown",
+      });
+      return masteryCache?.data ?? fallback?.data ?? [];
+    } finally {
+      masteryLoad = null;
+    }
+  })();
+  return masteryLoad;
+}
+
+/**
+ * Handbook mastery thresholds and display names. `staleOnly` never waits for
+ * the upstream service, which keeps stored profile responses local-only.
+ */
+export async function getWeaponMastery(
+  options: { staleOnly?: boolean } = {},
+): Promise<WeaponMasteryReference[]> {
   const now = Date.now();
   if (masteryCache && now - masteryCache.ts < MASTERY_TTL_MS) {
     console.info("tarkov reference", { reference: "mastering", source: "memory-cache" });
     return masteryCache.data;
   }
-  try {
-    const response = await fetchTarkovJson(ITEMS_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = parseWeaponMastery(await response.json());
-    masteryCache = { data, ts: now };
-    console.info("tarkov reference", { reference: "mastering", source: "json" });
-    return data;
-  } catch (error) {
-    console.error("tarkov reference validation failed", {
-      reference: "mastering",
-      error: error instanceof Error ? error.message : "unknown",
-    });
-    return masteryCache?.data ?? [];
+  const persisted = masteryCache ?? await readPersistedMastery();
+  if (persisted) {
+    masteryCache = persisted;
+    if (now - persisted.ts >= MASTERY_TTL_MS) void refreshWeaponMastery(persisted);
+    console.info("tarkov reference", { reference: "mastering", source: "persistent-cache" });
+    return persisted.data;
   }
+  if (options.staleOnly) {
+    void refreshWeaponMastery(null);
+    return [];
+  }
+  return refreshWeaponMastery(null);
 }
 
 function getCounterValue(

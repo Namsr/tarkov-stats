@@ -190,6 +190,7 @@ function snapshotFromRow(row: Record<string, unknown>): SystemMetricSnapshot {
 }
 
 function bucketMilliseconds(period: AdminPeriod): number {
+  if (period === "15m") return 60_000;
   if (period === "24h") return 5 * 60_000;
   if (period === "7d") return 30 * 60_000;
   if (period === "30d") return 2 * 3_600_000;

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error Node's strip-types test runner resolves the explicit .ts module.
 import { buildWeaponMasteryRows, displayedWeaponMasteryProgress, normalizeWeaponMastery, parseWeaponMastery, sortWeaponMastery, weaponMasteryLevel } from "../lib/profile-mastery.ts";
 // @ts-expect-error Node's strip-types test runner resolves the explicit .ts module.
-import { parseProfileStats } from "../lib/tarkov-api.ts";
+import { getWeaponMastery, parseProfileStats } from "../lib/tarkov-api.ts";
 
 test("weapon mastery parser validates handbook rows and level boundaries", () => {
   const references = parseWeaponMastery({ data: { mastering: [
@@ -17,6 +19,37 @@ test("weapon mastery parser validates handbook rows and level boundaries", () =>
   assert.throws(() => parseWeaponMastery({ data: { mastering: [
     { id: "bad", weapons: [], level2: 4, level3: 3 },
   ] } }));
+});
+
+test("stored profile mastery starts one background refresh without waiting for upstream", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "mastery-cache-"));
+  const previousDirectory = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const previousFetch = globalThis.fetch;
+  process.env.ACHIEVEMENTS_CACHE_DIR = directory;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    await gate;
+    return new Response(JSON.stringify({ data: { mastering: [
+      { id: "mastering-ak", weapons: ["AK-74"], level2: 100, level3: 300 },
+    ] } }), { status: 200 });
+  };
+  try {
+    assert.deepEqual(await getWeaponMastery({ staleOnly: true }), []);
+    assert.deepEqual(await getWeaponMastery({ staleOnly: true }), []);
+    assert.equal(requests, 1);
+    release();
+    const loaded = await getWeaponMastery();
+    assert.equal(loaded[0]?.id, "mastering-ak");
+  } finally {
+    release();
+    globalThis.fetch = previousFetch;
+    if (previousDirectory === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = previousDirectory;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("profile parsing retains normalized Mastering rows for stats_json", () => {
@@ -96,6 +129,10 @@ test("all profile modes wire mastery from API through their UI shells", () => {
   assert.match(route, /enrichRegularViewModel[\s\S]*?enrichPersistentViewModel\("regular"/);
   assert.match(route, /enrichPersistentViewModel\("pve"/);
   assert.match(route, /async function enrichSeasonalViewModel[\s\S]*?buildWeaponMasteryRows\(viewModel\.mastering\.items, masteryReferences\)/);
+  assert.match(route, /getWeaponMastery\(\{ staleOnly: true \}\)/);
+  const tarkovApi = readFileSync("lib/tarkov-api.ts", "utf8");
+  assert.match(tarkovApi, /signal: AbortSignal\.timeout\(MASTERY_REQUEST_TIMEOUT_MS\)/);
+  assert.match(tarkovApi, /weapon-mastery\.json/);
   assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
   assert.match(seasonal, /masteryFromViewModel[\s\S]*?mastering=\{hasVisibleMastery\(masteryItems\) \? <ProfileMastering items=\{masteryItems\} \/>/);
 

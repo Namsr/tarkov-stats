@@ -108,14 +108,32 @@ async function loadPersistentAchievementBaseline(mode: PersistentMode): Promise<
   }
 }
 
+type ProfileEnrichmentPhases = { baselineMs?: number; metadataMs?: number; masteryMs?: number };
+
+async function timedEnrichmentPhase<T>(
+  phases: ProfileEnrichmentPhases | undefined,
+  key: keyof ProfileEnrichmentPhases,
+  load: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await load();
+  } finally {
+    if (phases) phases[key] = Math.max(0, Math.round(performance.now() - started));
+  }
+}
+
 async function enrichSeasonalViewModel(
   profile: import("@/types/seasonal").SeasonalProfile,
   viewModel: ReturnType<typeof buildSeasonalProfileViewModel>,
+  phases?: ProfileEnrichmentPhases,
 ) {
   const [baseline, metadata, masteryReferences] = await Promise.all([
-    getPublishedSeasonalAchievementBaseline(profile.cycleId),
-    getAchievements("seasonal").catch(() => new Map()),
-    viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
+    timedEnrichmentPhase(phases, "baselineMs", () => getPublishedSeasonalAchievementBaseline(profile.cycleId)),
+    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("seasonal").catch(() => new Map())),
+    viewModel.mastering.items.length > 0
+      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true }))
+      : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.id, entry]));
   const achievements = (viewModel.seasonalAchievements ?? []).map((achievement) => {
@@ -150,21 +168,15 @@ async function enrichSeasonalViewModel(
 async function enrichPersistentViewModel(
   mode: PersistentMode,
   viewModel: ReturnType<typeof buildPersistentProfileViewModel>,
-  phases?: { baselineMs?: number; metadataMs?: number },
+  phases?: ProfileEnrichmentPhases,
 ) {
-  const timed = async <T>(key: "baselineMs" | "metadataMs", load: () => Promise<T>): Promise<T> => {
-    const started = performance.now();
-    try {
-      return await load();
-    } finally {
-      if (phases) phases[key] = Math.max(0, Math.round(performance.now() - started));
-    }
-  };
   const [baseline, metadata, masteryReferences] = await Promise.all([
-    timed("baselineMs", () => loadPersistentAchievementBaseline(mode)),
+    timedEnrichmentPhase(phases, "baselineMs", () => loadPersistentAchievementBaseline(mode)),
     // Achievement definitions are shared. Ownership stays in the mode store.
-    timed("metadataMs", () => getAchievements("regular").catch(() => new Map())),
-    viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
+    timedEnrichmentPhase(phases, "metadataMs", () => getAchievements("regular").catch(() => new Map())),
+    viewModel.mastering.items.length > 0
+      ? timedEnrichmentPhase(phases, "masteryMs", () => getWeaponMastery({ staleOnly: true }))
+      : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
   const eligibleN = baseline?.total ?? null;
@@ -197,7 +209,7 @@ async function enrichPersistentViewModel(
 
 async function enrichRegularViewModel(
   viewModel: ReturnType<typeof buildRegularProfileViewModel>,
-  phases?: { baselineMs?: number; metadataMs?: number },
+  phases?: ProfileEnrichmentPhases,
 ) {
   return enrichPersistentViewModel("regular", viewModel, phases);
 }
@@ -387,6 +399,7 @@ export async function GET(request: NextRequest) {
       }, { status: 404, headers: noStore });
     }
     const seasonalStarted = timing.now();
+    const enrichmentPhases: ProfileEnrichmentPhases = {};
     const result = await resolveSeasonalProfile(
       { aid, cycleId, force },
       {
@@ -433,6 +446,7 @@ export async function GET(request: NextRequest) {
       ? await enrichSeasonalViewModel(
           result.profile,
           buildSeasonalProfileViewModel({ profile: result.profile }, publicRisk),
+          enrichmentPhases,
         )
       : null;
     const response = NextResponse.json(
@@ -458,6 +472,9 @@ export async function GET(request: NextRequest) {
       force,
       source: result.ok && result.capture.status === "stored" ? "stored" : "upstream",
       seasonalMs: timing.elapsedMs(seasonalStarted),
+      baselineMs: enrichmentPhases.baselineMs,
+      metadataMs: enrichmentPhases.metadataMs,
+      masteryMs: enrichmentPhases.masteryMs,
     });
     return response;
   }
@@ -471,7 +488,7 @@ export async function GET(request: NextRequest) {
     let profileMs: number | undefined;
     let levelsMs: number | undefined;
     let parseMs: number | undefined;
-    const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
+    const enrichmentPhases: ProfileEnrichmentPhases = {};
     let profileStarted: number | undefined;
     let storage: "sqlite" | "unavailable" = "unavailable";
     let source: "upstream" | "cache" = "upstream";
@@ -550,6 +567,7 @@ export async function GET(request: NextRequest) {
           profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
           baselineMs: enrichmentPhases.baselineMs,
           metadataMs: enrichmentPhases.metadataMs,
+          masteryMs: enrichmentPhases.masteryMs,
         });
         return response;
       };
@@ -648,6 +666,7 @@ export async function GET(request: NextRequest) {
         parseMs,
         baselineMs: enrichmentPhases.baselineMs,
         metadataMs: enrichmentPhases.metadataMs,
+        masteryMs: enrichmentPhases.masteryMs,
       });
       return response;
     } catch (error) {
@@ -670,6 +689,7 @@ export async function GET(request: NextRequest) {
         parseMs,
         baselineMs: enrichmentPhases.baselineMs,
         metadataMs: enrichmentPhases.metadataMs,
+        masteryMs: enrichmentPhases.masteryMs,
       });
       return response;
     }
@@ -681,7 +701,7 @@ export async function GET(request: NextRequest) {
     const stored = progressionStore ? await progressionStore.latest(aid) : null;
     const storeReadMs = timing.elapsedMs(storedStarted);
     if (stored) {
-      const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
+      const enrichmentPhases: ProfileEnrichmentPhases = {};
       const storedRisk = stored.stats.pvpStatsKnown === false
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
@@ -710,6 +730,7 @@ export async function GET(request: NextRequest) {
         storeReadMs,
         baselineMs: enrichmentPhases.baselineMs,
         metadataMs: enrichmentPhases.metadataMs,
+        masteryMs: enrichmentPhases.masteryMs,
       });
       return NextResponse.json({
         profile: null,
@@ -729,7 +750,7 @@ export async function GET(request: NextRequest) {
   let profileMs: number | undefined;
   let levelsMs: number | undefined;
   let parseMs: number | undefined;
-  const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
+  const enrichmentPhases: ProfileEnrichmentPhases = {};
   let profileStarted: number | undefined;
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
@@ -831,6 +852,7 @@ export async function GET(request: NextRequest) {
       parseMs,
       baselineMs: enrichmentPhases.baselineMs,
       metadataMs: enrichmentPhases.metadataMs,
+      masteryMs: enrichmentPhases.masteryMs,
     });
     return response;
   } catch {
@@ -854,6 +876,7 @@ export async function GET(request: NextRequest) {
       parseMs,
       baselineMs: enrichmentPhases.baselineMs,
       metadataMs: enrichmentPhases.metadataMs,
+      masteryMs: enrichmentPhases.masteryMs,
     });
     return response;
   }

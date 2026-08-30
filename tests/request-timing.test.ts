@@ -28,6 +28,7 @@ test("timing events use only the explicit whitelist and rounded nonnegative mill
     outcome: "success",
     status: 200,
     profileMs: 2.5,
+    masteryMs: 1.5,
     totalMs: -1,
     ...({ aid: 5869253, arbitrary: "never logged" } as object),
   });
@@ -35,10 +36,11 @@ test("timing events use only the explicit whitelist and rounded nonnegative mill
   assert.equal(output.length, 1);
   const event = JSON.parse(output[0]) as Record<string, unknown>;
   assert.deepEqual(Object.keys(event).sort(), [
-    "entry", "event", "mode", "operation", "outcome", "profile_ms", "status", "total_ms",
+    "entry", "event", "mastery_ms", "mode", "operation", "outcome", "profile_ms", "status", "total_ms",
   ]);
   assert.equal(event.total_ms, 0);
   assert.equal(event.profile_ms, 3);
+  assert.equal(event.mastery_ms, 2);
 });
 
 test("synchronous store phases retain their direct durations after concurrent startup", async () => {

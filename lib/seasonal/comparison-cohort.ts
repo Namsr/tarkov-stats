@@ -21,8 +21,9 @@ type Row = Record<string, unknown>;
 
 const COHORT_CACHE_TTL_MS = 5 * 60_000;
 const COHORT_CACHE_MAX = 512;
-const cohortCache = new Map<string, { expiresAt: number; value: SeasonalComparisonCohortLookup }>();
-const cohortLoads = new Map<string, Promise<SeasonalComparisonCohortLookup>>();
+type SeasonalComparisonCohortValue = Omit<SeasonalComparisonCohortLookup, "cache">;
+const cohortCache = new Map<string, { expiresAt: number; value: SeasonalComparisonCohortValue }>();
+const cohortLoads = new Map<string, Promise<SeasonalComparisonCohortValue>>();
 let sqliteDatabase: D1DatabaseLike | null = null;
 
 const NORMALIZED_CTE = `
@@ -128,6 +129,7 @@ export interface SeasonalComparisonCohortInput {
 export interface SeasonalComparisonCohortLookup {
   available: boolean;
   result: ComparisonCohortResult | null;
+  cache: "hit" | "miss";
 }
 
 function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
@@ -135,7 +137,7 @@ function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
     input.period ?? "all", input.period === "90d" ? Math.floor(now / COHORT_CACHE_TTL_MS) : 0].join(":");
 }
 
-function cacheResult(key: string, value: SeasonalComparisonCohortLookup, now: number): void {
+function cacheResult(key: string, value: SeasonalComparisonCohortValue, now: number): void {
   for (const [cachedKey, entry] of cohortCache) {
     if (entry.expiresAt <= now) cohortCache.delete(cachedKey);
   }
@@ -150,7 +152,7 @@ function cacheResult(key: string, value: SeasonalComparisonCohortLookup, now: nu
 async function computeSeasonalComparisonCohort(
   input: SeasonalComparisonCohortInput,
   now: number,
-): Promise<SeasonalComparisonCohortLookup> {
+): Promise<SeasonalComparisonCohortValue> {
   const store = await backend();
   if (!store) return { available: false, result: null };
   const dimension = input.dimension ?? "hours";
@@ -228,10 +230,10 @@ export async function querySeasonalComparisonCohort(
   if (cached && cached.expiresAt > now) {
     cohortCache.delete(key);
     cohortCache.set(key, cached);
-    return cached.value;
+    return { ...cached.value, cache: "hit" };
   }
   const existing = cohortLoads.get(key);
-  if (existing) return existing;
+  if (existing) return { ...await existing, cache: "hit" };
   const load = computeSeasonalComparisonCohort(input, now).then((value) => {
     cacheResult(key, value, now);
     return value;
@@ -239,5 +241,5 @@ export async function querySeasonalComparisonCohort(
     if (cohortLoads.get(key) === load) cohortLoads.delete(key);
   });
   cohortLoads.set(key, load);
-  return load;
+  return { ...await load, cache: "miss" };
 }

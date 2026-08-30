@@ -73,6 +73,7 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
       now: 10_000,
     });
     assert.equal(lookup.available, true);
+    assert.equal(lookup.cache, "miss");
     assert.ok(lookup.result);
     assert.deepEqual(lookup.result.identity, { aid: 1, mode: "seasonal", cycleId: "cycle-a" });
     assert.equal(lookup.result.axes.hours.center, 100);
@@ -96,6 +97,13 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
       now: 10_000,
     });
     assert.equal(median.result?.averages.kd_ratio.value, 1);
+    const cachedMedian = await querySeasonalComparisonCohort({
+      aid: 1,
+      cycleId: "cycle-a",
+      statistic: "median",
+      now: 10_000,
+    });
+    assert.equal(cachedMedian.cache, "hit");
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;

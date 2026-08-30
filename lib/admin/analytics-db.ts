@@ -24,6 +24,7 @@ export interface RequestEvent {
   profileMs?: number | null;
   baselineMs?: number | null;
   metadataMs?: number | null;
+  masteryMs?: number | null;
   cohortMs?: number | null;
   storeReadMs?: number | null;
   storeWriteMs?: number | null;
@@ -34,6 +35,14 @@ export interface HealthOperationVariant {
   cache: string | null;
   force: boolean | null;
   requests: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+}
+
+export interface HealthPhaseSummary {
+  phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "store_read" | "store_write";
+  samples: number;
   p50Ms: number | null;
   p95Ms: number | null;
   p99Ms: number | null;
@@ -52,6 +61,7 @@ export interface HealthOperationSummary {
   lastSuccessAt: number | null;
   lastIssueAt: number | null;
   variants: HealthOperationVariant[];
+  phases: HealthPhaseSummary[];
 }
 
 export interface HealthIssueSummary {
@@ -161,6 +171,7 @@ CREATE TABLE IF NOT EXISTS request_events (
   profile_ms INTEGER,
   baseline_ms INTEGER,
   metadata_ms INTEGER,
+  mastery_ms INTEGER,
   cohort_ms INTEGER,
   store_read_ms INTEGER,
   store_write_ms INTEGER
@@ -199,16 +210,23 @@ function whereFor(period: AdminPeriod, domain: AdminDomain, now: number): { sql:
   return { sql, args };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function percentile(db: any, where: string, args: unknown[], fraction: number): number | null {
-  const count = Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`).get(...args)?.n ?? 0);
+function percentile(
+  db: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  where: string,
+  args: unknown[],
+  fraction: number,
+  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "store_read_ms" | "store_write_ms" = "latency_ms",
+  knownCount?: number,
+): number | null {
+  const count = knownCount ?? Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`).get(...args)?.n ?? 0);
   if (!count) return null;
   const offset = Math.max(0, Math.ceil(count * fraction) - 1);
-  const row = db.prepare(`SELECT latency_ms AS value FROM request_events WHERE ${where} ORDER BY latency_ms LIMIT 1 OFFSET ?`).get(...args, offset);
+  const row = db.prepare(`SELECT ${column} AS value FROM request_events WHERE ${where} ORDER BY ${column} LIMIT 1 OFFSET ?`).get(...args, offset);
   return row ? Number(row.value) : null;
 }
 
 function bucketMilliseconds(period: AdminPeriod): number {
+  if (period === "15m") return 60_000;
   if (period === "24h") return 5 * 60_000;
   if (period === "7d") return 30 * 60_000;
   if (period === "30d") return 2 * 3_600_000;
@@ -374,6 +392,7 @@ function ensureRequestDiagnosticColumns(db: any): void {
     ["profile_ms", "INTEGER"],
     ["baseline_ms", "INTEGER"],
     ["metadata_ms", "INTEGER"],
+    ["mastery_ms", "INTEGER"],
     ["cohort_ms", "INTEGER"],
     ["store_read_ms", "INTEGER"],
     ["store_write_ms", "INTEGER"],
@@ -401,9 +420,9 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       const storage = event.storage === "sqlite" || event.storage === "unavailable" ? event.storage : null;
       db.prepare(`INSERT INTO request_events
         (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache,
-          storage, failure_stage, error_code, latency_ms, profile_ms, baseline_ms, metadata_ms, cohort_ms,
+          storage, failure_stage, error_code, latency_ms, profile_ms, baseline_ms, metadata_ms, mastery_ms, cohort_ms,
           store_read_ms, store_write_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           occurredAt, event.host ?? null, event.operation, event.aid ?? null, event.nickname ?? null,
           event.mode ?? null, event.cycleId ?? null, event.outcome, event.status,
@@ -413,6 +432,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           event.profileMs == null ? null : Math.max(0, Math.round(event.profileMs)),
           event.baselineMs == null ? null : Math.max(0, Math.round(event.baselineMs)),
           event.metadataMs == null ? null : Math.max(0, Math.round(event.metadataMs)),
+          event.masteryMs == null ? null : Math.max(0, Math.round(event.masteryMs)),
           event.cohortMs == null ? null : Math.max(0, Math.round(event.cohortMs)),
           event.storeReadMs == null ? null : Math.max(0, Math.round(event.storeReadMs)),
           event.storeWriteMs == null ? null : Math.max(0, Math.round(event.storeWriteMs)),
@@ -492,6 +512,27 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           };
         });
         const successfulOperationWhere = `${operationWhere} AND outcome = 'success'`;
+        const phaseColumns = [
+          ["profile", "profile_ms"],
+          ["baseline", "baseline_ms"],
+          ["metadata", "metadata_ms"],
+          ["mastery", "mastery_ms"],
+          ["cohort", "cohort_ms"],
+          ["store_read", "store_read_ms"],
+          ["store_write", "store_write_ms"],
+        ] as const;
+        const phases: HealthPhaseSummary[] = phaseColumns.flatMap(([phase, column]) => {
+          const where = `${successfulOperationWhere} AND ${column} IS NOT NULL`;
+          const samples = Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`)
+            .get(...operationArgs)?.n ?? 0);
+          return samples === 0 ? [] : [{
+            phase,
+            samples,
+            p50Ms: percentile(db, where, operationArgs, 0.5, column, samples),
+            p95Ms: percentile(db, where, operationArgs, 0.95, column, samples),
+            p99Ms: percentile(db, where, operationArgs, 0.99, column, samples),
+          }];
+        });
         return {
           operation: String(operationRow.operation), mode,
           requests: Number(operationRow.requests ?? 0), success: Number(operationRow.success ?? 0),
@@ -502,6 +543,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
           lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
           variants,
+          phases,
         };
       });
       const issueRows = includeDiagnostics ? db.prepare(`SELECT

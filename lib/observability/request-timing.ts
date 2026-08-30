@@ -25,6 +25,7 @@ type TimingInput = {
   cohortMs?: number;
   baselineMs?: number;
   metadataMs?: number;
+  masteryMs?: number;
 };
 
 export type RequestTimingInput = TimingInput & {
@@ -159,6 +160,7 @@ export function createRequestTiming(options: Options = {}) {
         profileMs: input.profileMs,
         baselineMs: input.baselineMs,
         metadataMs: input.metadataMs,
+        masteryMs: input.masteryMs,
         cohortMs: input.cohortMs,
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
@@ -192,6 +194,7 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.cohortMs === undefined ? {} : { cohort_ms: roundedMs(input.cohortMs) }),
         ...(input.baselineMs === undefined ? {} : { baseline_ms: roundedMs(input.baselineMs) }),
         ...(input.metadataMs === undefined ? {} : { metadata_ms: roundedMs(input.metadataMs) }),
+        ...(input.masteryMs === undefined ? {} : { mastery_ms: roundedMs(input.masteryMs) }),
       };
       try {
         (options.logger ?? console.log)(JSON.stringify(event));
