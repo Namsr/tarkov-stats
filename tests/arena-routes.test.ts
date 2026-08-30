@@ -31,6 +31,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 
 const { getFavoritesStore, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
+const { getArenaAverage } = await import("../lib/arena/service.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
@@ -140,6 +141,37 @@ test("Arena average validates its isolated query contract and defaults to matche
     "mode=arena&arenaMode=teamFight&minMatches=-1",
   ]) {
     assert.equal((await getAverage(new NextRequest(`http://local/api/average?${query}`))).status, 400);
+  }
+});
+
+test("standard Arena mode reads the atomically published response", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average-publications.db");
+  publications.resetAveragePublicationForTests();
+  try {
+    const payload = await getArenaAverage({ mode: "teamFight", statistic: "trimmed_mean", dimension: "matches", metric: "players" });
+    assert.ok(payload);
+    await publications.publishAverageScope("arena", new Map([[
+      publications.standardArenaVariant("teamFight", "trimmed_mean"), payload,
+    ]]), Date.now() - 10, Date.now());
+    const response = await getAverage(new NextRequest(
+      "http://local/api/average?mode=arena&arenaMode=teamFight",
+    ));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-average-source"), "publication");
+    assert.equal((await response.json()).sampleN, 22);
+    assert.equal((await getAverage(new NextRequest(
+      "http://local/api/average?mode=arena&arenaMode=lastHero",
+    ))).status, 503);
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
   }
 });
 

@@ -2,6 +2,7 @@ import { revalidateTag } from "next/cache";
 import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
 import { SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
+import { markAveragePublicationDirty, seasonalPublicationScope } from "@/lib/average-publication";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import {
@@ -189,6 +190,7 @@ export async function POST(request: Request) {
     });
     if (result.capture.inserted) {
       revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, "max");
+      await markAveragePublicationDirty(seasonalPublicationScope(cycle.cycleId));
     }
     return Response.json({
       state: result.capture.inserted ? "updated" : result.capture.status,

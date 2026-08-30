@@ -5,7 +5,10 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { resolveY } from "@/lib/metrics";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { SeasonalAverageDimension } from "@/lib/seasonal/average-db";
-import { AVERAGE_CACHE_TTL_SECONDS, SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
+import { AVERAGE_PUBLICATION_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS, SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
+import { averagePublicationsEnabled, readAveragePublication, seasonalPublicationScope, standardAverageVariant } from "@/lib/average-publication";
+import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { createRequestTiming } from "@/lib/observability/request-timing";
 
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
@@ -37,7 +40,10 @@ const loadCachedSeasonalAverage = unstable_cache(
 );
 
 export async function GET(request: NextRequest) {
+  const timing = createRequestTiming();
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
   if (!isSeasonalRolloutReady()) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "not_found", status: 404 });
     return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 404 });
   }
   const configured = loadSeasonalCycleConfig();
@@ -65,21 +71,49 @@ export async function GET(request: NextRequest) {
   }
   const metric = resolveY(params.get("metric")).key;
   try {
-    const cached = await loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max);
+    const standard = dimension === "hours" && metric === "players" && min === null && max === null;
+    if (standard && averagePublicationsEnabled()) {
+      const publication = await readAveragePublication<Record<string, unknown>>(
+        seasonalPublicationScope(cycle),
+        standardAverageVariant(statistic, period),
+      );
+      if (!publication) {
+        timing.finish({ operation: "average", mode: "seasonal", outcome: "unavailable", status: 503, source: "publication" });
+        return NextResponse.json({ error: "Seasonal averages are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+      }
+      timing.finish({ operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
+      return NextResponse.json(publication.payload, {
+        headers: {
+          "Cache-Control": AVERAGE_PUBLICATION_CACHE_CONTROL,
+          "X-Seasonal-Average-Cache": "publication",
+          "X-Average-Source": "publication",
+          "X-Average-Generation": String(publication.generation),
+          "X-Average-Generated-At": String(publication.generatedAt),
+          "X-Average-Stale": publication.stale ? "1" : "0",
+        },
+      });
+    }
+    const dynamicKey = JSON.stringify(["seasonal", cycle, period, statistic, dimension, metric, min, max]);
+    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max));
+    const cached = loaded.value;
     if (cached.status === "not-found") {
       return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
     }
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
     return NextResponse.json(cached.result, {
       headers: {
         "Cache-Control": "no-store",
         "X-Seasonal-Average-Cache": "next-data",
+        "X-Average-Source": "dynamic",
       },
     });
   } catch (error) {
     if (error instanceof SeasonalAverageUnavailableError) {
+      timing.finish({ operation: "average", mode: "seasonal", outcome: "unavailable", status: 503, source: "dynamic" });
       return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
     }
     console.error("seasonal cross-section average failed", error);
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "error", status: 500, source: "dynamic" });
     return NextResponse.json({ error: "Failed to query Seasonal average" }, { status: 500 });
   }
 }

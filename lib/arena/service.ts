@@ -24,6 +24,7 @@ import {
 } from "@/types/arena";
 import type { PlayerProfile } from "@/types/tarkov";
 import { ARENA_PARSER_VERSION, ARENA_RISK_UPSERT_SQL, arenaRiskValues, isArenaMode } from "@/lib/arena/storage";
+import { markAveragePublicationDirty } from "@/lib/average-publication";
 
 export { ARENA_PARSER_VERSION } from "@/lib/arena/storage";
 
@@ -48,6 +49,7 @@ export async function persistArenaProfile(profile: PlayerProfile): Promise<Arena
   const store = await getStore("arena");
   if (!store) throw new Error("Arena storage unavailable");
   await store.upsert(profile.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);
+  await markAveragePublicationDirty("arena");
   return arena;
 }
 

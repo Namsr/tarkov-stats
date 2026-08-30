@@ -808,7 +808,7 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
 });
-test("average dashboard keeps the bulk warmer manual so it cannot block web traffic", async () => {
+test("average dashboard publishes standard variants outside the web process and keeps HTTP warming manual", async () => {
   const cache = await readFile("lib/average-cache.ts", "utf8");
   const average = await readFile("app/api/average/route.ts", "utf8");
   const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
@@ -817,6 +817,9 @@ test("average dashboard keeps the bulk warmer manual so it cannot block web traf
   const warmer = await readFile("scripts/warm-average-cache.mjs", "utf8");
   const dockerfile = await readFile("Dockerfile", "utf8");
   const startup = await readFile("scripts/start-web.mjs", "utf8");
+  const materializer = await readFile("scripts/materialize-average-publications.mjs", "utf8");
+  const publication = await readFile("lib/average-publication.ts", "utf8");
+  const client = await readFile("lib/client-average-request.ts", "utf8");
 
   assert.match(cache, /30 \* 60/);
   assert.match(cache, /s-maxage=\$\{AVERAGE_CACHE_TTL_SECONDS\}/);
@@ -836,6 +839,15 @@ test("average dashboard keeps the bulk warmer manual so it cannot block web traf
   assert.match(dockerfile, /start-web\.mjs/);
   assert.doesNotMatch(startup, /warm-average-cache\.mjs/);
   assert.doesNotMatch(startup, /AVERAGE_WARM_BASE_URL/);
+  assert.match(startup, /materialize-average-publications\.mjs/);
+  assert.match(startup, /setPriority\(averageMaterializer\.pid, 19\)/);
+  assert.doesNotMatch(materializer, /fetch\(|\/api\/average/);
+  assert.match(publication, /BEGIN IMMEDIATE/);
+  assert.match(publication, /LIMIT 2/);
+  assert.match(average, /readAveragePublication/);
+  assert.match(seasonal, /readAveragePublication/);
+  assert.match(client, /activePrefetches < 2/);
+  assert.match(client, /slow-2g/);
 });
 
 test("Seasonal average invalidation keeps the server cache tagged and the JSON response uncached", async () => {
@@ -849,7 +861,7 @@ test("Seasonal average invalidation keeps the server cache tagged and the JSON r
   assert.doesNotMatch(seasonal, /return \{ status: "unavailable" as const \}/);
   assert.match(seasonal, /"Cache-Control": "no-store"/);
   assert.match(sync, /import \{ revalidateTag \} from "next\/cache"/);
-  assert.match(sync, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, "max"\);\s*\}/s);
+  assert.match(sync, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, "max"\);\s*await markAveragePublicationDirty\(seasonalPublicationScope\(cycle\.cycleId\)\);\s*\}/s);
   assert.doesNotMatch(sync, /warmAverageCaches|after\(/);
   assert.equal((sync.match(/revalidateTag\(/g) ?? []).length, 1);
   assert.ok(

@@ -7,6 +7,8 @@ import SegmentedRadio from "@/components/SegmentedRadio";
 import { useI18n } from "@/lib/i18n/context";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { GameMode } from "@/types/seasonal";
+import { useEffect } from "react";
+import { scheduleAveragePrefetch } from "@/lib/client-average-request";
 
 export default function AveragePageHeader({
   current,
@@ -15,6 +17,7 @@ export default function AveragePageHeader({
   period,
   onPeriodChange,
   onBeforeNavigate,
+  seasonalCycleId,
 }: {
   current: GameMode;
   statistic: AverageStatistic;
@@ -22,8 +25,25 @@ export default function AveragePageHeader({
   period?: AveragePeriod;
   onPeriodChange?: (value: AveragePeriod) => void;
   onBeforeNavigate?: (mode: GameMode) => void;
+  seasonalCycleId?: string;
 }) {
   const { t } = useI18n();
+
+  useEffect(() => {
+    const selectedPeriod = period ?? "all";
+    const standard = (mode: "regular" | "pve") => `/api/average?${new URLSearchParams({
+      dimension: "hours", metric: "players", statistic, period: selectedPeriod, mode,
+    })}`;
+    const urls = [standard("regular"), standard("pve"), `/api/average?${new URLSearchParams({
+      mode: "arena", arenaMode: "teamFight", statistic, dimension: "matches", metric: "players",
+    })}`];
+    if (seasonalCycleId) {
+      const seasonal = new URLSearchParams({ dimension: "hours", metric: "players", statistic, period: selectedPeriod });
+      seasonal.set("cycle", seasonalCycleId);
+      urls.push(`/api/seasonal/average?${seasonal}`);
+    }
+    scheduleAveragePrefetch(urls);
+  }, [period, seasonalCycleId, statistic]);
 
   return (
     <>
@@ -67,6 +87,7 @@ export default function AveragePageHeader({
             <ProfileModeSwitch
               current={current}
               page="average"
+              seasonalCycleId={seasonalCycleId}
               onBeforeNavigate={onBeforeNavigate}
             />
           </div>

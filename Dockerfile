@@ -52,6 +52,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/ts-alias-loader.mjs ./scripts/ts-alias-loader.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
+COPY --from=builder --chown=nextjs:nodejs /app/types ./types
 COPY --from=builder --chown=nextjs:nodejs /app/lib/brackets.ts ./lib/brackets.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/cheater-score.ts ./lib/cheater-score.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/admin/moderation-db.ts ./lib/admin/moderation-db.ts
@@ -85,6 +89,7 @@ ENV SQLITE_PATH="/data/players.db"
 ENV BANS_SQLITE_PATH="/data/bans.db"
 ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
 ENV ADMIN_ANALYTICS_SQLITE_PATH="/data/admin-analytics.db"
+ENV AVERAGE_PUBLICATION_SQLITE_PATH="/data/average-publications.db"
 
 # --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
 CMD ["node", "scripts/start-web.mjs"]

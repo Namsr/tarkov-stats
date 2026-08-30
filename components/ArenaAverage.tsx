@@ -23,6 +23,7 @@ import {
 } from "@/lib/arena/average-range";
 import { useI18n } from "@/lib/i18n/context";
 import type { ArenaAverageBucket, ArenaAverageResult, ArenaDimension, ArenaStatistic } from "@/types/arena";
+import { loadAverageJson, scheduleAveragePrefetch } from "@/lib/client-average-request";
 
 type ArenaFilterField = "minHours" | "maxHours" | "minMatches" | "maxMatches";
 
@@ -428,10 +429,11 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
     const controller = new AbortController();
     setContextLoaded(false);
     setContextError(false);
-    fetch(contextRequestFor(mode, statistic, filter.dimension), { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json() as unknown;
-        if (!response.ok) throw new Error("request failed");
+    loadAverageJson<unknown>(contextRequestFor(mode, statistic, filter.dimension), {
+      signal: controller.signal,
+      retryUnavailable: true,
+    })
+      .then((body) => {
         const next = toArenaAverage(body);
         if (!next || !matchesContext(next, mode, statistic, filter.dimension)) throw new Error("invalid response");
         return next;
@@ -464,10 +466,11 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
     let active = true;
     setLoading(true);
     setError(false);
-    fetch(requestFor(mode, filter, statistic), { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json() as unknown;
-        if (!response.ok) throw new Error("request failed");
+    loadAverageJson<unknown>(requestFor(mode, filter, statistic), {
+      signal: controller.signal,
+      retryUnavailable: true,
+    })
+      .then((body) => {
         const next = toArenaAverage(body);
         if (!next || !matchesFilter(next, mode, filter, statistic)) throw new Error("invalid response");
         return next;
@@ -550,7 +553,7 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
   );
 }
 
-export default function ArenaAverage() {
+export default function ArenaAverage({ seasonalCycleId }: { seasonalCycleId?: string }) {
   const { t } = useI18n();
   const [statistic, setStatistic] = useState<ArenaStatistic>("trimmed_mean");
   const [filters, setFilters] = useState<Record<ArenaModeKey, ArenaFilterState>>(defaultFilters);
@@ -588,12 +591,14 @@ export default function ArenaAverage() {
   }, []);
   useEffect(() => {
     if (!urlReady) return;
+    scheduleAveragePrefetch(ARENA_MODE_KEYS.map((mode) => contextRequestFor(mode, statistic)));
     const controller = new AbortController();
     setOverviewLoading(true);
-    fetch(contextRequestFor("teamFight", statistic), { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json() as unknown;
-        if (!response.ok) throw new Error("request failed");
+    loadAverageJson<unknown>(contextRequestFor("teamFight", statistic), {
+      signal: controller.signal,
+      retryUnavailable: true,
+    })
+      .then((body) => {
         const next = toArenaAverage(body);
         if (!next || !matchesContext(next, "teamFight", statistic)) throw new Error("invalid response");
         return next;
@@ -613,7 +618,7 @@ export default function ArenaAverage() {
   }, [statistic, urlReady]);
   return (
     <main className="page-frame">
-      <AveragePageHeader current="arena" statistic={statistic} onStatisticChange={changeStatistic} />
+      <AveragePageHeader current="arena" statistic={statistic} onStatisticChange={changeStatistic} seasonalCycleId={seasonalCycleId} />
       <section className="summary-strip surface">
         <div className="summary-strip__copy">
           <div className="section-kicker">{t("average.accountsScanned")}</div>

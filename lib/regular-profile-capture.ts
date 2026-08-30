@@ -5,6 +5,7 @@ import {
   type CaptureSnapshotResult,
 } from "@/lib/progression-db";
 import type { PersistentProgressionMode } from "@/lib/regular-progression";
+import { markAveragePublicationDirty } from "@/lib/average-publication";
 
 export interface PersistRegularProfileOptions {
   /** Regular remains the default for legacy callers. */
@@ -36,5 +37,6 @@ export async function persistRegularProfileSnapshot(
       await store.upsert(snapshot.aid, snapshot.stats, snapshot.achievementIds);
     }
   }
+  if (capture?.inserted) await markAveragePublicationDirty(mode);
   return capture;
 }

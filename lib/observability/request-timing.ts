@@ -4,7 +4,7 @@ import { recordRequestEvent } from "../admin/request-events.ts";
 
 type Mode = GameMode;
 type Outcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
-type Source = "upstream" | "cache" | "stored" | "index";
+type Source = "upstream" | "cache" | "stored" | "index" | "publication" | "dynamic";
 type Cache = "hit" | "miss" | "bypass";
 type Storage = "sqlite" | "unavailable";
 type Memo = "hit" | "miss";

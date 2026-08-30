@@ -467,3 +467,34 @@ test("average and cohort API contracts default, echo median, and reject unknown 
     "http://local/api/average/cohort?mode=arena&center=1&excludeAid=1&period=90d",
   ))).status, 400);
 });
+
+test("standard average API reads its publication without recalculating player data", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average-publications.db");
+  publications.resetAveragePublicationForTests();
+  try {
+    await publications.publishAverageScope("regular", new Map([[
+      publications.standardAverageVariant("trimmed_mean", "all"),
+      { mode: "regular", statistic: "trimmed_mean", period: "all", total: 777, averages: { n: 777 } },
+    ]]), Date.now() - 10, Date.now());
+    reset();
+    const response = await getAverage(new NextRequest("http://local/api/average"));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-average-source"), "publication");
+    assert.equal(response.headers.get("x-average-stale"), "0");
+    assert.equal((await response.json()).total, 777);
+
+    const missing = await getAverage(new NextRequest("http://local/api/average?mode=pve"));
+    assert.equal(missing.status, 503);
+    assert.equal(missing.headers.get("retry-after"), "5");
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
+  }
+});

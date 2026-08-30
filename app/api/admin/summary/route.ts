@@ -4,6 +4,7 @@ import { getAnalyticsStore } from "@/lib/admin/analytics-db";
 import { fetchCloudflareTrafficRange } from "@/lib/admin/cloudflare-analytics";
 import { ADMIN_NO_STORE_HEADERS, parseAdminDomain, parseAdminPeriod, periodMilliseconds } from "@/lib/admin/types";
 import { getSuspiciousSummary } from "@/lib/admin/moderation-db";
+import { getAveragePublicationStates } from "@/lib/average-publication";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,7 @@ export async function GET(request: NextRequest) {
   ]);
   const local = store?.summary(period, domain, now) ?? null;
   const previousLocal = store?.summary(period, domain, now - duration, false) ?? null;
+  const averagePublications = await getAveragePublicationStates(now);
   const metrics = {
     visits: traffic.visits,
     pageviews: traffic.pageviews,
@@ -53,5 +55,6 @@ export async function GET(request: NextRequest) {
     suspicious,
     storageAvailable: Boolean(store),
     traffic: { available: traffic.available, reason: traffic.reason, sampled: traffic.sampled, from: traffic.from, to: traffic.to },
+    averagePublications,
   }, { headers: ADMIN_NO_STORE_HEADERS });
 }

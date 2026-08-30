@@ -23,15 +23,16 @@ export default async function CanonicalAveragePage({ params, searchParams }: Pro
   // chart can render from the known-good local snapshot while the average
   // profile request starts immediately.
   const levelBands = cumulativeLevelBands(PLAYER_LEVELS_V2026_07_22);
+  const availableSeasonalCycle = loadSeasonalCycleConfig();
   if (mode === "regular" || mode === "pve") {
-    return <LegacyAveragePage mode={mode} levelBands={levelBands} />;
+    return <LegacyAveragePage mode={mode} levelBands={levelBands} seasonalCycleId={availableSeasonalCycle?.cycleId} />;
   }
-  if (mode === "arena") return <ArenaAverage />;
+  if (mode === "arena") return <ArenaAverage seasonalCycleId={availableSeasonalCycle?.cycleId} />;
   if (mode !== "seasonal") return <LegacyAveragePage mode={mode} />;
-  const cycle = loadSeasonalCycleConfig();
+  const cycle = availableSeasonalCycle;
   const requestedCycle = (await searchParams).cycle;
   if (!isSeasonalRolloutReady() || !cycle || Array.isArray(requestedCycle) || (requestedCycle && requestedCycle !== cycle.cycleId)) {
     return <ModeUnavailable seasonal />;
   }
-  return <LegacyAveragePage mode="seasonal" cycleId={cycle.cycleId} levelBands={levelBands} />;
+  return <LegacyAveragePage mode="seasonal" cycleId={cycle.cycleId} seasonalCycleId={cycle.cycleId} levelBands={levelBands} />;
 }

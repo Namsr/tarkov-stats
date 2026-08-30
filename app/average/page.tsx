@@ -17,6 +17,7 @@ import {
 } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY, Y_METRICS } from "@/lib/metrics";
+import { loadAverageJson } from "@/lib/client-average-request";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { LevelBand } from "@/lib/seasonal/ui";
 import type { GameMode } from "@/types/seasonal";
@@ -126,10 +127,12 @@ function AveragePageContent({
   mode = "regular",
   levelBands = [],
   cycleId,
+  seasonalCycleId,
 }: {
   mode?: GameMode;
   levelBands?: LevelBand[];
   cycleId?: string;
+  seasonalCycleId?: string;
 }) {
   const { t } = useI18n();
   const pathname = usePathname();
@@ -196,12 +199,10 @@ function AveragePageContent({
       }
     });
 
-    fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        const json = (await response.json()) as AverageResponse & { error?: string };
-        if (!response.ok) throw new Error(json.error ?? t("common.loadFailed"));
-        return json;
-      })
+    loadAverageJson<AverageResponse>(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal,
+      retryUnavailable: true,
+    })
       .then((json) => {
         if (controller.signal.aborted) return;
         setData(json);
@@ -393,6 +394,7 @@ function AveragePageContent({
         period={period}
         onPeriodChange={changePeriod}
         onBeforeNavigate={cancelAverageRequests}
+        seasonalCycleId={seasonalCycleId}
       />
 
       <section className="summary-strip surface">
@@ -663,7 +665,7 @@ function AveragePageContent({
   );
 }
 
-export default function AveragePage(props: { mode?: GameMode; levelBands?: LevelBand[]; cycleId?: string }) {
+export default function AveragePage(props: { mode?: GameMode; levelBands?: LevelBand[]; cycleId?: string; seasonalCycleId?: string }) {
   return (
     <Suspense fallback={<main className="page-frame" />}>
       <AveragePageContent {...props} />

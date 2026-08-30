@@ -7,6 +7,7 @@ import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
+import { markAveragePublicationDirty, seasonalPublicationScope } from "@/lib/average-publication";
 
 export const runtime = "nodejs";
 
@@ -71,6 +72,7 @@ export async function POST(request: Request) {
     }
     if (result.capture.inserted === true) {
       revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, "max");
+      await markAveragePublicationDirty(seasonalPublicationScope(cycle.cycleId));
     }
     return Response.json({
       state: result.capture.inserted ? "updated" : result.capture.status,

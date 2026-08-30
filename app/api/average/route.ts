@@ -1,26 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { unstable_cache } from "next/cache";
 import {
-  getStore,
   parseAveragePeriod,
   parseAverageStatistic,
-  type BucketAgg,
   type AveragePeriod,
   type AverageStatistic,
   type CrossSectionMode,
   type RangeDimension,
 } from "@/lib/db";
-import { buildNumericHistogram, MAX_HISTOGRAM_BINS } from "@/lib/histogram";
-import { DEFAULT_Y, resolveY } from "@/lib/metrics";
+import { MAX_HISTOGRAM_BINS } from "@/lib/histogram";
+import { resolveY } from "@/lib/metrics";
+import { computeAverage } from "@/lib/average-compute";
 import { isGameMode } from "@/types/seasonal";
 import {
   ARENA_AVERAGE_CACHE_TAG,
   AVERAGE_CACHE_CONTROL,
+  AVERAGE_PUBLICATION_CACHE_CONTROL,
   AVERAGE_CACHE_TTL_SECONDS,
 } from "@/lib/average-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
 import { ARENA_METRIC_KEYS, ARENA_MODE_KEYS, type ArenaDimension, type ArenaMetricKey, type ArenaModeKey, type ArenaStatistic } from "@/types/arena";
+import {
+  averagePublicationsEnabled,
+  readAveragePublication,
+  standardArenaVariant,
+  standardAverageVariant,
+} from "@/lib/average-publication";
+import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -35,85 +42,11 @@ function parseDimension(value: string | null): RangeDimension | null {
   return null;
 }
 
-function legacyBrackets(buckets: BucketAgg[]) {
-  return buckets.map((bucket) => ({
-    bracket_key: bucket.hi == null ? `${bucket.lo}+` : `${bucket.lo}-${bucket.hi}`,
-    n: bucket.n,
-    sum: bucket.sum,
-  }));
-}
-
 function binCount(value: string | null): number {
   const number = Number(value);
   return Number.isFinite(number) && number > 0
     ? Math.max(1, Math.min(MAX_HISTOGRAM_BINS, Math.floor(number)))
     : MAX_HISTOGRAM_BINS;
-}
-
-async function computeAverage(
-  mode: CrossSectionMode,
-  dimension: RangeDimension,
-  metricKey: string,
-  maxBins: number,
-  statistic: AverageStatistic,
-  period: AveragePeriod,
-  min: number | null,
-  max: number | null,
-  maxInclusive: boolean,
-) {
-  const metric = resolveY(metricKey);
-  const store = await getStore(mode);
-  if (!store) {
-    return {
-      storage: "unavailable" as const,
-      body: {
-        mode,
-        cycleId: "persistent",
-        total: 0,
-        averages: null,
-        metricCounts: {},
-        brackets: [],
-        buckets: [],
-        histogram: [],
-        bounds: { min: 0, max: dimension === "hours" ? 5000 : 1000 },
-        dimension,
-        metric: metric.key || DEFAULT_Y,
-        statistic,
-        period,
-      },
-    };
-  }
-
-  const [averageResult, bucketResult, boundsResult] = await Promise.all([
-    store.averages({ dimension, min, max, maxInclusive }, statistic, period),
-    store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
-    store.rangeBounds(dimension, period),
-  ]);
-  const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
-  const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };
-  const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
-    ...bin,
-    avg: metric.agg === "avg" && bin.n > 0 ? bin.sum / bin.n : null,
-  }));
-
-  return {
-    storage: "sqlite" as const,
-    body: {
-      mode,
-      cycleId: "persistent",
-      total,
-      averages: averageResult ? averageValues : null,
-      metricCounts,
-      brackets: legacyBrackets(bucketResult),
-      buckets: bucketResult,
-      histogram,
-      bounds: boundsResult,
-      dimension,
-      metric: metric.key,
-      statistic,
-      period,
-    },
-  };
 }
 
 const loadCachedAverage = unstable_cache(
@@ -188,7 +121,23 @@ async function arenaAverageResponse(
     return NextResponse.json({ error: "Invalid Arena average query" }, { status: 400 });
   }
   try {
-    const result = await loadCachedArenaAverage(
+    const standard = dimension === "matches" && metric === "players" && ranges.every((range) => range.value === null);
+    if (standard && averagePublicationsEnabled()) {
+      const publication = await readAveragePublication<Record<string, unknown>>(
+        "arena",
+        standardArenaVariant(arenaMode, statistic),
+      );
+      if (!publication) {
+        timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "publication" });
+        return NextResponse.json({ error: "Arena averages are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+      }
+      timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
+      return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...publication.payload }, {
+        headers: publicationHeaders(publication),
+      });
+    }
+    const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value)]);
+    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
       arenaMode,
       statistic,
       dimension,
@@ -197,22 +146,34 @@ async function arenaAverageResponse(
       ranges[1].value,
       ranges[2].value,
       ranges[3].value,
-    );
+    ));
+    const result = loaded.value;
     if (!result) {
       timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503 });
       return NextResponse.json({ error: "Arena averages are unavailable" }, { status: 503 });
     }
-    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite" });
+    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
       // The server cache is tagged and invalidated by the collector. Do not let
       // a browser or reverse proxy retain the first tiny backfill sample.
-      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data" },
+      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
     });
   } catch (error) {
     console.error("Arena average stats failed", error);
     timing.finish({ operation: "average", mode: "arena", outcome: "error", status: 500 });
     return NextResponse.json({ error: "Failed to compute Arena averages" }, { status: 500 });
   }
+}
+
+function publicationHeaders(publication: { generation: number; generatedAt: number; stale: boolean }) {
+  return {
+    "Cache-Control": AVERAGE_PUBLICATION_CACHE_CONTROL,
+    "X-Average-Cache": "publication",
+    "X-Average-Source": "publication",
+    "X-Average-Generation": String(publication.generation),
+    "X-Average-Generated-At": String(publication.generatedAt),
+    "X-Average-Stale": publication.stale ? "1" : "0",
+  };
 }
 
 export async function GET(request: NextRequest) {
@@ -261,7 +222,22 @@ export async function GET(request: NextRequest) {
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
   try {
-    const result = await loadCachedAverage(
+    const standard = dimension === "hours" && metric.key === "players" && maxBins === MAX_HISTOGRAM_BINS &&
+      parsedMin.value === null && parsedMax.value === null;
+    if (standard && averagePublicationsEnabled()) {
+      const publication = await readAveragePublication<Record<string, unknown>>(
+        rawMode,
+        standardAverageVariant(statistic, period),
+      );
+      if (!publication) {
+        timing.finish({ operation: "average", mode: rawMode, outcome: "unavailable", status: 503, source: "publication" });
+        return NextResponse.json({ error: "Average statistics are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+      }
+      timing.finish({ operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
+      return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
+    }
+    const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, usesNewRange]);
+    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
       rawMode,
       dimension,
       metric.key,
@@ -271,16 +247,18 @@ export async function GET(request: NextRequest) {
       parsedMin.value,
       parsedMax.value,
       usesNewRange,
-    );
+    ));
+    const result = loaded.value;
     const response = NextResponse.json(result.body, {
       headers: {
         "Cache-Control": AVERAGE_CACHE_CONTROL,
         "X-Average-Cache": "next-data",
+        "X-Average-Source": "dynamic",
       },
     });
     timing.finish({
       operation: "average", mode: rawMode, outcome: result.storage === "sqlite" ? "success" : "unavailable",
-      status: 200, storage: result.storage,
+      status: 200, storage: result.storage, source: "dynamic", cache: loaded.cache,
     });
     return response;
   } catch (error) {
