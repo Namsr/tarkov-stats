@@ -1,7 +1,9 @@
-export const AVERAGE_PUBLICATION_STALE_MS = 30 * 60_000;
 export const AVERAGE_PUBLICATION_DEBOUNCE_MS = 5 * 60_000;
 export const AVERAGE_PUBLICATION_MIN_INTERVAL_MS = 15 * 60_000;
 export const AVERAGE_PUBLICATION_FORCE_INTERVAL_MS = 6 * 60 * 60_000;
+// A healthy publication remains current until the six-hour safety refresh has
+// had enough time to finish even for the slow Seasonal scope.
+export const AVERAGE_PUBLICATION_STALE_MS = AVERAGE_PUBLICATION_FORCE_INTERVAL_MS + 30 * 60_000;
 
 export type AveragePublicationScope = "regular" | "pve" | "arena" | `seasonal:${string}`;
 
@@ -24,7 +26,7 @@ export interface AveragePublicationState {
   lastDurationMs: number | null;
   lastError: string | null;
   variants: number;
-  status: "warming" | "dirty" | "processing" | "ready" | "error";
+  status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error";
 }
 
 const SCHEMA = `
@@ -230,7 +232,7 @@ export async function getAveragePublicationStates(now = Date.now()): Promise<Ave
         lastError,
         variants: Number(row.variants ?? 0),
         status: lastError ? "error" : processing ? "processing" : generatedAt == null ? "warming"
-          : dirtyAt != null || now - generatedAt > AVERAGE_PUBLICATION_STALE_MS ? "dirty" : "ready",
+          : dirtyAt != null ? "dirty" : now - generatedAt > AVERAGE_PUBLICATION_STALE_MS ? "stale" : "ready",
       };
     });
   } catch (error) {

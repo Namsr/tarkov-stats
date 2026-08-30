@@ -829,6 +829,8 @@ test("average dashboard publishes standard variants outside the web process and 
   assert.match(progression, /\["average-progression-regular-v2"\]/);
   assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
   assert.match(page, /showAverageProgression && levelBands\.length > 0/);
+  assert.match(page, /const identity = `\$\{props\.mode \?\? "regular"\}:\$\{props\.cycleId \?\? "persistent"\}`/);
+  assert.match(page, /<AveragePageContent key=\{identity\}/);
   for (const mode of ["regular", "pve", "arena"]) assert.match(warmer, new RegExp(`"${mode}"`));
   assert.match(warmer, /SEASONAL_CYCLE_ID/);
   assert.match(warmer, /api\/progression\/average\?mode=pve/);

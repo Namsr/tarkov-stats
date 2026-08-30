@@ -81,6 +81,18 @@ test("missing and corrupt payloads degrade to null while stale publications rema
   assert.equal(await publication.readAveragePublication("pve", "standard:median:all"), null);
 });
 
+test("publication status distinguishes queued writes from an overdue safety refresh", async () => {
+  const generatedAt = 2_000;
+  await publication.publishAverageScope("arena", new Map([["standard:teamFight:median", { total: 1 }]]), 1_900, generatedAt);
+  const beforeSafetyRefresh = generatedAt + publication.AVERAGE_PUBLICATION_FORCE_INTERVAL_MS - 1;
+  assert.equal((await publication.getAveragePublicationStates(beforeSafetyRefresh)).find((state) => state.scope === "arena")?.status, "ready");
+  await publication.markAveragePublicationDirty("arena", beforeSafetyRefresh);
+  assert.equal((await publication.getAveragePublicationStates(beforeSafetyRefresh)).find((state) => state.scope === "arena")?.status, "dirty");
+  await publication.publishAverageScope("arena", new Map([["standard:teamFight:median", { total: 2 }]]), beforeSafetyRefresh, beforeSafetyRefresh + 1);
+  const overdueAt = beforeSafetyRefresh + 1 + publication.AVERAGE_PUBLICATION_STALE_MS + 1;
+  assert.equal((await publication.getAveragePublicationStates(overdueAt)).find((state) => state.scope === "arena")?.status, "stale");
+});
+
 test("dirty scheduling debounces writes and enforces the minimum and forced intervals", () => {
   const now = 10_000_000;
   const ready = {

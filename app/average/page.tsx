@@ -666,9 +666,10 @@ function AveragePageContent({
 }
 
 export default function AveragePage(props: { mode?: GameMode; levelBands?: LevelBand[]; cycleId?: string; seasonalCycleId?: string }) {
+  const identity = `${props.mode ?? "regular"}:${props.cycleId ?? "persistent"}`;
   return (
     <Suspense fallback={<main className="page-frame" />}>
-      <AveragePageContent {...props} />
+      <AveragePageContent key={identity} {...props} />
     </Suspense>
   );
 }
