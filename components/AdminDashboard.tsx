@@ -13,8 +13,12 @@ type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health" | "moni
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
-type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number };
-type Summary = { metrics: Metrics; previous: Metrics; series: SeriesPoint[]; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string } };
+type HealthOperation = { operation: string; mode: string | null; requests: number; success: number; serverErrors: number; rateLimited: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; lastIssueAt: number | null };
+type HealthIssue = { operation: string; mode: string | null; stage: string; code: string; status: number; count: number; activeCount: number; firstSeenAt: number; lastSeenAt: number; maxLatencyMs: number; active: boolean; severity: "warning" | "critical" };
+type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
+type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[] };
+type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string } };
+type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
 type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localMatchingCount: number | null; localCurrentCount: number | null; missingCount: number | null; staleCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
 type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
 type Rank = { key: string; pageviews: number; visits: number };
@@ -59,6 +63,7 @@ export default function AdminDashboard() {
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
+  const [healthSignal, setHealthSignal] = useState<HealthSignal | null>(null);
   const [audit, setAudit] = useState<DataAudit | null>(null);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditError, setAuditError] = useState("");
@@ -118,6 +123,14 @@ export default function AdminDashboard() {
   }, [t]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
+  useEffect(() => {
+    let current = true;
+    setHealthSignal(null);
+    void getJson<HealthSignal>(`/api/admin/health-signal?domain=${encodeURIComponent(domain)}`)
+      .then((value) => { if (current) setHealthSignal(value); })
+      .catch(() => { if (current) setHealthSignal({ status: "degraded", activeIssueCount: 0, firstSeenAt: null, lastSeenAt: null, storageAvailable: false }); });
+    return () => { current = false; };
+  }, [domain, refreshKey]);
 
   function chooseTab(value: Tab) { setTab(value); updateUrl(value); }
   function choosePeriod(value: AdminPeriod) { setPeriod(value); updateUrl(tab, value, domain); }
@@ -138,7 +151,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="admin-tabs" role="tablist" aria-label={t("admin.tabsLabel")}>
-        {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} onClick={() => chooseTab(item)}>{t("admin.tab." + item)}</button>)}
+        {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} onClick={() => chooseTab(item)}><span>{t("admin.tab." + item)}</span>{item === "health" && healthSignal && (healthSignal.activeIssueCount > 0 || healthSignal.storageAvailable === false) && <span className={`admin-tab-alert admin-tab-alert--${healthSignal.status}`} aria-label={t("admin.health.tabAlert", { n: healthSignal.activeIssueCount })}>{healthSignal.activeIssueCount || "!"}</span>}</button>)}
       </div>
 
       <section className="admin-filters" aria-label={t("admin.filters") }>
@@ -497,11 +510,114 @@ function ModerationForm({ account, moderation, t, reload }: { account: Account; 
   </div>;
 }
 
+function healthPercent(value: number, total: number, lang: string): string {
+  return new Intl.NumberFormat(lang === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 }).format(total > 0 ? value / total * 100 : 0) + "%";
+}
+
+function healthLatency(value: number | null, t: T): string {
+  return value == null ? t("common.notAvailable") : t("admin.health.milliseconds", { n: formatNumber(value) });
+}
+
+function healthOperationLabel(operation: string, t: T): string {
+  const known = ["player_profile", "player_search", "average", "average_cohort", "baseline", "average_achievements"];
+  return known.includes(operation) ? t("admin.health.operation." + operation) : t("admin.health.operation.other");
+}
+
+function healthModeLabel(mode: string | null, t: T): string {
+  return mode && ["regular", "pve", "arena", "seasonal"].includes(mode) ? t("admin.mode." + mode) : t("admin.health.allModes");
+}
+
+function healthStageLabel(stage: string, t: T): string {
+  return ["request", "rate_limit", "upstream", "dependency", "storage", "application"].includes(stage)
+    ? t("admin.health.stage." + stage) : t("admin.health.stage.unknown");
+}
+
+function healthReport(summary: Summary): string {
+  const health = summary.health;
+  return JSON.stringify({
+    schema: "tarkovstats_health_v1",
+    generatedAt: new Date(summary.generatedAt).toISOString(),
+    period: summary.period,
+    domain: summary.domain,
+    storageAvailable: summary.storageAvailable,
+    health: health && {
+      status: health.status,
+      activeIssueCount: health.activeIssueCount,
+      recentIssueCount: health.recentIssueCount,
+      requests: health.requests,
+      success: health.success,
+      notFound: health.notFound,
+      rateLimited: health.rateLimited,
+      serverErrors: health.serverErrors,
+      latencyMs: { p50: health.p50Ms, p95: health.p95Ms, p99: health.p99Ms },
+      cache: { hits: health.cacheHits, misses: health.cacheMisses },
+      operations: health.operations,
+      issues: health.issues,
+    },
+    freshness: summary.freshness,
+  }, null, 2);
+}
+
+function HealthSeriesCharts({ points, lang, t }: { points: HealthSeriesPoint[]; lang: string; t: T }) {
+  if (!points.length) return <Empty t={t} />;
+  const left = 7;
+  const right = 97;
+  const top = 4;
+  const bottom = 38;
+  const firstAt = points[0].at;
+  const lastAt = points.at(-1)!.at;
+  const span = Math.max(1, lastAt - firstAt);
+  const xFor = (at: number) => points.length === 1 ? 52 : left + (at - firstAt) / span * (right - left);
+  const latencyMax = Math.max(1, ...points.flatMap((point) => [point.p50Ms ?? 0, point.p95Ms ?? 0, point.p99Ms ?? 0]));
+  const volumeMax = Math.max(1, ...points.flatMap((point) => [point.requests, point.problems]));
+  const line = (key: "p50Ms" | "p95Ms" | "p99Ms", max: number) => points
+    .filter((point) => point[key] != null)
+    .map((point) => `${xFor(point.at)},${bottom - Number(point[key]) / max * (bottom - top)}`)
+    .join(" ");
+  const volumeLine = (key: "requests" | "problems") => points
+    .map((point) => `${xFor(point.at)},${bottom - point[key] / volumeMax * (bottom - top)}`)
+    .join(" ");
+  const axis = <div className="admin-health-chart-axis" aria-hidden="true"><span>{formatChartAxis(firstAt, lang, span)}</span><span>{formatChartAxis(lastAt, lang, span)}</span></div>;
+  return <div className="admin-health-chart-grid">
+    <section className="data-panel admin-panel admin-health-chart"><h2 className="section-heading">{t("admin.health.latencyChart")}</h2><p className="admin-chart-description">{t("admin.health.latencyChartDescription")}</p><div className="admin-health-chart-stage"><svg viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true">{[top, bottom].map((y) => <line key={y} className="admin-chart__grid" x1={left} x2={right} y1={y} y2={y} />)}<polyline className="admin-health-chart__line admin-health-chart__line--p50" points={line("p50Ms", latencyMax)} /><polyline className="admin-health-chart__line admin-health-chart__line--p95" points={line("p95Ms", latencyMax)} /><polyline className="admin-health-chart__line admin-health-chart__line--p99" points={line("p99Ms", latencyMax)} /></svg><span className="admin-health-chart-max">{healthLatency(latencyMax, t)}</span></div>{axis}<div className="admin-chart-legend"><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p50" />{t("admin.health.p50Short")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p95" />{t("admin.health.p95Short")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p99" />{t("admin.health.p99Short")}</span></div></section>
+    <section className="data-panel admin-panel admin-health-chart"><h2 className="section-heading">{t("admin.health.volumeChart")}</h2><p className="admin-chart-description">{t("admin.health.volumeChartDescription")}</p><div className="admin-health-chart-stage"><svg viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true">{[top, bottom].map((y) => <line key={y} className="admin-chart__grid" x1={left} x2={right} y1={y} y2={y} />)}<polyline className="admin-health-chart__line admin-health-chart__line--requests" points={volumeLine("requests")} /><polyline className="admin-health-chart__line admin-health-chart__line--problems" points={volumeLine("problems")} /></svg><span className="admin-health-chart-max">{formatNumber(volumeMax)}</span></div>{axis}<div className="admin-chart-legend"><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--requests" />{t("admin.health.requests")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--problems" />{t("admin.health.problems")}</span></div></section>
+  </div>;
+}
+
 function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudit }: { summary: Summary | null; lang: string; t: T; audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void> }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const health = summary?.health;
-  if (!health) return <div className="admin-stack"><Empty t={t} /><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
-  const values: Array<[string, string]> = [["requests", formatNumber(health.requests)], ["success", formatNumber(health.success)], ["notFound", formatNumber(health.notFound)], ["rateLimited", formatNumber(health.rateLimited)], ["serverErrors", formatNumber(health.serverErrors)], ["p50", health.p50Ms == null ? t("common.notAvailable") : `${health.p50Ms} ms`], ["p95", health.p95Ms == null ? t("common.notAvailable") : `${health.p95Ms} ms`], ["cacheHits", formatNumber(health.cacheHits)], ["cacheMisses", formatNumber(health.cacheMisses)]];
-  return <div className="admin-stack"><p className="admin-notice">{t("admin.health.scope")}</p><div className="admin-metrics">{values.map(([key, value]) => <StatCard key={key} label={t("admin.health." + key)} value={value} />)}</div><section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.freshness")}</h2><dl className="admin-health-dates"><div><dt>{t("admin.health.lastSuccess")}</dt><dd>{formatDate(health.lastSuccessAt, lang, t)}</dd></div><div><dt>{t("admin.health.lastEvent")}</dt><dd>{formatDate(summary?.freshness?.lastEventAt ?? null, lang, t)}</dd></div><div><dt>{t("admin.health.lastProfile")}</dt><dd>{formatDate(summary?.freshness?.lastProfileRequestAt ?? null, lang, t)}</dd></div></dl></section><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
+  if (!health || !summary) return <div className="admin-stack"><div className="admin-notice admin-notice--error" role="alert">{t("admin.warning.storage")}</div><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
+  const cached = health.cacheHits + health.cacheMisses;
+  const values: Array<[string, string]> = [
+    ["requests", formatNumber(health.requests)],
+    ["successRate", healthPercent(health.success, health.requests, lang)],
+    ["serverErrorRate", healthPercent(health.serverErrors, health.requests, lang)],
+    ["p50", healthLatency(health.p50Ms, t)],
+    ["p95", healthLatency(health.p95Ms, t)],
+    ["p99", healthLatency(health.p99Ms, t)],
+    ["cacheHitRate", healthPercent(health.cacheHits, cached, lang)],
+    ["rateLimited", formatNumber(health.rateLimited)],
+  ];
+  const copyReport = async () => {
+    try { await navigator.clipboard.writeText(healthReport(summary)); setCopyState("copied"); }
+    catch { setCopyState("error"); }
+  };
+  const statusDescription = health.status === "healthy" && health.recentIssueCount > 0
+    ? t("admin.health.status.recovered", { n: health.recentIssueCount })
+    : t("admin.health.status." + health.status + "Description", { active: health.activeIssueCount, recent: health.recentIssueCount });
+  return <div className="admin-stack">
+    <section className={`admin-health-status admin-health-status--${health.status}`} aria-live="polite"><div><p className="admin-health-status__eyebrow">{t("admin.health.currentStatus")}</p><h2>{t("admin.health.status." + health.status)}</h2><p>{statusDescription}</p>{health.statusSinceAt && <small>{t("admin.health.status.since", { date: formatDate(health.statusSinceAt, lang, t) })}</small>}</div><div className="admin-health-report"><button type="button" className="ghost-button" onClick={() => { void copyReport(); }}>{t("admin.health.copyReport")}</button><span role="status">{copyState === "copied" ? t("admin.health.reportCopied") : copyState === "error" ? t("admin.health.reportError") : t("admin.health.reportSafe")}</span></div></section>
+    <p className="admin-notice">{t("admin.health.scope")}</p>
+    <div className="admin-metrics admin-health-metrics">{values.map(([key, value]) => <StatCard key={key} label={t("admin.health." + key)} value={value} />)}</div>
+    {health.requests > 0 && health.requests < 100 && <p className="admin-notice">{t("admin.health.p99LowConfidence", { n: health.requests })}</p>}
+    <HealthSeriesCharts points={health.series ?? []} lang={lang} t={t} />
+    <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.operationsHeading")}</h2><p className="admin-chart-description">{t("admin.health.operationsDescription")}</p><div className="admin-health-table-wrap"><table className="admin-health-table"><thead><tr><th scope="col">{t("admin.health.table.operation")}</th><th scope="col">{t("admin.health.table.mode")}</th><th scope="col">{t("admin.health.table.requests")}</th><th scope="col">{t("admin.health.table.success")}</th><th scope="col">{t("admin.health.table.server5xx")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th><th scope="col">{t("admin.health.table.lastSuccess")}</th><th scope="col">{t("admin.health.table.lastIssue")}</th></tr></thead><tbody>{health.operations.map((operation) => <tr key={`${operation.operation}-${operation.mode ?? "all"}`}><th scope="row">{healthOperationLabel(operation.operation, t)}</th><td>{healthModeLabel(operation.mode, t)}</td><td>{formatNumber(operation.requests)}</td><td>{healthPercent(operation.success, operation.requests, lang)}</td><td>{formatNumber(operation.serverErrors)}</td><td>{healthLatency(operation.p50Ms, t)}</td><td>{healthLatency(operation.p95Ms, t)}</td><td>{healthLatency(operation.p99Ms, t)}{operation.requests < 100 && <span className="admin-health-confidence" title={t("admin.health.lowConfidence")}>*</span>}</td><td>{formatDate(operation.lastSuccessAt, lang, t)}</td><td>{formatDate(operation.lastIssueAt, lang, t)}</td></tr>)}</tbody></table></div></section>
+    <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.issuesHeading")}</h2><p className="admin-chart-description">{t("admin.health.issuesDescription")}</p>{health.issues.length ? <div className="admin-health-table-wrap"><table className="admin-health-table admin-health-issues"><thead><tr><th scope="col">{t("admin.health.table.state")}</th><th scope="col">{t("admin.health.table.operation")}</th><th scope="col">{t("admin.health.table.stage")}</th><th scope="col">{t("admin.health.table.code")}</th><th scope="col">{t("admin.health.table.http")}</th><th scope="col">{t("admin.health.table.count")}</th><th scope="col">{t("admin.health.table.firstSeen")}</th><th scope="col">{t("admin.health.table.lastSeen")}</th><th scope="col">{t("admin.health.table.maxLatency")}</th></tr></thead><tbody>{health.issues.map((issue) => <tr key={`${issue.operation}-${issue.mode}-${issue.stage}-${issue.code}-${issue.status}`}><td><span className={`admin-health-issue-badge admin-health-issue-badge--${issue.active ? issue.severity : "resolved"}`}>{t(issue.active ? "admin.health.issue.active" : "admin.health.issue.resolved")}</span></td><th scope="row">{healthOperationLabel(issue.operation, t)}<small>{healthModeLabel(issue.mode, t)}</small></th><td>{healthStageLabel(issue.stage, t)}</td><td><code>{issue.code}</code></td><td>{issue.status}</td><td>{formatNumber(issue.count)}{issue.activeCount > 0 && <small>{t("admin.health.issue.activeCount", { n: issue.activeCount })}</small>}</td><td>{formatDate(issue.firstSeenAt, lang, t)}</td><td>{formatDate(issue.lastSeenAt, lang, t)}</td><td>{healthLatency(issue.maxLatencyMs, t)}</td></tr>)}</tbody></table></div> : <p className="admin-empty">{t("admin.health.noIssues")}</p>}</section>
+    <details className="data-panel admin-monitoring-table"><summary>{t("admin.health.seriesTable")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr><th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.health.requests")}</th><th scope="col">{t("admin.health.problems")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th></tr></thead><tbody>{health.series.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{formatNumber(point.requests)}</td><td>{formatNumber(point.problems)}</td><td>{healthLatency(point.p50Ms, t)}</td><td>{healthLatency(point.p95Ms, t)}</td><td>{healthLatency(point.p99Ms, t)}</td></tr>)}</tbody></table></div></details>
+    <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.freshness")}</h2><dl className="admin-health-dates"><div><dt>{t("admin.health.lastSuccess")}</dt><dd>{formatDate(health.lastSuccessAt, lang, t)}</dd></div><div><dt>{t("admin.health.lastEvent")}</dt><dd>{formatDate(summary.freshness?.lastEventAt ?? null, lang, t)}</dd></div><div><dt>{t("admin.health.lastProfile")}</dt><dd>{formatDate(summary.freshness?.lastProfileRequestAt ?? null, lang, t)}</dd></div></dl></section>
+    <DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} />
+  </div>;
 }
 
 const auditModes = ["regular", "pve", "arena", "pvp-season"] as const;

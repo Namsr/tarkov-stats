@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     getSuspiciousSummary().catch(() => null),
   ]);
   const local = store?.summary(period, domain, now) ?? null;
-  const previousLocal = store?.summary(period, domain, now - duration) ?? null;
+  const previousLocal = store?.summary(period, domain, now - duration, false) ?? null;
   const metrics = {
     visits: traffic.visits,
     pageviews: traffic.pageviews,
@@ -41,6 +41,9 @@ export async function GET(request: NextRequest) {
     errors: previousLocal?.errors ?? 0,
   };
   return NextResponse.json({
+    generatedAt: now,
+    period,
+    domain,
     metrics,
     previous,
     series: traffic.series,

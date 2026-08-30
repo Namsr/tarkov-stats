@@ -67,6 +67,22 @@ test("synchronous store phases retain their direct durations after concurrent st
   ], [3, 5, 7]);
 });
 
+test("failure diagnostics keep only stable operation-scoped codes", () => {
+  const output: string[] = [];
+  const timing = createRequestTiming({ sampleRate: 1, logger: (event) => output.push(event) });
+  timing.finish({
+    operation: "player_profile",
+    outcome: "unavailable",
+    status: 503,
+    storage: "unavailable",
+    errorCode: "token for user@example.com",
+  });
+  const event = JSON.parse(output[0]) as Record<string, unknown>;
+  assert.equal(event.failure_stage, "storage");
+  assert.equal(event.error_code, "player_profile_unavailable_503");
+  assert.equal(output[0].includes("example.com"), false);
+});
+
 test("unsampled requests emit no timing log", () => {
   const output: string[] = [];
   const timing = createRequestTiming({

@@ -1471,9 +1471,11 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-back:hover { color: var(--foreground); }
 .admin-tabs { display: flex; gap: 5px; margin-top: 34px; overflow-x: auto; border-bottom: 1px solid var(--card-border); scrollbar-width: none; }
 .admin-tabs::-webkit-scrollbar { display: none; }
-.admin-tabs button { flex: 0 0 auto; min-height: 44px; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.admin-tabs button { flex: 0 0 auto; min-height: 44px; display: inline-flex; align-items: center; gap: 7px; border-bottom: 2px solid transparent; padding: 10px 14px; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .admin-tabs button:hover { color: var(--foreground); }
 .admin-tabs button.is-active { border-color: var(--foreground); color: var(--foreground); }
+.admin-tab-alert { min-width: 19px; height: 19px; display: inline-grid; place-items: center; border-radius: 999px; background: var(--danger); color: var(--background); padding: 0 5px; font-size: .61rem; font-variant-numeric: tabular-nums; letter-spacing: 0; line-height: 1; }
+.admin-tab-alert--degraded { background: var(--foreground); }
 .admin-filters { display: flex; align-items: end; gap: 12px; margin: 20px 0 24px; }
 .admin-filters label, .admin-moderation label, .admin-ban label { display: grid; gap: 7px; min-width: 150px; }
 .admin-filters label > span, .admin-moderation label > span, .admin-ban label > span { color: var(--muted); font-size: .66rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -1580,6 +1582,42 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-danger { color: var(--danger); }
 .admin-danger:hover { border-color: var(--danger); color: var(--danger); }
 .admin-form-message { grid-column: 1 / -1; color: var(--muted-strong); font-size: .76rem; }
+.admin-health-status { display: flex; align-items: center; justify-content: space-between; gap: 24px; border: 1px solid var(--card-border); border-left: 4px solid var(--success); border-radius: 10px; background: var(--card-bg); padding: 20px; }
+.admin-health-status--degraded { border-left-color: var(--foreground); }
+.admin-health-status--incident { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 5%, var(--card-bg)); }
+.admin-health-status__eyebrow { color: var(--muted); font-size: .63rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.admin-health-status h2 { margin-top: 4px; font-size: clamp(1.35rem, 3vw, 2.1rem); line-height: 1.05; }
+.admin-health-status h2 + p { max-width: 720px; margin-top: 8px; color: var(--muted-strong); font-size: .83rem; line-height: 1.5; }
+.admin-health-status small { display: block; margin-top: 7px; color: var(--muted); font-size: .69rem; font-variant-numeric: tabular-nums; }
+.admin-health-report { flex: 0 0 230px; display: grid; gap: 7px; }
+.admin-health-report span { color: var(--muted); font-size: .65rem; line-height: 1.4; text-align: center; }
+.admin-health-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.admin-health-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-health-chart { min-width: 0; }
+.admin-health-chart-stage { position: relative; height: 190px; margin-top: 18px; }
+.admin-health-chart-stage svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.admin-health-chart__line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.admin-health-chart__line--p50, .admin-health-chart__line--requests { stroke: var(--success); }
+.admin-health-chart__line--p95 { stroke: var(--muted-strong); stroke-dasharray: 6 4; }
+.admin-health-chart__line--p99, .admin-health-chart__line--problems { stroke: var(--danger); stroke-dasharray: 2 3; }
+.admin-health-chart-max { position: absolute; top: 0; left: 0; color: var(--muted); font-size: .63rem; font-variant-numeric: tabular-nums; }
+.admin-health-chart-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; }
+.admin-health-chart__swatch--p50, .admin-health-chart__swatch--requests { border-top-color: var(--success); }
+.admin-health-chart__swatch--p95 { border-top-color: var(--muted-strong); border-top-style: dashed; }
+.admin-health-chart__swatch--p99, .admin-health-chart__swatch--problems { border-top-color: var(--danger); border-top-style: dotted; }
+.admin-health-table-wrap { margin-top: 18px; overflow-x: auto; }
+.admin-health-table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: .7rem; }
+.admin-health-table th, .admin-health-table td { border-top: 1px solid var(--card-border); padding: 10px 9px; font-variant-numeric: tabular-nums; text-align: right; vertical-align: top; white-space: nowrap; }
+.admin-health-table th:first-child, .admin-health-table td:first-child { text-align: left; }
+.admin-health-table thead th { color: var(--muted); font-size: .61rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.admin-health-table tbody th { font-weight: 700; }
+.admin-health-table tbody th small, .admin-health-table tbody td small { display: block; margin-top: 4px; color: var(--muted); font-size: .6rem; font-weight: 400; }
+.admin-health-table code { color: var(--muted-strong); font-size: .67rem; }
+.admin-health-confidence { margin-left: 2px; color: var(--muted); }
+.admin-health-issue-badge { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 4px 7px; font-size: .59rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.admin-health-issue-badge--critical { color: var(--danger); }
+.admin-health-issue-badge--warning { color: var(--foreground); }
+.admin-health-issue-badge--resolved { color: var(--success); }
 .admin-health-dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 16px; }
 .admin-audit-panel { overflow: visible; }
 .admin-audit-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
@@ -1597,6 +1635,7 @@ a.help-card:hover { border-color: var(--foreground); }
 
 @media (max-width: 1100px) {
   .admin-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .admin-health-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .admin-account-head { display: none; }
   .admin-account summary { grid-template-columns: minmax(190px, 1.25fr) minmax(75px, .35fr) minmax(75px, .35fr) minmax(150px, .8fr) minmax(170px, 1fr); }
   .admin-account-details { grid-template-columns: 1fr; }
@@ -1711,6 +1750,10 @@ a.help-card:hover { border-color: var(--foreground); }
   .admin-filter-search { grid-column: 1 / -1; }
   .admin-filters label { min-width: 0; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-health-chart-grid { grid-template-columns: 1fr; }
+  .admin-health-status { align-items: stretch; flex-direction: column; }
+  .admin-health-report { flex-basis: auto; }
   .admin-monitoring-grid { grid-template-columns: 1fr; }
   .admin-monitoring-status { align-items: flex-start; flex-direction: column; gap: 4px; }
   .admin-monitoring-chart__wrap { min-height: 204px; }
@@ -1761,7 +1804,7 @@ a.help-card:hover { border-color: var(--foreground); }
   .crypto-card__qr { width: 144px; height: 144px; }
   .project-cta__actions { width: 100%; }
   .project-cta__actions > * { width: 100%; text-align: center; }
-  .admin-filters, .admin-metrics, .admin-metrics--small { grid-template-columns: 1fr; }
+  .admin-filters, .admin-metrics, .admin-metrics--small, .admin-health-metrics { grid-template-columns: 1fr; }
   .admin-filter-search { grid-column: auto; }
 }
 

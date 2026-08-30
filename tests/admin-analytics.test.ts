@@ -23,13 +23,48 @@ test("analytics store retains only anonymous request/account facts and aggregate
   assert.equal(summary.errors, 1);
   assert.equal(summary.health.p50Ms, 13);
   assert.equal(summary.health.p95Ms, 100);
+  assert.equal(summary.health.p99Ms, 100);
+  assert.equal(summary.health.status, "incident");
+  assert.equal(summary.health.activeIssueCount, 1);
+  assert.equal(summary.health.recentIssueCount, 1);
+  assert.deepEqual(summary.health.issues.map((issue) => [issue.stage, issue.code, issue.active]), [["application", "average_error_503", true]]);
+  assert.deepEqual(summary.health.operations.map((operation) => [operation.operation, operation.p99Ms]), [["average", 100], ["player_profile", 13], ["player_search", 2]]);
+  assert.equal(summary.health.series.reduce((total, point) => total + point.requests, 0), 3);
   assert.equal(summary.freshness.lastProfileRequestAt, now - 1_000);
+  assert.deepEqual(store.healthSignal("all", now), {
+    status: "incident", activeIssueCount: 1, firstSeenAt: now - 2_000, lastSeenAt: now - 2_000,
+  });
 
   const columns = db.prepare("PRAGMA table_info(request_events)").all().map((row) => row.name);
   assert.equal(columns.includes("ip"), false);
   assert.equal(columns.includes("email"), false);
   assert.equal(columns.includes("user_sub"), false);
   assert.equal(columns.includes("search_text"), false);
+  assert.equal(columns.includes("failure_stage"), true);
+  assert.equal(columns.includes("error_code"), true);
+});
+
+test("diagnostic columns migrate in place and p99 uses the nearest-rank definition", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE request_events (
+    id INTEGER PRIMARY KEY, occurred_at INTEGER NOT NULL, host TEXT, operation TEXT NOT NULL,
+    aid INTEGER, nickname TEXT, mode TEXT, cycle_id TEXT, outcome TEXT NOT NULL,
+    status INTEGER NOT NULL, force INTEGER, source TEXT, cache TEXT, latency_ms INTEGER NOT NULL
+  );`);
+  const store = createAnalyticsStore(db);
+  const now = 250 * DAY;
+  for (let latencyMs = 1; latencyMs <= 101; latencyMs += 1) {
+    store.record({ occurredAt: now - latencyMs, operation: "average", outcome: "success", status: 200, latencyMs });
+  }
+  const summary = store.summary("24h", "all", now);
+  assert.equal(summary.health.p50Ms, 51);
+  assert.equal(summary.health.p95Ms, 96);
+  assert.equal(summary.health.p99Ms, 100);
+  assert.equal(summary.health.operations[0].p99Ms, 100);
+  const columns = db.prepare("PRAGMA table_info(request_events)").all().map((row) => row.name);
+  assert.equal(columns.includes("storage"), true);
+  assert.equal(columns.includes("failure_stage"), true);
+  assert.equal(columns.includes("error_code"), true);
 });
 
 test("account analytics filters, sorts, and cursor-paginates", () => {

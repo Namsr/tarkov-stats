@@ -8,6 +8,7 @@ type Source = "upstream" | "cache" | "stored" | "index";
 type Cache = "hit" | "miss" | "bypass";
 type Storage = "sqlite" | "unavailable";
 type Memo = "hit" | "miss";
+type FailureStage = "request" | "rate_limit" | "upstream" | "dependency" | "storage" | "application";
 
 type TimingInput = {
   totalMs?: number;
@@ -36,6 +37,8 @@ export type RequestTimingInput = TimingInput & {
   cache?: Cache;
   storage?: Storage;
   memo?: Memo;
+  failureStage?: FailureStage;
+  errorCode?: string;
 };
 
 type Options = {
@@ -67,6 +70,27 @@ export function getObservabilitySampleRate(
 
 function roundedMs(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+function safeErrorCode(value: string | undefined, input: RequestTimingInput): string {
+  const fallback = `${input.operation}_${input.outcome}_${input.status}`;
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized.startsWith(`${input.operation}_`) && /^[a-z0-9._-]{1,80}$/.test(normalized)
+    ? normalized : fallback;
+}
+
+function failureDiagnostic(input: RequestTimingInput): { stage: FailureStage | null; code: string | null } {
+  if (input.outcome === "success") return { stage: null, code: null };
+  const stage = input.failureStage
+    ?? (input.outcome === "invalid" || input.outcome === "not_found" ? "request"
+      : input.outcome === "rate_limited" || input.status === 429 ? "rate_limit"
+        : input.storage === "unavailable" ? "storage"
+          : input.source === "upstream" ? "upstream"
+            : input.outcome === "unavailable" ? "dependency" : "application");
+  return {
+    stage,
+    code: safeErrorCode(input.errorCode, input),
+  };
 }
 
 export function startTimingPhase<T>(now: () => number, run: () => Promise<T>) {
@@ -115,6 +139,7 @@ export function createRequestTiming(options: Options = {}) {
       if (finished) return;
       finished = true;
       const totalMs = roundedMs(input.totalMs ?? now() - startedAt);
+      const diagnostic = failureDiagnostic(input);
       void recordRequestEvent({
         operation: input.operation,
         aid: context.aid,
@@ -127,6 +152,9 @@ export function createRequestTiming(options: Options = {}) {
         force: input.force,
         source: input.source,
         cache: input.cache,
+        storage: input.storage,
+        failureStage: diagnostic.stage,
+        errorCode: diagnostic.code,
         latencyMs: totalMs,
       });
       if (!sampled) return;
@@ -142,6 +170,8 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.cache === undefined ? {} : { cache: input.cache }),
         ...(input.storage === undefined ? {} : { storage: input.storage }),
         ...(input.memo === undefined ? {} : { memo: input.memo }),
+        ...(diagnostic.stage === null ? {} : { failure_stage: diagnostic.stage }),
+        ...(diagnostic.code === null ? {} : { error_code: diagnostic.code }),
         total_ms: totalMs,
         ...(input.profileMs === undefined ? {} : { profile_ms: roundedMs(input.profileMs) }),
         ...(input.seasonalMs === undefined ? {} : { seasonal_ms: roundedMs(input.seasonalMs) }),

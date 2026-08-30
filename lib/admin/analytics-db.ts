@@ -17,7 +17,48 @@ export interface RequestEvent {
   force?: boolean | null;
   source?: string | null;
   cache?: string | null;
+  storage?: string | null;
+  failureStage?: string | null;
+  errorCode?: string | null;
   latencyMs: number;
+}
+
+export interface HealthOperationSummary {
+  operation: string;
+  mode: string | null;
+  requests: number;
+  success: number;
+  serverErrors: number;
+  rateLimited: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+  lastSuccessAt: number | null;
+  lastIssueAt: number | null;
+}
+
+export interface HealthIssueSummary {
+  operation: string;
+  mode: string | null;
+  stage: string;
+  code: string;
+  status: number;
+  count: number;
+  activeCount: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  maxLatencyMs: number;
+  active: boolean;
+  severity: "warning" | "critical";
+}
+
+export interface HealthSeriesPoint {
+  at: number;
+  requests: number;
+  problems: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
 }
 
 export interface LocalSummary {
@@ -31,9 +72,17 @@ export interface LocalSummary {
     serverErrors: number;
     p50Ms: number | null;
     p95Ms: number | null;
+    p99Ms: number | null;
     lastSuccessAt: number | null;
     cacheHits: number;
     cacheMisses: number;
+    status: "healthy" | "degraded" | "incident";
+    statusSinceAt: number | null;
+    activeIssueCount: number;
+    recentIssueCount: number;
+    operations: HealthOperationSummary[];
+    issues: HealthIssueSummary[];
+    series: HealthSeriesPoint[];
   };
   freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null };
   auth: { activeUsers: number; signIns: number };
@@ -67,7 +116,8 @@ export interface AccountAnalyticsRow {
 export interface AnalyticsStore {
   record(event: RequestEvent): void;
   recordAuth(subjectHash: string, kind: "sign_in" | "activity", now?: number): void;
-  summary(period: AdminPeriod, domain: AdminDomain, now?: number): LocalSummary;
+  summary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDiagnostics?: boolean): LocalSummary;
+  healthSignal(domain: AdminDomain, now?: number): { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null };
   accounts(options: AccountListOptions): { accounts: AccountAnalyticsRow[]; nextCursor: string | null };
   cleanup(now?: number): number;
 }
@@ -87,6 +137,9 @@ CREATE TABLE IF NOT EXISTS request_events (
   force INTEGER,
   source TEXT,
   cache TEXT,
+  storage TEXT,
+  failure_stage TEXT,
+  error_code TEXT,
   latency_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_request_events_time ON request_events(occurred_at);
@@ -105,6 +158,8 @@ CREATE INDEX IF NOT EXISTS idx_auth_activity_day ON auth_activity_daily(day);
 
 const RETENTION_MS = 90 * 86_400_000;
 const CLEANUP_INTERVAL_MS = 3_600_000;
+const ACTIVE_ISSUE_WINDOW_MS = 15 * 60_000;
+const FAILURE_STAGES = new Set(["request", "rate_limit", "upstream", "dependency", "storage", "application"]);
 
 interface AnalyticsStoreOptions {
   /** Optional progression database used to expose profile snapshot totals. */
@@ -128,6 +183,52 @@ function percentile(db: any, where: string, args: unknown[], fraction: number): 
   const offset = Math.max(0, Math.ceil(count * fraction) - 1);
   const row = db.prepare(`SELECT latency_ms AS value FROM request_events WHERE ${where} ORDER BY latency_ms LIMIT 1 OFFSET ?`).get(...args, offset);
   return row ? Number(row.value) : null;
+}
+
+function bucketMilliseconds(period: AdminPeriod): number {
+  if (period === "24h") return 5 * 60_000;
+  if (period === "7d") return 30 * 60_000;
+  if (period === "30d") return 2 * 3_600_000;
+  return 6 * 3_600_000;
+}
+
+function diagnosticStageSql(): string {
+  return `COALESCE(failure_stage, CASE
+    WHEN storage = 'unavailable' THEN 'storage'
+    WHEN outcome = 'rate_limited' OR status = 429 THEN 'rate_limit'
+    WHEN source = 'upstream' THEN 'upstream'
+    WHEN outcome = 'unavailable' THEN 'dependency'
+    ELSE 'application' END)`;
+}
+
+function diagnosticCodeSql(): string {
+  return `COALESCE(error_code, operation || '_' || outcome || '_' || status)`;
+}
+
+function problemSql(): string {
+  return `(outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500)`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function queryHealthSignal(db: any, domain: AdminDomain, now: number): { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null } {
+  const args: unknown[] = [now - ACTIVE_ISSUE_WINDOW_MS, now];
+  let domainSql = "";
+  if (domain !== "all") { domainSql = " AND host = ?"; args.push(domain); }
+  const signal = db.prepare(`SELECT
+    COUNT(*) AS active_issue_count,
+    SUM(CASE WHEN status >= 500 OR ${diagnosticStageSql()} IN ('storage', 'application') THEN 1 ELSE 0 END) AS critical_count,
+    MIN(occurred_at) AS first_seen_at,
+    MAX(occurred_at) AS last_seen_at
+    FROM request_events
+    WHERE occurred_at >= ? AND occurred_at < ?${domainSql} AND ${problemSql()}`).get(...args) as Record<string, unknown>;
+  const activeIssueCount = Number(signal.active_issue_count ?? 0);
+  const criticalCount = Number(signal.critical_count ?? 0);
+  return {
+    status: criticalCount > 0 ? "incident" : activeIssueCount > 0 ? "degraded" : "healthy",
+    activeIssueCount,
+    firstSeenAt: signal.first_seen_at == null ? null : Number(signal.first_seen_at),
+    lastSeenAt: signal.last_seen_at == null ? null : Number(signal.last_seen_at),
+  };
 }
 
 function encodeCursor(value: number, aid: number): string {
@@ -239,6 +340,19 @@ function removeExactAuthTimestamps(db: any): void {
   }
 }
 
+// Add diagnostic fields without rebuilding existing request history.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureRequestDiagnosticColumns(db: any): void {
+  const columns = tableColumns(db, "main", "request_events");
+  for (const [name, type] of [
+    ["storage", "TEXT"],
+    ["failure_stage", "TEXT"],
+    ["error_code", "TEXT"],
+  ] as const) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE request_events ADD COLUMN ${name} ${type}`);
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {}): AnalyticsStore {
   const journal = db.prepare("PRAGMA main.journal_mode = DELETE").get() as { journal_mode?: unknown } | undefined;
@@ -247,17 +361,23 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
   }
   attachProgressionDatabase(db, options.progressionDbPath);
   db.exec(ADMIN_ANALYTICS_SCHEMA);
+  ensureRequestDiagnosticColumns(db);
   removeExactAuthTimestamps(db);
   return {
     record(event) {
       const occurredAt = event.occurredAt ?? Date.now();
+      const failureStage = event.failureStage && FAILURE_STAGES.has(event.failureStage) ? event.failureStage : null;
+      const errorCode = event.errorCode?.startsWith(`${event.operation}_`) && /^[a-z0-9._-]{1,80}$/.test(event.errorCode)
+        ? event.errorCode : null;
+      const storage = event.storage === "sqlite" || event.storage === "unavailable" ? event.storage : null;
       db.prepare(`INSERT INTO request_events
-        (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache, latency_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache, storage, failure_stage, error_code, latency_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           occurredAt, event.host ?? null, event.operation, event.aid ?? null, event.nickname ?? null,
           event.mode ?? null, event.cycleId ?? null, event.outcome, event.status,
           event.force == null ? null : Number(event.force), event.source ?? null, event.cache ?? null,
+          storage, failureStage, errorCode,
           Math.max(0, Math.round(event.latencyMs)),
         );
       const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
@@ -272,7 +392,10 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           activities = activities + excluded.activities`)
         .run(day, subjectHash, kind === "sign_in" ? 1 : 0, kind === "activity" ? 1 : 0);
     },
-    summary(period, domain, now = Date.now()) {
+    healthSignal(domain, now = Date.now()) {
+      return queryHealthSignal(db, domain, now);
+    },
+    summary(period, domain, now = Date.now(), includeDiagnostics = true) {
       const { sql, args } = whereFor(period, domain, now);
       const row = db.prepare(`SELECT
         COUNT(*) AS requests,
@@ -290,6 +413,82 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         FROM request_events WHERE ${sql}`).get(...args) as Record<string, unknown>;
       const cutoffDay = new Date(now - periodMilliseconds(period)).toISOString().slice(0, 10);
       const auth = db.prepare("SELECT COUNT(DISTINCT subject_hash) AS active_users, COALESCE(SUM(sign_ins), 0) AS sign_ins FROM auth_activity_daily WHERE day >= ?").get(cutoffDay);
+      const p99Ms = includeDiagnostics ? percentile(db, sql, args, 0.99) : null;
+      const activeCutoff = now - ACTIVE_ISSUE_WINDOW_MS;
+      const operationRows = includeDiagnostics ? db.prepare(`SELECT
+        operation, mode, COUNT(*) AS requests,
+        SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS success,
+        SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS server_errors,
+        SUM(CASE WHEN outcome = 'rate_limited' OR status = 429 THEN 1 ELSE 0 END) AS rate_limited,
+        MAX(CASE WHEN outcome = 'success' THEN occurred_at END) AS last_success_at,
+        MAX(CASE WHEN ${problemSql()} THEN occurred_at END) AS last_issue_at
+        FROM request_events WHERE ${sql}
+        GROUP BY operation, mode ORDER BY requests DESC, operation, mode`).all(...args) as Record<string, unknown>[] : [];
+      const operations: HealthOperationSummary[] = operationRows.map((operationRow) => {
+        const mode = operationRow.mode == null ? null : String(operationRow.mode);
+        const operationWhere = `${sql} AND operation = ? AND ${mode == null ? "mode IS NULL" : "mode = ?"}`;
+        const operationArgs = mode == null
+          ? [...args, String(operationRow.operation)]
+          : [...args, String(operationRow.operation), mode];
+        return {
+          operation: String(operationRow.operation), mode,
+          requests: Number(operationRow.requests ?? 0), success: Number(operationRow.success ?? 0),
+          serverErrors: Number(operationRow.server_errors ?? 0), rateLimited: Number(operationRow.rate_limited ?? 0),
+          p50Ms: percentile(db, operationWhere, operationArgs, 0.5),
+          p95Ms: percentile(db, operationWhere, operationArgs, 0.95),
+          p99Ms: percentile(db, operationWhere, operationArgs, 0.99),
+          lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
+          lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
+        };
+      });
+      const issueRows = includeDiagnostics ? db.prepare(`SELECT
+        operation, mode, ${diagnosticStageSql()} AS stage, ${diagnosticCodeSql()} AS code, status,
+        COUNT(*) AS count,
+        SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS active_count,
+        MIN(occurred_at) AS first_seen_at,
+        MAX(occurred_at) AS last_seen_at,
+        MAX(latency_ms) AS max_latency_ms
+        FROM request_events WHERE ${sql} AND ${problemSql()}
+        GROUP BY operation, mode, stage, code, status
+        ORDER BY last_seen_at DESC LIMIT 50`).all(activeCutoff, ...args) as Record<string, unknown>[] : [];
+      const issues: HealthIssueSummary[] = issueRows.map((issueRow) => {
+        const stage = String(issueRow.stage);
+        const status = Number(issueRow.status);
+        const lastSeenAt = Number(issueRow.last_seen_at);
+        return {
+          operation: String(issueRow.operation), mode: issueRow.mode == null ? null : String(issueRow.mode),
+          stage, code: String(issueRow.code), status, count: Number(issueRow.count),
+          activeCount: Number(issueRow.active_count),
+          firstSeenAt: Number(issueRow.first_seen_at), lastSeenAt,
+          maxLatencyMs: Number(issueRow.max_latency_ms), active: lastSeenAt >= activeCutoff,
+          severity: status >= 500 || stage === "storage" || stage === "application" ? "critical" : "warning",
+        };
+      });
+      const bucketMs = bucketMilliseconds(period);
+      const seriesRows = includeDiagnostics ? db.prepare(`WITH bucketed AS (
+          SELECT CAST(occurred_at / ? AS INTEGER) * ? AS at, latency_ms, outcome, status
+          FROM request_events WHERE ${sql}
+        ), ranked AS (
+          SELECT at, latency_ms, outcome, status,
+            ROW_NUMBER() OVER (PARTITION BY at ORDER BY latency_ms) AS latency_rank,
+            COUNT(*) OVER (PARTITION BY at) AS bucket_count
+          FROM bucketed
+        )
+        SELECT at, MAX(bucket_count) AS requests,
+          SUM(CASE WHEN outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500 THEN 1 ELSE 0 END) AS problems,
+          MAX(CASE WHEN latency_rank = CAST((bucket_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
+          MAX(CASE WHEN latency_rank = CAST((bucket_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
+          MAX(CASE WHEN latency_rank = CAST((bucket_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms
+        FROM ranked GROUP BY at ORDER BY at`).all(bucketMs, bucketMs, ...args) as Record<string, unknown>[] : [];
+      const series: HealthSeriesPoint[] = seriesRows.map((seriesRow) => ({
+        at: Number(seriesRow.at), requests: Number(seriesRow.requests), problems: Number(seriesRow.problems),
+        p50Ms: seriesRow.p50_ms == null ? null : Number(seriesRow.p50_ms),
+        p95Ms: seriesRow.p95_ms == null ? null : Number(seriesRow.p95_ms),
+        p99Ms: seriesRow.p99_ms == null ? null : Number(seriesRow.p99_ms),
+      }));
+      const currentSignal = includeDiagnostics ? queryHealthSignal(db, domain, now) : {
+        status: "healthy" as const, activeIssueCount: 0, firstSeenAt: null, lastSeenAt: null,
+      };
       return {
         accountRequests: Number(row.account_requests ?? 0),
         errors: Number(row.errors ?? 0),
@@ -297,9 +496,16 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           requests: Number(row.requests ?? 0), success: Number(row.success ?? 0),
           notFound: Number(row.not_found ?? 0), rateLimited: Number(row.rate_limited ?? 0),
           serverErrors: Number(row.server_errors ?? 0),
-          p50Ms: percentile(db, sql, args, 0.5), p95Ms: percentile(db, sql, args, 0.95),
+          p50Ms: includeDiagnostics ? percentile(db, sql, args, 0.5) : null,
+          p95Ms: includeDiagnostics ? percentile(db, sql, args, 0.95) : null,
+          p99Ms,
           lastSuccessAt: row.last_success_at == null ? null : Number(row.last_success_at),
           cacheHits: Number(row.cache_hits ?? 0), cacheMisses: Number(row.cache_misses ?? 0),
+          status: currentSignal.status,
+          statusSinceAt: currentSignal.firstSeenAt,
+          activeIssueCount: currentSignal.activeIssueCount,
+          recentIssueCount: issues.reduce((total, issue) => total + issue.count, 0),
+          operations, issues, series,
         },
         freshness: {
           lastEventAt: row.last_event_at == null ? null : Number(row.last_event_at),
