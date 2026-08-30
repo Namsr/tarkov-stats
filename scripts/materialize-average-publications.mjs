@@ -30,7 +30,7 @@ function sleep(ms) {
 function scopes() {
   const result = ["regular", "pve", "arena"];
   const cycle = process.env.SEASONAL_ENABLED === "true" ? process.env.SEASONAL_CYCLE_ID?.trim() : "";
-  if (cycle) result.splice(2, 0, seasonalPublicationScope(cycle));
+  if (cycle) result.push(seasonalPublicationScope(cycle));
   return result;
 }
 
