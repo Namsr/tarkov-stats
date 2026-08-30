@@ -57,6 +57,7 @@ async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCac
   if (!store) return { total: 0, rows: [], storage: "unavailable" };
 
   const baseline = await store.achievementBaseline();
+  if (!baseline) return { total: 0, rows: [], storage: "unavailable" };
   const total = baseline.total;
   const rows: BaselineRow[] = baseline.achievements.map((a) => ({
     id: a.ach_id,

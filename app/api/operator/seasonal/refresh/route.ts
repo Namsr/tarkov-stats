@@ -1,6 +1,8 @@
 import { revalidateTag } from "next/cache";
+import { after } from "next/server";
 import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
 import { SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
+import { warmAverageCaches } from "@/lib/average-warmer";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
@@ -187,7 +189,10 @@ export async function POST(request: Request) {
     await store.recordProgressionRefreshOutcome({
       runId, candidateId, aid, cycleId: cycle.cycleId, owner, outcome: "completed",
     });
-    if (result.capture.inserted) revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, { expire: 0 });
+    if (result.capture.inserted) {
+      revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, "max");
+      after(() => warmAverageCaches(new URL(request.url).origin));
+    }
     return Response.json({
       state: result.capture.inserted ? "updated" : result.capture.status,
       profileUpdatedAt: result.profile.profileUpdatedAt,

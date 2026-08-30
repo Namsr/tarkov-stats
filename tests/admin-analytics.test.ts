@@ -13,7 +13,7 @@ test("analytics store retains only anonymous request/account facts and aggregate
   const db = new DatabaseSync(":memory:");
   const store = createAnalyticsStore(db);
   const now = 200 * DAY;
-  store.record({ occurredAt: now - 1_000, host: "tarkovstats.ru", operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", cycleId: "persistent", outcome: "success", status: 200, force: true, source: "upstream", cache: "miss", latencyMs: 12.6 });
+  store.record({ occurredAt: now - 1_000, host: "tarkovstats.ru", operation: "player_profile", aid: 42, nickname: "Bear", mode: "regular", cycleId: "persistent", outcome: "success", status: 200, force: true, source: "upstream", cache: "miss", latencyMs: 12.6, profileMs: 8, baselineMs: 2, metadataMs: 1, cohortMs: 3, storeReadMs: 1, storeWriteMs: 2 });
   store.record({ occurredAt: now - 900, host: "tarkovstats.ru", operation: "player_search", aid: 42, nickname: "Bear", outcome: "success", status: 200, source: "index", latencyMs: 2 });
   store.record({ occurredAt: now - 2_000, host: "tarkovstats.online", operation: "average", outcome: "error", status: 503, latencyMs: 100 });
   store.record({ occurredAt: now - 8 * DAY, host: "tarkovstats.ru", operation: "player_profile", aid: 99, outcome: "success", status: 200, latencyMs: 1 });
@@ -21,14 +21,16 @@ test("analytics store retains only anonymous request/account facts and aggregate
   const summary = store.summary("7d", "all", now);
   assert.equal(summary.accountRequests, 1);
   assert.equal(summary.errors, 1);
-  assert.equal(summary.health.p50Ms, 13);
-  assert.equal(summary.health.p95Ms, 100);
-  assert.equal(summary.health.p99Ms, 100);
+  assert.equal(summary.health.p50Ms, 2);
+  assert.equal(summary.health.p95Ms, 13);
+  assert.equal(summary.health.p99Ms, 13);
   assert.equal(summary.health.status, "incident");
   assert.equal(summary.health.activeIssueCount, 1);
   assert.equal(summary.health.recentIssueCount, 1);
   assert.deepEqual(summary.health.issues.map((issue) => [issue.stage, issue.code, issue.active]), [["application", "average_error_503", true]]);
-  assert.deepEqual(summary.health.operations.map((operation) => [operation.operation, operation.p99Ms]), [["average", 100], ["player_profile", 13], ["player_search", 2]]);
+  assert.deepEqual(summary.health.operations.map((operation) => [operation.operation, operation.p99Ms]), [["average", null], ["player_profile", 13], ["player_search", 2]]);
+  assert.deepEqual(summary.health.operations.find((operation) => operation.operation === "player_profile")?.variants,
+    [{ source: "upstream", cache: "miss", force: true, requests: 1, p50Ms: 13, p95Ms: 13, p99Ms: 13 }]);
   assert.equal(summary.health.series.reduce((total, point) => total + point.requests, 0), 3);
   assert.equal(summary.freshness.lastProfileRequestAt, now - 1_000);
   assert.deepEqual(store.healthSignal("all", now), {
@@ -42,6 +44,12 @@ test("analytics store retains only anonymous request/account facts and aggregate
   assert.equal(columns.includes("search_text"), false);
   assert.equal(columns.includes("failure_stage"), true);
   assert.equal(columns.includes("error_code"), true);
+  for (const name of ["profile_ms", "baseline_ms", "metadata_ms", "cohort_ms", "store_read_ms", "store_write_ms"]) {
+    assert.equal(columns.includes(name), true);
+  }
+  assert.deepEqual({ ...db.prepare(`SELECT profile_ms, baseline_ms, metadata_ms, cohort_ms,
+    store_read_ms, store_write_ms FROM request_events WHERE operation = 'player_profile' AND aid = 42`).get() },
+  { profile_ms: 8, baseline_ms: 2, metadata_ms: 1, cohort_ms: 3, store_read_ms: 1, store_write_ms: 2 });
 });
 
 test("diagnostic columns migrate in place and p99 uses the nearest-rank definition", () => {

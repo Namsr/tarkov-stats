@@ -416,7 +416,9 @@ export interface AchievementMeta {
 export type AchievementMode = keyof typeof ACHIEVEMENT_ENDPOINTS;
 type AchievementCache = { data: Map<string, AchievementMeta>; ts: number };
 const achievementsCache = new Map<AchievementMode, AchievementCache>();
+const achievementLoads = new Map<AchievementMode, Promise<Map<string, AchievementMeta>>>();
 const ACHIEVEMENTS_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const ACHIEVEMENT_REQUEST_TIMEOUT_MS = 8_000;
 const MASTERY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const ACHIEVEMENT_IMAGE_HOSTS = new Set(["assets.tarkov.dev"]);
 let masteryCache: { data: WeaponMasteryReference[]; ts: number } | null = null;
@@ -643,95 +645,95 @@ export function parseAchievements(
   return result;
 }
 
+async function refreshAchievements(
+  mode: AchievementMode,
+  fallback: AchievementCache | null,
+): Promise<Map<string, AchievementMeta>> {
+  const pending = achievementLoads.get(mode);
+  if (pending) return pending;
+  const endpoints = ACHIEVEMENT_ENDPOINTS[mode];
+  // Assigned before the async cleanup reads it; a const self-reference is rejected by TypeScript.
+  let load!: Promise<Map<string, AchievementMeta>>;
+  // eslint-disable-next-line prefer-const
+  load = (async () => {
+    try {
+      const loadJson = async (url: string) => {
+        const response = await fetchTarkovJson(url, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(ACHIEVEMENT_REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<unknown>;
+      };
+      const [tasksResult, englishResult, russianResult] = await Promise.allSettled([
+        loadJson(endpoints.tasks),
+        loadJson(endpoints.english),
+        loadJson(endpoints.russian),
+      ]);
+      if (tasksResult.status === "rejected") throw tasksResult.reason;
+      if (englishResult.status === "rejected") {
+        console.warn("tarkov reference validation failed", {
+          reference: "achievements-en-translations",
+          mode,
+          error: englishResult.reason instanceof Error ? englishResult.reason.message : "unknown",
+        });
+      }
+      if (russianResult.status === "rejected") {
+        console.warn("tarkov reference validation failed", {
+          reference: "achievements-ru-translations",
+          mode,
+          error: russianResult.reason instanceof Error ? russianResult.reason.message : "unknown",
+        });
+      }
+      const map = parseAchievements(
+        tasksResult.value,
+        englishResult.status === "fulfilled" ? englishResult.value : undefined,
+        russianResult.status === "fulfilled" ? russianResult.value : undefined,
+      );
+      const cache = { data: map, ts: Date.now() };
+      achievementsCache.set(mode, cache);
+      await writePersistedAchievements(mode, cache);
+      console.info("tarkov reference", { reference: "achievements", mode, source: "json" });
+      return map;
+    } catch (error) {
+      console.error("tarkov reference validation failed", {
+        reference: "achievements",
+        mode,
+        error: error instanceof Error ? error.message : "unknown",
+      });
+      const cachedFallback = achievementsCache.get(mode) ?? fallback;
+      console.info("tarkov reference", {
+        reference: "achievements",
+        mode,
+        source: cachedFallback ? "persistent-cache" : "local-fallback",
+      });
+      return cachedFallback?.data ?? new Map();
+    } finally {
+      if (achievementLoads.get(mode) === load) achievementLoads.delete(mode);
+    }
+  })();
+  achievementLoads.set(mode, load);
+  return load;
+}
+
 /** Achievement id -> metadata, cached in-isolate. Rarely changes (per wipe). */
 export async function getAchievements(mode: AchievementMode = "regular"): Promise<Map<string, AchievementMeta>> {
-  const now = Date.now();
   const cached = getCachedAchievements(mode);
   if (cached) {
     console.info("tarkov reference", { reference: "achievements", mode, source: "memory-cache" });
     return cached;
   }
-  // A stale disk snapshot is still a better fallback than raw IDs. A fresh
-  // snapshot can be returned immediately and avoids an unnecessary upstream
-  // hit after a normal container restart.
-  const persisted = await readPersistedAchievements(mode);
-  if (persisted && now - persisted.ts < ACHIEVEMENTS_TTL_MS) {
+  const memory = achievementsCache.get(mode) ?? null;
+  const persisted = memory ?? await readPersistedAchievements(mode);
+  if (persisted) {
     achievementsCache.set(mode, persisted);
+    if (Date.now() - persisted.ts >= ACHIEVEMENTS_TTL_MS) {
+      void refreshAchievements(mode, persisted);
+    }
     console.info("tarkov reference", { reference: "achievements", mode, source: "persistent-cache" });
     return persisted.data;
   }
-  const endpoints = ACHIEVEMENT_ENDPOINTS[mode];
-  let tasks: unknown;
-  try {
-    const response = await fetchTarkovJson(endpoints.tasks, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    tasks = await response.json();
-  } catch (error) {
-    console.error("tarkov reference validation failed", {
-      reference: "achievements",
-      mode,
-      error: error instanceof Error ? error.message : "unknown",
-    });
-    const cachedFallback = achievementsCache.get(mode);
-    const fallback = cachedFallback?.data ?? persisted?.data ?? new Map();
-    console.info("tarkov reference", {
-      reference: "achievements",
-      mode,
-      source: cachedFallback ? "memory-cache" : persisted ? "persistent-cache" : "local-fallback",
-    });
-    return fallback;
-  }
-
-  try {
-    const response = await fetchTarkovJson(endpoints.english, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const english = await response.json();
-    let russian: unknown;
-    try {
-      const russianResponse = await fetchTarkovJson(endpoints.russian, { cache: "no-store" });
-      if (russianResponse.ok) russian = await russianResponse.json();
-    } catch (error) {
-      console.warn("tarkov reference validation failed", {
-        reference: "achievements-ru-translations",
-        mode,
-        error: error instanceof Error ? error.message : "unknown",
-      });
-    }
-    const map = parseAchievements(tasks, english, russian);
-    const cache = { data: map, ts: now };
-    achievementsCache.set(mode, cache);
-    await writePersistedAchievements(mode, cache);
-    console.info("tarkov reference", { reference: "achievements", mode, source: "json" });
-    return map;
-  } catch (error) {
-    console.error("tarkov reference validation failed", {
-      reference: "achievements-translations",
-      mode,
-      error: error instanceof Error ? error.message : "unknown",
-    });
-    const cachedAfterError = achievementsCache.get(mode) ?? persisted;
-    if (cachedAfterError) {
-      console.info("tarkov reference", {
-        reference: "achievements",
-        mode,
-        source: achievementsCache.has(mode) ? "memory-cache" : "persistent-cache",
-      });
-      return cachedAfterError.data;
-    }
-    try {
-      const fallback = parseAchievements(tasks);
-      console.info("tarkov reference", { reference: "achievements", mode, source: "local-fallback" });
-      return fallback;
-    } catch (tasksError) {
-      console.error("tarkov reference validation failed", {
-        reference: "achievements",
-        mode,
-        error: tasksError instanceof Error ? tasksError.message : "unknown",
-      });
-      console.info("tarkov reference", { reference: "achievements", mode, source: "local-fallback" });
-      return new Map();
-    }
-  }
+  return refreshAchievements(mode, null);
 }
 
 /** Handbook mastery thresholds and display names, cached for the isolate. */
@@ -1192,5 +1194,9 @@ export function parseProfileStats(
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
     weaponMastery: normalizeWeaponMastery(profile.skills?.Mastering),
+    commonSkills: Array.isArray(profile.skills?.Common) ? profile.skills.Common : [],
+    achievementUnlocks: Object.fromEntries(Object.entries(profile.achievements ?? {}).filter(
+      ([id, unlockedAt]) => id.trim() !== "" && Number.isFinite(Number(unlockedAt)) && Number(unlockedAt) > 0,
+    ).map(([id, unlockedAt]) => [id, Number(unlockedAt)])),
   };
 }

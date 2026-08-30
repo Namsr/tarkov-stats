@@ -20,8 +20,9 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     const profile = db.prepare(`INSERT INTO player_profiles (
       mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
       experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+      total_raids, survived, deaths, total_kills, longest_win_streak, level,
       first_seen_at, last_seen_at
-    ) VALUES ('seasonal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES ('seasonal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
         nickname = excluded.nickname,
         profile_updated_at = excluded.profile_updated_at,
@@ -34,6 +35,12 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
         pmc_deaths = excluded.pmc_deaths,
         pmc_kills = excluded.pmc_kills,
         killed_pmc = excluded.killed_pmc,
+        total_raids = excluded.total_raids,
+        survived = excluded.survived,
+        deaths = excluded.deaths,
+        total_kills = excluded.total_kills,
+        longest_win_streak = excluded.longest_win_streak,
+        level = excluded.level,
         last_seen_at = excluded.last_seen_at`);
     const snapshot = db.prepare(`INSERT INTO progression_snapshots (
       mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
@@ -44,7 +51,7 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
 
     const add = (cycle: string, aid: number, updated: number, hours: number, raids: number) => {
       profile.run(cycle, aid, `p-${cycle}-${aid}`, updated, updated, hours, 100,
-        raids, 0, raids, 1, raids, 0, updated, updated);
+        raids, 0, 1, 1, 1, raids, raids, raids, raids, raids, 5, 10, updated, updated);
       snapshot.run(cycle, aid, updated, updated, updated, 100, raids, raids, 0,
         raids, 1, raids, 1, 1, raids, raids, 0, null, 10, 1, 5, "[]");
     };

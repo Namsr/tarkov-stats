@@ -24,14 +24,17 @@ test("profile parsing retains normalized Mastering rows for stats_json", () => {
     aid: 42,
     info: { nickname: "Mastery", side: "Usec", experience: 0 },
     skills: {
-      Common: [],
+      Common: [{ Id: "Endurance", Progress: 4, LastAccess: 123, PointsEarnedDuringSession: 0 }],
       Mastering: [
         { Id: "AK", Progress: 12 },
         { Id: "bad", Progress: -1 },
       ],
     },
+    achievements: { first_raid: 456 },
   });
   assert.deepEqual(stats.weaponMastery, [{ id: "AK", progress: 12 }]);
+  assert.deepEqual(stats.commonSkills, [{ Id: "Endurance", Progress: 4, LastAccess: 123, PointsEarnedDuringSession: 0 }]);
+  assert.deepEqual(stats.achievementUnlocks, { first_raid: 456 });
 });
 
 test("weapon mastery normalizes profile rows, joins names, and sorts progress descending", () => {

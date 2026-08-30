@@ -199,5 +199,9 @@ export interface ParsedPlayerStats {
   arenaProfile?: ArenaProfile;
   /** Normalized profile.skills.Mastering rows retained for stored PvE views. */
   weaponMastery?: WeaponMasteryProgress[];
+  /** Common skills retained so a stored portrait can render without raw upstream JSON. */
+  commonSkills?: SkillEntry[];
+  /** Achievement unlock timestamps retained for stored profile views. */
+  achievementUnlocks?: Record<string, number>;
   [key: string]: unknown;
 }

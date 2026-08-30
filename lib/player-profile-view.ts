@@ -135,7 +135,7 @@ export function buildPersistentProfileViewModel(
   const identityValue = { aid: input.aid, mode: input.mode, cycleId: input.cycleId } as const;
   const ownAchievements = (profile?.achievements
     ? Object.entries(profile.achievements)
-    : (input.achievementIds ?? []).map((id) => [id, null] as const)
+    : (input.achievementIds ?? []).map((id) => [id, stats.achievementUnlocks?.[id] ?? null] as const)
   ).map(([id, unlockedAt]) => ({
     id,
     unlockedAt: timestampOrNull(unlockedAt),
@@ -197,7 +197,7 @@ export function buildPersistentProfileViewModel(
     achievements: { items: ownAchievements },
     skills: {
       kind: input.mode === "pve" ? "pve" : "pvp",
-      items: skillRows(profile?.skills),
+      items: skillRows(profile?.skills ?? stats.commonSkills),
       achievements: ownAchievements,
     },
     mastering: {

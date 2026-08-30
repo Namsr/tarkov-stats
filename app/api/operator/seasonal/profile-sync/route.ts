@@ -1,4 +1,5 @@
 import { revalidateTag } from "next/cache";
+import { after } from "next/server";
 import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
 import { SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
 import { isSeasonalCollectorReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
@@ -7,6 +8,7 @@ import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { recordSeasonalCaptureLifecycle } from "@/lib/seasonal/scanner";
+import { warmAverageCaches } from "@/lib/average-warmer";
 
 export const runtime = "nodejs";
 
@@ -70,7 +72,8 @@ export async function POST(request: Request) {
       return Response.json({ error: result.error }, { status: result.status, headers });
     }
     if (result.capture.inserted === true) {
-      revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, { expire: 0 });
+      revalidateTag(SEASONAL_AVERAGE_CACHE_TAG, "max");
+      after(() => warmAverageCaches(new URL(request.url).origin));
     }
     return Response.json({
       state: result.capture.inserted ? "updated" : result.capture.status,

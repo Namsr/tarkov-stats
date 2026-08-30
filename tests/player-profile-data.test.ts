@@ -49,7 +49,8 @@ test("persistent profile view model is mode-aware without a regular fallback", (
   assert.match(persistentBuilder, /PROFILE_SECTION_ORDER/);
   assert.match(persistentBuilder, /Object\.entries\(profile\.achievements\)/);
   assert.match(persistentBuilder, /input\.achievementIds/);
-  assert.match(persistentBuilder, /skillRows\(profile\?\.skills\)/);
+  assert.match(persistentBuilder, /skillRows\(profile\?\.skills \?\? stats\.commonSkills\)/);
+  assert.match(persistentBuilder, /stats\.achievementUnlocks\?\.\[id\]/);
   assert.doesNotMatch(persistentBuilder, /buildRegularProfileViewModel/);
 });
 

@@ -12,7 +12,7 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Changes, d1Rows } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
-import { counterArgs, identityObject, moscowDate, seasonalAchievementSnapshotValue, seasonalCommonSkillsSnapshotValue, seasonalWeaponMasterySnapshotValue, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
+import { counterArgs, identityObject, moscowDate, profilePortraitArgs, seasonalAchievementSnapshotValue, seasonalCommonSkillsSnapshotValue, seasonalWeaponMasterySnapshotValue, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
 
 const IDENTITY = "mode = ? AND cycle_id = ? AND aid = ?";
 
@@ -52,8 +52,9 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         INSERT INTO player_profiles (
           mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
           experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+          total_raids, survived, deaths, total_kills, longest_win_streak, level,
           first_seen_at, last_seen_at, confirmed_banned
-        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")},
+        ) VALUES (${Array.from({ length: 22 }, () => "?").join(", ")},
           EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
         ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
           nickname = excluded.nickname,
@@ -67,12 +68,18 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
           pmc_deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
           pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
           killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
+          total_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_raids ELSE player_profiles.total_raids END,
+          survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.survived ELSE player_profiles.survived END,
+          deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.deaths ELSE player_profiles.deaths END,
+          total_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_kills ELSE player_profiles.total_kills END,
+          longest_win_streak = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.longest_win_streak ELSE player_profiles.longest_win_streak END,
+          level = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.level ELSE player_profiles.level END,
           last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
           confirmed_banned = CASE
             WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
             ELSE player_profiles.confirmed_banned END
       `).bind(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
-        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt,
+        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), ...profilePortraitArgs(profile), observedAt, observedAt,
         profile.aid).run();
       const row = await db.prepare(`SELECT * FROM player_profiles WHERE ${IDENTITY}`)
         .bind(profile.mode, profile.cycleId, profile.aid).first() as Record<string, unknown> | null;

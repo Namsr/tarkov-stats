@@ -25,6 +25,8 @@ import { createRequestTiming } from "@/lib/observability/request-timing";
 import { findProfileSummary } from "@/lib/profile-summary";
 import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
+import { getProgressionStore } from "@/lib/progression-db";
+import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
 import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
@@ -52,6 +54,26 @@ const persistentAchievementBaselineInFlight = new Map<
   PersistentMode,
   Promise<AchievementBaseline | null>
 >();
+const regularBackgroundRefreshes = new Map<string, Promise<void>>();
+const STORED_PROFILE_REFRESH_MS = 5 * 60_000;
+
+async function refreshStoredRegularProfile(aid: number): Promise<void> {
+  const key = progressionFlightKey("regular", "persistent", aid);
+  return singleFlight(regularBackgroundRefreshes, key, async () => {
+    try {
+      const result = await getPublicProfile(aid, { force: true });
+      if (!result.profile) return;
+      const stats = parseProfileStats(result.profile, [...PLAYER_LEVELS_V2026_07_22]);
+      const achievementIds = Object.keys(result.profile.achievements ?? {});
+      await persistRegularProfileSnapshot(
+        makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
+        { upsertPlayer: !(result.fromCache || result.fromEdgeCache), strict: true },
+      );
+    } catch (error) {
+      console.error("regular stored profile background refresh failed", error);
+    }
+  });
+}
 
 async function loadPersistentAchievementBaseline(mode: PersistentMode): Promise<AchievementBaseline | null> {
   const now = Date.now();
@@ -128,11 +150,20 @@ async function enrichSeasonalViewModel(
 async function enrichPersistentViewModel(
   mode: PersistentMode,
   viewModel: ReturnType<typeof buildPersistentProfileViewModel>,
+  phases?: { baselineMs?: number; metadataMs?: number },
 ) {
+  const timed = async <T>(key: "baselineMs" | "metadataMs", load: () => Promise<T>): Promise<T> => {
+    const started = performance.now();
+    try {
+      return await load();
+    } finally {
+      if (phases) phases[key] = Math.max(0, Math.round(performance.now() - started));
+    }
+  };
   const [baseline, metadata, masteryReferences] = await Promise.all([
-    loadPersistentAchievementBaseline(mode),
+    timed("baselineMs", () => loadPersistentAchievementBaseline(mode)),
     // Achievement definitions are shared. Ownership stays in the mode store.
-    getAchievements("regular").catch(() => new Map()),
+    timed("metadataMs", () => getAchievements("regular").catch(() => new Map())),
     viewModel.mastering.items.length > 0 ? getWeaponMastery() : Promise.resolve([]),
   ]);
   const baselineById = new Map((baseline?.achievements ?? []).map((entry) => [entry.ach_id, entry]));
@@ -166,8 +197,9 @@ async function enrichPersistentViewModel(
 
 async function enrichRegularViewModel(
   viewModel: ReturnType<typeof buildRegularProfileViewModel>,
+  phases?: { baselineMs?: number; metadataMs?: number },
 ) {
-  return enrichPersistentViewModel("regular", viewModel);
+  return enrichPersistentViewModel("regular", viewModel, phases);
 }
 
 async function arenaProfileResponse(input: {
@@ -439,6 +471,7 @@ export async function GET(request: NextRequest) {
     let profileMs: number | undefined;
     let levelsMs: number | undefined;
     let parseMs: number | undefined;
+    const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
     let profileStarted: number | undefined;
     let storage: "sqlite" | "unavailable" = "unavailable";
     let source: "upstream" | "cache" = "upstream";
@@ -482,7 +515,7 @@ export async function GET(request: NextRequest) {
           stats: input.stats,
           achievementIds: input.achievementIds,
           capturedAt: input.capturedAt,
-        }, publicRisk));
+        }, publicRisk), enrichmentPhases);
         return NextResponse.json({
           profile: input.profile ?? null,
           stats: input.stats,
@@ -515,6 +548,8 @@ export async function GET(request: NextRequest) {
           storeOpenMs,
           storeReadMs,
           profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
+          baselineMs: enrichmentPhases.baselineMs,
+          metadataMs: enrichmentPhases.metadataMs,
         });
         return response;
       };
@@ -611,6 +646,8 @@ export async function GET(request: NextRequest) {
         profileMs,
         levelsMs,
         parseMs,
+        baselineMs: enrichmentPhases.baselineMs,
+        metadataMs: enrichmentPhases.metadataMs,
       });
       return response;
     } catch (error) {
@@ -631,14 +668,68 @@ export async function GET(request: NextRequest) {
         profileMs,
         levelsMs,
         parseMs,
+        baselineMs: enrichmentPhases.baselineMs,
+        metadataMs: enrichmentPhases.metadataMs,
       });
       return response;
+    }
+  }
+
+  if (!force) {
+    const storedStarted = timing.now();
+    const progressionStore = await getProgressionStore("regular");
+    const stored = progressionStore ? await progressionStore.latest(aid) : null;
+    const storeReadMs = timing.elapsedMs(storedStarted);
+    if (stored) {
+      const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
+      const storedRisk = stored.stats.pvpStatsKnown === false
+        ? null
+        : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+      const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId });
+      const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
+        aid,
+        mode: "regular",
+        cycleId,
+        stats: stored.stats,
+        achievementIds: stored.achievementIds,
+        capturedAt: stored.capturedAt,
+      }, publicRisk), enrichmentPhases);
+      if (Date.now() - stored.capturedAt >= STORED_PROFILE_REFRESH_MS) {
+        after(() => refreshStoredRegularProfile(aid));
+      }
+      timing.setRequestContext({ nickname: stored.stats.nickname });
+      timing.finish({
+        operation: "player_profile",
+        mode: "regular",
+        outcome: "success",
+        status: 200,
+        force: false,
+        source: "stored",
+        cache: "hit",
+        storage: "sqlite",
+        storeReadMs,
+        baselineMs: enrichmentPhases.baselineMs,
+        metadataMs: enrichmentPhases.metadataMs,
+      });
+      return NextResponse.json({
+        profile: null,
+        stats: stored.stats,
+        achievementIds: stored.achievementIds,
+        profileUpdatedAt: Number(stored.stats.profileUpdatedAt) || stored.upstreamUpdatedAt,
+        identity: { aid, mode: "regular", cycleId },
+        risk: publicRisk,
+        comparisonStats: buildPersistentComparisonStats(stored.stats),
+        capture: { inserted: false, status: "stored" },
+        freshness: viewModel.freshness,
+        viewModel,
+      }, { headers: profileHeaders });
     }
   }
 
   let profileMs: number | undefined;
   let levelsMs: number | undefined;
   let parseMs: number | undefined;
+  const enrichmentPhases: { baselineMs?: number; metadataMs?: number } = {};
   let profileStarted: number | undefined;
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
@@ -710,6 +801,7 @@ export async function GET(request: NextRequest) {
         profile,
         stats,
       }, publicRiskView),
+      enrichmentPhases,
     );
     const response = NextResponse.json(
       {
@@ -737,6 +829,8 @@ export async function GET(request: NextRequest) {
       profileMs,
       levelsMs,
       parseMs,
+      baselineMs: enrichmentPhases.baselineMs,
+      metadataMs: enrichmentPhases.metadataMs,
     });
     return response;
   } catch {
@@ -758,6 +852,8 @@ export async function GET(request: NextRequest) {
       profileMs,
       levelsMs,
       parseMs,
+      baselineMs: enrichmentPhases.baselineMs,
+      metadataMs: enrichmentPhases.metadataMs,
     });
     return response;
   }

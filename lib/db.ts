@@ -28,6 +28,11 @@ import {
   initializeArenaSchema,
   upsertArenaSqlite,
 } from "@/lib/arena/storage";
+import {
+  ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
+  parsePublishedAchievementBaseline,
+  readPublishedAchievementBaseline,
+} from "@/lib/achievement-baseline-publication";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -142,6 +147,7 @@ CREATE TABLE IF NOT EXISTS arena_player_index_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+${ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA}
 `;
 
 const CURRENT_PLAYER_SCHEMA_OBJECTS = [
@@ -152,6 +158,7 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
   "arena_player_index", "idx_arena_player_index_nickname_lower", "arena_player_index_meta",
+  "achievement_baseline_publications",
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -369,42 +376,6 @@ function toBucketAggs(rows: { lo: number; hi: number | null; n: number; s: numbe
 // derive variance = mean_sq − mean² in one pass (Welford-free, good enough here).
 // achievements is always valid JSON (we write JSON.stringify of an array), but we
 // guard NULL/'' to be safe against any legacy rows.
-const ACH_BASELINE_SQL =
-  `WITH expanded AS (` +
-  `SELECT je.value AS ach_id, p.hours AS hours ` +
-  `FROM players AS p, json_each(p.achievements) AS je ` +
-  `WHERE p.achievements IS NOT NULL AND p.achievements != '' ` +
-  `AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = p.aid)` +
-  `), ranked AS (` +
-  `SELECT ach_id, hours, ` +
-  `COUNT(*) OVER (PARTITION BY ach_id) AS owners, ` +
-  `AVG(hours) OVER (PARTITION BY ach_id) AS mean_hours, ` +
-  `AVG(hours * hours) OVER (PARTITION BY ach_id) AS mean_sq, ` +
-  `ROW_NUMBER() OVER (PARTITION BY ach_id ORDER BY hours) AS rn ` +
-  `FROM expanded` +
-  `) ` +
-  `SELECT ach_id, MAX(owners) AS owners, MAX(mean_hours) AS mean_hours, ` +
-  `MAX(mean_sq) AS mean_sq, ` +
-  `MIN(CASE WHEN rn = CAST((owners + 4) / 5 AS INTEGER) THEN hours END) AS early_hours ` +
-  `FROM ranked GROUP BY ach_id`;
-
-function toAchStats(
-  rows: { ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number }[]
-): AchievementStat[] {
-  return rows.map((r) => {
-    const mean = Number(r.mean_hours) || 0;
-    const variance = Math.max(0, (Number(r.mean_sq) || 0) - mean * mean);
-    const early = Number(r.early_hours) || mean;
-    return {
-      ach_id: String(r.ach_id),
-      owners: Number(r.owners),
-      meanHours: mean,
-      stdHours: Math.sqrt(variance),
-      earlyHours: early,
-    };
-  });
-}
-
 // Кап на рост таблицы: после лимита новые aid не добавляются (существующие
 // продолжают обновляться). Защищает диск VPS и датасет /average от
 // автоматического наполнения ботами. 0 = без лимита.
@@ -976,7 +947,7 @@ export interface PlayerStore {
    * Per-achievement playtime baseline over the whole sample: owner count plus
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
    */
-  achievementBaseline(): Promise<AchievementBaseline>;
+  achievementBaseline(): Promise<AchievementBaseline | null>;
   /**
    * Mean + std of each scored metric over a playtime range, for the within-bracket
    * z-scores behind the cheating-risk score.
@@ -1310,17 +1281,14 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         });
       },
       async achievementBaseline() {
-        const totalRow = (await db.prepare(`SELECT COUNT(*) AS n FROM players
-          WHERE NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).first()) as { n: number } | null;
-        const { results } = await db.prepare(ACH_BASELINE_SQL).all();
-        return {
-          total: Number(totalRow?.n ?? 0),
-          achievements: toAchStats(
-            (results ?? []) as {
-              ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number;
-            }[]
-          ),
-        };
+        if (mode === "arena") return null;
+        try {
+          const row = await rawDb.prepare(`SELECT mode, generation, generated_at, total, achievements_json
+            FROM achievement_baseline_publications WHERE mode = ?`).bind(mode).first() as Record<string, unknown> | null;
+          return parsePublishedAchievementBaseline(row);
+        } catch {
+          return null;
+        }
       },
       async baseline(min, max) {
         const { where, params } = legacyHoursRangeClause(min, max);
@@ -1656,12 +1624,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         });
       },
       async achievementBaseline() {
-        const totalRow = db.prepare(`SELECT COUNT(*) AS n FROM players
-          WHERE NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).get() as { n: number };
-        const rows = db.prepare(ACH_BASELINE_SQL).all() as {
-          ach_id: string; owners: number; mean_hours: number; mean_sq: number; early_hours: number;
-        }[];
-        return { total: Number(totalRow?.n ?? 0), achievements: toAchStats(rows) };
+        return mode === "arena" ? null : readPublishedAchievementBaseline(rawDb, mode);
       },
       async baseline(min, max) {
         const { where, params } = legacyHoursRangeClause(min, max);

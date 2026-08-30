@@ -5,6 +5,9 @@ import {
   materializeSqlitePopulationSnapshot,
 } from "../lib/seasonal/progression-db.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+import {
+  materializeAchievementBaseline,
+} from "../lib/achievement-baseline-publication.ts";
 
 const intervalMs = 21_600_000;
 const configuredInitialDelayMs = Number(process.env.PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS);
@@ -12,7 +15,28 @@ const initialDelayMs = Number.isFinite(configuredInitialDelayMs) && configuredIn
   ? configuredInitialDelayMs
   : 300_000;
 const databasePath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
+const playersDatabasePath = process.env.SQLITE_PATH || "/data/players.db";
 let running = false;
+
+function materializeAchievementBaselines(reason) {
+  const startedAt = Date.now();
+  const db = new DatabaseSync(playersDatabasePath);
+  try {
+    const published = [
+      materializeAchievementBaseline(db, "regular"),
+      materializeAchievementBaseline(db, "pve"),
+    ].map(({ mode, generation, generatedAt, total, achievements }) => ({
+      mode, generation, generatedAt, total, achievements: achievements.length,
+    }));
+    console.log(`achievement baselines materialized (${reason}) in ${Date.now() - startedAt}ms`, published);
+    return { skipped: false, published };
+  } catch (error) {
+    console.warn(`achievement baseline materialization failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    return { skipped: false, error };
+  } finally {
+    db.close();
+  }
+}
 
 export async function materializeProgressionPopulation(reason = "manual") {
   if (running) return { skipped: true };
@@ -45,7 +69,11 @@ export async function materializeProgressionPopulation(reason = "manual") {
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/scripts/materialize-progression-population.mjs")) {
-  setInterval(() => void materializeProgressionPopulation("interval"), intervalMs);
+  void materializeAchievementBaselines("startup");
+  setInterval(() => {
+    void materializeAchievementBaselines("interval");
+    void materializeProgressionPopulation("interval");
+  }, intervalMs);
   if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
   await materializeProgressionPopulation("startup");
 }

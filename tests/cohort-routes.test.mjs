@@ -23,7 +23,10 @@ test("seasonal route delegates center lookup to the identity-scoped helper", () 
   assert.match(seasonalRoute, /aid,\s*cycleId,/);
   assert.match(seasonalHelper, /SELECT hours, pmc_raids FROM normalized WHERE aid = \? LIMIT 1/);
   assert.match(seasonalHelper, /WHERE mode = 'seasonal' AND cycle_id = \?/);
-  assert.match(seasonalHelper, /WHERE s\.mode = 'seasonal' AND s\.cycle_id = \?/);
-  assert.match(seasonalHelper, /current\.cycle_id = s\.cycle_id/);
+  assert.doesNotMatch(seasonalHelper, /progression_snapshots/);
+  assert.doesNotMatch(seasonalHelper, /WITH latest AS/);
+  assert.match(seasonalHelper, /COHORT_CACHE_TTL_MS = 5 \* 60_000/);
+  assert.match(seasonalHelper, /COHORT_CACHE_MAX = 512/);
+  assert.match(seasonalHelper, /metric_values AS/);
   assert.match(seasonalHelper, /actualRanges/);
 });

@@ -21,6 +21,22 @@ export interface RequestEvent {
   failureStage?: string | null;
   errorCode?: string | null;
   latencyMs: number;
+  profileMs?: number | null;
+  baselineMs?: number | null;
+  metadataMs?: number | null;
+  cohortMs?: number | null;
+  storeReadMs?: number | null;
+  storeWriteMs?: number | null;
+}
+
+export interface HealthOperationVariant {
+  source: string | null;
+  cache: string | null;
+  force: boolean | null;
+  requests: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
 }
 
 export interface HealthOperationSummary {
@@ -35,6 +51,7 @@ export interface HealthOperationSummary {
   p99Ms: number | null;
   lastSuccessAt: number | null;
   lastIssueAt: number | null;
+  variants: HealthOperationVariant[];
 }
 
 export interface HealthIssueSummary {
@@ -140,7 +157,13 @@ CREATE TABLE IF NOT EXISTS request_events (
   storage TEXT,
   failure_stage TEXT,
   error_code TEXT,
-  latency_ms INTEGER NOT NULL
+  latency_ms INTEGER NOT NULL,
+  profile_ms INTEGER,
+  baseline_ms INTEGER,
+  metadata_ms INTEGER,
+  cohort_ms INTEGER,
+  store_read_ms INTEGER,
+  store_write_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_request_events_time ON request_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_request_events_account ON request_events(aid, occurred_at DESC);
@@ -348,6 +371,12 @@ function ensureRequestDiagnosticColumns(db: any): void {
     ["storage", "TEXT"],
     ["failure_stage", "TEXT"],
     ["error_code", "TEXT"],
+    ["profile_ms", "INTEGER"],
+    ["baseline_ms", "INTEGER"],
+    ["metadata_ms", "INTEGER"],
+    ["cohort_ms", "INTEGER"],
+    ["store_read_ms", "INTEGER"],
+    ["store_write_ms", "INTEGER"],
   ] as const) {
     if (!columns.has(name)) db.exec(`ALTER TABLE request_events ADD COLUMN ${name} ${type}`);
   }
@@ -371,14 +400,22 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         ? event.errorCode : null;
       const storage = event.storage === "sqlite" || event.storage === "unavailable" ? event.storage : null;
       db.prepare(`INSERT INTO request_events
-        (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache, storage, failure_stage, error_code, latency_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache,
+          storage, failure_stage, error_code, latency_ms, profile_ms, baseline_ms, metadata_ms, cohort_ms,
+          store_read_ms, store_write_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           occurredAt, event.host ?? null, event.operation, event.aid ?? null, event.nickname ?? null,
           event.mode ?? null, event.cycleId ?? null, event.outcome, event.status,
           event.force == null ? null : Number(event.force), event.source ?? null, event.cache ?? null,
           storage, failureStage, errorCode,
           Math.max(0, Math.round(event.latencyMs)),
+          event.profileMs == null ? null : Math.max(0, Math.round(event.profileMs)),
+          event.baselineMs == null ? null : Math.max(0, Math.round(event.baselineMs)),
+          event.metadataMs == null ? null : Math.max(0, Math.round(event.metadataMs)),
+          event.cohortMs == null ? null : Math.max(0, Math.round(event.cohortMs)),
+          event.storeReadMs == null ? null : Math.max(0, Math.round(event.storeReadMs)),
+          event.storeWriteMs == null ? null : Math.max(0, Math.round(event.storeWriteMs)),
         );
       const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
       if (occurredAt - lastCleanup >= CLEANUP_INTERVAL_MS) this.cleanup(occurredAt);
@@ -413,7 +450,8 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         FROM request_events WHERE ${sql}`).get(...args) as Record<string, unknown>;
       const cutoffDay = new Date(now - periodMilliseconds(period)).toISOString().slice(0, 10);
       const auth = db.prepare("SELECT COUNT(DISTINCT subject_hash) AS active_users, COALESCE(SUM(sign_ins), 0) AS sign_ins FROM auth_activity_daily WHERE day >= ?").get(cutoffDay);
-      const p99Ms = includeDiagnostics ? percentile(db, sql, args, 0.99) : null;
+      const successSql = `${sql} AND outcome = 'success'`;
+      const p99Ms = includeDiagnostics ? percentile(db, successSql, args, 0.99) : null;
       const activeCutoff = now - ACTIVE_ISSUE_WINDOW_MS;
       const operationRows = includeDiagnostics ? db.prepare(`SELECT
         operation, mode, COUNT(*) AS requests,
@@ -430,15 +468,40 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         const operationArgs = mode == null
           ? [...args, String(operationRow.operation)]
           : [...args, String(operationRow.operation), mode];
+        const variantRows = db.prepare(`SELECT source, cache, force, COUNT(*) AS requests
+          FROM request_events WHERE ${operationWhere} AND outcome = 'success'
+          GROUP BY source, cache, force ORDER BY requests DESC`).all(...operationArgs) as Record<string, unknown>[];
+        const variants = variantRows.map((variant) => {
+          const filters = [operationWhere, "outcome = 'success'",
+            variant.source == null ? "source IS NULL" : "source = ?",
+            variant.cache == null ? "cache IS NULL" : "cache = ?",
+            variant.force == null ? "force IS NULL" : "force = ?"];
+          const variantArgs = [...operationArgs];
+          if (variant.source != null) variantArgs.push(String(variant.source));
+          if (variant.cache != null) variantArgs.push(String(variant.cache));
+          if (variant.force != null) variantArgs.push(Number(variant.force));
+          const where = filters.join(" AND ");
+          return {
+            source: variant.source == null ? null : String(variant.source),
+            cache: variant.cache == null ? null : String(variant.cache),
+            force: variant.force == null ? null : Number(variant.force) === 1,
+            requests: Number(variant.requests),
+            p50Ms: percentile(db, where, variantArgs, 0.5),
+            p95Ms: percentile(db, where, variantArgs, 0.95),
+            p99Ms: percentile(db, where, variantArgs, 0.99),
+          };
+        });
+        const successfulOperationWhere = `${operationWhere} AND outcome = 'success'`;
         return {
           operation: String(operationRow.operation), mode,
           requests: Number(operationRow.requests ?? 0), success: Number(operationRow.success ?? 0),
           serverErrors: Number(operationRow.server_errors ?? 0), rateLimited: Number(operationRow.rate_limited ?? 0),
-          p50Ms: percentile(db, operationWhere, operationArgs, 0.5),
-          p95Ms: percentile(db, operationWhere, operationArgs, 0.95),
-          p99Ms: percentile(db, operationWhere, operationArgs, 0.99),
+          p50Ms: percentile(db, successfulOperationWhere, operationArgs, 0.5),
+          p95Ms: percentile(db, successfulOperationWhere, operationArgs, 0.95),
+          p99Ms: percentile(db, successfulOperationWhere, operationArgs, 0.99),
           lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
           lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
+          variants,
         };
       });
       const issueRows = includeDiagnostics ? db.prepare(`SELECT
@@ -470,15 +533,16 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           FROM request_events WHERE ${sql}
         ), ranked AS (
           SELECT at, latency_ms, outcome, status,
-            ROW_NUMBER() OVER (PARTITION BY at ORDER BY latency_ms) AS latency_rank,
-            COUNT(*) OVER (PARTITION BY at) AS bucket_count
+            ROW_NUMBER() OVER (PARTITION BY at ORDER BY CASE WHEN outcome = 'success' THEN 0 ELSE 1 END, latency_ms) AS latency_rank,
+            COUNT(*) OVER (PARTITION BY at) AS bucket_count,
+            SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) OVER (PARTITION BY at) AS success_count
           FROM bucketed
         )
         SELECT at, MAX(bucket_count) AS requests,
           SUM(CASE WHEN outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500 THEN 1 ELSE 0 END) AS problems,
-          MAX(CASE WHEN latency_rank = CAST((bucket_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
-          MAX(CASE WHEN latency_rank = CAST((bucket_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
-          MAX(CASE WHEN latency_rank = CAST((bucket_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms
         FROM ranked GROUP BY at ORDER BY at`).all(bucketMs, bucketMs, ...args) as Record<string, unknown>[] : [];
       const series: HealthSeriesPoint[] = seriesRows.map((seriesRow) => ({
         at: Number(seriesRow.at), requests: Number(seriesRow.requests), problems: Number(seriesRow.problems),
@@ -496,8 +560,8 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           requests: Number(row.requests ?? 0), success: Number(row.success ?? 0),
           notFound: Number(row.not_found ?? 0), rateLimited: Number(row.rate_limited ?? 0),
           serverErrors: Number(row.server_errors ?? 0),
-          p50Ms: includeDiagnostics ? percentile(db, sql, args, 0.5) : null,
-          p95Ms: includeDiagnostics ? percentile(db, sql, args, 0.95) : null,
+          p50Ms: includeDiagnostics ? percentile(db, successSql, args, 0.5) : null,
+          p95Ms: includeDiagnostics ? percentile(db, successSql, args, 0.95) : null,
           p99Ms,
           lastSuccessAt: row.last_success_at == null ? null : Number(row.last_success_at),
           cacheHits: Number(row.cache_hits ?? 0), cacheMisses: Number(row.cache_misses ?? 0),

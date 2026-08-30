@@ -156,6 +156,12 @@ export function createRequestTiming(options: Options = {}) {
         failureStage: diagnostic.stage,
         errorCode: diagnostic.code,
         latencyMs: totalMs,
+        profileMs: input.profileMs,
+        baselineMs: input.baselineMs,
+        metadataMs: input.metadataMs,
+        cohortMs: input.cohortMs,
+        storeReadMs: input.storeReadMs,
+        storeWriteMs: input.storeWriteMs,
       });
       if (!sampled) return;
       const event = {

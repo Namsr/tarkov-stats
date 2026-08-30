@@ -249,6 +249,9 @@ test("persistent captures isolate equal AIDs by mode and reject PvE duplicates a
   assert.equal((await pve.recordSnapshot(capture(2 * day, 600, 6))).status, "progression");
 
   assert.equal((await regular.history(42)).length, 1);
+  const legacyStored = await regular.latest(42);
+  assert.equal(legacyStored?.stats.commonSkills, undefined);
+  assert.equal(legacyStored?.stats.achievementUnlocks, undefined);
   assert.equal((await pve.history(42)).length, 2);
   assert.deepEqual(
     db.prepare(`SELECT mode, COUNT(*) AS n FROM progression_intervals

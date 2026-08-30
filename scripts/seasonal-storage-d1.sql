@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   experience INTEGER NOT NULL, pmc_raids INTEGER NOT NULL, scav_raids INTEGER NOT NULL,
   pmc_survived INTEGER NOT NULL, pmc_deaths INTEGER NOT NULL, pmc_kills INTEGER NOT NULL,
   killed_pmc INTEGER NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL,
+  total_raids INTEGER, survived INTEGER, deaths INTEGER, total_kills INTEGER,
+  longest_win_streak INTEGER, level INTEGER,
   linked_pvp_achievements TEXT NOT NULL DEFAULT '[]', linked_pvp_achievement_count INTEGER,
   linked_pvp_profile_updated_at INTEGER,
   snapshot_count INTEGER NOT NULL DEFAULT 0, confirmed_banned INTEGER NOT NULL DEFAULT 0,
@@ -50,6 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_average_freshness
   ON player_profiles(mode, cycle_id, confirmed_banned, profile_updated_at);
+CREATE INDEX IF NOT EXISTS idx_player_profiles_comparison
+  ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, pmc_raids, aid);
 
 CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
   aid INTEGER NOT NULL, mode TEXT NOT NULL, cycle_id TEXT NOT NULL,

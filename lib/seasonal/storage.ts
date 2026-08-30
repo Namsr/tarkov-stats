@@ -32,6 +32,15 @@ const COUNTER_COLUMNS = [
   "killed_pmc",
 ] as const;
 
+const PROFILE_PORTRAIT_COLUMNS = [
+  "total_raids",
+  "survived",
+  "deaths",
+  "total_kills",
+  "longest_win_streak",
+  "level",
+] as const;
+
 export const SEASONAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS excluded_players (
   aid INTEGER PRIMARY KEY,
@@ -62,6 +71,12 @@ CREATE TABLE IF NOT EXISTS player_profiles (
   pmc_deaths INTEGER NOT NULL,
   pmc_kills INTEGER NOT NULL,
   killed_pmc INTEGER NOT NULL,
+  total_raids INTEGER,
+  survived INTEGER,
+  deaths INTEGER,
+  total_kills INTEGER,
+  longest_win_streak INTEGER,
+  level INTEGER,
   first_seen_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
   linked_pvp_achievements TEXT NOT NULL DEFAULT '[]',
@@ -78,6 +93,8 @@ CREATE INDEX IF NOT EXISTS idx_player_profiles_progression_hours
   ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, aid);
 CREATE INDEX IF NOT EXISTS idx_player_profiles_average_freshness
   ON player_profiles(mode, cycle_id, confirmed_banned, profile_updated_at);
+CREATE INDEX IF NOT EXISTS idx_player_profiles_comparison
+  ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, pmc_raids, aid);
 CREATE TABLE IF NOT EXISTS upstream_ban_confirmations (
   aid INTEGER NOT NULL,
   mode TEXT NOT NULL,
@@ -349,6 +366,7 @@ function columns(db: SqliteDatabase, table: string): Set<string> {
 const CURRENT_SCHEMA_OBJECTS = [
   "excluded_players", "season_cycles", "player_profiles", "idx_player_profiles_cycle_access",
   "idx_player_profiles_progression_hours", "idx_player_profiles_average_freshness",
+  "idx_player_profiles_comparison",
   "upstream_ban_confirmations", "idx_upstream_ban_confirmations_aid", "progression_snapshots",
   "idx_progression_snapshots_identity_time", "idx_progression_snapshots_cycle_date",
   "idx_progression_snapshots_cycle_raids_latest", "progression_intervals",
@@ -376,7 +394,7 @@ function currentSeasonalSchema(db: SqliteDatabase): boolean {
 
   const profileColumns = columns(db, "player_profiles");
   if (!["progression_eligible", "linked_pvp_achievements", "linked_pvp_profile_updated_at",
-    "linked_pvp_achievement_count"].every((name) => profileColumns.has(name))) return false;
+    "linked_pvp_achievement_count", ...PROFILE_PORTRAIT_COLUMNS].every((name) => profileColumns.has(name))) return false;
   if (!columns(db, "progression_intervals").has("score_sample_n")) return false;
 
   const cycle = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'season_cycles'")
@@ -442,6 +460,35 @@ export function initializeSeasonalSchema(db: SqliteDatabase): void {
       WHEN linked_pvp_profile_updated_at IS NOT NULL AND json_valid(linked_pvp_achievements)
         THEN json_array_length(linked_pvp_achievements) ELSE NULL END`);
   }
+  for (const column of PROFILE_PORTRAIT_COLUMNS) {
+    if (!columns(db, "player_profiles").has(column)) {
+      db.exec(`ALTER TABLE player_profiles ADD COLUMN ${column} INTEGER`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_player_profiles_comparison
+    ON player_profiles(mode, cycle_id, confirmed_banned, lifetime_pvp_hours, pmc_raids, aid)`);
+  db.exec(`UPDATE player_profiles SET
+    total_raids = COALESCE(total_raids, (SELECT total_raids FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1)),
+    survived = COALESCE(survived, (SELECT survived FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1)),
+    deaths = COALESCE(deaths, (SELECT deaths FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1)),
+    total_kills = COALESCE(total_kills, (SELECT total_kills FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1)),
+    longest_win_streak = COALESCE(longest_win_streak, (SELECT longest_win_streak FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1)),
+    level = COALESCE(level, (SELECT level FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid ORDER BY profile_updated_at DESC, id DESC LIMIT 1))
+    WHERE mode = 'seasonal' AND EXISTS (SELECT 1 FROM progression_snapshots s
+      WHERE s.mode = player_profiles.mode AND s.cycle_id = player_profiles.cycle_id
+        AND s.aid = player_profiles.aid)`);
   if (!columns(db, "progression_intervals").has("score_sample_n")) {
     db.exec("ALTER TABLE progression_intervals ADD COLUMN score_sample_n INTEGER");
   }
@@ -598,6 +645,18 @@ export function moscowDate(timestamp: number): string {
 
 export function counterArgs(c: SeasonalCounters): number[] {
   return [c.experience, c.pmcRaids, c.scavRaids, c.pmcSurvived, c.pmcDeaths, c.pmcKills, c.killedPmc];
+}
+
+export function profilePortraitArgs(profile: SeasonalProfile): Array<number | null> {
+  const stats = profile.seasonalStats;
+  return [
+    stats?.totalRaids ?? null,
+    stats?.survivedRaids ?? null,
+    stats?.deaths ?? null,
+    stats?.totalKills ?? null,
+    stats?.longestWinStreak ?? null,
+    stats?.level ?? null,
+  ];
 }
 
 export function rowCounters(row: Record<string, unknown>): SeasonalCounters {
@@ -922,8 +981,9 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
       db.prepare(`
         INSERT INTO player_profiles (
           mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
-          ${COUNTER_COLUMNS.join(", ")}, first_seen_at, last_seen_at, confirmed_banned
-        ) VALUES (${Array.from({ length: 16 }, () => "?").join(", ")},
+          ${COUNTER_COLUMNS.join(", ")}, ${PROFILE_PORTRAIT_COLUMNS.join(", ")},
+          first_seen_at, last_seen_at, confirmed_banned
+        ) VALUES (${Array.from({ length: 22 }, () => "?").join(", ")},
           EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
         ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
           nickname = excluded.nickname,
@@ -937,12 +997,18 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           pmc_deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
           pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
           killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
+          total_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_raids ELSE player_profiles.total_raids END,
+          survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.survived ELSE player_profiles.survived END,
+          deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.deaths ELSE player_profiles.deaths END,
+          total_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_kills ELSE player_profiles.total_kills END,
+          longest_win_streak = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.longest_win_streak ELSE player_profiles.longest_win_streak END,
+          level = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.level ELSE player_profiles.level END,
           last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
           confirmed_banned = CASE
             WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
             ELSE player_profiles.confirmed_banned END
       `).run(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
-        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), observedAt, observedAt,
+        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), ...profilePortraitArgs(profile), observedAt, observedAt,
         profile.aid);
       return toProfile(db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(profile.mode, profile.cycleId, profile.aid));
     },

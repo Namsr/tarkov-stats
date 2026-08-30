@@ -275,7 +275,7 @@ test("v1 persisted achievement rows without descriptions or images remain readab
   try {
     const restartedApi = await import(`../lib/tarkov-api.ts?legacy=${Date.now()}`);
     const map = await restartedApi.getAchievements("regular");
-    assert.equal(fetchCalls, 1, "legacy cache should attempt a refresh before falling back");
+    assert.equal(fetchCalls, 3, "stale cache should refresh all three upstream files in parallel");
     assert.equal(map.get("legacy")?.descriptionEn, null);
     assert.equal(map.get("legacy")?.descriptionRu, null);
     assert.equal(map.get("legacy")?.imageUrl, null);
@@ -331,6 +331,9 @@ test("fresh legacy achievement cache is refreshed from JSON when upstream is hea
   };
   try {
     const restartedApi = await import(`../lib/tarkov-api.ts?legacy-refresh=${Date.now()}`);
+    const stale = await restartedApi.getAchievements("regular");
+    assert.equal(stale.get("legacy")?.nameEn, "Legacy");
+    await new Promise((resolve) => setImmediate(resolve));
     const map = await restartedApi.getAchievements("regular");
     assert.deepEqual(requested, [
       "https://json.tarkov.dev/regular/tasks",
@@ -340,6 +343,11 @@ test("fresh legacy achievement cache is refreshed from JSON when upstream is hea
     assert.equal(map.get("legacy")?.nameEn, "Fresh legacy");
     assert.equal(map.get("legacy")?.descriptionEn, "Fresh description");
     assert.equal(map.get("legacy")?.imageUrl, "https://assets.tarkov.dev/achievement/legacy.png");
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const persisted = await readFile(join(cacheDir, "achievements-regular.json"), "utf8");
+      if (persisted.includes("Fresh legacy")) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   } finally {
     globalThis.fetch = originalFetch;
     if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;

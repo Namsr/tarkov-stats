@@ -45,6 +45,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const cohortStarted = timing.now();
     const lookup = await querySeasonalComparisonCohort({
       aid,
       cycleId,
@@ -52,8 +53,9 @@ export async function GET(request: NextRequest) {
       statistic,
       period,
     });
+    const cohortMs = timing.elapsedMs(cohortStarted);
     if (!lookup.available) {
-      timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "error", status: 503 });
+      timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "error", status: 503, cohortMs });
       return NextResponse.json({
         identity,
         code: "comparison_unavailable",
@@ -61,14 +63,14 @@ export async function GET(request: NextRequest) {
       }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
     if (!lookup.result) {
-      timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "not_found", status: 404 });
+      timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "not_found", status: 404, cohortMs });
       return NextResponse.json({
         identity,
         code: "profile_unavailable",
         error: "Seasonal profile is not available for comparison",
       }, { status: 404, headers: { "Cache-Control": "no-store" } });
     }
-    timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "success", status: 200 });
+    timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "success", status: 200, cohortMs });
     return NextResponse.json({ ...lookup.result, statistic, period }, {
       headers: { "Cache-Control": "private, no-store" },
     });

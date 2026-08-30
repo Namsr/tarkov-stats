@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore Node's strip-types test runner requires explicit extensions.
-import { getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
+import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
 // @ts-ignore Node's strip-types test runner requires explicit extensions.
 import { initializeSeasonalSchema } from "./storage.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
@@ -16,55 +16,28 @@ import {
 // @ts-ignore Node's strip-types test runner resolves the explicit .ts extension.
 } from "../profile-cohort.ts";
 
-type Backend = {
-  kind: "d1" | "sqlite";
-  db: D1DatabaseLike;
-};
-
+type Backend = { kind: "d1" | "sqlite"; db: D1DatabaseLike };
 type Row = Record<string, unknown>;
 
+const COHORT_CACHE_TTL_MS = 5 * 60_000;
+const COHORT_CACHE_MAX = 512;
+const cohortCache = new Map<string, { expiresAt: number; value: SeasonalComparisonCohortLookup }>();
+const cohortLoads = new Map<string, Promise<SeasonalComparisonCohortLookup>>();
 let sqliteDatabase: D1DatabaseLike | null = null;
 
-const SEASONAL_PORTRAIT_CTE = `
-WITH latest AS (
-  SELECT s.* FROM progression_snapshots s
-  JOIN (
-    SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
-    FROM progression_snapshots
-    WHERE mode = 'seasonal' AND cycle_id = ?
-    GROUP BY aid, cycle_id
-  ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
-    AND current.profile_updated_at = s.profile_updated_at
-  WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-), portrait AS (
-  SELECT p.aid, p.profile_updated_at,
-    p.lifetime_pvp_hours AS hours,
-    latest.total_raids AS total_raids,
-    latest.pmc_raids AS pmc_raids,
-    latest.scav_raids AS scav_raids,
-    latest.survived AS survived,
-    latest.deaths AS deaths,
-    latest.total_kills AS total_kills,
-    latest.killed_pmc AS killed_pmc,
-    latest.longest_win_streak AS longest_win_streak,
-    latest.level AS level,
-    latest.pmc_survived AS pmc_survived,
-    latest.pmc_deaths AS pmc_deaths
-  FROM player_profiles p
-  JOIN latest ON latest.aid = p.aid
-    AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
-  WHERE p.mode = 'seasonal' AND p.cycle_id = ?
-    AND p.confirmed_banned = 0
-    AND p.lifetime_pvp_hours IS NOT NULL
-    AND latest.pmc_raids IS NOT NULL AND latest.pmc_raids > 0
-), normalized AS (
-  SELECT portrait.*,
+const NORMALIZED_CTE = `
+WITH normalized AS (
+  SELECT aid, profile_updated_at, lifetime_pvp_hours AS hours, total_raids,
+    pmc_raids, scav_raids, survived, deaths, total_kills, killed_pmc,
+    longest_win_streak, level, pmc_survived, pmc_deaths,
     CASE WHEN total_raids > 0 THEN 100.0 * survived / total_raids END AS survival_rate,
     CASE WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate
-  FROM portrait
+  FROM player_profiles
+  WHERE mode = 'seasonal' AND cycle_id = ? AND confirmed_banned = 0
+    AND lifetime_pvp_hours IS NOT NULL AND pmc_raids > 0
 )
 `;
 
@@ -86,19 +59,17 @@ async function backend(): Promise<Backend | null> {
   }
 }
 
-async function first(backend: Backend, sql: string, params: unknown[]): Promise<Row | null> {
-  if (backend.kind === "d1") {
-    return await backend.db.prepare(sql).bind(...params).first() as Row | null;
-  }
-  return backend.db.prepare(sql).get(...params) as Row | null;
+async function first(store: Backend, sql: string, params: unknown[]): Promise<Row | null> {
+  if (store.kind === "d1") return await store.db.prepare(sql).bind(...params).first() as Row | null;
+  return store.db.prepare(sql).get(...params) as Row | null;
 }
 
-function baseParams(cycleId: string, extra: unknown[] = []) {
-  return [cycleId, cycleId, cycleId, ...extra];
+async function all(store: Backend, sql: string, params: unknown[]): Promise<Row[]> {
+  if (store.kind === "d1") return d1Rows(await store.db.prepare(sql).bind(...params).all());
+  return store.db.prepare(sql).all(...params) as Row[];
 }
 
 function rangeWhere(input: {
-  cycleId: string;
   center: { hours: number; pmcRaids: number };
   percent: ComparisonCohortPercent;
   excludeAid: number;
@@ -106,44 +77,43 @@ function rangeWhere(input: {
   now: number;
 }) {
   const range = comparisonRangeFor(input.center, input.percent);
-  const hoursMin = range.hours.min;
-  const hoursMax = range.hours.max;
-  const raidsMin = range.pmcRaids.min;
-  const raidsMax = range.pmcRaids.max;
   const where = [
-    "hours > 0",
-    "pmc_raids > 0",
-    "hours >= ?",
-    "hours <= ?",
-    "pmc_raids >= ?",
-    "pmc_raids <= ?",
-    "aid != ?",
+    "hours > 0", "pmc_raids > 0", "hours >= ?", "hours <= ?",
+    "pmc_raids >= ?", "pmc_raids <= ?", "aid != ?",
   ];
-  const params: unknown[] = [hoursMin, hoursMax, raidsMin, raidsMax, input.excludeAid];
+  const params: unknown[] = [
+    range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max, input.excludeAid,
+  ];
   if (input.period === "90d") {
     where.push("profile_updated_at >= ?");
     params.push(Math.floor(input.now - 90 * 86_400_000));
   }
-  return {
-    where: `WHERE ${where.join(" AND ")}`,
-    params,
-    bounds: {
-      hours: { min: hoursMin, max: hoursMax },
-      pmcRaids: { min: raidsMin, max: raidsMax },
-    },
-  };
+  return { where: `WHERE ${where.join(" AND ")}`, params };
 }
 
-function metricSql(metric: string, where: string, statistic: AverageStatistic) {
+function metricsSql(where: string, statistic: AverageStatistic): string {
   const selected = statistic === "median"
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= 20 THEN CAST(n * 0.05 AS INTEGER) ELSE 0 END
        AND rn <= n - CASE WHEN n >= 20 THEN CAST(n * 0.05 AS INTEGER) ELSE 0 END`;
-  return `${SEASONAL_PORTRAIT_CTE}, ranked AS (
-    SELECT ${metric} AS v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
-      COUNT(*) OVER () AS n
-    FROM normalized ${where} AND ${metric} IS NOT NULL
-  ) SELECT MAX(n) AS n, AVG(v) AS a FROM ranked WHERE ${selected}`;
+  const values = COMPARISON_RADAR_METRICS.map((metric) =>
+    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL`
+  ).join(" UNION ALL ");
+  return `${NORMALIZED_CTE}, cohort AS (
+    SELECT * FROM normalized ${where}
+  ), metric_values AS (${values}), ranked AS (
+    SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
+      COUNT(*) OVER (PARTITION BY metric) AS n
+    FROM metric_values
+  )
+  SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
+    MIN(hours) AS hours_min, MAX(hours) AS hours_max,
+    MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
+  FROM cohort
+  UNION ALL
+  SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
+    NULL, NULL, NULL, NULL
+  FROM ranked GROUP BY metric`;
 }
 
 export interface SeasonalComparisonCohortInput {
@@ -160,142 +130,114 @@ export interface SeasonalComparisonCohortLookup {
   result: ComparisonCohortResult | null;
 }
 
-/**
- * Computes the Seasonal comparison from the current cycle's latest snapshots.
- * The caller only supplies identity and presentation preferences; both centers
- * and all cohort rows are read from server-side Seasonal storage.
- */
-export async function querySeasonalComparisonCohort(
+function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
+  return [input.cycleId, input.aid, input.dimension ?? "hours", input.statistic ?? "trimmed_mean",
+    input.period ?? "all", input.period === "90d" ? Math.floor(now / COHORT_CACHE_TTL_MS) : 0].join(":");
+}
+
+function cacheResult(key: string, value: SeasonalComparisonCohortLookup, now: number): void {
+  for (const [cachedKey, entry] of cohortCache) {
+    if (entry.expiresAt <= now) cohortCache.delete(cachedKey);
+  }
+  while (cohortCache.size >= COHORT_CACHE_MAX) {
+    const oldest = cohortCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cohortCache.delete(oldest);
+  }
+  cohortCache.set(key, { expiresAt: now + COHORT_CACHE_TTL_MS, value });
+}
+
+async function computeSeasonalComparisonCohort(
   input: SeasonalComparisonCohortInput,
+  now: number,
 ): Promise<SeasonalComparisonCohortLookup> {
   const store = await backend();
   if (!store) return { available: false, result: null };
   const dimension = input.dimension ?? "hours";
   const statistic = input.statistic ?? "trimmed_mean";
   const period = input.period ?? "all";
-  const now = input.now ?? Date.now();
   const target = await first(store,
-    `${SEASONAL_PORTRAIT_CTE} SELECT hours, pmc_raids FROM normalized WHERE aid = ? LIMIT 1`,
-    baseParams(input.cycleId, [input.aid]),
+    `${NORMALIZED_CTE} SELECT hours, pmc_raids FROM normalized WHERE aid = ? LIMIT 1`,
+    [input.cycleId, input.aid],
   );
-  if (!target || target.hours == null || target.pmc_raids == null) {
-    return { available: true, result: null };
-  }
+  if (!target || target.hours == null || target.pmc_raids == null) return { available: true, result: null };
   const center = { hours: Number(target.hours), pmcRaids: Number(target.pmc_raids) };
   if (!(center.hours > 0) || !(center.pmcRaids > 0)) {
-    return {
-      available: true,
-      result: makeComparisonCohortResult({
-        mode: "seasonal",
-        cycleId: input.cycleId,
-        aid: input.aid,
-        center,
-        dimension,
-        percent: 30,
-        n: 0,
-        actualRanges: { hours: null, pmcRaids: null, raids: null },
-        reason: "no_activity",
-      }),
-    };
+    return { available: true, result: makeComparisonCohortResult({
+      mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
+      percent: 30, n: 0, actualRanges: { hours: null, pmcRaids: null, raids: null }, reason: "no_activity",
+    }) };
   }
 
-  // Keep every D1 response compact. Returning all matching rows to the Worker
-  // makes large cohorts hit response or CPU limits, so counts and metrics stay
-  // inside SQL and only one aggregate row crosses the D1 boundary per query.
-  const widest = rangeWhere({
-    cycleId: input.cycleId,
-    center,
-    percent: 30,
-    excludeAid: input.aid,
-    period,
-    now,
-  });
+  const widest = rangeWhere({ center, percent: 30, excludeAid: input.aid, period, now });
   const countConditions = COMPARISON_COHORT_PERCENTAGES.map((percent) => {
     const range = comparisonRangeFor(center, percent);
-    return {
-      sql: "hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?",
-      params: [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max],
-    };
+    return { sql: "hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?",
+      params: [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max] };
   });
   const countRow = await first(store,
-    `${SEASONAL_PORTRAIT_CTE} SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent, index) =>
+    `${NORMALIZED_CTE} SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent, index) =>
       `SUM(CASE WHEN ${countConditions[index].sql} THEN 1 ELSE 0 END) AS count_${percent}`
     ).join(", ")} FROM normalized ${widest.where}`,
-    baseParams(input.cycleId)
-      .concat(countConditions.flatMap((condition) => condition.params), widest.params),
+    [input.cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
   );
   const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
-    percent,
-    Number(countRow?.[`count_${percent}`] ?? 0),
+    percent, Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
     counts[percent] >= COMPARISON_COHORT_TARGET
   ) ?? 30;
-  const selected = rangeWhere({ cycleId: input.cycleId, center, percent: selectedPercent, excludeAid: input.aid, period, now });
-  const group = await first(store,
-    `${SEASONAL_PORTRAIT_CTE} SELECT COUNT(*) AS n,
-      MIN(hours) AS hours_min, MAX(hours) AS hours_max,
-      MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
-      FROM normalized ${selected.where}`,
-    baseParams(input.cycleId, selected.params),
-  );
+  const selected = rangeWhere({ center, percent: selectedPercent, excludeAid: input.aid, period, now });
+  const rows = await all(store, metricsSql(selected.where, statistic), [input.cycleId, ...selected.params]);
+  const group = rows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
   const actualRanges: ComparisonActualRanges = {
-    hours: group?.hours_min == null || group?.hours_max == null
-      ? null
+    hours: group?.hours_min == null || group?.hours_max == null ? null
       : { min: Number(group.hours_min), max: Number(group.hours_max) },
-    pmcRaids: group?.raids_min == null || group?.raids_max == null
-      ? null
+    pmcRaids: group?.raids_min == null || group?.raids_max == null ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
-    raids: group?.raids_min == null || group?.raids_max == null
-      ? null
+    raids: group?.raids_min == null || group?.raids_max == null ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
   };
   if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
-    return {
-      available: true,
-      result: makeComparisonCohortResult({
-        mode: "seasonal",
-        cycleId: input.cycleId,
-        aid: input.aid,
-        center,
-        dimension,
-        percent: selectedPercent,
-        n,
-        actualRanges,
-        reason: "insufficient_cohort",
-      }),
-    };
+    return { available: true, result: makeComparisonCohortResult({
+      mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
+      percent: selectedPercent, n, actualRanges, reason: "insufficient_cohort",
+    }) };
   }
-
-  const averages = Object.fromEntries(
-    COMPARISON_RADAR_METRICS.map((metric) => [metric, { value: null, count: 0 }])
-  ) as ComparisonCohortResult["averages"];
-  for (const metric of COMPARISON_RADAR_METRICS) {
-    const row = await first(store,
-      metricSql(metric, selected.where, statistic),
-      baseParams(input.cycleId, selected.params),
-    );
+  const metricRows = new Map(rows.map((row) => [String(row.metric), row]));
+  const averages = Object.fromEntries(COMPARISON_RADAR_METRICS.map((metric) => {
+    const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
-    const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
-    if (count < minimumPopulatedCount) {
-      averages[metric] = { value: null, count };
-      continue;
-    }
-    averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
+    const minimum = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
+    return [metric, { value: count < minimum || row?.a == null ? null : Number(row.a), count }];
+  })) as ComparisonCohortResult["averages"];
+  return { available: true, result: makeComparisonCohortResult({
+    mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
+    percent: selectedPercent, n, actualRanges, averages,
+  }) };
+}
+
+/** Reads the Seasonal comparison in at most three SQL calls and shares identical work for five minutes. */
+export async function querySeasonalComparisonCohort(
+  input: SeasonalComparisonCohortInput,
+): Promise<SeasonalComparisonCohortLookup> {
+  const now = input.now ?? Date.now();
+  const key = cacheKey(input, now);
+  const cached = cohortCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    cohortCache.delete(key);
+    cohortCache.set(key, cached);
+    return cached.value;
   }
-  return {
-    available: true,
-    result: makeComparisonCohortResult({
-      mode: "seasonal",
-      cycleId: input.cycleId,
-      aid: input.aid,
-      center,
-      dimension,
-      percent: selectedPercent,
-      n,
-      actualRanges,
-      averages,
-    }),
-  };
+  const existing = cohortLoads.get(key);
+  if (existing) return existing;
+  const load = computeSeasonalComparisonCohort(input, now).then((value) => {
+    cacheResult(key, value, now);
+    return value;
+  }).finally(() => {
+    if (cohortLoads.get(key) === load) cohortLoads.delete(key);
+  });
+  cohortLoads.set(key, load);
+  return load;
 }
