@@ -100,6 +100,7 @@ const PUBLIC_PROFILE_PATH: Record<PublicProfileMode, string> = {
 };
 const profileCache = new Map<string, CachedProfile>();
 const PROFILE_TTL_MS = 5 * 60 * 1000; // 5 минут
+const PUBLIC_PROFILE_TIMEOUT_MS = 8_000;
 const PROFILE_CACHE_MAX = 2000;
 const PROFILE_VERSION_TOLERANCE_MS = 1000;
 
@@ -166,6 +167,7 @@ export async function getPublicProfile(
   const now = Date.now();
   const mode = opts.mode ?? "regular";
   const cacheKey = `${mode}:${aid}`;
+  const stale = profileCache.get(cacheKey);
   // force обходит in-process кэш: всё равно идём в upstream и перезаписываем кэш
   // свежим ответом (fromCache=false → вызывающий сделает upsert в БД).
   if (!opts.force) {
@@ -198,15 +200,26 @@ export async function getPublicProfile(
   if (!res) {
     // Normal profile opens can use the platform/edge fetch cache. Explicit
     // refreshes remain uncached so the user can still request fresh upstream data.
-    res = await fetchTarkovJson(url, {
-      cache: opts.force ? "no-store" : "force-cache",
-    });
+    try {
+      res = await fetchTarkovJson(url, {
+        cache: opts.force ? "no-store" : "force-cache",
+        signal: AbortSignal.timeout(PUBLIC_PROFILE_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (!opts.force && stale) {
+        return { profile: stale.profile, fromCache: true };
+      }
+      throw error;
+    }
   }
   if (res.status === 404) {
     cacheProfile(cacheKey, null, now);
     return { profile: null, fromCache: false, fromEdgeCache };
   }
   if (!res.ok) {
+    if (!opts.force && stale) {
+      return { profile: stale.profile, fromCache: true };
+    }
     throw new Error(`Public profile fetch failed: ${res.status}`);
   }
   const edgeResponse = !fromEdgeCache && edgeCache && edgeRequest ? res.clone() : null;

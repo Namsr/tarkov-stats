@@ -50,7 +50,8 @@ interface BaselineCache {
 // Reference-data failure degrades a single response instead of poisoning a memoized
 // payload with id-as-name / 0% for the whole TTL.
 const memo = new Map<string, BaselineCache>();
-const MEMO_TTL_MS = 60 * 1000;
+const baselineLoads = new Map<string, Promise<BaselineCache>>();
+const MEMO_TTL_MS = 5 * 60 * 1000;
 
 async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCache, "ts">> {
   if (!store) return { total: 0, rows: [], storage: "unavailable" };
@@ -98,26 +99,36 @@ export async function GET(request: NextRequest) {
     if (!cached || now - cached.ts >= MEMO_TTL_MS) {
       memoStatus = "miss";
       const baselineStarted = timing.now();
-      if (rawMode === "seasonal") {
-        const baseline = await getSeasonalAchievementBaseline(cycleId!);
-        cached = {
-          total: baseline?.total ?? 0,
-          rows: (baseline?.achievements ?? []).map((a) => ({
-            id: a.ach_id,
-            owners: a.owners,
-            samplePct: baseline && baseline.total > 0 ? (a.owners / baseline.total) * 100 : 0,
-            meanHours: a.meanHours,
-            stdHours: a.stdHours,
-            earlyHours: a.earlyHours,
-          })),
-          ts: now,
-          storage: baseline ? "sqlite" : "unavailable",
-        };
-      } else {
-        const storeOpenStarted = timing.now();
-        const store = await getStore(rawMode);
-        storeOpenMs = timing.elapsedMs(storeOpenStarted);
-        cached = { ...(await loadBaseline(store)), ts: now };
+      let load = baselineLoads.get(memoKey);
+      if (!load) {
+        load = (async () => {
+          if (rawMode === "seasonal") {
+            const baseline = await getSeasonalAchievementBaseline(cycleId!);
+            return {
+              total: baseline?.total ?? 0,
+              rows: (baseline?.achievements ?? []).map((a) => ({
+                id: a.ach_id,
+                owners: a.owners,
+                samplePct: baseline && baseline.total > 0 ? (a.owners / baseline.total) * 100 : 0,
+                meanHours: a.meanHours,
+                stdHours: a.stdHours,
+                earlyHours: a.earlyHours,
+              })),
+              ts: now,
+              storage: baseline ? "sqlite" as const : "unavailable" as const,
+            };
+          }
+          const storeOpenStarted = timing.now();
+          const store = await getStore(rawMode);
+          storeOpenMs = timing.elapsedMs(storeOpenStarted);
+          return { ...(await loadBaseline(store)), ts: now };
+        })();
+        baselineLoads.set(memoKey, load);
+      }
+      try {
+        cached = await load;
+      } finally {
+        if (baselineLoads.get(memoKey) === load) baselineLoads.delete(memoKey);
       }
       baselineMs = timing.elapsedMs(baselineStarted);
       memo.set(memoKey, cached);
@@ -150,7 +161,7 @@ export async function GET(request: NextRequest) {
 
     const payload: Payload = { total: cached.total, achievements };
     const response = NextResponse.json(payload, {
-      headers: { "Cache-Control": "public, max-age=300" },
+      headers: { "Cache-Control": "public, max-age=300, s-maxage=300, stale-while-revalidate=3600" },
     });
     timing.finish({
       operation: "average_achievements", mode: rawMode, outcome: "success", status: 200,

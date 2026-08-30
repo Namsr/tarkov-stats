@@ -79,6 +79,16 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     });
     assert.equal(lookup.result.ranges.hours.percent, 10);
     assert.equal(lookup.result.ranges.pmcRaids.percent, 10);
+    assert.deepEqual(lookup.result.averages.kd_ratio, { value: 1, count: 20 });
+    assert.deepEqual(lookup.result.averages.pmc_survival_rate, { value: 5, count: 20 });
+
+    const median = await querySeasonalComparisonCohort({
+      aid: 1,
+      cycleId: "cycle-a",
+      statistic: "median",
+      now: 10_000,
+    });
+    assert.equal(median.result?.averages.kd_ratio.value, 1);
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;

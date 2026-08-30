@@ -117,6 +117,28 @@ test("public profile cache is isolated by mode and aid while force stays fresh",
   assert.match(urls[3], new RegExp(`^https://players\\.tarkov\\.dev/profile/${aid}\\.json\\?v=\\d+$`));
 });
 
+test("public profile fetch falls back to an expired cached profile when upstream fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const aid = 5869269;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  globalThis.fetch = async () => new Response(JSON.stringify({ ...base, aid }), { status: 200 });
+  try {
+    const first = await getPublicProfile(aid);
+    assert.equal(first.fromCache, false);
+
+    now += 6 * 60 * 1000;
+    globalThis.fetch = async () => { throw new Error("upstream unavailable"); };
+    const stale = await getPublicProfile(aid);
+    assert.equal(stale.fromCache, true);
+    assert.equal(stale.profile?.aid, aid);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
 test("regular forced fetch cache-busts upstream and rejects an older profile version", async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";
