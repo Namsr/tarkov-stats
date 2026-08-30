@@ -75,6 +75,21 @@ export async function resolveSeasonalProfile(
     const loaded = await loadStore();
     const profile = loaded.profile;
     if (!profile || profile.confirmedBanned || input.expectedUpdatedAt !== undefined) return null;
+    if (profile.snapshotCount === 0 && loaded.store) {
+      try {
+        const observedAt = dependencies.now?.() ?? Date.now();
+        const capture = await loaded.store.captureSnapshot(profile, observedAt);
+        await dependencies.afterCapture?.({ cycle, profile, capture, observedAt });
+        return {
+          ok: true as const,
+          profile,
+          capture: { inserted: capture.inserted, status: capture.status },
+        };
+      } catch {
+        // A stored profile is still useful when the one-time baseline repair
+        // cannot be written. The next request can retry the repair.
+      }
+    }
     return {
       ok: true as const,
       profile,

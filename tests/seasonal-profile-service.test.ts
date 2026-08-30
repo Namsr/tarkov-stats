@@ -154,6 +154,46 @@ test("normal profile loads use the latest stored capture without waiting for ups
   assert.deepEqual(fallback.ok && fallback.profile.seasonalAchievements, [{ id: "first_raid", unlockedAt: 1_783_495_000_000 }]);
 });
 
+test("normal profile loads repair a stored profile that has no progression baseline", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const linked = validateSeasonalProfile(await fixture(), {
+    enabled: true,
+    confirmedContract: "game_mode",
+    cycleId: "season-2026-01",
+    seasonStartsAt: loadSeasonalCycleConfig(env)!.startsAt,
+    seasonEndsAt: loadSeasonalCycleConfig(env)!.endsAt,
+  });
+  assert.equal(linked.ok, true);
+  if (!linked.ok) return;
+  await store.upsertProfile(linked.profile, 1_783_600_000_000);
+
+  let upstreamCalls = 0;
+  const repaired = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false },
+    {
+      ...cycleDependencies,
+      fetchPayload: async () => {
+        upstreamCalls += 1;
+        throw new Error("upstream must not be needed");
+      },
+      getStore: async () => store,
+      now: () => 1_783_600_000_100,
+    },
+  );
+
+  assert.equal(repaired.ok, true);
+  assert.equal(upstreamCalls, 0);
+  assert.equal(repaired.ok && repaired.capture.status, "baseline");
+  assert.equal((await store.snapshotHistory({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).length, 1);
+});
+
 test("forced refresh keeps a stored Seasonal snapshot when the upstream payload is temporarily invalid", async (t) => {
   let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
   try {
