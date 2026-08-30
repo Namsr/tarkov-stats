@@ -93,7 +93,8 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
 test("Seasonal capture invalidates the average cache only after an inserted profile", async () => {
   const source = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
 
-  assert.match(source, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, "max"\);\s*after\(\(\) => warmAverageCaches/s);
+  assert.match(source, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, "max"\);\s*\}/s);
+  assert.doesNotMatch(source, /warmAverageCaches|after\(/);
   assert.equal((source.match(/revalidateTag\(/g) ?? []).length, 1);
   assert.ok(
     source.indexOf("if (!result.ok)") < source.indexOf("if (result.capture.inserted === true)"),

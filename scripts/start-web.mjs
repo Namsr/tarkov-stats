@@ -16,10 +16,6 @@ const progressionMaterializer = spawn(process.execPath, [
   env: childEnvironment,
   stdio: "inherit",
 });
-const averageWarmer = spawn(process.execPath, ["scripts/warm-average-cache.mjs"], {
-  env: childEnvironment,
-  stdio: "inherit",
-});
 if (progressionMaterializer.pid) {
   try {
     setPriority(progressionMaterializer.pid, 19);
@@ -33,7 +29,6 @@ function stop(signal) {
   stopping = true;
   server.kill(signal);
   progressionMaterializer.kill(signal);
-  averageWarmer.kill(signal);
 }
 
 process.on("SIGTERM", () => stop("SIGTERM"));
@@ -42,7 +37,6 @@ process.on("SIGINT", () => stop("SIGINT"));
 server.once("exit", (code, signal) => {
   if (!stopping) {
     progressionMaterializer.kill("SIGTERM");
-    averageWarmer.kill("SIGTERM");
   }
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);

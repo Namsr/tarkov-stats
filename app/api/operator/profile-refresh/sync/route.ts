@@ -1,12 +1,10 @@
 import { revalidateTag } from "next/cache";
-import { after } from "next/server";
 import { isOperatorRequest, operatorNoStoreHeaders } from "@/lib/operator-auth";
 import { resolveTrackedProfilePayload, snapshotFromOperatorProfile } from "@/lib/operator-profile";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { PublicProfileVersionConflictError, pveProfileDecision } from "@/lib/tarkov-api";
 import { ARENA_PARSER_VERSION, persistArenaProfile } from "@/lib/arena/service";
 import { ARENA_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
-import { warmAverageCaches } from "@/lib/average-warmer";
 
 export const runtime = "nodejs";
 
@@ -35,7 +33,6 @@ export async function POST(request: Request) {
     if (resolved.payload.mode === "arena") {
       const arena = await persistArenaProfile(resolved.payload.profile);
       revalidateTag(ARENA_AVERAGE_CACHE_TAG, "max");
-      after(() => warmAverageCaches(new URL(request.url).origin));
       return Response.json({
         state: "updated",
         profileUpdatedAt: arena.profileUpdatedAt,

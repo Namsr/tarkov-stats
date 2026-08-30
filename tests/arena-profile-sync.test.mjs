@@ -373,6 +373,6 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.match(syncRoute, /persistArenaProfile/);
   assert.match(syncRoute, /schemaVersion: ARENA_PARSER_VERSION/);
   assert.match(syncRoute, /revalidateTag\(ARENA_AVERAGE_CACHE_TAG, "max"\)/);
-  assert.match(syncRoute, /after\(\(\) => warmAverageCaches/);
+  assert.doesNotMatch(syncRoute, /warmAverageCaches|after\(/);
   assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
 });
