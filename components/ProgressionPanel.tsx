@@ -2,6 +2,7 @@
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
+import CompactDetails from "@/components/CompactDetails";
 import StatCard from "@/components/StatCard";
 import { useFavorites } from "@/lib/favorites/context";
 import { favoriteKey } from "@/lib/favorites/identity";
@@ -416,23 +417,25 @@ export default function ProgressionPanel({
           )}
 
           {history && (
-            <div className="seasonal-chart__meta mt-4">
-              <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
-              <span>{t("progression.baselineSnapshot", { n: history.snapshotCount > 0 ? 1 : 0 })}</span>
-              <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
-              <span>{t("progression.intervals", { n: history.intervalCount })}</span>
-              <span>{t("progression.allIntervals", { n: history.allIntervalCount ?? history.intervalCount })}</span>
-              <span>{t("progression.changedIntervals", { n: history.changedIntervalCount ?? history.intervalCount })}</span>
-              <span>{t("progression.raidIntervals", { n: history.raidIntervalCount ?? 0 })}</span>
-              <span>{t("progression.tempoPoints", { n: history.tempoPointCount ?? 0 })}</span>
-              <span>{t("progression.formPoints", { n: history.formPointCount ?? 0 })}</span>
-              {history.firstObservedAt && (
-                <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-              )}
-              {history.lastObservedAt && (
-                <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-              )}
-            </div>
+            <CompactDetails summary={t("progression.dataDetails")} className="mt-4">
+              <div className="seasonal-chart__meta">
+                <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
+                <span>{t("progression.baselineSnapshot", { n: history.snapshotCount > 0 ? 1 : 0 })}</span>
+                <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
+                <span>{t("progression.intervals", { n: history.intervalCount })}</span>
+                <span>{t("progression.allIntervals", { n: history.allIntervalCount ?? history.intervalCount })}</span>
+                <span>{t("progression.changedIntervals", { n: history.changedIntervalCount ?? history.intervalCount })}</span>
+                <span>{t("progression.raidIntervals", { n: history.raidIntervalCount ?? 0 })}</span>
+                <span>{t("progression.tempoPoints", { n: history.tempoPointCount ?? 0 })}</span>
+                <span>{t("progression.formPoints", { n: history.formPointCount ?? 0 })}</span>
+                {history.firstObservedAt && (
+                  <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
+                )}
+                {history.lastObservedAt && (
+                  <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
+                )}
+              </div>
+            </CompactDetails>
           )}
 
           {history?.ready && <section className="mt-5">

@@ -231,16 +231,6 @@ export default function CheaterScore({
 
   return (
     <div className="data-panel min-h-[280px] p-5">
-      <div className="mb-1 flex justify-end">
-        <span
-          className="text-[var(--muted)] text-xs cursor-help"
-          title={t("cheater.disclaimer")}
-          aria-label={t("cheater.disclaimer")}
-        >
-          ⓘ
-        </span>
-      </div>
-
       <svg viewBox="0 0 320 170" className="w-full max-w-[240px] mx-auto block" role="img" aria-label={t("cheater.heading")}>
         {ARCS.map((arc) => (
           <path key={arc.d} d={arc.d} fill="none" stroke={arc.color} strokeWidth={20} strokeOpacity={0.85} strokeLinecap="round" />
@@ -262,8 +252,8 @@ export default function CheaterScore({
 
       <div className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
         <span>{t("cheater.context", { mode: modeLabel, cycle: cycleId })}</span>
-        <span>{t("cheater.sample", { n: normalized.sampleSize == null ? t("common.notAvailable") : normalized.sampleSize.toLocaleString(lang) })}</span>
-        {confidencePercent != null && <span>{t("seasonal.confidenceValue", { n: confidencePercent })}</span>}
+        {normalized.sampleSize != null && normalized.sampleSize > 0 && <span>{t("cheater.sample", { n: normalized.sampleSize.toLocaleString(lang) })}</span>}
+        {normalized.sampleSize != null && normalized.sampleSize > 0 && confidencePercent != null && <span>{t("seasonal.confidenceValue", { n: confidencePercent })}</span>}
         {freshness && <span>{t("cheater.freshness", { date: freshness })}</span>}
       </div>
 

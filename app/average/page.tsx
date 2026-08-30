@@ -401,9 +401,6 @@ function AveragePageContent({
         <div className="summary-strip__copy">
           <div className="section-kicker">{t("average.accountsScanned")}</div>
           <div className="summary-strip__number">{total.toLocaleString()}</div>
-          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
-            {t("average.sampleGrows")}
-          </p>
         </div>
       </section>
 

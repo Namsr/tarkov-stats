@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import AveragePageHeader from "@/components/AveragePageHeader";
+import CompactDetails from "@/components/CompactDetails";
 import RangeSlider from "@/components/RangeSlider";
 import SegmentedRadio from "@/components/SegmentedRadio";
 import {
@@ -507,14 +508,16 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
               </div>;
             })}
           </div>
-          <p className="mt-4 text-xs text-[var(--muted)]">
-            {t("arena.average.coverage", {
-              n: Math.round(Math.min(100, Math.max(0, Math.min(...ARENA_METRIC_KEYS.map((metric) => {
-                const coverage = currentResult.coverage[metric];
-                return coverage <= 1 ? coverage * 100 : coverage;
-              }))))),
-            })}
-          </p>
+          <CompactDetails summary={t("arena.average.coverageDetails")} className="mt-4">
+            <p>
+              {t("arena.average.coverage", {
+                n: Math.round(Math.min(100, Math.max(0, Math.min(...ARENA_METRIC_KEYS.map((metric) => {
+                  const coverage = currentResult.coverage[metric];
+                  return coverage <= 1 ? coverage * 100 : coverage;
+                }))))),
+              })}
+            </p>
+          </CompactDetails>
         </>
       ) : null}
 
@@ -630,7 +633,6 @@ export default function ArenaAverage({ seasonalCycleId }: { seasonalCycleId?: st
                 ? t("common.loading")
                 : t("common.notAvailable")}
           </div>
-          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">{t("average.sampleGrows")}</p>
         </div>
       </section>
 

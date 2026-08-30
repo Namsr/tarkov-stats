@@ -8,6 +8,7 @@ import ArenaOverallComparison from "@/components/ArenaOverallComparison";
 import ArenaRiskPanel from "@/components/ArenaRiskPanel";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
+import CompactDetails from "@/components/CompactDetails";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import StatCard from "@/components/StatCard";
@@ -512,10 +513,18 @@ export default function ArenaPlayer({ aid }: Props) {
         kicker={t("arena.profile.kicker", { aid: numericAid })}
         title={profile.nickname || t("arena.account.unknown")}
         meta={
-          <div className="profile-header__meta">
-            {updatedDate && <span>{t("arena.profile.updated", { date: updatedDate })}</span>}
-            {fetchedDate && <span>{t("arena.profile.fetched", { date: fetchedDate })}</span>}
-            <span>{t("arena.profile.parser", { n: profile.parserVersion })}</span>
+          <div>
+            {updatedDate && (
+              <div className="profile-header__meta">
+                <span>{t("arena.profile.updated", { date: updatedDate })}</span>
+              </div>
+            )}
+            <CompactDetails summary={t("arena.profile.dataDetails")} className="mt-2">
+              <div className="grid gap-1">
+                {fetchedDate && <span>{t("arena.profile.fetched", { date: fetchedDate })}</span>}
+                <span>{t("arena.profile.parser", { n: profile.parserVersion })}</span>
+              </div>
+            </CompactDetails>
           </div>
         }
         actions={<ArenaProfileActions aid={numericAid} nickname={profile.nickname} stale={stale} onCheck={refreshProfile} />}
@@ -603,7 +612,6 @@ export default function ArenaPlayer({ aid }: Props) {
               <p className="section-kicker">{t("arena.modePicker.kicker")}</p>
               <h2 className="section-heading mt-1">{t("arena.modePicker.heading")}</h2>
             </div>
-            <span className="text-xs text-[var(--muted)]">{t("arena.modePicker.selected", { mode: t("arena.mode." + selectedMode) })}</span>
           </div>
           <div className="arena-mode-picker" role="group" aria-label={t("arena.modePicker.label") }>
             {ARENA_MODE_KEYS.map((mode) => {

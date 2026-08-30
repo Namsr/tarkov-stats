@@ -110,6 +110,7 @@ export default function AveragePageHeader({
                 {t("average.medianNote")}
               </p>
               <p>{t("average.period.note")}</p>
+              <p>{t("average.histogramDetails")}</p>
             </div>
           )}
         </CompactDetails>
