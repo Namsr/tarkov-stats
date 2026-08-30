@@ -141,6 +141,10 @@ test("Arena histogram keeps full context buckets, defers range requests, and rem
   assert.match(average, /average\.rangeTo/);
   assert.match(average, /average-chart-toolbar/);
   assert.match(average, /chart-panel data-panel/);
+  assert.doesNotMatch(average, /overflow-x-auto/);
+  assert.doesNotMatch(average, /min-w-\[34rem\]|minWidth: `max\(34rem/);
+  assert.match(average, /ref=\{chartRef\} className="w-full min-w-0"/);
+  assert.match(average, /className="flex h-full min-w-0 flex-1 flex-col items-center justify-end"/);
   assert.match(average, /const visibleRange/);
   assert.match(average, /filter\.dimension === "matches" && low === domain\.min/);
   assert.match(average, /value=\{draftRange\[field\] \|\|/);

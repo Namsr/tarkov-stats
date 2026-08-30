@@ -40,7 +40,6 @@ type ArenaRangeDraft = Pick<ArenaFilterState, ArenaFilterField>;
 
 const FILTER_FIELDS: readonly ArenaFilterField[] = ["minHours", "maxHours", "minMatches", "maxMatches"];
 const DEFAULT_MIN_MATCHES = "10";
-const ARENA_BAR_MIN_PX = 30;
 const ARENA_BAR_GAP_PX = 6;
 
 function defaultFilter(): ArenaFilterState {
@@ -181,6 +180,11 @@ function formatBucketRange(bucket: ArenaAverageBucket, dimension: ArenaDimension
     : t("arena.average.bucketRange", { min, max: Math.round(bucket.max).toLocaleString(), unit });
 }
 
+function formatBucketLabel(bucket: ArenaAverageBucket): string {
+  const min = Math.round(bucket.min).toLocaleString();
+  return bucket.max === null ? `${min}+` : `${min}–${Math.round(bucket.max).toLocaleString()}`;
+}
+
 function metricLabel(metric: "players" | ArenaMetricKey, t: (key: string, vars?: Record<string, string | number>) => string): string {
   return metric === "players" ? t("arena.average.metric.players") : t("arena.metric." + metric);
 }
@@ -254,9 +258,6 @@ function ArenaHistogram({
   const values = result?.buckets.map((bucket) => metric === "players" ? bucket.sampleN : bucket.metrics[metric].value) ?? [];
   const maxValue = Math.max(1, ...values.filter((value): value is number => value !== null && Number.isFinite(value)));
   const unit = t(filter.dimension === "hours" ? "unit.h" : "arena.average.matchesUnit");
-  const minChartWidth = result
-    ? result.buckets.length * ARENA_BAR_MIN_PX + Math.max(0, result.buckets.length - 1) * ARENA_BAR_GAP_PX
-    : 0;
 
   const rangeValues = (low: number, high: number): Partial<ArenaRangeDraft> => {
     if (!domain) return {};
@@ -297,8 +298,8 @@ function ArenaHistogram({
         {t(filter.dimension === "hours" ? "average.dimensionHours" : "arena.average.dimension.matches")}
       </div>
 
-      <div className="overflow-x-auto">
-        <div ref={chartRef} className="min-w-[34rem]" style={minChartWidth ? { minWidth: `max(34rem, ${minChartWidth}px)` } : undefined}>
+      <div className="w-full min-w-0">
+        <div ref={chartRef} className="w-full min-w-0">
           {contextLoading && !result ? (
             <div className="h-60 rounded skeleton" />
           ) : !result || result.buckets.length === 0 ? (
@@ -314,7 +315,7 @@ function ArenaHistogram({
                     <button
                       type="button"
                       key={`${bucket.min}-${bucket.max ?? "open"}`}
-                      className="flex h-full min-w-[30px] flex-1 flex-col items-center justify-end"
+                      className="flex h-full min-w-0 flex-1 flex-col items-center justify-end"
                       onClick={() => selectBucket(bucket)}
                       disabled={!selection}
                       title={t("arena.average.bucketTitle", {
@@ -323,7 +324,7 @@ function ArenaHistogram({
                         n: bucket.sampleN.toLocaleString(),
                       })}
                     >
-                      <span className="mb-2 text-[10px] leading-none tabular-nums text-[var(--muted)]">
+                      <span className="mb-2 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[10px] leading-none tabular-nums text-[var(--muted)]">
                         {value == null ? t("common.notAvailable") : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric)}
                       </span>
                       <span className="relative w-full overflow-hidden rounded-t bg-[var(--accent)]/15" style={{ height: `${height}%`, minHeight: value === null ? 0 : 2 }}>
@@ -335,8 +336,8 @@ function ArenaHistogram({
               </div>
               <div className="mt-3 flex w-full gap-1.5">
                 {result.buckets.map((bucket) => (
-                  <span key={`${bucket.min}-${bucket.max ?? "open"}`} className="min-w-[30px] flex-1 text-center text-[9px] leading-tight text-[var(--muted)]">
-                    {formatBucketRange(bucket, filter.dimension, t)}
+                  <span key={`${bucket.min}-${bucket.max ?? "open"}`} className="min-w-0 flex-1 overflow-hidden text-center text-[9px] leading-tight text-[var(--muted)]">
+                    {formatBucketLabel(bucket)}
                   </span>
                 ))}
               </div>
