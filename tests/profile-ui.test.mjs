@@ -599,12 +599,10 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /clipPath=\{`url\(#\$\{clipId\}-metric-reveal\)`\}/);
   assert.match(chart, /const rawYForPoint =/);
   assert.match(chart, /Math\.min\(animatedYDomains\.metric\.min, resolvedMetricDomain\.min\)/);
-  assert.match(chart, /markerCollisionRingRadii\(\[/);
-  assert.match(chart, /playerMarkerRings\[markerKey\(layer, isSelectedSeries \? "selected" : "player", point\)\]/);
   assert.match(chart, /seriesPath\(seriesPoints, timelineAxis, xForPoint, rawYForPoint, PAD\.top\)/);
   assert.match(chart, /seriesPath\(\[from, to\], timelineAxis, xForPoint, rawYForPoint, PAD\.top\)/);
   assert.match(chart, /y: \(rawYForPoint\(from\) \+ rawYForPoint\(to\)\) \/ 2/);
-  assert.match(chart, /progression-timeline__point--ring/);
+  assert.doesNotMatch(chart, /markerCollisionRingRadii|playerMarkerRings|progression-timeline__point--ring/);
   assert.doesNotMatch(chart, /metricLineShouldBeAboveXp|visualYForPoint|metricAboveXp/);
   assert.doesNotMatch(chart, /splitLanes|laneHeight|metricLane|xpLane|lane-divider/);
   assert.match(chart, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
@@ -671,7 +669,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /timelineAxis === "days"/);
   assert.match(chart, /SELECTED_SERIES_STYLE = \{ dash: "7 4 1 4"/);
   assert.match(chart, /progression-timeline__legend-item--selected/);
-  assert.match(chart, /markerCollisionRingRadii/);
+  assert.match(chart, /r=\{active \? 7 : seriesKey === "player" \|\| isSelectedSeries \? 4 : 2\.5\}/);
   assert.match(chart, /tooltipPointText\(hoveredPoint\.point, hoveredPoint\.metric, hoveredPoint\.series\)/);
   assert.match(chart, /progression-timeline__axis-label--metric \$\{metricLayerHighlighted/);
   assert.match(chart, /progression-timeline__axis-guide-item--level \$\{xpLayerHighlighted/);
@@ -712,7 +710,7 @@ test("progression hover states reserve space and never switch to a plus cursor",
   assert.match(styles, /progression-timeline__level-grid[^}]*stroke-width: \.75[^}]*stroke-dasharray: none/);
   assert.match(styles, /progression-timeline__line--overall[^}]*stroke-width: 1\.5/);
   assert.match(styles, /progression-timeline__line--selected[^}]*stroke-dasharray: 7 4 1 4/);
-  assert.match(styles, /progression-timeline__point--selected[^}]*fill: transparent/);
+  assert.match(styles, /progression-timeline__point--selected[^}]*fill: var\(--timeline-metric-color\)/);
   assert.match(styles, /progression-timeline__legend-swatch--selected[^}]*repeating-linear-gradient/);
   assert.match(styles, /@media \(max-width: 420px\)[\s\S]*progression-timeline__compare-select[^}]*min-height: 44px/);
   assert.match(styles, /progression-timeline__point--overall[^}]*opacity: \.58/);
@@ -720,7 +718,7 @@ test("progression hover states reserve space and never switch to a plus cursor",
   assert.match(styles, /progression-timeline__point[^}]*pointer-events: all/);
   assert.match(styles, /progression-timeline__point--dim[^}]*filter: blur/);
   assert.match(chart, /strokeWidth=\{11\}/);
-  assert.match(chart, /r=\{markerRing \? .*seriesKey === "player" \|\| isSelectedSeries \? 5 : 3\.5\}/);
+  assert.match(chart, /r=\{active \? 7 : seriesKey === "player" \|\| isSelectedSeries \? 4 : 2\.5\}/);
   assert.match(chart, /prefers-reduced-motion/);
   assert.match(chart, /const activeInterval = hoveredInterval\?\.layer === layer/);
   assert.doesNotMatch(chart, /progression-timeline__interval-guide/);

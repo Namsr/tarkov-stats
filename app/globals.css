@@ -1169,7 +1169,7 @@ button.search-unit__result-mode:hover { background: color-mix(in srgb, var(--acc
 }
 .progression-timeline__point { --timeline-metric-color: currentColor; fill: var(--timeline-metric-color); pointer-events: all; transition: opacity 160ms ease, filter 160ms ease, r 160ms ease; }
 .progression-timeline__point--player { stroke: var(--card-bg); stroke-width: 1.25px; vector-effect: non-scaling-stroke; }
-.progression-timeline__point--selected { fill: transparent; stroke: var(--timeline-metric-color); stroke-width: 1.75px; vector-effect: non-scaling-stroke; }
+.progression-timeline__point--selected { fill: var(--timeline-metric-color); stroke: var(--card-bg); stroke-width: 1.25px; vector-effect: non-scaling-stroke; }
 .progression-timeline__point--overall { opacity: .58; }
 .progression-timeline__point--nearby { opacity: .72; }
 .progression-timeline__point--dim { opacity: .18; filter: blur(1px); }

@@ -9,7 +9,6 @@ import {
 } from "@/lib/seasonal/ui";
 import {
   compactProgressionPoints,
-  markerCollisionRingRadii,
   progressionLineSegments,
   progressionDayDomain,
   progressionDayTicks,
@@ -514,30 +513,6 @@ export default function ProgressionTimelineChart({
   };
   const yLeft = (value: number) => PAD.top + plotHeight - ((value - leftDomain.min) / Math.max(1, leftDomain.max - leftDomain.min)) * plotHeight;
   const yMetric = (value: number) => PAD.top + plotHeight - ((value - metricDomain.min) / Math.max(1e-9, metricDomain.max - metricDomain.min)) * plotHeight;
-  const markerKey = (layer: TimelineLayer, series: "player" | "selected", point: TimelinePoint) =>
-    `${layer}\0${series}\0${point.pointId}`;
-  const playerMarkerRings = markerCollisionRingRadii([
-    ...xpPoints.player.map((point) => ({
-      id: markerKey(leftLayer, "player", point),
-      x: xForPoint(point),
-      y: yLeft(leftValueForPoint(point)),
-    })),
-    ...selectedXpPoints.map((point) => ({
-      id: markerKey(leftLayer, "selected", point),
-      x: xForPoint(point),
-      y: yLeft(leftValueForPoint(point)),
-    })),
-    ...foregroundPoints.player.map((point) => ({
-      id: markerKey(selectedMetric, "player", point),
-      x: xForPoint(point),
-      y: yMetric(point.value),
-    })),
-    ...selectedForegroundPoints.map((point) => ({
-      id: markerKey(selectedMetric, "selected", point),
-      x: xForPoint(point),
-      y: yMetric(point.value),
-    })),
-  ], PLAYER_MARKER_CLEARANCE);
   const xTicks = timelineAxis === "raids"
     ? raidTicks(animatedAxisDomain.min, animatedAxisDomain.max)
     : progressionDayTicks(animatedAxisDomain.min, animatedAxisDomain.max);
@@ -796,10 +771,6 @@ export default function ProgressionTimelineChart({
         {seriesPoints.map((point) => {
           const pointX = xForPoint(point);
           const pointY = rawYForPoint(point);
-          const markerRingRadius = seriesKey === "player" || isSelectedSeries
-            ? playerMarkerRings[markerKey(layer, isSelectedSeries ? "selected" : "player", point)] ?? 0
-            : 0;
-          const markerRing = markerRingRadius > 0;
           const dimPoint = dimLayer || dimSeries;
           const pointLabel = tooltipPointAriaLabel(point, seriesKey, selected);
           const active = hoveredPoint?.point.pointId === point.pointId && hoveredPoint.series === seriesKey && highlightedLayer === layer;
@@ -808,14 +779,10 @@ export default function ProgressionTimelineChart({
               key={`${layer}-${seriesKey}-${point.pointId}`}
               cx={pointX}
               cy={pointY}
-              r={markerRing ? markerRingRadius + (active ? 1 : 0) : active ? 7 : seriesKey === "player" || isSelectedSeries ? 5 : 3.5}
-              fill={markerRing || isSelectedSeries ? "none" : seriesColor}
-              stroke={markerRing || isSelectedSeries ? seriesColor : undefined}
-              strokeWidth={markerRing || isSelectedSeries ? 1.75 : undefined}
-              style={markerRing || isSelectedSeries
-                ? { ...seriesColorStyle, fill: "none", stroke: seriesColor, strokeWidth: 1.75, pointerEvents: "stroke" }
-                : seriesColorStyle}
-              className={`progression-timeline__point progression-timeline__point--${layer} progression-timeline__point--${seriesKey} ${markerRing ? "progression-timeline__point--ring" : ""} ${dimPoint ? "progression-timeline__point--dim" : ""} ${active ? "progression-timeline__point--highlight" : ""}`}
+              r={active ? 7 : seriesKey === "player" || isSelectedSeries ? 4 : 2.5}
+              fill={seriesColor}
+              style={seriesColorStyle}
+              className={`progression-timeline__point progression-timeline__point--${layer} progression-timeline__point--${seriesKey} ${dimPoint ? "progression-timeline__point--dim" : ""} ${active ? "progression-timeline__point--highlight" : ""}`}
               tabIndex={0}
               aria-label={pointLabel}
               aria-describedby={active ? tooltipId : undefined}
