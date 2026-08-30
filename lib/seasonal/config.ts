@@ -38,6 +38,30 @@ function tarkovStaticUrl(value: string | undefined, expectedPath?: string): bool
   }
 }
 
+function seasonalProfileContract(
+  env: Environment,
+  configured: SeasonCycle["upstreamContract"],
+): SeasonCycle["upstreamContract"] {
+  const template = env.SEASONAL_PROFILE_URL_TEMPLATE;
+  if (!template) return configured;
+  try {
+    const url = new URL(template
+      .replaceAll("{mode}", seasonalUpstreamMode())
+      .replaceAll("{aid}", "1"));
+    return url.protocol === "https:" &&
+      url.hostname === "players.tarkov.dev" &&
+      url.pathname === "/pvp-season/1.json" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+      ? "direct_profile"
+      : configured;
+  } catch {
+    return configured;
+  }
+}
+
 /**
  * Reads the one active Seasonal cycle. Invalid or incomplete configuration is
  * deliberately fail-closed, so neither capture nor UI can turn on early.
@@ -65,7 +89,7 @@ export function loadSeasonalCycleConfig(env: Environment = process.env): SeasonC
     startsAt,
     endsAt,
     enabled: env.SEASONAL_ENABLED === "true",
-    upstreamContract: contract,
+    upstreamContract: seasonalProfileContract(env, contract),
     collectionSource,
   };
 }
