@@ -465,6 +465,19 @@ function emptyAverageRow(): AverageRow {
   return row;
 }
 
+// SQLite executes the trimmed/median portrait on the web process. Covering the
+// ORDER BY columns avoids a temporary sort for every metric and keeps a cold
+// average request from blocking unrelated HTTP responses.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureSqliteAverageIndexes(db: any): void {
+  for (const column of AVG_COLS) {
+    if (!/^[a-z_]+$/.test(column)) throw new Error(`invalid average index column: ${column}`);
+    if (column === "hours" || column === "pmc_raids") continue;
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_${column} ON mode_players(mode, ${column})`);
+  }
+}
+
 // Signals scored for "cheating risk" (suspicious when high). The baseline returns
 // the mean + std of each within a playtime range, for within-bracket z-scores.
 // PMC-only — keep in sync with SIGNALS in lib/cheater-score.ts.
@@ -1353,6 +1366,7 @@ async function getSqliteDb(): Promise<any | null> {
         sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
+      ensureSqliteAverageIndexes(sqliteDb);
       initializeArenaSchema(sqliteDb);
     }
     return sqliteDb;

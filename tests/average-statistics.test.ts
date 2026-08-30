@@ -44,6 +44,13 @@ const { NextRequest } = await import("next/server");
 const store = await getStore();
 assert.ok(store);
 const db = new DatabaseSync(databasePath);
+for (const name of [
+  "idx_players_average_kd_ratio",
+  "idx_mode_players_average_kd_ratio",
+  "idx_players_average_longest_win_streak",
+]) {
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name));
+}
 const insert = db.prepare(`INSERT INTO players
   (aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
    kills_per_raid, pmc_survival_rate, longest_win_streak, level, fetched_at)
