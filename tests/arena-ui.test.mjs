@@ -122,7 +122,7 @@ test("Arena profile reuses the PvP shell and shows one selected mode", () => {
   assert.match(profile, /scope="overall"/);
 });
 
-test("Arena histogram keeps full context, adapts bins to its width, and defers range requests", async () => {
+test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {
   const average = read("components/ArenaAverage.tsx");
   const slider = read("components/RangeSlider.tsx");
   assert.match(average, /function contextRequestFor/);
@@ -146,10 +146,12 @@ test("Arena histogram keeps full context, adapts bins to its width, and defers r
   assert.match(average, /average\.rangeTo/);
   assert.match(average, /average-chart-toolbar/);
   assert.match(average, /chart-panel data-panel/);
-  assert.doesNotMatch(average, /overflow-x-auto/);
+  assert.match(average, /className="overflow-x-auto"/);
   assert.doesNotMatch(average, /min-w-\[34rem\]|minWidth: `max\(34rem/);
-  assert.match(average, /ref=\{chartRef\} className="w-full min-w-0"/);
-  assert.match(average, /className="flex h-full min-w-0 flex-1 flex-col items-center justify-end"/);
+  assert.match(average, /ref=\{chartRef\} className="chart-panel data-panel mt-4"/);
+  assert.match(average, /className="flex h-full min-w-\[26px\] flex-1 flex-col items-center justify-end"/);
+  assert.match(average, /className="min-w-\[26px\] flex-1 text-center text-\[9px\]/);
+  assert.doesNotMatch(average, /CompactDetails|arena\.average\.coverageDetails|arena\.average\.coverage/);
   assert.match(average, /const visibleRange/);
   assert.match(average, /filter\.dimension === "matches" && low === domain\.min/);
   assert.match(average, /value=\{draftRange\[field\] \|\|/);

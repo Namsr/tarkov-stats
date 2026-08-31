@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import AveragePageHeader from "@/components/AveragePageHeader";
-import CompactDetails from "@/components/CompactDetails";
 import RangeSlider from "@/components/RangeSlider";
 import SegmentedRadio from "@/components/SegmentedRadio";
 import {
@@ -344,7 +343,7 @@ function ArenaHistogram({
   };
 
   return (
-    <section className="chart-panel data-panel mt-4" aria-labelledby={`arena-histogram-${mode}-${filter.dimension}-${metric}`}>
+    <section ref={chartRef} className="chart-panel data-panel mt-4" aria-labelledby={`arena-histogram-${mode}-${filter.dimension}-${metric}`}>
       <div className="mb-4 text-xs text-[var(--muted)]">
         <span id={`arena-histogram-${mode}-${filter.dimension}-${metric}`} className="font-semibold text-[var(--accent)]">
           {metricLabel(metric, t)}
@@ -352,92 +351,87 @@ function ArenaHistogram({
         {t(filter.dimension === "hours" ? "average.dimensionHours" : "arena.average.dimension.matches")}
       </div>
 
-      <div className="w-full min-w-0">
-        <div ref={chartRef} className="w-full min-w-0">
-          {contextLoading && !result ? (
-            <div className="h-60 rounded skeleton" />
-          ) : !result || buckets.length === 0 ? (
-            <p className="h-60 pt-2 text-sm text-[var(--muted)]">{t("arena.average.empty")}</p>
-          ) : (
-            <>
-              <div className="flex h-60 w-full items-end gap-1.5 border-b border-[var(--card-border)]">
-                {buckets.map((bucket) => {
-                  const value = bucket.value;
-                  const height = value !== null && Number.isFinite(value) ? Math.max(2, (value / maxValue) * 88) : 0;
-                  const slice = selection && domain ? arenaHistogramSlice(bucket, selection, domain, discrete) : { left: 0, width: 0 };
-                  const formattedValue = value == null
-                    ? t("common.notAvailable")
-                    : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric);
-                  const bucketTitle = t("arena.average.bucketTitle", {
-                    range: formatBucketRange(bucket, filter.dimension, t),
-                    value: formattedValue,
-                    n: bucket.metricN.toLocaleString(),
-                  });
-                  return (
-                    <button
-                      type="button"
-                      key={`${bucket.min}-${bucket.max ?? "open"}`}
-                      className="flex h-full min-w-0 flex-1 flex-col items-center justify-end"
-                      onClick={() => selectBucket(bucket)}
-                      disabled={!selection}
-                      title={bucketTitle}
-                      aria-label={bucketTitle}
-                    >
-                      <span className="mb-2 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[10px] leading-none tabular-nums text-[var(--muted)]">
-                        {formattedValue}
-                      </span>
-                      <span className="relative w-full overflow-hidden rounded-t bg-[var(--accent)]/15" style={{ height: `${height}%`, minHeight: value === null ? 0 : 2 }}>
-                        <span className="absolute inset-y-0 bg-[var(--accent)]/70 transition-[left,width] duration-150 hover:bg-[var(--accent)]" style={{ left: `${slice.left}%`, width: `${slice.width}%` }} />
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="mt-3 flex w-full gap-1.5">
-                {buckets.map((bucket) => (
-                  <span key={`${bucket.min}-${bucket.max ?? "open"}`} className="min-w-0 flex-1 overflow-hidden text-center text-[9px] leading-tight text-[var(--muted)]">
-                    {formatBucketLabel(bucket)}
+      {contextLoading && !result ? (
+        <div className="h-60 rounded skeleton" />
+      ) : !result || buckets.length === 0 ? (
+        <p className="h-60 pt-2 text-sm text-[var(--muted)]">{t("arena.average.empty")}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <div className="flex h-60 items-end gap-1.5 border-b border-[var(--card-border)]">
+            {buckets.map((bucket) => {
+              const value = bucket.value;
+              const height = value !== null && Number.isFinite(value) ? Math.max(2, (value / maxValue) * 88) : 0;
+              const slice = selection && domain ? arenaHistogramSlice(bucket, selection, domain, discrete) : { left: 0, width: 0 };
+              const formattedValue = value == null
+                ? t("common.notAvailable")
+                : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric);
+              const bucketTitle = t("arena.average.bucketTitle", {
+                range: formatBucketRange(bucket, filter.dimension, t),
+                value: formattedValue,
+                n: bucket.metricN.toLocaleString(),
+              });
+              return (
+                <button
+                  type="button"
+                  key={`${bucket.min}-${bucket.max ?? "open"}`}
+                  className="flex h-full min-w-[26px] flex-1 flex-col items-center justify-end"
+                  onClick={() => selectBucket(bucket)}
+                  disabled={!selection}
+                  title={bucketTitle}
+                  aria-label={bucketTitle}
+                >
+                  <span className="mb-2 text-[10px] leading-none tabular-nums text-[var(--muted)]">
+                    {formattedValue}
                   </span>
-                ))}
-              </div>
-              <p className="mt-3 text-center text-[10px] text-[var(--muted)]">{unit}</p>
-            </>
-          )}
-
-          <div className="mt-6 border-t border-[var(--card-border)] pt-5">
-            <RangeSlider
-              min={domain?.min ?? 0}
-              max={domain?.max ?? 1}
-              low={selection?.low ?? 0}
-              high={selection?.high ?? 1}
-              lowLabel={t("average.rangeMinAria")}
-              highLabel={t("average.rangeMaxAria")}
-              disabled={!selection}
-              minVisualGap={chartWidth > 0 ? 20 / chartWidth : 0}
-              toPosition={(value, edge) => domain && result
-                ? arenaBucketPosition(buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
-                : 0}
-              fromPosition={(position, edge) => domain && result
-                ? arenaBucketValueAtPosition(buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
-                : 0}
-              onChange={setRange}
-              onChangeComplete={commitRange}
-            />
+                  <span className="relative w-full overflow-hidden rounded-t bg-[var(--accent)]/15" style={{ height: `${height}%`, minHeight: value === null ? 0 : 2 }}>
+                    <span className="absolute inset-y-0 bg-[var(--accent)]/70 transition-[left,width] duration-150 hover:bg-[var(--accent)]" style={{ left: `${slice.left}%`, width: `${slice.width}%` }} />
+                  </span>
+                </button>
+              );
+            })}
           </div>
+          <div className="mt-3 flex gap-1.5">
+            {buckets.map((bucket) => (
+              <span key={`${bucket.min}-${bucket.max ?? "open"}`} className="min-w-[26px] flex-1 text-center text-[9px] leading-tight text-[var(--muted)]">
+                {formatBucketLabel(bucket)}
+              </span>
+            ))}
+          </div>
+          <p className="mt-3 text-center text-[10px] text-[var(--muted)]">{unit}</p>
         </div>
-      </div>
-      <p className="mt-3 text-center text-sm text-[var(--muted)]" aria-live="polite">
-        {visibleRange.low !== null && visibleRange.high !== null
-          ? t("average.selectedRange", {
-              min: visibleRange.low.toLocaleString(), max: visibleRange.high.toLocaleString(), unit,
-            })
-          : contextError
-            ? t("arena.average.error")
-            : contextLoading
-              ? t("common.loading")
-              : t("arena.average.empty")}
-      </p>
-      <div className="mt-3 grid grid-cols-2 gap-3">
+      )}
+
+      <div className="mt-6 border-t border-[var(--card-border)] pt-5">
+        <p className="mb-3 text-center text-sm text-[var(--muted)]" aria-live="polite">
+          {visibleRange.low !== null && visibleRange.high !== null
+            ? t("average.selectedRange", {
+                min: visibleRange.low.toLocaleString(), max: visibleRange.high.toLocaleString(), unit,
+              })
+            : contextError
+              ? t("arena.average.error")
+              : contextLoading
+                ? t("common.loading")
+                : t("arena.average.empty")}
+        </p>
+        <RangeSlider
+          min={domain?.min ?? 0}
+          max={domain?.max ?? 1}
+          low={selection?.low ?? 0}
+          high={selection?.high ?? 1}
+          lowLabel={t("average.rangeMinAria")}
+          highLabel={t("average.rangeMaxAria")}
+          disabled={!selection}
+          minVisualGap={chartWidth > 0 ? 20 / chartWidth : 0}
+          toPosition={(value, edge) => domain && result
+            ? arenaBucketPosition(buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
+            : 0}
+          fromPosition={(position, edge) => domain && result
+            ? arenaBucketValueAtPosition(buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
+            : 0}
+          onChange={setRange}
+          onChangeComplete={commitRange}
+        />
+        <div className="mt-3 grid grid-cols-2 gap-3">
           {([
             [minField, "average.rangeFrom"],
             [maxField, "average.rangeTo"],
@@ -460,7 +454,7 @@ function ArenaHistogram({
             </label>
           ))}
         </div>
-
+      </div>
     </section>
   );
 }
@@ -556,27 +550,15 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
           {ARENA_METRIC_KEYS.map((metric) => <div key={metric} className="h-24 skeleton rounded-xl" />)}
         </div>
       ) : currentResult ? (
-        <>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            {ARENA_METRIC_KEYS.map((metric) => {
-              const summary = currentResult.metrics[metric];
-              return <div key={metric} className="metric-card">
-                <span className="metric-card__label">{t("arena.metric." + metric)}</span>
-                <p className="mt-2 metric-card__value">{summary.value == null ? t("common.notAvailable") : formatArenaMetric(summary.value, metric)}</p>
-              </div>;
-            })}
-          </div>
-          <CompactDetails summary={t("arena.average.coverageDetails")} className="mt-4">
-            <p>
-              {t("arena.average.coverage", {
-                n: Math.round(Math.min(100, Math.max(0, Math.min(...ARENA_METRIC_KEYS.map((metric) => {
-                  const coverage = currentResult.coverage[metric];
-                  return coverage <= 1 ? coverage * 100 : coverage;
-                }))))),
-              })}
-            </p>
-          </CompactDetails>
-        </>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {ARENA_METRIC_KEYS.map((metric) => {
+            const summary = currentResult.metrics[metric];
+            return <div key={metric} className="metric-card">
+              <span className="metric-card__label">{t("arena.metric." + metric)}</span>
+              <p className="mt-2 metric-card__value">{summary.value == null ? t("common.notAvailable") : formatArenaMetric(summary.value, metric)}</p>
+            </div>;
+          })}
+        </div>
       ) : null}
 
       <div className="average-chart-toolbar">
