@@ -122,7 +122,7 @@ test("Arena profile reuses the PvP shell and shows one selected mode", () => {
   assert.match(profile, /scope="overall"/);
 });
 
-test("Arena histogram keeps full context buckets, defers range requests, and removes extra details", async () => {
+test("Arena histogram keeps full context, adapts bins to its width, and defers range requests", async () => {
   const average = read("components/ArenaAverage.tsx");
   const slider = read("components/RangeSlider.tsx");
   assert.match(average, /function contextRequestFor/);
@@ -132,8 +132,13 @@ test("Arena histogram keeps full context buckets, defers range requests, and rem
   assert.match(average, /contextRequestFor\(mode, statistic, filter\.dimension\)/);
   assert.match(average, /result=\{chartContext\}/);
   assert.doesNotMatch(average, /result=\{currentResult\}/);
-  assert.match(average, /arenaBucketPosition\(result\.buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX\)/);
-  assert.match(average, /arenaBucketValueAtPosition\(result\.buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX\)/);
+  assert.match(average, /buildNumericHistogram/);
+  assert.match(average, /function buildArenaHistogramBuckets/);
+  assert.match(average, /const fitBins = chartWidth > 0/);
+  assert.match(average, /ARENA_BAR_MIN_PX \+ ARENA_BAR_GAP_PX/);
+  assert.match(average, /const buckets = result \? buildArenaHistogramBuckets\(result\.buckets, metric, fitBins\) : \[\]/);
+  assert.match(average, /arenaBucketPosition\(buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX\)/);
+  assert.match(average, /arenaBucketValueAtPosition\(buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX\)/);
   assert.match(average, /ref=\{chartRef\}/);
   assert.match(average, /minVisualGap=\{chartWidth > 0 \? 20 \/ chartWidth : 0\}/);
   assert.match(average, /<RangeSlider/);

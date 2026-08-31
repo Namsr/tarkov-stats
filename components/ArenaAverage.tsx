@@ -22,6 +22,7 @@ import {
   arenaRangeSelection,
   isArenaRangeBounds,
 } from "@/lib/arena/average-range";
+import { buildNumericHistogram } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import type { ArenaAverageBucket, ArenaAverageResult, ArenaDimension, ArenaStatistic } from "@/types/arena";
 import { loadAverageJson, scheduleAveragePrefetch } from "@/lib/client-average-request";
@@ -41,7 +42,55 @@ type ArenaRangeDraft = Pick<ArenaFilterState, ArenaFilterField>;
 
 const FILTER_FIELDS: readonly ArenaFilterField[] = ["minHours", "maxHours", "minMatches", "maxMatches"];
 const DEFAULT_MIN_MATCHES = "10";
+const ARENA_BAR_MIN_PX = 26;
 const ARENA_BAR_GAP_PX = 6;
+
+interface ArenaHistogramBucket {
+  min: number;
+  max: number | null;
+  sampleN: number;
+  metricN: number;
+  value: number | null;
+}
+
+function buildArenaHistogramBuckets(
+  source: ArenaAverageBucket[],
+  metric: "players" | ArenaMetricKey,
+  maxBins?: number,
+): ArenaHistogramBucket[] {
+  const bins = buildNumericHistogram(
+    source.map((bucket) => ({
+      lo: bucket.min,
+      hi: bucket.max,
+      n: bucket.sampleN,
+      sum: bucket.sampleN,
+    })),
+    maxBins,
+  );
+
+  return bins.map((bin) => {
+    if (metric === "players") {
+      return { min: bin.lo, max: bin.hi, sampleN: bin.n, metricN: bin.n, value: bin.n };
+    }
+
+    let metricN = 0;
+    let weightedValue = 0;
+    for (const bucket of source) {
+      if (bucket.min < bin.lo || (bin.hi !== null && bucket.min >= bin.hi)) continue;
+      const summary = bucket.metrics[metric];
+      if (summary.value === null || !Number.isFinite(summary.value) || summary.count <= 0) continue;
+      metricN += summary.count;
+      weightedValue += summary.value * summary.count;
+    }
+    return {
+      min: bin.lo,
+      max: bin.hi,
+      sampleN: bin.n,
+      metricN,
+      value: metricN > 0 ? weightedValue / metricN : null,
+    };
+  });
+}
 
 function defaultFilter(): ArenaFilterState {
   return {
@@ -173,7 +222,7 @@ function matchesContext(result: ArenaAverageResult, mode: ArenaModeKey, statisti
     identity.minMatches === null && identity.maxMatches === null;
 }
 
-function formatBucketRange(bucket: ArenaAverageBucket, dimension: ArenaDimension, t: (key: string, vars?: Record<string, string | number>) => string): string {
+function formatBucketRange(bucket: Pick<ArenaAverageBucket, "min" | "max">, dimension: ArenaDimension, t: (key: string, vars?: Record<string, string | number>) => string): string {
   const unit = t(dimension === "hours" ? "unit.h" : "arena.average.matchesUnit");
   const min = Math.round(bucket.min).toLocaleString();
   return bucket.max === null
@@ -181,7 +230,7 @@ function formatBucketRange(bucket: ArenaAverageBucket, dimension: ArenaDimension
     : t("arena.average.bucketRange", { min, max: Math.round(bucket.max).toLocaleString(), unit });
 }
 
-function formatBucketLabel(bucket: ArenaAverageBucket): string {
+function formatBucketLabel(bucket: Pick<ArenaAverageBucket, "min" | "max">): string {
   const min = Math.round(bucket.min).toLocaleString();
   return bucket.max === null ? `${min}+` : `${min}–${Math.round(bucket.max).toLocaleString()}`;
 }
@@ -256,7 +305,11 @@ function ArenaHistogram({
   };
   const metric = filter.metric;
   const discrete = filter.dimension === "matches";
-  const values = result?.buckets.map((bucket) => metric === "players" ? bucket.sampleN : bucket.metrics[metric].value) ?? [];
+  const fitBins = chartWidth > 0
+    ? Math.max(1, Math.floor((chartWidth + ARENA_BAR_GAP_PX) / (ARENA_BAR_MIN_PX + ARENA_BAR_GAP_PX)))
+    : undefined;
+  const buckets = result ? buildArenaHistogramBuckets(result.buckets, metric, fitBins) : [];
+  const values = buckets.map((bucket) => bucket.value);
   const maxValue = Math.max(1, ...values.filter((value): value is number => value !== null && Number.isFinite(value)));
   const unit = t(filter.dimension === "hours" ? "unit.h" : "arena.average.matchesUnit");
 
@@ -280,7 +333,7 @@ function ArenaHistogram({
     onFilterChange({ ...filter, [minField]: next[minField], [maxField]: next[maxField] });
   };
 
-  const selectBucket = (bucket: ArenaAverageBucket) => {
+  const selectBucket = (bucket: ArenaHistogramBucket) => {
     if (!domain) return;
     const low = Math.max(domain.min, bucket.min);
     const high = bucket.max === null
@@ -303,15 +356,23 @@ function ArenaHistogram({
         <div ref={chartRef} className="w-full min-w-0">
           {contextLoading && !result ? (
             <div className="h-60 rounded skeleton" />
-          ) : !result || result.buckets.length === 0 ? (
+          ) : !result || buckets.length === 0 ? (
             <p className="h-60 pt-2 text-sm text-[var(--muted)]">{t("arena.average.empty")}</p>
           ) : (
             <>
               <div className="flex h-60 w-full items-end gap-1.5 border-b border-[var(--card-border)]">
-                {result.buckets.map((bucket) => {
-                  const value = metric === "players" ? bucket.sampleN : bucket.metrics[metric].value;
+                {buckets.map((bucket) => {
+                  const value = bucket.value;
                   const height = value !== null && Number.isFinite(value) ? Math.max(2, (value / maxValue) * 88) : 0;
                   const slice = selection && domain ? arenaHistogramSlice(bucket, selection, domain, discrete) : { left: 0, width: 0 };
+                  const formattedValue = value == null
+                    ? t("common.notAvailable")
+                    : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric);
+                  const bucketTitle = t("arena.average.bucketTitle", {
+                    range: formatBucketRange(bucket, filter.dimension, t),
+                    value: formattedValue,
+                    n: bucket.metricN.toLocaleString(),
+                  });
                   return (
                     <button
                       type="button"
@@ -319,14 +380,11 @@ function ArenaHistogram({
                       className="flex h-full min-w-0 flex-1 flex-col items-center justify-end"
                       onClick={() => selectBucket(bucket)}
                       disabled={!selection}
-                      title={t("arena.average.bucketTitle", {
-                        range: formatBucketRange(bucket, filter.dimension, t),
-                        value: value == null ? t("common.notAvailable") : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric),
-                        n: bucket.sampleN.toLocaleString(),
-                      })}
+                      title={bucketTitle}
+                      aria-label={bucketTitle}
                     >
                       <span className="mb-2 max-w-full overflow-hidden text-ellipsis whitespace-nowrap text-[10px] leading-none tabular-nums text-[var(--muted)]">
-                        {value == null ? t("common.notAvailable") : metric === "players" ? value.toLocaleString() : formatArenaMetric(value, metric)}
+                        {formattedValue}
                       </span>
                       <span className="relative w-full overflow-hidden rounded-t bg-[var(--accent)]/15" style={{ height: `${height}%`, minHeight: value === null ? 0 : 2 }}>
                         <span className="absolute inset-y-0 bg-[var(--accent)]/70 transition-[left,width] duration-150 hover:bg-[var(--accent)]" style={{ left: `${slice.left}%`, width: `${slice.width}%` }} />
@@ -336,7 +394,7 @@ function ArenaHistogram({
                 })}
               </div>
               <div className="mt-3 flex w-full gap-1.5">
-                {result.buckets.map((bucket) => (
+                {buckets.map((bucket) => (
                   <span key={`${bucket.min}-${bucket.max ?? "open"}`} className="min-w-0 flex-1 overflow-hidden text-center text-[9px] leading-tight text-[var(--muted)]">
                     {formatBucketLabel(bucket)}
                   </span>
@@ -357,10 +415,10 @@ function ArenaHistogram({
               disabled={!selection}
               minVisualGap={chartWidth > 0 ? 20 / chartWidth : 0}
               toPosition={(value, edge) => domain && result
-                ? arenaBucketPosition(result.buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
+                ? arenaBucketPosition(buckets, domain, value, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
                 : 0}
               fromPosition={(position, edge) => domain && result
-                ? arenaBucketValueAtPosition(result.buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
+                ? arenaBucketValueAtPosition(buckets, domain, position, edge, discrete, chartWidth, ARENA_BAR_GAP_PX)
                 : 0}
               onChange={setRange}
               onChangeComplete={commitRange}
