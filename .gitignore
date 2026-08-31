@@ -42,6 +42,7 @@ yarn-error.log*
 /.codex-local/
 /.cursor/
 /.windsurf/
+/skills-lock.json
 AGENTS.md
 CLAUDE.md
 GEMINI.md

@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AUDIT_LEASE_MS,
-  compareAuditRecords,
+  compareAuditCounts,
   createDataAuditStore,
+  runDataAudit,
 } from "../lib/admin/data-audit.ts";
 
-test("manual admin data audit is guarded, explicit, JSON-only, and durable", async () => {
+test("manual admin data audit is guarded, explicit, durable, and does not redownload feeds", async () => {
   const [route, audit, dashboard, dictionary] = await Promise.all([
     readFile("app/api/admin/data-audit/route.ts", "utf8"),
     readFile("lib/admin/data-audit.ts", "utf8"),
@@ -17,160 +20,156 @@ test("manual admin data audit is guarded, explicit, JSON-only, and durable", asy
   ]);
   assert.match(route, /requireAdmin/);
   assert.match(route, /rejectInvalidAdminMutation/);
-  assert.match(audit, /fetchTarkovJson/);
-  assert.doesNotMatch(audit, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
+  assert.doesNotMatch(audit, /fetchTarkovJson|players\.tarkov\.dev|\.json\(\)/);
+  assert.match(audit, /source_rows/);
+  assert.match(audit, /row_count/);
+  assert.match(audit, /last_summary/);
+  assert.match(audit, /sourceEntries/);
+  assert.match(audit, /SELECT COUNT\(\*\) AS count/);
   assert.match(audit, /admin_data_audit_state/);
   assert.match(audit, /BEGIN IMMEDIATE/);
   assert.match(audit, /status === "running"/);
-  assert.doesNotMatch(audit, /(?:regular|seasonal)_profile_sync_meta|last_poll_at/);
-  assert.match(audit, /fetched_at/);
-  assert.match(audit, /synced_at/);
-  for (const mode of ["profile", "pve", "arena", "pvp-season"]) {
-    assert.match(audit, new RegExp(`players\\.tarkov\\.dev\\/${mode}\\/(?:index|updated)\\.json`));
-  }
   assert.match(dashboard, /\/api\/admin\/data-audit/);
   assert.match(dashboard, /method: "POST"/);
   assert.match(dashboard, /"admin\.audit\.button"/);
+  assert.match(dashboard, /differenceCount/);
   assert.match(dictionary, /"admin\.audit\.button": "Сверить данные"/);
   assert.match(dictionary, /"admin\.audit\.button": "Compare data"/);
-  assert.match(dictionary, /"admin\.audit\.localLegend"/);
+  assert.match(dictionary, /Файлы источника повторно не скачиваются/);
+  assert.match(dictionary, /The upstream files are not downloaded again/);
 });
 
-test("audit source keeps unavailable history distinct from zero", async () => {
-  const source = await readFile("lib/admin/data-audit.ts", "utf8");
-  assert.match(source, /upstreamRecordCount: null/);
-  assert.match(source, /localMatchingCount: null/);
-  assert.match(source, /lastReceivedAt/);
-  assert.match(source, /lastLocalApplyAt/);
-  assert.match(source, /latestUpstreamUpdatedAt/);
-  assert.match(source, /status: "unavailable"/);
-});
-
-test("audit comparison distinguishes missing, stale, current, and unavailable records", () => {
-  const index = compareAuditRecords(
-    "regular",
-    "index",
-    new Map([[1, "Alpha"], [2, "Bravo"], [3, "Charlie"], [4, "Delta"]]),
-    {
-      available: true,
-      rows: [
-        { aid: 1, nickname: " alpha " },
-        { aid: 2, nickname: "Old Bravo" },
-        { aid: 5, nickname: "Extra" },
-      ],
-      lastLocalApplyAt: 80,
-    },
-    100,
-    110,
-  );
-  assert.equal(index.status, "ok");
+test("audit comparison reports equal, missing, extra, empty, and unavailable counts", () => {
+  const equal = compareAuditCounts("regular", "index", 100, 100, 1_000, {
+    lastReceivedAt: 900,
+    lastLocalApplyAt: 950,
+  });
   assert.deepEqual(
     {
-      upstream: index.upstreamRecordCount,
-      matching: index.localMatchingCount,
-      current: index.localCurrentCount,
-      missing: index.missingCount,
-      stale: index.staleCount,
-      coverage: index.coveragePercent,
+      status: equal.status,
+      source: equal.upstreamRecordCount,
+      local: equal.localRecordCount,
+      difference: equal.differenceCount,
+      coverage: equal.coveragePercent,
+      received: equal.lastReceivedAt,
+      applied: equal.lastLocalApplyAt,
     },
-    { upstream: 4, matching: 2, current: 1, missing: 2, stale: 1, coverage: 25 },
-  );
-  assert.equal(index.lastCheckedAt, 100);
-  assert.equal(index.lastReceivedAt, 110);
-  assert.equal(index.lastLocalApplyAt, 80);
-
-  const updated = compareAuditRecords(
-    "pve",
-    "updated",
-    new Map([
-      [1, 1_700_000_000_000],
-      [2, 1_700_000_001_000],
-      [3, 1_700_002_000_000],
-      [4, 1_700_003_000_000],
-    ]),
-    {
-      available: true,
-      rows: [
-        { aid: 1, updatedAt: 1_700_000_000_000 },
-        { aid: 2, updatedAt: 1_700_000_000_999 },
-        { aid: 4, updatedAt: 1_700_003_000_001 },
-        { aid: 5, updatedAt: 1_700_004_000_000 },
-      ],
-      lastLocalApplyAt: 90,
-    },
-    200,
-    210,
-  );
-  assert.deepEqual(
-    {
-      matching: updated.localMatchingCount,
-      current: updated.localCurrentCount,
-      missing: updated.missingCount,
-      stale: updated.staleCount,
-      coverage: updated.coveragePercent,
-      latest: updated.latestUpstreamUpdatedAt,
-    },
-    {
-      matching: 3,
-      current: 2,
-      missing: 1,
-      stale: 1,
-      coverage: 50,
-      latest: 1_700_003_000_000,
-    },
+    { status: "ok", source: 100, local: 100, difference: 0, coverage: 100, received: 900, applied: 950 },
   );
 
-  const unavailable = compareAuditRecords(
-    "arena",
-    "updated",
-    new Map([[42, 1_700_000_000_000]]),
-    { available: false, rows: [], lastLocalApplyAt: null, error: "missing_db" },
-    300,
-    310,
-  );
-  assert.equal(unavailable.status, "unavailable");
-  assert.equal(unavailable.upstreamRecordCount, 1);
-  assert.equal(unavailable.localMatchingCount, null);
-  assert.equal(unavailable.localCurrentCount, null);
-  assert.equal(unavailable.missingCount, null);
-  assert.equal(unavailable.staleCount, null);
-  assert.equal(unavailable.coveragePercent, null);
-  assert.equal(unavailable.error, "missing_db");
+  const missing = compareAuditCounts("pve", "updated", 100, 75, 2_000);
+  assert.equal(missing.differenceCount, -25);
+  assert.equal(missing.coveragePercent, 75);
 
-  const empty = compareAuditRecords(
-    "arena",
-    "updated",
-    new Map(),
-    { available: true, rows: [], lastLocalApplyAt: null },
-    400,
-    410,
-  );
-  assert.equal(empty.status, "ok");
-  assert.equal(empty.upstreamRecordCount, 0);
-  assert.equal(empty.localMatchingCount, 0);
-  assert.equal(empty.localCurrentCount, 0);
-  assert.equal(empty.missingCount, 0);
-  assert.equal(empty.staleCount, 0);
+  const extra = compareAuditCounts("arena", "index", 80, 100, 3_000);
+  assert.equal(extra.differenceCount, 20);
+  assert.equal(extra.coveragePercent, 125);
+
+  const empty = compareAuditCounts("pvp-season", "updated", 0, 0, 4_000);
+  assert.equal(empty.differenceCount, 0);
   assert.equal(empty.coveragePercent, 100);
+
+  const unavailable = compareAuditCounts("regular", "updated", null, 10, 5_000);
+  assert.equal(unavailable.status, "unavailable");
+  assert.equal(unavailable.upstreamRecordCount, null);
+  assert.equal(unavailable.localRecordCount, 10);
+  assert.equal(unavailable.differenceCount, null);
+  assert.equal(unavailable.coveragePercent, null);
+  assert.equal(unavailable.error, "sync_metadata_unavailable");
 });
 
-test("audit latest updated timestamp handles large datasets without argument spread", () => {
-  const upstream = new Map();
-  for (let aid = 1; aid <= 150_000; aid += 1) {
-    upstream.set(aid, 1_700_000_000_000 + aid);
+test("audit reads all eight counts from synchronization metadata without upstream requests", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "admin-data-audit-"));
+  const playersPath = join(directory, "players.db");
+  const progressionPath = join(directory, "progression.db");
+  const previousPlayersPath = process.env.SQLITE_PATH;
+  const previousProgressionPath = process.env.PROGRESSION_SQLITE_PATH;
+  const players = new DatabaseSync(playersPath);
+  const progression = new DatabaseSync(progressionPath);
+  try {
+    players.exec(`
+      CREATE TABLE player_index (aid INTEGER PRIMARY KEY, nickname TEXT);
+      CREATE TABLE player_index_meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE pve_player_index (mode TEXT, aid INTEGER PRIMARY KEY);
+      CREATE TABLE pve_player_index_meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE arena_player_index (mode TEXT, aid INTEGER PRIMARY KEY);
+      CREATE TABLE arena_player_index_meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE players (aid INTEGER PRIMARY KEY, fetched_at INTEGER);
+      CREATE TABLE mode_players (mode TEXT, aid INTEGER, fetched_at INTEGER, PRIMARY KEY (mode, aid));
+      CREATE TABLE regular_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE pve_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE arena_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO player_index VALUES (1, 'Alpha'), (2, 'Bravo');
+      INSERT INTO pve_player_index VALUES ('pve', 1);
+      INSERT INTO arena_player_index VALUES ('arena', 1), ('arena', 2), ('arena', 3);
+      INSERT INTO players VALUES (1, 101), (2, 102);
+      INSERT INTO mode_players VALUES ('pve', 1, 201), ('arena', 1, 301), ('arena', 2, 302);
+    `);
+    for (const [table, count] of [
+      ["player_index_meta", 2],
+      ["pve_player_index_meta", 2],
+      ["arena_player_index_meta", 2],
+    ]) {
+      players.prepare(`INSERT INTO ${table} (key, value) VALUES ('source_rows', ?), ('synced_at', '1000'), ('last_poll_at', '1100')`)
+        .run(String(count));
+    }
+    for (const [table, count] of [
+      ["regular_profile_sync_meta", 2],
+      ["pve_profile_sync_meta", 3],
+      ["arena_profile_sync_meta", 2],
+    ]) {
+      players.prepare(`INSERT INTO ${table} (key, value) VALUES ('last_summary', ?), ('last_poll_at', '1200'), ('last_feed_max_updated_at', '1300')`)
+        .run(JSON.stringify({ sourceEntries: count }));
+    }
+
+    progression.exec(`
+      CREATE TABLE season_cycles (cycle_id TEXT PRIMARY KEY, enabled INTEGER, starts_at INTEGER);
+      CREATE TABLE seasonal_player_index (cycle_id TEXT, aid INTEGER, PRIMARY KEY (cycle_id, aid));
+      CREATE TABLE seasonal_player_index_meta (cycle_id TEXT, key TEXT, value TEXT, PRIMARY KEY (cycle_id, key));
+      CREATE TABLE player_profiles (mode TEXT, cycle_id TEXT, aid INTEGER, last_access_at INTEGER, PRIMARY KEY (mode, cycle_id, aid));
+      CREATE TABLE seasonal_profile_sync_meta (cycle_id TEXT, key TEXT, value TEXT, PRIMARY KEY (cycle_id, key));
+      INSERT INTO season_cycles VALUES ('current', 1, 1);
+      INSERT INTO seasonal_player_index VALUES ('current', 1), ('current', 2);
+      INSERT INTO seasonal_player_index_meta VALUES
+        ('current', 'source_rows', '3'), ('current', 'synced_at', '1400'), ('current', 'last_poll_at', '1500');
+      INSERT INTO player_profiles VALUES ('seasonal', 'current', 1, 401);
+      INSERT INTO seasonal_profile_sync_meta VALUES
+        ('current', 'last_summary', '${JSON.stringify({ sourceEntries: 2 })}'),
+        ('current', 'last_poll_at', '1600'), ('current', 'last_feed_max_updated_at', '1700');
+    `);
+    players.close();
+    progression.close();
+    process.env.SQLITE_PATH = playersPath;
+    process.env.PROGRESSION_SQLITE_PATH = progressionPath;
+
+    const storeDb = new DatabaseSync(":memory:");
+    const result = await runDataAudit({ store: createDataAuditStore(storeDb), now: () => 2_000 });
+    assert.equal(result.started, true);
+    assert.equal(result.state.snapshot?.datasets.length, 8);
+    assert.equal(result.state.snapshot?.status, "success");
+    assert.deepEqual(
+      result.state.snapshot?.datasets.map((row) => [row.mode, row.dataset, row.upstreamRecordCount, row.localRecordCount, row.differenceCount]),
+      [
+        ["regular", "index", 2, 2, 0],
+        ["regular", "updated", 2, 2, 0],
+        ["pve", "index", 2, 1, -1],
+        ["pve", "updated", 3, 1, -2],
+        ["arena", "index", 2, 3, 1],
+        ["arena", "updated", 2, 2, 0],
+        ["pvp-season", "index", 3, 2, -1],
+        ["pvp-season", "updated", 2, 1, -1],
+      ],
+    );
+    storeDb.close();
+  } finally {
+    try { players.close(); } catch {}
+    try { progression.close(); } catch {}
+    if (previousPlayersPath === undefined) delete process.env.SQLITE_PATH;
+    else process.env.SQLITE_PATH = previousPlayersPath;
+    if (previousProgressionPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
+    else process.env.PROGRESSION_SQLITE_PATH = previousProgressionPath;
+    await rm(directory, { recursive: true, force: true });
   }
-  const result = compareAuditRecords(
-    "regular",
-    "updated",
-    upstream,
-    { available: true, rows: [], lastLocalApplyAt: null },
-    500,
-    510,
-  );
-  assert.equal(result.upstreamRecordCount, 150_000);
-  assert.equal(result.latestUpstreamUpdatedAt, 1_700_000_150_000);
-  assert.equal(result.missingCount, 150_000);
-  assert.equal(result.coveragePercent, 0);
 });
 
 test("audit store rejects active lease, exposes expired lease as idle, and allows reclaim", () => {
@@ -180,7 +179,7 @@ test("audit store rejects active lease, exposes expired lease as idle, and allow
   assert.deepEqual(store.start("run-1", startedAt), { started: true });
 
   const priorSnapshot = {
-    version: 1,
+    version: 2,
     runId: "prior-run",
     status: "partial",
     startedAt: startedAt - 100,
