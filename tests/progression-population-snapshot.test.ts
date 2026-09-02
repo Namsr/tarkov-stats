@@ -168,7 +168,7 @@ test("VPS delays and deprioritizes the isolated population worker", async () => 
   assert.match(worker, /PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS/);
   assert.match(worker, /: 300_000/);
   assert.match(worker, /if \(running\) return \{ skipped: true \}/);
-  assert.match(worker, /setInterval\(\(\) => void materializeProgressionPopulation\("interval"\), intervalMs\)/);
+  assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("interval"\)[\s\S]*materializeProgressionPopulation\("interval"\)[\s\S]*\}, intervalMs\)/);
   assert.match(worker, /setTimeout\(resolve, initialDelayMs\)/);
   assert.match(worker, /await materializeProgressionPopulation\("startup"\)/);
 });
@@ -221,7 +221,7 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
         eligibleN: 30,
         seasonStartsAt: 1,
         achievements: [{ id: "seasonal-ach", owners: 10, eligibleN: 30, samplePct: 1,
-          meanHours: 1_000, stdHours: 100, earlyHours: 500, unlockDayP20: 10, timestampOwners: 10 }],
+          meanHours: 1_000, stdHours: 100, earlyHours: 500, unlockHours: 50, unlockDayP20: 10, timestampOwners: 10 }],
       },
     },
   };

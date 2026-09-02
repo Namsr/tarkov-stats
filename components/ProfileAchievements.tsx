@@ -65,6 +65,7 @@ function normalizeAchievement(value: unknown): ProfileAchievementItem | null {
       id: value,
       unlockedAt: null,
       earlyHours: null,
+      unlockHours: null,
       name: null,
       nameRu: null,
       description: null,
@@ -89,6 +90,7 @@ function normalizeAchievement(value: unknown): ProfileAchievementItem | null {
     id,
     unlockedAt: timestampOrNull(row.unlockedAt),
     earlyHours: finiteOrNull(row.earlyHours),
+    unlockHours: finiteOrNull(row.unlockHours),
     name: typeof row.name === "string" ? row.name : typeof row.nameEn === "string" ? row.nameEn : null,
     nameRu: typeof row.nameRu === "string" ? row.nameRu : null,
     description: typeof row.description === "string"
@@ -360,7 +362,7 @@ export default function ProfileAchievements({
                     const name = localizedAchievementName(achievement, lang);
                     const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                     const completed = formatDate(achievement.unlockedAt, lang);
-                    const unlockTime = formatHours(achievement.earlyHours, lang, t("unit.h"));
+                    const unlockTime = formatHours(achievement.unlockHours, lang, t("unit.h"));
                     const rarity = rarityLabel(achievement, t);
                     return (
                       <tr
@@ -400,7 +402,7 @@ export default function ProfileAchievements({
                 const name = localizedAchievementName(achievement, lang);
                 const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                 const completed = formatDate(achievement.unlockedAt, lang);
-                const unlockTime = formatHours(achievement.earlyHours, lang, t("unit.h"));
+                const unlockTime = formatHours(achievement.unlockHours, lang, t("unit.h"));
                 const rarity = rarityLabel(achievement, t);
                 return (
                   <article

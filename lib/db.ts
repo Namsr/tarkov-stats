@@ -899,6 +899,8 @@ export interface AchievementStat {
   stdHours: number;
   /** Lower-percentile owner playtime used as the early-unlock suspicion threshold. */
   earlyHours: number;
+  /** P1 for samples of at least 500 owners, otherwise P5; used only for display. */
+  unlockHours: number;
 }
 
 export interface AchievementBaseline {

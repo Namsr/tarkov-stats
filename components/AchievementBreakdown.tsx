@@ -19,6 +19,7 @@ interface AchievementRow {
   samplePct: number;
   officialPct: number;
   earlyHours: number;
+  unlockHours: number;
 }
 
 interface Payload {

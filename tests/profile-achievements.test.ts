@@ -12,6 +12,7 @@ const achievement = (id: string, unlockedAt: number | null, name: string, rarity
   id,
   unlockedAt,
   earlyHours: null,
+  unlockHours: null,
   name,
   nameRu: null,
   description: null,
@@ -35,11 +36,11 @@ test("achievement date sort defaults to newest and keeps missing dates last", ()
   assert.deepEqual(sortProfileAchievements(rows, "date", "asc"), [rows[0], rows[2], rows[1]]);
 });
 
-test("achievement hours sort uses the early-owner percentile and keeps missing values last", () => {
+test("achievement hours sort uses the display unlock percentile and keeps missing values last", () => {
   const rows = [
-    { ...achievement("late", null, "Late"), earlyHours: 900 },
-    { ...achievement("missing", null, "Missing"), earlyHours: null },
-    { ...achievement("early", null, "Early"), earlyHours: 20 },
+    { ...achievement("late", null, "Late"), earlyHours: 10, unlockHours: 900 },
+    { ...achievement("missing", null, "Missing"), earlyHours: 5, unlockHours: null },
+    { ...achievement("early", null, "Early"), earlyHours: 1_000, unlockHours: 20 },
   ];
   assert.deepEqual(sortProfileAchievements(rows, "hours", "asc").map((row) => row.id), ["early", "late", "missing"]);
   assert.deepEqual(sortProfileAchievements(rows, "hours", "desc").map((row) => row.id), ["late", "early", "missing"]);

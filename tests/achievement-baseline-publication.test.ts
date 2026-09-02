@@ -38,6 +38,43 @@ test("achievement baseline publishes PVP and PvE independently", () => {
   db.close();
 });
 
+test("display unlock hours use P5 below 500 owners and P1 from 500 owners", () => {
+  const db = fixture();
+  const insert = db.prepare("INSERT INTO players (aid, hours, achievements) VALUES (?, ?, ?)");
+  for (let aid = 10; aid < 509; aid += 1) insert.run(aid, aid - 9, '["small","large"]');
+  insert.run(509, 500, '["large"]');
+
+  const baseline = materializeAchievementBaseline(db, "regular", 3_000);
+  const small = baseline.achievements.find((row) => row.ach_id === "small");
+  const large = baseline.achievements.find((row) => row.ach_id === "large");
+
+  assert.equal(small?.owners, 499);
+  assert.equal(small?.unlockHours, 25);
+  assert.equal(large?.owners, 500);
+  assert.equal(large?.unlockHours, 5);
+  assert.ok((large?.earlyHours ?? 0) > (large?.unlockHours ?? 0));
+  db.close();
+});
+
+test("legacy publications use early hours as the display fallback", () => {
+  const db = fixture();
+  materializeAchievementBaseline(db, "regular", 1_000);
+  const publication = readPublishedAchievementBaseline(db, "regular");
+  const legacy = publication!.achievements.map((achievement) => ({
+    ach_id: achievement.ach_id,
+    owners: achievement.owners,
+    meanHours: achievement.meanHours,
+    stdHours: achievement.stdHours,
+    earlyHours: achievement.earlyHours,
+  }));
+  db.prepare("UPDATE achievement_baseline_publications SET achievements_json = ? WHERE mode = 'regular'")
+    .run(JSON.stringify(legacy));
+
+  const parsed = readPublishedAchievementBaseline(db, "regular");
+  assert.equal(parsed?.achievements[0]?.unlockHours, parsed?.achievements[0]?.earlyHours);
+  db.close();
+});
+
 test("missing and corrupt achievement publications degrade to null", () => {
   const db = fixture();
   materializeAchievementBaseline(db, "regular", 1_000);

@@ -203,12 +203,13 @@ test("average profiles always reuse the responsive profile achievements section"
   assert.match(achievements, /const AVERAGE_COLUMNS[\s\S]*key: "hours"[\s\S]*achievement\.col\.unlockTime/);
   assert.match(achievements, /variant === "average" && \(normalized\.owners \?\? 0\) <= 0/);
   assert.match(achievements, /variant === "profile" && \([\s\S]*<EarlyUnlocks/);
-  assert.match(achievements, /formatHours\(achievement\.earlyHours/);
+  assert.match(achievements, /formatHours\(achievement\.unlockHours/);
 
   assert.match(route, /nameRu: m\?\.nameRu \?\? null/);
   assert.match(route, /description: m\?\.descriptionEn \?\? null/);
   assert.match(route, /descriptionRu: m\?\.descriptionRu \?\? null/);
   assert.match(route, /imageUrl: m\?\.imageUrl \?\? null/);
+  assert.match(route, /unlockHours: r\.unlockHours/);
   assert.match(dictionary, /"achievement\.col\.unlockTime": "Unlock time"/);
   assert.match(dictionary, /"achievement\.col\.unlockTime": "Время получения"/);
   assert.match(dictionary, /"achv\.retry": "Try again"/);

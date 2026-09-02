@@ -1,3 +1,6 @@
+// @ts-expect-error Node's strip-types test runner requires the explicit extension.
+import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE } from "./achievement-unlock-hours.ts";
+
 export type PublishedAchievementMode = "regular" | "pve";
 
 export interface PublishedAchievementStat {
@@ -6,6 +9,7 @@ export interface PublishedAchievementStat {
   meanHours: number;
   stdHours: number;
   earlyHours: number;
+  unlockHours: number;
 }
 
 export interface PublishedAchievementBaseline {
@@ -42,7 +46,11 @@ const BASELINE_SELECT_SQL = `WITH expanded AS (
 )
 SELECT ach_id, MAX(owners) AS owners, MAX(mean_hours) AS mean_hours,
   MAX(mean_sq) AS mean_sq,
-  MIN(CASE WHEN rn = CAST((owners + 4) / 5 AS INTEGER) THEN hours END) AS early_hours
+  MIN(CASE WHEN rn = CAST((owners + 4) / 5 AS INTEGER) THEN hours END) AS early_hours,
+  MIN(CASE WHEN rn = CASE
+    WHEN owners >= ${ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE} THEN CAST((owners + 99) / 100 AS INTEGER)
+    ELSE CAST((owners + 19) / 20 AS INTEGER)
+  END THEN hours END) AS unlock_hours
 FROM ranked GROUP BY ach_id`;
 
 function baselineSql(mode: PublishedAchievementMode): { sql: string; params: unknown[] } {
@@ -71,6 +79,7 @@ function toAchievementStats(rows: readonly Record<string, unknown>[]): Published
       meanHours: mean,
       stdHours: Math.sqrt(variance),
       earlyHours: Number(row.early_hours) || mean,
+      unlockHours: Number(row.unlock_hours) || mean,
     };
   });
 }
@@ -86,7 +95,13 @@ export function parsePublishedAchievementBaseline(
       if (!value || typeof value !== "object") return [];
       const entry = value as Record<string, unknown>;
       const achId = typeof entry.ach_id === "string" ? entry.ach_id : "";
-      const numbers = [entry.owners, entry.meanHours, entry.stdHours, entry.earlyHours].map(Number);
+      const numbers = [
+        entry.owners,
+        entry.meanHours,
+        entry.stdHours,
+        entry.earlyHours,
+        entry.unlockHours ?? entry.earlyHours,
+      ].map(Number);
       if (!achId || numbers.some((number) => !Number.isFinite(number) || number < 0)) return [];
       return [{
         ach_id: achId,
@@ -94,6 +109,7 @@ export function parsePublishedAchievementBaseline(
         meanHours: numbers[1],
         stdHours: numbers[2],
         earlyHours: numbers[3],
+        unlockHours: numbers[4],
       }];
     });
     if (achievements.length !== parsed.length) return null;

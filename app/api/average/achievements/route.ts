@@ -25,6 +25,7 @@ export interface AchievementRow {
   meanHours: number;
   stdHours: number;
   earlyHours: number;
+  unlockHours: number;
 }
 
 interface Payload {
@@ -40,6 +41,7 @@ interface BaselineRow {
   meanHours: number;
   stdHours: number;
   earlyHours: number;
+  unlockHours: number;
 }
 
 interface BaselineCache {
@@ -70,6 +72,7 @@ async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCac
     meanHours: a.meanHours,
     stdHours: a.stdHours,
     earlyHours: a.earlyHours,
+    unlockHours: a.unlockHours,
   }));
   // Most-owned first: the rows with the firmest baseline lead.
   rows.sort((x, y) => y.owners - x.owners);
@@ -118,6 +121,7 @@ export async function GET(request: NextRequest) {
                 meanHours: a.meanHours,
                 stdHours: a.stdHours,
                 earlyHours: a.earlyHours,
+                unlockHours: a.unlockHours,
               })),
               ts: now,
               storage: baseline ? "sqlite" as const : "unavailable" as const,
@@ -165,6 +169,7 @@ export async function GET(request: NextRequest) {
         meanHours: r.meanHours,
         stdHours: r.stdHours,
         earlyHours: r.earlyHours,
+        unlockHours: r.unlockHours,
       };
     });
 

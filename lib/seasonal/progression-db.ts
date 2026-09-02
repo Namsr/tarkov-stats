@@ -16,6 +16,8 @@ import { scoreCheater, type Baseline, type CheaterScoreResult } from "../cheater
 import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,
@@ -455,7 +457,7 @@ interface PopulationSnapshotPayload {
     eligibleN: number;
     seasonStartsAt: number | null;
     achievements: Array<{
-      id: string; owners: number; samplePct: number; meanHours: number; stdHours: number; earlyHours: number;
+      id: string; owners: number; samplePct: number; meanHours: number; stdHours: number; earlyHours: number; unlockHours: number;
       eligibleN: number; unlockDayP20: number | null; timestampOwners: number;
     }>;
   } | null;
@@ -565,6 +567,7 @@ function buildAchievementBaseline(
         id, owners: value.owners.size, eligibleN: eligible.length,
         samplePct: value.owners.size / eligible.length * 100,
         meanHours, stdHours: Math.sqrt(Math.max(0, variance)), earlyHours: percentile20(value.hours) ?? meanHours,
+        unlockHours: achievementUnlockHours(value.hours) ?? meanHours,
         unlockDayP20: percentile20(value.unlockDays), timestampOwners: value.unlockDays.length,
       };
     }),
@@ -759,6 +762,7 @@ export interface PublishedSeasonalAchievementBaseline {
     meanHours: number;
     stdHours: number;
     earlyHours: number;
+    unlockHours: number;
   }>;
 }
 
@@ -782,6 +786,7 @@ export async function getPublishedSeasonalAchievementBaseline(
         meanHours: Number(achievement.meanHours) || 0,
         stdHours: Number(achievement.stdHours) || 0,
         earlyHours: Number(achievement.earlyHours) || Number(achievement.meanHours) || 0,
+        unlockHours: Number(achievement.unlockHours) || Number(achievement.earlyHours) || Number(achievement.meanHours) || 0,
       })),
     };
   } catch (error) {

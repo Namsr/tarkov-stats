@@ -20,6 +20,8 @@ import type { D1DatabaseLike } from "./d1.ts";
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { Baseline } from "../cheater-score.ts";
+// @ts-ignore Node's strip-types test runner requires the explicit extension.
+import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -321,6 +323,7 @@ export interface SeasonalAchievementBaselineEntry {
   meanHours: number;
   stdHours: number;
   earlyHours: number;
+  unlockHours: number;
   /** 20th percentile of unlock day from the current cycle start. */
   unlockDayP20: number | null;
   timestampOwners: number;
@@ -445,6 +448,7 @@ export async function getSeasonalAchievementBaseline(
           meanHours: hours.mean,
           stdHours: hours.std,
           earlyHours: hours.early,
+          unlockHours: achievementUnlockHours(value.hours) ?? hours.mean,
           unlockDayP20: percentile20(value.unlockDays),
           timestampOwners: value.unlockDays.length,
         };
