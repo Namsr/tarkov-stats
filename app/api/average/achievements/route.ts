@@ -13,6 +13,10 @@ import { createRequestTiming } from "@/lib/observability/request-timing";
 export interface AchievementRow {
   id: string;
   name: string;
+  nameRu: string | null;
+  description: string | null;
+  descriptionRu: string | null;
+  imageUrl: string | null;
   side: string;
   rarity: string;
   owners: number;
@@ -149,6 +153,10 @@ export async function GET(request: NextRequest) {
       return {
         id: r.id,
         name: m?.name ?? r.id,
+        nameRu: m?.nameRu ?? null,
+        description: m?.descriptionEn ?? null,
+        descriptionRu: m?.descriptionRu ?? null,
+        imageUrl: m?.imageUrl ?? null,
         side: m?.side ?? "",
         rarity: m?.rarity ?? "",
         owners: r.owners,

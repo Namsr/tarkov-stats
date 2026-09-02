@@ -32,10 +32,18 @@ type ProfileAchievementInput = Partial<ProfileAchievementItem> & {
   owned?: unknown;
 };
 
-const SORTABLE_COLUMNS: ReadonlyArray<{ key: AchievementSortKey; labelKey: string }> = [
+type AchievementColumn = { key: AchievementSortKey; labelKey: string };
+
+const PROFILE_COLUMNS: ReadonlyArray<AchievementColumn> = [
   { key: "alphabet", labelKey: "achievement.col.name" },
   { key: "percent", labelKey: "achievement.col.percent" },
   { key: "date", labelKey: "achievement.col.completed" },
+  { key: "rarity", labelKey: "achievement.col.rarity" },
+];
+const AVERAGE_COLUMNS: ReadonlyArray<AchievementColumn> = [
+  { key: "alphabet", labelKey: "achievement.col.name" },
+  { key: "percent", labelKey: "achievement.col.percent" },
+  { key: "hours", labelKey: "achievement.col.unlockTime" },
   { key: "rarity", labelKey: "achievement.col.rarity" },
 ];
 const ACHIEVEMENT_PREVIEW_COUNT = 3;
@@ -56,6 +64,7 @@ function normalizeAchievement(value: unknown): ProfileAchievementItem | null {
     return {
       id: value,
       unlockedAt: null,
+      earlyHours: null,
       name: null,
       nameRu: null,
       description: null,
@@ -79,6 +88,7 @@ function normalizeAchievement(value: unknown): ProfileAchievementItem | null {
   return {
     id,
     unlockedAt: timestampOrNull(row.unlockedAt),
+    earlyHours: finiteOrNull(row.earlyHours),
     name: typeof row.name === "string" ? row.name : typeof row.nameEn === "string" ? row.nameEn : null,
     nameRu: typeof row.nameRu === "string" ? row.nameRu : null,
     description: typeof row.description === "string"
@@ -115,6 +125,12 @@ function formatDate(value: number | null, locale: string): string | null {
     }).format(value);
 }
 
+function formatHours(value: number | null, locale: string, unit: string): string | null {
+  return value == null || value <= 0
+    ? null
+    : `${value.toLocaleString(locale, { maximumFractionDigits: 0 })} ${unit}`;
+}
+
 function sortAriaValue(
   active: boolean,
   direction: AchievementSortDirection,
@@ -131,7 +147,7 @@ function nextDirectionLabel(
 ): string {
   const nextDirection = active
     ? direction === "asc" ? "desc" : "asc"
-    : key === "date" ? "desc" : "asc";
+    : key === "date" || key === "hours" ? "desc" : "asc";
   return t(nextDirection === "asc" ? "achievement.sort.directionAsc" : "achievement.sort.directionDesc");
 }
 
@@ -196,7 +212,7 @@ function SortButton({
   onChange,
   t,
 }: {
-  column: (typeof SORTABLE_COLUMNS)[number];
+  column: AchievementColumn;
   active: boolean;
   direction: AchievementSortDirection;
   onChange: (key: AchievementSortKey) => void;
@@ -227,6 +243,7 @@ export default function ProfileAchievements({
   ownedIds,
   mode,
   cycleId,
+  variant = "profile",
 }: {
   items: readonly unknown[] | null | undefined;
   loading?: boolean;
@@ -234,18 +251,21 @@ export default function ProfileAchievements({
   ownedIds?: readonly string[];
   mode: "regular" | "pve" | "seasonal";
   cycleId: string;
+  variant?: "profile" | "average";
 }) {
   const { t, lang } = useI18n();
-  const [sortKey, setSortKey] = useState<AchievementSortKey>("date");
+  const [sortKey, setSortKey] = useState<AchievementSortKey>(variant === "average" ? "percent" : "date");
   const [direction, setDirection] = useState<AchievementSortDirection>("desc");
   const [expanded, setExpanded] = useState(false);
   const collapseId = `profile-achievements-${useId().replace(/:/g, "")}`;
+  const columns = variant === "average" ? AVERAGE_COLUMNS : PROFILE_COLUMNS;
   const achievements = useMemo(
     () => (items ?? []).flatMap((item) => {
       const normalized = normalizeAchievement(item);
-      return normalized ? [normalized] : [];
+      if (!normalized || (variant === "average" && (normalized.owners ?? 0) <= 0)) return [];
+      return [normalized];
     }),
-    [items],
+    [items, variant],
   );
   const sorted = useMemo(
     () => sortProfileAchievements(achievements, sortKey, direction, lang),
@@ -259,7 +279,7 @@ export default function ProfileAchievements({
       return;
     }
     setSortKey(key);
-    setDirection(key === "date" ? "desc" : "asc");
+    setDirection(key === "date" || key === "hours" ? "desc" : "asc");
   };
 
   return (
@@ -268,7 +288,7 @@ export default function ProfileAchievements({
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="section-heading text-base">{t("profile.section.achievements")}</h2>
           <div className="achievement-mobile-sort" role="group" aria-label={t("achievement.sortLabel")}>
-            {SORTABLE_COLUMNS.map((column) => (
+            {columns.map((column) => (
               <SortButton
                 key={column.key}
                 column={column}
@@ -286,7 +306,9 @@ export default function ProfileAchievements({
             {Array.from({ length: 3 }).map((_, index) => <div key={index} className="h-16 skeleton rounded" />)}
           </div>
         ) : sorted.length === 0 ? (
-          <p className="text-sm text-[var(--muted)]">{t("achievement.empty")}</p>
+          <p className="text-sm text-[var(--muted)]">
+            {t(variant === "average" ? "achv.empty" : "achievement.empty")}
+          </p>
         ) : (
           <>
             <ProfileCollapsible
@@ -296,10 +318,12 @@ export default function ProfileAchievements({
             >
             <div className="achievement-table-wrap">
               <table className="achievement-table">
-                <caption className="sr-only">{t("achievement.tableCaption")}</caption>
+                <caption className="sr-only">
+                  {t(variant === "average" ? "achievement.averageTableCaption" : "achievement.tableCaption")}
+                </caption>
                 <thead>
                   <tr>
-                    {SORTABLE_COLUMNS.filter((column) => column.key === "alphabet").map((column) => (
+                    {columns.filter((column) => column.key === "alphabet").map((column) => (
                       <th key={column.key} scope="col" aria-sort={sortAriaValue(sortKey === column.key, direction)}>
                         <SortButton
                           column={column}
@@ -311,10 +335,12 @@ export default function ProfileAchievements({
                       </th>
                     ))}
                     <th scope="col">{t("achievement.col.description")}</th>
-                    {SORTABLE_COLUMNS.filter((column) => column.key !== "alphabet").map((column) => (
+                    {columns.filter((column) => column.key !== "alphabet").map((column) => (
                       <th
                         key={column.key}
-                        className={column.key === "percent" || column.key === "date" ? "achievement-table__number-header" : undefined}
+                        className={column.key === "percent" || column.key === "date" || column.key === "hours"
+                          ? "achievement-table__number-header"
+                          : undefined}
                         scope="col"
                         aria-sort={sortAriaValue(sortKey === column.key, direction)}
                       >
@@ -334,6 +360,7 @@ export default function ProfileAchievements({
                     const name = localizedAchievementName(achievement, lang);
                     const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                     const completed = formatDate(achievement.unlockedAt, lang);
+                    const unlockTime = formatHours(achievement.earlyHours, lang, t("unit.h"));
                     const rarity = rarityLabel(achievement, t);
                     return (
                       <tr
@@ -354,9 +381,11 @@ export default function ProfileAchievements({
                         </td>
                         <td className="achievement-table__number"><AchievementPercentage achievement={achievement} locale={lang} t={t} /></td>
                         <td className="achievement-table__number achievement-table__completed">
-                          {completed
-                            ? <time dateTime={achievement.unlockedAt == null ? undefined : new Date(achievement.unlockedAt).toISOString()}>{completed}</time>
-                            : <span className="achievement-table__muted">{t("achievement.dateUnavailable")}</span>}
+                          {variant === "average"
+                            ? unlockTime ?? <span className="achievement-table__muted">{t("achievement.notAvailable")}</span>
+                            : completed
+                              ? <time dateTime={achievement.unlockedAt == null ? undefined : new Date(achievement.unlockedAt).toISOString()}>{completed}</time>
+                              : <span className="achievement-table__muted">{t("achievement.dateUnavailable")}</span>}
                         </td>
                         <td className="achievement-table__rarity">{rarity}</td>
                       </tr>
@@ -371,6 +400,7 @@ export default function ProfileAchievements({
                 const name = localizedAchievementName(achievement, lang);
                 const description = localizedAchievementDescription(achievement, lang)?.trim() || null;
                 const completed = formatDate(achievement.unlockedAt, lang);
+                const unlockTime = formatHours(achievement.earlyHours, lang, t("unit.h"));
                 const rarity = rarityLabel(achievement, t);
                 return (
                   <article
@@ -394,8 +424,12 @@ export default function ProfileAchievements({
                         <dd><AchievementPercentage achievement={achievement} locale={lang} t={t} /></dd>
                       </div>
                       <div>
-                        <dt>{t("achievement.col.completed")}</dt>
-                        <dd>{completed ?? t("achievement.dateUnavailable")}</dd>
+                        <dt>{t(variant === "average" ? "achievement.col.unlockTime" : "achievement.col.completed")}</dt>
+                        <dd>
+                          {variant === "average"
+                            ? unlockTime ?? t("achievement.notAvailable")
+                            : completed ?? t("achievement.dateUnavailable")}
+                        </dd>
                       </div>
                       <div>
                         <dt>{t("achievement.col.rarity")}</dt>
@@ -422,7 +456,9 @@ export default function ProfileAchievements({
           </>
         )}
       </section>
-      <EarlyUnlocks playerHours={playerHours} ownedIds={owned} mode={mode} cycleId={cycleId} />
+      {variant === "profile" && (
+        <EarlyUnlocks playerHours={playerHours} ownedIds={owned} mode={mode} cycleId={cycleId} />
+      )}
     </div>
   );
 }

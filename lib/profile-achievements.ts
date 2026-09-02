@@ -1,9 +1,10 @@
-export type AchievementSortKey = "date" | "alphabet" | "percent" | "rarity";
+export type AchievementSortKey = "date" | "hours" | "alphabet" | "percent" | "rarity";
 export type AchievementSortDirection = "asc" | "desc";
 
 export interface ProfileAchievementItem {
   id: string;
   unlockedAt: number | null;
+  earlyHours: number | null;
   name: string | null;
   nameRu: string | null;
   description: string | null;
@@ -104,6 +105,8 @@ export function sortProfileAchievements(
     let result = 0;
     if (key === "date") {
       result = compareNullable(left.unlockedAt, right.unlockedAt, (a, b) => a - b, direction);
+    } else if (key === "hours") {
+      result = compareNullable(left.earlyHours, right.earlyHours, (a, b) => a - b, direction);
     } else if (key === "percent") {
       const leftPercentage = left.percentage ?? left.officialPercentage;
       const rightPercentage = right.percentage ?? right.officialPercentage;

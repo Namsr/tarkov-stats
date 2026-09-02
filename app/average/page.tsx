@@ -150,7 +150,6 @@ function AveragePageContent({
   const [data, setData] = useState<AverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [showAch, setShowAch] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
   const averageRequestRef = useRef<AbortController | null>(null);
@@ -246,15 +245,6 @@ function AveragePageContent({
     else params.delete("period");
     const query = params.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }
-
-  function openBreakdown() {
-    setShowAch(true);
-    requestAnimationFrame(() => {
-      document
-        .getElementById("ach-breakdown")
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
   }
 
   function changeDimension(next: RangeDimension) {
@@ -359,29 +349,14 @@ function AveragePageContent({
   }
 
   function renderMetric(metric: (typeof METRICS)[number]) {
-    const card = (
-      <StatCard
-        label={t("metric." + metric.key)}
-        value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
-        suffix={metric.suffix}
-      />
-    );
-
-    if (metric.key !== "achv_count") return <div key={metric.key}>{card}</div>;
-
     return (
-      <button
-        key={metric.key}
-        type="button"
-        onClick={openBreakdown}
-        title={t("average.showAchBreakdown")}
-        className="relative rounded-[10px] text-left transition-transform hover:-translate-y-0.5 focus:outline-none"
-      >
-        {card}
-        <span className="absolute right-4 top-4 text-xs text-[var(--accent)]" aria-hidden="true">
-          ↗
-        </span>
-      </button>
+      <div key={metric.key}>
+        <StatCard
+          label={t("metric." + metric.key)}
+          value={fmt(averages?.[metric.key], metric.decimals ?? 1)}
+          suffix={metric.suffix}
+        />
+      </div>
     );
   }
 
@@ -651,13 +626,13 @@ function AveragePageContent({
         </section>
       )}
 
-      <AchievementBreakdown
-        key={`${mode}:${cycleId ?? "persistent"}`}
-        mode={mode}
-        cycleId={cycleId}
-        open={showAch}
-        onToggle={() => setShowAch((open) => !open)}
-      />
+      {mode !== "arena" && (
+        <AchievementBreakdown
+          key={`${mode}:${cycleId ?? "persistent"}`}
+          mode={mode}
+          cycleId={cycleId}
+        />
+      )}
     </main>
   );
 }

@@ -145,7 +145,7 @@ test("profile achievements use sortable desktop columns and readable mobile card
   assert.match(achievements, /referrerPolicy="no-referrer"/);
   assert.match(achievements, /achievement\.samplePrimary/);
   assert.match(achievements, /achievement\.bsgLine/);
-  assert.match(achievements, /const \[sortKey, setSortKey\] = useState<AchievementSortKey>\("date"\)/);
+  assert.match(achievements, /const \[sortKey, setSortKey\] = useState<AchievementSortKey>\(variant === "average" \? "percent" : "date"\)/);
   assert.match(achievements, /key: "percent"/);
   assert.match(achievements, /achievement-table__number-header/);
   assert.match(achievements, /<div className="achievement-cards" role="list">/);
@@ -178,6 +178,41 @@ test("profile achievements use sortable desktop columns and readable mobile card
   assert.match(dictionary, /"achievement\.col\.name": "Name"/);
   assert.match(dictionary, /"achievement\.col\.name": "Название"/);
   assert.match(dictionary, /"achievement\.sortBy":/);
+});
+
+test("average profiles always reuse the responsive profile achievements section", async () => {
+  const page = await readFile("app/average/page.tsx", "utf8");
+  const breakdown = await readFile("components/AchievementBreakdown.tsx", "utf8");
+  const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
+  const route = await readFile("app/api/average/achievements/route.ts", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  assert.doesNotMatch(page, /showAch|openBreakdown|average\.showAchBreakdown/);
+  assert.match(page, /mode !== "arena" && \([\s\S]*<AchievementBreakdown[\s\S]*mode=\{mode\}[\s\S]*cycleId=\{cycleId\}/);
+  assert.doesNotMatch(page, /<AchievementBreakdown[\s\S]*open=|<AchievementBreakdown[\s\S]*onToggle=/);
+  assert.match(page, /function renderMetric[\s\S]*<StatCard/);
+  assert.doesNotMatch(page, /metric\.key !== "achv_count"|title=\{t\("average\.showAchBreakdown"\)\}/);
+
+  assert.match(breakdown, /type AchievementMode = Extract<GameMode, "regular" \| "pve" \| "seasonal">/);
+  assert.match(breakdown, /<ProfileAchievements[\s\S]*variant="average"/);
+  assert.match(breakdown, /setAttempt\(\(value\) => value \+ 1\)/);
+  assert.match(breakdown, /role="alert"/);
+  assert.doesNotMatch(breakdown, /query|filterPlaceholder|<input|onToggle|aria-expanded/);
+
+  assert.match(achievements, /variant\?: "profile" \| "average"/);
+  assert.match(achievements, /const AVERAGE_COLUMNS[\s\S]*key: "hours"[\s\S]*achievement\.col\.unlockTime/);
+  assert.match(achievements, /variant === "average" && \(normalized\.owners \?\? 0\) <= 0/);
+  assert.match(achievements, /variant === "profile" && \([\s\S]*<EarlyUnlocks/);
+  assert.match(achievements, /formatHours\(achievement\.earlyHours/);
+
+  assert.match(route, /nameRu: m\?\.nameRu \?\? null/);
+  assert.match(route, /description: m\?\.descriptionEn \?\? null/);
+  assert.match(route, /descriptionRu: m\?\.descriptionRu \?\? null/);
+  assert.match(route, /imageUrl: m\?\.imageUrl \?\? null/);
+  assert.match(dictionary, /"achievement\.col\.unlockTime": "Unlock time"/);
+  assert.match(dictionary, /"achievement\.col\.unlockTime": "Время получения"/);
+  assert.match(dictionary, /"achv\.retry": "Try again"/);
+  assert.match(dictionary, /"achv\.retry": "Повторить"/);
 });
 
 test("achievement icon host is allowed by the production CSP", async () => {
