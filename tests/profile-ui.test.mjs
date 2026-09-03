@@ -289,7 +289,12 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
   const regularRoute = route.slice(route.indexOf("    const regularSnapshot = makePlayerSnapshot"));
   assert.doesNotMatch(regularRoute, /await persistRegularProfileSnapshot/);
-  assert.match(route, /if \(mode === "pve"\)[\s\S]*await persistRegularProfileSnapshot\(pveSnapshot, \{/);
+  const pveBranch = route.slice(route.indexOf('if (mode === "pve") {'));
+  assert.match(pveBranch, /after\(\(\) => persistRegularProfileSnapshot\(pveSnapshot, \{/);
+  assert.match(pveBranch, /mode: "pve"/);
+  assert.match(pveBranch, /pve profile capture after response failed/);
+  assert.match(pveBranch, /\{ inserted: false, status: "queued" \}/);
+  assert.doesNotMatch(pveBranch, /await persistRegularProfileSnapshot\(pveSnapshot/);
   assert.match(route, /const riskIsFresh = publicRisk &&[\s\S]*Date\.now\(\) - publicRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
   assert.match(route, /const seasonalRiskIsFresh = result\.ok && storedRisk &&[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
