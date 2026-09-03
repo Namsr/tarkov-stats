@@ -15,6 +15,15 @@ import {
 
 const PENDING_TIMEOUT_MS = 10_000;
 let latestSeasonalCycleId: string | null = null;
+let warmProfileController: AbortController | null = null;
+let warmTimelineController: AbortController | null = null;
+
+export function cancelModeSwitchWarms(): void {
+  warmProfileController?.abort();
+  warmProfileController = null;
+  warmTimelineController?.abort();
+  warmTimelineController = null;
+}
 
 export default function ProfileModeSwitch({
   current,
@@ -93,7 +102,10 @@ export default function ProfileModeSwitch({
       if (!cycleId) return;
       params.set("cycle", cycleId);
     }
-    warmPlayerProfileResponse(`/api/player/profile?${params}`);
+    warmProfileController?.abort();
+    const controller = new AbortController();
+    warmProfileController = controller;
+    warmPlayerProfileResponse(`/api/player/profile?${params}`, controller.signal);
   }
 
   function warmTimeline(mode: GameMode): void {
@@ -108,8 +120,13 @@ export default function ProfileModeSwitch({
       cycle: mode === "seasonal" ? activeSeasonalCycleId ?? "" : "persistent",
     });
     if (mode === "seasonal" && !activeSeasonalCycleId) return;
-    void fetch(`/api/progression/timeline?${params}`, { cache: "default" }).catch(() => {
+    warmTimelineController?.abort();
+    const controller = new AbortController();
+    warmTimelineController = controller;
+    void fetch(`/api/progression/timeline?${params}`, { cache: "default", signal: controller.signal }).catch(() => {
       // The destination profile owns the visible progression error state.
+    }).finally(() => {
+      if (warmTimelineController === controller) warmTimelineController = null;
     });
   }
 

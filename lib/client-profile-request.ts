@@ -55,9 +55,35 @@ function cacheResponse(key: string, response: PlayerProfileJsonResponse<unknown>
 
 export function loadPlayerProfileResponse<T>(
   url: string,
-  options: { force?: boolean; request?: typeof fetch } = {},
+  options: { force?: boolean; request?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<PlayerProfileJsonResponse<T>> {
   const key = playerProfileRequestKey(url);
+  if (options.signal) {
+    if (options.signal.aborted) {
+      return Promise.reject(new DOMException("Aborted", "AbortError"));
+    }
+    if (!options.force) {
+      const cached = getCachedPlayerProfileResponse<T>(key);
+      if (cached) return Promise.resolve(cached);
+    }
+    const doFetch = options.request ?? fetch;
+    return doFetch(url, {
+      cache: options.force ? "no-store" : "default",
+      signal: options.signal,
+    }).then(async (response) => {
+      const text = await response.text();
+      if (!text.trim()) throw new PlayerProfileResponseError();
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new PlayerProfileResponseError();
+      }
+      const result = { ok: response.ok, status: response.status, body };
+      cacheResponse(key, result);
+      return result as PlayerProfileJsonResponse<T>;
+    });
+  }
   if (!options.force) {
     const cached = getCachedPlayerProfileResponse<T>(key);
     if (cached) return Promise.resolve(cached);
@@ -90,8 +116,8 @@ export function loadPlayerProfileResponse<T>(
   return request as Promise<PlayerProfileJsonResponse<T>>;
 }
 
-export function warmPlayerProfileResponse(url: string): void {
-  void loadPlayerProfileResponse(url).catch(() => {
+export function warmPlayerProfileResponse(url: string, signal?: AbortSignal): void {
+  void loadPlayerProfileResponse(url, signal ? { signal } : undefined).catch(() => {
     // The mounted profile owns the visible error state and can retry.
   });
 }
