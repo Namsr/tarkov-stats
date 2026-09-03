@@ -41,13 +41,13 @@ interface MetricDefinition {
   percent?: boolean;
 }
 
-const XP_COLOR = "#ffb74d";
-const RAIDS_COLOR = "#81b29a";
+const XP_COLOR = "var(--timeline-xp-line, #ffb74d)";
+const RAIDS_COLOR = "var(--timeline-raids-line, #81b29a)";
 
 const METRICS: readonly MetricDefinition[] = [
-  { key: "pvp_kd", labelKey: "progression.timeline.metric.pvpKd", color: "#f778ba" },
-  { key: "ai_kd", labelKey: "progression.timeline.metric.aiKd", color: "#58a6ff" },
-  { key: "survival", labelKey: "progression.timeline.metric.survival", color: "#3fb950", percent: true },
+  { key: "pvp_kd", labelKey: "progression.timeline.metric.pvpKd", color: "var(--timeline-pvp-kd-line, #f778ba)" },
+  { key: "ai_kd", labelKey: "progression.timeline.metric.aiKd", color: "var(--timeline-ai-kd-line, #58a6ff)" },
+  { key: "survival", labelKey: "progression.timeline.metric.survival", color: "var(--timeline-survival-line, #3fb950)", percent: true },
 ] as const;
 
 const SERIES_LABELS: Record<SeriesKey, string> = {
@@ -983,8 +983,8 @@ export default function ProgressionTimelineChart({
                   <rect x={PAD.left} y={PAD.top} width={metricRevealWidth} height={plotHeight} />
                 </clipPath>
                 <linearGradient id={`${clipId}-left-fill`} x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0" stopColor={leftColor} stopOpacity="0.2" />
-                  <stop offset="1" stopColor={leftColor} stopOpacity="0" />
+                  <stop offset="0" style={{ stopColor: leftColor }} stopOpacity="0.2" />
+                  <stop offset="1" style={{ stopColor: leftColor }} stopOpacity="0" />
                 </linearGradient>
               </defs>
               <rect
@@ -1003,7 +1003,7 @@ export default function ProgressionTimelineChart({
                 const yValue = yLeft(value);
                 return <line key={`grid-${tick}`} x1={PAD.left} x2={WIDTH - PAD.right} y1={yValue} y2={yValue} className={`progression-timeline__grid ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`} />;
               })}
-              <line x1={WIDTH - PAD.right} x2={WIDTH - PAD.right} y1={PAD.top} y2={HEIGHT - PAD.bottom} stroke={metric.color} className={`progression-timeline__axis-line ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`} />
+              <line x1={WIDTH - PAD.right} x2={WIDTH - PAD.right} y1={PAD.top} y2={HEIGHT - PAD.bottom} style={{ stroke: metric.color }} className={`progression-timeline__axis-line ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`} />
               {TICKS.map((tick) => {
                 const value = metricDomain.min + (metricDomain.max - metricDomain.min) * tick;
                 return (
@@ -1012,7 +1012,7 @@ export default function ProgressionTimelineChart({
                     x={WIDTH - PAD.right + 10}
                     y={yMetric(value) + 4}
                     textAnchor="start"
-                    fill={metric.color}
+                    style={{ fill: metric.color }}
                     className={`progression-timeline__axis progression-timeline__axis--right ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`}
                   >
                     {numberLabel(value, metric.percent)}
@@ -1035,7 +1035,7 @@ export default function ProgressionTimelineChart({
                 </g>
               ))}
               <text x={PAD.left - 2} y={PAD.top - 13} textAnchor="end" className={`progression-timeline__axis-label progression-timeline__axis-label--level ${leftLayerHighlighted ? "is-highlighted" : ""} ${leftLayerDimmed ? "is-dimmed" : ""}`}>{t(activeLeftAxis === "level" ? "progression.timeline.axisLevel" : "progression.timeline.axisPmcRaids")}</text>
-              <text x={WIDTH - PAD.right - 2} y={PAD.top - 13} textAnchor="end" fill={metric.color} className={`progression-timeline__axis-label progression-timeline__axis-label--metric ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`}>{t(metric.labelKey)}</text>
+              <text x={WIDTH - PAD.right - 2} y={PAD.top - 13} textAnchor="end" style={{ fill: metric.color }} className={`progression-timeline__axis-label progression-timeline__axis-label--metric ${metricLayerHighlighted ? "is-highlighted" : ""} ${metricLayerDimmed ? "is-dimmed" : ""}`}>{t(metric.labelKey)}</text>
               <g clipPath={`url(#${clipId})`}>
                 {xpPoints.player.length > 1 && (
                   <path

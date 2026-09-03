@@ -881,9 +881,77 @@ button.search-unit__result-mode:hover { background: color-mix(in srgb, var(--acc
   --timeline-survival: #77cf89;
   --timeline-pvp-kd: #e9c46a;
   --timeline-ai-kd: #8d99ae;
+  --timeline-xp-line: #ffb74d;
+  --timeline-raids-line: #81b29a;
+  --timeline-pvp-kd-line: #f778ba;
+  --timeline-ai-kd-line: #58a6ff;
+  --timeline-survival-line: #3fb950;
   min-width: 0;
   margin-top: 16px;
   padding: 18px;
+}
+
+/* Light theme: card background is #ffffff, so every active timeline color
+   must keep at least 3:1 contrast on white. Dark-theme values above are
+   kept as fallbacks; the component resolves line colors through these
+   variables (see ProgressionTimelineChart XP_COLOR / METRICS). */
+html[data-theme="light"] .progression-timeline {
+  --timeline-xp: #b45309;
+  --timeline-xp-day: #c2410c;
+  --timeline-raids-day: #0f766e;
+  --timeline-pmc-kills-day: #1d4ed8;
+  --timeline-non-pmc-kills-day: #7e22ce;
+  --timeline-pmc-kills-raid: #be185d;
+  --timeline-non-pmc-kills-raid: #0e7490;
+  --timeline-survival: #15803d;
+  --timeline-pvp-kd: #a16207;
+  --timeline-ai-kd: #475569;
+  --timeline-xp-line: #b45309;
+  --timeline-raids-line: #0f766e;
+  --timeline-pvp-kd-line: #be185d;
+  --timeline-ai-kd-line: #1d4ed8;
+  --timeline-survival-line: #15803d;
+}
+
+/* Light theme keeps dimmed/context layers distinguishable on white.
+   Dark-theme opacities (0.18 / 0.32 / 0.2) would drop dark-on-white
+   colors below readability, so they are raised here while staying
+   visibly de-emphasized next to full-opacity active lines. */
+html[data-theme="light"] .progression-timeline__line--dim {
+  opacity: .55;
+}
+html[data-theme="light"] .progression-timeline__line--segment-context {
+  opacity: .75;
+}
+html[data-theme="light"] .progression-timeline__point--dim {
+  opacity: .55;
+}
+html[data-theme="light"] .progression-timeline__point--overall {
+  opacity: .8;
+}
+html[data-theme="light"] .progression-timeline__point--nearby {
+  opacity: .9;
+}
+html[data-theme="light"] .progression-timeline__line--overall {
+  stroke-opacity: .8;
+}
+html[data-theme="light"] .progression-timeline__line--nearby {
+  stroke-opacity: .9;
+}
+html[data-theme="light"] .progression-timeline__toggle.is-dimmed,
+html[data-theme="light"] .progression-timeline__comparison.is-dimmed,
+html[data-theme="light"] .progression-timeline__axis.is-dimmed {
+  opacity: .55;
+  filter: none;
+}
+html[data-theme="light"] .progression-timeline__grid.is-dimmed,
+html[data-theme="light"] .progression-timeline__level-tick.is-dimmed,
+html[data-theme="light"] .progression-timeline__axis-label.is-dimmed,
+html[data-theme="light"] .progression-timeline__axis-line.is-dimmed,
+html[data-theme="light"] .progression-timeline__legend-item.is-dimmed,
+html[data-theme="light"] .progression-timeline__axis-guide-item.is-dimmed {
+  opacity: .45;
+  filter: none;
 }
 
 .progression-timeline__head {
