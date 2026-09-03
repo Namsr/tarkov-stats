@@ -34,6 +34,8 @@ type Row = Record<string, unknown>;
 const COHORT_PERCENTS = [10, 15, 20, 30] as const;
 const RISK_METRICS = ["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const;
 export const ARENA_RISK_CALCULATION_VERSION = 2;
+/** Stored Arena risk is reused for cache hits; background refresh keeps it fresh. */
+export const ARENA_RISK_TTL_MS = 5 * 60 * 60 * 1000;
 
 export function parseArenaProfile(profile: PlayerProfile): ArenaProfile {
   const parsed = parseArenaProfileStats(profile).arenaProfile;
@@ -529,6 +531,41 @@ async function riskForOverall(backend: Backend, aid: number, target: Row): Promi
   }
   const rows = await arenaRows(backend, { mode: "overall", exceptAid: aid, eligible: true });
   return { mode: "overall", peerCount: rows.length, ...riskMetrics(target, rows) };
+}
+
+/** Display-only Arena anomaly score. It never calls generic moderation storage. */
+export async function getStoredArenaProfileRisk(aid: number): Promise<ArenaProfileRisk | null> {
+  if (!Number.isSafeInteger(aid) || aid <= 0) throw new Error("invalid arena account id");
+  const backend = await getArenaBackend();
+  if (!backend) return null;
+  try {
+    const rows = await all(backend, "SELECT risk_json FROM arena_risk_evaluations WHERE aid = ?", [aid]);
+    const raw = rows[0]?.risk_json;
+    if (typeof raw !== "string" || !raw) return null;
+    const parsed = JSON.parse(raw) as ArenaProfileRisk;
+    if (!parsed || typeof parsed !== "object" || Number(parsed.aid) !== aid) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** A stored risk is fresh when it matches the current snapshot versions and TTL. */
+export function isArenaProfileRiskFresh(
+  risk: ArenaProfileRisk | null,
+  profileUpdatedAt: number | null,
+  now = Date.now(),
+): boolean {
+  if (!risk) return false;
+  if (risk.version?.calculation !== ARENA_RISK_CALCULATION_VERSION) return false;
+  if (risk.version?.parser !== ARENA_PARSER_VERSION) return false;
+  if (typeof profileUpdatedAt === "number" && Number.isFinite(profileUpdatedAt)) {
+    const riskUpstream = risk.version?.upstream ?? risk.freshness?.profileUpdatedAt;
+    if (riskUpstream == null || riskUpstream < profileUpdatedAt) return false;
+  }
+  const evaluatedAt = risk.freshness?.evaluatedAt;
+  if (!Number.isFinite(evaluatedAt)) return false;
+  return now - (evaluatedAt as number) < ARENA_RISK_TTL_MS;
 }
 
 /** Display-only Arena anomaly score. It never calls generic moderation storage. */
