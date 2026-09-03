@@ -10,6 +10,22 @@ function legacyBrackets(buckets: BucketAgg[]) {
   }));
 }
 
+export interface AverageComputePhases {
+  averagesMs?: number;
+  bucketAggregateMs?: number;
+  rangeBoundsMs?: number;
+}
+
+async function timedPhase<T>(phases: AverageComputePhases | undefined, key: keyof AverageComputePhases, load: () => Promise<T>): Promise<T> {
+  if (!phases) return load();
+  const started = performance.now();
+  try {
+    return await load();
+  } finally {
+    phases[key] = Math.max(0, Math.round(performance.now() - started));
+  }
+}
+
 export async function computeAverage(
   mode: CrossSectionMode,
   dimension: RangeDimension,
@@ -20,6 +36,7 @@ export async function computeAverage(
   min: number | null,
   max: number | null,
   maxInclusive: boolean,
+  phases?: AverageComputePhases,
 ) {
   const metric = resolveY(metricKey);
   const store = await getStore(mode);
@@ -45,9 +62,9 @@ export async function computeAverage(
   }
 
   const [averageResult, bucketResult, boundsResult] = await Promise.all([
-    store.averages({ dimension, min, max, maxInclusive }, statistic, period),
-    store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
-    store.rangeBounds(dimension, period),
+    timedPhase(phases, "averagesMs", () => store.averages({ dimension, min, max, maxInclusive }, statistic, period)),
+    timedPhase(phases, "bucketAggregateMs", () => store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic)),
+    timedPhase(phases, "rangeBoundsMs", () => store.rangeBounds(dimension, period)),
   ]);
   const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
   const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };

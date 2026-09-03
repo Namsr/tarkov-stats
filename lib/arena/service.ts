@@ -235,15 +235,44 @@ function averageBuckets(rows: Row[], dimension: ArenaDimension, kind: ArenaStati
     .map((bucket) => ({ min: bucket.min, max: bucket.max, sampleN: bucket.rows.length, metrics: metricSummary(bucket.rows, kind) }));
 }
 
-export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAverageResult | null> {
+export interface ArenaAveragePhases {
+  averagesMs?: number;
+  bucketAggregateMs?: number;
+  rangeBoundsMs?: number;
+}
+
+async function timedArenaPhase<T>(
+  phases: ArenaAveragePhases | undefined,
+  key: keyof ArenaAveragePhases,
+  load: () => Promise<T>,
+): Promise<T> {
+  if (!phases) return load();
+  const started = performance.now();
+  try {
+    return await load();
+  } finally {
+    phases[key] = Math.max(0, Math.round(performance.now() - started));
+  }
+}
+
+export async function getArenaAverage(
+  input: ArenaAverageInput,
+  phases?: ArenaAveragePhases,
+): Promise<ArenaAverageResult | null> {
   const backend = await getArenaBackend();
   if (!backend) return null;
   const filterIdentity = averageIdentity(input);
   const [rows, population] = await Promise.all([
-    arenaRows(backend, { ...filterIdentity, eligible: true }),
-    arenaPopulation(backend),
+    timedArenaPhase(phases, "averagesMs", () => arenaRows(backend, { ...filterIdentity, eligible: true })),
+    timedArenaPhase(phases, "bucketAggregateMs", () => arenaPopulation(backend)),
   ]);
+  const computeStarted = performance.now();
   const metrics = metricSummary(rows, filterIdentity.statistic);
+  const buckets = averageBuckets(rows, filterIdentity.dimension, filterIdentity.statistic);
+  const resultBounds = { hours: bounds(rows, "hours"), matches: bounds(rows, "games_count") };
+  if (phases) {
+    phases.rangeBoundsMs = Math.max(0, Math.round(performance.now() - computeStarted));
+  }
   return {
     filterIdentity,
     sampleN: rows.length,
@@ -251,9 +280,9 @@ export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAv
     coverage: Object.fromEntries(ARENA_METRIC_KEYS.map((metric) => [
       metric, rows.length ? metrics[metric].count / rows.length : 0,
     ])) as Record<ArenaMetricKey, number>,
-    bounds: { hours: bounds(rows, "hours"), matches: bounds(rows, "games_count") },
+    bounds: resultBounds,
     metrics,
-    buckets: averageBuckets(rows, filterIdentity.dimension, filterIdentity.statistic),
+    buckets,
     population,
   };
 }

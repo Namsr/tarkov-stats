@@ -19,6 +19,8 @@ const dynamicCache = await import("../lib/average-dynamic-cache.ts");
 
 test.after(() => {
   publication.resetAveragePublicationForTests();
+  dynamicCache.resetDynamicAverageCacheForTests();
+  dynamicCache.resetDynamicAveragePersistentForTests();
   rmSync(directory, { recursive: true, force: true });
 });
 

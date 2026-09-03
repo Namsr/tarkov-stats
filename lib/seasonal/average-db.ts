@@ -176,6 +176,26 @@ function bucketExpressions(dimension: SeasonalAverageDimension) {
   return { column, lo, hi };
 }
 
+export interface SeasonalAveragePhases {
+  averagesMs?: number;
+  bucketAggregateMs?: number;
+  rangeBoundsMs?: number;
+}
+
+async function timedSeasonalPhase<T>(
+  phases: SeasonalAveragePhases | undefined,
+  key: keyof SeasonalAveragePhases,
+  load: () => Promise<T>,
+): Promise<T> {
+  if (!phases) return load();
+  const started = performance.now();
+  try {
+    return await load();
+  } finally {
+    phases[key] = Math.max(0, Math.round(performance.now() - started));
+  }
+}
+
 /** Query adapter for the Seasonal cross-section; it never opens the regular player store. */
 export async function getSeasonalAverageCrossSectionQuery(): Promise<
   ((input: {
@@ -187,6 +207,7 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
     min: number | null;
     max: number | null;
     now?: number;
+    phases?: SeasonalAveragePhases;
   }) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
 > {
   try {
@@ -208,54 +229,67 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
 
     return async (input) => {
       const now = input.now ?? Date.now();
+      const phases = input.phases;
       const metricDef = resolveY(input.metric);
       const metric = metricDef.key;
 
       const baseParams = (extra: unknown[] = []) => [input.cycleId, input.cycleId, input.cycleId, ...extra];
-      const populationParams: unknown[] = [];
-      const populationWhere = periodWhere(input.period, populationParams, now);
-      const population = await backendFirst(backend,
-        `${PORTRAIT_CTE} SELECT COUNT(*) AS n FROM normalized${populationWhere.length ? ` WHERE ${populationWhere.join(" AND ")}` : ""}`,
-        baseParams(populationParams),
-      );
-      const total = Number(population?.n ?? 0);
-
-      const rangeParams: unknown[] = [];
-      const rangeWhere = periodWhere(input.period, rangeParams, now);
-      appendRange(rangeWhere, rangeParams, input.dimension, input.min, input.max);
-      const scopedWhere = rangeWhere.length ? ` WHERE ${rangeWhere.join(" AND ")}` : "";
-      const scopedCount = await backendFirst(backend,
-        `${PORTRAIT_CTE} SELECT COUNT(*) AS n FROM normalized${scopedWhere}`,
-        baseParams(rangeParams),
-      );
-      const averages = { n: Number(scopedCount?.n ?? 0) } as NonNullable<AverageDashboardResponse["averages"]>;
-      const metricCounts: Record<string, number> = {};
-      for (const column of SEASONAL_AVG_COLS) {
-        const metricParams: unknown[] = [];
-        const metricWhereParts = periodWhere(input.period, metricParams, now);
-        appendRange(metricWhereParts, metricParams, input.dimension, input.min, input.max);
-        const metricExpr = metricExpression(column);
-        const count = await backendFirst(backend,
-          `${PORTRAIT_CTE} SELECT COUNT(${metricExpr}) AS n FROM normalized${metricWhereParts.length ? ` WHERE ${metricWhereParts.join(" AND ")}` : ""}`,
-          baseParams(metricParams),
-        );
-        const n = Number(count?.n ?? 0);
-        metricCounts[column] = n;
-        if (n === 0) {
-          averages[column] = null;
-          continue;
+      const averagesBundle = await timedSeasonalPhase(phases, "averagesMs", async () => {
+        const populationParams: unknown[] = [];
+        const populationWhere = periodWhere(input.period, populationParams, now);
+        const rangeParams: unknown[] = [];
+        const rangeWhere = periodWhere(input.period, rangeParams, now);
+        appendRange(rangeWhere, rangeParams, input.dimension, input.min, input.max);
+        const scopedWhere = rangeWhere.length ? ` WHERE ${rangeWhere.join(" AND ")}` : "";
+        const [population, scopedCount] = await Promise.all([
+          backendFirst(backend,
+            `${PORTRAIT_CTE} SELECT COUNT(*) AS n FROM normalized${populationWhere.length ? ` WHERE ${populationWhere.join(" AND ")}` : ""}`,
+            baseParams(populationParams),
+          ),
+          backendFirst(backend,
+            `${PORTRAIT_CTE} SELECT COUNT(*) AS n FROM normalized${scopedWhere}`,
+            baseParams(rangeParams),
+          ),
+        ]);
+        const total = Number(population?.n ?? 0);
+        const averages = { n: Number(scopedCount?.n ?? 0) } as NonNullable<AverageDashboardResponse["averages"]>;
+        const metricCounts: Record<string, number> = {};
+        // Sequential per-column roundtrips kept Seasonal p50 near 10s on D1.
+        // Counts run in one batch, statistics in a second batch.
+        const counts = await Promise.all(SEASONAL_AVG_COLS.map(async (column) => {
+          const metricParams: unknown[] = [];
+          const metricWhereParts = periodWhere(input.period, metricParams, now);
+          appendRange(metricWhereParts, metricParams, input.dimension, input.min, input.max);
+          const metricExpr = metricExpression(column);
+          const count = await backendFirst(backend,
+            `${PORTRAIT_CTE} SELECT COUNT(${metricExpr}) AS n FROM normalized${metricWhereParts.length ? ` WHERE ${metricWhereParts.join(" AND ")}` : ""}`,
+            baseParams(metricParams),
+          );
+          return { column, n: Number(count?.n ?? 0) };
+        }));
+        for (const { column, n } of counts) {
+          metricCounts[column] = n;
+          if (n === 0) averages[column] = null;
         }
-        const statisticParams: unknown[] = [];
-        const statisticWhereParts = periodWhere(input.period, statisticParams, now);
-        appendRange(statisticWhereParts, statisticParams, input.dimension, input.min, input.max);
-        const statisticWhere = statisticWhereParts.length ? `WHERE ${statisticWhereParts.join(" AND ")}` : "";
-        const value = await backendFirst(backend,
-          `${PORTRAIT_CTE} ${averageSql(metricExpr, statisticWhere || "WHERE 1 = 1", input.statistic, n)}`,
-          baseParams(statisticParams),
-        );
-        averages[column] = readNumber(value ?? undefined, "a");
-        if (column === "hours" && input.metric === "hours") averages.hours = averages[column];
-      }
+        await Promise.all(counts.filter(({ n }) => n > 0).map(async ({ column, n }) => {
+          const metricExpr = metricExpression(column);
+          const statisticParams: unknown[] = [];
+          const statisticWhereParts = periodWhere(input.period, statisticParams, now);
+          appendRange(statisticWhereParts, statisticParams, input.dimension, input.min, input.max);
+          const statisticWhere = statisticWhereParts.length ? `WHERE ${statisticWhereParts.join(" AND ")}` : "";
+          const value = await backendFirst(backend,
+            `${PORTRAIT_CTE} ${averageSql(metricExpr, statisticWhere || "WHERE 1 = 1", input.statistic, n)}`,
+            baseParams(statisticParams),
+          );
+          averages[column] = readNumber(value ?? undefined, "a");
+        }));
+        if (input.metric === "hours" && averages.hours !== undefined) {
+          // Keep the hours alias consistent with the requested metric.
+          averages.hours = averages.hours;
+        }
+        return { total, averages, metricCounts };
+      });
+      const { total, averages, metricCounts } = averagesBundle;
       const rangeMetricExpr = metricDef.agg === "count" ? null : metricExpression(metricDef.column ?? metric);
       const { column: dimensionColumn, lo, hi } = bucketExpressions(input.dimension);
       const bucketParams: unknown[] = [];
@@ -282,16 +316,17 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
         : `${PORTRAIT_CTE} SELECT ${lo} AS lo, ${hi} AS hi, COUNT(*) AS n,
             ${rangeMetricExpr ? `COALESCE(SUM(${rangeMetricExpr}), 0)` : "0"} AS s
             FROM normalized ${bucketWhere} GROUP BY ${lo}, ${hi} ORDER BY lo`;
-      const bucketRows = await backendRows(backend,
-        bucketSql,
-        baseParams(bucketParams),
+      const bucketRows = await timedSeasonalPhase(phases, "bucketAggregateMs", () =>
+        backendRows(backend, bucketSql, baseParams(bucketParams)),
       );
       const boundsParams: unknown[] = [];
       const boundsWhere = periodWhere(input.period, boundsParams, now);
       const boundsColumn = dimensionColumn;
-      const bounds = await backendFirst(backend,
-        `${PORTRAIT_CTE} SELECT MIN(${boundsColumn}) AS lo, MAX(${boundsColumn}) AS hi FROM normalized${[...boundsWhere, `${boundsColumn} IS NOT NULL`].length ? ` WHERE ${[...boundsWhere, `${boundsColumn} IS NOT NULL`].join(" AND ")}` : ""}`,
-        baseParams(boundsParams),
+      const bounds = await timedSeasonalPhase(phases, "rangeBoundsMs", () =>
+        backendFirst(backend,
+          `${PORTRAIT_CTE} SELECT MIN(${boundsColumn}) AS lo, MAX(${boundsColumn}) AS hi FROM normalized${[...boundsWhere, `${boundsColumn} IS NOT NULL`].length ? ` WHERE ${[...boundsWhere, `${boundsColumn} IS NOT NULL`].join(" AND ")}` : ""}`,
+          baseParams(boundsParams),
+        ),
       );
       return {
         mode: "seasonal",

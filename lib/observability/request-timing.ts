@@ -164,6 +164,9 @@ export function createRequestTiming(options: Options = {}) {
         cohortMs: input.cohortMs,
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
+        averagesMs: input.averagesMs,
+        bucketAggregateMs: input.bucketAggregateMs,
+        rangeBoundsMs: input.rangeBoundsMs,
       });
       if (!sampled) return;
       const event = {

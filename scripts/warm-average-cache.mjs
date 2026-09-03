@@ -47,13 +47,26 @@ function seasonalAveragePath(cycle, statistic, period) {
   return `/api/seasonal/average?${params}`;
 }
 
-function arenaAveragePath(arenaMode, statistic) {
+function arenaAveragePath(arenaMode, statistic, extra = {}) {
   const params = new URLSearchParams({
     mode: "arena",
     arenaMode,
     dimension: "matches",
     metric: "players",
     statistic,
+    ...extra,
+  });
+  return `/api/average?${params}`;
+}
+
+function dynamicAveragePath(mode, statistic, period, extra = {}) {
+  const params = new URLSearchParams({
+    mode,
+    dimension: "pmc_raids",
+    metric: "kd_ratio",
+    period,
+    statistic,
+    ...extra,
   });
   return `/api/average?${params}`;
 }
@@ -63,10 +76,16 @@ async function warmAverageCache() {
     for (const mode of modes) {
       for (const period of periods) {
         await request(averagePath(mode, statistic, period));
+        // Frequent dynamic filter variants: alternate dimension/metric so cold
+        // cache misses for typical range switches stay below the 1s budget.
+        await request(dynamicAveragePath(mode, statistic, period));
       }
     }
     for (const arenaMode of arenaModes) {
       await request(arenaAveragePath(arenaMode, statistic));
+      // The Arena UI defaults to minMatches=10, which is a dynamic (non-standard)
+      // variant. Warm it alongside the standard publication-shaped request.
+      await request(arenaAveragePath(arenaMode, statistic, { minMatches: "10" }));
     }
   }
 
