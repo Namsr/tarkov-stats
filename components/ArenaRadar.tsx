@@ -337,28 +337,35 @@ export default function ArenaRadar({
           {ARENA_METRIC_KEYS.map((metric, index) => {
             const edge = point(index, RADIUS);
             const label = point(index, RADIUS + 30);
+            const labelText = t(metricLabelKey(metric));
+            const side = index === 1 ? "right" : index === 4 ? "left" : null;
+            const labelLines = side ? labelText.split(/\s+(?=\S+$)/) : [labelText];
+            const labelX = side === "left" ? 8 : side === "right" ? 392 : label.x;
             const available = centerValues[index] !== null;
             return (
               <g key={metric}>
                 <line x1={CX} y1={CY} x2={edge.x} y2={edge.y} stroke="var(--card-border)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
                 <text
-                  x={label.x}
+                  x={labelX}
                   y={label.y}
                   fill={available ? "var(--muted-strong)" : "var(--muted)"}
                   fontSize="11"
                   fontWeight="600"
-                  textAnchor={label.x < CX - 4 ? "end" : label.x > CX + 4 ? "start" : "middle"}
+                  textAnchor={side === "left" ? "start" : side === "right" ? "end" : "middle"}
                   dominantBaseline={label.y < CY - 4 ? "auto" : label.y > CY + 4 ? "hanging" : "middle"}
                 >
-                  {t(metricLabelKey(metric))}
+                  {labelLines.map((line, lineIndex) => (
+                    <tspan key={line} x={labelX} dy={lineIndex === 0 ? 0 : 13}>{line}</tspan>
+                  ))}
                 </text>
                 {!available && (
                   <text
-                    x={label.x}
-                    y={label.y + 15}
+                    x={labelX}
+                    y={label.y + labelLines.length * 15}
                     fill="var(--muted)"
                     fontSize="10"
-                    textAnchor={label.x < CX - 4 ? "end" : label.x > CX + 4 ? "start" : "middle"}
+                    textAnchor={side === "left" ? "start" : side === "right" ? "end" : "middle"}
+                    dominantBaseline={label.y > CY + 4 ? "hanging" : undefined}
                   >
                     {t("common.notAvailable")}
                   </text>

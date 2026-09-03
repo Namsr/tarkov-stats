@@ -358,3 +358,11 @@ test("Arena radar uses the PvP comparison scale and accessible interactions", ()
   assert.doesNotMatch(radar, /sampleShort/);
   assert.doesNotMatch(radar, /cursor-help/);
 });
+
+test("Arena radar keeps translated side labels inside the viewBox", () => {
+  const radar = read("components/ArenaRadar.tsx");
+  assert.match(radar, /const side = index === 1 \? "right" : index === 4 \? "left" : null/);
+  assert.match(radar, /const labelX = side === "left" \? 8 : side === "right" \? 392 : label\.x/);
+  assert.match(radar, /<tspan key=\{line\} x=\{labelX\}/);
+  assert.match(radar, /dominantBaseline=\{label\.y > CY \+ 4 \? "hanging" : undefined\}/);
+});
