@@ -176,6 +176,222 @@ function bucketExpressions(dimension: SeasonalAverageDimension) {
   return { column, lo, hi };
 }
 
+export interface SeasonalPublicationVariantTimings {
+  variant: string;
+  period: AveragePeriod;
+  statistic: AverageStatistic;
+  computeMs: number;
+}
+
+export interface SeasonalPublicationTimings {
+  /** The single shared portrait scan; previously re-evaluated ~38x per variant. */
+  portraitFetchMs: number;
+  portraitRows: number;
+  totalMs: number;
+  variants: SeasonalPublicationVariantTimings[];
+}
+
+const SEASONAL_PORTRAIT_COLUMNS = [
+  "aid", "profile_updated_at", "hours", "total_raids", "pmc_raids", "scav_raids",
+  "survived", "deaths", "total_kills", "killed_pmc", "run_through", "longest_win_streak",
+  "level", "prestige", "achv_count", "pmc_survived", "pmc_deaths", "pmc_kills",
+  "survival_rate", "kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate",
+] as const;
+
+const SEASONAL_PUBLICATION_STATISTICS = ["trimmed_mean", "median"] as const satisfies readonly AverageStatistic[];
+const SEASONAL_PUBLICATION_PERIODS = ["all", "90d"] as const satisfies readonly AveragePeriod[];
+
+function standardSeasonalVariant(statistic: AverageStatistic, period: AveragePeriod): string {
+  return `standard:${statistic}:${period}`;
+}
+
+async function openSeasonalAverageBackend(): Promise<AverageBackend | null> {
+  try {
+    const d1 = await getSeasonalD1();
+    if (d1) return { kind: "d1", db: d1 };
+    if (!database) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sqlite = (await import("node:sqlite" as string)) as any;
+      database = new sqlite.DatabaseSync(
+        process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
+      );
+      initializeSeasonalSchema(database);
+    }
+    return { kind: "sqlite", db: database };
+  } catch (error) {
+    console.warn("seasonal average backend unavailable: " + (error as Error).message);
+    return null;
+  }
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (value == null) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function averageNumbers(values: number[], statistic: AverageStatistic): number | null {
+  if (values.length === 0) return null;
+  if (statistic === "median") {
+    const sorted = [...values].sort((left, right) => left - right);
+    const n = sorted.length;
+    if (n % 2 === 1) return sorted[(n - 1) / 2] ?? null;
+    return ((sorted[n / 2 - 1] ?? 0) + (sorted[n / 2] ?? 0)) / 2;
+  }
+  const { off, limit } = trimWindow(values.length);
+  if (off === 0) return values.reduce((sum, value) => sum + value, 0) / values.length;
+  const sorted = [...values].sort((left, right) => left - right);
+  const window = sorted.slice(off, off + limit);
+  if (window.length === 0) return null;
+  return window.reduce((sum, value) => sum + value, 0) / window.length;
+}
+
+/** Mirrors the hours branch of bucketExpressions; Math.trunc matches SQLite CAST AS INTEGER. */
+export function seasonalHoursBucket(value: number): { lo: number; hi: number | null } {
+  if (value >= 10000) return { lo: 10000, hi: null };
+  if (value < 2000) {
+    const lo = Math.trunc(value / 50) * 50;
+    return { lo, hi: lo + 50 };
+  }
+  const lo = 2000 + Math.trunc((value - 2000) / 100) * 100;
+  return { lo, hi: lo + 100 };
+}
+
+/**
+ * Pure builder used by the publication batch path. It replicates the
+ * per-variant SQL semantics (period-only total/buckets/bounds, period+range
+ * averages) over an already-fetched portrait snapshot.
+ */
+export function buildSeasonalCrossSectionFromRows(
+  rows: readonly Record<string, unknown>[],
+  input: {
+    cycleId: string;
+    period: AveragePeriod;
+    statistic: AverageStatistic;
+    dimension: SeasonalAverageDimension;
+    metric: string;
+    min: number | null;
+    max: number | null;
+    now?: number;
+  },
+): SeasonalAverageCrossSectionResponse {
+  const now = input.now ?? Date.now();
+  const metric = resolveY(input.metric).key;
+  const dimensionColumn = input.dimension === "hours" ? "hours" : "pmc_raids";
+  const cutoff = input.period === "90d" ? Math.floor(now - 90 * 86_400_000) : null;
+  const periodRows = cutoff == null
+    ? [...rows]
+    : rows.filter((row) => Number(row.profile_updated_at) >= cutoff);
+  const inRange = (row: Record<string, unknown>) => {
+    const value = finiteOrNull(row[dimensionColumn]);
+    if (value == null) return input.min == null && input.max == null ? true : false;
+    if (input.min != null && value < input.min) return false;
+    if (input.max != null && value > input.max) return false;
+    return true;
+  };
+  const scopedRows = periodRows.filter(inRange);
+  const total = periodRows.length;
+  const averages = { n: scopedRows.length } as NonNullable<AverageDashboardResponse["averages"]>;
+  const metricCounts: Record<string, number> = {};
+  for (const column of SEASONAL_AVG_COLS) {
+    const values: number[] = [];
+    for (const row of scopedRows) {
+      const value = finiteOrNull(row[column]);
+      if (value != null) values.push(value);
+    }
+    metricCounts[column] = values.length;
+    averages[column] = averageNumbers(values, input.statistic);
+  }
+  const grouped = new Map<string, { lo: number; hi: number | null; n: number }>();
+  let boundLo: number | null = null;
+  let boundHi: number | null = null;
+  for (const row of periodRows) {
+    const value = finiteOrNull(row[dimensionColumn]);
+    if (value == null) continue;
+    if (boundLo == null || value < boundLo) boundLo = value;
+    if (boundHi == null || value > boundHi) boundHi = value;
+    if (input.dimension !== "hours") continue;
+    const bucket = seasonalHoursBucket(value);
+    const key = `${bucket.lo}:${bucket.hi ?? ""}`;
+    const entry = grouped.get(key) ?? { lo: bucket.lo, hi: bucket.hi, n: 0 };
+    entry.n += 1;
+    grouped.set(key, entry);
+  }
+  const buckets = [...grouped.values()]
+    .sort((left, right) => left.lo - right.lo)
+    .map((entry) => ({ lo: entry.lo, hi: entry.hi, n: entry.n, sum: 0 }));
+  return {
+    mode: "seasonal",
+    cycleId: input.cycleId,
+    period: input.period,
+    statistic: input.statistic,
+    total,
+    averages: total === 0 ? null : averages,
+    metricCounts,
+    buckets,
+    bounds: boundLo == null || boundHi == null
+      ? DEFAULT_BOUNDS[input.dimension]
+      : { min: Math.max(0, Math.floor(boundLo)), max: Math.ceil(boundHi) },
+    dimension: input.dimension,
+    metric,
+  };
+}
+
+/**
+ * Batch path for the publication materializer. The legacy per-variant query
+ * re-evaluated PORTRAIT_CTE ~38 times per variant (152 scans for the full
+ * 2 statistics x 2 periods matrix), which dominated the ~9 minute production
+ * build. This fetches the normalized portrait once and derives all four
+ * standard variants in JS, keeping the single transactional publish so a
+ * parallel/incremental build can never expose a partial set.
+ */
+export async function getSeasonalAveragePublicationPayloads(
+  cycleId: string,
+  now: number = Date.now(),
+): Promise<{
+    payloads: Map<string, SeasonalAverageCrossSectionResponse>;
+    timings: SeasonalPublicationTimings;
+  } | null> {
+  const totalStartedAt = Date.now();
+  const backend = await openSeasonalAverageBackend();
+  if (!backend) return null;
+  let rows: Record<string, unknown>[];
+  const portraitFetchStartedAt = Date.now();
+  try {
+    rows = await backendRows(backend,
+      `${PORTRAIT_CTE} SELECT ${SEASONAL_PORTRAIT_COLUMNS.join(", ")} FROM normalized`,
+      [cycleId, cycleId, cycleId],
+    );
+  } catch (error) {
+    console.warn("seasonal publication portrait fetch failed: " + (error as Error).message);
+    return null;
+  }
+  const portraitFetchMs = Date.now() - portraitFetchStartedAt;
+  const payloads = new Map<string, SeasonalAverageCrossSectionResponse>();
+  const variants: SeasonalPublicationVariantTimings[] = [];
+  for (const statistic of SEASONAL_PUBLICATION_STATISTICS) {
+    for (const period of SEASONAL_PUBLICATION_PERIODS) {
+      const computeStartedAt = Date.now();
+      const response = buildSeasonalCrossSectionFromRows(rows, {
+        cycleId, period, statistic, dimension: "hours", metric: "players", min: null, max: null, now,
+      });
+      const computeMs = Date.now() - computeStartedAt;
+      const variant = standardSeasonalVariant(statistic, period);
+      payloads.set(variant, response);
+      variants.push({ variant, period, statistic, computeMs });
+    }
+  }
+  return {
+    payloads,
+    timings: {
+      portraitFetchMs,
+      portraitRows: rows.length,
+      totalMs: Date.now() - totalStartedAt,
+      variants,
+    },
+  };
+}
+
 /** Query adapter for the Seasonal cross-section; it never opens the regular player store. */
 export async function getSeasonalAverageCrossSectionQuery(): Promise<
   ((input: {
