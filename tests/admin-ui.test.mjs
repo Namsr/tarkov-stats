@@ -19,11 +19,12 @@ test("admin access uses only the exact Google subject and hides the page", async
 });
 
 test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation inputs", async () => {
-  const [dashboard, profile, dictionary, styles] = await Promise.all([
+  const [dashboard, profile, dictionary, styles, accountsRoute] = await Promise.all([
     readFile("components/AdminDashboard.tsx", "utf8"),
     readFile("app/profile/page.tsx", "utf8"),
     readFile("lib/i18n/dictionary.ts", "utf8"),
     readFile("app/globals.css", "utf8"),
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
   ]);
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
@@ -51,7 +52,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.account\.openProfile": "Open \{mode\} profile"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Profile updated \(MSK\)"/);
   assert.match(dictionary, /"admin\.source\.reported": "Marked suspicious: \{n\}"/);
-  assert.match(dictionary, /"admin\.suspicious\.heading": "Accounts marked suspicious by users"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Awaiting a decision"/);
+  assert.match(dictionary, /"admin\.suspicious\.confirmedHeading": "Confirmed global bans"/);
   assert.match(dictionary, /"admin\.metric\.newSuspicious": "Awaiting review \(total\)"/);
   assert.match(dictionary, /"admin\.metric\.severeRisk": "Severe risk \(total\)"/);
   assert.match(dictionary, /"admin\.metric\.accountRequests": "Exact nickname searches"/);
@@ -65,7 +67,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.account\.openProfile": "Открыть профиль \{mode\}"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Профиль обновлён \(МСК\)"/);
   assert.match(dictionary, /"admin\.source\.reported": "Отмечен подозрительным: \{n\}"/);
-  assert.match(dictionary, /"admin\.suspicious\.heading": "Аккаунты, отмеченные пользователями как подозрительные"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Ожидают решения"/);
+  assert.match(dictionary, /"admin\.suspicious\.confirmedHeading": "Подтверждённые глобальные баны"/);
   assert.match(dictionary, /"admin\.metric\.newSuspicious": "Ожидают проверки \(итого\)"/);
   assert.match(dictionary, /"admin\.metric\.severeRisk": "Критический риск \(итого\)"/);
   assert.match(dictionary, /"admin\.metric\.accountRequests": "Точные поиски по никнейму"/);
@@ -77,6 +80,12 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.health\.scope": "Показатели состояния включают только API-маршруты/);
   assert.match(dictionary, /"admin\.health\.lastProfile": "Последний вызов API профиля \(МСК\)"/);
   assert.match(styles, /\.admin-account__mode-link/);
+  assert.match(dashboard, /reportedMode && profileModes\.includes\(reportedMode\)/);
+  assert.match(dashboard, /admin\.account\.reportedModes/);
+  assert.match(dashboard, /const confirmed = data\.accounts\.filter/);
+  assert.match(accountsRoute, /storedReportNicknames/);
+  assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
+  assert.match(accountsRoute, /reportedModes: report\.modes/);
   assert.match(dictionary, /"profile\.admin": "Админ-панель"/);
   assert.match(styles, /@media \(max-width: 420px\)[\s\S]*?\.admin-metrics/);
   assert.match(dashboard, /useMemo/);

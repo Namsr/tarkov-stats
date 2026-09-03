@@ -7,6 +7,7 @@ export interface CommunityCandidate {
 }
 
 export interface CommunityReview extends CommunityCandidate {
+  modes: string[];
   yesCount: number;
   noCount: number;
 }
@@ -56,6 +57,7 @@ function reviewsSql(aid?: number): string {
     SELECT r.aid,
       (SELECT mode FROM suspect_reports source WHERE source.aid = r.aid ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS mode,
       (SELECT cycle_id FROM suspect_reports source WHERE source.aid = r.aid ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS cycle_id,
+      GROUP_CONCAT(DISTINCT r.mode) AS modes,
       COUNT(*) AS report_count, MAX(r.created_at) AS last_reported_at,
       (SELECT COUNT(*) FROM ban_review_votes v WHERE v.aid = r.aid AND v.verdict = 'yes') AS yes_count,
       (SELECT COUNT(*) FROM ban_review_votes v WHERE v.aid = r.aid AND v.verdict = 'no') AS no_count
@@ -72,7 +74,12 @@ function candidate(row: Record<string, unknown>): CommunityCandidate {
 }
 
 function review(row: Record<string, unknown>): CommunityReview {
-  return { ...candidate(row), yesCount: Number(row.yes_count), noCount: Number(row.no_count) };
+  return {
+    ...candidate(row),
+    modes: String(row.modes ?? "").split(",").filter(Boolean),
+    yesCount: Number(row.yes_count),
+    noCount: Number(row.no_count),
+  };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

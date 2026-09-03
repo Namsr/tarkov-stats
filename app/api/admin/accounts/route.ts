@@ -3,8 +3,10 @@ import { requireAdmin } from "@/lib/admin-auth";
 import { getAnalyticsStore } from "@/lib/admin/analytics-db";
 import { ADMIN_NO_STORE_HEADERS, parseAdminDomain, parseAdminPeriod } from "@/lib/admin/types";
 import { isGameMode } from "@/types/seasonal";
-import { getCommunityReportsStore } from "@/lib/community-reports-db";
+import { getCommunityReportsStore, type CommunityReview } from "@/lib/community-reports-db";
 import { getModerationForAids, getSnapshotCountsForAids } from "@/lib/admin/moderation-db";
+import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
+import { getSeasonalStore } from "@/lib/seasonal/storage";
 
 export const runtime = "nodejs";
 
@@ -20,6 +22,32 @@ function validCursor(cursor: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+async function storedReportNicknames(
+  reports: readonly CommunityReview[],
+  knownNicknames: ReadonlyMap<number, string | null>,
+): Promise<Map<number, string>> {
+  const missing = reports.filter((report) => !knownNicknames.get(report.aid));
+  const modes = [...new Set(missing.flatMap((report) => [report.mode, ...report.modes]).filter(isGameMode))];
+  const crossSectionModes = modes.filter((item): item is CrossSectionMode => item !== "seasonal");
+  const stores = new Map<CrossSectionMode, PlayerStore | null>(await Promise.all(
+    crossSectionModes.map(async (item) => [item, await getStore(item)] as const),
+  ));
+  const seasonalStore = modes.includes("seasonal") ? await getSeasonalStore() : null;
+  const resolved = await Promise.all(missing.map(async (report) => {
+    const reportModes = [...new Set([report.mode, ...report.modes].filter(isGameMode))];
+    for (const reportMode of reportModes) {
+      const nickname = reportMode === "seasonal"
+        ? report.mode === "seasonal"
+          ? (await seasonalStore?.getProfile({ mode: "seasonal", cycleId: report.cycleId, aid: report.aid }))?.nickname
+          : null
+        : (await stores.get(reportMode)?.profileSummary(report.aid))?.nickname;
+      if (nickname) return [report.aid, nickname] as const;
+    }
+    return null;
+  }));
+  return new Map(resolved.filter((item): item is readonly [number, string] => item !== null));
 }
 
 export async function GET(request: NextRequest) {
@@ -74,11 +102,15 @@ export async function GET(request: NextRequest) {
     for (const [aid, count] of counts) snapshotCounts.set(aid, count);
   }
   const byAid = new Map(moderation.map((item) => [item.aid, item]));
+  const accountByAid = new Map(page.accounts.map((account) => [account.aid, account]));
+  const storedNicknames = suspiciousOnly
+    ? await storedReportNicknames(reportRows, new Map(page.accounts.map((account) => [account.aid, account.nickname])))
+    : new Map<number, string>();
   const accounts = suspiciousOnly
     ? reportRows
-      .filter((report) => !mode || report.mode === mode)
+      .filter((report) => !mode || report.modes.includes(mode))
       .map((report) => {
-        const account = page.accounts.find((item) => item.aid === report.aid);
+        const account = accountByAid.get(report.aid);
         const item = byAid.get(report.aid);
         return {
           ...(account ?? {
@@ -92,9 +124,12 @@ export async function GET(request: NextRequest) {
             sources: [],
             snapshotCount: snapshotCounts.get(report.aid) ?? 0,
           }),
-          modes: [...new Set([...(account?.modes ?? []), report.mode])],
+          nickname: account?.nickname ?? storedNicknames.get(report.aid) ?? null,
+          modes: [...new Set([...(account?.modes ?? []), ...report.modes, report.mode])],
           snapshotCount: snapshotCounts.get(report.aid) ?? account?.snapshotCount ?? 0,
           reportedAt: report.lastReportedAt,
+          reportedMode: report.mode,
+          reportedModes: report.modes,
           risk: item?.risk ?? null,
           reportCount: report.reportCount,
           confirmedBan: item?.sources.confirmedBan ?? false,
@@ -102,6 +137,7 @@ export async function GET(request: NextRequest) {
           canRestoreManualBan: item?.canRestoreManualBan ?? false,
         };
       })
+      .filter((account) => account.confirmedBan || account.review.status !== "false_positive")
       .filter((account) => !search || account.nickname?.toLocaleLowerCase().includes(search.toLocaleLowerCase()) || String(account.aid) === search)
       .sort((left, right) => sort === "requests"
         ? right.reportCount - left.reportCount || right.reportedAt - left.reportedAt || right.aid - left.aid
@@ -117,6 +153,8 @@ export async function GET(request: NextRequest) {
         snapshotCount: snapshotCounts.get(account.aid) ?? account.snapshotCount,
         risk: item?.risk ?? null,
         reportCount: report?.reportCount ?? item?.sources.communityReports ?? 0,
+        reportedMode: report?.mode,
+        reportedModes: report?.modes ?? [],
         confirmedBan: item?.sources.confirmedBan ?? false,
         review: item?.review ?? { status: "new", note: null, updatedAt: null },
         canRestoreManualBan: item?.canRestoreManualBan ?? false,

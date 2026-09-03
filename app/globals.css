@@ -1557,6 +1557,7 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-rank-bar i { display: block; height: 100%; background: var(--foreground); }
 .admin-accounts { overflow: hidden; }
 .admin-accounts__heading { margin: 20px 18px 0; }
+.admin-accounts__heading p { max-width: 760px; margin-top: 6px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
 .admin-account-head, .admin-account summary { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(85px, .35fr) minmax(85px, .35fr) minmax(160px, .85fr) minmax(200px, 1fr); align-items: center; gap: 14px; }
 .admin-account-head { padding: 13px 18px; color: var(--muted); font-size: .64rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .admin-account { border-top: 1px solid var(--card-border); }

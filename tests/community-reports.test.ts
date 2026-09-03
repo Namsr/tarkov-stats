@@ -65,7 +65,7 @@ for (const [name, makeStore] of storeFactories) {
     assert.deepEqual((await store.candidates("helper-a", 3)).map((candidate) => candidate.aid), [80]);
     assert.deepEqual(await store.vote({ helperId: "helper-b", aid: 999, verdict: "yes" }), { already: false, missing: true });
     assert.deepEqual(await store.reviews(70), [{
-      aid: 70, mode: "regular", cycleId: "persistent", reportCount: 1, lastReportedAt: 1, yesCount: 1, noCount: 0,
+      aid: 70, mode: "regular", modes: ["regular"], cycleId: "persistent", reportCount: 1, lastReportedAt: 1, yesCount: 1, noCount: 0,
     }]);
   });
 
@@ -74,7 +74,7 @@ for (const [name, makeStore] of storeFactories) {
     await store.report({ userSub: "google-a", aid: 9, mode: "regular", cycleId: "persistent", createdAt: 10 });
     await store.report({ userSub: "google-z", aid: 9, mode: "arena", cycleId: "persistent", createdAt: 10 });
     assert.deepEqual(await store.reviews(9), [{
-      aid: 9, mode: "arena", cycleId: "persistent", reportCount: 2, lastReportedAt: 10, yesCount: 0, noCount: 0,
+      aid: 9, mode: "arena", modes: ["regular", "arena"], cycleId: "persistent", reportCount: 2, lastReportedAt: 10, yesCount: 0, noCount: 0,
     }]);
   });
 }
