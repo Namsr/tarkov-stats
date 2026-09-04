@@ -38,11 +38,17 @@ async function storedReportNicknames(
   const resolved = await Promise.all(missing.map(async (report) => {
     const reportModes = [...new Set([report.mode, ...report.modes].filter(isGameMode))];
     for (const reportMode of reportModes) {
-      const nickname = reportMode === "seasonal"
-        ? report.mode === "seasonal"
-          ? (await seasonalStore?.getProfile({ mode: "seasonal", cycleId: report.cycleId, aid: report.aid }))?.nickname
-          : null
-        : (await stores.get(reportMode)?.profileSummary(report.aid))?.nickname;
+      if (reportMode === "seasonal") {
+        // Per-mode cycle: the latest report overall may be regular/arena while an
+        // earlier seasonal report holds a different cycleId. Use the latest seasonal
+        // cycleId so seasonal nicknames resolve even when seasonal is not last.
+        const seasonalCycleId = report.seasonalCycleId ?? (report.mode === "seasonal" ? report.cycleId : null);
+        if (!seasonalCycleId) continue;
+        const nickname = (await seasonalStore?.getProfile({ mode: "seasonal", cycleId: seasonalCycleId, aid: report.aid }))?.nickname;
+        if (nickname) return [report.aid, nickname] as const;
+        continue;
+      }
+      const nickname = (await stores.get(reportMode)?.profileSummary(report.aid))?.nickname;
       if (nickname) return [report.aid, nickname] as const;
     }
     return null;
@@ -103,10 +109,14 @@ export async function GET(request: NextRequest) {
   }
   const byAid = new Map(moderation.map((item) => [item.aid, item]));
   const accountByAid = new Map(page.accounts.map((account) => [account.aid, account]));
-  const storedNicknames = suspiciousOnly
-    ? await storedReportNicknames(reportRows, new Map(page.accounts.map((account) => [account.aid, account.nickname])))
-    : new Map<number, string>();
-  const accounts = suspiciousOnly
+  // Precedence (ban-wins): a confirmed global ban keeps the account visible even
+  // when a false_positive review exists. False positives only hide pending rows.
+  // Perf: stored nickname enrichment runs strictly after all filters + slice, so
+  // with limit<=100 we issue at most ~limit*modes stored reads instead of scanning
+  // the whole reviews() table (reportAids up to ~900, reviews() unbounded).
+  // Tradeoff: `search` matches analytics nicknames + AID before enrichment;
+  // stored-only nicknames are display enrichment and not part of the search index.
+  const filteredSuspicious = suspiciousOnly
     ? reportRows
       .filter((report) => !mode || report.modes.includes(mode))
       .map((report) => {
@@ -124,7 +134,7 @@ export async function GET(request: NextRequest) {
             sources: [],
             snapshotCount: snapshotCounts.get(report.aid) ?? 0,
           }),
-          nickname: account?.nickname ?? storedNicknames.get(report.aid) ?? null,
+          nickname: account?.nickname ?? null,
           modes: [...new Set([...(account?.modes ?? []), ...report.modes, report.mode])],
           snapshotCount: snapshotCounts.get(report.aid) ?? account?.snapshotCount ?? 0,
           reportedAt: report.lastReportedAt,
@@ -144,7 +154,19 @@ export async function GET(request: NextRequest) {
         : sort === "snapshots"
           ? right.snapshotCount - left.snapshotCount || right.reportedAt - left.reportedAt || right.aid - left.aid
           : right.reportedAt - left.reportedAt || right.aid - left.aid)
-      .slice(0, limit)
+    : [];
+  const pageSlice = suspiciousOnly ? filteredSuspicious.slice(0, limit) : [];
+  const pageReports = suspiciousOnly
+    ? pageSlice.map((account) => reportByAid.get(account.aid)).filter((item): item is CommunityReview => item !== undefined)
+    : [];
+  const storedNicknames = suspiciousOnly
+    ? await storedReportNicknames(pageReports, new Map(page.accounts.map((account) => [account.aid, account.nickname])))
+    : new Map<number, string>();
+  const accounts = suspiciousOnly
+    ? pageSlice.map((account) => ({
+        ...account,
+        nickname: account.nickname ?? storedNicknames.get(account.aid) ?? null,
+      }))
     : page.accounts.map((account) => {
       const item = byAid.get(account.aid);
       const report = reportByAid.get(account.aid);

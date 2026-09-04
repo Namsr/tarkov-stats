@@ -124,3 +124,36 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(styles, /\.admin-monitoring-chart__line--2[\s\S]*?stroke-dasharray/);
   assert.match(styles, /\.admin-monitoring-table > summary[\s\S]*?min-height: 44px/);
 });
+
+test("suspicious queue enriches stored nicknames only after pagination (N+1 guard)", async () => {
+  const accountsRoute = await readFile("app/api/admin/accounts/route.ts", "utf8");
+  // Must not fan out stored reads over the whole reviews() table.
+  assert.doesNotMatch(accountsRoute, /storedReportNicknames\(reportRows/);
+  assert.match(accountsRoute, /storedReportNicknames\(pageReports/);
+  // Order: filter -> sort -> slice -> stored lookup. Slice must precede the lookup.
+  const sliceIdx = accountsRoute.indexOf(".slice(0, limit)");
+  const lookupIdx = accountsRoute.indexOf("await storedReportNicknames(");
+  assert.ok(sliceIdx !== -1 && lookupIdx !== -1 && sliceIdx < lookupIdx, "stored lookup must run after slice(0, limit)");
+  // The paged slice is built from filtered/sorted rows, then enriched.
+  assert.match(accountsRoute, /const filteredSuspicious = suspiciousOnly/);
+  assert.match(accountsRoute, /const pageSlice = suspiciousOnly \? filteredSuspicious\.slice\(0, limit\)/);
+  assert.match(accountsRoute, /nickname: account\.nickname \?\? storedNicknames\.get\(account\.aid\)/);
+});
+
+test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wins", async () => {
+  const [accountsRoute, db] = await Promise.all([
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
+    readFile("lib/community-reports-db.ts", "utf8"),
+  ]);
+  // Bug 2: iterate per-mode, not via latest report.mode; use per-mode seasonal cycle.
+  assert.match(accountsRoute, /if \(reportMode === "seasonal"\)/);
+  assert.match(accountsRoute, /report\.seasonalCycleId/);
+  assert.doesNotMatch(accountsRoute, /\? report\.mode === "seasonal"\s*\n?\s*\? \(await seasonalStore/);
+  assert.match(db, /seasonal_cycle_id/);
+  assert.match(db, /seasonalCycleId/);
+  // Bug 3: deterministic modes order.
+  assert.match(db, /\.split\(","\)\.filter\(Boolean\)\.sort\(\)/);
+  // Bug 4: ban-wins precedence is documented and enforced.
+  assert.match(accountsRoute, /ban-wins/);
+  assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
+});

@@ -8,6 +8,9 @@ export interface CommunityCandidate {
 
 export interface CommunityReview extends CommunityCandidate {
   modes: string[];
+  // Latest cycle_id for the seasonal mode (if any). Needed because `cycleId`
+  // above is the latest report across all modes and may belong to regular/arena.
+  seasonalCycleId: string | null;
   yesCount: number;
   noCount: number;
 }
@@ -57,6 +60,7 @@ function reviewsSql(aid?: number): string {
     SELECT r.aid,
       (SELECT mode FROM suspect_reports source WHERE source.aid = r.aid ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS mode,
       (SELECT cycle_id FROM suspect_reports source WHERE source.aid = r.aid ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS cycle_id,
+      (SELECT cycle_id FROM suspect_reports source WHERE source.aid = r.aid AND source.mode = 'seasonal' ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS seasonal_cycle_id,
       GROUP_CONCAT(DISTINCT r.mode) AS modes,
       COUNT(*) AS report_count, MAX(r.created_at) AS last_reported_at,
       (SELECT COUNT(*) FROM ban_review_votes v WHERE v.aid = r.aid AND v.verdict = 'yes') AS yes_count,
@@ -76,7 +80,10 @@ function candidate(row: Record<string, unknown>): CommunityCandidate {
 function review(row: Record<string, unknown>): CommunityReview {
   return {
     ...candidate(row),
-    modes: String(row.modes ?? "").split(",").filter(Boolean),
+    // GROUP_CONCAT(DISTINCT r.mode) has no ORDER BY, so its order is
+    // non-deterministic across SQLite/D1. Sort in JS for a stable contract.
+    modes: String(row.modes ?? "").split(",").filter(Boolean).sort(),
+    seasonalCycleId: row.seasonal_cycle_id == null ? null : String(row.seasonal_cycle_id),
     yesCount: Number(row.yes_count),
     noCount: Number(row.no_count),
   };
