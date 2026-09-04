@@ -41,7 +41,7 @@ import {
   buildRegularComparisonStats,
   buildSeasonalComparisonStats,
 } from "@/lib/profile-comparison";
-import { getArenaProfile, getArenaProfileRisk, persistArenaProfile } from "@/lib/arena/service";
+import { getArenaProfile, getArenaProfileRisk, getStoredArenaProfileRisk, isArenaProfileRiskFresh, persistArenaProfile } from "@/lib/arena/service";
 
 const PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
 type PersistentMode = "regular" | "pve";
@@ -55,7 +55,18 @@ const persistentAchievementBaselineInFlight = new Map<
   Promise<AchievementBaseline | null>
 >();
 const regularBackgroundRefreshes = new Map<string, Promise<void>>();
+const arenaRiskRefreshes = new Map<number, Promise<void>>();
 const STORED_PROFILE_REFRESH_MS = 5 * 60_000;
+
+async function refreshStoredArenaRisk(aid: number): Promise<void> {
+  return singleFlight(arenaRiskRefreshes, aid, async () => {
+    try {
+      await getArenaProfileRisk(aid);
+    } catch (error) {
+      console.error("Arena risk background refresh failed", error);
+    }
+  });
+}
 
 async function refreshStoredRegularProfile(aid: number): Promise<void> {
   const key = progressionFlightKey("regular", "persistent", aid);
@@ -227,13 +238,26 @@ async function arenaProfileResponse(input: {
   let profile: PlayerProfile | null = null;
   let capture = { inserted: false, status: "stored" };
   let profileMs: number | undefined;
+  let storeReadMs: number | undefined;
+  let riskMs: number | undefined;
   let stored: Awaited<ReturnType<typeof getArenaProfile>> = null;
   let legacy: ArenaLegacySnapshot = null;
+  const scheduleArenaRiskRefresh = () => {
+    try {
+      // `after()` already runs outside the critical response path, so no
+      // artificial delay is needed (serverless does not guarantee +1s life).
+      // `refreshStoredArenaRisk` coalesces concurrent refreshes per aid.
+      after(() => refreshStoredArenaRisk(aid));
+    } catch {
+      // `after()` is unavailable outside a request scope (unit tests). The
+      // stored response must stay fast regardless.
+    }
+  };
   const legacyResponse = (snapshot: NonNullable<ArenaLegacySnapshot>) => {
     timing.setRequestContext({ nickname: snapshot.stats.nickname });
     timing.finish({
       operation: "player_profile", mode: "arena", outcome: "success", status: 200, force,
-      source: "stored", cache: "hit", storage: "sqlite", profileMs,
+      source: "stored", cache: "hit", storage: "sqlite", profileMs, storeReadMs, riskMs,
     });
     return NextResponse.json({
       profile: null,
@@ -253,7 +277,9 @@ async function arenaProfileResponse(input: {
   };
 
   try {
+    const storeReadStarted = timing.now();
     stored = await getArenaProfile(aid);
+    storeReadMs = timing.elapsedMs(storeReadStarted);
     if (!stored) {
       const store = await getStore("arena");
       legacy = store ? await store.stored(aid) : null;
@@ -270,29 +296,56 @@ async function arenaProfileResponse(input: {
       source = fetched.fromCache || fetched.fromEdgeCache ? "cache" : "upstream";
       if (profile) {
         await persistArenaProfile(profile);
+        const rereadStarted = timing.now();
         stored = await getArenaProfile(aid);
+        storeReadMs = timing.elapsedMs(rereadStarted);
         if (!stored) throw new Error("Arena profile was not stored");
         capture = { inserted: !fetched.fromCache && !fetched.fromEdgeCache, status: "updated" };
       }
     }
     if (!stored) {
       if (legacy) return legacyResponse(legacy);
-      timing.finish({ operation: "player_profile", mode: "arena", outcome: "not_found", status: 404, force, source, profileMs });
+      timing.finish({ operation: "player_profile", mode: "arena", outcome: "not_found", status: 404, force, source, profileMs, storeReadMs, riskMs });
       return NextResponse.json({
         identity: { aid, mode: "arena", cycleId },
         code: "mode_profile_unavailable",
         error: "Arena profile is not available in the public cache",
       }, { status: 404, headers: noStore });
     }
-    const risk = await getArenaProfileRisk(aid).catch((error) => {
-      console.error("Arena display risk failed", error);
-      return null;
-    });
+    // Stored cache hits reuse the saved risk row. A full cohort recomputation
+    // runs only for fresh fetches or as a background refresh outside the
+    // critical response path.
+    let risk: Awaited<ReturnType<typeof getStoredArenaProfileRisk>> = null;
+    const isStoredHit = !force && source === "stored";
+    if (isStoredHit) {
+      const riskStarted = timing.now();
+      try {
+        risk = await getStoredArenaProfileRisk(aid).catch(() => null);
+      } catch (error) {
+        console.error("Arena display risk failed", error);
+        risk = null;
+      } finally {
+        riskMs = timing.elapsedMs(riskStarted);
+      }
+      if (!isArenaProfileRiskFresh(risk, stored.profileUpdatedAt)) {
+        scheduleArenaRiskRefresh();
+      }
+    } else {
+      const riskStarted = timing.now();
+      try {
+        risk = await getArenaProfileRisk(aid);
+      } catch (error) {
+        console.error("Arena display risk failed", error);
+        risk = null;
+      } finally {
+        riskMs = timing.elapsedMs(riskStarted);
+      }
+    }
     timing.setRequestContext({ nickname: stored.nickname });
     timing.finish({
       operation: "player_profile", mode: "arena", outcome: "success", status: 200, force, source,
       cache: force ? "bypass" : source === "stored" ? "hit" : source === "cache" ? "hit" : "miss",
-      storage: "sqlite", profileMs,
+      storage: "sqlite", profileMs, storeReadMs, riskMs,
     });
     return NextResponse.json({
       profile,
@@ -309,11 +362,13 @@ async function arenaProfileResponse(input: {
   } catch (error) {
     console.error("Arena profile load failed", error);
     if (stored) {
-      const risk = await getArenaProfileRisk(aid).catch(() => null);
+      const riskStarted = timing.now();
+      const risk = await getStoredArenaProfileRisk(aid).catch(() => null);
+      riskMs = timing.elapsedMs(riskStarted);
       timing.setRequestContext({ nickname: stored.nickname });
       timing.finish({
         operation: "player_profile", mode: "arena", outcome: "success", status: 200, force,
-        source: "stored", cache: "hit", storage: "sqlite", profileMs,
+        source: "stored", cache: "hit", storage: "sqlite", profileMs, storeReadMs, riskMs,
       });
       return NextResponse.json({
         profile: null,
@@ -329,7 +384,7 @@ async function arenaProfileResponse(input: {
       }, { headers: noStore });
     }
     if (legacy) return legacyResponse(legacy);
-    timing.finish({ operation: "player_profile", mode: "arena", outcome: "error", status: 503, force, source, profileMs });
+    timing.finish({ operation: "player_profile", mode: "arena", outcome: "error", status: 503, force, source, profileMs, storeReadMs, riskMs });
     return NextResponse.json({ error: "Failed to load Arena profile", identity: { aid, mode: "arena", cycleId } }, {
       status: 503,
       headers: noStore,
