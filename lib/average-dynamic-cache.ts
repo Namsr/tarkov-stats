@@ -1,8 +1,27 @@
+// Dynamic average cache: stale-while-revalidate with an interactive budget.
+//
+// - Cold miss: singleflight via coldInflight; withBudget (DYNAMIC_AVERAGE_BUDGET_MS,
+//   default 900ms, cap 10s) races the compute. On timeout the caller gets 503 +
+//   Retry-After:5 and the compute keeps running in the background.
+// - Fresh hit (age < TTL 5m): awaited within the budget, never stale.
+// - Stale hit (TTL < age < TTL + stale 30m): the last good value is returned
+//   immediately with `stale:true` (routes expose X-Average-Stale:1 for
+//   observability). The UI intentionally shows stale data silently up to 30m
+//   without a badge; a background refresh revalidates out of band.
+// - Failed background refresh: restores the previous value, expires at once,
+//   and backs off ~30s per key (DYNAMIC_AVERAGE_REFRESH_BACKOFF_MS) so a
+//   permanently failing backend does not cause a refresh storm.
+// - Persistent cache: self-hosted node:sqlite only (DYNAMIC_AVERAGE_SQLITE_PATH);
+//   on Cloudflare/D1 it is unavailable and only the in-memory LRU is used.
 export const DYNAMIC_AVERAGE_TTL_MS = 5 * 60_000;
 export const DYNAMIC_AVERAGE_STALE_MS = 30 * 60_000;
 export const DYNAMIC_AVERAGE_MAX_KEYS = 512;
 export const DYNAMIC_AVERAGE_PERSISTENT_MAX_ROWS = 2000;
 export const DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS = 5;
+// Minimum delay between background refresh attempts for the same key after a
+// failure. Prevents a refresh storm when the backend is permanently failing:
+// every stale hit would otherwise spawn a new load.
+export const DYNAMIC_AVERAGE_REFRESH_BACKOFF_MS = 30_000;
 
 const TTL_MS = DYNAMIC_AVERAGE_TTL_MS;
 const MAX_KEYS = DYNAMIC_AVERAGE_MAX_KEYS;
@@ -41,6 +60,8 @@ type Entry<T> = {
   value?: T;
   hasValue: boolean;
   settled: boolean;
+  lastFailureAt?: number;
+  consecutiveFailures?: number;
 };
 const entries = new Map<string, Entry<unknown>>();
 const coldInflight = new Map<string, Promise<DynamicAverageResult<unknown>>>();
@@ -49,6 +70,9 @@ function prune(now: number): void {
   for (const [key, entry] of entries) {
     if (entry.staleAt <= now && entry.settled) entries.delete(key);
   }
+  // NOTE: keys are JSON-serialized filter tuples with continuous min/max
+  // ranges, so cardinality is unbounded in theory. MAX_KEYS is a coarse LRU
+  // cap (evict oldest) to bound memory, not a precise per-filter budget.
   while (entries.size >= MAX_KEYS) entries.delete(entries.keys().next().value!);
 }
 
@@ -70,6 +94,11 @@ function withBudget<T>(promise: Promise<T>, budgetMs: number): Promise<T> {
 let persistentDb: any = null;
 let persistentPath: string | null = null;
 
+// Persistent cache is opt-in and self-hosted only: it requires
+// DYNAMIC_AVERAGE_SQLITE_PATH (or AVERAGE_PUBLICATION_SQLITE_PATH) pointing at
+// a writable node:sqlite file. On Cloudflare/D1 (or when the variable is
+// unset) openPersistentCache() returns null and only the in-memory LRU above
+// is used. All persistent helpers are best-effort and never break responses.
 function persistentCachePath(): string | null {
   const configured = process.env.DYNAMIC_AVERAGE_SQLITE_PATH ?? process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
   return configured && configured.trim() !== "" ? configured : null;
@@ -138,6 +167,9 @@ async function writePersistentCache(key: string, value: unknown): Promise<void> 
       }
     ).run(key, payload, now);
     try {
+      // Best-effort cap: the NOT IN ... LIMIT prune runs on every write but is
+      // wrapped in try/catch so a slow/failed prune never breaks the response.
+      // Throttling was considered; the query is cheap enough at 2000 rows.
       (
         db.prepare(`DELETE FROM dynamic_average_cache WHERE key NOT IN
           (SELECT key FROM dynamic_average_cache ORDER BY generated_at DESC LIMIT ?)`) as {
@@ -155,9 +187,37 @@ async function writePersistentCache(key: string, value: unknown): Promise<void> 
 function startBackgroundRefresh<T>(key: string, load: () => Promise<T>, staleMs: number): void {
   const existing = entries.get(key) as Entry<T> | undefined;
   if (!existing || !existing.settled) return;
+  const backoffCheckedAt = Date.now();
+  if (
+    existing.lastFailureAt != null &&
+    backoffCheckedAt - existing.lastFailureAt < DYNAMIC_AVERAGE_REFRESH_BACKOFF_MS
+  ) {
+    // Recent failure: skip spawning another background load to avoid a
+    // refresh storm. The caller still serves the stale value immediately.
+    return;
+  }
   existing.settled = false;
+  let promise: Promise<T>;
+  try {
+    promise = load();
+  } catch {
+    const current = entries.get(key) as Entry<T> | undefined;
+    if (current !== existing) return;
+    existing.consecutiveFailures = (existing.consecutiveFailures ?? 0) + 1;
+    existing.lastFailureAt = Date.now();
+    if (existing.hasValue) {
+      // Never leave a rejected promise behind: restore the last good value so
+      // the next hit serves stale instead of throwing. Expire immediately so
+      // the next stale hit retries (subject to the backoff above).
+      existing.promise = Promise.resolve(existing.value as T);
+      existing.settled = true;
+      existing.expiresAt = Date.now() - 1;
+    } else if (entries.get(key) === (existing as unknown as Entry<unknown>)) {
+      entries.delete(key);
+    }
+    return;
+  }
   const startedAt = Date.now();
-  const promise = load();
   existing.promise = promise;
   existing.expiresAt = startedAt + TTL_MS;
   existing.staleAt = startedAt + TTL_MS + staleMs;
@@ -168,12 +228,29 @@ function startBackgroundRefresh<T>(key: string, load: () => Promise<T>, staleMs:
       existing.value = value;
       existing.hasValue = true;
       existing.settled = true;
+      existing.consecutiveFailures = 0;
       void writePersistentCache(key, value);
     },
     () => {
       const current = entries.get(key) as Entry<T> | undefined;
       if (current !== existing) return;
-      existing.settled = true;
+      existing.consecutiveFailures = (existing.consecutiveFailures ?? 0) + 1;
+      existing.lastFailureAt = Date.now();
+      if (existing.hasValue) {
+        // Poisoned-cache fix: a failed background refresh must not leave a
+        // permanently rejected promise with a future expiresAt (the next hit
+        // would await it and throw instead of serving stale). Restore the old
+        // value, mark settled, and expire at once so the next request takes
+        // the stale branch again and retries after the backoff above.
+        // staleAt is intentionally preserved (up to 30m stale serving).
+        existing.promise = Promise.resolve(existing.value as T);
+        existing.settled = true;
+        existing.expiresAt = Date.now() - 1;
+      } else if (entries.get(key) === (existing as unknown as Entry<unknown>)) {
+        // No good value to fall back to: drop the entry so the next request
+        // goes through the cold path instead of hitting a broken promise.
+        entries.delete(key);
+      }
     },
   );
 }

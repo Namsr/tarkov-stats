@@ -84,6 +84,46 @@ test("stale dynamic entry serves immediately while revalidating in the backgroun
   assert.deepEqual(refreshed.value, { version: 2 });
 });
 
+test("failed background refresh serves stale and the next request does not throw", async () => {
+  let calls = 0;
+  const goodLoad = async () => {
+    calls += 1;
+    return { version: 1 };
+  };
+  const first = await cache.loadDynamicAverage("failed-refresh-key", goodLoad, 1_000, { budgetMs: 5_000, staleMs: STALE_MS });
+  assert.deepEqual(first.value, { version: 1 });
+  assert.equal(calls, 1);
+
+  const failingLoad = async () => {
+    calls += 1;
+    await delay(20);
+    throw new Error("backend down");
+  };
+  const stale = await cache.loadDynamicAverage("failed-refresh-key", failingLoad, 1_000 + TTL_MS + 1, { budgetMs: 5_000, staleMs: STALE_MS });
+  assert.deepEqual(stale.value, { version: 1 });
+  assert.equal(stale.cache, "hit");
+  assert.equal(stale.stale, true);
+  assert.equal(calls, 2, "stale hit must trigger exactly one background refresh");
+
+  // Let the background refresh reject and restore the previous value.
+  await delay(60);
+
+  const callsBeforeRetry = calls;
+  const retry = await cache.loadDynamicAverage(
+    "failed-refresh-key",
+    async () => {
+      calls += 1;
+      return { version: 2 };
+    },
+    Date.now(),
+    { budgetMs: 5_000, staleMs: STALE_MS },
+  );
+  assert.deepEqual(retry.value, { version: 1 }, "failed refresh must keep serving the old value as stale");
+  assert.equal(retry.cache, "hit");
+  assert.equal(retry.stale, true);
+  assert.equal(calls, callsBeforeRetry, "backoff must skip an immediate retry after a failure");
+});
+
 test("persistent dynamic cache survives a process restart", async () => {
   const directory = mkdtempSync(join(tmpdir(), "dynamic-average-"));
   const databasePath = join(directory, "dynamic.db");
@@ -145,6 +185,10 @@ test("dynamic average routes enforce budget, stale, warming, and phase observabi
   assert.match(dynamicCache, /withBudget/);
   assert.match(dynamicCache, /dynamic_average_cache/);
   assert.match(dynamicCache, /stale:\s*true/);
+  // Poisoned-cache fix + refresh-storm backoff (issue #18 follow-up).
+  assert.match(dynamicCache, /DYNAMIC_AVERAGE_REFRESH_BACKOFF_MS/);
+  assert.match(dynamicCache, /lastFailureAt/);
+  assert.match(dynamicCache, /consecutiveFailures/);
 
   for (const route of [averageRoute, seasonalRoute]) {
     assert.match(route, /dynamicCacheOptions\(\)/);
@@ -181,6 +225,13 @@ test("dynamic average routes enforce budget, stale, warming, and phase observabi
   assert.match(dictionary, /"admin\.health\.phase\.averages"/);
   assert.match(dictionary, /"admin\.health\.phase\.bucket_aggregate"/);
   assert.match(dictionary, /"admin\.health\.phase\.range_bounds"/);
+  // Merge compatibility with #17 (arena stored risk): both risk_ms and the
+  // average phases must coexist in analytics, timing, dashboard, dictionary.
+  assert.match(timing, /riskMs:\s*input\.riskMs/);
+  assert.match(analytics, /risk_ms/);
+  assert.match(analytics, /\["risk", "risk_ms"\]/);
+  assert.match(dashboard, /"risk"/);
+  assert.match(dictionary, /"admin\.health\.phase\.risk"/);
 
   assert.match(warmer, /minMatches/);
   assert.match(warmer, /pmc_raids/);
