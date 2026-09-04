@@ -26,6 +26,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 const { getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const {
+  coalesceArenaRiskRefresh,
   getArenaProfile,
   getArenaProfileRisk,
   getStoredArenaProfileRisk,
@@ -193,11 +194,21 @@ test("arena route separates profile and risk timing phases and refreshes stale r
   assert.match(service, /ARENA_RISK_TTL_MS/);
   assert.match(service, /SELECT risk_json FROM arena_risk_evaluations WHERE aid = \?/);
 
-  const arenaFunction = route.slice(route.indexOf("async function arenaProfileResponse"));
+  assert.match(service, /export function coalesceArenaRiskRefresh/);
+  assert.match(service, /singleFlight\(arenaRiskInFlight, aid/);
+  assert.match(route, /const arenaRiskRefreshes = new Map<number, Promise<void>>/);
+  assert.match(route, /async function refreshStoredArenaRisk/);
+  assert.match(route, /singleFlight\(arenaRiskRefreshes, aid/);
+
+  const arenaFunction = route.slice(
+    route.indexOf("async function arenaProfileResponse"),
+    route.indexOf("export async function GET"),
+  );
   assert.match(arenaFunction, /getStoredArenaProfileRisk/);
   assert.match(arenaFunction, /isArenaProfileRiskFresh/);
   assert.match(arenaFunction, /scheduleArenaRiskRefresh/);
-  assert.match(arenaFunction, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*getArenaProfileRisk/);
+  assert.match(arenaFunction, /after\(\(\) => refreshStoredArenaRisk\(aid\)\)/);
+  assert.doesNotMatch(arenaFunction, /setTimeout/);
   assert.match(arenaFunction, /const isStoredHit = !force && source === "stored"/);
 
   const storedBranch = arenaFunction.slice(arenaFunction.indexOf("const isStoredHit"));
@@ -217,4 +228,54 @@ test("arena route separates profile and risk timing phases and refreshes stale r
   assert.match(analytics, /riskMs\?: number \| null/);
   assert.match(analytics, /\["risk", "risk_ms"\]/);
   assert.match(analytics, /risk_ms INTEGER/);
+});
+
+test("five parallel stale hits share a single risk recomputation", async () => {
+  const aid = 50_003;
+  // Slow-recalc pattern like the stored-read test above: the full cohort
+  // scan takes ~80ms while the stored read stays instant. Concurrent
+  // stale-hits must coalesce instead of planning N full scans.
+  let calls = 0;
+  const slowRecalc = async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return null;
+  };
+
+  const pending = Array.from({ length: 5 }, () => coalesceArenaRiskRefresh(aid, slowRecalc));
+  const results = await Promise.all(pending);
+  assert.equal(calls, 1, "5 parallel stale-hits must trigger exactly 1 recalc");
+  assert.ok(results.every((result) => result === null));
+
+  // A settled flight must not become a cache: the next refresh recomputes.
+  await coalesceArenaRiskRefresh(aid, slowRecalc);
+  assert.equal(calls, 2, "a completed flight must allow a later refresh");
+
+  // Different aids never share a flight.
+  const otherAid = 50_004;
+  let otherCalls = 0;
+  const otherRecalc = async () => {
+    otherCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    return null;
+  };
+  await Promise.all([
+    coalesceArenaRiskRefresh(aid, slowRecalc),
+    coalesceArenaRiskRefresh(otherAid, otherRecalc),
+  ]);
+  assert.equal(calls, 3);
+  assert.equal(otherCalls, 1);
+
+  // The real computation is coalesced too: concurrent callers share one row write.
+  const realAid = 50_005;
+  await save(profile(realAid));
+  const realResults = await Promise.all(
+    Array.from({ length: 5 }, () => getArenaProfileRisk(realAid)),
+  );
+  assert.ok(realResults.every((result) => result && result.aid === realAid));
+  const evaluatedAt = realResults.map((result) => result.freshness.evaluatedAt);
+  assert.ok(
+    evaluatedAt.every((value) => value === evaluatedAt[0]),
+    "concurrent getArenaProfileRisk calls must share a single computation",
+  );
 });

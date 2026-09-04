@@ -25,6 +25,7 @@ import {
 import type { PlayerProfile } from "@/types/tarkov";
 import { ARENA_PARSER_VERSION, ARENA_RISK_UPSERT_SQL, arenaRiskValues, isArenaMode } from "@/lib/arena/storage";
 import { markAveragePublicationDirty } from "@/lib/average-publication";
+import { singleFlight } from "@/lib/seasonal/progression-flight";
 
 export { ARENA_PARSER_VERSION } from "@/lib/arena/storage";
 
@@ -568,9 +569,21 @@ export function isArenaProfileRiskFresh(
   return now - (evaluatedAt as number) < ARENA_RISK_TTL_MS;
 }
 
-/** Display-only Arena anomaly score. It never calls generic moderation storage. */
-export async function getArenaProfileRisk(aid: number): Promise<ArenaProfileRisk | null> {
-  if (!Number.isSafeInteger(aid) || aid <= 0) throw new Error("invalid arena account id");
+const arenaRiskInFlight = new Map<number, Promise<ArenaProfileRisk | null>>();
+
+/**
+ * Coalesces concurrent Arena risk recomputations by aid. N parallel
+ * stale-hits share a single flight; the entry is removed on settle so a
+ * later refresh recomputes. Errors propagate to callers (the route logs).
+ */
+export function coalesceArenaRiskRefresh(
+  aid: number,
+  load: () => Promise<ArenaProfileRisk | null>,
+): Promise<ArenaProfileRisk | null> {
+  return singleFlight(arenaRiskInFlight, aid, load);
+}
+
+async function computeArenaProfileRisk(aid: number): Promise<ArenaProfileRisk | null> {
   const backend = await getArenaBackend();
   if (!backend) return null;
   const targetRows = await arenaRows(backend, { mode: "overall", aid });
@@ -600,4 +613,10 @@ export async function getArenaProfileRisk(aid: number): Promise<ArenaProfileRisk
   };
   await run(backend, ARENA_RISK_UPSERT_SQL, arenaRiskValues(risk, risk.freshness.evaluatedAt)).catch(() => undefined);
   return risk;
+}
+
+/** Display-only Arena anomaly score. It never calls generic moderation storage. */
+export async function getArenaProfileRisk(aid: number): Promise<ArenaProfileRisk | null> {
+  if (!Number.isSafeInteger(aid) || aid <= 0) throw new Error("invalid arena account id");
+  return coalesceArenaRiskRefresh(aid, () => computeArenaProfileRisk(aid));
 }

@@ -55,7 +55,18 @@ const persistentAchievementBaselineInFlight = new Map<
   Promise<AchievementBaseline | null>
 >();
 const regularBackgroundRefreshes = new Map<string, Promise<void>>();
+const arenaRiskRefreshes = new Map<number, Promise<void>>();
 const STORED_PROFILE_REFRESH_MS = 5 * 60_000;
+
+async function refreshStoredArenaRisk(aid: number): Promise<void> {
+  return singleFlight(arenaRiskRefreshes, aid, async () => {
+    try {
+      await getArenaProfileRisk(aid);
+    } catch (error) {
+      console.error("Arena risk background refresh failed", error);
+    }
+  });
+}
 
 async function refreshStoredRegularProfile(aid: number): Promise<void> {
   const key = progressionFlightKey("regular", "persistent", aid);
@@ -233,14 +244,10 @@ async function arenaProfileResponse(input: {
   let legacy: ArenaLegacySnapshot = null;
   const scheduleArenaRiskRefresh = () => {
     try {
-      after(async () => {
-        // Let the stored response finish before the population-wide risk scan
-        // occupies node:sqlite, same as regular/seasonal risk refreshes.
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        await getArenaProfileRisk(aid).catch((error) => {
-          console.error("Arena risk background refresh failed", error);
-        });
-      });
+      // `after()` already runs outside the critical response path, so no
+      // artificial delay is needed (serverless does not guarantee +1s life).
+      // `refreshStoredArenaRisk` coalesces concurrent refreshes per aid.
+      after(() => refreshStoredArenaRisk(aid));
     } catch {
       // `after()` is unavailable outside a request scope (unit tests). The
       // stored response must stay fast regardless.
