@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import StatCard from "@/components/StatCard";
-import { arenaMetricValue, formatArenaMetric } from "@/components/arena-ui";
+import { arenaMetricValue, formatArenaMetric, formatArenaValue } from "@/components/arena-ui";
 import type { ArenaProfile } from "@/types/arena";
 
 export default function ArenaAccountCard({ profile }: { profile: ArenaProfile }) {
@@ -19,6 +20,24 @@ export default function ArenaAccountCard({ profile }: { profile: ArenaProfile })
         <StatCard label={t("arena.counter.matches")} value={counters.matches == null ? t("common.notAvailable") : counters.matches.toLocaleString()} />
         <StatCard label={t("arena.counter.kills")} value={counters.kills == null ? t("common.notAvailable") : counters.kills.toLocaleString()} />
         <StatCard label={t("arena.metric.win_rate")} value={formatArenaMetric(winRate, "win_rate")} />
+        <div className="metric-card flex flex-col gap-2">
+          <span className="metric-card__label">{t("arena.bestArp")}</span>
+          <div className="flex items-end gap-2">
+            <span className="metric-card__value">
+              {overall.bestArp == null ? (
+                t("common.notAvailable")
+              ) : (
+                <Link
+                  href="/average/arena/leaderboard"
+                  className="underline-offset-4 hover:underline"
+                  aria-label={t("arena.leaderboard.openFull")}
+                >
+                  {formatArenaValue(overall.bestArp)}
+                </Link>
+              )}
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );
