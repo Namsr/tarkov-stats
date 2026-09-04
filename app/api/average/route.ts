@@ -27,7 +27,28 @@ import {
   standardArenaVariant,
   standardAverageVariant,
 } from "@/lib/average-publication";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import {
+  DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS,
+  DYNAMIC_AVERAGE_STALE_MS,
+  dynamicAverageBudgetMs,
+  isDynamicAverageWarmingError,
+  loadDynamicAverage,
+} from "@/lib/average-dynamic-cache";
+
+function dynamicCacheOptions() {
+  return { budgetMs: dynamicAverageBudgetMs(), staleMs: DYNAMIC_AVERAGE_STALE_MS };
+}
+
+function dynamicWarmingResponse(
+  timing: ReturnType<typeof createRequestTiming>,
+  mode: string,
+) {
+  timing.finish({ operation: "average", mode: mode as "regular", outcome: "unavailable", status: 503, storage: "sqlite", source: "dynamic", cache: "miss" });
+  return NextResponse.json({ error: "Average statistics are warming" }, {
+    status: 503,
+    headers: { "Retry-After": String(DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS) },
+  });
+}
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
@@ -60,7 +81,11 @@ const loadCachedAverage = unstable_cache(
     min: number | null,
     max: number | null,
     maxInclusive: boolean,
-  ) => computeAverage(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
+  ) => {
+    const phases: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } = {};
+    const result = await computeAverage(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive, phases);
+    return { ...result, phases };
+  },
   ["average-dashboard-v2"],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS },
 );
@@ -75,7 +100,12 @@ const loadCachedArenaAverage = unstable_cache(
     maxHours: number | null,
     minMatches: number | null,
     maxMatches: number | null,
-  ) => getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches }),
+  ) => {
+    const phases: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } = {};
+    const result = await getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches }, phases);
+    if (!result) return null;
+    return { ...result, phases };
+  },
   ["arena-average-v2", String(ARENA_PARSER_VERSION)],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
 );
@@ -137,28 +167,56 @@ async function arenaAverageResponse(
       });
     }
     const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value)]);
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
-      arenaMode,
-      statistic,
-      dimension,
-      metric,
-      ranges[0].value,
-      ranges[1].value,
-      ranges[2].value,
-      ranges[3].value,
-    ));
-    const result = loaded.value;
-    if (!result) {
+    let loaded;
+    try {
+      loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
+        arenaMode,
+        statistic,
+        dimension,
+        metric,
+        ranges[0].value,
+        ranges[1].value,
+        ranges[2].value,
+        ranges[3].value,
+      ), Date.now(), dynamicCacheOptions());
+    } catch (error) {
+      if (isDynamicAverageWarmingError(error)) {
+        timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, storage: "sqlite", source: "dynamic", cache: "miss" });
+        return NextResponse.json({ error: "Arena averages are warming" }, {
+          status: 503,
+          headers: { "Retry-After": String(error.retryAfter ?? DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS) },
+        });
+      }
+      throw error;
+    }
+    const cached = loaded.value as (Record<string, unknown> & { phases?: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } }) | null;
+    if (!cached) {
       timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503 });
       return NextResponse.json({ error: "Arena averages are unavailable" }, { status: 503 });
     }
-    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
+    const { phases, ...result } = cached;
+    timing.finish({
+      operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache,
+      averagesMs: phases?.averagesMs, bucketAggregateMs: phases?.bucketAggregateMs, rangeBoundsMs: phases?.rangeBoundsMs,
+    });
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
       // The server cache is tagged and invalidated by the collector. Do not let
       // a browser or reverse proxy retain the first tiny backfill sample.
-      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Average-Cache": "next-data",
+        "X-Average-Source": "dynamic",
+        ...(loaded.stale ? { "X-Average-Stale": "1" } : {}),
+      },
     });
   } catch (error) {
+    if (isDynamicAverageWarmingError(error)) {
+      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, storage: "sqlite", source: "dynamic", cache: "miss" });
+      return NextResponse.json({ error: "Arena averages are warming" }, {
+        status: 503,
+        headers: { "Retry-After": String(DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS) },
+      });
+    }
     console.error("Arena average stats failed", error);
     timing.finish({ operation: "average", mode: "arena", outcome: "error", status: 500 });
     return NextResponse.json({ error: "Failed to compute Arena averages" }, { status: 500 });
@@ -237,31 +295,44 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
     const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, usesNewRange]);
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
-      rawMode,
-      dimension,
-      metric.key,
-      maxBins,
-      statistic,
-      period,
-      parsedMin.value,
-      parsedMax.value,
-      usesNewRange,
-    ));
-    const result = loaded.value;
+    let loaded;
+    try {
+      loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
+        rawMode,
+        dimension,
+        metric.key,
+        maxBins,
+        statistic,
+        period,
+        parsedMin.value,
+        parsedMax.value,
+        usesNewRange,
+      ), Date.now(), dynamicCacheOptions());
+    } catch (error) {
+      if (isDynamicAverageWarmingError(error)) return dynamicWarmingResponse(timing, rawMode);
+      throw error;
+    }
+    const result = loaded.value as {
+      storage: "sqlite" | "unavailable";
+      body: unknown;
+      phases?: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number };
+    };
     const response = NextResponse.json(result.body, {
       headers: {
         "Cache-Control": AVERAGE_CACHE_CONTROL,
         "X-Average-Cache": "next-data",
         "X-Average-Source": "dynamic",
+        ...(loaded.stale ? { "X-Average-Stale": "1" } : {}),
       },
     });
     timing.finish({
       operation: "average", mode: rawMode, outcome: result.storage === "sqlite" ? "success" : "unavailable",
       status: 200, storage: result.storage, source: "dynamic", cache: loaded.cache,
+      averagesMs: result.phases?.averagesMs, bucketAggregateMs: result.phases?.bucketAggregateMs, rangeBoundsMs: result.phases?.rangeBoundsMs,
     });
     return response;
   } catch (error) {
+    if (isDynamicAverageWarmingError(error)) return dynamicWarmingResponse(timing, rawMode);
     console.error("average stats failed", error);
     timing.finish({
       operation: "average", mode: rawMode, outcome: "error", status: 500,

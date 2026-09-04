@@ -23,6 +23,7 @@ type TimingInput = {
   bucketAggregateMs?: number;
   rangeBoundsMs?: number;
   cohortMs?: number;
+  riskMs?: number;
   baselineMs?: number;
   metadataMs?: number;
   masteryMs?: number;
@@ -162,8 +163,12 @@ export function createRequestTiming(options: Options = {}) {
         metadataMs: input.metadataMs,
         masteryMs: input.masteryMs,
         cohortMs: input.cohortMs,
+        riskMs: input.riskMs,
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
+        averagesMs: input.averagesMs,
+        bucketAggregateMs: input.bucketAggregateMs,
+        rangeBoundsMs: input.rangeBoundsMs,
       });
       if (!sampled) return;
       const event = {
@@ -192,6 +197,7 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.bucketAggregateMs === undefined ? {} : { bucket_aggregate_ms: roundedMs(input.bucketAggregateMs) }),
         ...(input.rangeBoundsMs === undefined ? {} : { range_bounds_ms: roundedMs(input.rangeBoundsMs) }),
         ...(input.cohortMs === undefined ? {} : { cohort_ms: roundedMs(input.cohortMs) }),
+        ...(input.riskMs === undefined ? {} : { risk_ms: roundedMs(input.riskMs) }),
         ...(input.baselineMs === undefined ? {} : { baseline_ms: roundedMs(input.baselineMs) }),
         ...(input.metadataMs === undefined ? {} : { metadata_ms: roundedMs(input.metadataMs) }),
         ...(input.masteryMs === undefined ? {} : { mastery_ms: roundedMs(input.masteryMs) }),

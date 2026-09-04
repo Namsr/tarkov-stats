@@ -7,8 +7,18 @@ import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { SeasonalAverageDimension } from "@/lib/seasonal/average-db";
 import { AVERAGE_PUBLICATION_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS, SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
 import { averagePublicationsEnabled, readAveragePublication, seasonalPublicationScope, standardAverageVariant } from "@/lib/average-publication";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import {
+  DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS,
+  DYNAMIC_AVERAGE_STALE_MS,
+  dynamicAverageBudgetMs,
+  isDynamicAverageWarmingError,
+  loadDynamicAverage,
+} from "@/lib/average-dynamic-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
+
+function dynamicCacheOptions() {
+  return { budgetMs: dynamicAverageBudgetMs(), staleMs: DYNAMIC_AVERAGE_STALE_MS };
+}
 
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
@@ -28,12 +38,13 @@ const loadCachedSeasonalAverage = unstable_cache(
     min: number | null,
     max: number | null,
   ) => {
+    const phases: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } = {};
     const query = await getSeasonalAverageCrossSectionQuery();
     if (!query) throw new SeasonalAverageUnavailableError();
-    const result = await query({ cycleId, period, statistic, dimension, metric, min, max });
+    const result = await query({ cycleId, period, statistic, dimension, metric, min, max, phases });
     return result
-      ? { status: "ready" as const, result }
-      : { status: "not-found" as const };
+      ? { status: "ready" as const, result, phases }
+      : { status: "not-found" as const, phases };
   },
   ["average-seasonal-dashboard-v2"],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [SEASONAL_AVERAGE_CACHE_TAG] },
@@ -94,20 +105,50 @@ export async function GET(request: NextRequest) {
       });
     }
     const dynamicKey = JSON.stringify(["seasonal", cycle, period, statistic, dimension, metric, min, max]);
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max));
-    const cached = loaded.value;
+    let loaded;
+    try {
+      loaded = await loadDynamicAverage(
+        dynamicKey,
+        () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max),
+        Date.now(),
+        dynamicCacheOptions(),
+      );
+    } catch (error) {
+      if (isDynamicAverageWarmingError(error)) {
+        timing.finish({ operation: "average", mode: "seasonal", outcome: "unavailable", status: 503, storage: "sqlite", source: "dynamic", cache: "miss" });
+        return NextResponse.json({ error: "Seasonal averages are warming" }, {
+          status: 503,
+          headers: { "Retry-After": String(error.retryAfter ?? DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS) },
+        });
+      }
+      throw error;
+    }
+    const cached = loaded.value as
+      | { status: "ready"; result: unknown; phases?: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } }
+      | { status: "not-found"; phases?: { averagesMs?: number; bucketAggregateMs?: number; rangeBoundsMs?: number } };
     if (cached.status === "not-found") {
       return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
     }
-    timing.finish({ operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
+    timing.finish({
+      operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache,
+      averagesMs: cached.phases?.averagesMs, bucketAggregateMs: cached.phases?.bucketAggregateMs, rangeBoundsMs: cached.phases?.rangeBoundsMs,
+    });
     return NextResponse.json(cached.result, {
       headers: {
         "Cache-Control": "no-store",
         "X-Seasonal-Average-Cache": "next-data",
         "X-Average-Source": "dynamic",
+        ...(loaded.stale ? { "X-Average-Stale": "1" } : {}),
       },
     });
   } catch (error) {
+    if (isDynamicAverageWarmingError(error)) {
+      timing.finish({ operation: "average", mode: "seasonal", outcome: "unavailable", status: 503, storage: "sqlite", source: "dynamic", cache: "miss" });
+      return NextResponse.json({ error: "Seasonal averages are warming" }, {
+        status: 503,
+        headers: { "Retry-After": String(DYNAMIC_AVERAGE_RETRY_AFTER_SECONDS) },
+      });
+    }
     if (error instanceof SeasonalAverageUnavailableError) {
       timing.finish({ operation: "average", mode: "seasonal", outcome: "unavailable", status: 503, source: "dynamic" });
       return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 503 });
