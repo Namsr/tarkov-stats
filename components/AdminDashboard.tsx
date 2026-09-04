@@ -9,7 +9,7 @@ import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
-type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
+type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring" | "diagnostics";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
@@ -32,7 +32,7 @@ type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedByte
 type SystemMetricSnapshot = SystemMetricPoint & { memoryTotalBytes: number; swapTotalBytes: number; diskTotalBytes: number; diskAvailableBytes: number };
 type SystemMetrics = { available: boolean; configured: boolean; reason?: string; latest: SystemMetricSnapshot | null; points: SystemMetricPoint[]; sampleCount?: number; from?: number; to?: number };
 
-const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"];
+const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health", "monitoring", "diagnostics"];
 const periods: AdminPeriod[] = ["15m", "24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
@@ -84,6 +84,7 @@ export default function AdminDashboard() {
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
+    if (tab === "diagnostics") { setLoading(false); return; }
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
@@ -158,8 +159,8 @@ export default function AdminDashboard() {
       </div>
 
       <section className="admin-filters" aria-label={t("admin.filters") }>
-        <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>
-        {tab !== "monitoring" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
+        {tab !== "diagnostics" && <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>}
+        {tab !== "monitoring" && tab !== "diagnostics" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
         {(tab === "accounts" || tab === "suspicious") && <>
           <label className="admin-filter-search"><span>{t("admin.search")}</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("admin.searchPlaceholder")} /></label>
           <label><span>{t("admin.mode")}</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">{t("admin.mode.all")}</option>{["regular", "pve", "arena", "seasonal"].map((item) => <option key={item} value={item}>{t("admin.mode." + item)}</option>)}</select></label>
@@ -174,6 +175,7 @@ export default function AdminDashboard() {
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
       {!error && !loading && tab === "monitoring" && <SystemMonitoringPanel data={systemMetrics} lang={lang} t={t} />}
+      {!error && !loading && tab === "diagnostics" && <LatencyScanPanel lang={lang} t={t} />}
     </main>
   );
 }
@@ -668,6 +670,95 @@ function DataAuditPanel({ audit, auditBusy, auditError, onRunAudit, lang, t }: {
   const resultFor = (mode: AuditDataset["mode"], dataset: AuditDataset["dataset"]) => datasets.find((row) => row.mode === mode && row.dataset === dataset) ?? null;
   return <section className="data-panel admin-panel admin-audit-panel"><div className="admin-audit-heading"><div><h2 className="section-heading">{t("admin.audit.heading")}</h2><p className="admin-chart-description">{t("admin.audit.description")}</p></div><button type="button" className="tactical-button" disabled={auditBusy || audit?.running === true} onClick={() => { void onRunAudit(); }}>{auditBusy || audit?.running ? t("common.loading") : t("admin.audit.button")}</button></div>{auditError && <div className="admin-notice admin-notice--error" role="alert">{auditError}</div>}{audit?.running && <div className="admin-notice">{t("admin.audit.running")}</div>}{!audit?.snapshot && !audit?.running && <p className="admin-empty">{t("admin.audit.notRun")}</p>}{audit?.snapshot && <div className="admin-audit-table-wrap"><table className="admin-audit-table"><thead><tr><th scope="col">{t("admin.audit.mode")}</th><th scope="col">{t("admin.audit.dataset")}</th><th scope="col">{t("admin.audit.upstream")}</th><th scope="col">{t("admin.audit.local")}</th><th scope="col">{t("admin.audit.difference")}</th><th scope="col">{t("admin.audit.coverage")}</th><th scope="col">{t("admin.audit.lastChecked")}</th><th scope="col">{t("admin.audit.lastReceived")}</th><th scope="col">{t("admin.audit.lastLocalApply")}</th><th scope="col">{t("admin.audit.latestUpdated")}</th></tr></thead><tbody>{auditModes.flatMap((mode) => auditDatasets.map((dataset) => { const row = resultFor(mode, dataset); const status = row?.status ?? "unavailable"; return <tr key={`${mode}-${dataset}`}><th scope="row">{t("admin.audit.mode." + mode)}</th><td><span>{t("admin.audit.dataset." + dataset)}</span><small className={`admin-audit-status admin-audit-status--${status}`}>{t("admin.audit.status." + status)}</small></td><td>{auditValue(row?.upstreamRecordCount ?? null, t)}</td><td>{auditValue(row?.localRecordCount ?? null, t)}</td><td>{auditDifference(row?.differenceCount ?? null, lang, t)}</td><td>{auditPercent(row?.coveragePercent ?? null, lang, t)}</td><td>{formatDate(row?.lastCheckedAt ?? null, lang, t)}</td><td>{formatDate(row?.lastReceivedAt ?? null, lang, t)}</td><td>{formatDate(row?.lastLocalApplyAt ?? null, lang, t)}</td><td>{formatDate(row?.latestUpstreamUpdatedAt ?? null, lang, t)}</td></tr>; }))}</tbody></table><p className="admin-audit-note">{t("admin.audit.localLegend")}</p></div>}</section>;
 }
+
+type LatencyTarget = { id: string; label: string; kind: string; samples: number; succeeded: number; failed: number; minMs: number | null; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; maxMs: number | null; meanMs: number | null; lastError: string | null; unavailable: boolean; unavailableReason: string | null };
+type LatencyScan = { schema: string; generatedAt: number; generatedAtIso: string; host: string | null; runtime: string; samplesPerTarget: number; timeoutMs: number; durationMs: number; targets: LatencyTarget[] };
+
+function LatencyScanPanel({ lang, t }: { lang: string; t: T }) {
+  const [scan, setScan] = useState<LatencyScan | null>(null);
+  const [roundTripMs, setRoundTripMs] = useState<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+
+  const runScan = useCallback(async () => {
+    setRunning(true); setScanError(""); setCopyState("idle");
+    const started = performance.now();
+    try {
+      const response = await fetch("/api/admin/latency-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: "{}",
+      });
+      const body = await response.json() as LatencyScan;
+      if (!response.ok) throw new Error(String(response.status));
+      setScan(body);
+      setRoundTripMs(performance.now() - started);
+    } catch { setScanError(t("admin.diagnostics.error")); }
+    finally { setRunning(false); }
+  }, [t]);
+
+  const aiReport = useMemo(() => {
+    if (!scan) return "";
+    return JSON.stringify({
+      ...scan,
+      client: {
+        roundTripMs: roundTripMs == null ? null : Math.round(roundTripMs * 10) / 10,
+        pageUrl: typeof window === "undefined" ? null : window.location.href,
+        note: "Paste this whole JSON into ChatGPT/Claude and ask it to diagnose slow p50/p95/p99, failed probes, and what to check next.",
+      },
+    }, null, 2);
+  }, [scan, roundTripMs]);
+
+  const copyReport = async () => {
+    if (!aiReport) return;
+    try { await navigator.clipboard.writeText(aiReport); setCopyState("copied"); }
+    catch { setCopyState("error"); }
+  };
+
+  const downloadReport = () => {
+    if (!aiReport || !scan) return;
+    const blob = new Blob([aiReport], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `latency-scan-${new Date(scan.generatedAt).toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const ms = (value: number | null) => value == null ? t("common.notAvailable") : t("admin.health.milliseconds", { n: formatNumber(value) });
+  return <div className="admin-stack">
+    <section className="data-panel admin-panel admin-audit-panel">
+      <div className="admin-audit-heading">
+        <div><h2 className="section-heading">{t("admin.diagnostics.heading")}</h2><p className="admin-chart-description">{t("admin.diagnostics.description")}</p></div>
+        <button type="button" className="tactical-button" disabled={running} onClick={() => { void runScan(); }}>{running ? t("admin.diagnostics.running") : t("admin.diagnostics.run")}</button>
+      </div>
+      {scanError && <div className="admin-notice admin-notice--error" role="alert">{scanError}</div>}
+      {!scan && !scanError && <p className="admin-empty">{t("admin.diagnostics.notRun")}</p>}
+      {scan && <p className="admin-notice">{t("admin.diagnostics.meta", { server: ms(scan.durationMs), client: ms(roundTripMs), date: formatDate(scan.generatedAt, lang, t) })}</p>}
+      {scan && <p className="admin-notice">{t("admin.diagnostics.lowConfidence")}</p>}
+    </section>
+    {scan && <section className="data-panel admin-panel">
+      <h2 className="section-heading">{t("admin.diagnostics.heading")}</h2>
+      <div className="admin-health-table-wrap"><table className="admin-health-table">
+        <thead><tr><th scope="col">{t("admin.diagnostics.table.target")}</th><th scope="col">{t("admin.diagnostics.table.samples")}</th><th scope="col">{t("admin.diagnostics.table.ok")}</th><th scope="col">{t("admin.diagnostics.table.errors")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th><th scope="col">{t("admin.diagnostics.table.mean")}</th></tr></thead>
+        <tbody>{scan.targets.map((target) => <tr key={target.id}><th scope="row">{target.label}{target.unavailableReason && <small>{target.unavailableReason}</small>}{target.lastError && <small>{target.lastError}</small>}</th><td>{formatNumber(target.samples)}</td><td>{formatNumber(target.succeeded)}</td><td>{formatNumber(target.failed)}</td><td>{ms(target.p50Ms)}</td><td>{ms(target.p95Ms)}</td><td>{ms(target.p99Ms)}</td><td>{ms(target.meanMs)}</td></tr>)}</tbody>
+      </table></div>
+    </section>}
+    {scan && <section className="data-panel admin-panel">
+      <div className="admin-audit-heading"><div><h2 className="section-heading">{t("admin.diagnostics.reportTitle")}</h2></div>
+        <div className="admin-health-report"><button type="button" className="ghost-button" onClick={() => { void copyReport(); }}>{t("admin.diagnostics.copyJson")}</button><button type="button" className="ghost-button" onClick={downloadReport}>{t("admin.diagnostics.download")}</button></div>
+      </div>
+      <span role="status">{copyState === "copied" ? t("admin.diagnostics.copied") : copyState === "error" ? t("admin.diagnostics.copyError") : t("admin.health.reportSafe")}</span>
+      <details className="admin-monitoring-table"><summary>{t("admin.monitoring.table.show")}</summary><pre className="admin-health-report__json">{aiReport}</pre></details>
+    </section>}
+  </div>;
+}
+
 function formatDate(value: number | null, lang: string, t: T) { return value ? new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" }) : t("common.notAvailable"); }
 function formatChartAxis(value: number, lang: string, span: number) { return new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", span <= 2 * 86_400_000 ? { timeZone: "Europe/Moscow", day: "2-digit", month: "short", hour: "2-digit" } : { timeZone: "Europe/Moscow", day: "2-digit", month: "short" }); }
 function formatChartDate(value: number, lang: string) { return new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow", dateStyle: "medium", timeStyle: "short" }); }
