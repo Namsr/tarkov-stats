@@ -637,16 +637,16 @@ export async function GET(request: NextRequest) {
           Number(stats.profileUpdatedAt),
         );
         capturedAt = pveSnapshot.capturedAt;
-        const storeWriteStarted = timing.now();
-        try {
-          const persisted = await persistRegularProfileSnapshot(pveSnapshot, {
-            mode: "pve",
-            playerStore: store,
-          });
-          capture = persisted ?? { inserted: false, status: "unavailable" };
-        } finally {
-          storeWriteMs = timing.elapsedMs(storeWriteStarted);
-        }
+        // Не блокируем ответ PvE-профиля записью в SQLite: очередь как у regular.
+        // Дедупликация остаётся внутри persistRegularProfileSnapshot, повторная
+        // попытка произойдёт на следующем forced-обновлении с тем же upstreamUpdatedAt.
+        capture = { inserted: false, status: "queued" };
+        after(() => persistRegularProfileSnapshot(pveSnapshot, {
+          mode: "pve",
+          playerStore: store,
+        }).catch((error) => {
+          console.error("pve profile capture after response failed", error);
+        }));
       } else {
         capture = { inserted: false, status: decision.state };
       }
