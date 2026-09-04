@@ -1,4 +1,4 @@
-import type { GameMode, ProfileIdentity } from "@/types/seasonal";
+import type { GameMode } from "@/types/seasonal";
 
 export type ProfileShellMode = Extract<GameMode, "regular" | "pve" | "seasonal">;
 
@@ -55,13 +55,4 @@ export interface ProfileComparisonStats {
   longestWinStreak: number | null;
   level: number | null;
   pvpStatsKnown?: boolean;
-}
-
-export interface ProfileViewModel {
-  identity: ProfileIdentity;
-  nickname: string;
-  overview: ProfileViewMetric[];
-  comparison: ProfileComparisonStats;
-  risk: PublicRiskView | null;
-  seasonalAchievements?: SeasonalAchievementView[];
 }

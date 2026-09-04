@@ -143,11 +143,6 @@ export interface WeaponStat {
   Count: number;
 }
 
-export interface Streamer {
-  name: string;
-  nickname: string;
-}
-
 export interface ParsedPlayerStats {
   nickname: string;
   level: number;

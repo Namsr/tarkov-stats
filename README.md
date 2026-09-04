@@ -41,7 +41,6 @@ pull request with a short description and the checks you ran.
 - `components/` — reusable UI components
 - `lib/` — application logic and data access
 - `tests/` — automated tests
-- `data/streamers.json` — public streamer quick-compare entries
 
 The application reads public Tarkov data from JSON endpoints and is not
 affiliated with Battlestate Games or Tarkov.dev.
