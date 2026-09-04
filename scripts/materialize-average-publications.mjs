@@ -1,7 +1,7 @@
 import { computeAverage } from "../lib/average-compute.ts";
 import { MAX_HISTOGRAM_BINS } from "../lib/histogram.ts";
 import { getArenaAverage } from "../lib/arena/service.ts";
-import { getSeasonalAverageCrossSectionQuery } from "../lib/seasonal/average-db.ts";
+import { getSeasonalAveragePublicationPayloads } from "../lib/seasonal/average-db.ts";
 import {
   averagePublicationDue,
   beginAveragePublication,
@@ -48,24 +48,30 @@ async function regularPayloads(mode) {
 
 async function seasonalPayloads(scope) {
   const cycleId = scope.slice("seasonal:".length);
-  const query = await getSeasonalAverageCrossSectionQuery();
-  if (!query) throw new Error("seasonal average storage unavailable");
-  const payloads = new Map();
+  const startedAt = Date.now();
+  // Single shared portrait scan for all four standard variants. The previous
+  // per-variant cross-section query re-evaluated the latest-snapshot portrait
+  // CTE ~38 times per variant (152 scans total), which dominated the ~9 minute
+  // production build. The full variant set is still published atomically below.
+  const batch = await getSeasonalAveragePublicationPayloads(cycleId);
+  if (!batch) throw new Error("seasonal average storage unavailable");
+  const { payloads, timings } = batch;
   for (const statistic of statistics) {
     for (const period of periods) {
-      const result = await query({
-        cycleId,
-        period,
-        statistic,
-        dimension: "hours",
-        metric: "players",
-        min: null,
-        max: null,
-      });
-      if (!result) throw new Error(`seasonal cycle ${cycleId} unavailable`);
-      payloads.set(standardAverageVariant(statistic, period), result);
+      if (!payloads.has(standardAverageVariant(statistic, period))) {
+        throw new Error(`seasonal cycle ${cycleId} unavailable`);
+      }
     }
   }
+  console.log("seasonal average variants completed", {
+    scope,
+    cycleId,
+    portraitRows: timings.portraitRows,
+    portraitFetchMs: timings.portraitFetchMs,
+    variants: timings.variants,
+    sqlPhases: { portraitFetchMs: timings.portraitFetchMs },
+    totalMs: Date.now() - startedAt,
+  });
   return payloads;
 }
 
