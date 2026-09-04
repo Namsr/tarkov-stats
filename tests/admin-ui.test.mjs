@@ -19,11 +19,12 @@ test("admin access uses only the exact Google subject and hides the page", async
 });
 
 test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation inputs", async () => {
-  const [dashboard, profile, dictionary, styles] = await Promise.all([
+  const [dashboard, profile, dictionary, styles, accountsRoute] = await Promise.all([
     readFile("components/AdminDashboard.tsx", "utf8"),
     readFile("app/profile/page.tsx", "utf8"),
     readFile("lib/i18n/dictionary.ts", "utf8"),
     readFile("app/globals.css", "utf8"),
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
   ]);
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
@@ -51,7 +52,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.account\.openProfile": "Open \{mode\} profile"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Profile updated \(MSK\)"/);
   assert.match(dictionary, /"admin\.source\.reported": "Marked suspicious: \{n\}"/);
-  assert.match(dictionary, /"admin\.suspicious\.heading": "Accounts marked suspicious by users"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Awaiting a decision"/);
+  assert.match(dictionary, /"admin\.suspicious\.confirmedHeading": "Confirmed global bans"/);
   assert.match(dictionary, /"admin\.metric\.newSuspicious": "Awaiting review \(total\)"/);
   assert.match(dictionary, /"admin\.metric\.severeRisk": "Severe risk \(total\)"/);
   assert.match(dictionary, /"admin\.metric\.accountRequests": "Exact nickname searches"/);
@@ -65,7 +67,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.account\.openProfile": "Открыть профиль \{mode\}"/);
   assert.match(dictionary, /"admin\.account\.profileUpdated": "Профиль обновлён \(МСК\)"/);
   assert.match(dictionary, /"admin\.source\.reported": "Отмечен подозрительным: \{n\}"/);
-  assert.match(dictionary, /"admin\.suspicious\.heading": "Аккаунты, отмеченные пользователями как подозрительные"/);
+  assert.match(dictionary, /"admin\.suspicious\.heading": "Ожидают решения"/);
+  assert.match(dictionary, /"admin\.suspicious\.confirmedHeading": "Подтверждённые глобальные баны"/);
   assert.match(dictionary, /"admin\.metric\.newSuspicious": "Ожидают проверки \(итого\)"/);
   assert.match(dictionary, /"admin\.metric\.severeRisk": "Критический риск \(итого\)"/);
   assert.match(dictionary, /"admin\.metric\.accountRequests": "Точные поиски по никнейму"/);
@@ -77,6 +80,12 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(dictionary, /"admin\.health\.scope": "Показатели состояния включают только API-маршруты/);
   assert.match(dictionary, /"admin\.health\.lastProfile": "Последний вызов API профиля \(МСК\)"/);
   assert.match(styles, /\.admin-account__mode-link/);
+  assert.match(dashboard, /reportedMode && profileModes\.includes\(reportedMode\)/);
+  assert.match(dashboard, /admin\.account\.reportedModes/);
+  assert.match(dashboard, /const confirmed = data\.accounts\.filter/);
+  assert.match(accountsRoute, /storedReportNicknames/);
+  assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
+  assert.match(accountsRoute, /reportedModes: report\.modes/);
   assert.match(dictionary, /"profile\.admin": "Админ-панель"/);
   assert.match(styles, /@media \(max-width: 420px\)[\s\S]*?\.admin-metrics/);
   assert.match(dashboard, /useMemo/);
@@ -114,4 +123,37 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.match(styles, /\.admin-monitoring-grid/);
   assert.match(styles, /\.admin-monitoring-chart__line--2[\s\S]*?stroke-dasharray/);
   assert.match(styles, /\.admin-monitoring-table > summary[\s\S]*?min-height: 44px/);
+});
+
+test("suspicious queue enriches stored nicknames only after pagination (N+1 guard)", async () => {
+  const accountsRoute = await readFile("app/api/admin/accounts/route.ts", "utf8");
+  // Must not fan out stored reads over the whole reviews() table.
+  assert.doesNotMatch(accountsRoute, /storedReportNicknames\(reportRows/);
+  assert.match(accountsRoute, /storedReportNicknames\(pageReports/);
+  // Order: filter -> sort -> slice -> stored lookup. Slice must precede the lookup.
+  const sliceIdx = accountsRoute.indexOf(".slice(0, limit)");
+  const lookupIdx = accountsRoute.indexOf("await storedReportNicknames(");
+  assert.ok(sliceIdx !== -1 && lookupIdx !== -1 && sliceIdx < lookupIdx, "stored lookup must run after slice(0, limit)");
+  // The paged slice is built from filtered/sorted rows, then enriched.
+  assert.match(accountsRoute, /const filteredSuspicious = suspiciousOnly/);
+  assert.match(accountsRoute, /const pageSlice = suspiciousOnly \? filteredSuspicious\.slice\(0, limit\)/);
+  assert.match(accountsRoute, /nickname: account\.nickname \?\? storedNicknames\.get\(account\.aid\)/);
+});
+
+test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wins", async () => {
+  const [accountsRoute, db] = await Promise.all([
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
+    readFile("lib/community-reports-db.ts", "utf8"),
+  ]);
+  // Bug 2: iterate per-mode, not via latest report.mode; use per-mode seasonal cycle.
+  assert.match(accountsRoute, /if \(reportMode === "seasonal"\)/);
+  assert.match(accountsRoute, /report\.seasonalCycleId/);
+  assert.doesNotMatch(accountsRoute, /\? report\.mode === "seasonal"\s*\n?\s*\? \(await seasonalStore/);
+  assert.match(db, /seasonal_cycle_id/);
+  assert.match(db, /seasonalCycleId/);
+  // Bug 3: deterministic modes order.
+  assert.match(db, /\.split\(","\)\.filter\(Boolean\)\.sort\(\)/);
+  // Bug 4: ban-wins precedence is documented and enforced.
+  assert.match(accountsRoute, /ban-wins/);
+  assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
 });
