@@ -413,6 +413,7 @@ export async function getArenaProfile(aid: number): Promise<ArenaProfile | null>
       hours: numberOrNull(overall.hours),
       counters: countersFrom(overall),
       metrics: Object.fromEntries(ARENA_METRIC_KEYS.map((metric) => [metric, numberOrNull(overall[metric])])) as ArenaOverallStats["metrics"],
+      bestArp: numberOrNull(overall.best_arp),
       source: sourceFrom(overall),
     },
     modes: Object.fromEntries(ARENA_MODE_KEYS.map((mode) => [mode, modeFrom(byMode.get(mode)!, mode)])) as ArenaProfile["modes"],
@@ -529,6 +530,75 @@ async function riskForOverall(backend: Backend, aid: number, target: Row): Promi
   }
   const rows = await arenaRows(backend, { mode: "overall", exceptAid: aid, eligible: true });
   return { mode: "overall", peerCount: rows.length, ...riskMetrics(target, rows) };
+}
+
+export interface ArenaLeaderboardEntry {
+  rank: number;
+  aid: number;
+  nickname: string;
+  bestArp: number;
+  matches: number | null;
+  kdRatio: number | null;
+  winRate: number | null;
+  wins: number | null;
+}
+
+export interface ArenaLeaderboardResult {
+  entries: ArenaLeaderboardEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export const ARENA_LEADERBOARD_MAX_LIMIT = 500;
+const ARENA_LEADERBOARD_MIN_MATCHES = 10;
+
+/**
+ * Best ARP leaderboard. The rating is a single upstream value
+ * (UnrankedOverall.BestArp, BlastGang context) stored on the overall
+ * snapshot — there is intentionally no per-mode leaderboard.
+ */
+export async function getArenaLeaderboard(
+  limit = 10,
+  offset = 0,
+): Promise<ArenaLeaderboardResult | null> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > ARENA_LEADERBOARD_MAX_LIMIT) {
+    throw new Error("invalid leaderboard limit");
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("invalid leaderboard offset");
+  const backend = await getArenaBackend();
+  if (!backend) return null;
+  const where = `WHERE s.arena_mode = 'overall'
+    AND s.best_arp IS NOT NULL AND s.best_arp > 0
+    AND s.games_count >= ?
+    AND s.parser_version = ?
+    AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = s.aid)`;
+  const params: unknown[] = [ARENA_LEADERBOARD_MIN_MATCHES, ARENA_PARSER_VERSION];
+  const order = `ORDER BY s.best_arp DESC, s.games_count DESC, COALESCE(s.kd_ratio, -1) DESC`;
+  const [rows, counted] = await Promise.all([
+    all(backend, `SELECT s.aid, s.best_arp, s.games_count, s.kd_ratio, s.win_rate, s.arena_wins,
+        COALESCE(m.nickname, 'Unknown') AS nickname
+      FROM arena_mode_stats s
+      LEFT JOIN mode_players m ON m.mode = 'arena' AND m.aid = s.aid
+      ${where} ${order} LIMIT ? OFFSET ?`, [...params, limit, offset]),
+    all(backend, `SELECT COUNT(*) AS total FROM arena_mode_stats s ${where}`, params),
+  ]);
+  const total = Number(counted[0]?.total) || 0;
+  const entries = rows.map((row, index) => {
+    const aid = Number(row.aid);
+    const bestArp = Number(row.best_arp);
+    return {
+      rank: offset + index + 1,
+      aid,
+      nickname: typeof row.nickname === "string" && row.nickname ? row.nickname : "Unknown",
+      bestArp,
+      matches: numberOrNull(row.games_count),
+      kdRatio: numberOrNull(row.kd_ratio),
+      winRate: numberOrNull(row.win_rate),
+      wins: numberOrNull(row.arena_wins),
+    };
+  }).filter((entry) => Number.isSafeInteger(entry.aid) && entry.aid > 0 && Number.isFinite(entry.bestArp));
+  return { entries, total, limit, offset };
 }
 
 /** Display-only Arena anomaly score. It never calls generic moderation storage. */

@@ -29,7 +29,7 @@ type TimingInput = {
 };
 
 export type RequestTimingInput = TimingInput & {
-  operation: "player_profile" | "player_search" | "average" | "average_cohort" | "baseline" | "average_achievements";
+  operation: "player_profile" | "player_search" | "average" | "average_cohort" | "baseline" | "average_achievements" | "arena_leaderboard";
   mode?: Mode;
   outcome: Outcome;
   status: number;

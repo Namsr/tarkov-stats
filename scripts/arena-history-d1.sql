@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS arena_mode_stats_history (
   headshot_rate REAL,
   kills_per_match REAL,
   damage_per_match REAL,
+  best_arp REAL,
   upstream_version INTEGER NOT NULL,
   parser_version INTEGER NOT NULL,
   raw_json TEXT NOT NULL,

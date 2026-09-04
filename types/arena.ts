@@ -57,6 +57,8 @@ export interface ArenaOverallStats {
   hours: number | null;
   counters: ArenaCounters;
   metrics: ArenaMetrics;
+  /** Best ARP from upstream UnrankedOverall. Single rating (BlastGang context). Null when unknown. */
+  bestArp: number | null;
   /** Direct upstream totals win. Complete five-mode sums are the only fallback. */
   source: "upstream" | "complete_mode_sum" | "unavailable";
 }

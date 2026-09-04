@@ -69,6 +69,13 @@ function totals(groups) {
       else counters[key] = (counters[key] ?? 0) + value;
     }
   }
+  // BestArp is a rating, not a sum. Derive a deterministic per-profile value
+  // from the fixture totals so seeded DBs have leaderboard data.
+  const kills = counters.Kills ?? 0;
+  const deaths = counters.Deaths ?? 0;
+  const wins = counters.ArenaWins ?? 0;
+  const games = counters.GamesCount ?? 0;
+  counters.BestArp = 1000 + kills * 5 + wins * 3 - deaths + (games % 7);
   return { Counters: counters };
 }
 

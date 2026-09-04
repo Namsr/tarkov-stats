@@ -1051,6 +1051,7 @@ function completeModeOverall(modes: PublicArenaModeStats[], hours: number | null
     hours,
     counters,
     metrics: arenaMetrics(counters),
+    bestArp: null,
     source: complete ? "complete_mode_sum" : "unavailable",
   };
 }
@@ -1067,7 +1068,7 @@ function overallWithFallback(
     key,
     directCounters[key] ?? summed[key],
   ])) as unknown as ArenaCounters;
-  return { hours, counters, metrics: arenaMetrics(counters), source: "upstream" };
+  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: "upstream" };
 }
 
 /** Parses Arena's separate counter tree into the shared stored-stat envelope. */
@@ -1130,6 +1131,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     ARENA_MODE_KEYS.map((mode) => publicModes[mode]),
     arenaHours,
   );
+  publicOverall.bestArp = arenaCounterValue(directOverall, "BestArp");
   const arenaProfile: ArenaProfile = {
     aid: Number(profile.aid) || 0,
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",

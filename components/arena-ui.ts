@@ -135,6 +135,7 @@ function normalizeOverall(value: unknown): ArenaOverallStats {
     hours: finiteNumber(source.hours),
     counters: normalizeArenaCounters(source.counters),
     metrics: normalizeArenaMetrics(source.metrics),
+    bestArp: finiteNumber(source.bestArp),
     source: sourceValue,
   };
 }
@@ -225,6 +226,7 @@ function fromLegacyArena(
     parserVersion: 0,
     overall: {
       hours,
+      bestArp: finiteNumber(value.bestArp),
       source: totalKills !== null || totalDeaths !== null ? "upstream" : "unavailable",
       counters: {
         ...emptyArenaCounters(),

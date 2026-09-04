@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import AveragePageHeader from "@/components/AveragePageHeader";
-import RangeSlider from "@/components/RangeSlider";
-import SegmentedRadio from "@/components/SegmentedRadio";
+import ArenaLeaderboard from "@/components/ArenaLeaderboard";
+import RangeSlider from "@/components/RangeSlider";import SegmentedRadio from "@/components/SegmentedRadio";
 import {
   ARENA_METRIC_KEYS,
   ARENA_MODE_KEYS,
@@ -711,6 +711,8 @@ export default function ArenaAverage({ seasonalCycleId }: { seasonalCycleId?: st
           onFilterChange={(next) => updateFilter(selectedMode, next)}
         />
       </div>
+
+      <ArenaLeaderboard limit={10} footerLink="full" />
     </main>
   );
 }
