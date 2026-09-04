@@ -17,7 +17,7 @@ import {
 } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import { DEFAULT_Y, formatValue, resolveY, Y_METRICS } from "@/lib/metrics";
-import { loadAverageJson } from "@/lib/client-average-request";
+import { cancelAveragePrefetches, loadAverageJson } from "@/lib/client-average-request";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { LevelBand } from "@/lib/seasonal/ui";
 import type { GameMode } from "@/types/seasonal";
@@ -223,6 +223,7 @@ function AveragePageContent({
   function cancelAverageRequests() {
     averageRequestRef.current?.abort();
     progressionRequestRef.current?.abort();
+    cancelAveragePrefetches();
   }
 
   function changeStatistic(next: AverageStatistic) {

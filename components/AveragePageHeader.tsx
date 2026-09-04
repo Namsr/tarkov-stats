@@ -8,7 +8,7 @@ import { useI18n } from "@/lib/i18n/context";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { GameMode } from "@/types/seasonal";
 import { useEffect } from "react";
-import { scheduleAveragePrefetch } from "@/lib/client-average-request";
+import { cancelAveragePrefetches, scheduleAveragePrefetch } from "@/lib/client-average-request";
 
 export default function AveragePageHeader({
   current,
@@ -43,6 +43,7 @@ export default function AveragePageHeader({
       urls.push(`/api/seasonal/average?${seasonal}`);
     }
     scheduleAveragePrefetch(urls);
+    return () => cancelAveragePrefetches();
   }, [period, seasonalCycleId, statistic]);
 
   return (
