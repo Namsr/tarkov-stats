@@ -16,6 +16,7 @@ Object.defineProperty(globalThis, "navigator", {
 });
 
 const requests = await import("../lib/client-average-request.ts");
+const profileRequests = await import("../lib/client-profile-request.ts");
 
 test.afterEach(() => requests.resetAverageResponseCacheForTests());
 
@@ -79,38 +80,185 @@ test("navigation cancels pending and active average prefetches", async () => {
   }
 });
 
-test("mode navigation cancels stale average, warm and comparison requests", async () => {
-  const client = await readFile("lib/client-average-request.ts", "utf8");
+test("concurrent signal loads of the same URL share one network request", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ total: 7 }), { status: 200 });
+  };
+
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const [first, second] = await Promise.all([
+    requests.loadAverageJson("/api/average?shared-signal", { signal: firstController.signal }),
+    requests.loadAverageJson("/api/average?shared-signal", { signal: secondController.signal }),
+  ]);
+
+  assert.deepEqual(first, { total: 7 });
+  assert.deepEqual(second, { total: 7 });
+  assert.equal(fetches, 1);
+});
+
+test("aborting one signal consumer keeps the shared request alive for the other", async () => {
+  let fetches = 0;
+  globalThis.fetch = (url, init) => {
+    fetches += 1;
+    const signal = init?.signal ?? null;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(new Response(JSON.stringify({ total: 3 }), { status: 200 }));
+      }, 30);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+  };
+
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = requests.loadAverageJson("/api/average?shared-abort", { signal: firstController.signal });
+  const second = requests.loadAverageJson("/api/average?shared-abort", { signal: secondController.signal });
+  const firstAssertion = assert.rejects(first, (error) => error?.name === "AbortError");
+  setTimeout(() => firstController.abort(), 5);
+  const secondResult = await second;
+  await firstAssertion;
+
+  assert.deepEqual(secondResult, { total: 3 });
+  assert.equal(fetches, 1);
+});
+
+test("prefetch and demand load of the same URL share one network request", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ total: 9 }), { status: 200 });
+  };
+
+  requests.scheduleAveragePrefetch(["/api/average?shared-prefetch"]);
+  const demanded = await requests.loadAverageJson("/api/average?shared-prefetch");
+  // Let a duplicate prefetch settle if it escaped dedup.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.deepEqual(demanded, { total: 9 });
+  assert.equal(fetches, 1);
+});
+
+test("second mode aborts the first request while completing itself", async () => {
+  globalThis.fetch = (url, init) => {
+    const signal = init?.signal ?? null;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(new Response(JSON.stringify({ url }), { status: 200 }));
+      }, 30);
+      if (signal) {
+        if (signal.aborted) {
+          clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      }
+    });
+  };
+
+  const firstController = new AbortController();
+  const first = requests.loadAverageJson("/api/average?mode=regular", { signal: firstController.signal });
+  const firstAssertion = assert.rejects(first, (error) => error?.name === "AbortError");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  firstController.abort();
+
+  const secondController = new AbortController();
+  const second = await requests.loadAverageJson("/api/average?mode=pve", { signal: secondController.signal });
+
+  await firstAssertion;
+  assert.deepEqual(second, { url: "/api/average?mode=pve" });
+});
+
+test("cancelAveragePrefetches never aborts a demand load that took over a prefetch", async () => {
+  let fetches = 0;
+  globalThis.fetch = (url, init) => {
+    fetches += 1;
+    const signal = init?.signal ?? null;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(new Response(JSON.stringify({ total: 5 }), { status: 200 }));
+      }, 30);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+  };
+
+  requests.scheduleAveragePrefetch(["/api/average?takeover"]);
+  const demanded = requests.loadAverageJson("/api/average?takeover");
+  // Navigation cancels best-effort prefetches while the demand is in flight.
+  requests.cancelAveragePrefetches();
+  const result = await demanded;
+
+  assert.deepEqual(result, { total: 5 });
+  assert.equal(fetches, 1);
+});
+
+test("concurrent profile signal loads share one network request", async () => {
+  const stamp = Date.now();
+  const url = `/api/player/profile?aid=9100001&mode=regular&probe=${stamp}`;
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const customRequest = async () => {
+    calls += 1;
+    await gate;
+    return Response.json({ stats: { nickname: "Shared" } });
+  };
+
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = profileRequests.loadPlayerProfileResponse(url, {
+    signal: firstController.signal,
+    request: customRequest,
+  });
+  const second = profileRequests.loadPlayerProfileResponse(url, {
+    signal: secondController.signal,
+    request: customRequest,
+  });
+  assert.equal(calls, 1);
+  release();
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+  assert.equal(calls, 1);
+  assert.equal(firstResponse.body.stats.nickname, "Shared");
+  assert.equal(secondResponse.body.stats.nickname, "Shared");
+});
+
+test("mode navigation wiring keeps only the last request alive", async () => {
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");
   const averagePage = await readFile("app/average/page.tsx", "utf8");
   const switcher = await readFile("components/ProfileModeSwitch.tsx", "utf8");
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
-  const arena = await readFile("components/ArenaAverage.tsx", "utf8");
-  const profileClient = await readFile("lib/client-profile-request.ts", "utf8");
 
-  // Real underlying average fetch is abortable.
-  assert.match(client, /fetchJson\(url,\s*signal\)/);
-  assert.match(client, /fetch\(url,\s*signal \? \{ cache: "default", signal \}/);
-  assert.match(client, /function raceWithAbort/);
-  assert.match(client, /cancelAveragePrefetches/);
-  assert.match(client, /prefetchControllers/);
-
-  // Prefetch queue does not survive navigation.
+  // Prefetch queue does not survive navigation, demand loads take over prefetches.
+  assert.match(header, /scheduleAveragePrefetch/);
   assert.match(header, /cancelAveragePrefetches/);
-  assert.match(header, /return \(\) => cancelAveragePrefetches\(\)/);
-  assert.match(averagePage, /cancelAveragePrefetches\(\)/);
-  assert.match(arena, /cancelAveragePrefetches\(\)/);
+  assert.match(averagePage, /cancelAveragePrefetches/);
+  assert.match(averagePage, /averageRequestRef\.current\?\.abort/);
 
-  // Warm requests keep only the last mode active.
-  assert.match(switcher, /warmTimelineController\?\.abort\(\)/);
-  assert.match(switcher, /warmProfileController\?\.abort\(\)/);
-  assert.match(switcher, /signal:\s*controller\.signal/);
-  assert.match(switcher, /cancelModeSwitchWarms/);
-  assert.match(profileClient, /signal\?: AbortSignal/);
-  assert.match(profileClient, /warmPlayerProfileResponse\(url:\s*string,\s*signal\?: AbortSignal\)/);
+  // Warm controllers are per-instance and cleaned up on unmount.
+  assert.match(switcher, /warmProfileRef/);
+  assert.match(switcher, /warmTimelineRef/);
+  assert.match(switcher, /useRef<AbortController \| null>/);
+  assert.doesNotMatch(switcher, /let warmProfileController/);
+  assert.doesNotMatch(switcher, /let warmTimelineController/);
+  assert.doesNotMatch(switcher, /cancelModeSwitchWarms/);
+  assert.match(switcher, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`/);
 
-  // Comparison timeline is cancelled by navigation, like the main timeline.
-  const secondaryEffect = panel.slice(panel.indexOf("secondaryController.current = controller"));
-  assert.match(secondaryEffect, /profile-mode-navigate/);
-  assert.match(secondaryEffect, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
+  // Timelines are cancelled by navigation.
+  assert.match(panel, /profile-mode-navigate/);
+  assert.match(panel, /secondaryController\.current\?\.abort/);
 });

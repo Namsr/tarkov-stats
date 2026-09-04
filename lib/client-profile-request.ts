@@ -11,10 +11,16 @@ interface CachedResponse {
   response: PlayerProfileJsonResponse<unknown>;
 }
 
+interface ProfileInFlight {
+  promise: Promise<PlayerProfileJsonResponse<unknown>>;
+  controller: AbortController;
+  consumers: number;
+}
+
 const CACHE_TTL_MS = 5 * 60_000;
 const CACHE_MAX = 64;
 const responseCache = new Map<string, CachedResponse>();
-const inFlight = new Map<string, Promise<PlayerProfileJsonResponse<unknown>>>();
+const inFlight = new Map<string, ProfileInFlight>();
 
 export class PlayerProfileResponseError extends Error {
   constructor() {
@@ -53,67 +59,120 @@ function cacheResponse(key: string, response: PlayerProfileJsonResponse<unknown>
   responseCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, response });
 }
 
+/**
+ * Attach a consumer to a shared profile request keyed by URL.
+ * Aborting one consumer rejects only that consumer; the shared network is
+ * aborted only when the last consumer leaves.
+ */
+function attachProfile(
+  entry: ProfileInFlight,
+  signal?: AbortSignal,
+): Promise<PlayerProfileJsonResponse<unknown>> {
+  if (!signal) {
+    entry.consumers += 1;
+    return entry.promise.then(
+      (value) => {
+        entry.consumers = Math.max(0, entry.consumers - 1);
+        return value;
+      },
+      (error) => {
+        entry.consumers = Math.max(0, entry.consumers - 1);
+        throw error;
+      },
+    );
+  }
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  entry.consumers += 1;
+  return new Promise<PlayerProfileJsonResponse<unknown>>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      entry.consumers = Math.max(0, entry.consumers - 1);
+      if (entry.consumers === 0) {
+        try {
+          entry.controller.abort();
+        } catch {
+          // Ignore abort errors during navigation.
+        }
+      }
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        entry.consumers = Math.max(0, entry.consumers - 1);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        entry.consumers = Math.max(0, entry.consumers - 1);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function parseProfileResponse(
+  response: Response,
+  key: string,
+): Promise<PlayerProfileJsonResponse<unknown>> {
+  const text = await response.text();
+  if (!text.trim()) throw new PlayerProfileResponseError();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new PlayerProfileResponseError();
+  }
+  const result = { ok: response.ok, status: response.status, body };
+  cacheResponse(key, result);
+  return result;
+}
+
 export function loadPlayerProfileResponse<T>(
   url: string,
   options: { force?: boolean; request?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<PlayerProfileJsonResponse<T>> {
   const key = playerProfileRequestKey(url);
-  if (options.signal) {
-    if (options.signal.aborted) {
-      return Promise.reject(new DOMException("Aborted", "AbortError"));
-    }
-    if (!options.force) {
-      const cached = getCachedPlayerProfileResponse<T>(key);
-      if (cached) return Promise.resolve(cached);
-    }
-    const doFetch = options.request ?? fetch;
-    return doFetch(url, {
-      cache: options.force ? "no-store" : "default",
-      signal: options.signal,
-    }).then(async (response) => {
-      const text = await response.text();
-      if (!text.trim()) throw new PlayerProfileResponseError();
-      let body: unknown;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        throw new PlayerProfileResponseError();
-      }
-      const result = { ok: response.ok, status: response.status, body };
-      cacheResponse(key, result);
-      return result as PlayerProfileJsonResponse<T>;
-    });
+  const signal = options.signal;
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
   }
   if (!options.force) {
     const cached = getCachedPlayerProfileResponse<T>(key);
     if (cached) return Promise.resolve(cached);
-    const pending = inFlight.get(key);
-    if (pending) return pending as Promise<PlayerProfileJsonResponse<T>>;
   }
 
   const requestKey = options.force ? `${key}\0refresh` : key;
   const existing = inFlight.get(requestKey);
-  if (existing) return existing as Promise<PlayerProfileJsonResponse<T>>;
+  if (existing) {
+    return attachProfile(existing, signal) as Promise<PlayerProfileJsonResponse<T>>;
+  }
 
-  const request = (options.request ?? fetch)(url, {
+  const controller = new AbortController();
+  const doFetch = options.request ?? fetch;
+  const network = doFetch(url, {
     cache: options.force ? "no-store" : "default",
-  }).then(async (response) => {
-    const text = await response.text();
-    if (!text.trim()) throw new PlayerProfileResponseError();
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new PlayerProfileResponseError();
-    }
-    const result = { ok: response.ok, status: response.status, body };
-    cacheResponse(key, result);
-    return result;
-  }).finally(() => {
-    if (inFlight.get(requestKey) === request) inFlight.delete(requestKey);
+    signal: controller.signal,
+  }).then((response) => parseProfileResponse(response, key));
+  const entry: ProfileInFlight = {
+    promise: null as unknown as Promise<PlayerProfileJsonResponse<unknown>>,
+    controller,
+    consumers: 0,
+  };
+  entry.promise = network.finally(() => {
+    if (inFlight.get(requestKey) === entry) inFlight.delete(requestKey);
   });
-  inFlight.set(requestKey, request);
-  return request as Promise<PlayerProfileJsonResponse<T>>;
+  // Avoid unhandled rejection when the shared fetch fails before anyone attaches.
+  entry.promise.catch(() => undefined);
+  inFlight.set(requestKey, entry);
+  return attachProfile(entry, signal) as Promise<PlayerProfileJsonResponse<T>>;
 }
 
 export function warmPlayerProfileResponse(url: string, signal?: AbortSignal): void {

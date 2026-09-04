@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { handleActiveLinkClick } from "@/lib/active-link";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
@@ -15,15 +15,6 @@ import {
 
 const PENDING_TIMEOUT_MS = 10_000;
 let latestSeasonalCycleId: string | null = null;
-let warmProfileController: AbortController | null = null;
-let warmTimelineController: AbortController | null = null;
-
-export function cancelModeSwitchWarms(): void {
-  warmProfileController?.abort();
-  warmProfileController = null;
-  warmTimelineController?.abort();
-  warmTimelineController = null;
-}
 
 export default function ProfileModeSwitch({
   current,
@@ -49,6 +40,17 @@ export default function ProfileModeSwitch({
     pathname: string;
   } | null>(null);
   const activeSeasonalCycleId = seasonalCycleForNavigation(current, seasonalCycleId, null, null);
+  // Per-instance warm controllers: aborting here never touches another mounted
+  // switch (e.g. average header vs player header) and is cleaned up on unmount.
+  const warmProfileRef = useRef<AbortController | null>(null);
+  const warmTimelineRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    warmProfileRef.current?.abort();
+    warmProfileRef.current = null;
+    warmTimelineRef.current?.abort();
+    warmTimelineRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (activeSeasonalCycleId) latestSeasonalCycleId = activeSeasonalCycleId;
@@ -102,9 +104,9 @@ export default function ProfileModeSwitch({
       if (!cycleId) return;
       params.set("cycle", cycleId);
     }
-    warmProfileController?.abort();
+    warmProfileRef.current?.abort();
     const controller = new AbortController();
-    warmProfileController = controller;
+    warmProfileRef.current = controller;
     warmPlayerProfileResponse(`/api/player/profile?${params}`, controller.signal);
   }
 
@@ -120,13 +122,13 @@ export default function ProfileModeSwitch({
       cycle: mode === "seasonal" ? activeSeasonalCycleId ?? "" : "persistent",
     });
     if (mode === "seasonal" && !activeSeasonalCycleId) return;
-    warmTimelineController?.abort();
+    warmTimelineRef.current?.abort();
     const controller = new AbortController();
-    warmTimelineController = controller;
+    warmTimelineRef.current = controller;
     void fetch(`/api/progression/timeline?${params}`, { cache: "default", signal: controller.signal }).catch(() => {
       // The destination profile owns the visible progression error state.
     }).finally(() => {
-      if (warmTimelineController === controller) warmTimelineController = null;
+      if (warmTimelineRef.current === controller) warmTimelineRef.current = null;
     });
   }
 
