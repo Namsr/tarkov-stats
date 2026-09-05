@@ -114,6 +114,32 @@ test("PvE versions are read through the identifying JSON helper boundary", async
   assert.equal(versions.size, 1);
 });
 
+test("PvE feed retries a terminated partial stream without keeping partial versions", async () => {
+  let calls = 0;
+  const partial = () => {
+    let pulls = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (pulls++ === 0) controller.enqueue(new TextEncoder().encode('{"3":300,'));
+        else controller.error(new TypeError("terminated"));
+      },
+    }));
+  };
+  const versions = await loadUpdatedVersions("https://players.tarkov.dev/pve/updated.json", {
+    maxRetries: 1, timeoutMs: 30_000, sleep: async () => {},
+    request: async () => ++calls === 1 ? partial() : new Response('{"4":400}'),
+  });
+  assert.deepEqual([...versions], [[4, 400_000]]);
+  assert.equal(calls, 2);
+
+  calls = 0;
+  await assert.rejects(loadUpdatedVersions("https://players.tarkov.dev/pve/updated.json", {
+    maxRetries: 1, timeoutMs: 30_000, sleep: async () => {},
+    request: async () => { calls += 1; return partial(); },
+  }), /warmup updated feed failed after 2 attempts: TypeError: terminated/);
+  assert.equal(calls, 2);
+});
+
 test("409 retries through the global pacer while an uncertain timeout stops the run", async () => {
   const candidate = { mode: "regular", aid: 1, sourceVersion: 100 };
   let paced = 0;

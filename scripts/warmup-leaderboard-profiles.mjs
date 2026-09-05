@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");
-const { createTimestampObjectParser, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
+const { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
 
 function integer(value, fallback, minimum, maximum) {
   const parsed = value == null || value === "" ? fallback : Number(value);
@@ -81,25 +81,53 @@ export function acquireWarmupLock(path) {
   };
 }
 
-export async function loadUpdatedVersions(url, request = fetchTarkovJson) {
-  const response = await request(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`warmup updated feed HTTP ${response.status}`);
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("warmup updated feed has no readable body");
-  const versions = new Map();
-  const parser = createTimestampObjectParser((aidValue, updatedValue) => {
-    const aid = Number(aidValue);
-    const updatedAt = normalizeUpdatedAt(updatedValue);
-    if (Number.isSafeInteger(aid) && aid > 0 && updatedAt !== null) versions.set(aid, updatedAt);
-  });
-  const decoder = new TextDecoder();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    parser.append(decoder.decode(value, { stream: true }));
+export async function loadUpdatedVersions(url, options = {}) {
+  const request = typeof options === "function" ? options : options.request ?? fetchTarkovJson;
+  const maxRetries = typeof options === "function" ? 0 : options.maxRetries ?? 0;
+  const timeoutMs = typeof options === "function" ? 30_000 : options.timeoutMs ?? 30_000;
+  const sleep = typeof options === "function" ? (ms) => new Promise((done) => setTimeout(done, ms))
+    : options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  let lastError;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    attempts = attempt;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await request(url, { cache: "no-store", signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error(`warmup updated feed HTTP ${response.status}`);
+        error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("warmup updated feed has no readable body");
+      const versions = new Map();
+      const parser = createTimestampObjectParser((aidValue, updatedValue) => {
+        const aid = Number(aidValue);
+        const updatedAt = normalizeUpdatedAt(updatedValue);
+        if (Number.isSafeInteger(aid) && aid > 0 && updatedAt !== null) versions.set(aid, updatedAt);
+      });
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parser.append(decoder.decode(value, { stream: true }));
+      }
+      parser.finish(decoder.decode());
+      return versions;
+    } catch (error) {
+      lastError = controller.signal.aborted
+        ? new Error(`warmup updated feed timed out after ${timeoutMs}ms`, { cause: error })
+        : error;
+      if (attempt > maxRetries || error?.retryable === false) break;
+      await sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
+    } finally {
+      clearTimeout(timeout);
+    }
   }
-  parser.finish(decoder.decode());
-  return versions;
+  const detail = lastError instanceof Error ? `${lastError.name}: ${lastError.message}` : String(lastError);
+  throw new Error(`warmup updated feed failed after ${attempts} attempts: ${detail}`, { cause: lastError });
 }
 
 /** Select only rows produced before the current parser, not current-parser rows with genuinely absent metrics. */
@@ -293,9 +321,11 @@ async function main() {
     players = new DatabaseSync(dbPath, { readOnly: true });
     players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
     const cycleId = validCycleId(process.env.SEASONAL_CYCLE_ID);
-    const pveVersions = await loadUpdatedVersions(
-      process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json",
-    );
+    const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
+    pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
+    const pveVersions = await loadUpdatedVersions(pveUpdatedUrl, {
+      maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+    });
     const candidates = selectWarmupCandidates(players, cycleId, pveVersions);
     const pace = createRequestPacer();
     const result = await runWarmup({
