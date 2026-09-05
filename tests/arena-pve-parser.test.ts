@@ -9,6 +9,7 @@ import * as tested from "../lib/tarkov-api.ts";
 const profileRouteSource = await readFile(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
 const {
   getPublicProfile,
+  needsPvpStatsParserRefresh,
   lastSkillAccessSeconds,
   parseArenaProfileStats,
   parseProfileStats,
@@ -212,10 +213,41 @@ test("explicit zero PMC kills is known while a missing counter remains unknown",
     ...base,
     pmcStats: { eft: { totalInGameTime: 0, overAllCounters: { Items: items } } },
   });
-  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 0 }])).pvpStatsKnown, true);
-  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 7 }])).pmcKilledPmc, 7);
-  assert.equal(parseProfileStats(profile([{ Key: ["KilledPmc"], Value: 0 }])).pmcKilledPmc, 0);
-  assert.equal(parseProfileStats(profile([])).pvpStatsKnown, false);
+  const complete = (killedPmc) => [
+    { Key: ["Sessions", "Pmc"], Value: 0 },
+    { Key: ["Deaths"], Value: 0 },
+    { Key: ["KilledPmc"], Value: killedPmc },
+  ];
+  assert.equal(parseProfileStats(profile(complete(0))).pvpStatsKnown, true);
+  assert.equal(parseProfileStats(profile(complete(0))).pvpStatsVersion, 1);
+  assert.equal(parseProfileStats(profile(complete(7))).pmcKilledPmc, 7);
+  assert.equal(parseProfileStats(profile(complete(0))).pmcKilledPmc, 0);
+  const freshMissing = parseProfileStats(profile([]));
+  assert.equal(freshMissing.pvpStatsKnown, false);
+  assert.equal(freshMissing.pvpStatsVersion, 0);
+  assert.equal(freshMissing.pvpStatsParserVersion, 1);
+  assert.equal(needsPvpStatsParserRefresh({}), true);
+  assert.equal(needsPvpStatsParserRefresh(freshMissing), false);
+  assert.equal(needsPvpStatsParserRefresh(freshMissing), false);
+  assert.equal(parseProfileStats(profile([])).pmcKilledPmc, null);
+  for (const invalid of ["bad", null, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(parseProfileStats(profile(complete(invalid))).pvpStatsKnown, false);
+    assert.equal(parseProfileStats(profile(complete(invalid))).pmcKilledPmc, null);
+    const invalidRaids = parseProfileStats(profile([
+      { Key: ["Sessions", "Pmc"], Value: invalid },
+      { Key: ["Deaths"], Value: 0 },
+      { Key: ["KilledPmc"], Value: 0 },
+    ]));
+    assert.equal(invalidRaids.pvpStatsKnown, true);
+    assert.equal(invalidRaids.pvpStatsVersion, 0);
+    const invalidDeaths = parseProfileStats(profile([
+      { Key: ["Sessions", "Pmc"], Value: 0 },
+      { Key: ["Deaths"], Value: invalid },
+      { Key: ["KilledPmc"], Value: 0 },
+    ]));
+    assert.equal(invalidDeaths.pvpStatsKnown, true);
+    assert.equal(invalidDeaths.pvpStatsVersion, 0);
+  }
 });
 
 test("mode profile refresh falls back to the last stored snapshot", () => {

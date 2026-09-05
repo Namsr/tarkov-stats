@@ -32,6 +32,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 const { getFavoritesStore, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const { getArenaAverage } = await import("../lib/arena/service.ts");
+const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
@@ -44,11 +45,11 @@ const modes = ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "s
 const insert = db.prepare(`INSERT INTO arena_mode_stats (
   aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate,
   kills_per_match, damage_per_match, upstream_version, parser_version, raw_json, fetched_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, '{}', 1)`);
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, '{}', 1)`);
 
 for (let aid = 1; aid <= 22; aid += 1) {
   for (const mode of modes) {
-    insert.run(aid, mode, 100, 100, aid, 50, 25, 2, 500);
+    insert.run(aid, mode, 100, 100, aid, 50, 25, 2, 500, ARENA_PARSER_VERSION);
   }
 }
 
@@ -126,7 +127,7 @@ test("Arena average validates its isolated query contract and defaults to matche
   assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
   assert.equal(body.mode, "arena");
-  assert.equal(body.schemaVersion, 1);
+  assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);
   assert.deepEqual(body.filterIdentity, {
     mode: "teamFight", statistic: "trimmed_mean", dimension: "matches", metric: "players",
     minHours: null, maxHours: null, minMatches: null, maxMatches: null,
@@ -184,7 +185,7 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
   assert.equal(body.gameMode, "arena");
   assert.equal(body.mode, "teamFight");
   assert.equal(body.strategy, "matched");
-  assert.equal(body.schemaVersion, 1);
+  assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);
   assert.deepEqual(body.target, { hours: 100, matches: 100 });
   assert.equal(body.quality, "sufficient");
   assert.equal(body.sampleN, 21);

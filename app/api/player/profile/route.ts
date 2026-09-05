@@ -7,6 +7,7 @@ import {
   safeAchievementImageUrl,
   parseProfileStats,
   pveProfileDecision,
+  needsPvpStatsParserRefresh,
 } from "@/lib/tarkov-api";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
@@ -82,6 +83,24 @@ async function refreshStoredRegularProfile(aid: number): Promise<void> {
       );
     } catch (error) {
       console.error("regular stored profile background refresh failed", error);
+    }
+  });
+}
+
+async function refreshStoredPveProfile(aid: number): Promise<void> {
+  const key = progressionFlightKey("pve", "persistent", aid);
+  return singleFlight(regularBackgroundRefreshes, key, async () => {
+    try {
+      const { profile } = await getPublicProfile(aid, { force: true, mode: "pve" });
+      if (!profile || pveProfileDecision(profile).state !== "store") return;
+      const stats = parseProfileStats(profile, [...PLAYER_LEVELS_V2026_07_22]);
+      const achievementIds = Object.keys(profile.achievements ?? {});
+      await persistRegularProfileSnapshot(
+        makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
+        { mode: "pve", strict: true },
+      );
+    } catch (error) {
+      console.error("pve stored profile background refresh failed", error);
     }
   });
 }
@@ -630,6 +649,9 @@ export async function GET(request: NextRequest) {
         return response;
       };
       if (stored && !force) {
+        if (needsPvpStatsParserRefresh(stored.stats)) {
+          after(() => refreshStoredPveProfile(aid));
+        }
         return await storedResponse(stored);
       }
 
@@ -772,7 +794,8 @@ export async function GET(request: NextRequest) {
         achievementIds: stored.achievementIds,
         capturedAt: stored.capturedAt,
       }, publicRisk), enrichmentPhases);
-      if (Date.now() - stored.capturedAt >= STORED_PROFILE_REFRESH_MS) {
+      if (needsPvpStatsParserRefresh(stored.stats) ||
+          Date.now() - stored.capturedAt >= STORED_PROFILE_REFRESH_MS) {
         after(() => refreshStoredRegularProfile(aid));
       }
       timing.setRequestContext({ nickname: stored.stats.nickname });

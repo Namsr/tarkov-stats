@@ -231,6 +231,65 @@ test("isolates the same aid by cycle and deduplicates timestamps", async () => {
   assert.deepEqual(JSON.parse(captured.achievements), timestamped.seasonalAchievements);
 });
 
+test("journals exact Seasonal promotions by cycle and never mixes a certified same-version tuple", async () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createSqliteSeasonalStore(db);
+  const legacy = profile("season-a", 1700000000000, 100);
+  await store.upsertProfile(legacy, 1700000000100);
+  await store.captureSnapshot(legacy, 1700000000200);
+  const first = db.prepare(`SELECT change_id,revision FROM leaderboard_seasonal_profile_changes
+    WHERE cycle_id='season-a' AND aid=42`).get() as { change_id: number; revision: number };
+
+  const promoted = profile("season-a", 1700000000000, 100);
+  promoted.counters.pmcKilledPmc = 0;
+  promoted.pvpStatsVersion = 1;
+  promoted.pvpStatsParserVersion = 1;
+  promoted.leaderboardActivityAt = 1699999999000;
+  await store.upsertProfile(promoted, 1700000000300);
+  assert.equal((await store.captureSnapshot(promoted, 1700000000400)).status, "duplicate");
+  const exact = db.prepare(`SELECT pmc_raids,pmc_deaths,pmc_killed_pmc,pvp_stats_version,
+    pvp_stats_parser_version,leaderboard_activity_at FROM player_profiles
+    WHERE cycle_id='season-a' AND aid=42`).get() as Record<string, unknown>;
+  assert.deepEqual({ ...exact }, { pmc_raids: 1, pmc_deaths: 1, pmc_killed_pmc: 0, pvp_stats_version: 1,
+    pvp_stats_parser_version: 1, leaderboard_activity_at: 1699999999000 });
+  const promotedMarker = db.prepare(`SELECT change_id,revision FROM leaderboard_seasonal_profile_changes
+    WHERE cycle_id='season-a' AND aid=42`).get() as { change_id: number; revision: number };
+  assert.equal(promotedMarker.revision, 2);
+  assert.ok(promotedMarker.change_id > first.change_id);
+  const snapshot = db.prepare(`SELECT stats_json FROM progression_snapshots
+    WHERE cycle_id='season-a' AND aid=42`).get() as { stats_json: string };
+  assert.deepEqual(JSON.parse(snapshot.stats_json), { pmcKilledPmc: 0, pvpStatsKnown: true,
+    pvpStatsVersion: 1, pvpStatsParserVersion: 1, leaderboardActivityAt: 1699999999000 });
+
+  const missingReplay = profile("season-a", 1700000000000, 100);
+  missingReplay.counters.pmcRaids = 0;
+  missingReplay.counters.pmcDeaths = 0;
+  missingReplay.counters.pmcKilledPmc = null;
+  missingReplay.pvpStatsVersion = 0;
+  missingReplay.pvpStatsParserVersion = 1;
+  await store.upsertProfile(missingReplay, 1700000000500);
+  const preserved = db.prepare(`SELECT pmc_raids,pmc_deaths,pmc_killed_pmc,pvp_stats_version
+    FROM player_profiles WHERE cycle_id='season-a' AND aid=42`).get();
+  assert.deepEqual({ ...preserved }, { pmc_raids: 1, pmc_deaths: 1, pmc_killed_pmc: 0, pvp_stats_version: 1 });
+  assert.equal((db.prepare(`SELECT revision FROM leaderboard_seasonal_profile_changes
+    WHERE cycle_id='season-a' AND aid=42`).get() as { revision: number }).revision, 2);
+
+  const otherCycle = profile("season-b", 1700000000000, 100);
+  await store.upsertProfile(otherCycle, 1700000000600);
+  assert.equal((db.prepare(`SELECT revision FROM leaderboard_seasonal_profile_changes
+    WHERE cycle_id='season-b' AND aid=42`).get() as { revision: number }).revision, 1);
+  db.prepare("DELETE FROM player_profiles WHERE mode='seasonal' AND cycle_id='season-a' AND aid=42").run();
+  assert.equal((db.prepare(`SELECT revision FROM leaderboard_seasonal_profile_changes
+    WHERE cycle_id='season-a' AND aid=42`).get() as { revision: number }).revision, 3);
+
+  db.exec(`CREATE TRIGGER reject_seasonal_profile BEFORE INSERT ON player_profiles
+    WHEN NEW.aid=99 BEGIN SELECT RAISE(ABORT,'fixture failure'); END`);
+  const rejected = { ...profile("season-a", 1700000001000, 100), aid: 99 };
+  await assert.rejects(store.upsertProfile(rejected), /fixture failure/);
+  assert.equal(db.prepare("SELECT 1 FROM leaderboard_seasonal_profile_changes WHERE aid=99").get(), undefined);
+  db.close();
+});
+
 test("persists intervals and starts a new series after a reset", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createSqliteSeasonalStore(db);

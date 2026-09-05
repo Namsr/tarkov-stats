@@ -345,6 +345,7 @@ export default function SeasonalPlayer({
         cycleId={cycleId}
         kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
         title={displayNickname}
+        leaderboardRevision={`${cycleId}:${progressionRefreshRevision}`}
         actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={displayNickname} missing={modeUnavailable} onCheck={refreshProfile} />}
         overviewCards={overviewLabels.map((label) => ({ label, value: unknownValue }))}
         progression={emptySlot}
@@ -411,6 +412,7 @@ export default function SeasonalPlayer({
       cycleId={cycleId}
       kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
       title={profile.nickname}
+      leaderboardRevision={`${cycleId}:${profile.profileUpdatedAt}:${progressionRefreshRevision}`}
       meta={
         <div className="profile-header__meta">
           <span>{t("player.sideLabel", { side: profile.side ?? unknownValue })}</span>

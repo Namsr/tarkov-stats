@@ -1,0 +1,12 @@
+[Unit]
+Description=TarkovStats daily leaderboard materialization
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+ConditionPathExists=/opt/tarkovstats/docker-compose.vps.yml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats
+ExecStart=/usr/bin/flock -n /run/tarkovstats-leaderboard.lock /usr/bin/docker compose -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs
+TimeoutStartSec=2h

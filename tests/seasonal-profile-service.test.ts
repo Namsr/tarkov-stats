@@ -154,6 +154,46 @@ test("normal profile loads use the latest stored capture without waiting for ups
   assert.deepEqual(fallback.ok && fallback.profile.seasonalAchievements, [{ id: "first_raid", unlockedAt: 1_783_495_000_000 }]);
 });
 
+test("a cached legacy parser row refreshes once even when the exact tuple remains unavailable", async (t) => {
+  let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    t.skip("node:sqlite unavailable");
+    return;
+  }
+  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const source = await fixture();
+  const parsed = cycleDependencies.validatePayload(source, cycleDependencies.loadCycle());
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  const legacy = { ...parsed.profile, counters: { ...parsed.profile.counters } };
+  await store.upsertProfile(legacy, 1_783_500_000_000);
+  await store.captureSnapshot(legacy, 1_783_500_000_000);
+
+  const missing = structuredClone(source);
+  missing.profile.pmcStats.eft.overAllCounters.Items = missing.profile.pmcStats.eft.overAllCounters.Items
+    .filter((item) => item.Key[0] !== "KilledPmc");
+  let upstreamCalls = 0;
+  const dependencies = {
+    ...cycleDependencies,
+    fetchPayload: async () => { upstreamCalls += 1; return missing; },
+    getStore: async () => store,
+    now: () => 1_783_600_000_000,
+  };
+  const first = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false }, dependencies,
+  );
+  const second = await resolveSeasonalProfile(
+    { aid: 730001, cycleId: "season-2026-01", force: false }, dependencies,
+  );
+  assert.equal(first.ok && first.profile.pvpStatsVersion, 0);
+  assert.equal(second.ok && second.profile.pvpStatsParserVersion, 1);
+  assert.equal(upstreamCalls, 1);
+  assert.equal((await store.getProfile({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 }))
+    ?.pvpStatsParserVersion, 1);
+});
+
 test("normal profile loads repair a stored profile that has no progression baseline", async (t) => {
   let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
   try {

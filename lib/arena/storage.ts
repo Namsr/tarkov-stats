@@ -10,7 +10,7 @@ import {
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 from "../../types/arena.ts";
 
-export const ARENA_PARSER_VERSION = 1;
+export const ARENA_PARSER_VERSION = 2;
 
 export const ARENA_STORAGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS arena_mode_stats (
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS arena_mode_stats (
   headshot_rate REAL,
   kills_per_match REAL,
   damage_per_match REAL,
+  best_arp REAL,
   upstream_version INTEGER NOT NULL,
   parser_version INTEGER NOT NULL,
   raw_json TEXT NOT NULL,
@@ -48,6 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_hours
   ON arena_mode_stats(arena_mode, hours, games_count);
 CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_aid_version
   ON arena_mode_stats(aid, upstream_version);
+CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp
+  ON arena_mode_stats(arena_mode, best_arp DESC);
 
 CREATE TABLE IF NOT EXISTS arena_mode_stats_history (
   aid INTEGER NOT NULL,
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS arena_mode_stats_history (
   headshot_rate REAL,
   kills_per_match REAL,
   damage_per_match REAL,
+  best_arp REAL,
   upstream_version INTEGER NOT NULL,
   parser_version INTEGER NOT NULL,
   raw_json TEXT NOT NULL,
@@ -116,6 +120,7 @@ const COUNTER_COLUMNS: Record<keyof ArenaCounters, string> = {
 const ARENA_COLUMNS = [
   "aid", "arena_mode", "hours", ...Object.values(COUNTER_COLUMNS),
   "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
+  "best_arp",
   "upstream_version", "parser_version", "raw_json", "fetched_at",
 ] as const;
 
@@ -156,6 +161,7 @@ type ArenaStoredSnapshot = {
   hours: number | null;
   counters: ArenaCounters;
   metrics: ArenaProfile["overall"]["metrics"];
+  bestArp: number | null;
   source?: ArenaProfile["overall"]["source"];
 };
 
@@ -166,6 +172,7 @@ function storedSnapshots(profile: ArenaProfile): ArenaStoredSnapshot[] {
       hours: profile.overall.hours,
       counters: profile.overall.counters,
       metrics: profile.overall.metrics,
+      bestArp: profile.overall.bestArp,
       source: profile.overall.source,
     },
     ...ARENA_MODE_KEYS.map((mode) => ({
@@ -175,6 +182,7 @@ function storedSnapshots(profile: ArenaProfile): ArenaStoredSnapshot[] {
       hours: profile.overall.hours,
       counters: profile.modes[mode].counters,
       metrics: profile.modes[mode].metrics,
+      bestArp: null,
     })),
   ];
 }
@@ -191,6 +199,7 @@ function valuesFor(profile: ArenaProfile, snapshot: ArenaStoredSnapshot, now: nu
     snapshot.metrics.headshot_rate,
     snapshot.metrics.kills_per_match,
     snapshot.metrics.damage_per_match,
+    snapshot.bestArp,
     profile.profileUpdatedAt,
     // Version zero is a real legacy parser version. Do not coerce it to the
     // current version, otherwise old snapshots leak into analytics.
@@ -211,6 +220,15 @@ export function initializeArenaSchema(db: {
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_mode_stats_history'"
   ).get());
   db.exec(ARENA_STORAGE_SCHEMA);
+  for (const table of ["arena_mode_stats", "arena_mode_stats_history"]) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN best_arp REAL`);
+    } catch {
+      /* column already exists */
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp
+    ON arena_mode_stats(arena_mode, best_arp DESC)`);
   // Only the schema upgrade performs this write. Later cold starts remain
   // read-only and every new profile writes its own immutable history row.
   if (!historyExists) db.exec(ARENA_HISTORY_BACKFILL_SQL);

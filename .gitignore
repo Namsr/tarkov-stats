@@ -60,6 +60,16 @@ GEMINI.md
 /docker-compose.vps.yml
 /docs/
 /ops/
+!/docs/
+/docs/*
+!/docs/leaderboard-operations.md
+!/docs/leaderboard-arena-season.md
+!/ops/
+/ops/*
+!/ops/systemd/
+/ops/systemd/*
+!/ops/systemd/tarkovstats-leaderboard-materialize.service
+!/ops/systemd/tarkovstats-leaderboard-materialize.timer
 
 # local runtime data
 /data/*.db

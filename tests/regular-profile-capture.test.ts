@@ -30,7 +30,8 @@ process.env.PROGRESSION_SQLITE_PATH = directory;
 const { makePlayerSnapshot } = await import("../lib/ban-db.ts");
 const { snapshotFromOperatorProfile } = await import("../lib/operator-profile.ts");
 const { persistRegularProfileSnapshot } = await import("../lib/regular-profile-capture.ts");
-const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+const { needsPvpStatsParserRefresh, parseProfileStats } = await import("../lib/tarkov-api.ts");
+const { getProgressionStore } = await import("../lib/progression-db.ts");
 
 function snapshot(updated, raids) {
   const profile = {
@@ -79,6 +80,24 @@ test("Regular persistence is resilient publicly, strict operationally, and captu
   const progression = new DatabaseSync(progressionPath);
   assert.equal(players.prepare("SELECT profile_updated_at FROM players WHERE aid = ?").get(first.aid).profile_updated_at, first.upstreamUpdatedAt);
   assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = ?").get(first.aid).n, 2);
+
+  progression.prepare(`UPDATE progression_snapshots SET
+    stats_json = json_remove(stats_json, '$.pvpStatsParserVersion')
+    WHERE aid = ? AND upstream_updated_at = ?`).run(cached.aid, cached.upstreamUpdatedAt);
+  cached.capturedAt += 1_000;
+  assert.equal((await persistRegularProfileSnapshot(cached, {
+    strict: true,
+    upsertPlayer: false,
+  }))?.status, "duplicate");
+  const refreshed = JSON.parse(progression.prepare(`SELECT stats_json FROM progression_snapshots
+    WHERE aid = ? AND upstream_updated_at = ?`).get(cached.aid, cached.upstreamUpdatedAt).stats_json);
+  assert.equal(refreshed.pvpStatsVersion, 0);
+  assert.equal(refreshed.pvpStatsParserVersion, 1);
+  assert.equal(progression.prepare(`SELECT captured_at FROM progression_snapshots
+    WHERE aid = ? AND upstream_updated_at = ?`).get(cached.aid, cached.upstreamUpdatedAt).captured_at, cached.capturedAt);
+  const storedAfterUpgrade = await (await getProgressionStore("regular"))?.latest(cached.aid);
+  assert.equal(storedAfterUpgrade?.stats.pvpStatsVersion, 0);
+  assert.equal(needsPvpStatsParserRefresh(storedAfterUpgrade?.stats), false);
 });
 
 test("cold player store opens a current schema without waiting for migration writes", async () => {

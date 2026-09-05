@@ -416,6 +416,7 @@ export async function getArenaProfile(aid: number): Promise<ArenaProfile | null>
       hours: numberOrNull(overall.hours),
       counters: countersFrom(overall),
       metrics: Object.fromEntries(ARENA_METRIC_KEYS.map((metric) => [metric, numberOrNull(overall[metric])])) as ArenaOverallStats["metrics"],
+      bestArp: numberOrNull(overall.best_arp),
       source: sourceFrom(overall),
     },
     modes: Object.fromEntries(ARENA_MODE_KEYS.map((mode) => [mode, modeFrom(byMode.get(mode)!, mode)])) as ArenaProfile["modes"],

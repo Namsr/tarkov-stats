@@ -33,6 +33,7 @@ import {
   parsePublishedAchievementBaseline,
   readPublishedAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
+import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
@@ -45,12 +46,12 @@ CREATE TABLE IF NOT EXISTS players (
   experience INTEGER DEFAULT 0, hours REAL DEFAULT 0, bracket_key TEXT,
   total_raids INTEGER DEFAULT 0, pmc_raids INTEGER DEFAULT 0, scav_raids INTEGER DEFAULT 0,
   survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
-  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
+  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, pmc_killed_pmc INTEGER, run_through INTEGER DEFAULT 0,
   longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
-  achievements TEXT, profile_updated_at INTEGER DEFAULT 0,
-  pvp_stats_known INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL
+  achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
@@ -65,18 +66,19 @@ CREATE TABLE IF NOT EXISTS mode_players (
   experience INTEGER DEFAULT 0, hours REAL DEFAULT 0, bracket_key TEXT,
   total_raids INTEGER DEFAULT 0, pmc_raids INTEGER DEFAULT 0, scav_raids INTEGER DEFAULT 0,
   survived INTEGER DEFAULT 0, deaths INTEGER DEFAULT 0, pmc_deaths INTEGER DEFAULT 0,
-  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, run_through INTEGER DEFAULT 0,
+  total_kills INTEGER DEFAULT 0, killed_pmc INTEGER DEFAULT 0, pmc_killed_pmc INTEGER, run_through INTEGER DEFAULT 0,
   longest_win_streak INTEGER DEFAULT 0, kd_ratio REAL DEFAULT 0, pmc_kd_ratio REAL DEFAULT 0,
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
-  achievements TEXT, profile_updated_at INTEGER DEFAULT 0,
-  pvp_stats_known INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
+  achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
   PRIMARY KEY (mode, aid)
 );
 CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
 CREATE INDEX IF NOT EXISTS idx_mode_players_hours ON mode_players(mode, hours);
 CREATE INDEX IF NOT EXISTS idx_mode_players_pmc_raids ON mode_players(mode, pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, hours, pmc_raids, aid);
+
 CREATE VIEW IF NOT EXISTS pve_players AS SELECT * FROM mode_players WHERE mode = 'pve';
 CREATE VIEW IF NOT EXISTS arena_players AS SELECT * FROM mode_players WHERE mode = 'arena';
 
@@ -156,6 +158,10 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "players", "idx_players_bracket", "idx_players_hours", "idx_players_pmc_raids", "idx_players_cohort",
   "idx_players_nickname_nocase", "idx_players_profile_updated_at", "mode_players",
   "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids", "idx_mode_players_cohort",
+  "leaderboard_profile_changes", "idx_leaderboard_profile_changes_mode_change",
+  "trg_players_leaderboard_change_insert", "trg_players_leaderboard_change_update",
+  "trg_players_leaderboard_change_delete", "trg_mode_players_leaderboard_change_insert",
+  "trg_mode_players_leaderboard_change_update", "trg_mode_players_leaderboard_change_delete",
   "pve_players", "arena_players", "excluded_players", "favorites",
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
@@ -172,7 +178,7 @@ export function currentSqlitePlayerSchema(db: any): boolean {
   for (const table of ["players", "mode_players"]) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
       .map((column) => column.name));
-    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known"]
+    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "last_played_at"]
       .every((name) => columns.has(name))) return false;
   }
   const favorites = db.prepare("PRAGMA table_info(favorites)").all() as { name: string; pk: number }[];
@@ -184,24 +190,26 @@ export function currentSqlitePlayerSchema(db: any): boolean {
 const COLS = [
   "aid", "nickname", "side", "prestige", "level", "experience", "hours", "bracket_key",
   "total_raids", "pmc_raids", "scav_raids", "survived", "deaths", "pmc_deaths",
-  "total_kills", "killed_pmc", "run_through", "longest_win_streak",
+  "total_kills", "killed_pmc", "pmc_killed_pmc", "run_through", "longest_win_streak",
   "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
   "pmc_survival_rate", "pmc_kills_per_raid",
-  "achv_count", "achievements", "profile_updated_at", "pvp_stats_known", "fetched_at",
+  "achv_count", "achievements", "profile_updated_at", "last_played_at", "pvp_stats_known", "pvp_stats_version", "fetched_at",
 ];
 const UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) SELECT ${COLS.map(() => "?").join(", ")} ` +
   `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at >= players.profile_updated_at`;
+  ` WHERE excluded.profile_updated_at > players.profile_updated_at OR ` +
+  `(excluded.profile_updated_at = players.profile_updated_at AND excluded.pvp_stats_version >= players.pvp_stats_version)`;
 const SQLITE_UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) ` +
   `SELECT ${COLS.map(() => "?").join(", ")} ` +
   `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
   `ON CONFLICT(aid) DO UPDATE SET ` +
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at >= players.profile_updated_at`;
+  ` WHERE excluded.profile_updated_at > players.profile_updated_at OR ` +
+  `(excluded.profile_updated_at = players.profile_updated_at AND excluded.pvp_stats_version >= players.pvp_stats_version)`;
 const MODE_UPSERT_SQL =
   `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
   `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
@@ -209,7 +217,8 @@ const MODE_UPSERT_SQL =
   `ON CONFLICT(mode, aid) DO UPDATE SET ` +
   [...COLS.filter((c) => c !== "aid"), "stats_json"]
     .map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at >= mode_players.profile_updated_at`;
+  ` WHERE excluded.profile_updated_at > mode_players.profile_updated_at OR ` +
+  `(excluded.profile_updated_at = mode_players.profile_updated_at AND excluded.pvp_stats_version >= mode_players.pvp_stats_version)`;
 const SQLITE_MODE_UPSERT_SQL =
   `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
   `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
@@ -217,7 +226,8 @@ const SQLITE_MODE_UPSERT_SQL =
   `ON CONFLICT(mode, aid) DO UPDATE SET ` +
   [...COLS.filter((c) => c !== "aid"), "stats_json"]
     .map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at >= mode_players.profile_updated_at`;
+  ` WHERE excluded.profile_updated_at > mode_players.profile_updated_at OR ` +
+  `(excluded.profile_updated_at = mode_players.profile_updated_at AND excluded.pvp_stats_version >= mode_players.pvp_stats_version)`;
 
 export type CrossSectionMode = Exclude<GameMode, "seasonal">;
 type PlayerTable = "players" | "pve_players" | "arena_players";
@@ -810,11 +820,16 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
     bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
-    s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc, s.runThrough, s.longestWinStreak,
+    s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc, s.pmcKilledPmc, s.runThrough, s.longestWinStreak,
     s.kdRatio, s.pmcKdRatio, s.survivalRate, s.killsPerRaid,
     s.pmcSurvivalRate, s.pmcKillsPerRaid, s.achievementsCount,
     JSON.stringify(achievementIds), Number(s.profileUpdatedAt) || 0,
-    s.pvpStatsKnown === true ? 1 : 0, now,
+    typeof s.lastPlayedAt === "number" && Number.isFinite(s.lastPlayedAt) && s.lastPlayedAt > 0
+      ? s.lastPlayedAt
+      : null,
+    s.pvpStatsKnown === true ? 1 : 0,
+    Number.isSafeInteger(s.pvpStatsVersion) && Number(s.pvpStatsVersion) >= 0 ? Number(s.pvpStatsVersion) : 0,
+    now,
   ];
 }
 
@@ -1375,8 +1390,14 @@ async function getSqliteDb(): Promise<any | null> {
           ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
           ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
           ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+          ["players", "pvp_stats_version", "INTEGER DEFAULT 0"],
+          ["players", "pmc_killed_pmc", "INTEGER"],
+          ["players", "last_played_at", "INTEGER"],
           ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
           ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+          ["mode_players", "pvp_stats_version", "INTEGER DEFAULT 0"],
+          ["mode_players", "pmc_killed_pmc", "INTEGER"],
+          ["mode_players", "last_played_at", "INTEGER"],
         ]) {
           try {
             sqliteDb.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
@@ -1392,6 +1413,7 @@ async function getSqliteDb(): Promise<any | null> {
         sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
+      initializeProfileChangeJournal(sqliteDb);
       ensureSqliteAverageIndexes(sqliteDb);
       initializeArenaSchema(sqliteDb);
     }
