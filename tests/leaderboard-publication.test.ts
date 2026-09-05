@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 // @ts-expect-error node:sqlite types require a newer @types/node than the app uses.
 const { DatabaseSync } = await import("node:sqlite");
@@ -196,6 +199,81 @@ test("incremental failure rolls back member, order, publication token, and curso
   assert.equal(db.prepare("SELECT source_revision FROM leaderboard_members WHERE scope='regular' AND aid=61").get().source_revision, 0);
   assert.deepEqual(publication.leaderboardSourceCursor(db, "regular"), { initialized: false, changeId: 0 });
   assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
+});
+
+test("a stale publisher cannot overwrite a newer revision or advance its cursor", () => {
+  const stale = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get();
+  const newer = materializeCandidate({ ...source(62, 30_000), nickname: "Newer", sourceUpdatedAt: 3,
+    sourceRevision: 20 }, { config, formula });
+  publication.updateLeaderboardScope(db, config.scope, Number(stale.generation),
+    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...newer }], 400,
+    { mode: "regular", changeId: 50 }, Number(stale.generated_at));
+  const current = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get();
+
+  const older = materializeCandidate({ ...source(62), nickname: "Older", sourceUpdatedAt: 2,
+    sourceRevision: 19 }, { config, formula });
+  assert.throws(() => publication.updateLeaderboardScope(db, config.scope, Number(stale.generation),
+    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...older }], 401,
+    { mode: "regular", changeId: 51 }, Number(stale.generated_at)), /publication changed/);
+  const staleFull = generation([{ ...source(62), nickname: "Older", sourceUpdatedAt: 2 }]);
+  assert.throws(() => publication.publishLeaderboardScope(db, config.scope,
+    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, staleFull.members, staleFull.orders,
+    402, undefined, { mode: "regular", changeId: 52 },
+    { generation: Number(stale.generation), generatedAt: Number(stale.generated_at) }), /publication changed/);
+
+  assert.deepEqual({ ...db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get() },
+    { ...current });
+  assert.equal(db.prepare("SELECT nickname FROM leaderboard_members WHERE scope='regular' AND aid=62").get().nickname, "Newer");
+  assert.deepEqual(publication.leaderboardSourceCursor(db, "regular"), { initialized: true, changeId: 50 });
+});
+
+test("the implicit revision guard rejects a commit between the entry read and write lock", () => {
+  const directory = mkdtempSync(join(tmpdir(), "leaderboard-cas-"));
+  const path = join(directory, "publication.db");
+  const primary = new DatabaseSync(path);
+  const concurrent = new DatabaseSync(path);
+  try {
+    publication.initializeLeaderboardSchema(primary);
+    const initial = generation([source(70)]);
+    publication.publishLeaderboardScope(primary, config.scope,
+      { formulaVersion: 1, params: { ...config, formula }, meta: {} }, initial.members, initial.orders, 90, 100);
+    const generationId = Number(primary.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get().generation);
+    let injected = false;
+    const wrapped = new Proxy(primary, {
+      get(target, property) {
+        if (property !== "prepare") {
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (injected || sql !== "SELECT generation,generated_at FROM leaderboard_current WHERE scope=?") return statement;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty) {
+              if (statementProperty !== "get") {
+                const value = Reflect.get(statementTarget, statementProperty);
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              }
+              return (...args: unknown[]) => {
+                const row = statementTarget.get(...args);
+                concurrent.prepare("UPDATE leaderboard_current SET generated_at=generated_at+1 WHERE scope=?").run(...args);
+                injected = true;
+                return row;
+              };
+            },
+          });
+        };
+      },
+    });
+    const stale = materializeCandidate({ ...source(70), nickname: "Stale" }, { config, formula });
+    assert.throws(() => publication.updateLeaderboardScope(wrapped, config.scope, generationId,
+      { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 70, ...stale }]), /publication changed/);
+    assert.equal(primary.prepare("SELECT nickname FROM leaderboard_members WHERE aid=70").get().nickname, "P70");
+  } finally {
+    concurrent.close();
+    primary.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("the predecessor lookup uses the comparator index", () => {

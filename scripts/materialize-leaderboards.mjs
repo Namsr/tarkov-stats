@@ -93,6 +93,7 @@ try {
     const sourceJournalCreated = mode === "pvp-season" ? seasonalJournalCreated : journalCreated;
     let sourceTransaction = false;
     try {
+      const currents = new Map(modeConfigs.map((config) => [config.scope, currentGeneration(publication, config.scope)]));
       source.exec("BEGIN");
       sourceTransaction = true;
       const window = leaderboardChangeWindow(source, mode, cursor.changeId, cycleId);
@@ -102,7 +103,7 @@ try {
         const config = modeConfigs[index];
         const startedAt = Date.now();
         beginLeaderboardPublication(publication, config.scope, startedAt);
-        const current = currentGeneration(publication, config.scope);
+        const current = currents.get(config.scope);
         const fullReason = leaderboardFullReason({ current, config, formulaVersion: LEADERBOARD_FORMULA_VERSION,
           metricVersion: LEADERBOARD_METRIC_VERSION, exclusionFingerprint: bans, forceFull,
           journalCreated: sourceJournalCreated || !cursor.initialized });
@@ -126,7 +127,8 @@ try {
         if (full) {
           const iterables = fullIterables(source, config, formula);
           result = { kind: "full", ...publishLeaderboardScope(publication, config.scope, metadata,
-            iterables.members, iterables.orders, startedAt, undefined, sourceCursor) };
+            iterables.members, iterables.orders, startedAt, undefined, sourceCursor,
+            current ? { generation: current.generation, generatedAt: current.generatedAt } : null) };
         } else {
           const candidates = window.changes.map(({ aid }) => {
             const next = leaderboardSourceRows(source, config, aid)[Symbol.iterator]().next();
@@ -134,7 +136,7 @@ try {
             return { aid, ...materializeCandidate(next.value, { config, formula }) };
           });
           result = { kind: "incremental", ...updateLeaderboardScope(publication, config.scope,
-            current.generation, metadata, candidates, startedAt, sourceCursor) };
+            current.generation, metadata, candidates, startedAt, sourceCursor, current.generatedAt) };
         }
         console.log(JSON.stringify({ scope: config.scope, fullReason, sourceChanges: window.changes.length,
           durationMs: Date.now() - startedAt, ...result }));

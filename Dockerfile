@@ -51,6 +51,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-p
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-leaderboards.mjs ./scripts/materialize-leaderboards.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-leaderboard-exact-fields.mjs ./scripts/backfill-leaderboard-exact-fields.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/warmup-leaderboard-profiles.mjs ./scripts/warmup-leaderboard-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/ts-alias-loader.mjs ./scripts/ts-alias-loader.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
 COPY --from=builder --chown=nextjs:nodejs /app/types ./types

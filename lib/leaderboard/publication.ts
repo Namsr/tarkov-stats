@@ -95,6 +95,8 @@ export interface IncrementalCandidate {
   orders: PublishedOrder[];
 }
 
+export type LeaderboardPublicationToken = { generation: number; generatedAt: number } | null;
+
 export function initializeLeaderboardSchema(db: { exec(sql: string): void }): void {
   db.exec(LEADERBOARD_SCHEMA);
   try { db.exec("ALTER TABLE leaderboard_members ADD COLUMN source_revision INTEGER NOT NULL DEFAULT 0"); } catch {
@@ -125,14 +127,23 @@ export function publishLeaderboardScope(
   startedAt: number,
   generatedAt?: number,
   sourceCursor?: { mode: string; changeId: number },
+  expectedCurrent?: LeaderboardPublicationToken,
 ): { generation: number; rankedCount: number; groupCount: number } {
   const generationSeed = generatedAt ?? Date.now();
-  const previous = db.prepare("SELECT MAX(generation) generation FROM leaderboard_generations WHERE scope=?").get(scope);
-  const generation = Math.max(generationSeed, Number(previous?.generation ?? 0) + 1);
+  let generation = generationSeed;
   let rankedCount = 0;
   let groupCount = 0;
   db.exec("BEGIN IMMEDIATE");
   try {
+    const lockedCurrent = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope=?").get(scope);
+    if (expectedCurrent !== undefined && (expectedCurrent === null
+      ? Boolean(lockedCurrent)
+      : !lockedCurrent || Number(lockedCurrent.generation) !== expectedCurrent.generation ||
+        Number(lockedCurrent.generated_at) !== expectedCurrent.generatedAt)) {
+      throw new Error("leaderboard publication changed");
+    }
+    const previous = db.prepare("SELECT MAX(generation) generation FROM leaderboard_generations WHERE scope=?").get(scope);
+    generation = Math.max(generationSeed, Number(previous?.generation ?? 0) + 1);
     const insertMember = db.prepare(`INSERT INTO leaderboard_members
       (scope,generation,aid,nickname,source_updated_at,source_revision,parser_version,metric_version,
        source_fingerprint,status,score,primary_rank,stats_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -202,9 +213,14 @@ export function updateLeaderboardScope(
   candidates: Iterable<IncrementalCandidate>,
   startedAt = Date.now(),
   sourceCursor?: { mode: string; changeId: number },
+  expectedGeneratedAt?: number,
 ): { generation: number; changedMembers: number; touchedSorts: number; ordinalMs: number } {
   const current = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope=?").get(scope);
-  if (!current || Number(current.generation) !== generation) throw new Error("leaderboard generation changed");
+  if (!current || Number(current.generation) !== generation ||
+      (expectedGeneratedAt !== undefined && Number(current.generated_at) !== expectedGeneratedAt)) {
+    throw new Error("leaderboard publication changed");
+  }
+  const expectedRevision = expectedGeneratedAt ?? Number(current.generated_at);
   let rankedCount = Number(db.prepare(`SELECT ranked_count FROM leaderboard_generations
     WHERE scope=? AND generation=?`).get(scope, generation)?.ranked_count ?? 0);
   let groupCount = Number(db.prepare(`SELECT group_count FROM leaderboard_generations
@@ -214,8 +230,11 @@ export function updateLeaderboardScope(
   const touched = new Set<LeaderboardSort>();
   db.exec("BEGIN IMMEDIATE");
   try {
-    const lockedCurrent = db.prepare("SELECT generation FROM leaderboard_current WHERE scope=?").get(scope);
-    if (Number(lockedCurrent?.generation) !== generation) throw new Error("leaderboard generation changed");
+    const lockedCurrent = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope=?").get(scope);
+    if (Number(lockedCurrent?.generation) !== generation ||
+        Number(lockedCurrent?.generated_at) !== expectedRevision) {
+      throw new Error("leaderboard publication changed");
+    }
     const oldMember = db.prepare("SELECT * FROM leaderboard_members WHERE scope=? AND generation=? AND aid=?");
     const oldOrders = db.prepare(`SELECT * FROM leaderboard_order WHERE scope=? AND generation=?
       AND sort IN ('primary','kd','killsPerMatch','hours') AND aid=?`);

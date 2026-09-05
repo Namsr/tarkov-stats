@@ -49,8 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_hours
   ON arena_mode_stats(arena_mode, hours, games_count);
 CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_aid_version
   ON arena_mode_stats(aid, upstream_version);
-CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp
-  ON arena_mode_stats(arena_mode, best_arp DESC);
 
 CREATE TABLE IF NOT EXISTS arena_mode_stats_history (
   aid INTEGER NOT NULL,
