@@ -50,10 +50,10 @@ systemctl status tarkovstats-leaderboard-materialize.service --no-pager
 systemctl list-timers --all tarkovstats-leaderboard-materialize.timer
 ```
 
-The inspected host had only 5.9 GiB free while the two source databases and
-their WAL files used about 2.67 GiB. It also had 4.305 GiB of reclaimable build
-cache. Reclaim builder cache before backup, then recheck disk. Preserve all
-images, containers, and volumes; do not use an image or system prune:
+If the read-only baseline shows insufficient room for the pristine backup,
+working copies, publication output, and rollback margin, reclaim builder cache
+before backup and recheck disk. Preserve all images, containers, and volumes;
+do not use an image or system prune:
 
 ```bash
 docker builder prune --force
