@@ -22,6 +22,13 @@ from "../types/arena.ts";
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
 
 export const TARKOV_JSON_USER_AGENT = "TarkovStats/0.1 (+https://tarkovstats.ru)";
+export const PVP_STATS_PARSER_VERSION = 1;
+
+export function needsPvpStatsParserRefresh(
+  stats: Pick<ParsedPlayerStats, "pvpStatsParserVersion"> | null | undefined,
+): boolean {
+  return Number(stats?.pvpStatsParserVersion ?? 0) < PVP_STATS_PARSER_VERSION;
+}
 
 /** Server-side JSON request with the identity required by tarkov.dev. */
 export function fetchTarkovJson(url: string | URL, init: RequestInit = {}): Promise<Response> {
@@ -874,15 +881,15 @@ function getCounterValue(
   return Number.isFinite(v) ? v : 0;
 }
 
-function hasCounter(
+function exactCount(
   items: { Key: string[]; Value: number }[],
   ...keys: string[]
-): boolean {
-  return items.some(
-    (item) =>
-      item.Key.length === keys.length &&
-      keys.every((key, index) => item.Key[index] === key)
-  );
+): number | null {
+  const entry = items.find((item) =>
+    item.Key.length === keys.length && keys.every((key, index) => item.Key[index] === key));
+  return typeof entry?.Value === "number" && Number.isSafeInteger(entry.Value) && entry.Value >= 0
+    ? entry.Value
+    : null;
 }
 
 const round = (n: number, d = 2) => {
@@ -1051,6 +1058,7 @@ function completeModeOverall(modes: PublicArenaModeStats[], hours: number | null
     hours,
     counters,
     metrics: arenaMetrics(counters),
+    bestArp: null,
     source: complete ? "complete_mode_sum" : "unavailable",
   };
 }
@@ -1067,7 +1075,7 @@ function overallWithFallback(
     key,
     directCounters[key] ?? summed[key],
   ])) as unknown as ArenaCounters;
-  return { hours, counters, metrics: arenaMetrics(counters), source: "upstream" };
+  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: "upstream" };
 }
 
 /** Parses Arena's separate counter tree into the shared stored-stat envelope. */
@@ -1104,7 +1112,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     currentKillStreak: arenaCounter(overall, "KillsWithoutDeaths"),
     maxKillStreak: arenaCounter(overall, "MaxKillsWithoutDeaths"),
     maxWinStreak: arenaCounter(overall, "LongestWinStreak"),
-    bestArp: arenaCounter(overall, "BestArp"),
+    bestArp: arenaCounterValue(overall, "BestArp"),
     currentLossStreak: arenaCounter(overall, "LoseStreak"),
     maxLossStreak: arenaCounter(overall, "LongestLoseStreak"),
     totalKills,
@@ -1130,12 +1138,13 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     ARENA_MODE_KEYS.map((mode) => publicModes[mode]),
     arenaHours,
   );
+  publicOverall.bestArp = arenaCounterValue(directOverall, "BestArp");
   const arenaProfile: ArenaProfile = {
     aid: Number(profile.aid) || 0,
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     fetchedAt: null,
-    parserVersion: 1,
+    parserVersion: 2,
     overall: publicOverall,
     modes: publicModes,
   };
@@ -1156,9 +1165,11 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     survivedRaids: 0,
     survivalRate: 0,
     totalKills,
-    pmcKilledPmc: 0,
+    pmcKilledPmc: null,
     killedPmc: 0,
     pvpStatsKnown: false,
+    pvpStatsVersion: 0,
+    pvpStatsParserVersion: 0,
     killsPerRaid: 0,
     kdRatio: arena.kdRatio,
     pmcKdRatio: 0,
@@ -1201,7 +1212,8 @@ export function parseProfileStats(
   const pmcCounters = pmcEft?.overAllCounters?.Items ?? [];
   const scavCounters = scavEft?.overAllCounters?.Items ?? [];
 
-  const pmcRaids = getCounterValue(pmcCounters, "Sessions", "Pmc");
+  const exactPmcRaids = exactCount(pmcCounters, "Sessions", "Pmc");
+  const pmcRaids = exactPmcRaids ?? 0;
   const scavRaids = getCounterValue(scavCounters, "Sessions", "Scav");
   const totalRaids = pmcRaids + scavRaids;
 
@@ -1214,13 +1226,14 @@ export function parseProfileStats(
   const scavKills = getCounterValue(scavCounters, "Kills");
   const totalKills = pmcKills + scavKills;
 
-  const pmcDeaths = getCounterValue(pmcCounters, "Deaths");
+  const exactPmcDeaths = exactCount(pmcCounters, "Deaths");
+  const pmcDeaths = exactPmcDeaths ?? 0;
   const scavDeaths = getCounterValue(scavCounters, "Deaths");
   const deaths = pmcDeaths + scavDeaths;
 
-  const pmcKilledPmc = getCounterValue(pmcCounters, "KilledPmc");
+  const pmcKilledPmc = exactCount(pmcCounters, "KilledPmc");
   const scavKilledPmc = getCounterValue(scavCounters, "KilledPmc");
-  const killedPmc = pmcKilledPmc + scavKilledPmc;
+  const killedPmc = (pmcKilledPmc ?? 0) + scavKilledPmc;
 
   const runThrough = getCounterValue(pmcCounters, "ExitStatus", "Runner", "Pmc");
 
@@ -1233,7 +1246,7 @@ export function parseProfileStats(
   const pmcExitMia = getCounterValue(pmcCounters, "ExitStatus", "MissingInAction", "Pmc");
 
   const kdRatio = deaths > 0 ? totalKills / deaths : totalKills;
-  const pmcKdRatio = pmcDeaths > 0 ? pmcKilledPmc / pmcDeaths : pmcKilledPmc;
+  const pmcKdRatio = pmcDeaths > 0 ? (pmcKilledPmc ?? 0) / pmcDeaths : (pmcKilledPmc ?? 0);
   const killsPerRaid = totalRaids > 0 ? totalKills / totalRaids : 0;
 
   // PMC-only versions of survival and kills-per-raid — these feed the cheating-risk
@@ -1255,6 +1268,7 @@ export function parseProfileStats(
 
   const experience = profile.info?.experience ?? profile.experience ?? 0;
   const level = levels && levels.length > 0 ? expToLevel(experience, levels) : 0;
+  const lastPlayedAtSeconds = lastSkillAccessSeconds(profile);
 
   return {
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
@@ -1270,7 +1284,10 @@ export function parseProfileStats(
     totalKills,
     pmcKilledPmc,
     killedPmc,
-    pvpStatsKnown: hasCounter(pmcCounters, "KilledPmc"),
+    pvpStatsKnown: pmcKilledPmc !== null,
+    pvpStatsVersion:
+      exactPmcRaids !== null && exactPmcDeaths !== null && pmcKilledPmc !== null ? 1 : 0,
+    pvpStatsParserVersion: PVP_STATS_PARSER_VERSION,
     killsPerRaid: round(killsPerRaid),
     kdRatio: round(kdRatio),
     pmcKdRatio: round(pmcKdRatio),
@@ -1291,7 +1308,7 @@ export function parseProfileStats(
     registrationDate: profile.info?.registrationDate ?? 0,
     lastActiveDate: profile.info?.lastActiveDate ?? 0,
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
-    lastPlayedAt: (lastSkillAccessSeconds(profile) ?? 0) * 1000,
+    lastPlayedAt: lastPlayedAtSeconds === null ? null : lastPlayedAtSeconds * 1000,
     avgLifespan: round(avgLifespan, 1),
     totalLootValue: 0,
     weaponMastery: normalizeWeaponMastery(profile.skills?.Mastering),

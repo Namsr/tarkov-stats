@@ -61,7 +61,7 @@ export interface SeasonalCounters {
   pmcKills: number;
   killedPmc: number;
   /** Exact PMC-vs-PMC kills when the upstream counter is available. */
-  pmcKilledPmc?: number;
+  pmcKilledPmc?: number | null;
 }
 
 /** Wipe-scoped portrait fields parsed from the Seasonal profile only. */
@@ -115,6 +115,12 @@ export interface SeasonalProfile extends ProfileIdentity {
   side?: string;
   profileUpdatedAt: number;
   lastAccessAt: number;
+  /** Latest positive-progress Common skill access, used only for leaderboard activity. */
+  leaderboardActivityAt?: number | null;
+  /** Version 1 certifies explicit valid PMC raids, deaths, and PMC kills. */
+  pvpStatsVersion?: number;
+  /** Parser generation is independent of whether the exact tuple exists. */
+  pvpStatsParserVersion?: number;
   lifetimePvpHours: number | null;
   counters: SeasonalCounters;
   /** null = the upstream payload was present but had no achievement data. */

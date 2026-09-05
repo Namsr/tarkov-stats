@@ -46,11 +46,12 @@ export default function SiteHeader() {
           <nav className="site-header__nav" aria-label={t("nav.primary")}>
             <AverageNavButton onNavigate={() => setOpen(false)} />
             {[
+              { href: "/leaderboard", label: t("nav.leaderboard"), prefix: true },
               { href: "/about", label: t("nav.about") },
               { href: "/support", label: t("nav.support"), support: true },
               { href: "/community", label: t("nav.community") },
             ].map((item) => {
-              const active = pathname === item.href;
+              const active = pathname === item.href || (item.prefix && pathname.startsWith(`${item.href}/`));
               return (
                 <Link
                   key={item.href}

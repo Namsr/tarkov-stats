@@ -512,6 +512,8 @@ export default function ArenaPlayer({ aid }: Props) {
         mode="arena"
         kicker={t("arena.profile.kicker", { aid: numericAid })}
         title={profile.nickname || t("arena.account.unknown")}
+        leaderboardArenaMode={selectedMode}
+        leaderboardRevision={`${profile.profileUpdatedAt}:${profile.fetchedAt ?? "unknown"}:${profile.parserVersion}`}
         meta={
           <div>
             {updatedDate && (

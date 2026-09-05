@@ -98,8 +98,11 @@ export async function resolveSeasonalProfile(
   };
 
   if (!input.force && input.expectedUpdatedAt === undefined) {
-    const stored = await storedResult();
-    if (stored) return stored;
+    const loaded = await loadStore();
+    if (!loaded.profile || Number(loaded.profile.pvpStatsParserVersion ?? 0) >= 1) {
+      const stored = await storedResult();
+      if (stored) return stored;
+    }
   }
 
   let payload: unknown;

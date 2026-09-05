@@ -229,21 +229,50 @@ function optionalCounterValue(items: UnknownRecord[], ...keys: string[]): number
   return item ? nonNegativeInteger(item.Value, `counter ${keys.join("/")}`) : null;
 }
 
-function parseCounters(profile: UnknownRecord): SeasonalCounters {
+function parseCounters(profile: UnknownRecord): { counters: SeasonalCounters; pvpStatsVersion: number } {
   const info = requiredRecord(profile.info, "profile.info");
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
   const scav = counterItems(profile.scavStats, "profile.scavStats");
 
-  const counters = {
+  const exactPmcRaids = optionalCounterValue(pmc, "Sessions", "Pmc");
+  const exactPmcDeaths = optionalCounterValue(pmc, "Deaths");
+  const exactPmcKilledPmc = optionalCounterValue(pmc, "KilledPmc");
+  const counters: SeasonalCounters = {
     experience: nonNegativeInteger(info.experience, "profile.info.experience"),
-    pmcRaids: counterValue(pmc, "Sessions", "Pmc"),
+    pmcRaids: exactPmcRaids ?? 0,
     scavRaids: counterValue(scav, "Sessions", "Scav"),
     pmcSurvived: counterValue(pmc, "ExitStatus", "Survived", "Pmc"),
-    pmcDeaths: counterValue(pmc, "Deaths"),
+    pmcDeaths: exactPmcDeaths ?? 0,
     pmcKills: counterValue(pmc, "Kills"),
-    killedPmc: counterValue(pmc, "KilledPmc"),
+    killedPmc: exactPmcKilledPmc ?? 0,
   };
-  return counters;
+  Object.defineProperty(counters, "pmcKilledPmc", { value: exactPmcKilledPmc, enumerable: false });
+  return {
+    counters,
+    pvpStatsVersion: exactPmcRaids !== null && exactPmcDeaths !== null && exactPmcKilledPmc !== null ? 1 : 0,
+  };
+}
+
+/** Latest skill activity that proves positive progress, excluding achievement/profile fallbacks. */
+export function seasonalLeaderboardActivity(profile: unknown): number | null {
+  const root = requiredRecord(profile, "profile");
+  if (root.skills === undefined) return null;
+  const skills = requiredRecord(root.skills, "profile.skills");
+  if (!Array.isArray(skills.Common)) {
+    throw new SeasonalValidationError("invalid_payload", "profile.skills.Common must be an array");
+  }
+  const candidates: number[] = [];
+  skills.Common.forEach((value, index) => {
+    const skill = requiredRecord(value, `profile.skills.Common[${index}]`);
+    if (skill.Progress === undefined || skill.Progress === null ||
+        skill.LastAccess === undefined || skill.LastAccess === null) return;
+    const progress = finiteNumber(skill.Progress, `profile.skills.Common[${index}].Progress`);
+    const lastAccess = finiteNumber(skill.LastAccess, `profile.skills.Common[${index}].LastAccess`);
+    if (progress > 0 && lastAccess > 0) {
+      candidates.push(unixMilliseconds(lastAccess, `profile.skills.Common[${index}].LastAccess`));
+    }
+  });
+  return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
 /**
@@ -467,7 +496,7 @@ export function parseSeasonalProfile(
     );
   }
 
-  const counters = parseCounters(extracted.profile);
+  const { counters, pvpStatsVersion } = parseCounters(extracted.profile);
   const seasonalAchievements = parseSeasonalAchievements(extracted.profile);
   const commonSkills = parseSeasonalCommonSkills(extracted.profile);
   const weaponMastery = parseSeasonalWeaponMastery(extracted.profile);
@@ -475,6 +504,7 @@ export function parseSeasonalProfile(
   validateCounterRelationships(counters);
 
   const lastAccessAt = seasonalLastAccess(extracted.profile);
+  const leaderboardActivityAt = seasonalLeaderboardActivity(extracted.profile);
   const profileUpdatedAt = unixMilliseconds(extracted.profile.updated, "profile.updated");
   const seasonEndsAt = options.seasonEndsAt ?? null;
   if (
@@ -513,6 +543,12 @@ export function parseSeasonalProfile(
     counters,
     staticSignals: parseStaticSignals(extracted.profile),
   };
+  Object.defineProperty(result, "leaderboardActivityAt", { value: leaderboardActivityAt, enumerable: false });
+  Object.defineProperty(result, "pvpStatsVersion", {
+    value: pvpStatsVersion,
+    enumerable: false,
+  });
+  Object.defineProperty(result, "pvpStatsParserVersion", { value: 1, enumerable: false });
   // Keep the legacy validator's enumerable payload stable for existing callers;
   // the richer portrait is still available to the storage boundary.
   Object.defineProperty(result, "seasonalStats", { value: seasonalStats, enumerable: false });

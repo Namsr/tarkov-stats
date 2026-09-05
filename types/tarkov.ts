@@ -89,7 +89,7 @@ export interface ArenaStats {
   currentKillStreak: number;
   maxKillStreak: number;
   maxWinStreak: number;
-  bestArp: number;
+  bestArp: number | null;
   currentLossStreak: number;
   maxLossStreak: number;
   totalKills: number;
@@ -156,10 +156,14 @@ export interface ParsedPlayerStats {
   survivalRate: number;
   totalKills: number;
   /** Exact PMC kills against PMC while playing PMC (not Scav kills). */
-  pmcKilledPmc: number;
+  pmcKilledPmc: number | null;
   killedPmc: number;
   /** True when the exact PMC ["KilledPmc"] counter exists upstream (zero is valid). */
   pvpStatsKnown?: boolean;
+  /** Version 1 validates the exact PMC raids, deaths, and PMC-kill tuple; 0 means incomplete. */
+  pvpStatsVersion?: number;
+  /** Parser generation, independent of whether the exact tuple exists upstream. */
+  pvpStatsParserVersion?: number;
   killsPerRaid: number;
   kdRatio: number;
   pmcKdRatio: number;
@@ -186,7 +190,7 @@ export interface ParsedPlayerStats {
   /** Upstream profile version, as a Unix ms timestamp. */
   profileUpdatedAt?: number;
   /** Latest progressed skill access, as a Unix ms timestamp. */
-  lastPlayedAt?: number;
+  lastPlayedAt?: number | null;
   avgLifespan: number;
   totalLootValue: number;
   arena?: ArenaStats;

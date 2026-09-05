@@ -14,7 +14,7 @@ import { syncArenaIndex } from "./sync-arena-index.mjs";
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 // Keep this queue target in lockstep with lib/arena/storage.ts. The collector
 // runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
-const ARENA_PARSER_VERSION = 1;
+const ARENA_PARSER_VERSION = 2;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
 const runId = randomUUID();

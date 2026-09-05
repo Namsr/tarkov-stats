@@ -4,7 +4,7 @@ import test from "node:test";
 
 test("regular profile route is stored-first and keeps forced refresh synchronous", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
-  const storedBranch = source.indexOf('if (!force) {\n    const storedStarted');
+  const storedBranch = source.search(/if \(!force\) \{\r?\n    const storedStarted/);
   const upstreamBranch = source.indexOf('const { profile, fromCache, fromEdgeCache } = await getPublicProfile(aid, { force })');
   assert.ok(storedBranch >= 0 && upstreamBranch > storedBranch);
   const storedPath = source.slice(storedBranch, upstreamBranch);
@@ -13,10 +13,19 @@ test("regular profile route is stored-first and keeps forced refresh synchronous
   assert.match(storedPath, /profile: null/);
   assert.match(storedPath, /capture: \{ inserted: false, status: "stored" \}/);
   assert.match(storedPath, /after\(\(\) => refreshStoredRegularProfile\(aid\)\)/);
+  assert.match(storedPath, /needsPvpStatsParserRefresh\(stored\.stats\)/);
   assert.doesNotMatch(storedPath, /await getPublicProfile/);
   assert.match(source, /progressionFlightKey\("regular", "persistent", aid\)/);
   assert.match(source, /singleFlight\(regularBackgroundRefreshes, key/);
   assert.match(source, /getPublicProfile\(aid, \{ force: true \}\)/);
+});
+
+test("cached PvE profiles refresh only when their parser generation is old", async () => {
+  const source = await readFile("app/api/player/profile/route.ts", "utf8");
+  assert.match(source, /if \(stored && !force\) \{\s*if \(needsPvpStatsParserRefresh\(stored\.stats\)\) \{\s*after\(\(\) => refreshStoredPveProfile\(aid\)\)/);
+  assert.match(source, /getPublicProfile\(aid, \{ force: true, mode: "pve" \}\)/);
+  assert.match(source, /pveProfileDecision\(profile\)\.state !== "store"/);
+  assert.match(source, /\{ mode: "pve", strict: true \}/);
 });
 
 test("achievement-heavy SQL is absent from request paths", async () => {

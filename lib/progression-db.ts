@@ -201,6 +201,12 @@ export function createSqliteProgressionStore(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
       ).get(mode, PERSISTENT_CYCLE_ID, input.aid) as SnapshotRow | undefined);
       if (previous && input.upstreamUpdatedAt === previous.upstreamUpdatedAt) {
+        const previousParser = Number(previous.stats.pvpStatsParserVersion) || 0;
+        const incomingParser = Number(input.stats.pvpStatsParserVersion) || 0;
+        if (incomingParser > previousParser) {
+          db.prepare(`UPDATE progression_snapshots SET stats_json = ?, achievements = ?, captured_at = ?
+            WHERE id = ?`).run(JSON.stringify(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previous.id);
+        }
         return {
           inserted: false, status: "duplicate", previousUpdatedAt: previous.upstreamUpdatedAt,
           currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],

@@ -6,6 +6,7 @@ import {
   isSeasonalUpstreamReady,
   parseSeasonalProfile,
   seasonalLastAccess,
+  seasonalLeaderboardActivity,
   validateSeasonalProfile,
 } from "../lib/seasonal-upstream.ts";
 import { seasonalProfileCacheUrl } from "../lib/seasonal/profile-cache-key.ts";
@@ -189,6 +190,36 @@ test("LastAccess is the maximum across Common skills and achievement timestamps"
     }),
     1_783_580_000_000
   );
+});
+
+test("leaderboard inputs distinguish explicit zero from missing counters and require positive skill progress", async () => {
+  const payload = await loadFixture("seasonal-game-mode.json");
+  payload.profile.skills.Common = [
+    { Id: "Ignored", Progress: 0, LastAccess: 1_783_500_100 },
+    { Id: "Strength", Progress: 1, LastAccess: 1_783_500_000 },
+    { Id: "Never", Progress: 5, LastAccess: -2147483648 },
+  ];
+  const killed = payload.profile.pmcStats.eft.overAllCounters.Items.find((item) => item.Key[0] === "KilledPmc");
+  killed.Value = 0;
+  const profile = parseSeasonalProfile(payload, { ...baseOptions, confirmedContract: "game_mode" });
+  assert.equal(profile.counters.pmcKilledPmc, 0);
+  assert.equal(profile.pvpStatsVersion, 1);
+  assert.equal(profile.pvpStatsParserVersion, 1);
+  assert.equal(profile.leaderboardActivityAt, 1_783_500_000_000);
+  assert.equal(seasonalLeaderboardActivity(payload.profile), 1_783_500_000_000);
+
+  for (const key of [["Sessions", "Pmc"], ["Deaths"], ["KilledPmc"]]) {
+    const missing = structuredClone(payload);
+    missing.profile.pmcStats.eft.overAllCounters.Items = missing.profile.pmcStats.eft.overAllCounters.Items
+      .filter((item) => JSON.stringify(item.Key) !== JSON.stringify(key));
+    if (key[0] === "Sessions") {
+      missing.profile.pmcStats.eft.overAllCounters.Items = missing.profile.pmcStats.eft.overAllCounters.Items
+        .filter((item) => item.Key[0] !== "ExitStatus");
+    }
+    const parsed = parseSeasonalProfile(missing, { ...baseOptions, confirmedContract: "game_mode" });
+    assert.equal(parsed.pvpStatsVersion, 0);
+    if (key[0] === "KilledPmc") assert.equal(parsed.counters.pmcKilledPmc, null);
+  }
 });
 
 test("stays fail-closed until both flag and contract confirmation are present", async () => {

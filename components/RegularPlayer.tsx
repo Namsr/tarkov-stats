@@ -557,6 +557,7 @@ function LegacyPlayer({
         cycleId="persistent"
         kicker={`#${aid}`}
         title={stats.nickname}
+        leaderboardRevision={`${profileUpdatedAt ?? "unknown"}:${progressionRefreshRevision}`}
         meta={
           <div className="profile-header__meta">
             <span>{t("player.sideLabel", { side: stats.side })}</span>

@@ -203,6 +203,29 @@ test("Arena history migration backfills current snapshots once and is idempotent
   }
 });
 
+test("Arena schema adds BestArp before its index and preserves legacy rows", () => {
+  const legacySchema = readFileSync("scripts/arena-storage-d1.sql", "utf8")
+    .replace(/  best_arp REAL,\r?\n/g, "")
+    .replace(/CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp\r?\n  ON arena_mode_stats\(arena_mode, best_arp DESC\);?\r?\n/g, "");
+  const memory = new DatabaseSync(":memory:");
+  try {
+    memory.exec("CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY)");
+    memory.exec(legacySchema);
+    memory.prepare(`INSERT INTO arena_mode_stats
+      (aid,arena_mode,hours,upstream_version,parser_version,raw_json,fetched_at)
+      VALUES (504,'overall',10,100,1,'{}',200)`).run();
+    initializeArenaSchema(memory);
+    initializeArenaSchema(memory);
+    assert.equal(memory.prepare("SELECT COUNT(*) n FROM arena_mode_stats WHERE aid=504").get().n, 1);
+    assert.ok(memory.prepare("PRAGMA table_info(arena_mode_stats)").all().some((row) => row.name === "best_arp"));
+    assert.ok(memory.prepare("PRAGMA table_info(arena_mode_stats_history)").all().some((row) => row.name === "best_arp"));
+    assert.ok(memory.prepare(`SELECT 1 FROM sqlite_master
+      WHERE type='index' AND name='idx_arena_mode_stats_best_arp'`).get());
+  } finally {
+    memory.close();
+  }
+});
+
 test("Arena averages, cohort, and display-only risk use current eligible snapshots", async () => {
   const store = await getStore("arena");
   assert.ok(store);
