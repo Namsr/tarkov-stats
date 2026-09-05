@@ -1,6 +1,6 @@
 # Leaderboard operations
 
-Run the host commands below from `/opt/tarkovstats`.
+Run the host commands below from `/opt/tarkovstats-auto`.
 
 The web process and the publisher must use the same Docker volume and paths:
 
@@ -20,7 +20,7 @@ LEADERBOARD_ARP_SEASON_CONFIRMED=false
 ```
 
 The existing host Compose setup mounts its named data volume at `/data`. The
-systemd publication job runs `docker compose ... exec -T web`, so it receives
+systemd publication job runs `docker compose -p tarkovstats ... exec -T web`, so it receives
 the same `env_file`, image, source database, and publication database as the
 web routes. Do not run the publisher against a host-local database path.
 Add these values to the deployment-local environment file already loaded by
@@ -33,15 +33,15 @@ Before changing the host, capture a read-only baseline. These commands do not
 print environment contents or secrets:
 
 ```bash
-cd /opt/tarkovstats
+cd /opt/tarkovstats-auto
 git rev-parse HEAD
 git status --short
 uptime
 free -h
 df -h / /var/lib/docker
-docker compose -f docker-compose.vps.yml ps
+docker compose -p tarkovstats -f docker-compose.vps.yml ps
 docker stats --no-stream
-docker compose -f docker-compose.vps.yml exec -T web sh -c 'du -h /data/*.db* 2>/dev/null'
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web sh -c 'du -h /data/*.db* 2>/dev/null'
 ps -eo pid,etime,cmd --sort=-etime | head -n 30
 systemctl list-timers --all 'tarkovstats-*'
 systemctl list-units --type=service --all 'tarkovstats-*'
@@ -67,10 +67,10 @@ copies committed pages from a live WAL database, including changes that have
 not reached the main `.db` file:
 
 ```bash
-docker compose -f docker-compose.vps.yml exec -T web node --experimental-sqlite -e 'console.log(typeof require("node:sqlite").backup)'
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-sqlite -e 'console.log(typeof require("node:sqlite").backup)'
 R=/data/leaderboard-rollout/$(date +%Y%m%d-%H%M%S)
-docker compose -f docker-compose.vps.yml exec -T web mkdir -p "$R"
-docker compose -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync,backup}=require("node:sqlite");const{existsSync}=require("node:fs");(async()=>{for(const[n,e]of[["players.db","SQLITE_PATH"],["progression.db","PROGRESSION_SQLITE_PATH"],["leaderboards-before.db","LEADERBOARD_SQLITE_PATH"]]){if(!existsSync(process.env[e]))continue;const d=new DatabaseSync(process.env[e],{readOnly:true});try{await backup(d,process.env.R+"/"+n)}finally{d.close()}}})().catch(e=>{console.error(e);process.exit(1)})'
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web mkdir -p "$R"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync,backup}=require("node:sqlite");const{existsSync}=require("node:fs");(async()=>{for(const[n,e]of[["players.db","SQLITE_PATH"],["progression.db","PROGRESSION_SQLITE_PATH"],["leaderboards-before.db","LEADERBOARD_SQLITE_PATH"]]){if(!existsSync(process.env[e]))continue;const d=new DatabaseSync(process.env[e],{readOnly:true});try{await backup(d,process.env.R+"/"+n)}finally{d.close()}}})().catch(e=>{console.error(e);process.exit(1)})'
 echo "$R"
 ```
 
@@ -83,12 +83,12 @@ working set and a new output database; the pristine rollback set remains
 unchanged:
 
 ```bash
-docker compose -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync,backup}=require("node:sqlite");(async()=>{for(const n of["players.db","progression.db"]){const d=new DatabaseSync(process.env.R+"/"+n,{readOnly:true});try{await backup(d,process.env.R+"/work-"+n)}finally{d.close()}}})().catch(e=>{console.error(e);process.exit(1)})'
-docker compose -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" web node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs --input-type=module -e "const {getStore}=await import('./lib/db.ts');if(!(await getStore('regular')))throw new Error('players schema init failed');const {DatabaseSync}=await import('node:sqlite');const {initializeSeasonalSchema}=await import('./lib/seasonal/storage.ts');const d=new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH||process.env.PROGRESSION_DB_PATH||'/data/progression.db');try{initializeSeasonalSchema(d)}finally{d.close()}console.log('profile schemas initialized')"
-docker compose -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs
-time docker compose -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" -e LEADERBOARD_SQLITE_PATH="$R/leaderboards-test.db" web node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs --recalibrate
-docker compose -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync}=require("node:sqlite");for(const n of["work-players.db","work-progression.db","leaderboards-test.db"]){const d=new DatabaseSync(process.env.R+"/"+n,{readOnly:true});console.log(n,d.prepare("PRAGMA integrity_check").get());d.close()}'
-docker compose -f docker-compose.vps.yml exec -T web sh -c "du -h '$R'/*.db"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync,backup}=require("node:sqlite");(async()=>{for(const n of["players.db","progression.db"]){const d=new DatabaseSync(process.env.R+"/"+n,{readOnly:true});try{await backup(d,process.env.R+"/work-"+n)}finally{d.close()}}})().catch(e=>{console.error(e);process.exit(1)})'
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" web node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs --input-type=module -e "const {getStore}=await import('./lib/db.ts');if(!(await getStore('regular')))throw new Error('players schema init failed');const {DatabaseSync}=await import('node:sqlite');const {initializeSeasonalSchema}=await import('./lib/seasonal/storage.ts');const d=new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH||process.env.PROGRESSION_DB_PATH||'/data/progression.db');try{initializeSeasonalSchema(d)}finally{d.close()}console.log('profile schemas initialized')"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs
+time docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e SQLITE_PATH="$R/work-players.db" -e PROGRESSION_SQLITE_PATH="$R/work-progression.db" -e LEADERBOARD_SQLITE_PATH="$R/leaderboards-test.db" web node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs --recalibrate
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e R="$R" web node --experimental-sqlite -e 'const{DatabaseSync}=require("node:sqlite");for(const n of["work-players.db","work-progression.db","leaderboards-test.db"]){const d=new DatabaseSync(process.env.R+"/"+n,{readOnly:true});console.log(n,d.prepare("PRAGMA integrity_check").get());d.close()}'
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web sh -c "du -h '$R'/*.db"
 ```
 
 Watch `docker stats` from a second console while the copy run is active and
@@ -102,8 +102,8 @@ publication. Keep the pristine backup through the rollback window.
 After the copy run passes, backfill exact values in the live source databases:
 
 ```bash
-docker compose -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs --input-type=module -e "const {getStore}=await import('./lib/db.ts');if(!(await getStore('regular')))throw new Error('players schema init failed');const {DatabaseSync}=await import('node:sqlite');const {initializeSeasonalSchema}=await import('./lib/seasonal/storage.ts');const d=new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH||process.env.PROGRESSION_DB_PATH||'/data/progression.db');try{initializeSeasonalSchema(d)}finally{d.close()}console.log('profile schemas initialized')"
-docker compose -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs --input-type=module -e "const {getStore}=await import('./lib/db.ts');if(!(await getStore('regular')))throw new Error('players schema init failed');const {DatabaseSync}=await import('node:sqlite');const {initializeSeasonalSchema}=await import('./lib/seasonal/storage.ts');const d=new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH||process.env.PROGRESSION_DB_PATH||'/data/progression.db');try{initializeSeasonalSchema(d)}finally{d.close()}console.log('profile schemas initialized')"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs
 ```
 
 The backfill does not infer exact PMC kills from rounded K/D. Profiles without
@@ -119,7 +119,7 @@ exact-field state.
 
 ```bash
 sudo systemctl stop tarkovstats-leaderboard-materialize.timer
-sudo flock -n /run/tarkovstats-leaderboard.lock sh -c 'docker compose -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs && docker compose -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs --full'
+sudo flock -n /run/tarkovstats-leaderboard.lock sh -c 'docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/backfill-leaderboard-exact-fields.mjs && docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs --full'
 sudo systemctl start tarkovstats-leaderboard-materialize.timer
 ```
 
@@ -147,7 +147,7 @@ sudo systemctl stop tarkovstats-{regular,pve,arena,seasonal}-profile-sync.servic
 Run a bounded 20-profile pilot through a dedicated host lock:
 
 ```bash
-sudo flock -n /run/tarkovstats-profile-warmup.lock docker compose -f docker-compose.vps.yml exec -T -e LEADERBOARD_WARMUP_MAX_PROFILES=20 web node --experimental-strip-types --experimental-sqlite scripts/warmup-leaderboard-profiles.mjs
+sudo flock -n /run/tarkovstats-profile-warmup.lock docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e LEADERBOARD_WARMUP_MAX_PROFILES=20 web node --experimental-strip-types --experimental-sqlite scripts/warmup-leaderboard-profiles.mjs
 ```
 
 Inspect web logs, the exit status, and
@@ -166,7 +166,7 @@ source snapshot and later consumes warmup changes from the journal, so rollout
 does not wait weeks for every legacy profile to refresh:
 
 ```bash
-sudo systemd-run --unit=tarkovstats-profile-warmup --collect --property=WorkingDirectory=/opt/tarkovstats /usr/bin/flock -n /run/tarkovstats-profile-warmup.lock /usr/bin/docker compose -f docker-compose.vps.yml exec -T -e LEADERBOARD_WARMUP_MAX_PROFILES=100000 web node --experimental-strip-types --experimental-sqlite scripts/warmup-leaderboard-profiles.mjs
+sudo systemd-run --unit=tarkovstats-profile-warmup --collect --property=WorkingDirectory=/opt/tarkovstats-auto /usr/bin/flock -n /run/tarkovstats-profile-warmup.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e LEADERBOARD_WARMUP_MAX_PROFILES=100000 web node --experimental-strip-types --experimental-sqlite scripts/warmup-leaderboard-profiles.mjs
 journalctl -u tarkovstats-profile-warmup -f
 ```
 
@@ -181,11 +181,11 @@ lock. Never delete the lock while its recorded process is alive.
 
 ```bash
 sudo systemctl stop tarkovstats-profile-warmup
-docker compose -f docker-compose.vps.yml exec -T web cat /data/leaderboard-warmup.lock
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web cat /data/leaderboard-warmup.lock
 PID=replace-with-the-verified-numeric-pid
-docker compose -f docker-compose.vps.yml exec -T web sh -c "tr '\000' ' ' </proc/$PID/cmdline"
-docker compose -f docker-compose.vps.yml exec -T web kill -TERM "$PID"
-docker compose -f docker-compose.vps.yml exec -T web test ! -e /data/leaderboard-warmup.lock
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web sh -c "tr '\000' ' ' </proc/$PID/cmdline"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web kill -TERM "$PID"
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web test ! -e /data/leaderboard-warmup.lock
 ```
 
 Authentication failures, retry exhaustion, configuration failures, and an
@@ -212,9 +212,9 @@ sudo systemctl start tarkovstats-leaderboard-materialize.service
 Verify the publication before enabling the timer:
 
 ```bash
-docker compose -f docker-compose.vps.yml exec -T web node -e \
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node -e \
   'fetch("http://127.0.0.1:3000/api/leaderboard?mode=regular&sort=primary").then(async r=>{if(!r.ok)throw new Error(await r.text());console.log(await r.text())})'
-docker compose -f docker-compose.vps.yml exec -T web \
+docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web \
   node --experimental-sqlite -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.env.LEADERBOARD_SQLITE_PATH,{readOnly:true});console.table(d.prepare("SELECT scope,generation,generated_at FROM leaderboard_current ORDER BY scope").all())'
 ```
 
@@ -253,7 +253,7 @@ the saved reference formula, stop the timer and use the same host lock:
 ```bash
 sudo systemctl stop tarkovstats-leaderboard-materialize.timer
 sudo flock -n /run/tarkovstats-leaderboard.lock \
-  docker compose -f docker-compose.vps.yml exec -T web \
+  docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web \
   node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs --full
 sudo systemctl start tarkovstats-leaderboard-materialize.timer
 ```

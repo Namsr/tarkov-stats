@@ -20,7 +20,7 @@ Arena mode. Arena counters remain cumulative, and PvP/PvE are unchanged.
 3. Recreate `web` so both routes and jobs read the new environment, then publish:
 
    ```bash
-   docker compose -f docker-compose.vps.yml up -d --force-recreate web
+   docker compose -p tarkovstats -f docker-compose.vps.yml up -d --force-recreate web
    sudo systemctl start tarkovstats-leaderboard-materialize.service
    ```
 
@@ -40,9 +40,9 @@ Arena mode. Arena counters remain cumulative, and PvP/PvE are unchanged.
    check the BlastGang endpoint before announcing the season:
 
    ```bash
-   docker compose -f docker-compose.vps.yml up -d --force-recreate web
+   docker compose -p tarkovstats -f docker-compose.vps.yml up -d --force-recreate web
    sudo systemctl start tarkovstats-leaderboard-materialize.service
-   docker compose -f docker-compose.vps.yml exec -T web node -e \
+   docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node -e \
      'fetch("http://127.0.0.1:3000/api/leaderboard?mode=arena&arenaMode=blastGang&sort=primary").then(async r=>{if(!r.ok)throw new Error(await r.text());console.log(await r.text())})'
    ```
 
