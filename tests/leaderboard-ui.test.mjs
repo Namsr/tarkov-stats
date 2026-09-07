@@ -43,10 +43,14 @@ test("public and focused lists preserve server rows and disable mass link prefet
     read("components/LeaderboardTable.tsx"),
   ]);
   assert.match(page, /\/api\/leaderboard\?\$\{params\}/);
-  assert.match(page, /rows=\{data\.top\}/);
-  assert.match(page, /rows=\{data\.around\}/);
+  assert.match(page, /rows=\{orderedTop\}/);
+  assert.match(page, /rows=\{orderedAround\}/);
+  assert.match(page, /data\.top/);
+  assert.match(page, /data\.around/);
   assert.doesNotMatch(page, /\.slice\(/);
-  assert.equal((table.match(/prefetch=\{false\}/g) ?? []).length, 2);
+  assert.ok(((table.match(/prefetch=\{false\}/g) ?? []).length) >= 2);
+  assert.match(table, /leaderboard-cards/);
+  assert.doesNotMatch(table, /raidsOrMatches/);
   assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
@@ -60,7 +64,7 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   const page = await read("components/LeaderboardPage.tsx");
   assert.match(page, /\?\? "blastGang"/);
   assert.match(page, /sort: sort === "hours" \? "hours" : "primary"/);
-  assert.match(page, /arenaMode: "blastGang", sort: "primary"/);
+  assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
   assert.match(page, /data-leaderboard-selected="true" className="leaderboard-insufficient/);
   assert.match(page, /leaderboard-lists--has-around/);
@@ -70,13 +74,26 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /data\?\.meta\.cycleId \?\? cycle/);
 });
 
-test("leaderboard mobile layout exposes one full list and fixed jump controls", async () => {
+test("leaderboard sort pills replace the select and support direction toggle", async () => {
+  const page = await read("components/LeaderboardPage.tsx");
+  assert.match(page, /leaderboard-sort-pills/);
+  assert.match(page, /leaderboard\.pills\.place/);
+  assert.match(page, /setDirection/);
+  assert.match(page, /\.reverse\(\)/);
+  assert.doesNotMatch(page, /<select/);
+});
+
+test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
   const css = await read("app/globals.css");
   assert.match(css, /\.leaderboard-mode-switch \{[^}]*grid-template-columns: repeat\(4,/);
   assert.match(css, /\.leaderboard-mode-switch \{ grid-template-columns: repeat\(2,/);
-  assert.match(css, /\.leaderboard-jumps \{ position: fixed;/);
+  assert.match(css, /\.leaderboard-sticky \{[^}]*position: sticky/);
+  assert.match(css, /\.leaderboard-sort-pills button\[aria-pressed="true"\]/);
+  assert.match(css, /\.leaderboard-cards/);
+  assert.doesNotMatch(css, /\.leaderboard-table \{ min-width: 7/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="top"\]/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="around"\]/);
-  assert.match(css, /body:has\(\.leaderboard-page--focused\) \.faq-trigger/);
+  assert.doesNotMatch(css, /\.leaderboard-jumps \{ position: fixed/);
+  assert.doesNotMatch(css, /body:has\(\.leaderboard-page--focused\) \.faq-trigger/);
   assert.match(css, /tr\[aria-current="true"\]/);
 });

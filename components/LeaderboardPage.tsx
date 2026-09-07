@@ -53,6 +53,11 @@ export default function LeaderboardPage() {
     error: string;
   } | null>(null);
   const [mobileList, setMobileList] = useState<"top" | "around">("top");
+  const [direction, setDirection] = useState<"desc" | "asc">("desc");
+
+  useEffect(() => {
+    setDirection("desc");
+  }, [sort]);
 
   const requestUrl = useMemo(() => {
     const params = new URLSearchParams({ mode, sort });
@@ -116,6 +121,24 @@ export default function LeaderboardPage() {
     updateQuery({ arenaMode: nextMode, sort: sort === "hours" ? "hours" : "primary" });
   }
 
+  function handleSortClick(key: LeaderboardSort) {
+    if (key === sort) {
+      setDirection((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      updateQuery({ sort: key });
+    }
+  }
+
+  const orderedTop = useMemo(() => {
+    if (!data?.top) return [];
+    return direction === "asc" ? [...data.top].reverse() : data.top;
+  }, [data, direction]);
+
+  const orderedAround = useMemo(() => {
+    if (!data?.around) return undefined;
+    return direction === "asc" ? [...data.around].reverse() : data.around;
+  }, [data, direction]);
+
   function jump(target: "top" | "end" | "player") {
     if (target === "player") setMobileList("around");
     window.requestAnimationFrame(() => {
@@ -159,19 +182,6 @@ export default function LeaderboardPage() {
     reference_unavailable: t("leaderboard.subject.reference_unavailable"),
     excluded: t("leaderboard.subject.excluded"),
   };
-  const primaryMetric = data?.meta.primaryMetric ?? (mode === "arena"
-    ? arenaMode === "blastGang"
-      ? "arp"
-      : arenaMode === "lastHero"
-        ? "killsPerMatch"
-        : "performance"
-    : "performance");
-  // BlastGang sorts by Best ARP (no current ARP upstream) — label the primary sort accordingly.
-  const primaryLabel = primaryMetric === "arp"
-    ? t("leaderboard.column.bestArp")
-    : primaryMetric === "killsPerMatch"
-      ? t("leaderboard.sort.killsPerMatch")
-      : t("leaderboard.sort.performance");
   const publicationKey = data && data.meta.publicationStatus !== "ready"
     ? `leaderboard.publication.${data.meta.publicationStatus}`
     : null;
@@ -204,25 +214,6 @@ export default function LeaderboardPage() {
           </div>
         )}
 
-        <label className="native-select leaderboard-sort">
-          <span>{t("leaderboard.sort.label")}</span>
-          <select
-            value={sort}
-            onChange={(event) => {
-              if (event.target.value === "arp") {
-                updateQuery({ arenaMode: "blastGang", sort: "primary" });
-                return;
-              }
-              updateQuery({ sort: querySort(event.target.value) });
-            }}
-          >
-            <option value="primary">{primaryLabel}</option>
-            {mode === "arena" && arenaMode !== "blastGang" && <option value="arp">{t("leaderboard.column.bestArp")}</option>}
-            <option value="kd">{t("leaderboard.sort.kd")}</option>
-            <option value="killsPerMatch">{t(mode === "arena" ? "leaderboard.sort.killsPerMatch" : "leaderboard.sort.killsPerRaid")}</option>
-            <option value="hours">{t(mode === "arena" ? "leaderboard.sort.arenaHours" : "leaderboard.sort.hours")}</option>
-          </select>
-        </label>
       </section>
 
       {publicationKey && <p className="leaderboard-publication" role="status">{t(publicationKey)}</p>}
@@ -243,13 +234,34 @@ export default function LeaderboardPage() {
 
       {!loading && data && (
         <>
-          {focused && (
-            <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
-              <button type="button" onClick={() => jump("top")}>{t("leaderboard.jump.start")}</button>
-              <button type="button" onClick={() => jump("end")}>{t("leaderboard.jump.end")}</button>
-              <button type="button" disabled={!data.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+          <div className="leaderboard-sticky">
+            <div className="leaderboard-sort-pills" role="group" aria-label={t("leaderboard.sort.label")}>
+              {SORTS.map((key) => {
+                const label = key === "primary"
+                  ? t("leaderboard.pills.place")
+                  : key === "kd"
+                    ? t("leaderboard.pills.kd")
+                    : key === "killsPerMatch"
+                      ? mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid")
+                      : t("leaderboard.pills.hours");
+                return (
+                  <button key={key} type="button" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
+                    {label}
+                    {sort === key && (
+                      <span aria-hidden="true" className="leaderboard-sort-pills__arrow">{direction === "desc" ? "↓" : "↑"}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          )}
+            {focused && (
+              <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
+                <button type="button" onClick={() => jump("top")}>{t("leaderboard.jump.start")}</button>
+                <button type="button" onClick={() => jump("end")}>{t("leaderboard.jump.end")}</button>
+                <button type="button" disabled={!data.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+              </div>
+            )}
+          </div>
 
           {focused && data.around && (
             <div className="leaderboard-mobile-lists" role="group" aria-label={t("leaderboard.mobileLists") }>
@@ -262,11 +274,11 @@ export default function LeaderboardPage() {
             <LeaderboardTable
               id="leaderboard-top"
               title={focused ? t("leaderboard.top100") : t("leaderboard.top500")}
-              rows={data.top}
+              rows={orderedTop}
               meta={data.meta}
             />
-            {focused && data.around && (
-              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={data.around} meta={data.meta} />
+            {focused && data.around && orderedAround && (
+              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={data.meta} />
             )}
             {focused && !data.around && data.subject && (
               <section id="leaderboard-around" tabIndex={-1} data-leaderboard-selected="true" className="leaderboard-insufficient data-panel">

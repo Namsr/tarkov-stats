@@ -44,7 +44,6 @@ export default function LeaderboardTable({
   // Upstream exposes only Best ARP — there is no current ARP data.
   // Hide the primary ARP column for BlastGang and keep BEST ARP as the rating.
   const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
-  const raidLabel = meta.mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids");
   const rateLabel = meta.mode === "arena" ? t("leaderboard.column.killsPerMatch") : t("leaderboard.column.killsPerRaid");
   const primaryLabel = meta.primaryMetric === "arp"
     ? t("leaderboard.column.bestArp")
@@ -70,7 +69,6 @@ export default function LeaderboardTable({
               {meta.mode === "arena" && <th scope="col">{t("leaderboard.column.bestArp")}</th>}
               <th scope="col">{t("leaderboard.column.kd")}</th>
               {meta.primaryMetric !== "killsPerMatch" && <th scope="col">{rateLabel}</th>}
-              <th scope="col">{raidLabel}</th>
               <th scope="col">{meta.mode === "arena" ? t("leaderboard.column.arenaHours") : t("leaderboard.column.hours")}</th>
             </tr>
           </thead>
@@ -109,7 +107,6 @@ export default function LeaderboardTable({
                     {row.stats.deathless ? t("leaderboard.deathless") : formatNumber(row.stats.kd, locale, 2)}
                   </td>
                   {meta.primaryMetric !== "killsPerMatch" && <td className="leaderboard-table__number">{formatNumber(row.stats.killsPerMatch, locale, 2)}</td>}
-                  <td className="leaderboard-table__number">{formatNumber(row.stats.raidsOrMatches, locale)}</td>
                   <td className="leaderboard-table__number">{formatNumber(row.stats.hours, locale, 1)}</td>
                 </tr>
               );
@@ -117,6 +114,69 @@ export default function LeaderboardTable({
           </tbody>
         </table>
       </div>
+      <ol className="leaderboard-cards">
+        {rows.map((row) => {
+          const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
+          const profileParams = new URLSearchParams();
+          if (meta.mode === "arena" && meta.arenaMode) {
+            focusParams.set("arenaMode", meta.arenaMode);
+            profileParams.set("arenaMode", meta.arenaMode);
+          }
+          if (meta.mode === "pvp-season" && meta.cycleId) {
+            focusParams.set("cycle", meta.cycleId);
+            profileParams.set("cycle", meta.cycleId);
+          }
+          const profileQuery = profileParams.toString();
+          const profileHref = `/player/${meta.mode}/${row.aid}${profileQuery ? `?${profileQuery}` : ""}`;
+          const rank = primaryRank(row);
+          return (
+            <li
+              key={row.aid}
+              className="leaderboard-card"
+              data-leaderboard-selected={row.selected ? "true" : undefined}
+              aria-current={row.selected ? "true" : undefined}
+            >
+              <div className="leaderboard-card__top">
+                <Link href={profileHref} prefetch={false} className="leaderboard-card__name">
+                  {row.nickname || `#${row.aid}`}
+                </Link>
+                {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
+                <span className="leaderboard-card__rank">
+                  {rank === "—" ? rank : <Link href={`/leaderboard?${focusParams}`} prefetch={false}>{rank}</Link>}
+                </span>
+              </div>
+              <dl className="leaderboard-card__grid">
+                {!hidePrimaryArp && (
+                  <div>
+                    <dt>{primaryLabel}</dt>
+                    <dd>{primaryValue(row, meta, locale)}</dd>
+                  </div>
+                )}
+                {meta.mode === "arena" && (
+                  <div>
+                    <dt>{t("leaderboard.column.bestArp")}</dt>
+                    <dd>{formatNumber(row.stats.bestArp, locale)}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt>{t("leaderboard.column.kd")}</dt>
+                  <dd>{row.stats.deathless ? t("leaderboard.deathless") : formatNumber(row.stats.kd, locale, 2)}</dd>
+                </div>
+                {meta.primaryMetric !== "killsPerMatch" && (
+                  <div>
+                    <dt>{rateLabel}</dt>
+                    <dd>{formatNumber(row.stats.killsPerMatch, locale, 2)}</dd>
+                  </div>
+                )}
+                <div>
+                  <dt>{meta.mode === "arena" ? t("leaderboard.column.arenaHours") : t("leaderboard.column.hours")}</dt>
+                  <dd>{row.stats.hours == null ? "—" : `${formatNumber(row.stats.hours, locale, 1)}${lang === "ru" ? " ч" : " h"}`}</dd>
+                </div>
+              </dl>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
