@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
 import { useI18n } from "@/lib/i18n/context";
@@ -41,13 +41,32 @@ function queryCycle(value: string | null): string | null {
 
 export default function LeaderboardPage() {
   const { lang, t } = useI18n();
-  const router = useRouter();
   const searchParams = useSearchParams();
-  const mode = queryMode(searchParams.get("mode"));
-  const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
-  const sort = querySort(searchParams.get("sort"));
-  const cycle = queryCycle(searchParams.get("cycle"));
-  const aid = positiveAid(searchParams.get("aid"));
+  // Local query state: pills/mode switches apply instantly without a Next
+  // route navigation (which would flash app/leaderboard/loading.tsx).
+  // The URL is mirrored via pushState so links stay shareable; popstate syncs back/forward.
+  const [query, setQuery] = useState(() => ({
+    mode: queryMode(searchParams.get("mode")),
+    arenaMode: queryArenaMode(searchParams.get("arenaMode")),
+    sort: querySort(searchParams.get("sort")),
+    cycle: queryCycle(searchParams.get("cycle")),
+    aid: positiveAid(searchParams.get("aid")),
+  }));
+  useEffect(() => {
+    const onPopState = () => {
+      const sp = new URLSearchParams(window.location.search);
+      setQuery({
+        mode: queryMode(sp.get("mode")),
+        arenaMode: queryArenaMode(sp.get("arenaMode")),
+        sort: querySort(sp.get("sort")),
+        cycle: queryCycle(sp.get("cycle")),
+        aid: positiveAid(sp.get("aid")),
+      });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const { mode, arenaMode, sort, cycle, aid } = query;
   const [result, setResult] = useState<{
     key: string;
     data: LeaderboardPageResponse | null;
@@ -115,7 +134,15 @@ export default function LeaderboardPage() {
     if (nextSort !== "primary") params.set("sort", nextSort);
     const nextAid = next.aid === undefined ? aid : next.aid;
     if (nextAid != null) params.set("aid", String(nextAid));
-    router.push(`/leaderboard?${params}`, { scroll: false });
+    const url = `/leaderboard?${params}`;
+    setQuery({
+      mode: nextMode,
+      arenaMode: nextMode === "arena" ? (next.arenaMode ?? arenaMode) : arenaMode,
+      sort: nextSort,
+      cycle: nextCycle,
+      aid: nextAid,
+    });
+    window.history.pushState(null, "", url);
   }
 
   function changeMode(nextMode: LeaderboardMode) {
@@ -273,7 +300,9 @@ export default function LeaderboardPage() {
             </div>
           )}
 
-          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
+          {/* key follows the displayed dataset: entrance animation replays
+              exactly when fresh rows land (or direction flips), never on stale rows. */}
+          <div key={`${visible.meta.mode}-${visible.meta.arenaMode ?? ""}-${visible.meta.cycleId ?? ""}-${visible.meta.sort}-${direction}`} className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
               title={t("leaderboard.top100")}

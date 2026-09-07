@@ -92,12 +92,20 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
     read("components/LeaderboardPage.tsx"),
     read("app/globals.css"),
   ]);
-  assert.match(page, /useRouter/);
-  assert.match(page, /router\.push\(`\/leaderboard\?\$\{params\}`/);
-  assert.doesNotMatch(page, /history\.pushState/);
+  // Local query state: no Next navigation, so app/leaderboard/loading.tsx never flashes.
+  assert.doesNotMatch(page, /useRouter/);
+  assert.doesNotMatch(page, /router\.push/);
+  assert.match(page, /popstate/);
+  assert.match(page, /history\.pushState/);
   assert.match(page, /lastData/);
   assert.match(page, /leaderboard-switching/);
+  // Entrance replays only when the displayed dataset actually changes.
+  assert.match(page, /visible\.meta\.sort/);
   assert.match(css, /\.leaderboard-switching/);
+  assert.match(css, /lb-rise/);
+  assert.match(css, /lb-arrow-pop/);
+  assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /\.leaderboard-sort-pills button/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {

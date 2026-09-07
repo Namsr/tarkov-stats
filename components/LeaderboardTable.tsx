@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { CSSProperties } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { LeaderboardMeta, LeaderboardRow } from "@/types/leaderboard";
 
@@ -71,7 +72,7 @@ export default function LeaderboardTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
+            {rows.map((row, index) => {
               const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
               const profileParams = new URLSearchParams();
               if (meta.mode === "arena" && meta.arenaMode) {
@@ -87,6 +88,7 @@ export default function LeaderboardTable({
               return (
                 <tr
                   key={row.aid}
+                  style={{ "--lb-i": index } as CSSProperties}
                   data-leaderboard-selected={row.selected ? "true" : undefined}
                   aria-current={row.selected ? "true" : undefined}
                   tabIndex={row.selected ? -1 : undefined}
@@ -112,7 +114,7 @@ export default function LeaderboardTable({
         </table>
       </div>
       <ol className="leaderboard-cards">
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
           const profileParams = new URLSearchParams();
           if (meta.mode === "arena" && meta.arenaMode) {
@@ -129,6 +131,7 @@ export default function LeaderboardTable({
           return (
             <li
               key={row.aid}
+              style={{ "--lb-i": index } as CSSProperties}
               className="leaderboard-card"
               data-leaderboard-selected={row.selected ? "true" : undefined}
               aria-current={row.selected ? "true" : undefined}
