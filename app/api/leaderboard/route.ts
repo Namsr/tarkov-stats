@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   let response;
   try {
     prepared = parsed.aid == null ? null : await prepareLeaderboardCandidate(runtime.reader, parsed.config, parsed.aid);
-    response = runtime.reader.readPage(parsed.config, parsed.sort, parsed.aid, parsed.aid == null ? 500 : 100,
+    response = runtime.reader.readPage(parsed.config, parsed.sort, parsed.aid, 100,
       prepared?.candidate, Date.now(), prepared?.generation, prepared?.generatedAt);
   } catch (error) {
     console.warn("leaderboard read failed: " + (error instanceof Error ? error.message : String(error)));

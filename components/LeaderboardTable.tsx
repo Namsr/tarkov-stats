@@ -40,7 +40,6 @@ export default function LeaderboardTable({
 }) {
   const { lang, t } = useI18n();
   const locale = lang === "ru" ? "ru-RU" : "en-US";
-  const alternateSort = meta.sort !== "primary";
   // Upstream exposes only Best ARP — there is no current ARP data.
   // Hide the primary ARP column for BlastGang and keep BEST ARP as the rating.
   const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
@@ -62,7 +61,6 @@ export default function LeaderboardTable({
           <caption className="sr-only">{title}</caption>
           <thead>
             <tr>
-              {alternateSort && <th scope="col">{t("leaderboard.column.position")}</th>}
               <th scope="col">{t("leaderboard.column.rank")}</th>
               <th scope="col" className="leaderboard-table__player">{t("leaderboard.column.player")}</th>
               {!hidePrimaryArp && <th scope="col">{primaryLabel}</th>}
@@ -93,7 +91,6 @@ export default function LeaderboardTable({
                   aria-current={row.selected ? "true" : undefined}
                   tabIndex={row.selected ? -1 : undefined}
                 >
-                  {alternateSort && <td className="leaderboard-table__number">{row.position == null ? "—" : `#${row.position}`}</td>}
                   <td className="leaderboard-table__number">
                     <RankCell row={row} href={`/leaderboard?${focusParams}`} />
                   </td>

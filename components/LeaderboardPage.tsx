@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
 import { useI18n } from "@/lib/i18n/context";
@@ -41,6 +41,7 @@ function queryCycle(value: string | null): string | null {
 
 export default function LeaderboardPage() {
   const { lang, t } = useI18n();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const mode = queryMode(searchParams.get("mode"));
   const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
@@ -69,6 +70,14 @@ export default function LeaderboardPage() {
   const data = result?.key === requestUrl ? result.data : null;
   const error = result?.key === requestUrl ? result.error : "";
   const loading = result?.key !== requestUrl;
+  // Stale-while-revalidate: keep the previous table on screen while the next
+  // sort/mode loads, dimmed via .leaderboard-switching. Kills the skeleton flash.
+  const [lastData, setLastData] = useState<LeaderboardPageResponse | null>(null);
+  useEffect(() => {
+    if (data) setLastData(data);
+  }, [data]);
+  const visible = data ?? lastData;
+  const switching = loading && visible != null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,12 +110,12 @@ export default function LeaderboardPage() {
     params.set("mode", nextMode);
     const nextSort = next.sort ?? sort;
     if (nextMode === "arena") params.set("arenaMode", next.arenaMode ?? arenaMode);
-    const nextCycle = next.cycle === undefined ? data?.meta.cycleId ?? cycle : next.cycle;
+    const nextCycle = next.cycle === undefined ? visible?.meta.cycleId ?? cycle : next.cycle;
     if (nextMode === "pvp-season" && nextCycle) params.set("cycle", nextCycle);
     if (nextSort !== "primary") params.set("sort", nextSort);
     const nextAid = next.aid === undefined ? aid : next.aid;
     if (nextAid != null) params.set("aid", String(nextAid));
-    window.history.pushState(null, "", `/leaderboard?${params}`);
+    router.push(`/leaderboard?${params}`, { scroll: false });
   }
 
   function changeMode(nextMode: LeaderboardMode) {
@@ -130,14 +139,14 @@ export default function LeaderboardPage() {
   }
 
   const orderedTop = useMemo(() => {
-    if (!data?.top) return [];
-    return direction === "asc" ? [...data.top].reverse() : data.top;
-  }, [data, direction]);
+    if (!visible?.top) return [];
+    return direction === "asc" ? [...visible.top].reverse() : visible.top;
+  }, [visible, direction]);
 
   const orderedAround = useMemo(() => {
-    if (!data?.around) return undefined;
-    return direction === "asc" ? [...data.around].reverse() : data.around;
-  }, [data, direction]);
+    if (!visible?.around) return undefined;
+    return direction === "asc" ? [...visible.around].reverse() : visible.around;
+  }, [visible, direction]);
 
   function jump(target: "top" | "end" | "player") {
     if (target === "player") setMobileList("around");
@@ -145,7 +154,7 @@ export default function LeaderboardPage() {
       const mobile = window.matchMedia("(max-width: 767px)").matches;
       const visibleListId = mobile && mobileList === "top"
         ? "leaderboard-top"
-        : data?.around
+        : visible?.around
           ? "leaderboard-around"
           : "leaderboard-top";
       const element = target === "player"
@@ -182,8 +191,8 @@ export default function LeaderboardPage() {
     reference_unavailable: t("leaderboard.subject.reference_unavailable"),
     excluded: t("leaderboard.subject.excluded"),
   };
-  const publicationKey = data && data.meta.publicationStatus !== "ready"
-    ? `leaderboard.publication.${data.meta.publicationStatus}`
+  const publicationKey = visible && visible.meta.publicationStatus !== "ready"
+    ? `leaderboard.publication.${visible.meta.publicationStatus}`
     : null;
 
   return (
@@ -203,9 +212,9 @@ export default function LeaderboardPage() {
           ))}
         </div>
 
-        {mode === "arena" && data?.meta.arenaTabs && (
+        {mode === "arena" && visible?.meta.arenaTabs && (
           <div className="leaderboard-arena-tabs" role="group" aria-label={t("leaderboard.arenaModes") }>
-            {data.meta.arenaTabs.map((tab) => (
+            {visible.meta.arenaTabs.map((tab) => (
               <button key={tab.mode} type="button" aria-pressed={arenaMode === tab.mode} onClick={() => changeArenaMode(tab.mode)}>
                 <span>{arenaModeLabels[tab.mode]}</span>
                 <small>{t("leaderboard.knownProfiles", { n: tab.knownMatchProfiles.toLocaleString(locale) })}</small>
@@ -217,23 +226,17 @@ export default function LeaderboardPage() {
       </section>
 
       {publicationKey && <p className="leaderboard-publication" role="status">{t(publicationKey)}</p>}
-      {data && (
-        <p className="leaderboard-meta">
-          {t("leaderboard.generated", { date: new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(data.meta.generatedAt) })}
-          {" · "}{t("leaderboard.ranked", { n: data.meta.rankedCount.toLocaleString(locale) })}
-        </p>
-      )}
 
-      {loading && <LeaderboardLoading />}
-      {!loading && error && (
+      {loading && !visible && <LeaderboardLoading />}
+      {error && !visible && (
         <div className="data-panel leaderboard-state" role="alert">
           <p>{error}</p>
           <button type="button" className="ghost-button" onClick={() => window.location.reload()}>{t("leaderboard.retry")}</button>
         </div>
       )}
 
-      {!loading && data && (
-        <>
+      {visible && (
+        <div className={switching ? "leaderboard-switching" : undefined} aria-busy={switching || undefined}>
           <div className="leaderboard-sticky">
             <div className="leaderboard-sort-pills" role="group" aria-label={t("leaderboard.sort.label")}>
               {SORTS.map((key) => {
@@ -258,41 +261,41 @@ export default function LeaderboardPage() {
               <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
                 <button type="button" onClick={() => jump("top")}>{t("leaderboard.jump.start")}</button>
                 <button type="button" onClick={() => jump("end")}>{t("leaderboard.jump.end")}</button>
-                <button type="button" disabled={!data.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+                <button type="button" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
               </div>
             )}
           </div>
 
-          {focused && data.around && (
+          {focused && visible.around && (
             <div className="leaderboard-mobile-lists" role="group" aria-label={t("leaderboard.mobileLists") }>
               <button type="button" aria-pressed={mobileList === "top"} onClick={() => setMobileList("top")}>{t("leaderboard.top100")}</button>
               <button type="button" aria-pressed={mobileList === "around"} onClick={() => setMobileList("around")}>{t("leaderboard.aroundPlayer")}</button>
             </div>
           )}
 
-          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${data.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
+          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
-              title={focused ? t("leaderboard.top100") : t("leaderboard.top500")}
+              title={t("leaderboard.top100")}
               rows={orderedTop}
-              meta={data.meta}
+              meta={visible.meta}
             />
-            {focused && data.around && orderedAround && (
-              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={data.meta} />
+            {focused && visible.around && orderedAround && (
+              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={visible.meta} />
             )}
-            {focused && !data.around && data.subject && (
+            {focused && !visible.around && visible.subject && (
               <section id="leaderboard-around" tabIndex={-1} data-leaderboard-selected="true" className="leaderboard-insufficient data-panel">
                 <h2 className="section-heading">{t("leaderboard.insufficient.title")}</h2>
-                <p>{subjectMessages[data.subject.status]}</p>
+                <p>{subjectMessages[visible.subject.status]}</p>
                 <dl>
-                  <div><dt>{t("leaderboard.column.player")}</dt><dd>{data.subject.nickname}</dd></div>
-                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{data.subject.stats.deathless ? t("leaderboard.deathless") : data.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
-                  <div><dt>{mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids")}</dt><dd>{data.subject.stats.raidsOrMatches?.toLocaleString(locale) ?? "—"}</dd></div>
+                  <div><dt>{t("leaderboard.column.player")}</dt><dd>{visible.subject.nickname}</dd></div>
+                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{visible.subject.stats.deathless ? t("leaderboard.deathless") : visible.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
+                  <div><dt>{mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids")}</dt><dd>{visible.subject.stats.raidsOrMatches?.toLocaleString(locale) ?? "—"}</dd></div>
                 </dl>
               </section>
             )}
           </div>
-        </>
+        </div>
       )}
     </main>
   );

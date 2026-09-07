@@ -45,12 +45,13 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(page, /\/api\/leaderboard\?\$\{params\}/);
   assert.match(page, /rows=\{orderedTop\}/);
   assert.match(page, /rows=\{orderedAround\}/);
-  assert.match(page, /data\.top/);
-  assert.match(page, /data\.around/);
+  assert.match(page, /visible\.top/);
+  assert.match(page, /visible\.around/);
   assert.doesNotMatch(page, /\.slice\(/);
   assert.ok(((table.match(/prefetch=\{false\}/g) ?? []).length) >= 2);
   assert.match(table, /leaderboard-cards/);
   assert.doesNotMatch(table, /raidsOrMatches/);
+  assert.doesNotMatch(table, /column\.position/);
   assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
@@ -71,7 +72,7 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /\["regular", "pve", "arena", "pvp-season"\]/);
   assert.match(page, /"pvp-season": t\("fav\.mode\.seasonal"\)/);
   assert.match(page, /mode === "pvp-season" && cycle/);
-  assert.match(page, /data\?\.meta\.cycleId \?\? cycle/);
+  assert.match(page, /visible\?\.meta\.cycleId \?\? cycle/);
 });
 
 test("leaderboard sort pills replace the select and support direction toggle", async () => {
@@ -81,6 +82,22 @@ test("leaderboard sort pills replace the select and support direction toggle", a
   assert.match(page, /setDirection/);
   assert.match(page, /\.reverse\(\)/);
   assert.doesNotMatch(page, /<select/);
+  assert.doesNotMatch(page, /leaderboard\.generated/);
+  assert.doesNotMatch(page, /leaderboard\.top500/);
+  assert.match(page, /leaderboard\.top100/);
+});
+
+test("leaderboard switches sorts smoothly without a skeleton flash", async () => {
+  const [page, css] = await Promise.all([
+    read("components/LeaderboardPage.tsx"),
+    read("app/globals.css"),
+  ]);
+  assert.match(page, /useRouter/);
+  assert.match(page, /router\.push\(`\/leaderboard\?\$\{params\}`/);
+  assert.doesNotMatch(page, /history\.pushState/);
+  assert.match(page, /lastData/);
+  assert.match(page, /leaderboard-switching/);
+  assert.match(css, /\.leaderboard-switching/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
