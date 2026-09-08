@@ -52,6 +52,7 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /leaderboard-cards/);
   assert.doesNotMatch(table, /raidsOrMatches/);
   assert.doesNotMatch(table, /column\.position/);
+  assert.match(table, /leaderboard\.column\.kills/);
   assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
@@ -111,6 +112,7 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /\.leaderboard-sort-pills button/);
   assert.match(css, /\.leaderboard-jump-toggle__arrow/);
+  assert.match(css, /-webkit-text-stroke/);
   // One shared row: round edge-jump + player jump live inside the sort pills.
   assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*border-radius: 50%/);
   assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*margin-right/);

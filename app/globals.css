@@ -749,7 +749,7 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-sort-pills button,
 .leaderboard-mobile-lists button { min-height: 44px; border-radius: 999px; color: var(--muted-strong); padding: 8px 12px; font-size: .72rem; font-weight: 800; letter-spacing: .04em; transition: background-color 160ms ease, color 160ms ease, transform 120ms ease; }
 .leaderboard-sort-pills button:disabled { cursor: not-allowed; opacity: .45; }
-.leaderboard-jump-toggle__arrow { transition: opacity 160ms ease; }
+.leaderboard-jump-toggle__arrow { font-size: 1.35rem; font-weight: 900; line-height: 1; -webkit-text-stroke: .8px currentColor; transition: opacity 160ms ease; }
 .leaderboard-jump-toggle__arrow.is-dim { opacity: .4; }
 .leaderboard-sort-pills button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
 .leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }

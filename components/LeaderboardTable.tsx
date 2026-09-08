@@ -45,6 +45,7 @@ export default function LeaderboardTable({
   // Hide the primary ARP column for BlastGang and keep BEST ARP as the rating.
   const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
   const rateLabel = meta.mode === "arena" ? t("leaderboard.column.killsPerMatch") : t("leaderboard.column.killsPerRaid");
+  const killsLabel = meta.mode === "arena" ? t("leaderboard.column.arenaKills") : t("leaderboard.column.kills");
   const primaryLabel = meta.primaryMetric === "arp"
     ? t("leaderboard.column.bestArp")
     : meta.primaryMetric === "killsPerMatch"
@@ -68,6 +69,7 @@ export default function LeaderboardTable({
               {meta.mode === "arena" && <th scope="col">{t("leaderboard.column.bestArp")}</th>}
               <th scope="col">{t("leaderboard.column.kd")}</th>
               {meta.primaryMetric !== "killsPerMatch" && <th scope="col">{rateLabel}</th>}
+              <th scope="col">{killsLabel}</th>
               <th scope="col">{meta.mode === "arena" ? t("leaderboard.column.arenaHours") : t("leaderboard.column.hours")}</th>
             </tr>
           </thead>
@@ -106,6 +108,7 @@ export default function LeaderboardTable({
                     {row.stats.deathless ? t("leaderboard.deathless") : formatNumber(row.stats.kd, locale, 2)}
                   </td>
                   {meta.primaryMetric !== "killsPerMatch" && <td className="leaderboard-table__number">{formatNumber(row.stats.killsPerMatch, locale, 2)}</td>}
+                  <td className="leaderboard-table__number">{formatNumber(row.stats.kills, locale)}</td>
                   <td className="leaderboard-table__number">{formatNumber(row.stats.hours, locale, 1)}</td>
                 </tr>
               );
@@ -168,6 +171,10 @@ export default function LeaderboardTable({
                     <dd>{formatNumber(row.stats.killsPerMatch, locale, 2)}</dd>
                   </div>
                 )}
+                <div>
+                  <dt>{killsLabel}</dt>
+                  <dd>{formatNumber(row.stats.kills, locale)}</dd>
+                </div>
                 <div>
                   <dt>{meta.mode === "arena" ? t("leaderboard.column.arenaHours") : t("leaderboard.column.hours")}</dt>
                   <dd>{row.stats.hours == null ? "—" : `${formatNumber(row.stats.hours, locale, 1)}${lang === "ru" ? " ч" : " h"}`}</dd>
