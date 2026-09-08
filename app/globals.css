@@ -748,10 +748,9 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .leaderboard-sort-pills button,
 .leaderboard-mobile-lists button { min-height: 44px; border-radius: 999px; color: var(--muted-strong); padding: 8px 12px; font-size: .72rem; font-weight: 800; letter-spacing: .04em; transition: background-color 160ms ease, color 160ms ease, transform 120ms ease; }
 .leaderboard-jumps button:disabled { cursor: not-allowed; opacity: .45; }
-.leaderboard-jump-toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; border-radius: 999px; background: var(--input-bg); padding: 4px; }
-.leaderboard-jump-toggle button { min-height: 36px; padding: 4px 8px; font-size: 1rem; font-weight: 900; line-height: 1; color: var(--muted); opacity: .55; }
-.leaderboard-jump-toggle button:hover { opacity: .85; }
-.leaderboard-jump-toggle button[aria-pressed="true"] { background: var(--foreground); color: var(--background); opacity: 1; }
+.leaderboard-jump-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 1rem; font-weight: 900; line-height: 1; }
+.leaderboard-jump-toggle__arrow { transition: opacity 160ms ease; }
+.leaderboard-jump-toggle__arrow.is-dim { opacity: .4; }
 .leaderboard-sort-pills button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
 .leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }

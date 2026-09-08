@@ -108,7 +108,7 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /lb-arrow-pop/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /\.leaderboard-sort-pills button/);
-  assert.match(css, /\.leaderboard-jump-toggle button\[aria-pressed="true"\]/);
+  assert.match(css, /\.leaderboard-jump-toggle__arrow/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {

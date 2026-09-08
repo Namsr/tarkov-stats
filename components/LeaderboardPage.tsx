@@ -74,7 +74,8 @@ export default function LeaderboardPage() {
   } | null>(null);
   const [mobileList, setMobileList] = useState<"top" | "around">("top");
   const [direction, setDirection] = useState<"desc" | "asc">("desc");
-  // Edge-jump toggle: highlighted half is the last jump target (starts at top).
+  // Edge-jump toggle: one button, both arrows inside. The lit arrow is the
+  // last jump target (starts at top); press jumps to the other end.
   const [jumpDir, setJumpDir] = useState<"top" | "end">("top");
 
   useEffect(() => {
@@ -293,24 +294,15 @@ export default function LeaderboardPage() {
             </div>
             {focused && (
               <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
-                <div className="leaderboard-jump-toggle">
-                  <button
-                    type="button"
-                    aria-pressed={jumpDir === "top"}
-                    aria-label={t("leaderboard.jump.start")}
-                    onClick={() => jumpEdge("top")}
-                  >
-                    <span aria-hidden="true">↑</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={jumpDir === "end"}
-                    aria-label={t("leaderboard.jump.end")}
-                    onClick={() => jumpEdge("end")}
-                  >
-                    <span aria-hidden="true">↓</span>
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="leaderboard-jump-toggle"
+                  aria-label={jumpDir === "top" ? t("leaderboard.jump.end") : t("leaderboard.jump.start")}
+                  onClick={() => jumpEdge(jumpDir === "top" ? "end" : "top")}
+                >
+                  <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
+                  <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
+                </button>
                 <button type="button" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
               </div>
             )}
