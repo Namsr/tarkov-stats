@@ -9,8 +9,8 @@ const baseConfig = {
   scope: "regular", mode: "regular" as const, arenaMode: null, cycleId: null, primaryMetric: "performance" as const,
   minimumSample: 6, activityCutoffMs: 100, arpSeasonId: null, arpSourceConfirmed: false,
 };
-const formula = { kdWeight: .7, killsPerMatchWeight: .3, smoothing: 20,
-  referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
+const formula = { killsWeight: .4, kdWeight: .3, killsPerMatchWeight: .3, smoothing: 20,
+  referenceTotalKills: 500, referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
 const row = { aid: 1, nickname: "One", sourceUpdatedAt: 1, parserVersion: 0,
   activityAt: 101, activitySource: "skill" as const, matches: 20, kills: 20, deaths: 10,
   hours: 10, currentArp: null, bestArp: null };

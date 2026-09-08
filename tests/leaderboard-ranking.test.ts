@@ -4,9 +4,11 @@ import test from "node:test";
 const { arpOrderKey, compareOrderKeys, kdValue, performanceScore } = await import("../lib/leaderboard/ranking.ts");
 
 const formula = {
-  kdWeight: 0.7,
+  killsWeight: 0.4,
+  kdWeight: 0.3,
   killsPerMatchWeight: 0.3,
   smoothing: 20,
+  referenceTotalKills: 500,
   referenceKillsPerMatch: 1,
   referenceDeathsPerMatch: 0.5,
 };
@@ -15,6 +17,10 @@ test("performance score is finite for zero deaths and rejects an unusable refere
   assert.ok(Number.isFinite(performanceScore({ matches: 20, kills: 30, deaths: 0 }, formula)));
   assert.equal(performanceScore({ matches: 20, kills: 30, deaths: 1 }, { ...formula, referenceDeathsPerMatch: 0 }), null);
   assert.equal(performanceScore({ matches: 20, kills: 30, deaths: 1 }, { ...formula, kdWeight: 0.8 }), null);
+  assert.equal(performanceScore({ matches: 20, kills: 30, deaths: 1 }, { ...formula, referenceTotalKills: 0 }), null);
+  const few = performanceScore({ matches: 20, kills: 10, deaths: 10 }, formula);
+  const many = performanceScore({ matches: 20, kills: 100, deaths: 10 }, formula);
+  assert.ok(few != null && many != null && many > few);
 });
 
 test("ARP order resolves every required tie and finishes with ascending aid", () => {

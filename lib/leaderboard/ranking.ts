@@ -1,10 +1,12 @@
-export const LEADERBOARD_FORMULA_VERSION = 1;
+export const LEADERBOARD_FORMULA_VERSION = 2;
 export const LEADERBOARD_METRIC_VERSION = 1;
 
 export interface PerformanceFormula {
+  killsWeight: number;
   kdWeight: number;
   killsPerMatchWeight: number;
   smoothing: number;
+  referenceTotalKills: number;
   referenceKillsPerMatch: number;
   referenceDeathsPerMatch: number;
 }
@@ -22,20 +24,23 @@ const validMetric = (value: number) => Number.isFinite(value) && value >= 0;
 
 export function performanceScore(input: PerformanceInput, formula: PerformanceFormula): number | null {
   if (!validCount(input.matches) || !validCount(input.kills) || !validCount(input.deaths)) return null;
-  const { kdWeight, killsPerMatchWeight, smoothing: m } = formula;
+  const { killsWeight, kdWeight, killsPerMatchWeight, smoothing: m } = formula;
+  const t0 = formula.referenceTotalKills;
   const k0 = formula.referenceKillsPerMatch;
   const d0 = formula.referenceDeathsPerMatch;
-  if (![kdWeight, killsPerMatchWeight, m, k0, d0].every(validMetric) ||
-      Math.abs(kdWeight + killsPerMatchWeight - 1) > Number.EPSILON * 4 ||
-      m <= 0 || k0 <= 0 || d0 <= 0) return null;
+  if (![killsWeight, kdWeight, killsPerMatchWeight, m, t0, k0, d0].every(validMetric) ||
+      Math.abs(killsWeight + kdWeight + killsPerMatchWeight - 1) > Number.EPSILON * 4 ||
+      m <= 0 || t0 <= 0 || k0 <= 0 || d0 <= 0) return null;
   const adjustedKills = input.kills + m * k0;
   const adjustedKd = adjustedKills / (input.deaths + m * d0);
   const adjustedKillsPerMatch = adjustedKills / (input.matches + m);
+  const killsBase = Math.log1p(t0);
   const kdBase = Math.log1p(k0 / d0);
-  const killsBase = Math.log1p(k0);
+  const killsBasePerMatch = Math.log1p(k0);
   const score = 100 * (
+    killsWeight * Math.log1p(input.kills) / killsBase +
     kdWeight * Math.log1p(adjustedKd) / kdBase +
-    killsPerMatchWeight * Math.log1p(adjustedKillsPerMatch) / killsBase
+    killsPerMatchWeight * Math.log1p(adjustedKillsPerMatch) / killsBasePerMatch
   );
   return Number.isFinite(score) && score >= 0 ? score : null;
 }

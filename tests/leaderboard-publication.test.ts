@@ -19,8 +19,8 @@ publication.initializeLeaderboardSchema(db);
 const config = { scope: "regular", mode: "regular" as const, arenaMode: null, cycleId: null,
   primaryMetric: "performance" as const, minimumSample: 6, activityCutoffMs: 100,
   arpSeasonId: null, arpSourceConfirmed: false };
-const formula = { kdWeight: .7, killsPerMatchWeight: .3, smoothing: 20,
-  referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
+const formula = { killsWeight: .4, kdWeight: .3, killsPerMatchWeight: .3, smoothing: 20,
+  referenceTotalKills: 500, referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
 const source = (aid: number, kills = 121 - aid, activityAt = 101) => ({
   aid, nickname: `P${aid}`, sourceUpdatedAt: 1, parserVersion: 0, activityAt,
   activitySource: "skill" as const, matches: 20, kills, deaths: 10, hours: aid,
