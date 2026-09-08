@@ -105,6 +105,9 @@ export function materializeCandidate(row: LeaderboardSourceRow, context: Materia
   if (active && sampleReady && stats.killsPerMatch != null) {
     orders.push({ sort: "killsPerMatch", aid: row.aid, key: metricOrderKey(stats.killsPerMatch, row.aid) });
   }
+  if (active && sampleReady && count(row.kills)) {
+    orders.push({ sort: "kills", aid: row.aid, key: metricOrderKey(row.kills, row.aid) });
+  }
   const kd = kdValue(row.kills, row.deaths);
   if (active && sampleReady && kd.orderClass > 0) {
     orders.push({ sort: "kd", aid: row.aid, key: orderKey([kd.orderClass, kd.value ?? 0], row.aid) });
@@ -127,19 +130,22 @@ export function median(values: number[]): number | null {
 }
 
 export function referenceFormula(rows: Iterable<LeaderboardSourceRow>, activityCutoffMs: number): PerformanceFormula | null {
+  const totalKills: number[] = [];
   const killsPerMatch: number[] = [];
   const deathsPerMatch: number[] = [];
   for (const row of rows) {
     if (row.activityAt == null || row.activityAt < activityCutoffMs ||
         !count(row.matches) || row.matches < 20 || !count(row.kills) || !count(row.deaths)) continue;
+    totalKills.push(row.kills);
     killsPerMatch.push(row.kills / row.matches);
     deathsPerMatch.push(row.deaths / row.matches);
   }
+  const t0 = median(totalKills);
   const k0 = median(killsPerMatch);
   const d0 = median(deathsPerMatch);
-  if (k0 == null || d0 == null || k0 <= 0 || d0 <= 0) return null;
-  return { kdWeight: 0.7, killsPerMatchWeight: 0.3, smoothing: 20,
-    referenceKillsPerMatch: k0, referenceDeathsPerMatch: d0 };
+  if (t0 == null || k0 == null || d0 == null || t0 <= 0 || k0 <= 0 || d0 <= 0) return null;
+  return { killsWeight: 0.4, kdWeight: 0.3, killsPerMatchWeight: 0.3, smoothing: 20,
+    referenceTotalKills: t0, referenceKillsPerMatch: k0, referenceDeathsPerMatch: d0 };
 }
 
 export function primaryMetricForArena(mode: ArenaModeKey): "arp" | "killsPerMatch" | "performance" {
@@ -147,7 +153,7 @@ export function primaryMetricForArena(mode: ArenaModeKey): "arp" | "killsPerMatc
 }
 
 export function allowedSorts(): readonly LeaderboardSort[] {
-  return ["primary", "kd", "killsPerMatch", "hours"];
+  return ["primary", "kd", "killsPerMatch", "kills", "hours"];
 }
 
 export { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION };

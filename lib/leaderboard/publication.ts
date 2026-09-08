@@ -237,7 +237,7 @@ export function updateLeaderboardScope(
     }
     const oldMember = db.prepare("SELECT * FROM leaderboard_members WHERE scope=? AND generation=? AND aid=?");
     const oldOrders = db.prepare(`SELECT * FROM leaderboard_order WHERE scope=? AND generation=?
-      AND sort IN ('primary','kd','killsPerMatch','hours') AND aid=?`);
+      AND sort IN ('primary','kd','killsPerMatch','kills','hours') AND aid=?`);
     const deleteOrder = db.prepare("DELETE FROM leaderboard_order WHERE scope=? AND generation=? AND aid=? AND sort=?");
     const deleteMember = db.prepare("DELETE FROM leaderboard_members WHERE scope=? AND generation=? AND aid=?");
     const insertMember = db.prepare(`INSERT INTO leaderboard_members

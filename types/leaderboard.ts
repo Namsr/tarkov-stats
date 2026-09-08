@@ -2,7 +2,7 @@ import type { ArenaModeKey } from "@/types/arena";
 
 export type LeaderboardMode = "regular" | "pve" | "arena" | "pvp-season";
 export type LeaderboardPrimaryMetric = "performance" | "arp" | "killsPerMatch";
-export type LeaderboardSort = "primary" | "kd" | "killsPerMatch" | "hours";
+export type LeaderboardSort = "primary" | "kd" | "killsPerMatch" | "kills" | "hours";
 export type LeaderboardSubjectStatus =
   | "ranked"
   | "insufficient_sample"

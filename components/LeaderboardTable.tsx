@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import type { LeaderboardMeta, LeaderboardRow } from "@/types/leaderboard";
+import type { LeaderboardMeta, LeaderboardRow, LeaderboardSort } from "@/types/leaderboard";
 
 function formatNumber(value: number | null, locale: string, digits = 0): string {
   return value == null
@@ -17,14 +17,16 @@ function primaryValue(row: LeaderboardRow, meta: LeaderboardMeta, locale: string
   return formatNumber(row.score, locale, 2);
 }
 
-function primaryRank(row: LeaderboardRow): string {
-  if (row.status === "ranked" && row.primaryRank != null) return `#${row.primaryRank}`;
+function displayRank(row: LeaderboardRow, sort: LeaderboardSort): string {
   if (row.status === "insufficient_sample" && row.groupStart != null) return `#${row.groupStart}+`;
+  // Place always follows the active filter: primary rank for Балл, position otherwise.
+  const rank = sort === "primary" ? row.primaryRank : row.position;
+  if (row.status === "ranked" && rank != null) return `#${rank}`;
   return "—";
 }
 
-function RankCell({ row, href }: { row: LeaderboardRow; href: string }) {
-  const rank = primaryRank(row);
+function RankCell({ row, sort, href }: { row: LeaderboardRow; sort: LeaderboardSort; href: string }) {
+  const rank = displayRank(row, sort);
   return rank === "—" ? rank : <Link href={href} prefetch={false}>{rank}</Link>;
 }
 
@@ -96,7 +98,7 @@ export default function LeaderboardTable({
                   tabIndex={row.selected ? -1 : undefined}
                 >
                   <td className="leaderboard-table__number">
-                    <RankCell row={row} href={`/leaderboard?${focusParams}`} />
+                    <RankCell row={row} sort={meta.sort} href={`/leaderboard?${focusParams}`} />
                   </td>
                   <th scope="row">
                     <Link href={profileHref} prefetch={false}>{row.nickname || `#${row.aid}`}</Link>
@@ -130,7 +132,7 @@ export default function LeaderboardTable({
           }
           const profileQuery = profileParams.toString();
           const profileHref = `/player/${meta.mode}/${row.aid}${profileQuery ? `?${profileQuery}` : ""}`;
-          const rank = primaryRank(row);
+          const rank = displayRank(row, meta.sort);
           return (
             <li
               key={row.aid}

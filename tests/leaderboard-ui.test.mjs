@@ -53,6 +53,8 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.doesNotMatch(table, /raidsOrMatches/);
   assert.doesNotMatch(table, /column\.position/);
   assert.match(table, /leaderboard\.column\.kills/);
+  assert.match(table, /displayRank/);
+  assert.match(table, /sort === "primary" \? row\.primaryRank : row\.position/);
   assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
@@ -65,7 +67,7 @@ test("public and focused lists preserve server rows and disable mass link prefet
 test("Arena defaults, sort preservation, and focused jump targets are explicit", async () => {
   const page = await read("components/LeaderboardPage.tsx");
   assert.match(page, /\?\? "blastGang"/);
-  assert.match(page, /sort: sort === "hours" \? "hours" : "primary"/);
+  assert.match(page, /sort: sort === "hours" \|\| sort === "kills" \? sort : "primary"/);
   assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
   assert.match(page, /leaderboard-jump-toggle/);
@@ -83,7 +85,10 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
 test("leaderboard sort pills replace the select and support direction toggle", async () => {
   const page = await read("components/LeaderboardPage.tsx");
   assert.match(page, /leaderboard-sort-pills/);
-  assert.match(page, /leaderboard\.pills\.place/);
+  assert.match(page, /\["primary", "kd", "killsPerMatch", "kills", "hours"\]/);
+  assert.match(page, /leaderboard\.pills\.score/);
+  assert.match(page, /leaderboard\.pills\.kills/);
+  assert.doesNotMatch(page, /leaderboard\.pills\.place/);
   assert.match(page, /setDirection/);
   assert.match(page, /\.reverse\(\)/);
   assert.doesNotMatch(page, /<select/);

@@ -14,7 +14,7 @@ import type {
 } from "@/types/leaderboard";
 
 const MODES: LeaderboardMode[] = ["regular", "pve", "arena", "pvp-season"];
-const SORTS: LeaderboardSort[] = ["primary", "kd", "killsPerMatch", "hours"];
+const SORTS: LeaderboardSort[] = ["primary", "kd", "killsPerMatch", "kills", "hours"];
 
 function positiveAid(value: string | null): number | null {
   if (!value || !/^\d+$/.test(value)) return null;
@@ -152,12 +152,12 @@ export default function LeaderboardPage() {
     updateQuery({
       mode: nextMode,
       arenaMode: nextMode === "arena" ? "blastGang" : undefined,
-      sort: sort === "hours" ? "hours" : "primary",
+      sort: sort === "hours" || sort === "kills" ? sort : "primary",
     });
   }
 
   function changeArenaMode(nextMode: ArenaModeKey) {
-    updateQuery({ arenaMode: nextMode, sort: sort === "hours" ? "hours" : "primary" });
+    updateQuery({ arenaMode: nextMode, sort: sort === "hours" || sort === "kills" ? sort : "primary" });
   }
 
   function handleSortClick(key: LeaderboardSort) {
@@ -285,12 +285,14 @@ export default function LeaderboardPage() {
               </button>
               {SORTS.map((key) => {
                 const label = key === "primary"
-                  ? t("leaderboard.pills.place")
+                  ? t("leaderboard.pills.score")
                   : key === "kd"
                     ? t("leaderboard.pills.kd")
                     : key === "killsPerMatch"
                       ? mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid")
-                      : t("leaderboard.pills.hours");
+                      : key === "kills"
+                        ? t("leaderboard.pills.kills")
+                        : t("leaderboard.pills.hours");
                 return (
                   <button key={key} type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
                     {label}
