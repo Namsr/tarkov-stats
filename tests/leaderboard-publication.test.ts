@@ -35,7 +35,7 @@ function generation(rows = [...Array.from({ length: 119 }, (_, index) => source(
 
 test("publication assigns stable ordinals, swaps atomically, and keeps the previous generation on failure", () => {
   const first = generation();
-  publication.publishLeaderboardScope(db, config.scope, { formulaVersion: 1, params: { ...config, formula }, meta: {} },
+  publication.publishLeaderboardScope(db, config.scope, { formulaVersion: 2, params: { ...config, formula }, meta: {} },
     first.members, first.orders, 90, 100);
   const current = db.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get().generation;
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE sort='primary' AND aid=1").get().ordinal, 1);
@@ -43,7 +43,7 @@ test("publication assigns stable ordinals, swaps atomically, and keeps the previ
     WHEN NEW.aid=999 BEGIN SELECT RAISE(ABORT,'fixture failure'); END`);
   const failed = generation([source(999)]);
   assert.throws(() => publication.publishLeaderboardScope(db, config.scope,
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, failed.members, failed.orders, 101, 102));
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, failed.members, failed.orders, 101, 102));
   assert.equal(db.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get().generation, current);
   assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
   db.exec("DROP TRIGGER fail_leaderboard_order");
@@ -115,7 +115,7 @@ test("a current-cycle confirmed ban is excluded immediately from a Seasonal publ
   const candidates = [source(201, 50), source(202, 40)].map((row) =>
     materializeCandidate(row, { config: seasonalConfig, formula }));
   publication.publishLeaderboardScope(db, seasonalConfig.scope,
-    { formulaVersion: 1, params: { ...seasonalConfig, formula }, meta: {} },
+    { formulaVersion: 2, params: { ...seasonalConfig, formula }, meta: {} },
     candidates.map((candidate) => candidate.member), candidates.flatMap((candidate) => candidate.orders), 90, 100);
   const reader = createLeaderboardReader(db, "excluded_players", "seasonal_excluded", "seasonal_profiles");
   assert.equal(reader.readRank(seasonalConfig, 201)?.subject.status, "ranked");
@@ -136,7 +136,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const high = materializeCandidate({ ...source(60, 10_000), sourceUpdatedAt: 2, sourceRevision: 1 }, { config, formula });
   const low = materializeCandidate({ ...source(2, 0), sourceUpdatedAt: 2, sourceRevision: 1 }, { config, formula });
   const updated = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} },
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} },
     [{ aid: 60, ...high }, { aid: 2, ...low }], 200);
   assert.equal(updated.changedMembers, 2);
   assert.equal(updated.touchedSorts, 3);
@@ -148,7 +148,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const unchanged = materializeCandidate({ ...source(3), sourceRevision: 9 }, { config, formula });
   const beforeOrdinal = db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=3").get().ordinal;
   const noOp = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 3, ...unchanged }], 201);
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 3, ...unchanged }], 201);
   assert.equal(noOp.changedMembers, 0);
   assert.equal(noOp.touchedSorts, 0);
   assert.equal(db.prepare("SELECT source_revision FROM leaderboard_members WHERE scope='regular' AND aid=3").get().source_revision, 9);
@@ -157,7 +157,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const beforeRename = db.prepare("SELECT sort,ordinal FROM leaderboard_order WHERE scope='regular' AND aid=4 ORDER BY sort").all();
   const renamed = materializeCandidate({ ...source(4), nickname: "Renamed", sourceRevision: 10 }, { config, formula });
   const rename = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 4, ...renamed }], 202);
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 4, ...renamed }], 202);
   assert.equal(rename.changedMembers, 1);
   assert.equal(rename.touchedSorts, 0);
   assert.deepEqual(db.prepare("SELECT sort,ordinal FROM leaderboard_order WHERE scope='regular' AND aid=4 ORDER BY sort").all(), beforeRename);
@@ -168,7 +168,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const beforeHours = db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='hours' AND aid=5").get().ordinal;
   const killsOnly = materializeCandidate({ ...source(5), kills: 50_000, sourceRevision: 11 }, { config, formula });
   const subset = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 5, ...killsOnly }], 203);
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 5, ...killsOnly }], 203);
   assert.equal(subset.touchedSorts, 3);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='hours' AND aid=5").get().ordinal, beforeHours);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 4);
@@ -176,11 +176,11 @@ test("incremental publication moves changed players both ways and skips ordinal 
   assert.equal(page?.top.some((row) => row.aid === 5), true);
 
   publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [], 204, { mode: "pve", changeId: 0 });
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [], 204, { mode: "pve", changeId: 0 });
   assert.deepEqual(publication.leaderboardSourceCursor(db, "pve"), { initialized: true, changeId: 0 });
 
   const removed = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 120, member: null, orders: [] }], 205);
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 120, member: null, orders: [] }], 205);
   assert.equal(removed.changedMembers, 1);
   assert.equal(db.prepare("SELECT 1 FROM leaderboard_members WHERE scope='regular' AND aid=120").get(), undefined);
   assert.equal(db.prepare("SELECT 1 FROM leaderboard_order WHERE scope='regular' AND aid=120").get(), undefined);
@@ -192,7 +192,7 @@ test("incremental failure rolls back member, order, publication token, and curso
   db.exec(`CREATE TRIGGER fail_incremental_order BEFORE INSERT ON leaderboard_order
     WHEN NEW.aid=61 BEGIN SELECT RAISE(ABORT,'incremental fixture failure'); END`);
   assert.throws(() => publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 61, ...candidate }], 300,
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 61, ...candidate }], 300,
     { mode: "regular", changeId: 44 }));
   db.exec("DROP TRIGGER fail_incremental_order");
   assert.equal(db.prepare("SELECT generated_at FROM leaderboard_current WHERE scope='regular'").get().generated_at, current.generated_at);
@@ -206,18 +206,18 @@ test("a stale publisher cannot overwrite a newer revision or advance its cursor"
   const newer = materializeCandidate({ ...source(62, 30_000), nickname: "Newer", sourceUpdatedAt: 3,
     sourceRevision: 20 }, { config, formula });
   publication.updateLeaderboardScope(db, config.scope, Number(stale.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...newer }], 400,
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...newer }], 400,
     { mode: "regular", changeId: 50 }, Number(stale.generated_at));
   const current = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get();
 
   const older = materializeCandidate({ ...source(62), nickname: "Older", sourceUpdatedAt: 2,
     sourceRevision: 19 }, { config, formula });
   assert.throws(() => publication.updateLeaderboardScope(db, config.scope, Number(stale.generation),
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...older }], 401,
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 62, ...older }], 401,
     { mode: "regular", changeId: 51 }, Number(stale.generated_at)), /publication changed/);
   const staleFull = generation([{ ...source(62), nickname: "Older", sourceUpdatedAt: 2 }]);
   assert.throws(() => publication.publishLeaderboardScope(db, config.scope,
-    { formulaVersion: 1, params: { ...config, formula }, meta: {} }, staleFull.members, staleFull.orders,
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, staleFull.members, staleFull.orders,
     402, undefined, { mode: "regular", changeId: 52 },
     { generation: Number(stale.generation), generatedAt: Number(stale.generated_at) }), /publication changed/);
 
@@ -236,7 +236,7 @@ test("the implicit revision guard rejects a commit between the entry read and wr
     publication.initializeLeaderboardSchema(primary);
     const initial = generation([source(70)]);
     publication.publishLeaderboardScope(primary, config.scope,
-      { formulaVersion: 1, params: { ...config, formula }, meta: {} }, initial.members, initial.orders, 90, 100);
+      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, initial.members, initial.orders, 90, 100);
     const generationId = Number(primary.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get().generation);
     let injected = false;
     const wrapped = new Proxy(primary, {
@@ -267,7 +267,7 @@ test("the implicit revision guard rejects a commit between the entry read and wr
     });
     const stale = materializeCandidate({ ...source(70), nickname: "Stale" }, { config, formula });
     assert.throws(() => publication.updateLeaderboardScope(wrapped, config.scope, generationId,
-      { formulaVersion: 1, params: { ...config, formula }, meta: {} }, [{ aid: 70, ...stale }]), /publication changed/);
+      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 70, ...stale }]), /publication changed/);
     assert.equal(primary.prepare("SELECT nickname FROM leaderboard_members WHERE aid=70").get().nickname, "P70");
   } finally {
     concurrent.close();

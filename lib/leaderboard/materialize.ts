@@ -150,7 +150,7 @@ export function primaryMetricForArena(mode: ArenaModeKey): "arp" | "killsPerMatc
 }
 
 export function allowedSorts(): readonly LeaderboardSort[] {
-  return ["primary", "kd", "killsPerMatch", "kills", "hours"];
+  return ["primary", "kd", "killsPerMatch", "hours"];
 }
 
 export { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION };
