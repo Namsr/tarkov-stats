@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { LeaderboardMeta, LeaderboardRow, LeaderboardSort } from "@/types/leaderboard";
 
@@ -30,6 +31,28 @@ function RankCell({ row, sort, href }: { row: LeaderboardRow; sort: LeaderboardS
   return rank === "—" ? rank : <Link href={href} prefetch={false}>{rank}</Link>;
 }
 
+// FLIP: rows glide to their new positions on resort instead of swapping instantly.
+// Measures offsetTop per aid before paint, then animates the delta. Skipped entirely
+// under prefers-reduced-motion. Runs on every render; unchanged rows are no-ops.
+function flipRows(container: HTMLElement | null, prev: Map<number, number>): Map<number, number> {
+  const current = new Map<number, number>();
+  if (!container) return current;
+  container.querySelectorAll("[data-aid]").forEach((el) => {
+    current.set(Number((el as HTMLElement).dataset.aid), (el as HTMLElement).offsetTop);
+  });
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    current.forEach((top, aid) => {
+      const from = prev.get(aid);
+      if (from == null || from === top) return;
+      container.querySelector(`[data-aid="${aid}"]`)?.animate(
+        [{ transform: `translateY(${from - top}px)` }, { transform: "translateY(0)" }],
+        { duration: 340, easing: "cubic-bezier(.22,1,.36,1)" },
+      );
+    });
+  }
+  return current;
+}
+
 export default function LeaderboardTable({
   id,
   title,
@@ -43,6 +66,13 @@ export default function LeaderboardTable({
 }) {
   const { lang, t } = useI18n();
   const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  const cardsRef = useRef<HTMLOListElement>(null);
+  const flipPrev = useRef({ tbody: new Map<number, number>(), cards: new Map<number, number>() });
+  useLayoutEffect(() => {
+    flipPrev.current.tbody = flipRows(tbodyRef.current, flipPrev.current.tbody);
+    flipPrev.current.cards = flipRows(cardsRef.current, flipPrev.current.cards);
+  });
   // Upstream exposes only Best ARP — there is no current ARP data.
   // Hide the primary ARP column for BlastGang and keep BEST ARP as the rating.
   const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
@@ -75,7 +105,7 @@ export default function LeaderboardTable({
               <th scope="col">{meta.mode === "arena" ? t("leaderboard.column.arenaHours") : t("leaderboard.column.hours")}</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody ref={tbodyRef}>
             {rows.map((row, index) => {
               const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
               const profileParams = new URLSearchParams();
@@ -92,6 +122,7 @@ export default function LeaderboardTable({
               return (
                 <tr
                   key={row.aid}
+                  data-aid={row.aid}
                   style={{ "--lb-i": index } as CSSProperties}
                   data-leaderboard-selected={row.selected ? "true" : undefined}
                   aria-current={row.selected ? "true" : undefined}
@@ -118,7 +149,7 @@ export default function LeaderboardTable({
           </tbody>
         </table>
       </div>
-      <ol className="leaderboard-cards">
+      <ol ref={cardsRef} className="leaderboard-cards">
         {rows.map((row, index) => {
           const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
           const profileParams = new URLSearchParams();
@@ -136,6 +167,7 @@ export default function LeaderboardTable({
           return (
             <li
               key={row.aid}
+              data-aid={row.aid}
               style={{ "--lb-i": index } as CSSProperties}
               className="leaderboard-card"
               data-leaderboard-selected={row.selected ? "true" : undefined}

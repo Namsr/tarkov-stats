@@ -755,10 +755,8 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }
 .leaderboard-mobile-lists { display: none; }
-.leaderboard-sticky, .leaderboard-lists { transition: none; }
-.leaderboard-switching { opacity: .55; }
+.leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
 @media (prefers-reduced-motion: no-preference) {
-  .leaderboard-sticky, .leaderboard-lists { transition: opacity 180ms ease; }
   .leaderboard-table tbody tr { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
   .leaderboard-card { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
   .leaderboard-sort-pills__arrow { animation: lb-arrow-pop .22s ease; }

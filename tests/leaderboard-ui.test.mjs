@@ -55,6 +55,9 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /leaderboard\.column\.kills/);
   assert.match(table, /displayRank/);
   assert.match(table, /sort === "primary" \? row\.primaryRank : row\.position/);
+  assert.match(table, /data-aid/);
+  assert.match(table, /useLayoutEffect/);
+  assert.match(table, /translateY/);
   assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
