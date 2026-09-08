@@ -300,9 +300,10 @@ export default function LeaderboardPage() {
             </div>
           )}
 
-          {/* key follows the displayed dataset: entrance animation replays
-              exactly when fresh rows land (or direction flips), never on stale rows. */}
-          <div key={`${visible.meta.mode}-${visible.meta.arenaMode ?? ""}-${visible.meta.cycleId ?? ""}-${visible.meta.sort}-${direction}`} className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
+          {/* No key here on purpose: rows keep their DOM nodes across sorts,
+              so updates swap instantly instead of flashing. The entrance
+              cascade (lb-rise) plays once on first mount. */}
+          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
               title={t("leaderboard.top100")}

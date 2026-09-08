@@ -99,8 +99,8 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(page, /history\.pushState/);
   assert.match(page, /lastData/);
   assert.match(page, /leaderboard-switching/);
-  // Entrance replays only when the displayed dataset actually changes.
-  assert.match(page, /visible\.meta\.sort/);
+  // No remount key on the lists: rows keep DOM nodes, updates swap instantly.
+  assert.doesNotMatch(page, /visible\.meta\.sort-\$\{direction\}/);
   assert.match(css, /\.leaderboard-switching/);
   assert.match(css, /lb-rise/);
   assert.match(css, /lb-arrow-pop/);
