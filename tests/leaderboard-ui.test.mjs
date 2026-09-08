@@ -67,6 +67,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /sort: sort === "hours" \? "hours" : "primary"/);
   assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
+  assert.match(page, /leaderboard-jump-toggle/);
+  assert.match(page, /jumpEdge/);
   assert.match(page, /data-leaderboard-selected="true" className="leaderboard-insufficient/);
   assert.match(page, /leaderboard-lists--has-around/);
   assert.match(page, /\["regular", "pve", "arena", "pvp-season"\]/);
@@ -106,6 +108,7 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /lb-arrow-pop/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /\.leaderboard-sort-pills button/);
+  assert.match(css, /\.leaderboard-jump-toggle button\[aria-pressed="true"\]/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
