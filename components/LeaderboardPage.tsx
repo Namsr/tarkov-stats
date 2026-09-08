@@ -283,7 +283,7 @@ export default function LeaderboardPage() {
                       ? mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid")
                       : t("leaderboard.pills.hours");
                 return (
-                  <button key={key} type="button" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
+                  <button key={key} type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
                     {label}
                     {sort === key && (
                       <span aria-hidden="true" className="leaderboard-sort-pills__arrow">{direction === "desc" ? "↓" : "↑"}</span>
@@ -291,9 +291,7 @@ export default function LeaderboardPage() {
                   </button>
                 );
               })}
-            </div>
-            {focused && (
-              <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
+              {focused && (
                 <button
                   type="button"
                   className="leaderboard-jump-toggle"
@@ -303,9 +301,11 @@ export default function LeaderboardPage() {
                   <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
                   <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
                 </button>
-                <button type="button" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
-              </div>
-            )}
+              )}
+              {focused && (
+                <button type="button" className="leaderboard-jump-player" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+              )}
+            </div>
           </div>
 
           {focused && visible.around && (

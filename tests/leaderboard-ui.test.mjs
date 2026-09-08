@@ -109,6 +109,9 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /\.leaderboard-sort-pills button/);
   assert.match(css, /\.leaderboard-jump-toggle__arrow/);
+  // One shared row: round edge-jump + player jump live inside the sort pills.
+  assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*border-radius: 50%/);
+  assert.doesNotMatch(css, /\.leaderboard-jumps \{/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
@@ -121,7 +124,7 @@ test("leaderboard mobile layout exposes one full list and sticky controls", asyn
   assert.doesNotMatch(css, /\.leaderboard-table \{ min-width: 7/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="top"\]/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="around"\]/);
-  assert.doesNotMatch(css, /\.leaderboard-jumps \{ position: fixed/);
+  assert.doesNotMatch(css, /\.leaderboard-jumps \{/);
   assert.doesNotMatch(css, /body:has\(\.leaderboard-page--focused\) \.faq-trigger/);
   assert.match(css, /tr\[aria-current="true"\]/);
 });
