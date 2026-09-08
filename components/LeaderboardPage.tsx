@@ -274,6 +274,15 @@ export default function LeaderboardPage() {
         <div className={switching ? "leaderboard-switching" : undefined} aria-busy={switching || undefined}>
           <div className="leaderboard-sticky">
             <div className="leaderboard-sort-pills" role="group" aria-label={t("leaderboard.sort.label")}>
+              <button
+                type="button"
+                className="leaderboard-jump-toggle"
+                aria-label={jumpDir === "top" ? t("leaderboard.jump.end") : t("leaderboard.jump.start")}
+                onClick={() => jumpEdge(jumpDir === "top" ? "end" : "top")}
+              >
+                <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
+                <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
+              </button>
               {SORTS.map((key) => {
                 const label = key === "primary"
                   ? t("leaderboard.pills.place")
@@ -291,17 +300,6 @@ export default function LeaderboardPage() {
                   </button>
                 );
               })}
-              {focused && (
-                <button
-                  type="button"
-                  className="leaderboard-jump-toggle"
-                  aria-label={jumpDir === "top" ? t("leaderboard.jump.end") : t("leaderboard.jump.start")}
-                  onClick={() => jumpEdge(jumpDir === "top" ? "end" : "top")}
-                >
-                  <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
-                  <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
-                </button>
-              )}
               {focused && (
                 <button type="button" className="leaderboard-jump-player" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
               )}

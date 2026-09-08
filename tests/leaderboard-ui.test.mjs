@@ -69,6 +69,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
   assert.match(page, /leaderboard-jump-toggle/);
   assert.match(page, /jumpEdge/);
+  // Round jump is first in the row and always visible (no focused gate).
+  assert.ok(page.indexOf("leaderboard-jump-toggle") < page.indexOf("SORTS.map"));
   assert.match(page, /data-leaderboard-selected="true" className="leaderboard-insufficient/);
   assert.match(page, /leaderboard-lists--has-around/);
   assert.match(page, /\["regular", "pve", "arena", "pvp-season"\]/);
@@ -111,6 +113,8 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /\.leaderboard-jump-toggle__arrow/);
   // One shared row: round edge-jump + player jump live inside the sort pills.
   assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*border-radius: 50%/);
+  assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*margin-right/);
+  assert.match(css, /\.leaderboard-sticky \{[^}]*margin-top/);
   assert.doesNotMatch(css, /\.leaderboard-jumps \{/);
 });
 
