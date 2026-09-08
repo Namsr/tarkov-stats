@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
 import { useI18n } from "@/lib/i18n/context";
 import { ARENA_MODE_KEYS, type ArenaModeKey } from "@/types/arena";
@@ -183,8 +183,37 @@ export default function LeaderboardPage() {
     jump(target);
   }
 
+  function scrollToPlayer(retries: number): void {
+    const around = [
+      ...Array.from(document.querySelectorAll<HTMLElement>("#leaderboard-around [data-leaderboard-selected='true']")),
+      ...Array.from(document.querySelectorAll<HTMLElement>("#leaderboard-around[data-leaderboard-selected='true']")),
+    ];
+    // The marker exists twice: on the table row (hidden on mobile) and on the
+    // card (the visible copy). Scroll the visible one.
+    const visible = around.find((item) => item.getClientRects().length > 0);
+    if (visible) {
+      visible.scrollIntoView({ block: "center" });
+      visible.focus({ preventScroll: true });
+      return;
+    }
+    if (around.length > 0 && retries < 10) {
+      // Around-list exists but is still hidden (mobile list flip pending) — wait for it.
+      window.requestAnimationFrame(() => scrollToPlayer(retries + 1));
+      return;
+    }
+    if (around.length === 0) {
+      const top = document.querySelector<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']");
+      top?.scrollIntoView({ block: "center" });
+      top?.focus({ preventScroll: true });
+    }
+  }
+
   function jump(target: "top" | "end" | "player") {
-    if (target === "player") setMobileList("around");
+    if (target === "player") {
+      setMobileList("around");
+      window.requestAnimationFrame(() => scrollToPlayer(0));
+      return;
+    }
     window.requestAnimationFrame(() => {
       const mobile = window.matchMedia("(max-width: 767px)").matches;
       const visibleListId = mobile && mobileList === "top"
@@ -192,18 +221,22 @@ export default function LeaderboardPage() {
         : visible?.around
           ? "leaderboard-around"
           : "leaderboard-top";
-      const element = target === "player"
-        ? document.querySelector<HTMLElement>("#leaderboard-around [data-leaderboard-selected='true']")
-          ?? document.querySelector<HTMLElement>("#leaderboard-around[data-leaderboard-selected='true']")
-          ?? document.querySelector<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']")
-        : document.getElementById(target === "top" && !mobile ? "leaderboard-top" : visibleListId);
-      element?.scrollIntoView({ block: target === "top" ? "start" : target === "end" ? "end" : "center" });
+      const element = document.getElementById(target === "top" && !mobile ? "leaderboard-top" : visibleListId);
+      element?.scrollIntoView({ block: target === "top" ? "start" : "end" });
       element?.focus({ preventScroll: true });
     });
   }
 
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const focused = aid != null;
+  const isBlastGang = mode === "arena" && arenaMode === "blastGang";
+  function pillLabel(key: LeaderboardSort): string {
+    if (key === "primary") return isBlastGang ? t("leaderboard.pills.arp") : t("leaderboard.pills.score");
+    if (key === "kd") return t("leaderboard.pills.kd");
+    if (key === "killsPerMatch") return mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid");
+    if (key === "kills") return t("leaderboard.pills.kills");
+    return t("leaderboard.pills.hours");
+  }
   const modeLabels: Record<LeaderboardMode, string> = {
     regular: t("fav.mode.regular"),
     pve: t("fav.mode.pve"),
@@ -283,25 +316,17 @@ export default function LeaderboardPage() {
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
               </button>
-              {SORTS.map((key) => {
-                const label = key === "primary"
-                  ? t("leaderboard.pills.score")
-                  : key === "kd"
-                    ? t("leaderboard.pills.kd")
-                    : key === "killsPerMatch"
-                      ? mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid")
-                      : key === "kills"
-                        ? t("leaderboard.pills.kills")
-                        : t("leaderboard.pills.hours");
-                return (
-                  <button key={key} type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
-                    {label}
+              {SORTS.map((key) => (
+                <Fragment key={key}>
+                  {key === "kills" && <span aria-hidden="true" className="leaderboard-sort-pills__break" />}
+                  <button type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
+                    {pillLabel(key)}
                     {sort === key && (
                       <span aria-hidden="true" className="leaderboard-sort-pills__arrow">{direction === "desc" ? "↓" : "↑"}</span>
                     )}
                   </button>
-                );
-              })}
+                </Fragment>
+              ))}
               {focused && (
                 <button type="button" className="leaderboard-jump-player" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
               )}
@@ -334,7 +359,7 @@ export default function LeaderboardPage() {
                 <p>{subjectMessages[visible.subject.status]}</p>
                 <dl>
                   <div><dt>{t("leaderboard.column.player")}</dt><dd>{visible.subject.nickname}</dd></div>
-                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{visible.subject.stats.deathless ? t("leaderboard.deathless") : visible.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
+                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{visible.subject.stats.deathless ? (visible.subject.stats.kills?.toLocaleString(locale) ?? "—") : visible.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
                   <div><dt>{mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids")}</dt><dd>{visible.subject.stats.raidsOrMatches?.toLocaleString(locale) ?? "—"}</dd></div>
                 </dl>
               </section>

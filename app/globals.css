@@ -753,6 +753,7 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-jump-toggle__arrow.is-dim { opacity: .4; }
 .leaderboard-sort-pills button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
 .leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.leaderboard-sort-pills__break { display: none; }
 .leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }
 .leaderboard-mobile-lists { display: none; }
 .leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
@@ -780,7 +781,10 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; color: var(--muted-strong); font-size: .74rem; }
 .leaderboard-table th,
 .leaderboard-table td { border-bottom: 1px solid var(--card-border); padding: 11px 10px; text-align: right; white-space: nowrap; }
-.leaderboard-table thead th { position: sticky; top: 0; z-index: 1; background: var(--card-bg); color: var(--muted); font-size: .61rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.leaderboard-table thead th { position: sticky; top: 0; z-index: 1; background: var(--card-bg); color: var(--muted); font-size: .61rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; text-align: right; font-variant-numeric: tabular-nums; }
+.leaderboard-table thead th:first-child { width: 56px; }
+.leaderboard-table thead th:not(:first-child):not(.leaderboard-table__player) { width: 84px; }
+.leaderboard-table thead th.leaderboard-table__player { text-align: left; }
 .leaderboard-table__player,
 .leaderboard-table tbody th { max-width: 190px; overflow: hidden; text-align: left; text-overflow: ellipsis; }
 .leaderboard-table a { color: var(--foreground); text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color 160ms ease, color 160ms ease; }
@@ -1873,7 +1877,13 @@ a.help-card:hover { border-color: var(--foreground); }
   .leaderboard-mode-switch button { border-bottom: 1px solid var(--card-border); }
   .leaderboard-mode-switch button:nth-child(2n) { border-right: 0; }
   .leaderboard-mode-switch button:nth-last-child(-n+2) { border-bottom: 0; }
-  .leaderboard-arena-tabs { grid-template-columns: repeat(5, minmax(132px, 1fr)); margin-inline: -2px; }
+  .leaderboard-arena-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; margin-inline: -14px; padding: 2px 14px 6px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .leaderboard-arena-tabs::-webkit-scrollbar { display: none; }
+  .leaderboard-arena-tabs button { flex: 0 0 auto; min-width: 132px; }
+  .leaderboard-sort-pills { border-radius: 22px; }
+  .leaderboard-sort-pills__break { display: block; flex-basis: 100%; height: 0; }
+  .leaderboard-sort-pills .leaderboard-sort-pill { flex: 1 1 0; }
+  .leaderboard-sort-pills .leaderboard-jump-player { flex: 1 1 0; }
   .leaderboard-sort { max-width: none; }
   .leaderboard-sticky { top: 70px; }
   .leaderboard-mobile-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-top: 16px; border: 1px solid var(--card-border); border-radius: 999px; background: var(--input-bg); padding: 4px; }
@@ -1994,9 +2004,6 @@ a.help-card:hover { border-color: var(--foreground); }
   .project-cta__actions > * { width: 100%; text-align: center; }
   .admin-filters, .admin-metrics, .admin-metrics--small, .admin-health-metrics { grid-template-columns: 1fr; }
   .admin-filter-search { grid-column: auto; }
-  .leaderboard-sort-pills { border-radius: 22px; }
-  .leaderboard-sort-pills .leaderboard-sort-pill { flex: 1 1 40%; }
-  .leaderboard-sort-pills .leaderboard-jump-player { flex: 1 1 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -58,7 +58,8 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /data-aid/);
   assert.match(table, /useLayoutEffect/);
   assert.match(table, /translateY/);
-  assert.match(table, /meta\.mode === "arena" && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
+  assert.match(table, /showBestArp && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
+  assert.match(table, /meta\.arenaMode === "blastGang"/);
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
   assert.match(table, /tabIndex=\{row\.selected \? -1 : undefined\}/);
@@ -73,6 +74,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /sort: sort === "hours" \|\| sort === "kills" \? sort : "primary"/);
   assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
+  assert.match(page, /scrollToPlayer/);
+  assert.match(page, /getClientRects/);
   assert.match(page, /leaderboard-jump-toggle/);
   assert.match(page, /jumpEdge/);
   // Round jump is first in the row and always visible (no focused gate).
@@ -90,6 +93,8 @@ test("leaderboard sort pills replace the select and support direction toggle", a
   assert.match(page, /leaderboard-sort-pills/);
   assert.match(page, /\["primary", "kd", "killsPerMatch", "kills", "hours"\]/);
   assert.match(page, /leaderboard\.pills\.score/);
+  assert.match(page, /leaderboard\.pills\.arp/);
+  assert.match(page, /leaderboard-sort-pills__break/);
   assert.match(page, /leaderboard\.pills\.kills/);
   assert.doesNotMatch(page, /leaderboard\.pills\.place/);
   assert.match(page, /setDirection/);
@@ -134,7 +139,11 @@ test("leaderboard mobile layout exposes one full list and sticky controls", asyn
   assert.match(css, /\.leaderboard-mode-switch \{ grid-template-columns: repeat\(2,/);
   assert.match(css, /\.leaderboard-sticky \{[^}]*position: sticky/);
   assert.match(css, /\.leaderboard-sort-pills button\[aria-pressed="true"\]/);
+  assert.match(css, /\.leaderboard-table thead th \{[^}]*font-variant-numeric: tabular-nums/);
+  assert.match(css, /\.leaderboard-table thead th:not\(:first-child\):not\(\.leaderboard-table__player\)/);
   assert.match(css, /\.leaderboard-cards/);
+  assert.match(css, /\.leaderboard-sort-pills__break/);
+  assert.match(css, /\.leaderboard-arena-tabs button \{[^}]*flex: 0 0 auto/);
   assert.doesNotMatch(css, /\.leaderboard-table \{ min-width: 7/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="top"\]/);
   assert.match(css, /leaderboard-lists--has-around\[data-mobile-list="around"\]/);
