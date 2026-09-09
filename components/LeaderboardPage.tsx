@@ -319,7 +319,7 @@ export default function LeaderboardPage() {
 
           {focused && visible.around && (
             <div className="leaderboard-mobile-lists" role="group" aria-label={t("leaderboard.mobileLists") }>
-              <button type="button" aria-pressed={mobileList === "top"} onClick={() => setMobileList("top")}>{t("leaderboard.top100")}</button>
+              <button type="button" aria-pressed={mobileList === "top"} onClick={() => setMobileList("top")}>{t(direction === "asc" ? "leaderboard.ascendingList" : "leaderboard.top100")}</button>
               <button type="button" aria-pressed={mobileList === "around"} onClick={() => setMobileList("around")}>{t("leaderboard.aroundPlayer")}</button>
             </div>
           )}
