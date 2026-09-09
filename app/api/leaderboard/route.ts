@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   try {
     prepared = parsed.aid == null ? null : await prepareLeaderboardCandidate(runtime.reader, parsed.config, parsed.aid);
     response = runtime.reader.readPage(parsed.config, parsed.sort, parsed.aid, parsed.aid == null ? 500 : 100,
-      prepared?.candidate, Date.now(), prepared?.generation, prepared?.generatedAt);
+      prepared?.candidate, Date.now(), prepared?.generation, prepared?.generatedAt, parsed.direction);
   } catch (error) {
     console.warn("leaderboard read failed: " + (error instanceof Error ? error.message : String(error)));
     return NextResponse.json<LeaderboardErrorResponse>({ code: "leaderboard_unavailable",

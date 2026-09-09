@@ -262,12 +262,13 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
 
   function readPage(config: LeaderboardScopeConfig, sort: LeaderboardSort, aid: number | null,
     topLimit: number, candidate?: MaterializedCandidate | null, now = Date.now(),
-    expectedGeneration?: number, expectedGeneratedAt?: number): LeaderboardPageResponse | null {
+    expectedGeneration?: number, expectedGeneratedAt?: number, direction: "desc" | "asc" = "desc"): LeaderboardPageResponse | null {
+    const ordinalDirection = direction === "asc" ? "DESC" : "ASC";
     const snap = snapshot(config, now, expectedGeneration, expectedGeneratedAt);
     if (!snap) return null;
     if (aid != null && excluded(config, aid)) {
       const counts = liveCounts(config, snap);
-      const topRows = selectedRows(config, snap.generation, sort, "1=1", [], Math.min(500, Math.max(1, topLimit)));
+      const topRows = selectedRows(config, snap.generation, sort, "1=1", [], Math.min(500, Math.max(1, topLimit)), ordinalDirection);
       const selectedBans = bannedOrdinals(config, snap.generation, sort);
       const primaryBans = sort === "primary" ? selectedBans : bannedOrdinals(config, snap.generation, "primary");
       return finish(snap, { meta: metadata(config, snap, sort, counts),
@@ -291,7 +292,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
     const freshSelected = candidateOrder(useFresh, sort);
     const selectedOverlay = useFresh ? { key: freshSelected?.key ?? null, oldOrdinal: oldSelected ? Number(oldSelected.ordinal) : null } : null;
     const requested = Math.min(500, Math.max(1, topLimit));
-    const rawTop = selectedRows(config, snap.generation, sort, "1=1", [], requested + (aid == null ? 0 : 1), "ASC",
+    const rawTop = selectedRows(config, snap.generation, sort, "1=1", [], requested + (aid == null ? 0 : 1), ordinalDirection,
       useFresh ? aid! : undefined);
     let top = rawTop.map((row) => rowFrom(row, aid, selectedBans, primaryBans,
       primaryOverlay, selectedOverlay, counts.ranked + 1));
@@ -305,7 +306,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
       subject = candidateRow(useFresh, position, primaryRank,
         useFresh.member.status === "insufficient_sample" ? counts.ranked + 1 : null);
       top.push(subject);
-      top.sort((left, right) => (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER));
+      top.sort((left, right) => ((left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER)) * (direction === "asc" ? -1 : 1));
       top = top.slice(0, requested);
       const tuple = freshSelected.key;
       const before = db.prepare(`SELECT o.*,m.nickname,m.status,m.score,m.stats_json,p.ordinal primary_ordinal,
@@ -358,6 +359,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
       }
     }
     top = top.slice(0, requested);
+    if (direction === "asc") around?.reverse();
     return finish(snap, { meta: metadata(config, snap, sort, counts), top, around, subject });
   }
 

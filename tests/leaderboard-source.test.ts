@@ -6,6 +6,13 @@ const { DatabaseSync } = await import("node:sqlite");
 const { arenaTabCounts, leaderboardChangeWindow, leaderboardSourceRows } = await import("../lib/leaderboard/source.ts");
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 const { parseLeaderboardRequest } = await import("../lib/leaderboard/runtime.ts");
+
+test("leaderboard requests validate kills sorting and its direction", () => {
+  assert.equal(parseLeaderboardRequest(new URLSearchParams("sort=kills")).sort, "kills");
+  assert.equal(parseLeaderboardRequest(new URLSearchParams("sort=kills")).direction, "desc");
+  assert.equal(parseLeaderboardRequest(new URLSearchParams("sort=kills&dir=asc")).direction, "asc");
+  assert.throws(() => parseLeaderboardRequest(new URLSearchParams("dir=invalid")), /invalid direction/);
+});
 import type { LeaderboardScopeConfig } from "../lib/leaderboard/config";
 
 const db = new DatabaseSync(":memory:");
