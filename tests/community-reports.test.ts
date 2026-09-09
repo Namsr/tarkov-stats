@@ -108,9 +108,11 @@ test("community routes never reference the destructive ban operation", async () 
     "app/api/operator/community-reviews/route.ts",
   ];
   const operatorSource = readFileSync("app/api/operator/community-reviews/route.ts", "utf8");
+  const reportSource = readFileSync("app/api/community-reports/route.ts", "utf8");
   assert.equal(operatorSource.includes("user_" + "sub"), false);
   assert.equal(operatorSource.includes("helper_" + "id"), false);
   assert.equal(operatorSource.includes("reportCount"), true);
+  assert.match(reportSource, /input\.mode === "regular"[\s\S]*getProgressionStore\("regular"\)[\s\S]*store\.latest\(input\.aid\)/);
   for (const path of paths) {
     const source = readFileSync(path, "utf8");
     assert.equal(source.includes("confirm" + "Banned"), false, path);

@@ -8,6 +8,7 @@ import {
   acquireWarmupLock,
   createRequestPacer,
   loadUpdatedVersions,
+  parseWarmupModes,
   requestCandidate,
   runWarmup,
   selectWarmupCandidates,
@@ -61,6 +62,8 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   assert.deepEqual(candidates.map(({ mode, aid }) => [mode, aid]), [
     ["regular", 1], ["regular", 10], ["pve", 3], ["arena", 5], ["arena", 9], ["pvp-season", 7],
   ]);
+  assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["arena"])
+    .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 9]]);
 
   const requested = [];
   const first = await runWarmup({
@@ -91,16 +94,63 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   players.close();
 });
 
-test("one pacer spaces every request start by at least one second", async () => {
+test("one pacer allows at most two request starts per second", async () => {
   let now = 10_000;
   const waits = [];
   const pace = createRequestPacer({ now: () => now, sleep: async (ms) => { waits.push(ms); now += ms; } });
   assert.equal(await pace(), 10_000);
   now += 250;
-  assert.equal(await pace(), 11_000);
+  assert.equal(await pace(), 10_500);
   now += 1_500;
-  assert.equal(await pace(), 12_500);
-  assert.deepEqual(waits, [750]);
+  assert.equal(await pace(), 12_000);
+  assert.deepEqual(waits, [250]);
+});
+
+test("mode filtering rejects typos and retains checkpoint state for other modes", async () => {
+  assert.deepEqual(parseWarmupModes("arena,pve,arena"), ["pve", "arena"]);
+  assert.throws(() => parseWarmupModes("arnea"));
+  const dir = mkdtempSync(join(tmpdir(), "warmup-modes-"));
+  const checkpointPath = join(dir, "state.json");
+  const candidates = [
+    { mode: "regular", aid: 1, sourceVersion: 100 },
+    { mode: "arena", aid: 2, sourceVersion: 200 },
+  ];
+  const requested = [];
+  const request = async (candidate) => {
+    requested.push(candidate.mode);
+    return { kind: "skip", outcome: "not_found" };
+  };
+  await runWarmup({ candidates, checkpointPath, modes: ["regular"], maxProfiles: Infinity, request });
+  const result = await runWarmup({ candidates, checkpointPath, modes: ["arena"], maxProfiles: Infinity, request });
+  assert.deepEqual(requested, ["regular", "arena"]);
+  assert.equal(result.checkpoint.modes.regular.skipped, 1);
+  assert.equal(result.checkpoint.modes.arena.skipped, 1);
+  assert.equal(result.bounded, false);
+});
+
+test("a full run resumes terminal skips after failure and reaches the last mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-resume-"));
+  const checkpointPath = join(dir, "state.json");
+  const candidates = Array.from({ length: 101 }, (_, index) => ({
+    mode: "regular", aid: index + 1, sourceVersion: 100,
+  }));
+  candidates.push({ mode: "pvp-season", aid: 102, sourceVersion: 100, cycleId: "s1" });
+  await assert.rejects(runWarmup({
+    candidates, checkpointPath, maxProfiles: Infinity,
+    request: async ({ aid }) => {
+      if (aid === 2) throw new Error("container unavailable");
+      return { kind: "skip", outcome: "not_found" };
+    },
+  }), /container unavailable/);
+  const requested = [];
+  const result = await runWarmup({
+    candidates, checkpointPath, maxProfiles: Infinity,
+    request: async ({ aid }) => { requested.push(aid); return { kind: "completed", outcome: "ok" }; },
+  });
+  assert.deepEqual(requested, Array.from({ length: 101 }, (_, index) => index + 2));
+  assert.equal(result.bounded, false);
+  assert.equal(result.checkpoint.modes.regular.lastError, null);
+  assert.equal(result.checkpoint.modes["pvp-season"].completed, 1);
 });
 
 test("PvE versions are read through the identifying JSON helper boundary", async () => {
@@ -112,6 +162,32 @@ test("PvE versions are read through the identifying JSON helper boundary", async
   assert.equal(init.cache, "no-store");
   assert.equal(versions.get(3), 300_000);
   assert.equal(versions.size, 1);
+});
+
+test("PvE feed retries a terminated partial stream without keeping partial versions", async () => {
+  let calls = 0;
+  const partial = () => {
+    let pulls = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (pulls++ === 0) controller.enqueue(new TextEncoder().encode('{"3":300,'));
+        else controller.error(new TypeError("terminated"));
+      },
+    }));
+  };
+  const versions = await loadUpdatedVersions("https://players.tarkov.dev/pve/updated.json", {
+    maxRetries: 1, timeoutMs: 30_000, sleep: async () => {},
+    request: async () => ++calls === 1 ? partial() : new Response('{"4":400}'),
+  });
+  assert.deepEqual([...versions], [[4, 400_000]]);
+  assert.equal(calls, 2);
+
+  calls = 0;
+  await assert.rejects(loadUpdatedVersions("https://players.tarkov.dev/pve/updated.json", {
+    maxRetries: 1, timeoutMs: 30_000, sleep: async () => {},
+    request: async () => { calls += 1; return partial(); },
+  }), /warmup updated feed failed after 2 attempts: TypeError: terminated/);
+  assert.equal(calls, 2);
 });
 
 test("409 retries through the global pacer while an uncertain timeout stops the run", async () => {

@@ -4,6 +4,7 @@ import { getClientIp } from "@/lib/client-ip";
 import { getCommunityReportsStore } from "@/lib/community-reports-db";
 import { getStore, type CrossSectionMode } from "@/lib/db";
 import { parsePlayerId } from "@/lib/player-id";
+import { getProgressionStore } from "@/lib/progression-db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { isGameMode, normalizeCycleId, type GameMode } from "@/types/seasonal";
@@ -28,6 +29,10 @@ async function profileExists(input: { aid: number; mode: GameMode; cycleId: stri
   if (input.mode === "seasonal") {
     const store = await getSeasonalStore();
     return Boolean(store && await store.latestSnapshot(input));
+  }
+  if (input.mode === "regular") {
+    const store = await getProgressionStore("regular");
+    return Boolean(store && await store.latest(input.aid));
   }
   const store = await getStore(input.mode as CrossSectionMode);
   return Boolean(store && await store.stored(input.aid));

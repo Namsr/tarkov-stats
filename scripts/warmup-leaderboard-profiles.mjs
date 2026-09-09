@@ -8,9 +8,28 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
+
+/** Comma-separated mode filter, e.g. LEADERBOARD_WARMUP_MODES=arena or --modes=arena,pve. */
+export function parseWarmupModes(value) {
+  if (value == null || String(value).trim() === "") return [...WARMUP_MODES];
+  const modes = String(value).split(",").map((entry) => entry.trim()).filter(Boolean);
+  const unknown = modes.filter((mode) => !WARMUP_MODES.includes(mode));
+  if (modes.length === 0 || unknown.length > 0) {
+    throw new Error(`expected modes from ${WARMUP_MODES.join(",")}`);
+  }
+  return [...new Set(modes)].sort((a, b) => WARMUP_MODES.indexOf(a) - WARMUP_MODES.indexOf(b));
+}
+
+export function warmupModesFromArgs(argv = process.argv.slice(2)) {
+  for (const arg of argv) {
+    if (arg.startsWith("--modes=")) return parseWarmupModes(arg.slice("--modes=".length));
+    if (arg.startsWith("--mode=")) return parseWarmupModes(arg.slice("--mode=".length));
+  }
+  return parseWarmupModes(process.env.LEADERBOARD_WARMUP_MODES);
+}
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");
-const { createTimestampObjectParser, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
+const { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
 
 function integer(value, fallback, minimum, maximum) {
   const parsed = value == null || value === "" ? fallback : Number(value);
@@ -20,7 +39,7 @@ function integer(value, fallback, minimum, maximum) {
   return parsed;
 }
 
-export function createRequestPacer({ intervalMs = 1_000, now = Date.now, sleep = (ms) =>
+export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (ms) =>
   new Promise((done) => setTimeout(done, ms)) } = {}) {
   let previousStart = null;
   return async () => {
@@ -81,30 +100,60 @@ export function acquireWarmupLock(path) {
   };
 }
 
-export async function loadUpdatedVersions(url, request = fetchTarkovJson) {
-  const response = await request(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`warmup updated feed HTTP ${response.status}`);
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("warmup updated feed has no readable body");
-  const versions = new Map();
-  const parser = createTimestampObjectParser((aidValue, updatedValue) => {
-    const aid = Number(aidValue);
-    const updatedAt = normalizeUpdatedAt(updatedValue);
-    if (Number.isSafeInteger(aid) && aid > 0 && updatedAt !== null) versions.set(aid, updatedAt);
-  });
-  const decoder = new TextDecoder();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    parser.append(decoder.decode(value, { stream: true }));
+export async function loadUpdatedVersions(url, options = {}) {
+  const request = typeof options === "function" ? options : options.request ?? fetchTarkovJson;
+  const maxRetries = typeof options === "function" ? 0 : options.maxRetries ?? 0;
+  const timeoutMs = typeof options === "function" ? 30_000 : options.timeoutMs ?? 30_000;
+  const sleep = typeof options === "function" ? (ms) => new Promise((done) => setTimeout(done, ms))
+    : options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  let lastError;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    attempts = attempt;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await request(url, { cache: "no-store", signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error(`warmup updated feed HTTP ${response.status}`);
+        error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("warmup updated feed has no readable body");
+      const versions = new Map();
+      const parser = createTimestampObjectParser((aidValue, updatedValue) => {
+        const aid = Number(aidValue);
+        const updatedAt = normalizeUpdatedAt(updatedValue);
+        if (Number.isSafeInteger(aid) && aid > 0 && updatedAt !== null) versions.set(aid, updatedAt);
+      });
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parser.append(decoder.decode(value, { stream: true }));
+      }
+      parser.finish(decoder.decode());
+      return versions;
+    } catch (error) {
+      lastError = controller.signal.aborted
+        ? new Error(`warmup updated feed timed out after ${timeoutMs}ms`, { cause: error })
+        : error;
+      if (attempt > maxRetries || error?.retryable === false) break;
+      await sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
+    } finally {
+      clearTimeout(timeout);
+    }
   }
-  parser.finish(decoder.decode());
-  return versions;
+  const detail = lastError instanceof Error ? `${lastError.name}: ${lastError.message}` : String(lastError);
+  throw new Error(`warmup updated feed failed after ${attempts} attempts: ${detail}`, { cause: lastError });
 }
 
 /** Select only rows produced before the current parser, not current-parser rows with genuinely absent metrics. */
-export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map()) {
+export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES) {
+  const wanted = new Set(modes);
   const candidates = [];
+  if (wanted.has("regular")) {
   for (const row of players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM players p
@@ -118,6 +167,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     ORDER BY p.aid`).all(CURRENT_PVP_PARSER)) {
     candidates.push({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
   }
+  }
+  if (wanted.has("pve")) {
   for (const row of players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM mode_players p
@@ -130,6 +181,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
     if (sourceVersion > 0) candidates.push({ mode: "pve", aid, sourceVersion });
   }
+  }
+  if (wanted.has("arena")) {
   for (const row of players.prepare(`
     SELECT p.aid,MAX(p.profile_updated_at,COALESCE(s.upstream_version,0)) source_version
     FROM mode_players p
@@ -144,7 +197,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     ORDER BY p.aid`).all(CURRENT_ARENA_PARSER)) {
     candidates.push({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
   }
-  if (cycleId) {
+  }
+  if (cycleId && wanted.has("pvp-season")) {
     for (const row of players.prepare(`
       SELECT p.aid,p.profile_updated_at source_version
       FROM progression_scan.player_profiles p
@@ -225,10 +279,14 @@ export async function requestCandidate(candidate, options) {
 
 export async function runWarmup(options) {
   const checkpoint = loadCheckpoint(options.checkpointPath);
-  const grouped = Object.fromEntries(WARMUP_MODES.map((mode) => [mode, []]));
-  for (const candidate of options.candidates) grouped[candidate.mode].push(candidate);
+  const modes = options.modes ?? WARMUP_MODES;
+  const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
+  for (const candidate of options.candidates) {
+    if (!grouped[candidate.mode]) continue;
+    grouped[candidate.mode].push(candidate);
+  }
   let processed = 0;
-  for (const mode of WARMUP_MODES) {
+  for (const mode of modes) {
     const state = checkpoint.modes[mode] ?? { attempted: 0, completed: 0, skipped: 0 };
     checkpoint.modes[mode] = state;
     for (const candidate of grouped[mode]) {
@@ -290,16 +348,21 @@ async function main() {
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
   try {
+    const modes = warmupModesFromArgs();
     players = new DatabaseSync(dbPath, { readOnly: true });
     players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
     const cycleId = validCycleId(process.env.SEASONAL_CYCLE_ID);
-    const pveVersions = await loadUpdatedVersions(
-      process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json",
-    );
-    const candidates = selectWarmupCandidates(players, cycleId, pveVersions);
+    const pveVersions = !modes.includes("pve") ? new Map() : await (async () => {
+      const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
+      pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
+      return loadUpdatedVersions(pveUpdatedUrl, {
+        maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+      });
+    })();
+    const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes);
     const pace = createRequestPacer();
     const result = await runWarmup({
-      candidates, checkpointPath, maxProfiles,
+      candidates, checkpointPath, maxProfiles, modes,
       request: (candidate) => requestCandidate(candidate, {
         baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
         secret, maxRetries, timeoutMs, pace, fetch, shouldStop: () => stopping,
@@ -308,7 +371,8 @@ async function main() {
       shouldStop: () => stopping,
     });
     process.stdout.write(`${JSON.stringify({
-      candidates: Object.fromEntries(WARMUP_MODES.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
+      modes,
+      candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
       processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
     })}\n`);
   } finally {
