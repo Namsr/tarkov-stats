@@ -57,6 +57,8 @@ test("a null-reference base becomes rankable once changed profiles form a valid 
   const available = referenceFormula(cohort, baseConfig.activityCutoffMs);
   assert.ok(available);
   assert.equal(materializeCandidate(cohort[0], { config: baseConfig, formula: available }).member.status, "ranked");
+  const sorts = materializeCandidate(row, { config: baseConfig, formula }).orders.map((order) => order.sort).sort();
+  assert.deepEqual(sorts, ["hours", "kd", "kills", "killsPerMatch", "primary"]);
 });
 
 test("reference cohorts reject degenerate medians without division by zero", () => {

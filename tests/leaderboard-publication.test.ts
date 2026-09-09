@@ -139,7 +139,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
     { formulaVersion: 2, params: { ...config, formula }, meta: {} },
     [{ aid: 60, ...high }, { aid: 2, ...low }], 200);
   assert.equal(updated.changedMembers, 2);
-  assert.equal(updated.touchedSorts, 3);
+  assert.equal(updated.touchedSorts, 4);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=60").get().ordinal, 1);
   assert.ok(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=2").get().ordinal > 2);
   const reader = createLeaderboardReader(db, "excluded_players");
@@ -169,9 +169,9 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const killsOnly = materializeCandidate({ ...source(5), kills: 50_000, sourceRevision: 11 }, { config, formula });
   const subset = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
     { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 5, ...killsOnly }], 203);
-  assert.equal(subset.touchedSorts, 3);
+  assert.equal(subset.touchedSorts, 4);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='hours' AND aid=5").get().ordinal, beforeHours);
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 4);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 5);
   const page = createLeaderboardReader(db, "excluded_players").readPage(config, "primary", 5, 100);
   assert.equal(page?.top.some((row) => row.aid === 5), true);
 
