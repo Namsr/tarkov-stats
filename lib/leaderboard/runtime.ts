@@ -10,6 +10,8 @@ import { leaderboardPublicationsEnabled, openLeaderboardDatabase } from "./publi
 import { createLeaderboardReader } from "./service.ts";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardSourceRows } from "./source.ts";
+// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
+import { LEADERBOARD_METRIC_VERSION } from "./ranking.ts";
 
 const sourceDatabases = new Map<string, any>();
 
@@ -57,6 +59,10 @@ export async function prepareLeaderboardCandidate(
 ): Promise<{ generation: number; generatedAt: number; candidate: MaterializedCandidate | null } | null> {
   const snap = reader.snapshot(config);
   if (!snap) return null;
+  // Never insert a fresh score into an order published with a different formula.
+  if (snap.params.metricVersion !== LEADERBOARD_METRIC_VERSION) {
+    return { generation: snap.generation, generatedAt: snap.generatedAt, candidate: null };
+  }
   const source = await openSourceDatabase(config);
   const next = leaderboardSourceRows(source, config, aid)[Symbol.iterator]().next();
   return { generation: snap.generation, generatedAt: snap.generatedAt,

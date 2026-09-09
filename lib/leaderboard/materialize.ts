@@ -5,6 +5,7 @@ import {
   LEADERBOARD_FORMULA_VERSION,
   LEADERBOARD_METRIC_VERSION,
   arpOrderKey,
+  confidenceKd,
   kdValue,
   metricOrderKey,
   orderKey,
@@ -58,6 +59,7 @@ function statsFor(row: LeaderboardSourceRow): LeaderboardStats {
     kills: row.kills,
     deaths: row.deaths,
     kd: kd.value,
+    kdScore: confidenceKd(row.kills, row.deaths, row.hours, row.matches),
     deathless: kd.deathless,
     killsPerMatch: count(row.kills) && count(row.matches) && row.matches > 0 ? row.kills / row.matches : null,
     hours: row.hours,
@@ -108,9 +110,8 @@ export function materializeCandidate(row: LeaderboardSourceRow, context: Materia
   if (active && sampleReady && count(row.kills)) {
     orders.push({ sort: "kills", aid: row.aid, key: metricOrderKey(row.kills, row.aid) });
   }
-  const kd = kdValue(row.kills, row.deaths);
-  if (active && sampleReady && kd.orderClass > 0) {
-    orders.push({ sort: "kd", aid: row.aid, key: orderKey([kd.orderClass, kd.value ?? 0], row.aid) });
+  if (active && sampleReady && stats.kdScore != null) {
+    orders.push({ sort: "kd", aid: row.aid, key: orderKey([stats.kdScore], row.aid) });
   }
   if (finalStatus === "ranked" && score != null) {
     const key = context.config.primaryMetric === "arp"

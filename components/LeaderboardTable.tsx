@@ -78,6 +78,7 @@ export default function LeaderboardTable({
 }) {
   const { lang, t } = useI18n();
   const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const showKdScore = meta.sort === "kd" && rows.some((row) => row.stats.kdScore !== undefined);
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const cardsRef = useRef<HTMLOListElement>(null);
   const flipPrev = useRef({ tbody: new Map<number, number>(), cards: new Map<number, number>() });
@@ -107,6 +108,10 @@ export default function LeaderboardTable({
         <h2 className="section-heading">{title}</h2>
         <span>{t("leaderboard.total", { n: meta.rankedCount.toLocaleString(locale) })}</span>
       </div>
+      {showKdScore && <details className="leaderboard-kd-explanation">
+        <summary>{t("leaderboard.kdExplanationTitle")}</summary>
+        <p>{t("leaderboard.kdExplanation")}</p>
+      </details>}
       <div className="leaderboard-table-wrap">
         <table className="leaderboard-table">
           <caption className="sr-only">{title}</caption>
@@ -156,6 +161,7 @@ export default function LeaderboardTable({
                   {showBestArp && <td className="leaderboard-table__number">{formatNumber(row.stats.bestArp, locale)}</td>}
                   <td className="leaderboard-table__number">
                     {row.stats.deathless ? formatNumber(row.stats.kills, locale) : formatNumber(row.stats.kd, locale, 2)}
+                    {showKdScore && <small className="leaderboard-kd-score">{t("leaderboard.kdScore", { v: formatNumber(row.stats.kdScore ?? null, locale, 2) })}</small>}
                   </td>
                   {meta.primaryMetric !== "killsPerMatch" && <td className="leaderboard-table__number">{formatNumber(row.stats.killsPerMatch, locale, 2)}</td>}
                   <td className="leaderboard-table__number">{formatNumber(row.stats.kills, locale)}</td>
@@ -216,6 +222,7 @@ export default function LeaderboardTable({
                 <div>
                   <dt>{t("leaderboard.column.kd")}</dt>
                   <dd>{row.stats.deathless ? formatNumber(row.stats.kills, locale) : formatNumber(row.stats.kd, locale, 2)}</dd>
+                  {showKdScore && <dd className="leaderboard-kd-score">{t("leaderboard.kdScore", { v: formatNumber(row.stats.kdScore ?? null, locale, 2) })}</dd>}
                 </div>
                 {meta.primaryMetric !== "killsPerMatch" && (
                   <div>

@@ -18,6 +18,8 @@ export interface LeaderboardStats {
   kills: number | null;
   deaths: number | null;
   kd: number | null;
+  /** Published confidence-adjusted K/D; absent in generations before metric version 3. */
+  kdScore?: number | null;
   deathless: boolean;
   killsPerMatch: number | null;
   hours: number | null;

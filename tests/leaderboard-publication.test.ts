@@ -46,13 +46,19 @@ test("ascending pages read the global tail and preserve ranks with bans and fres
     const ascending = (sort: "primary" | "kills" | "kd" | "killsPerMatch" | "hours", aid: number | null = null,
       candidate?: ReturnType<typeof materializeCandidate>) =>
       reader.readPage(config, sort, aid, aid == null ? 500 : 100, candidate, Date.now(), undefined, undefined, "asc")!;
-    for (const sort of ["primary", "kills", "kd", "killsPerMatch"] as const) {
+    for (const sort of ["primary", "kills", "killsPerMatch"] as const) {
       const page = ascending(sort);
       assert.equal(page.top.length, 500);
       assert.equal(page.top[0].aid, 620);
       assert.equal(page.top[0].position, 620);
       assert.equal(page.top.at(-1)?.aid, 121);
     }
+    const kdPage = ascending("kd");
+    assert.equal(kdPage.top.length, 500);
+    assert.equal(kdPage.top[0].aid, 1); // One hour cannot outweigh a large, established sample.
+    assert.equal(kdPage.top[0].position, 620);
+    assert.ok(kdPage.top.every((row, index, rows) => index === 0 ||
+      row.stats.kdScore! >= rows[index - 1].stats.kdScore!));
     assert.equal(ascending("hours").top[0].aid, 1);
     // Hours have the opposite ordering from the performance rank.
     assert.equal(ascending("hours").top[0].primaryRank, 1);

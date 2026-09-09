@@ -788,6 +788,11 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-table tbody th { max-width: 190px; overflow: hidden; text-align: left; text-overflow: ellipsis; }
 .leaderboard-table a { color: var(--foreground); text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color 160ms ease, color 160ms ease; }
 .leaderboard-table__number { font-variant-numeric: tabular-nums; }
+.leaderboard-kd-score { display: block; color: var(--muted); font-size: .68rem; }
+.leaderboard-kd-explanation { padding: 12px 16px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.leaderboard-kd-explanation summary { cursor: pointer; }
+.leaderboard-kd-explanation summary:focus-visible { outline: 2px solid var(--foreground); outline-offset: 3px; }
+.leaderboard-kd-explanation p { margin-top: 8px; }
 .leaderboard-table tr[aria-current="true"] > * { background: color-mix(in srgb, var(--accent) 12%, var(--card-bg)); color: var(--foreground); }
 .leaderboard-table tr[aria-current="true"] > :first-child { box-shadow: inset 3px 0 var(--accent); }
 .leaderboard-table tr:focus-visible { outline: none; }

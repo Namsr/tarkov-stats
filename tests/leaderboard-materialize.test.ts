@@ -15,6 +15,28 @@ const row = { aid: 1, nickname: "One", sourceUpdatedAt: 1, parserVersion: 0,
   activityAt: 101, activitySource: "skill" as const, matches: 20, kills: 20, deaths: 10,
   hours: 10, currentArp: null, bestArp: null };
 
+test("K/D orders use the published rating and reject missing hours or insufficient mode samples", () => {
+  const candidate = materializeCandidate(row, { config: baseConfig, formula });
+  assert.equal(candidate.member.stats.kdScore, 12.5);
+  assert.equal(candidate.orders.find((order) => order.sort === "kd")?.key[0], 12.5);
+  for (const change of [{ hours: null }, { hours: -1 }, { matches: 5 }, { deaths: null }]) {
+    const result = materializeCandidate({ ...row, ...change }, { config: baseConfig, formula });
+    assert.equal(result.orders.some((order) => order.sort === "kd"), false);
+  }
+  const smaller = materializeCandidate({ ...row, kills: 353, deaths: 0, aid: 1 }, { config: baseConfig, formula });
+  const larger = materializeCandidate({ ...row, kills: 370, deaths: 0, aid: 2 }, { config: baseConfig, formula });
+  assert.ok(larger.orders.find((order) => order.sort === "kd")!.key[0] >
+    smaller.orders.find((order) => order.sort === "kd")!.key[0]);
+});
+
+test("focused requests retain the published order until an old metric generation is rebuilt", async () => {
+  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
+  const { prepareLeaderboardCandidate } = await import("../lib/leaderboard/runtime.ts");
+  const reader = { snapshot: () => ({ generation: 123, generatedAt: 456, params: { metricVersion: 2 } }) };
+  assert.deepEqual(await prepareLeaderboardCandidate(reader as unknown as Parameters<typeof prepareLeaderboardCandidate>[0], baseConfig, 1),
+    { generation: 123, generatedAt: 456, candidate: null });
+});
+
 test("inactive profiles are absent from every order and the reference sample", () => {
   const inactive = { ...row, activityAt: 99, kills: 10_000 };
   assert.equal(materializeCandidate(inactive, { config: baseConfig, formula }).member.status, "inactive");

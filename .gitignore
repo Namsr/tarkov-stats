@@ -64,6 +64,7 @@ GEMINI.md
 /docs/*
 !/docs/leaderboard-operations.md
 !/docs/leaderboard-arena-season.md
+!/docs/leaderboard-kd-rating.md
 !/ops/
 /ops/*
 !/ops/systemd/
