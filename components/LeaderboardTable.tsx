@@ -18,23 +18,15 @@ function primaryValue(row: LeaderboardRow, meta: LeaderboardMeta, locale: string
   return formatNumber(row.score, locale, 2);
 }
 
-function displayRank(row: LeaderboardRow, sort: LeaderboardSort, direction: "desc" | "asc", rankedCount: number): string {
+function displayRank(row: LeaderboardRow, sort: LeaderboardSort): string {
   if (row.status === "insufficient_sample" && row.groupStart != null) return `#${row.groupStart}+`;
-  // Rank follows the active sort: primary rank for the primary sort, sort position otherwise.
-  // Ascending display mirrors the server window, so ranked rows show the mirrored
-  // global rank instead of the descending server rank.
   const rank = sort === "primary" ? row.primaryRank : row.position;
-  if (row.status === "ranked" && rank != null) {
-    if (direction === "asc" && rankedCount > 0 && rank >= 1 && rank <= rankedCount) {
-      return `#${rankedCount - rank + 1}`;
-    }
-    return `#${rank}`;
-  }
+  if (rank != null) return `#${rank}`;
   return "—";
 }
 
-function RankCell({ row, sort, direction, rankedCount, href }: { row: LeaderboardRow; sort: LeaderboardSort; direction: "desc" | "asc"; rankedCount: number; href: string }) {
-  const rank = displayRank(row, sort, direction, rankedCount);
+function RankCell({ row, sort, href }: { row: LeaderboardRow; sort: LeaderboardSort; href: string }) {
+  const rank = displayRank(row, sort);
   return rank === "—" ? rank : <Link href={href} prefetch={false}>{rank}</Link>;
 }
 
@@ -51,13 +43,14 @@ function flipRows(container: HTMLElement | null, prev: Map<number, number>): Map
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   container.querySelectorAll("[data-aid]").forEach((node) => {
     const el = node as HTMLElement;
-    const top = el.getBoundingClientRect().top;
+    flipActive.get(el)?.cancel();
+    if (el.getClientRects().length === 0) return;
+    const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
     const aid = Number(el.dataset.aid);
     current.set(aid, top);
     if (reduceMotion) return;
     const from = prev.get(aid);
     if (from == null || from === top) return;
-    flipActive.get(el)?.cancel();
     const anim = el.animate(
       [{ transform: `translateY(${from - top}px)` }, { transform: "translateY(0)" }],
       { duration: 340, easing: "cubic-bezier(.22,1,.36,1)" },
@@ -81,7 +74,7 @@ export default function LeaderboardTable({
   title: string;
   rows: LeaderboardRow[];
   meta: LeaderboardMeta;
-  direction?: "desc" | "asc";
+  direction?: "asc" | "desc";
 }) {
   const { lang, t } = useI18n();
   const locale = lang === "ru" ? "ru-RU" : "en-US";
@@ -91,6 +84,9 @@ export default function LeaderboardTable({
   useLayoutEffect(() => {
     flipPrev.current.tbody = flipRows(tbodyRef.current, flipPrev.current.tbody);
     flipPrev.current.cards = flipRows(cardsRef.current, flipPrev.current.cards);
+    const elements = [tbodyRef.current, cardsRef.current].flatMap((container) =>
+      Array.from(container?.querySelectorAll("[data-aid]") ?? []));
+    return () => elements.forEach((element) => flipActive.get(element)?.cancel());
   }, [rows]);
   // Upstream exposes only best ARP — there is no current ARP data.
   // Hide the primary ARP column for BlastGang and keep best ARP as the rating.
@@ -128,7 +124,7 @@ export default function LeaderboardTable({
           </thead>
           <tbody ref={tbodyRef}>
             {rows.map((row, index) => {
-              const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
+              const focusParams = new URLSearchParams({ mode: meta.mode, sort: meta.sort, dir: direction, aid: String(row.aid) });
               const profileParams = new URLSearchParams();
               if (meta.mode === "arena" && meta.arenaMode) {
                 focusParams.set("arenaMode", meta.arenaMode);
@@ -150,7 +146,7 @@ export default function LeaderboardTable({
                   tabIndex={row.selected ? -1 : undefined}
                 >
                   <td className="leaderboard-table__number">
-                    <RankCell row={row} sort={meta.sort} direction={direction} rankedCount={meta.rankedCount} href={`/leaderboard?${focusParams}`} />
+                    <RankCell row={row} sort={meta.sort} href={`/leaderboard?${focusParams}`} />
                   </td>
                   <th scope="row">
                     <Link href={profileHref} prefetch={false}>{row.nickname || `#${row.aid}`}</Link>
@@ -172,7 +168,7 @@ export default function LeaderboardTable({
       </div>
       <ol ref={cardsRef} className="leaderboard-cards">
         {rows.map((row, index) => {
-          const focusParams = new URLSearchParams({ mode: meta.mode, sort: "primary", aid: String(row.aid) });
+          const focusParams = new URLSearchParams({ mode: meta.mode, sort: meta.sort, dir: direction, aid: String(row.aid) });
           const profileParams = new URLSearchParams();
           if (meta.mode === "arena" && meta.arenaMode) {
             focusParams.set("arenaMode", meta.arenaMode);
@@ -184,7 +180,7 @@ export default function LeaderboardTable({
           }
           const profileQuery = profileParams.toString();
           const profileHref = `/player/${meta.mode}/${row.aid}${profileQuery ? `?${profileQuery}` : ""}`;
-          const rank = displayRank(row, meta.sort, direction, meta.rankedCount);
+          const rank = displayRank(row, meta.sort);
           return (
             <li
               key={row.aid}

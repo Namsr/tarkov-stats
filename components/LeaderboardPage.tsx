@@ -46,33 +46,12 @@ function queryCycle(value: string | null): string | null {
 export default function LeaderboardPage() {
   const { lang, t } = useI18n();
   const searchParams = useSearchParams();
-  // Local query state: pills/mode switches apply instantly without a Next
-  // route navigation (which would flash app/leaderboard/loading.tsx).
-  // The URL is mirrored via pushState so links stay shareable; popstate syncs back/forward.
-  const [query, setQuery] = useState(() => ({
-    mode: queryMode(searchParams.get("mode")),
-    arenaMode: queryArenaMode(searchParams.get("arenaMode")),
-    sort: querySort(searchParams.get("sort")),
-    dir: queryDir(searchParams.get("dir")),
-    cycle: queryCycle(searchParams.get("cycle")),
-    aid: positiveAid(searchParams.get("aid")),
-  }));
-  useEffect(() => {
-    const onPopState = () => {
-      const sp = new URLSearchParams(window.location.search);
-      setQuery({
-        mode: queryMode(sp.get("mode")),
-        arenaMode: queryArenaMode(sp.get("arenaMode")),
-        sort: querySort(sp.get("sort")),
-        dir: queryDir(sp.get("dir")),
-        cycle: queryCycle(sp.get("cycle")),
-        aid: positiveAid(sp.get("aid")),
-      });
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
-  const { mode, arenaMode, sort, dir: direction, cycle, aid } = query;
+  const mode = queryMode(searchParams.get("mode"));
+  const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
+  const sort = querySort(searchParams.get("sort"));
+  const direction = queryDir(searchParams.get("dir"));
+  const cycle = queryCycle(searchParams.get("cycle"));
+  const aid = positiveAid(searchParams.get("aid"));
   const [result, setResult] = useState<{
     key: string;
     data: LeaderboardPageResponse | null;
@@ -84,22 +63,16 @@ export default function LeaderboardPage() {
   const [jumpDir, setJumpDir] = useState<"top" | "end">("top");
 
   const requestUrl = useMemo(() => {
-    const params = new URLSearchParams({ mode, sort });
+    const params = new URLSearchParams({ mode, sort, dir: direction });
     if (mode === "arena") params.set("arenaMode", arenaMode);
     if (mode === "pvp-season" && cycle) params.set("cycle", cycle);
     if (aid != null) params.set("aid", String(aid));
     return `/api/leaderboard?${params}`;
-  }, [aid, arenaMode, cycle, mode, sort]);
+  }, [aid, arenaMode, cycle, mode, sort, direction]);
   const data = result?.key === requestUrl ? result.data : null;
   const error = result?.key === requestUrl ? result.error : "";
   const loading = result?.key !== requestUrl;
-  // Stale-while-revalidate: keep the previous table on screen while the next
-  // sort/mode loads, dimmed via .leaderboard-switching. Kills the skeleton flash.
-  const [lastData, setLastData] = useState<LeaderboardPageResponse | null>(null);
-  useEffect(() => {
-    if (data) setLastData(data);
-  }, [data]);
-  const visible = data ?? lastData;
+  const visible = data ?? (loading ? result?.data : null);
   const switching = loading && visible != null;
 
   useEffect(() => {
@@ -142,14 +115,6 @@ export default function LeaderboardPage() {
     const nextAid = next.aid === undefined ? aid : next.aid;
     if (nextAid != null) params.set("aid", String(nextAid));
     const url = `/leaderboard?${params}`;
-    setQuery({
-      mode: nextMode,
-      arenaMode: nextMode === "arena" ? (next.arenaMode ?? arenaMode) : arenaMode,
-      sort: nextSort,
-      dir: nextDir,
-      cycle: nextCycle,
-      aid: nextAid,
-    });
     window.history.pushState(null, "", url);
   }
 
@@ -173,15 +138,8 @@ export default function LeaderboardPage() {
     }
   }
 
-  const orderedTop = useMemo(() => {
-    if (!visible?.top) return [];
-    return direction === "asc" ? [...visible.top].reverse() : visible.top;
-  }, [visible, direction]);
-
-  const orderedAround = useMemo(() => {
-    if (!visible?.around) return undefined;
-    return direction === "asc" ? [...visible.around].reverse() : visible.around;
-  }, [visible, direction]);
+  const orderedTop = visible?.top ?? [];
+  const orderedAround = visible?.around;
 
   function jumpEdge(target: "top" | "end") {
     setJumpDir(target);
@@ -207,7 +165,7 @@ export default function LeaderboardPage() {
       return;
     }
     if (around.length === 0) {
-      const top = document.querySelector<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']");
+      const top = Array.from(document.querySelectorAll<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']")).find((item) => item.getClientRects().length > 0);
       top?.scrollIntoView({ block: "center" });
       top?.focus({ preventScroll: true });
     }
@@ -230,7 +188,7 @@ export default function LeaderboardPage() {
 
   function jump(target: "top" | "end" | "player") {
     if (target === "player") {
-      setMobileList("around");
+      setMobileList(visible?.around ? "around" : "top");
       window.requestAnimationFrame(() => scrollToPlayer(0));
       return;
     }
@@ -256,7 +214,7 @@ export default function LeaderboardPage() {
   const focused = aid != null;
   const isBlastGang = mode === "arena" && arenaMode === "blastGang";
   function pillLabel(key: LeaderboardSort): string {
-    if (key === "primary") return isBlastGang ? t("leaderboard.pills.arp") : t("leaderboard.pills.score");
+    if (key === "primary") return isBlastGang ? t("leaderboard.column.bestArp") : mode === "arena" && arenaMode === "lastHero" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.score");
     if (key === "kd") return t("leaderboard.pills.kd");
     if (key === "killsPerMatch") return mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid");
     if (key === "kills") return t("leaderboard.pills.kills");
@@ -321,7 +279,7 @@ export default function LeaderboardPage() {
       {publicationKey && <p className="leaderboard-publication" role="status">{t(publicationKey)}</p>}
 
       {loading && !visible && <LeaderboardLoading />}
-      {error && !visible && (
+      {error && (
         <div className="data-panel leaderboard-state" role="alert">
           <p>{error}</p>
           <button type="button" className="ghost-button" onClick={() => window.location.reload()}>{t("leaderboard.retry")}</button>
@@ -335,6 +293,7 @@ export default function LeaderboardPage() {
               <button
                 type="button"
                 className="leaderboard-jump-toggle"
+                disabled={loading}
                 aria-label={jumpDir === "top" ? t("leaderboard.jump.end") : t("leaderboard.jump.start")}
                 onClick={() => jumpEdge(jumpDir === "top" ? "end" : "top")}
               >
@@ -344,7 +303,7 @@ export default function LeaderboardPage() {
               {SORTS.map((key) => (
                 <Fragment key={key}>
                   {key === "kills" && <span aria-hidden="true" className="leaderboard-sort-pills__break" />}
-                  <button type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
+                  <button type="button" className="leaderboard-sort-pill" aria-label={`${pillLabel(key)}: ${t(sort === key && direction === "desc" ? "leaderboard.sort.ascending" : "leaderboard.sort.descending")}`} aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
                     {pillLabel(key)}
                     {sort === key && (
                       <span aria-hidden="true" className="leaderboard-sort-pills__arrow">{direction === "desc" ? "↓" : "↑"}</span>
@@ -353,7 +312,7 @@ export default function LeaderboardPage() {
                 </Fragment>
               ))}
               {focused && (
-                <button type="button" className="leaderboard-jump-player" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+                <button type="button" className="leaderboard-jump-player" disabled={loading || !visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
               )}
             </div>
           </div>
@@ -371,7 +330,7 @@ export default function LeaderboardPage() {
           <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
-              title={t("leaderboard.top100")}
+              title={t(direction === "asc" ? "leaderboard.ascendingList" : focused ? "leaderboard.top100" : "leaderboard.top500")}
               rows={orderedTop}
               meta={visible.meta}
               direction={direction}

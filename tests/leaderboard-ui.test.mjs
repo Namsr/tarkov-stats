@@ -45,7 +45,7 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(page, /\/api\/leaderboard\?\$\{params\}/);
   assert.match(page, /rows=\{orderedTop\}/);
   assert.match(page, /rows=\{orderedAround\}/);
-  assert.match(page, /visible\.top/);
+  assert.match(page, /visible\?\.top/);
   assert.match(page, /visible\.around/);
   assert.doesNotMatch(page, /\.slice\(/);
   assert.ok(((table.match(/prefetch=\{false\}/g) ?? []).length) >= 2);
@@ -55,9 +55,9 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /leaderboard\.column\.kills/);
   assert.match(table, /displayRank/);
   assert.match(table, /sort === "primary" \? row\.primaryRank : row\.position/);
-  // Ascending display mirrors the server window, so ranked rows show the mirrored global rank.
-  assert.match(table, /direction === "asc"/);
-  assert.match(table, /rankedCount - rank \+ 1/);
+  // Direction changes the server window; ranks retain their published meaning.
+  assert.doesNotMatch(page, /\.reverse\(/);
+  assert.doesNotMatch(table, /rankedCount - rank/);
   assert.doesNotMatch(table, /Балл/);
   assert.match(table, /getBoundingClientRect/);
   assert.match(table, /flipActive/);
@@ -107,20 +107,20 @@ test("leaderboard sort pills replace the select and support direction toggle", a
   assert.match(page, /leaderboard-sort-pills/);
   assert.match(page, /\["primary", "kd", "killsPerMatch", "kills", "hours"\]/);
   assert.match(page, /leaderboard\.pills\.score/);
-  assert.match(page, /leaderboard\.pills\.arp/);
+  assert.match(page, /leaderboard\.column\.bestArp/);
   assert.match(page, /leaderboard-sort-pills__break/);
   assert.match(page, /leaderboard\.pills\.kills/);
   assert.doesNotMatch(page, /leaderboard\.pills\.place/);
   // Direction lives in the shareable URL and flows into direction-aware ranks.
   assert.match(page, /queryDir/);
   assert.match(page, /searchParams\.get\("dir"\)/);
-  assert.match(page, /sp\.get\("dir"\)/);
+  assert.match(page, /dir: direction/);
   assert.match(page, /params\.set\("dir", "asc"\)/);
-  assert.match(page, /direction=\{direction\}/);
+  assert.match(page, /leaderboard\.sort\.ascending/);
   assert.match(page, /dir: direction === "desc" \? "asc" : "desc"/);
   assert.doesNotMatch(page, /<select/);
   assert.doesNotMatch(page, /leaderboard\.generated/);
-  assert.doesNotMatch(page, /leaderboard\.top500/);
+  assert.match(page, /leaderboard\.top500/);
   assert.match(page, /leaderboard\.top100/);
 });
 
@@ -132,9 +132,9 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   // Local query state: no Next navigation, so app/leaderboard/loading.tsx never flashes.
   assert.doesNotMatch(page, /useRouter/);
   assert.doesNotMatch(page, /router\.push/);
-  assert.match(page, /popstate/);
+  assert.match(page, /const aid = positiveAid\(searchParams\.get/);
   assert.match(page, /history\.pushState/);
-  assert.match(page, /lastData/);
+  assert.match(page, /loading \? result\?\.data : null/);
   assert.match(page, /leaderboard-switching/);
   // No remount key on the lists: rows keep DOM nodes, updates swap instantly.
   assert.doesNotMatch(page, /visible\.meta\.sort-\$\{direction\}/);
@@ -143,7 +143,7 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(page, /role="status"/);
   assert.match(css, /\.leaderboard-switching/);
   // A single switching rule for the pills plus a real dim of the stale lists.
-  assert.equal((css.match(/\.leaderboard-switching \.leaderboard-sort-pills button/g) ?? []).length, 1);
+  assert.match(page, /disabled=\{loading\}/);
   assert.match(css, /\.leaderboard-switching \.leaderboard-lists \{[^}]*opacity/);
   assert.match(css, /lb-rise/);
   assert.match(css, /lb-arrow-pop/);

@@ -66,6 +66,7 @@ export async function prepareLeaderboardCandidate(
 export function parseLeaderboardRequest(searchParams: URLSearchParams): {
   config: LeaderboardScopeConfig;
   sort: LeaderboardSort;
+  direction: "asc" | "desc";
   aid: number | null;
 } {
   const mode = searchParams.get("mode") ?? "regular";
@@ -90,7 +91,9 @@ export function parseLeaderboardRequest(searchParams: URLSearchParams): {
   if (aidRaw != null && !/^[1-9]\d*$/.test(aidRaw)) throw new Error("invalid aid");
   const aid = aidRaw == null ? null : Number(aidRaw);
   if (aid != null && !Number.isSafeInteger(aid)) throw new Error("invalid aid");
-  return { config, sort, aid };
+  const direction = searchParams.get("dir") ?? "desc";
+  if (direction !== "asc" && direction !== "desc") throw new Error("invalid direction");
+  return { config, sort, aid, direction };
 }
 
 export function resetLeaderboardRuntimeForTests(): void {

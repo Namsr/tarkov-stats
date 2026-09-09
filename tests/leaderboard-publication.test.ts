@@ -33,6 +33,58 @@ function generation(rows = [...Array.from({ length: 119 }, (_, index) => source(
   return { members: candidates.map((item) => item.member), orders: candidates.flatMap((item) => item.orders) };
 }
 
+test("ascending pages read the global tail and preserve ranks with bans and fresh overlays", () => {
+  const local = new DatabaseSync(":memory:");
+  try {
+    local.exec("CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+    publication.initializeLeaderboardSchema(local);
+    const rows = Array.from({ length: 620 }, (_, i) => source(i + 1, 1000 - i));
+    const initial = generation(rows);
+    publication.publishLeaderboardScope(local, config.scope,
+      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, initial.members, initial.orders);
+    const reader = createLeaderboardReader(local, "excluded_players");
+    const ascending = (sort: "primary" | "kills" | "kd" | "killsPerMatch" | "hours", aid: number | null = null,
+      candidate?: ReturnType<typeof materializeCandidate>) =>
+      reader.readPage(config, sort, aid, aid == null ? 500 : 100, candidate, Date.now(), undefined, undefined, "asc")!;
+    for (const sort of ["primary", "kills", "kd", "killsPerMatch"] as const) {
+      const page = ascending(sort);
+      assert.equal(page.top.length, 500);
+      assert.equal(page.top[0].aid, 620);
+      assert.equal(page.top[0].position, 620);
+      assert.equal(page.top.at(-1)?.aid, 121);
+    }
+    assert.equal(ascending("hours").top[0].aid, 1);
+    // Hours have the opposite ordering from the performance rank.
+    assert.equal(ascending("hours").top[0].primaryRank, 1);
+    local.exec("INSERT INTO excluded_players VALUES (620)");
+    assert.equal(ascending("kills").top[0].aid, 619);
+    assert.equal(ascending("kills").top[0].position, 619);
+    const banned = ascending("kills", 620);
+    assert.equal(banned.subject?.status, "excluded");
+    assert.equal(banned.top[0].aid, 619);
+    const demoted = materializeCandidate({ ...rows[599], kills: 0, sourceUpdatedAt: 2 }, { config, formula });
+    const low = ascending("kills", 600, demoted);
+    assert.equal(low.top[0].aid, 600);
+    assert.equal(low.subject?.position, 619);
+    assert.equal(low.around?.filter((row) => row.aid === 600).length, 1);
+    assert.ok(low.around?.every((row, i, all) => i === 0 || row.position! < all[i - 1].position!));
+    const promoted = materializeCandidate({ ...rows[599], kills: 2000, sourceUpdatedAt: 2 }, { config, formula });
+    const high = ascending("kills", 600, promoted);
+    assert.equal(high.subject?.position, 1);
+    assert.equal(high.top.some((row) => row.aid === 600), false);
+    const inactive = materializeCandidate({ ...rows[599], activityAt: 99, sourceUpdatedAt: 2 }, { config, formula });
+    const removed = ascending("kills", 600, inactive);
+    assert.equal(removed.top.length, 100);
+    assert.equal(removed.top.some((row) => row.aid === 600), false);
+    assert.equal(removed.subject?.position, null);
+    const saved = ascending("kills", 600);
+    assert.equal(saved.around?.filter((row) => row.aid === 600).length, 1);
+    assert.ok(saved.around?.every((row, i, all) => i === 0 || row.position! < all[i - 1].position!));
+  } finally {
+    local.close();
+  }
+});
+
 test("publication assigns stable ordinals, swaps atomically, and keeps the previous generation on failure", () => {
   const first = generation();
   publication.publishLeaderboardScope(db, config.scope, { formulaVersion: 2, params: { ...config, formula }, meta: {} },
