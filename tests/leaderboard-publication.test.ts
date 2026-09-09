@@ -23,7 +23,7 @@ const formula = { killsWeight: .4, kdWeight: .3, killsPerMatchWeight: .3, smooth
   referenceTotalKills: 500, referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
 const source = (aid: number, kills = 121 - aid, activityAt = 101) => ({
   aid, nickname: `P${aid}`, sourceUpdatedAt: 1, parserVersion: 0, activityAt,
-  activitySource: "skill" as const, matches: 20, kills, deaths: 10, hours: aid,
+  activitySource: "skill" as const, matches: 20, kills, deaths: 10, hours: 10_000 + aid,
   currentArp: null, bestArp: null,
 });
 
@@ -43,10 +43,10 @@ test("ascending pages read the global tail and preserve ranks with bans and fres
     publication.publishLeaderboardScope(local, config.scope,
       { formulaVersion: 2, params: { ...config, formula }, meta: {} }, initial.members, initial.orders, Date.now());
     const reader = createLeaderboardReader(local, "excluded_players");
-    const ascending = (sort: "primary" | "kills" | "kd" | "killsPerMatch" | "hours", aid: number | null = null,
+    const ascending = (sort: "primary" | "score" | "kills" | "kd" | "killsPerMatch" | "hours", aid: number | null = null,
       candidate?: ReturnType<typeof materializeCandidate>) =>
       reader.readPage(config, sort, aid, aid == null ? 500 : 100, candidate, Date.now(), undefined, undefined, "asc")!;
-    for (const sort of ["primary", "kills", "kd", "killsPerMatch"] as const) {
+    for (const sort of ["primary", "score", "kd", "kills", "killsPerMatch"] as const) {
       const page = ascending(sort);
       assert.equal(page.top.length, 500);
       assert.equal(page.top[0].aid, 620);
@@ -80,6 +80,41 @@ test("ascending pages read the global tail and preserve ranks with bans and fres
     const saved = ascending("kills", 600);
     assert.equal(saved.around?.filter((row) => row.aid === 600).length, 1);
     assert.ok(saved.around?.every((row, i, all) => i === 0 || row.position! < all[i - 1].position!));
+  } finally {
+    local.close();
+  }
+});
+
+test("BlastGang score ranks independently of ARP and responds to hours-only changes", () => {
+  const local = new DatabaseSync(":memory:");
+  try {
+    local.exec("CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+    publication.initializeLeaderboardSchema(local);
+    const blast = { ...config, scope: "arena:blastGang:initial", mode: "arena" as const,
+      arenaMode: "blastGang" as const, primaryMetric: "arp" as const,
+      arpSeasonId: "initial", arpSourceConfirmed: true };
+    const rows = [
+      { ...source(1, 600), deaths: 1, matches: 6, hours: 3, bestArp: 2000 },
+      { ...source(2, 400), deaths: 100, matches: 200, hours: 100, bestArp: 1500 },
+    ];
+    const candidates = rows.map((row) => materializeCandidate(row, { config: blast, formula }));
+    const metadata = { formulaVersion: 3, params: { ...blast, formula }, meta: {} };
+    publication.publishLeaderboardScope(local, blast.scope, metadata,
+      candidates.map((candidate) => candidate.member), candidates.flatMap((candidate) => candidate.orders), 90, 100);
+    const reader = createLeaderboardReader(local, "excluded_players");
+    assert.equal(reader.readPage(blast, "primary", null, 100)?.top[0].aid, 1);
+    assert.equal(reader.readPage(blast, "score", null, 100)?.top[0].aid, 2);
+    assert.equal(reader.readPage(blast, "score", null, 100, null, Date.now(), undefined, undefined, "asc")?.top[0].aid, 1);
+    const changed = materializeCandidate({ ...rows[0], hours: 1000, sourceUpdatedAt: 2 }, { config: blast, formula });
+    assert.equal(reader.readPage(blast, "score", 1, 100, changed)?.subject?.position, 1);
+    const generation = Number(local.prepare("SELECT generation FROM leaderboard_current").get().generation);
+    publication.updateLeaderboardScope(local, blast.scope, generation, metadata, [{ aid: 1, ...changed }], 200);
+    assert.equal(reader.readPage(blast, "score", null, 100)?.top[0].aid, 1);
+    assert.equal(reader.readPage(blast, "primary", null, 100)?.top[0].aid, 1);
+    const missing = materializeCandidate({ ...rows[0], hours: null, sourceUpdatedAt: 3 }, { config: blast, formula });
+    publication.updateLeaderboardScope(local, blast.scope, generation, metadata, [{ aid: 1, ...missing }], 300);
+    assert.deepEqual(reader.readPage(blast, "score", null, 100)?.top.map((row) => row.aid), [2]);
+    assert.equal(reader.readPage(blast, "primary", null, 100)?.top[0].aid, 1);
   } finally {
     local.close();
   }
@@ -205,7 +240,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
     { formulaVersion: 2, params: { ...config, formula }, meta: {} },
     [{ aid: 60, ...high }, { aid: 2, ...low }], 200);
   assert.equal(updated.changedMembers, 2);
-  assert.equal(updated.touchedSorts, 4);
+  assert.equal(updated.touchedSorts, 5);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=60").get().ordinal, 1);
   assert.ok(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=2").get().ordinal > 2);
   const reader = createLeaderboardReader(db, "excluded_players");
@@ -235,9 +270,9 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const killsOnly = materializeCandidate({ ...source(5), kills: 50_000, sourceRevision: 11 }, { config, formula });
   const subset = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
     { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 5, ...killsOnly }], 203);
-  assert.equal(subset.touchedSorts, 4);
+  assert.equal(subset.touchedSorts, 5);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='hours' AND aid=5").get().ordinal, beforeHours);
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 5);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 6);
   const page = createLeaderboardReader(db, "excluded_players").readPage(config, "primary", 5, 100);
   assert.equal(page?.top.some((row) => row.aid === 5), true);
 

@@ -12,10 +12,11 @@ function formatNumber(value: number | null, locale: string, digits = 0): string 
     : value.toLocaleString(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
-function primaryValue(row: LeaderboardRow, meta: LeaderboardMeta, locale: string): string {
-  if (meta.primaryMetric === "arp") return formatNumber(row.stats.arp, locale);
-  if (meta.primaryMetric === "killsPerMatch") return formatNumber(row.stats.killsPerMatch, locale, 2);
-  return formatNumber(row.score, locale, 2);
+function scoreValue(row: LeaderboardRow, meta: LeaderboardMeta, locale: string): string {
+  const score = row.stats.performanceScore === undefined
+    ? meta.primaryMetric === "performance" ? row.score : null
+    : row.stats.performanceScore;
+  return formatNumber(score, locale, 2);
 }
 
 function displayRank(row: LeaderboardRow, sort: LeaderboardSort): string {
@@ -88,18 +89,9 @@ export default function LeaderboardTable({
       Array.from(container?.querySelectorAll("[data-aid]") ?? []));
     return () => elements.forEach((element) => flipActive.get(element)?.cancel());
   }, [rows]);
-  // Upstream exposes only best ARP — there is no current ARP data.
-  // Hide the primary ARP column for BlastGang and keep best ARP as the rating.
-  // Best ARP is shown only for BlastGang; other Arena modes keep arena numbers.
-  const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
   const showBestArp = meta.mode === "arena" && meta.arenaMode === "blastGang";
   const rateLabel = meta.mode === "arena" ? t("leaderboard.column.killsPerMatch") : t("leaderboard.column.killsPerRaid");
   const killsLabel = meta.mode === "arena" ? t("leaderboard.column.arenaKills") : t("leaderboard.column.kills");
-  const primaryLabel = meta.primaryMetric === "arp"
-    ? t("leaderboard.column.bestArp")
-    : meta.primaryMetric === "killsPerMatch"
-      ? t("leaderboard.column.killsPerMatch")
-      : t("leaderboard.column.score");
 
   return (
     <section id={id} tabIndex={-1} className="leaderboard-list data-panel">
@@ -114,10 +106,10 @@ export default function LeaderboardTable({
             <tr>
               <th scope="col">{t("leaderboard.column.rank")}</th>
               <th scope="col" className="leaderboard-table__player">{t("leaderboard.column.player")}</th>
-              {!hidePrimaryArp && <th scope="col">{primaryLabel}</th>}
               {showBestArp && <th scope="col">{t("leaderboard.column.bestArp")}</th>}
+              <th scope="col">{t("leaderboard.column.score")}</th>
               <th scope="col">{t("leaderboard.column.kd")}</th>
-              {meta.primaryMetric !== "killsPerMatch" && <th scope="col">{rateLabel}</th>}
+              <th scope="col">{rateLabel}</th>
               <th scope="col">{killsLabel}</th>
               <th scope="col">{t("leaderboard.column.hours")}</th>
             </tr>
@@ -152,12 +144,12 @@ export default function LeaderboardTable({
                     <Link href={profileHref} prefetch={false}>{row.nickname || `#${row.aid}`}</Link>
                     {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                   </th>
-                  {!hidePrimaryArp && <td className="leaderboard-table__number">{primaryValue(row, meta, locale)}</td>}
                   {showBestArp && <td className="leaderboard-table__number">{formatNumber(row.stats.bestArp, locale)}</td>}
+                  <td className="leaderboard-table__number">{scoreValue(row, meta, locale)}</td>
                   <td className="leaderboard-table__number">
                     {row.stats.deathless ? formatNumber(row.stats.kills, locale) : formatNumber(row.stats.kd, locale, 2)}
                   </td>
-                  {meta.primaryMetric !== "killsPerMatch" && <td className="leaderboard-table__number">{formatNumber(row.stats.killsPerMatch, locale, 2)}</td>}
+                  <td className="leaderboard-table__number">{formatNumber(row.stats.killsPerMatch, locale, 2)}</td>
                   <td className="leaderboard-table__number">{formatNumber(row.stats.kills, locale)}</td>
                   <td className="leaderboard-table__number">{formatNumber(row.stats.hours, locale, 1)}</td>
                 </tr>
@@ -201,12 +193,6 @@ export default function LeaderboardTable({
                 </span>
               </div>
               <dl className="leaderboard-card__grid">
-                {!hidePrimaryArp && (
-                  <div>
-                    <dt>{primaryLabel}</dt>
-                    <dd>{primaryValue(row, meta, locale)}</dd>
-                  </div>
-                )}
                 {showBestArp && (
                   <div>
                     <dt>{t("leaderboard.column.bestArp")}</dt>
@@ -214,15 +200,17 @@ export default function LeaderboardTable({
                   </div>
                 )}
                 <div>
+                  <dt>{t("leaderboard.column.score")}</dt>
+                  <dd>{scoreValue(row, meta, locale)}</dd>
+                </div>
+                <div>
                   <dt>{t("leaderboard.column.kd")}</dt>
                   <dd>{row.stats.deathless ? formatNumber(row.stats.kills, locale) : formatNumber(row.stats.kd, locale, 2)}</dd>
                 </div>
-                {meta.primaryMetric !== "killsPerMatch" && (
-                  <div>
-                    <dt>{rateLabel}</dt>
-                    <dd>{formatNumber(row.stats.killsPerMatch, locale, 2)}</dd>
-                  </div>
-                )}
+                <div>
+                  <dt>{rateLabel}</dt>
+                  <dd>{formatNumber(row.stats.killsPerMatch, locale, 2)}</dd>
+                </div>
                 <div>
                   <dt>{killsLabel}</dt>
                   <dd>{formatNumber(row.stats.kills, locale)}</dd>

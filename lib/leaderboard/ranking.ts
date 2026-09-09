@@ -1,5 +1,7 @@
-export const LEADERBOARD_FORMULA_VERSION = 2;
-export const LEADERBOARD_METRIC_VERSION = 2;
+export const LEADERBOARD_FORMULA_VERSION = 3;
+export const LEADERBOARD_METRIC_VERSION = 4;
+
+export const PERFORMANCE_CONFIDENCE_HOURS = 10;
 
 export interface PerformanceFormula {
   killsWeight: number;
@@ -15,6 +17,7 @@ export interface PerformanceInput {
   matches: number;
   kills: number;
   deaths: number;
+  hours: number | null;
 }
 
 export type OrderKey = readonly [number, number, number, number, number, number];
@@ -23,7 +26,8 @@ const validCount = (value: number) => Number.isSafeInteger(value) && value >= 0;
 const validMetric = (value: number) => Number.isFinite(value) && value >= 0;
 
 export function performanceScore(input: PerformanceInput, formula: PerformanceFormula): number | null {
-  if (!validCount(input.matches) || !validCount(input.kills) || !validCount(input.deaths)) return null;
+  if (!validCount(input.matches) || !validCount(input.kills) || !validCount(input.deaths) ||
+      input.hours == null || !validMetric(input.hours)) return null;
   const { killsWeight, kdWeight, killsPerMatchWeight, smoothing: m } = formula;
   const t0 = formula.referenceTotalKills;
   const k0 = formula.referenceKillsPerMatch;
@@ -37,11 +41,12 @@ export function performanceScore(input: PerformanceInput, formula: PerformanceFo
   const killsBase = Math.log1p(t0);
   const kdBase = Math.log1p(k0 / d0);
   const killsBasePerMatch = Math.log1p(k0);
-  const score = 100 * (
+  const baseScore = 100 * (
     killsWeight * Math.log1p(input.kills) / killsBase +
     kdWeight * Math.log1p(adjustedKd) / kdBase +
     killsPerMatchWeight * Math.log1p(adjustedKillsPerMatch) / killsBasePerMatch
   );
+  const score = baseScore * (input.hours / (input.hours + PERFORMANCE_CONFIDENCE_HOURS));
   return Number.isFinite(score) && score >= 0 ? score : null;
 }
 

@@ -113,7 +113,7 @@ try {
           leaderboardConfigChanged(current?.params, config) ||
           current?.formulaVersion !== LEADERBOARD_FORMULA_VERSION ||
           current?.params.metricVersion !== LEADERBOARD_METRIC_VERSION || current?.params.exclusionFingerprint !== bans;
-        if (config.primaryMetric === "performance" && (mustRecalculate || (!formula && window.changes.length > 0))) {
+        if (mustRecalculate || (!formula && window.changes.length > 0)) {
           const available = referenceFormula(leaderboardSourceRows(source, config), config.activityCutoffMs);
           if (mustRecalculate || available) formula = available;
           if (!current?.params.formula && available) full = true;

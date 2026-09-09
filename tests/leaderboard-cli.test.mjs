@@ -87,6 +87,16 @@ test("materializer CLI performs an initial build, a persisted delta, and a no-op
     assert.ok(idle.every((row) => row.kind === "incremental" && row.sourceChanges === 0 && row.changedMembers === 0));
 
     const published = new DatabaseSync(publicationPath);
+    const scores = published.prepare(`SELECT m.scope,m.score,m.stats_json,o.k1 FROM leaderboard_members m
+      JOIN leaderboard_current c ON c.scope=m.scope AND c.generation=m.generation
+      JOIN leaderboard_order o ON o.scope=m.scope AND o.generation=m.generation AND o.aid=m.aid AND o.sort='score'`).all();
+    assert.equal(scores.length, 8);
+    assert.ok(scores.every((row) => row.k1 > 0 && row.k1 === JSON.parse(row.stats_json).performanceScore));
+    const blast = scores.find((row) => row.scope === 'arena:blastGang:initial');
+    assert.equal(blast.score, 1500); // Primary ARP stays independent from the composite score.
+    assert.notEqual(blast.k1, blast.score);
+    assert.ok(scores.filter((row) => row.scope === 'regular' || row.scope === 'pve' || row.scope === 'seasonal:s1')
+      .every((row) => row.k1 === row.score));
     const beforeUnavailable = published.prepare("SELECT scope,generation,generated_at FROM leaderboard_current ORDER BY scope").all();
     published.close();
     const unavailable = spawnSync(process.execPath, ["--experimental-strip-types", "--experimental-sqlite",

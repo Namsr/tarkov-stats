@@ -2,7 +2,7 @@ import type { ArenaModeKey } from "@/types/arena";
 
 export type LeaderboardMode = "regular" | "pve" | "arena" | "pvp-season";
 export type LeaderboardPrimaryMetric = "performance" | "arp" | "killsPerMatch";
-export type LeaderboardSort = "primary" | "kd" | "killsPerMatch" | "kills" | "hours";
+export type LeaderboardSort = "primary" | "score" | "kd" | "killsPerMatch" | "kills" | "hours";
 export type LeaderboardSubjectStatus =
   | "ranked"
   | "insufficient_sample"
@@ -18,6 +18,8 @@ export interface LeaderboardStats {
   kills: number | null;
   deaths: number | null;
   kd: number | null;
+  /** Composite performance score with hours confidence; independent of the primary ARP/match metric. */
+  performanceScore?: number | null;
   deathless: boolean;
   killsPerMatch: number | null;
   hours: number | null;
