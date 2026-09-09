@@ -166,8 +166,9 @@ export default function LeaderboardPage() {
         ? "killsPerMatch"
         : "performance"
     : "performance");
+  // BlastGang sorts by Best ARP (no current ARP upstream) — label the primary sort accordingly.
   const primaryLabel = primaryMetric === "arp"
-    ? t("leaderboard.sort.arp")
+    ? t("leaderboard.column.bestArp")
     : primaryMetric === "killsPerMatch"
       ? t("leaderboard.sort.killsPerMatch")
       : t("leaderboard.sort.performance");
@@ -216,7 +217,7 @@ export default function LeaderboardPage() {
             }}
           >
             <option value="primary">{primaryLabel}</option>
-            {mode === "arena" && arenaMode !== "blastGang" && <option value="arp">{t("leaderboard.sort.arp")}</option>}
+            {mode === "arena" && arenaMode !== "blastGang" && <option value="arp">{t("leaderboard.column.bestArp")}</option>}
             <option value="kd">{t("leaderboard.sort.kd")}</option>
             <option value="killsPerMatch">{t(mode === "arena" ? "leaderboard.sort.killsPerMatch" : "leaderboard.sort.killsPerRaid")}</option>
             <option value="hours">{t(mode === "arena" ? "leaderboard.sort.arenaHours" : "leaderboard.sort.hours")}</option>

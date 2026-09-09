@@ -41,10 +41,13 @@ export default function LeaderboardTable({
   const { lang, t } = useI18n();
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const alternateSort = meta.sort !== "primary";
+  // Upstream exposes only Best ARP — there is no current ARP data.
+  // Hide the primary ARP column for BlastGang and keep BEST ARP as the rating.
+  const hidePrimaryArp = meta.mode === "arena" && meta.primaryMetric === "arp";
   const raidLabel = meta.mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids");
   const rateLabel = meta.mode === "arena" ? t("leaderboard.column.killsPerMatch") : t("leaderboard.column.killsPerRaid");
   const primaryLabel = meta.primaryMetric === "arp"
-    ? t("leaderboard.column.arp")
+    ? t("leaderboard.column.bestArp")
     : meta.primaryMetric === "killsPerMatch"
       ? t("leaderboard.column.killsPerMatch")
       : t("leaderboard.column.score");
@@ -63,7 +66,7 @@ export default function LeaderboardTable({
               {alternateSort && <th scope="col">{t("leaderboard.column.position")}</th>}
               <th scope="col">{t("leaderboard.column.rank")}</th>
               <th scope="col" className="leaderboard-table__player">{t("leaderboard.column.player")}</th>
-              <th scope="col">{primaryLabel}</th>
+              {!hidePrimaryArp && <th scope="col">{primaryLabel}</th>}
               {meta.mode === "arena" && <th scope="col">{t("leaderboard.column.bestArp")}</th>}
               <th scope="col">{t("leaderboard.column.kd")}</th>
               {meta.primaryMetric !== "killsPerMatch" && <th scope="col">{rateLabel}</th>}
@@ -100,7 +103,7 @@ export default function LeaderboardTable({
                     <Link href={profileHref} prefetch={false}>{row.nickname || `#${row.aid}`}</Link>
                     {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                   </th>
-                  <td className="leaderboard-table__number">{primaryValue(row, meta, locale)}</td>
+                  {!hidePrimaryArp && <td className="leaderboard-table__number">{primaryValue(row, meta, locale)}</td>}
                   {meta.mode === "arena" && <td className="leaderboard-table__number">{formatNumber(row.stats.bestArp, locale)}</td>}
                   <td className="leaderboard-table__number">
                     {row.stats.deathless ? t("leaderboard.deathless") : formatNumber(row.stats.kd, locale, 2)}
