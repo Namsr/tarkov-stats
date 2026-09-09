@@ -8,6 +8,25 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
+
+/** Comma-separated mode filter, e.g. LEADERBOARD_WARMUP_MODES=arena or --modes=arena,pve. */
+export function parseWarmupModes(value) {
+  if (value == null || String(value).trim() === "") return [...WARMUP_MODES];
+  const modes = String(value).split(",").map((entry) => entry.trim()).filter(Boolean);
+  const unknown = modes.filter((mode) => !WARMUP_MODES.includes(mode));
+  if (modes.length === 0 || unknown.length > 0) {
+    throw new Error(`expected modes from ${WARMUP_MODES.join(",")}`);
+  }
+  return [...new Set(modes)].sort((a, b) => WARMUP_MODES.indexOf(a) - WARMUP_MODES.indexOf(b));
+}
+
+export function warmupModesFromArgs(argv = process.argv.slice(2)) {
+  for (const arg of argv) {
+    if (arg.startsWith("--modes=")) return parseWarmupModes(arg.slice("--modes=".length));
+    if (arg.startsWith("--mode=")) return parseWarmupModes(arg.slice("--mode=".length));
+  }
+  return parseWarmupModes(process.env.LEADERBOARD_WARMUP_MODES);
+}
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");
 const { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
@@ -20,7 +39,7 @@ function integer(value, fallback, minimum, maximum) {
   return parsed;
 }
 
-export function createRequestPacer({ intervalMs = 1_000, now = Date.now, sleep = (ms) =>
+export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (ms) =>
   new Promise((done) => setTimeout(done, ms)) } = {}) {
   let previousStart = null;
   return async () => {
@@ -131,8 +150,10 @@ export async function loadUpdatedVersions(url, options = {}) {
 }
 
 /** Select only rows produced before the current parser, not current-parser rows with genuinely absent metrics. */
-export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map()) {
+export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES) {
+  const wanted = new Set(modes);
   const candidates = [];
+  if (wanted.has("regular")) {
   for (const row of players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM players p
@@ -146,6 +167,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     ORDER BY p.aid`).all(CURRENT_PVP_PARSER)) {
     candidates.push({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
   }
+  }
+  if (wanted.has("pve")) {
   for (const row of players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM mode_players p
@@ -158,6 +181,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
     if (sourceVersion > 0) candidates.push({ mode: "pve", aid, sourceVersion });
   }
+  }
+  if (wanted.has("arena")) {
   for (const row of players.prepare(`
     SELECT p.aid,MAX(p.profile_updated_at,COALESCE(s.upstream_version,0)) source_version
     FROM mode_players p
@@ -172,7 +197,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     ORDER BY p.aid`).all(CURRENT_ARENA_PARSER)) {
     candidates.push({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
   }
-  if (cycleId) {
+  }
+  if (cycleId && wanted.has("pvp-season")) {
     for (const row of players.prepare(`
       SELECT p.aid,p.profile_updated_at source_version
       FROM progression_scan.player_profiles p
@@ -253,10 +279,14 @@ export async function requestCandidate(candidate, options) {
 
 export async function runWarmup(options) {
   const checkpoint = loadCheckpoint(options.checkpointPath);
-  const grouped = Object.fromEntries(WARMUP_MODES.map((mode) => [mode, []]));
-  for (const candidate of options.candidates) grouped[candidate.mode].push(candidate);
+  const modes = options.modes ?? WARMUP_MODES;
+  const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
+  for (const candidate of options.candidates) {
+    if (!grouped[candidate.mode]) continue;
+    grouped[candidate.mode].push(candidate);
+  }
   let processed = 0;
-  for (const mode of WARMUP_MODES) {
+  for (const mode of modes) {
     const state = checkpoint.modes[mode] ?? { attempted: 0, completed: 0, skipped: 0 };
     checkpoint.modes[mode] = state;
     for (const candidate of grouped[mode]) {
@@ -318,18 +348,21 @@ async function main() {
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
   try {
+    const modes = warmupModesFromArgs();
     players = new DatabaseSync(dbPath, { readOnly: true });
     players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
     const cycleId = validCycleId(process.env.SEASONAL_CYCLE_ID);
-    const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
-    pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
-    const pveVersions = await loadUpdatedVersions(pveUpdatedUrl, {
-      maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-    });
-    const candidates = selectWarmupCandidates(players, cycleId, pveVersions);
+    const pveVersions = !modes.includes("pve") ? new Map() : await (async () => {
+      const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
+      pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
+      return loadUpdatedVersions(pveUpdatedUrl, {
+        maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+      });
+    })();
+    const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes);
     const pace = createRequestPacer();
     const result = await runWarmup({
-      candidates, checkpointPath, maxProfiles,
+      candidates, checkpointPath, maxProfiles, modes,
       request: (candidate) => requestCandidate(candidate, {
         baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
         secret, maxRetries, timeoutMs, pace, fetch, shouldStop: () => stopping,
@@ -338,7 +371,8 @@ async function main() {
       shouldStop: () => stopping,
     });
     process.stdout.write(`${JSON.stringify({
-      candidates: Object.fromEntries(WARMUP_MODES.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
+      modes,
+      candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
       processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
     })}\n`);
   } finally {
