@@ -129,6 +129,20 @@ test("a saved low-sample player keeps the shared group label in an alternate sor
   const page = reader.readPage(config, "hours", 120, 100);
   assert.equal(page?.subject?.status, "insufficient_sample");
   assert.equal(page?.subject?.groupStart, (page?.meta.rankedCount ?? 0) + 1);
+  for (const sort of ["kd", "kills", "hours"] as const) {
+    const alternate = reader.readPage(config, sort, 120, 100);
+    assert.equal(alternate?.subject?.status, "insufficient_sample");
+    assert.equal(alternate?.subject?.groupStart, (alternate?.meta.rankedCount ?? 0) + 1);
+    assert.equal(alternate?.subject?.selected, true);
+    if (sort === "hours") {
+      assert.ok(alternate?.subject?.position != null);
+      assert.equal(alternate?.around?.length, 100);
+    } else {
+      assert.equal(alternate?.subject?.position, null);
+      assert.equal(alternate?.subject?.primaryRank, null);
+      assert.equal(alternate?.around, null);
+    }
+  }
 });
 
 test("incremental publication moves changed players both ways and skips ordinal work for a no-op", () => {
