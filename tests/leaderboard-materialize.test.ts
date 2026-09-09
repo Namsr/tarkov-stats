@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { materializeCandidate, referenceFormula } from "../lib/leaderboard/materialize.ts";
+import { LEADERBOARD_FORMULA_VERSION, materializeCandidate, referenceFormula } from "../lib/leaderboard/materialize.ts";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardFullReason } from "../lib/leaderboard/config.ts";
 
@@ -9,8 +9,8 @@ const baseConfig = {
   scope: "regular", mode: "regular" as const, arenaMode: null, cycleId: null, primaryMetric: "performance" as const,
   minimumSample: 6, activityCutoffMs: 100, arpSeasonId: null, arpSourceConfirmed: false,
 };
-const formula = { kdWeight: .7, killsPerMatchWeight: .3, smoothing: 20,
-  referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
+const formula = { killsWeight: .4, kdWeight: .3, killsPerMatchWeight: .3, smoothing: 20,
+  referenceTotalKills: 500, referenceKillsPerMatch: 1, referenceDeathsPerMatch: .5 };
 const row = { aid: 1, nickname: "One", sourceUpdatedAt: 1, parserVersion: 0,
   activityAt: 101, activitySource: "skill" as const, matches: 20, kills: 20, deaths: 10,
   hours: 10, currentArp: null, bestArp: null };
@@ -36,9 +36,9 @@ test("ARP ranks without tie metrics and LastHero does not require deaths", () =>
 });
 
 test("ordinary changes stay incremental while incompatible publication inputs force full", () => {
-  const current = { formulaVersion: 1, params: { ...baseConfig, formula, metricVersion: 1,
+  const current = { formulaVersion: LEADERBOARD_FORMULA_VERSION, params: { ...baseConfig, formula, metricVersion: 1,
     exclusionFingerprint: "ban-a" } };
-  const input = { current, config: baseConfig, formulaVersion: 1, metricVersion: 1,
+  const input = { current, config: baseConfig, formulaVersion: LEADERBOARD_FORMULA_VERSION, metricVersion: 1,
     exclusionFingerprint: "ban-a", forceFull: false, journalCreated: false };
   assert.equal(leaderboardFullReason(input), null);
   assert.equal(leaderboardFullReason({ ...input, current: null }), "initial");
@@ -46,6 +46,8 @@ test("ordinary changes stay incremental while incompatible publication inputs fo
   assert.equal(leaderboardFullReason({ ...input, metricVersion: 2 }), "metric_version");
   assert.equal(leaderboardFullReason({ ...input, exclusionFingerprint: "ban-b" }), "exclusions");
   assert.equal(leaderboardFullReason({ ...input, config: { ...baseConfig, minimumSample: 7 } }), "config");
+  assert.equal(leaderboardFullReason({ ...input,
+    current: { ...current, formulaVersion: LEADERBOARD_FORMULA_VERSION - 1 } }), "formula_version");
 });
 
 test("a null-reference base becomes rankable once changed profiles form a valid cohort", () => {
@@ -55,4 +57,14 @@ test("a null-reference base becomes rankable once changed profiles form a valid 
   const available = referenceFormula(cohort, baseConfig.activityCutoffMs);
   assert.ok(available);
   assert.equal(materializeCandidate(cohort[0], { config: baseConfig, formula: available }).member.status, "ranked");
+});
+
+test("reference cohorts reject degenerate medians without division by zero", () => {
+  const single = [{ ...row, aid: 201, matches: 20, kills: 30, deaths: 10 }];
+  const one = referenceFormula(single, baseConfig.activityCutoffMs);
+  assert.ok(one && one.referenceTotalKills === 30);
+  assert.equal(referenceFormula([{ ...row, aid: 202, matches: 20, kills: 0, deaths: 10 }], baseConfig.activityCutoffMs), null);
+  assert.equal(referenceFormula([{ ...row, aid: 203, matches: 20, kills: 30, deaths: 0 }], baseConfig.activityCutoffMs), null);
+  assert.equal(referenceFormula([{ ...row, aid: 204, activityAt: 99, matches: 20, kills: 10_000, deaths: 10 }],
+    baseConfig.activityCutoffMs), null);
 });
