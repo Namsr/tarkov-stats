@@ -129,6 +129,20 @@ test("a saved low-sample player keeps the shared group label in an alternate sor
   const page = reader.readPage(config, "hours", 120, 100);
   assert.equal(page?.subject?.status, "insufficient_sample");
   assert.equal(page?.subject?.groupStart, (page?.meta.rankedCount ?? 0) + 1);
+  for (const sort of ["kd", "kills", "hours"] as const) {
+    const alternate = reader.readPage(config, sort, 120, 100);
+    assert.equal(alternate?.subject?.status, "insufficient_sample");
+    assert.equal(alternate?.subject?.groupStart, (alternate?.meta.rankedCount ?? 0) + 1);
+    assert.equal(alternate?.subject?.selected, true);
+    if (sort === "hours") {
+      assert.ok(alternate?.subject?.position != null);
+      assert.equal(alternate?.around?.length, 100);
+    } else {
+      assert.equal(alternate?.subject?.position, null);
+      assert.equal(alternate?.subject?.primaryRank, null);
+      assert.equal(alternate?.around, null);
+    }
+  }
 });
 
 test("incremental publication moves changed players both ways and skips ordinal work for a no-op", () => {
@@ -139,7 +153,7 @@ test("incremental publication moves changed players both ways and skips ordinal 
     { formulaVersion: 2, params: { ...config, formula }, meta: {} },
     [{ aid: 60, ...high }, { aid: 2, ...low }], 200);
   assert.equal(updated.changedMembers, 2);
-  assert.equal(updated.touchedSorts, 3);
+  assert.equal(updated.touchedSorts, 4);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=60").get().ordinal, 1);
   assert.ok(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=2").get().ordinal > 2);
   const reader = createLeaderboardReader(db, "excluded_players");
@@ -169,9 +183,9 @@ test("incremental publication moves changed players both ways and skips ordinal 
   const killsOnly = materializeCandidate({ ...source(5), kills: 50_000, sourceRevision: 11 }, { config, formula });
   const subset = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
     { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 5, ...killsOnly }], 203);
-  assert.equal(subset.touchedSorts, 3);
+  assert.equal(subset.touchedSorts, 4);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='hours' AND aid=5").get().ordinal, beforeHours);
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 4);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM leaderboard_order WHERE scope='regular' AND aid=5 AND ordinal IS NOT NULL").get().count, 5);
   const page = createLeaderboardReader(db, "excluded_players").readPage(config, "primary", 5, 100);
   assert.equal(page?.top.some((row) => row.aid === 5), true);
 

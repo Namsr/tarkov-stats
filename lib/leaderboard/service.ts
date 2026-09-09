@@ -347,9 +347,10 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
         primaryRank: livePrimaryRank,
         groupStart: previous.status === "insufficient_sample" ? counts.ranked + 1 : null,
         status: previous.status, score: previous.score, stats: JSON.parse(String(previous.stats_json)), selected: true };
-      if (saved) {
-        const before = selectedRows(config, snap.generation, sort, "o.ordinal<?", [Number((oldSelected as any).ordinal)], 99, "DESC").reverse();
-        const after = selectedRows(config, snap.generation, sort, "o.ordinal>?", [Number((oldSelected as any).ordinal)], 99, "ASC");
+      if (saved && oldSelected) {
+        const selectedOrdinal = Number((oldSelected as { ordinal: unknown }).ordinal);
+        const before = selectedRows(config, snap.generation, sort, "o.ordinal<?", [selectedOrdinal], 99, "DESC").reverse();
+        const after = selectedRows(config, snap.generation, sort, "o.ordinal>?", [selectedOrdinal], 99, "ASC");
         const merged = [...before, saved as any, ...after].map((entry: any) => "stats_json" in entry
           ? rowFrom(entry, aid, selectedBans, primaryBans, null, null, counts.ranked + 1) : entry as LeaderboardRow);
         const start = Math.max(0, Math.min(before.length - 50, merged.length - 100));

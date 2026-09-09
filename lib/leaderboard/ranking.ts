@@ -1,5 +1,5 @@
 export const LEADERBOARD_FORMULA_VERSION = 2;
-export const LEADERBOARD_METRIC_VERSION = 1;
+export const LEADERBOARD_METRIC_VERSION = 2;
 
 export interface PerformanceFormula {
   killsWeight: number;

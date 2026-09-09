@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { LEADERBOARD_FORMULA_VERSION, materializeCandidate, referenceFormula } from "../lib/leaderboard/materialize.ts";
+import { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION, materializeCandidate, referenceFormula } from "../lib/leaderboard/materialize.ts";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardFullReason } from "../lib/leaderboard/config.ts";
 
@@ -36,14 +36,17 @@ test("ARP ranks without tie metrics and LastHero does not require deaths", () =>
 });
 
 test("ordinary changes stay incremental while incompatible publication inputs force full", () => {
-  const current = { formulaVersion: LEADERBOARD_FORMULA_VERSION, params: { ...baseConfig, formula, metricVersion: 1,
+  const current = { formulaVersion: LEADERBOARD_FORMULA_VERSION, params: { ...baseConfig, formula, metricVersion: LEADERBOARD_METRIC_VERSION,
     exclusionFingerprint: "ban-a" } };
-  const input = { current, config: baseConfig, formulaVersion: LEADERBOARD_FORMULA_VERSION, metricVersion: 1,
+  const input = { current, config: baseConfig, formulaVersion: LEADERBOARD_FORMULA_VERSION, metricVersion: LEADERBOARD_METRIC_VERSION,
     exclusionFingerprint: "ban-a", forceFull: false, journalCreated: false };
   assert.equal(leaderboardFullReason(input), null);
   assert.equal(leaderboardFullReason({ ...input, current: null }), "initial");
   assert.equal(leaderboardFullReason({ ...input, journalCreated: true }), "journal_initialized");
-  assert.equal(leaderboardFullReason({ ...input, metricVersion: 2 }), "metric_version");
+  assert.equal(leaderboardFullReason({ ...input, metricVersion: LEADERBOARD_METRIC_VERSION + 1 }), "metric_version");
+  assert.equal(leaderboardFullReason({ ...input,
+    current: { ...current, params: { ...current.params, metricVersion: 1 } } }), "metric_version");
+  assert.equal(materializeCandidate(row, { config: baseConfig, formula }).member.metricVersion, LEADERBOARD_METRIC_VERSION);
   assert.equal(leaderboardFullReason({ ...input, exclusionFingerprint: "ban-b" }), "exclusions");
   assert.equal(leaderboardFullReason({ ...input, config: { ...baseConfig, minimumSample: 7 } }), "config");
   assert.equal(leaderboardFullReason({ ...input,
@@ -57,6 +60,8 @@ test("a null-reference base becomes rankable once changed profiles form a valid 
   const available = referenceFormula(cohort, baseConfig.activityCutoffMs);
   assert.ok(available);
   assert.equal(materializeCandidate(cohort[0], { config: baseConfig, formula: available }).member.status, "ranked");
+  const sorts = materializeCandidate(row, { config: baseConfig, formula }).orders.map((order) => order.sort).sort();
+  assert.deepEqual(sorts, ["hours", "kd", "kills", "killsPerMatch", "primary"]);
 });
 
 test("reference cohorts reject degenerate medians without division by zero", () => {
