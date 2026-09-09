@@ -39,7 +39,7 @@ function integer(value, fallback, minimum, maximum) {
   return parsed;
 }
 
-export function createRequestPacer({ intervalMs = 1_000, now = Date.now, sleep = (ms) =>
+export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (ms) =>
   new Promise((done) => setTimeout(done, ms)) } = {}) {
   let previousStart = null;
   return async () => {
