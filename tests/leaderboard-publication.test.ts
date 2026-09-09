@@ -41,7 +41,7 @@ test("ascending pages read the global tail and preserve ranks with bans and fres
     const rows = Array.from({ length: 620 }, (_, i) => source(i + 1, 1000 - i));
     const initial = generation(rows);
     publication.publishLeaderboardScope(local, config.scope,
-      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, initial.members, initial.orders);
+      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, initial.members, initial.orders, Date.now());
     const reader = createLeaderboardReader(local, "excluded_players");
     const ascending = (sort: "primary" | "kills" | "kd" | "killsPerMatch" | "hours", aid: number | null = null,
       candidate?: ReturnType<typeof materializeCandidate>) =>
