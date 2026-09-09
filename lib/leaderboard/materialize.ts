@@ -5,7 +5,6 @@ import {
   LEADERBOARD_FORMULA_VERSION,
   LEADERBOARD_METRIC_VERSION,
   arpOrderKey,
-  confidenceKd,
   kdValue,
   metricOrderKey,
   orderKey,
@@ -52,14 +51,19 @@ export function sourceFingerprint(row: LeaderboardSourceRow): string {
     row.currentArp ?? "", row.bestArp ?? ""].join("|");
 }
 
-function statsFor(row: LeaderboardSourceRow): LeaderboardStats {
+function statsFor(row: LeaderboardSourceRow, context: MaterializeContext): LeaderboardStats {
   const kd = kdValue(row.kills, row.deaths);
+  const score = row.activityAt != null && row.activityAt >= context.config.activityCutoffMs &&
+    count(row.matches) && row.matches >= context.config.minimumSample && count(row.kills) &&
+    count(row.deaths) && context.formula
+    ? performanceScore({ matches: row.matches, kills: row.kills, deaths: row.deaths, hours: row.hours }, context.formula)
+    : null;
   return {
     raidsOrMatches: row.matches,
     kills: row.kills,
     deaths: row.deaths,
     kd: kd.value,
-    kdScore: confidenceKd(row.kills, row.deaths, row.hours, row.matches),
+    performanceScore: score,
     deathless: kd.deathless,
     killsPerMatch: count(row.kills) && count(row.matches) && row.matches > 0 ? row.kills / row.matches : null,
     hours: row.hours,
@@ -77,7 +81,7 @@ function statusFor(row: LeaderboardSourceRow, context: MaterializeContext, stats
     return stats.arp == null ? "missing_metrics" : "ranked";
   }
   if (!count(row.matches) || !count(row.kills) ||
-      (context.config.primaryMetric === "performance" && !count(row.deaths))) return "missing_metrics";
+      (context.config.primaryMetric === "performance" && (!count(row.deaths) || !metric(row.hours)))) return "missing_metrics";
   if (row.matches < context.config.minimumSample) return "insufficient_sample";
   if (context.config.primaryMetric === "performance" && !context.formula) return "reference_unavailable";
   return "ranked";
@@ -85,12 +89,12 @@ function statusFor(row: LeaderboardSourceRow, context: MaterializeContext, stats
 
 export function materializeCandidate(row: LeaderboardSourceRow, context: MaterializeContext): MaterializedCandidate {
   if (!Number.isSafeInteger(row.aid) || row.aid <= 0) throw new Error("invalid leaderboard source aid");
-  const stats = statsFor(row);
+  const stats = statsFor(row, context);
   const status = statusFor(row, context, stats);
   const score = status !== "ranked" ? null
     : context.config.primaryMetric === "arp" ? stats.arp
     : context.config.primaryMetric === "killsPerMatch" ? stats.killsPerMatch
-    : performanceScore({ matches: row.matches!, kills: row.kills!, deaths: row.deaths! }, context.formula!);
+    : stats.performanceScore ?? null;
   const finalStatus = status === "ranked" && score == null ? "missing_metrics" : status;
   const member: PublishedMember = {
     aid: row.aid, nickname: row.nickname || "Unknown", sourceUpdatedAt: row.sourceUpdatedAt,
@@ -110,8 +114,12 @@ export function materializeCandidate(row: LeaderboardSourceRow, context: Materia
   if (active && sampleReady && count(row.kills)) {
     orders.push({ sort: "kills", aid: row.aid, key: metricOrderKey(row.kills, row.aid) });
   }
-  if (active && sampleReady && stats.kdScore != null) {
-    orders.push({ sort: "kd", aid: row.aid, key: orderKey([stats.kdScore], row.aid) });
+  const kd = kdValue(row.kills, row.deaths);
+  if (active && sampleReady && kd.orderClass > 0) {
+    orders.push({ sort: "kd", aid: row.aid, key: orderKey([kd.value ?? row.kills], row.aid) });
+  }
+  if (stats.performanceScore != null) {
+    orders.push({ sort: "score", aid: row.aid, key: performanceOrderKey(stats.performanceScore, row.aid) });
   }
   if (finalStatus === "ranked" && score != null) {
     const key = context.config.primaryMetric === "arp"
@@ -154,7 +162,7 @@ export function primaryMetricForArena(mode: ArenaModeKey): "arp" | "killsPerMatc
 }
 
 export function allowedSorts(): readonly LeaderboardSort[] {
-  return ["primary", "kd", "killsPerMatch", "kills", "hours"];
+  return ["primary", "score", "kd", "killsPerMatch", "kills", "hours"];
 }
 
 export { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION };

@@ -69,7 +69,8 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /showBestArp && <th scope="col">\{t\("leaderboard\.column\.bestArp"\)\}/);
   assert.match(table, /meta\.arenaMode === "blastGang"/);
   assert.match(table, /row\.stats\.bestArp/);
-  assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
+  assert.match(table, /scoreValue\(row, meta, locale\)/);
+  assert.match(table, /leaderboard\.column\.bestArp"\)\}<\/th>\}\s*<th scope="col">\{t\("leaderboard\.column\.score/);
   assert.match(table, /tabIndex=\{row\.selected \? -1 : undefined\}/);
   // Both the desktop row and the mobile card (the visible copy) are programmatically focusable.
   assert.ok(((table.match(/tabIndex=\{row\.selected \? -1 : undefined\}/g) ?? []).length) >= 2);
@@ -93,7 +94,7 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /leaderboard-jump-toggle/);
   assert.match(page, /jumpEdge/);
   // Round jump is first in the row and always visible (no focused gate).
-  assert.ok(page.indexOf("leaderboard-jump-toggle") < page.indexOf("SORTS.map"));
+  assert.ok(page.indexOf("leaderboard-jump-toggle") < page.indexOf("SORTS.filter"));
   assert.match(page, /data-leaderboard-selected="true" className="leaderboard-insufficient/);
   assert.match(page, /leaderboard-lists--has-around/);
   assert.match(page, /\["regular", "pve", "arena", "pvp-season"\]/);
@@ -105,7 +106,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
 test("leaderboard sort pills replace the select and support direction toggle", async () => {
   const page = await read("components/LeaderboardPage.tsx");
   assert.match(page, /leaderboard-sort-pills/);
-  assert.match(page, /\["primary", "kd", "killsPerMatch", "kills", "hours"\]/);
+  assert.match(page, /\["primary", "score", "kd", "killsPerMatch", "kills", "hours"\]/);
+  assert.match(page, /key !== "score" \|\| hasAlternatePrimary/);
   assert.match(page, /leaderboard\.pills\.score/);
   assert.match(page, /leaderboard\.column\.bestArp/);
   assert.match(page, /leaderboard-sort-pills__break/);

@@ -15,18 +15,24 @@ const row = { aid: 1, nickname: "One", sourceUpdatedAt: 1, parserVersion: 0,
   activityAt: 101, activitySource: "skill" as const, matches: 20, kills: 20, deaths: 10,
   hours: 10, currentArp: null, bestArp: null };
 
-test("K/D orders use the published rating and reject missing hours or insufficient mode samples", () => {
+test("score orders use the composite and reject missing hours or insufficient mode samples", () => {
   const candidate = materializeCandidate(row, { config: baseConfig, formula });
-  assert.equal(candidate.member.stats.kdScore, 12.5);
-  assert.equal(candidate.orders.find((order) => order.sort === "kd")?.key[0], 12.5);
+  assert.ok(candidate.member.score! > 0);
+  assert.equal(candidate.member.stats.performanceScore, candidate.member.score);
+  assert.equal(candidate.orders.find((order) => order.sort === "score")?.key[0], candidate.member.score);
   for (const change of [{ hours: null }, { hours: -1 }, { matches: 5 }, { deaths: null }]) {
     const result = materializeCandidate({ ...row, ...change }, { config: baseConfig, formula });
-    assert.equal(result.orders.some((order) => order.sort === "kd"), false);
+    assert.equal(result.orders.some((order) => order.sort === "score"), false);
   }
+});
+
+test("raw K/D sorting follows displayed values, including zero deaths", () => {
   const smaller = materializeCandidate({ ...row, kills: 353, deaths: 0, aid: 1 }, { config: baseConfig, formula });
   const larger = materializeCandidate({ ...row, kills: 370, deaths: 0, aid: 2 }, { config: baseConfig, formula });
-  assert.ok(larger.orders.find((order) => order.sort === "kd")!.key[0] >
-    smaller.orders.find((order) => order.sort === "kd")!.key[0]);
+  assert.equal(smaller.orders.find((order) => order.sort === "kd")!.key[0], 353);
+  assert.equal(larger.orders.find((order) => order.sort === "kd")!.key[0], 370);
+  const finite = materializeCandidate({ ...row, kills: 400, deaths: 1, hours: null }, { config: baseConfig, formula });
+  assert.equal(finite.orders.find((order) => order.sort === "kd")!.key[0], 400);
 });
 
 test("focused requests retain the published order until an old metric generation is rebuilt", async () => {
@@ -35,6 +41,15 @@ test("focused requests retain the published order until an old metric generation
   const reader = { snapshot: () => ({ generation: 123, generatedAt: 456, params: { metricVersion: 2 } }) };
   assert.deepEqual(await prepareLeaderboardCandidate(reader as unknown as Parameters<typeof prepareLeaderboardCandidate>[0], baseConfig, 1),
     { generation: 123, generatedAt: 456, candidate: null });
+});
+
+test("the public parser accepts score sorting in BlastGang and the other modes", async () => {
+  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
+  const { parseLeaderboardRequest } = await import("../lib/leaderboard/runtime.ts");
+  for (const mode of ["regular", "pve", "arena"]) {
+    const request = parseLeaderboardRequest(new URLSearchParams({ mode, sort: "score" }));
+    assert.equal(request.sort, "score");
+  }
 });
 
 test("inactive profiles are absent from every order and the reference sample", () => {
@@ -83,7 +98,7 @@ test("a null-reference base becomes rankable once changed profiles form a valid 
   assert.ok(available);
   assert.equal(materializeCandidate(cohort[0], { config: baseConfig, formula: available }).member.status, "ranked");
   const sorts = materializeCandidate(row, { config: baseConfig, formula }).orders.map((order) => order.sort).sort();
-  assert.deepEqual(sorts, ["hours", "kd", "kills", "killsPerMatch", "primary"]);
+  assert.deepEqual(sorts, ["hours", "kd", "kills", "killsPerMatch", "primary", "score"]);
 });
 
 test("reference cohorts reject degenerate medians without division by zero", () => {

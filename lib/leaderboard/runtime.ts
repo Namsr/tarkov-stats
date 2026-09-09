@@ -90,7 +90,7 @@ export function parseLeaderboardRequest(searchParams: URLSearchParams): {
     throw new Error("cycle does not match the active leaderboard");
   }
   const sort = searchParams.get("sort") ?? "primary";
-  if (sort !== "primary" && sort !== "kd" && sort !== "killsPerMatch" && sort !== "kills" && sort !== "hours") {
+  if (sort !== "primary" && sort !== "score" && sort !== "kd" && sort !== "killsPerMatch" && sort !== "kills" && sort !== "hours") {
     throw new Error("invalid sort");
   }
   const aidRaw = searchParams.get("aid");

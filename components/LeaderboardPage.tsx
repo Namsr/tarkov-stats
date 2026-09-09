@@ -14,7 +14,7 @@ import type {
 } from "@/types/leaderboard";
 
 const MODES: LeaderboardMode[] = ["regular", "pve", "arena", "pvp-season"];
-const SORTS: LeaderboardSort[] = ["primary", "kd", "killsPerMatch", "kills", "hours"];
+const SORTS: LeaderboardSort[] = ["primary", "score", "kd", "killsPerMatch", "kills", "hours"];
 
 function positiveAid(value: string | null): number | null {
   if (!value || !/^\d+$/.test(value)) return null;
@@ -48,7 +48,9 @@ export default function LeaderboardPage() {
   const searchParams = useSearchParams();
   const mode = queryMode(searchParams.get("mode"));
   const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
-  const sort = querySort(searchParams.get("sort"));
+  const hasAlternatePrimary = mode === "arena" && (arenaMode === "blastGang" || arenaMode === "lastHero");
+  const requestedSort = querySort(searchParams.get("sort"));
+  const sort = requestedSort === "score" && !hasAlternatePrimary ? "primary" : requestedSort;
   const direction = queryDir(searchParams.get("dir"));
   const cycle = queryCycle(searchParams.get("cycle"));
   const aid = positiveAid(searchParams.get("aid"));
@@ -214,6 +216,7 @@ export default function LeaderboardPage() {
   const focused = aid != null;
   const isBlastGang = mode === "arena" && arenaMode === "blastGang";
   function pillLabel(key: LeaderboardSort): string {
+    if (key === "score") return t("leaderboard.pills.score");
     if (key === "primary") return isBlastGang ? t("leaderboard.column.bestArp") : mode === "arena" && arenaMode === "lastHero" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.score");
     if (key === "kd") return t("leaderboard.pills.kd");
     if (key === "killsPerMatch") return mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid");
@@ -300,7 +303,7 @@ export default function LeaderboardPage() {
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
               </button>
-              {SORTS.map((key) => (
+              {SORTS.filter((key) => key !== "score" || hasAlternatePrimary).map((key) => (
                 <Fragment key={key}>
                   {key === "kills" && <span aria-hidden="true" className="leaderboard-sort-pills__break" />}
                   <button type="button" className="leaderboard-sort-pill" aria-label={`${pillLabel(key)}: ${t(sort === key && direction === "desc" ? "leaderboard.sort.ascending" : "leaderboard.sort.descending")}`} aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
