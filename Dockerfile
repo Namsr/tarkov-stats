@@ -90,6 +90,8 @@ ENV PROGRESSION_SQLITE_PATH="/data/progression.db"
 ENV ADMIN_ANALYTICS_SQLITE_PATH="/data/admin-analytics.db"
 ENV AVERAGE_PUBLICATION_SQLITE_PATH="/data/average-publications.db"
 ENV LEADERBOARD_SQLITE_PATH="/data/leaderboards.db"
+# Process exclusion must not outlive the container; checkpoints remain in /data.
+ENV LEADERBOARD_WARMUP_LOCK="/dev/shm/leaderboard-warmup.lock"
 
 # --experimental-sqlite включает встроенный модуль node:sqlite (Node 22).
 CMD ["node", "scripts/start-web.mjs"]
