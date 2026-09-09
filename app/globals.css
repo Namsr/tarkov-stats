@@ -741,21 +741,50 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .leaderboard-loading { display: grid; gap: 7px; margin-top: 20px; }
 .leaderboard-state { display: grid; justify-items: start; gap: 16px; margin-top: 20px; padding: 20px; color: var(--danger); }
 
-.leaderboard-jumps { position: sticky; top: 82px; z-index: 20; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: min(100%, 480px); margin: 16px auto; border: 1px solid var(--card-border); border-radius: 999px; background: color-mix(in srgb, var(--background) 94%, transparent); padding: 5px; backdrop-filter: blur(10px); }
-.leaderboard-jumps button,
+.leaderboard-sticky { position: sticky; top: 82px; z-index: 20; display: grid; gap: 8px; margin-top: 14px; }
+.leaderboard-sort-pills { display: flex; flex-wrap: wrap; gap: 6px; border: 1px solid var(--card-border); border-radius: 999px; background: color-mix(in srgb, var(--background) 94%, transparent); padding: 5px; backdrop-filter: blur(10px); }
+.leaderboard-sort-pills .leaderboard-sort-pill { flex: 1 1 0; min-width: 0; }
+.leaderboard-sort-pills .leaderboard-jump-player { flex: 1 1 auto; white-space: nowrap; }
+button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; margin-right: 8px; border: 1px solid var(--card-border); border-radius: 50%; background: var(--input-bg); padding: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 1rem; font-weight: 900; line-height: 1; }
+.leaderboard-sort-pills button,
 .leaderboard-mobile-lists button { min-height: 44px; border-radius: 999px; color: var(--muted-strong); padding: 8px 12px; font-size: .72rem; font-weight: 800; letter-spacing: .04em; transition: background-color 160ms ease, color 160ms ease, transform 120ms ease; }
-.leaderboard-jumps button:disabled { cursor: not-allowed; opacity: .45; }
+.leaderboard-sort-pills button:disabled { cursor: not-allowed; opacity: .45; }
+.leaderboard-jump-toggle__arrow { font-size: 1.35rem; font-weight: 900; line-height: 1; -webkit-text-stroke: .8px currentColor; transition: opacity 160ms ease; }
+.leaderboard-jump-toggle__arrow.is-dim { opacity: .4; }
+.leaderboard-sort-pills button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
+.leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.leaderboard-sort-pills__break { display: none; }
+.leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }
 .leaderboard-mobile-lists { display: none; }
+.leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .leaderboard-table tbody tr { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
+  .leaderboard-card { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
+  .leaderboard-sort-pills__arrow { animation: lb-arrow-pop .22s ease; }
+}
+@keyframes lb-rise {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes lb-arrow-pop {
+  0% { transform: scale(.4); }
+  60% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+.leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
 .leaderboard-lists { display: grid; gap: 16px; margin-top: 18px; }
 .leaderboard-lists--focused { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .leaderboard-list { min-width: 0; overflow: hidden; scroll-margin-top: 144px; }
 .leaderboard-list__heading { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--card-border); padding: 14px 16px; }
 .leaderboard-list__heading span { color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.leaderboard-table-wrap { overflow-x: auto; overscroll-behavior-inline: contain; }
-.leaderboard-table { width: 100%; min-width: 760px; border-collapse: collapse; color: var(--muted-strong); font-size: .74rem; }
+.leaderboard-table-wrap { overflow-x: visible; overscroll-behavior-inline: contain; }
+.leaderboard-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; color: var(--muted-strong); font-size: .74rem; }
 .leaderboard-table th,
 .leaderboard-table td { border-bottom: 1px solid var(--card-border); padding: 11px 10px; text-align: right; white-space: nowrap; }
-.leaderboard-table thead th { position: sticky; top: 0; z-index: 1; background: var(--card-bg); color: var(--muted); font-size: .61rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.leaderboard-table thead th { position: sticky; top: 0; z-index: 1; background: var(--card-bg); color: var(--muted); font-size: .61rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; text-align: right; font-variant-numeric: tabular-nums; }
+.leaderboard-table thead th:first-child { width: 56px; }
+.leaderboard-table thead th:not(:first-child):not(.leaderboard-table__player) { width: 84px; }
+.leaderboard-table thead th.leaderboard-table__player { text-align: left; }
 .leaderboard-table__player,
 .leaderboard-table tbody th { max-width: 190px; overflow: hidden; text-align: left; text-overflow: ellipsis; }
 .leaderboard-table a { color: var(--foreground); text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color 160ms ease, color 160ms ease; }
@@ -764,6 +793,15 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .leaderboard-table tr[aria-current="true"] > :first-child { box-shadow: inset 3px 0 var(--accent); }
 .leaderboard-table tr:focus-visible { outline: none; }
 .leaderboard-table tr:focus-visible > * { outline: 2px solid var(--accent); outline-offset: -2px; }
+.leaderboard-cards { display: none; }
+.leaderboard-card { border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); padding: 12px 14px; }
+.leaderboard-card__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.leaderboard-card__name { color: var(--foreground); font-weight: 800; }
+.leaderboard-card__rank { color: var(--muted-strong); font-variant-numeric: tabular-nums; }
+.leaderboard-card__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; border-top: 1px solid var(--card-border); padding-top: 10px; }
+.leaderboard-card dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.leaderboard-card dd { font-variant-numeric: tabular-nums; }
+.leaderboard-card[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%, var(--card-bg)); }
 .leaderboard-insufficient { scroll-margin-top: 144px; padding: 20px; }
 .leaderboard-insufficient > p { margin-top: 10px; color: var(--muted-strong); line-height: 1.55; }
 .leaderboard-insufficient dl { display: grid; gap: 8px; margin-top: 18px; }
@@ -776,13 +814,13 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
   .leaderboard-arena-tabs button:hover { border-color: var(--foreground); }
   a.leaderboard-rank:hover { background: color-mix(in srgb, var(--foreground) 7%, transparent); }
   .leaderboard-table a:hover { text-decoration-color: currentColor; }
-  .leaderboard-jumps button:hover,
+  .leaderboard-sort-pills button:hover,
   .leaderboard-mobile-lists button:hover { background: color-mix(in srgb, var(--foreground) 8%, transparent); color: var(--foreground); }
 }
 
 @media (prefers-reduced-motion: no-preference) {
   a.leaderboard-rank:active,
-  .leaderboard-jumps button:active,
+  .leaderboard-sort-pills button:active,
   .leaderboard-mobile-lists button:active { transform: scale(.97); }
 }
 .section-heading { margin: 0; color: var(--foreground); font-family: var(--heading-font); font-size: 1.25rem; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }
@@ -1834,15 +1872,20 @@ a.help-card:hover { border-color: var(--foreground); }
   .average-settings__mode .mode-switch { width: 100%; }
   .average-chart-toolbar .sample-status { margin-bottom: 0; }
   .profile-header__top { grid-template-columns: 1fr; padding: 18px; }
-  .leaderboard-page--focused { padding-bottom: 126px; }
   .leaderboard-controls { padding: 14px; }
   .leaderboard-mode-switch { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .leaderboard-mode-switch button { border-bottom: 1px solid var(--card-border); }
   .leaderboard-mode-switch button:nth-child(2n) { border-right: 0; }
   .leaderboard-mode-switch button:nth-last-child(-n+2) { border-bottom: 0; }
-  .leaderboard-arena-tabs { grid-template-columns: repeat(5, minmax(132px, 1fr)); margin-inline: -2px; }
+  .leaderboard-arena-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; margin-inline: -14px; padding: 2px 14px 6px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .leaderboard-arena-tabs::-webkit-scrollbar { display: none; }
+  .leaderboard-arena-tabs button { flex: 0 0 auto; min-width: 132px; }
+  .leaderboard-sort-pills { border-radius: 22px; }
+  .leaderboard-sort-pills__break { display: block; flex-basis: 100%; height: 0; }
+  .leaderboard-sort-pills .leaderboard-sort-pill { flex: 1 1 0; }
+  .leaderboard-sort-pills .leaderboard-jump-player { flex: 1 1 0; }
   .leaderboard-sort { max-width: none; }
-  .leaderboard-jumps { position: fixed; top: auto; right: 12px; bottom: 12px; left: 12px; z-index: 35; width: auto; max-width: 656px; margin: 0 auto; }
+  .leaderboard-sticky { top: 70px; }
   .leaderboard-mobile-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-top: 16px; border: 1px solid var(--card-border); border-radius: 999px; background: var(--input-bg); padding: 4px; }
   .leaderboard-mobile-lists button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
   .leaderboard-lists--focused { grid-template-columns: 1fr; }
@@ -1851,8 +1894,8 @@ a.help-card:hover { border-color: var(--foreground); }
   .leaderboard-list { scroll-margin-top: 78px; }
   .leaderboard-list,
   .leaderboard-insufficient { scroll-margin-bottom: 88px; }
-  .leaderboard-table { min-width: 700px; }
-  body:has(.leaderboard-page--focused) .faq-trigger { bottom: 80px; }
+  .leaderboard-table-wrap { display: none; }
+  .leaderboard-cards { display: grid; gap: 10px; }
   .profile-header > .detail-grid { padding: 0 18px 18px; }
   .profile-actions-grid { grid-template-columns: 1fr; }
   .profile-section-nav { flex-wrap: nowrap; margin-inline: -12px; overflow-x: auto; padding-inline: 12px; scrollbar-width: none; }

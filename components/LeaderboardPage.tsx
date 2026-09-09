@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
 import { useI18n } from "@/lib/i18n/context";
 import { ARENA_MODE_KEYS, type ArenaModeKey } from "@/types/arena";
@@ -14,7 +14,7 @@ import type {
 } from "@/types/leaderboard";
 
 const MODES: LeaderboardMode[] = ["regular", "pve", "arena", "pvp-season"];
-const SORTS: LeaderboardSort[] = ["primary", "kd", "killsPerMatch", "hours"];
+const SORTS: LeaderboardSort[] = ["primary", "kd", "killsPerMatch", "kills", "hours"];
 
 function positiveAid(value: string | null): number | null {
   if (!value || !/^\d+$/.test(value)) return null;
@@ -42,17 +42,45 @@ function queryCycle(value: string | null): string | null {
 export default function LeaderboardPage() {
   const { lang, t } = useI18n();
   const searchParams = useSearchParams();
-  const mode = queryMode(searchParams.get("mode"));
-  const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
-  const sort = querySort(searchParams.get("sort"));
-  const cycle = queryCycle(searchParams.get("cycle"));
-  const aid = positiveAid(searchParams.get("aid"));
+  // Local query state: pills/mode switches apply instantly without a Next
+  // route navigation (which would flash app/leaderboard/loading.tsx).
+  // The URL is mirrored via pushState so links stay shareable; popstate syncs back/forward.
+  const [query, setQuery] = useState(() => ({
+    mode: queryMode(searchParams.get("mode")),
+    arenaMode: queryArenaMode(searchParams.get("arenaMode")),
+    sort: querySort(searchParams.get("sort")),
+    cycle: queryCycle(searchParams.get("cycle")),
+    aid: positiveAid(searchParams.get("aid")),
+  }));
+  useEffect(() => {
+    const onPopState = () => {
+      const sp = new URLSearchParams(window.location.search);
+      setQuery({
+        mode: queryMode(sp.get("mode")),
+        arenaMode: queryArenaMode(sp.get("arenaMode")),
+        sort: querySort(sp.get("sort")),
+        cycle: queryCycle(sp.get("cycle")),
+        aid: positiveAid(sp.get("aid")),
+      });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  const { mode, arenaMode, sort, cycle, aid } = query;
   const [result, setResult] = useState<{
     key: string;
     data: LeaderboardPageResponse | null;
     error: string;
   } | null>(null);
   const [mobileList, setMobileList] = useState<"top" | "around">("top");
+  const [direction, setDirection] = useState<"desc" | "asc">("desc");
+  // Edge-jump toggle: one button, both arrows inside. The lit arrow is the
+  // last jump target (starts at top); press jumps to the other end.
+  const [jumpDir, setJumpDir] = useState<"top" | "end">("top");
+
+  useEffect(() => {
+    setDirection("desc");
+  }, [sort]);
 
   const requestUrl = useMemo(() => {
     const params = new URLSearchParams({ mode, sort });
@@ -64,6 +92,14 @@ export default function LeaderboardPage() {
   const data = result?.key === requestUrl ? result.data : null;
   const error = result?.key === requestUrl ? result.error : "";
   const loading = result?.key !== requestUrl;
+  // Stale-while-revalidate: keep the previous table on screen while the next
+  // sort/mode loads, dimmed via .leaderboard-switching. Kills the skeleton flash.
+  const [lastData, setLastData] = useState<LeaderboardPageResponse | null>(null);
+  useEffect(() => {
+    if (data) setLastData(data);
+  }, [data]);
+  const visible = data ?? lastData;
+  const switching = loading && visible != null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -96,47 +132,111 @@ export default function LeaderboardPage() {
     params.set("mode", nextMode);
     const nextSort = next.sort ?? sort;
     if (nextMode === "arena") params.set("arenaMode", next.arenaMode ?? arenaMode);
-    const nextCycle = next.cycle === undefined ? data?.meta.cycleId ?? cycle : next.cycle;
+    const nextCycle = next.cycle === undefined ? visible?.meta.cycleId ?? cycle : next.cycle;
     if (nextMode === "pvp-season" && nextCycle) params.set("cycle", nextCycle);
     if (nextSort !== "primary") params.set("sort", nextSort);
     const nextAid = next.aid === undefined ? aid : next.aid;
     if (nextAid != null) params.set("aid", String(nextAid));
-    window.history.pushState(null, "", `/leaderboard?${params}`);
+    const url = `/leaderboard?${params}`;
+    setQuery({
+      mode: nextMode,
+      arenaMode: nextMode === "arena" ? (next.arenaMode ?? arenaMode) : arenaMode,
+      sort: nextSort,
+      cycle: nextCycle,
+      aid: nextAid,
+    });
+    window.history.pushState(null, "", url);
   }
 
   function changeMode(nextMode: LeaderboardMode) {
     updateQuery({
       mode: nextMode,
       arenaMode: nextMode === "arena" ? "blastGang" : undefined,
-      sort: sort === "hours" ? "hours" : "primary",
+      sort: sort === "hours" || sort === "kills" ? sort : "primary",
     });
   }
 
   function changeArenaMode(nextMode: ArenaModeKey) {
-    updateQuery({ arenaMode: nextMode, sort: sort === "hours" ? "hours" : "primary" });
+    updateQuery({ arenaMode: nextMode, sort: sort === "hours" || sort === "kills" ? sort : "primary" });
+  }
+
+  function handleSortClick(key: LeaderboardSort) {
+    if (key === sort) {
+      setDirection((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      updateQuery({ sort: key });
+    }
+  }
+
+  const orderedTop = useMemo(() => {
+    if (!visible?.top) return [];
+    return direction === "asc" ? [...visible.top].reverse() : visible.top;
+  }, [visible, direction]);
+
+  const orderedAround = useMemo(() => {
+    if (!visible?.around) return undefined;
+    return direction === "asc" ? [...visible.around].reverse() : visible.around;
+  }, [visible, direction]);
+
+  function jumpEdge(target: "top" | "end") {
+    setJumpDir(target);
+    jump(target);
+  }
+
+  function scrollToPlayer(retries: number): void {
+    const around = [
+      ...Array.from(document.querySelectorAll<HTMLElement>("#leaderboard-around [data-leaderboard-selected='true']")),
+      ...Array.from(document.querySelectorAll<HTMLElement>("#leaderboard-around[data-leaderboard-selected='true']")),
+    ];
+    // The marker exists twice: on the table row (hidden on mobile) and on the
+    // card (the visible copy). Scroll the visible one.
+    const visible = around.find((item) => item.getClientRects().length > 0);
+    if (visible) {
+      visible.scrollIntoView({ block: "center" });
+      visible.focus({ preventScroll: true });
+      return;
+    }
+    if (around.length > 0 && retries < 10) {
+      // Around-list exists but is still hidden (mobile list flip pending) — wait for it.
+      window.requestAnimationFrame(() => scrollToPlayer(retries + 1));
+      return;
+    }
+    if (around.length === 0) {
+      const top = document.querySelector<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']");
+      top?.scrollIntoView({ block: "center" });
+      top?.focus({ preventScroll: true });
+    }
   }
 
   function jump(target: "top" | "end" | "player") {
-    if (target === "player") setMobileList("around");
+    if (target === "player") {
+      setMobileList("around");
+      window.requestAnimationFrame(() => scrollToPlayer(0));
+      return;
+    }
     window.requestAnimationFrame(() => {
       const mobile = window.matchMedia("(max-width: 767px)").matches;
       const visibleListId = mobile && mobileList === "top"
         ? "leaderboard-top"
-        : data?.around
+        : visible?.around
           ? "leaderboard-around"
           : "leaderboard-top";
-      const element = target === "player"
-        ? document.querySelector<HTMLElement>("#leaderboard-around [data-leaderboard-selected='true']")
-          ?? document.querySelector<HTMLElement>("#leaderboard-around[data-leaderboard-selected='true']")
-          ?? document.querySelector<HTMLElement>("#leaderboard-top [data-leaderboard-selected='true']")
-        : document.getElementById(target === "top" && !mobile ? "leaderboard-top" : visibleListId);
-      element?.scrollIntoView({ block: target === "top" ? "start" : target === "end" ? "end" : "center" });
+      const element = document.getElementById(target === "top" && !mobile ? "leaderboard-top" : visibleListId);
+      element?.scrollIntoView({ block: target === "top" ? "start" : "end" });
       element?.focus({ preventScroll: true });
     });
   }
 
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const focused = aid != null;
+  const isBlastGang = mode === "arena" && arenaMode === "blastGang";
+  function pillLabel(key: LeaderboardSort): string {
+    if (key === "primary") return isBlastGang ? t("leaderboard.pills.arp") : t("leaderboard.pills.score");
+    if (key === "kd") return t("leaderboard.pills.kd");
+    if (key === "killsPerMatch") return mode === "arena" ? t("leaderboard.pills.perMatch") : t("leaderboard.pills.perRaid");
+    if (key === "kills") return t("leaderboard.pills.kills");
+    return t("leaderboard.pills.hours");
+  }
   const modeLabels: Record<LeaderboardMode, string> = {
     regular: t("fav.mode.regular"),
     pve: t("fav.mode.pve"),
@@ -159,20 +259,8 @@ export default function LeaderboardPage() {
     reference_unavailable: t("leaderboard.subject.reference_unavailable"),
     excluded: t("leaderboard.subject.excluded"),
   };
-  const primaryMetric = data?.meta.primaryMetric ?? (mode === "arena"
-    ? arenaMode === "blastGang"
-      ? "arp"
-      : arenaMode === "lastHero"
-        ? "killsPerMatch"
-        : "performance"
-    : "performance");
-  const primaryLabel = primaryMetric === "arp"
-    ? t("leaderboard.sort.arp")
-    : primaryMetric === "killsPerMatch"
-      ? t("leaderboard.sort.killsPerMatch")
-      : t("leaderboard.sort.performance");
-  const publicationKey = data && data.meta.publicationStatus !== "ready"
-    ? `leaderboard.publication.${data.meta.publicationStatus}`
+  const publicationKey = visible && visible.meta.publicationStatus !== "ready"
+    ? `leaderboard.publication.${visible.meta.publicationStatus}`
     : null;
 
   return (
@@ -192,9 +280,9 @@ export default function LeaderboardPage() {
           ))}
         </div>
 
-        {mode === "arena" && data?.meta.arenaTabs && (
+        {mode === "arena" && visible?.meta.arenaTabs && (
           <div className="leaderboard-arena-tabs" role="group" aria-label={t("leaderboard.arenaModes") }>
-            {data.meta.arenaTabs.map((tab) => (
+            {visible.meta.arenaTabs.map((tab) => (
               <button key={tab.mode} type="button" aria-pressed={arenaMode === tab.mode} onClick={() => changeArenaMode(tab.mode)}>
                 <span>{arenaModeLabels[tab.mode]}</span>
                 <small>{t("leaderboard.knownProfiles", { n: tab.knownMatchProfiles.toLocaleString(locale) })}</small>
@@ -203,83 +291,81 @@ export default function LeaderboardPage() {
           </div>
         )}
 
-        <label className="native-select leaderboard-sort">
-          <span>{t("leaderboard.sort.label")}</span>
-          <select
-            value={sort}
-            onChange={(event) => {
-              if (event.target.value === "arp") {
-                updateQuery({ arenaMode: "blastGang", sort: "primary" });
-                return;
-              }
-              updateQuery({ sort: querySort(event.target.value) });
-            }}
-          >
-            <option value="primary">{primaryLabel}</option>
-            {mode === "arena" && arenaMode !== "blastGang" && <option value="arp">{t("leaderboard.sort.arp")}</option>}
-            <option value="kd">{t("leaderboard.sort.kd")}</option>
-            <option value="killsPerMatch">{t(mode === "arena" ? "leaderboard.sort.killsPerMatch" : "leaderboard.sort.killsPerRaid")}</option>
-            <option value="hours">{t(mode === "arena" ? "leaderboard.sort.arenaHours" : "leaderboard.sort.hours")}</option>
-          </select>
-        </label>
       </section>
 
       {publicationKey && <p className="leaderboard-publication" role="status">{t(publicationKey)}</p>}
-      {data && (
-        <p className="leaderboard-meta">
-          {t("leaderboard.generated", { date: new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(data.meta.generatedAt) })}
-          {" · "}{t("leaderboard.ranked", { n: data.meta.rankedCount.toLocaleString(locale) })}
-        </p>
-      )}
 
-      {loading && <LeaderboardLoading />}
-      {!loading && error && (
+      {loading && !visible && <LeaderboardLoading />}
+      {error && !visible && (
         <div className="data-panel leaderboard-state" role="alert">
           <p>{error}</p>
           <button type="button" className="ghost-button" onClick={() => window.location.reload()}>{t("leaderboard.retry")}</button>
         </div>
       )}
 
-      {!loading && data && (
-        <>
-          {focused && (
-            <div className="leaderboard-jumps" aria-label={t("leaderboard.jumps") }>
-              <button type="button" onClick={() => jump("top")}>{t("leaderboard.jump.start")}</button>
-              <button type="button" onClick={() => jump("end")}>{t("leaderboard.jump.end")}</button>
-              <button type="button" disabled={!data.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+      {visible && (
+        <div className={switching ? "leaderboard-switching" : undefined} aria-busy={switching || undefined}>
+          <div className="leaderboard-sticky">
+            <div className="leaderboard-sort-pills" role="group" aria-label={t("leaderboard.sort.label")}>
+              <button
+                type="button"
+                className="leaderboard-jump-toggle"
+                aria-label={jumpDir === "top" ? t("leaderboard.jump.end") : t("leaderboard.jump.start")}
+                onClick={() => jumpEdge(jumpDir === "top" ? "end" : "top")}
+              >
+                <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
+                <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
+              </button>
+              {SORTS.map((key) => (
+                <Fragment key={key}>
+                  {key === "kills" && <span aria-hidden="true" className="leaderboard-sort-pills__break" />}
+                  <button type="button" className="leaderboard-sort-pill" aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
+                    {pillLabel(key)}
+                    {sort === key && (
+                      <span aria-hidden="true" className="leaderboard-sort-pills__arrow">{direction === "desc" ? "↓" : "↑"}</span>
+                    )}
+                  </button>
+                </Fragment>
+              ))}
+              {focused && (
+                <button type="button" className="leaderboard-jump-player" disabled={!visible.subject} onClick={() => jump("player")}>{t("leaderboard.jump.player")}</button>
+              )}
             </div>
-          )}
+          </div>
 
-          {focused && data.around && (
+          {focused && visible.around && (
             <div className="leaderboard-mobile-lists" role="group" aria-label={t("leaderboard.mobileLists") }>
               <button type="button" aria-pressed={mobileList === "top"} onClick={() => setMobileList("top")}>{t("leaderboard.top100")}</button>
               <button type="button" aria-pressed={mobileList === "around"} onClick={() => setMobileList("around")}>{t("leaderboard.aroundPlayer")}</button>
             </div>
           )}
 
-          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${data.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
+          {/* No key here on purpose: rows keep their DOM nodes across sorts,
+              so updates swap instantly instead of flashing. The entrance
+              cascade (lb-rise) plays once on first mount. */}
+          <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
-              title={focused ? t("leaderboard.top100") : t("leaderboard.top500")}
-              rows={data.top}
-              meta={data.meta}
+              title={t("leaderboard.top100")}
+              rows={orderedTop}
+              meta={visible.meta}
             />
-            {focused && data.around && (
-              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={data.around} meta={data.meta} />
+            {focused && visible.around && orderedAround && (
+              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={visible.meta} />
             )}
-            {focused && !data.around && data.subject && (
+            {focused && !visible.around && visible.subject && (
               <section id="leaderboard-around" tabIndex={-1} data-leaderboard-selected="true" className="leaderboard-insufficient data-panel">
                 <h2 className="section-heading">{t("leaderboard.insufficient.title")}</h2>
-                <p>{subjectMessages[data.subject.status]}</p>
+                <p>{subjectMessages[visible.subject.status]}</p>
                 <dl>
-                  <div><dt>{t("leaderboard.column.player")}</dt><dd>{data.subject.nickname}</dd></div>
-                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{data.subject.stats.deathless ? t("leaderboard.deathless") : data.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
-                  <div><dt>{mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids")}</dt><dd>{data.subject.stats.raidsOrMatches?.toLocaleString(locale) ?? "—"}</dd></div>
+                  <div><dt>{t("leaderboard.column.player")}</dt><dd>{visible.subject.nickname}</dd></div>
+                  <div><dt>{t("leaderboard.column.kd")}</dt><dd>{visible.subject.stats.deathless ? (visible.subject.stats.kills?.toLocaleString(locale) ?? "—") : visible.subject.stats.kd?.toLocaleString(locale, { maximumFractionDigits: 2 }) ?? "—"}</dd></div>
+                  <div><dt>{mode === "arena" ? t("leaderboard.column.matches") : t("leaderboard.column.raids")}</dt><dd>{visible.subject.stats.raidsOrMatches?.toLocaleString(locale) ?? "—"}</dd></div>
                 </dl>
               </section>
             )}
           </div>
-        </>
+        </div>
       )}
     </main>
   );
