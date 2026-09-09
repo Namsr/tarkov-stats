@@ -34,6 +34,10 @@ function querySort(value: string | null): LeaderboardSort {
   return SORTS.find((sort) => sort === value) ?? "primary";
 }
 
+function queryDir(value: string | null): "desc" | "asc" {
+  return value === "asc" ? "asc" : "desc";
+}
+
 function queryCycle(value: string | null): string | null {
   const cycle = value?.trim();
   return cycle || null;
@@ -49,6 +53,7 @@ export default function LeaderboardPage() {
     mode: queryMode(searchParams.get("mode")),
     arenaMode: queryArenaMode(searchParams.get("arenaMode")),
     sort: querySort(searchParams.get("sort")),
+    dir: queryDir(searchParams.get("dir")),
     cycle: queryCycle(searchParams.get("cycle")),
     aid: positiveAid(searchParams.get("aid")),
   }));
@@ -59,6 +64,7 @@ export default function LeaderboardPage() {
         mode: queryMode(sp.get("mode")),
         arenaMode: queryArenaMode(sp.get("arenaMode")),
         sort: querySort(sp.get("sort")),
+        dir: queryDir(sp.get("dir")),
         cycle: queryCycle(sp.get("cycle")),
         aid: positiveAid(sp.get("aid")),
       });
@@ -66,21 +72,16 @@ export default function LeaderboardPage() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-  const { mode, arenaMode, sort, cycle, aid } = query;
+  const { mode, arenaMode, sort, dir: direction, cycle, aid } = query;
   const [result, setResult] = useState<{
     key: string;
     data: LeaderboardPageResponse | null;
     error: string;
   } | null>(null);
   const [mobileList, setMobileList] = useState<"top" | "around">("top");
-  const [direction, setDirection] = useState<"desc" | "asc">("desc");
   // Edge-jump toggle: one button, both arrows inside. The lit arrow is the
   // last jump target (starts at top); press jumps to the other end.
   const [jumpDir, setJumpDir] = useState<"top" | "end">("top");
-
-  useEffect(() => {
-    setDirection("desc");
-  }, [sort]);
 
   const requestUrl = useMemo(() => {
     const params = new URLSearchParams({ mode, sort });
@@ -124,6 +125,7 @@ export default function LeaderboardPage() {
     mode?: LeaderboardMode;
     arenaMode?: ArenaModeKey;
     sort?: LeaderboardSort;
+    dir?: "desc" | "asc";
     aid?: number | null;
     cycle?: string | null;
   }) {
@@ -135,6 +137,8 @@ export default function LeaderboardPage() {
     const nextCycle = next.cycle === undefined ? visible?.meta.cycleId ?? cycle : next.cycle;
     if (nextMode === "pvp-season" && nextCycle) params.set("cycle", nextCycle);
     if (nextSort !== "primary") params.set("sort", nextSort);
+    const nextDir = next.dir ?? direction;
+    if (nextDir === "asc") params.set("dir", "asc");
     const nextAid = next.aid === undefined ? aid : next.aid;
     if (nextAid != null) params.set("aid", String(nextAid));
     const url = `/leaderboard?${params}`;
@@ -142,6 +146,7 @@ export default function LeaderboardPage() {
       mode: nextMode,
       arenaMode: nextMode === "arena" ? (next.arenaMode ?? arenaMode) : arenaMode,
       sort: nextSort,
+      dir: nextDir,
       cycle: nextCycle,
       aid: nextAid,
     });
@@ -162,9 +167,9 @@ export default function LeaderboardPage() {
 
   function handleSortClick(key: LeaderboardSort) {
     if (key === sort) {
-      setDirection((d) => (d === "desc" ? "asc" : "desc"));
+      updateQuery({ dir: direction === "desc" ? "asc" : "desc" });
     } else {
-      updateQuery({ sort: key });
+      updateQuery({ sort: key, dir: "desc" });
     }
   }
 
@@ -208,22 +213,42 @@ export default function LeaderboardPage() {
     }
   }
 
+  function scrollEdge(listId: "leaderboard-top" | "leaderboard-around", block: "start" | "end", retries: number): void {
+    const element = document.getElementById(listId);
+    if (element && element.getClientRects().length > 0) {
+      element.scrollIntoView({ block });
+      element.focus({ preventScroll: true });
+      return;
+    }
+    // The target list can still be hidden right after a mobile list switch — wait for it.
+    if (retries < 10) {
+      window.requestAnimationFrame(() => scrollEdge(listId, block, retries + 1));
+      return;
+    }
+    element?.scrollIntoView({ block });
+  }
+
   function jump(target: "top" | "end" | "player") {
     if (target === "player") {
       setMobileList("around");
       window.requestAnimationFrame(() => scrollToPlayer(0));
       return;
     }
+    if (target === "top") {
+      // Top always means the main list, even when the around list is the active mobile list.
+      setMobileList("top");
+      window.requestAnimationFrame(() => scrollEdge("leaderboard-top", "start", 0));
+      return;
+    }
     window.requestAnimationFrame(() => {
       const mobile = window.matchMedia("(max-width: 767px)").matches;
-      const visibleListId = mobile && mobileList === "top"
-        ? "leaderboard-top"
-        : visible?.around
-          ? "leaderboard-around"
-          : "leaderboard-top";
-      const element = document.getElementById(target === "top" && !mobile ? "leaderboard-top" : visibleListId);
-      element?.scrollIntoView({ block: target === "top" ? "start" : "end" });
-      element?.focus({ preventScroll: true });
+      // Desktop shows both lists side by side: end means the end of the main
+      // list. On mobile only the active list is visible, so end follows it.
+      if (mobile && mobileList === "around" && visible?.around) {
+        scrollEdge("leaderboard-around", "end", 0);
+      } else {
+        scrollEdge("leaderboard-top", "end", 0);
+      }
     });
   }
 
@@ -349,9 +374,10 @@ export default function LeaderboardPage() {
               title={t("leaderboard.top100")}
               rows={orderedTop}
               meta={visible.meta}
+              direction={direction}
             />
             {focused && visible.around && orderedAround && (
-              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={visible.meta} />
+              <LeaderboardTable id="leaderboard-around" title={t("leaderboard.aroundPlayer")} rows={orderedAround} meta={visible.meta} direction={direction} />
             )}
             {focused && !visible.around && visible.subject && (
               <section id="leaderboard-around" tabIndex={-1} data-leaderboard-selected="true" className="leaderboard-insufficient data-panel">
@@ -372,10 +398,12 @@ export default function LeaderboardPage() {
 }
 
 export function LeaderboardLoading() {
+  const { t } = useI18n();
   return (
-    <div className="leaderboard-loading" aria-hidden="true">
-      <div className="h-16 skeleton rounded-xl" />
-      {Array.from({ length: 8 }).map((_, index) => <div key={index} className="h-12 skeleton rounded-lg" />)}
+    <div className="leaderboard-loading" role="status" aria-live="polite">
+      <span className="sr-only">{t("common.loading")}</span>
+      <div className="h-16 skeleton rounded-xl" aria-hidden="true" />
+      {Array.from({ length: 8 }).map((_, index) => <div key={index} className="h-12 skeleton rounded-lg" aria-hidden="true" />)}
     </div>
   );
 }

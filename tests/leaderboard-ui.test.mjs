@@ -55,6 +55,14 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /leaderboard\.column\.kills/);
   assert.match(table, /displayRank/);
   assert.match(table, /sort === "primary" \? row\.primaryRank : row\.position/);
+  // Ascending display mirrors the server window, so ranked rows show the mirrored global rank.
+  assert.match(table, /direction === "asc"/);
+  assert.match(table, /rankedCount - rank \+ 1/);
+  assert.doesNotMatch(table, /Балл/);
+  assert.match(table, /getBoundingClientRect/);
+  assert.match(table, /flipActive/);
+  assert.match(table, /\.cancel\(\)/);
+  assert.match(table, /\}, \[rows\]\)/);
   assert.match(table, /data-aid/);
   assert.match(table, /useLayoutEffect/);
   assert.match(table, /translateY/);
@@ -63,6 +71,10 @@ test("public and focused lists preserve server rows and disable mass link prefet
   assert.match(table, /row\.stats\.bestArp/);
   assert.match(table, /meta\.primaryMetric !== "killsPerMatch"/);
   assert.match(table, /tabIndex=\{row\.selected \? -1 : undefined\}/);
+  // Both the desktop row and the mobile card (the visible copy) are programmatically focusable.
+  assert.ok(((table.match(/tabIndex=\{row\.selected \? -1 : undefined\}/g) ?? []).length) >= 2);
+  assert.match(table, /leaderboard\.hoursValue/);
+  assert.doesNotMatch(table, /lang === "ru" \? " ч"/);
   assert.match(table, /meta\.mode === "pvp-season" && meta\.cycleId/);
   assert.match(table, /profileParams\.set\("cycle", meta\.cycleId\)/);
   assert.match(table, /focusParams\.set\("cycle", meta\.cycleId\)/);
@@ -75,6 +87,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
   assert.match(page, /scrollToPlayer/);
+  assert.match(page, /scrollEdge/);
+  assert.match(page, /setMobileList\("top"\)/);
   assert.match(page, /getClientRects/);
   assert.match(page, /leaderboard-jump-toggle/);
   assert.match(page, /jumpEdge/);
@@ -97,8 +111,13 @@ test("leaderboard sort pills replace the select and support direction toggle", a
   assert.match(page, /leaderboard-sort-pills__break/);
   assert.match(page, /leaderboard\.pills\.kills/);
   assert.doesNotMatch(page, /leaderboard\.pills\.place/);
-  assert.match(page, /setDirection/);
-  assert.match(page, /\.reverse\(\)/);
+  // Direction lives in the shareable URL and flows into direction-aware ranks.
+  assert.match(page, /queryDir/);
+  assert.match(page, /searchParams\.get\("dir"\)/);
+  assert.match(page, /sp\.get\("dir"\)/);
+  assert.match(page, /params\.set\("dir", "asc"\)/);
+  assert.match(page, /direction=\{direction\}/);
+  assert.match(page, /dir: direction === "desc" \? "asc" : "desc"/);
   assert.doesNotMatch(page, /<select/);
   assert.doesNotMatch(page, /leaderboard\.generated/);
   assert.doesNotMatch(page, /leaderboard\.top500/);
@@ -119,7 +138,13 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(page, /leaderboard-switching/);
   // No remount key on the lists: rows keep DOM nodes, updates swap instantly.
   assert.doesNotMatch(page, /visible\.meta\.sort-\$\{direction\}/);
+  // Loading announces itself instead of hiding behind aria-hidden.
+  assert.match(page, /aria-live="polite"/);
+  assert.match(page, /role="status"/);
   assert.match(css, /\.leaderboard-switching/);
+  // A single switching rule for the pills plus a real dim of the stale lists.
+  assert.equal((css.match(/\.leaderboard-switching \.leaderboard-sort-pills button/g) ?? []).length, 1);
+  assert.match(css, /\.leaderboard-switching \.leaderboard-lists \{[^}]*opacity/);
   assert.match(css, /lb-rise/);
   assert.match(css, /lb-arrow-pop/);
   assert.match(css, /prefers-reduced-motion/);
@@ -131,6 +156,15 @@ test("leaderboard switches sorts smoothly without a skeleton flash", async () =>
   assert.match(css, /button\.leaderboard-jump-toggle \{[^}]*margin-right/);
   assert.match(css, /\.leaderboard-sticky \{[^}]*margin-top/);
   assert.doesNotMatch(css, /\.leaderboard-jumps \{/);
+});
+
+test("leaderboard hours units and best ARP labels live in the dictionary", async () => {
+  const dict = await read("lib/i18n/dictionary.ts");
+  assert.match(dict, /"leaderboard\.hoursValue": "\{v\} h"/);
+  assert.match(dict, /"leaderboard\.hoursValue": "\{v\} ч"/);
+  assert.match(dict, /"leaderboard\.column\.bestArp": "Best ARP"/);
+  assert.match(dict, /"leaderboard\.column\.bestArp": "Лучший ARP"/);
+  assert.doesNotMatch(dict, /"leaderboard\.column\.bestArp": "BEST ARP"/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {

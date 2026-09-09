@@ -757,6 +757,7 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }
 .leaderboard-mobile-lists { display: none; }
 .leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
+.leaderboard-switching .leaderboard-lists { opacity: .55; }
 @media (prefers-reduced-motion: no-preference) {
   .leaderboard-table tbody tr { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
   .leaderboard-card { animation: lb-rise .34s ease both; animation-delay: calc(min(var(--lb-i, 0), 24) * 13ms); }
@@ -771,7 +772,6 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
   60% { transform: scale(1.25); }
   100% { transform: scale(1); }
 }
-.leaderboard-switching .leaderboard-sort-pills button { pointer-events: none; }
 .leaderboard-lists { display: grid; gap: 16px; margin-top: 18px; }
 .leaderboard-lists--focused { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .leaderboard-list { min-width: 0; overflow: hidden; scroll-margin-top: 144px; }
