@@ -29,9 +29,64 @@ import {
   progressionValueDomain,
 } from "../lib/seasonal/progression-timeline-ui.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension.
-import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+import { initializeSeasonalSchema, createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 
 const execFileAsync = promisify(execFile);
+
+test("banned personal timelines remain readable while published populations exclude them", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "banned-timeline-"));
+  const databasePath = join(directory, "progression.db");
+  const db = new DatabaseSync(databasePath);
+  try {
+    const store = createSqliteSeasonalStore(db);
+    db.exec("INSERT INTO season_cycles VALUES ('seasonal', 's1', 1, NULL, 1, 'direct_profile')");
+    db.exec("INSERT INTO excluded_players VALUES (1, 'admin_manual', 1)");
+    for (let aid = 1; aid <= 102; aid += 1) {
+      for (let version = 1; version <= 3; version += 1) {
+        const profile = {
+          mode: "seasonal", cycleId: "s1", aid, nickname: `p${aid}`,
+          profileUpdatedAt: version * 86_400_000, lastAccessAt: version * 86_400_000,
+          lifetimePvpHours: 100,
+          counters: { experience: version * (aid <= 2 ? 1_000 : 100), pmcRaids: version * 10, scavRaids: 0,
+            pmcSurvived: version * 5, pmcDeaths: version * 5, pmcKills: version * 20, killedPmc: version * 5 },
+        };
+        await store.upsertProfile(profile);
+        await store.captureSnapshot(profile);
+      }
+    }
+    // Also cover upstream bans represented by the profile flag alone.
+    db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE aid = 2");
+    db.exec("UPDATE player_profiles SET lifetime_pvp_hours = 100");
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--experimental-strip-types", "--experimental-sqlite", "-e",
+      `const { DatabaseSync } = await import('node:sqlite');
+       const { getProgressionTimelineQuery, materializeSqlitePopulationSnapshot } = await import('./lib/seasonal/progression-db.ts');
+       const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+       materializeSqlitePopulationSnapshot(db, 'seasonal', 's1', 100);
+       const payload = JSON.parse(db.prepare('SELECT payload FROM progression_population_generations').get().payload);
+       const query = await getProgressionTimelineQuery();
+       const timelines = await Promise.all([1, 2].map(aid => query({ mode: 'seasonal', cycleId: 's1', aid })));
+       console.log(JSON.stringify({ timelines, population: payload.metrics }));
+       db.close();`,
+    ], { cwd: process.cwd(), env: { ...process.env, PROGRESSION_SQLITE_PATH: databasePath }, timeout: 10_000 });
+    const result = JSON.parse(stdout.trim());
+    assert.deepEqual(result.population.xp.overall.map((point) => point.n), [100]);
+    assert.deepEqual(result.population.xp.overall.map((point) => point.value), [300]);
+    assert.ok(result.population.xp_per_day.overall.length > 0);
+    assert.ok(result.population.xp_per_day.overall.every((point) => point.n === 100));
+    for (const timeline of result.timelines) {
+      assert.ok(timeline);
+      assert.equal(timeline.history.snapshotCount, 3);
+      assert.equal(timeline.history.ready, true);
+      assert.deepEqual(timeline.metrics.xp.player.map((point) => point.value), [1_000, 2_000, 3_000]);
+      assert.equal(timeline.metrics.xp_per_day.player.length, 2);
+    }
+    assert.equal(Number(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 1").get().confirmed_banned), 1);
+  } finally {
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const identity = { mode: "seasonal", cycleId: "s1", aid: 1 } as const;
 

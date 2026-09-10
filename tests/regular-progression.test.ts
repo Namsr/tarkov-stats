@@ -136,6 +136,30 @@ function stats(experience: number, pmcRaids: number) {
   });
 }
 
+test("banned persistent accounts keep personal history without entering the average", async () => {
+  for (const mode of ["regular", "pve"] as const) {
+    const db = new DatabaseSync(":memory:");
+    const store = createSqliteProgressionStore(db, mode);
+    db.exec("INSERT INTO excluded_players VALUES (42, 'admin_manual', 1)");
+    const snapshot = (aid, version, xp) => ({ aid, upstreamUpdatedAt: version, capturedAt: version,
+      stats: JSON.parse(stats(xp, 10)), achievementIds: [] });
+    for (let aid = 43; aid < 143; aid += 1) await store.recordSnapshot(snapshot(aid, day, 100));
+    assert.equal((await store.recordSnapshot(snapshot(42, day, 10_000))).status, "baseline");
+    // Repair the shape left behind by the old excluded-account materializer.
+    db.exec("DELETE FROM player_profiles WHERE aid = 42");
+    assert.equal((await store.recordSnapshot(snapshot(42, day, 10_000))).status, "duplicate");
+    assert.equal(Number(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 42").get().confirmed_banned), 1);
+    assert.equal((await store.recordSnapshot(snapshot(42, 2 * day, 20_000))).status, "progression");
+    assert.equal((await store.history(42)).length, 2);
+    const result = queryProgressionSeries(db, { mode, cycleId: "persistent", aid: 42, kind: "cumulative" });
+    assert.deepEqual(result.player.map((point) => point.value), [20_000]);
+    assert.deepEqual(result.overall.map((point) => point.value), [100]);
+    assert.equal(result.overall[0].n, 100);
+    assert.deepEqual(queryPersistentProgressionAverage(db, mode).series.cumulative.overall.map((point) => point.value), [100]);
+    db.close();
+  }
+});
+
 test("regular backfill is idempotent, classifies counters, and unlocks after two changed snapshots", () => {
   const db = new DatabaseSync(":memory:");
   materializeRegularProgression(db);

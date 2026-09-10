@@ -90,9 +90,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
     async captureSnapshot(profile, capturedAt = Date.now()) {
       validateProfile(profile);
       const identity = [profile.mode, profile.cycleId, profile.aid] as const;
-      if (await db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").bind(profile.aid).first()) {
-        return { inserted: false, status: "banned", snapshot: null, interval: null } as CaptureSnapshotResult;
-      }
+      // Keep personal history even when the account is excluded from population statistics.
       const previousRow = await db.prepare(`SELECT * FROM progression_snapshots WHERE ${IDENTITY} ORDER BY profile_updated_at DESC LIMIT 1`)
         .bind(...identity).first() as Record<string, unknown> | null;
       const previous = toSnapshot(previousRow ?? undefined);

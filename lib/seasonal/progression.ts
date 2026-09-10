@@ -81,6 +81,7 @@ export function parseProgressionTimelineRequest(
 
 export interface DailyRow {
   aid: number;
+  confirmed_banned?: number;
   point_id?: number;
   local_date: string;
   observed_at?: number;
@@ -225,13 +226,12 @@ export function progressionDailySql(kind: ProgressionKind): string {
         WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0
       )
       SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
-             p.lifetime_pvp_hours AS lifetime_hours,
+             p.lifetime_pvp_hours AS lifetime_hours, p.confirmed_banned,
              r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
              r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids, r.level
       FROM ranked r
       JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
-        AND p.confirmed_banned = 0
-      WHERE r.rank = 1 OR r.aid = ?
+      WHERE (r.rank = 1 AND p.confirmed_banned = 0) OR r.aid = ?
       ORDER BY r.pmc_raids, r.freshness_at, r.aid`;
   }
   const score = kind === "tempo" ? "tempo_score" : "form_score";
@@ -254,13 +254,12 @@ export function progressionDailySql(kind: ProgressionKind): string {
         AND i.${score} IS NOT NULL AND i.pmc_raids > 0 AND s.pmc_raids > 0
     )
     SELECT r.aid, r.point_id, r.local_date, r.observed_at, r.value, r.pmc_raids, r.raid_bucket,
-           p.lifetime_pvp_hours AS lifetime_hours,
+           p.lifetime_pvp_hours AS lifetime_hours, p.confirmed_banned,
            r.freshness_at, r.confidence, r.series_id, r.score_sample_n,
            r.period_start_at, r.elapsed_days, r.delta_experience, r.delta_pmc_raids, r.level
     FROM ranked r
     JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
-      AND p.confirmed_banned = 0
-    WHERE r.rank = 1 OR r.aid = ?
+    WHERE (r.rank = 1 AND p.confirmed_banned = 0) OR r.aid = ?
     ORDER BY r.pmc_raids, r.freshness_at, r.aid`;
 }
 
@@ -548,7 +547,8 @@ export function buildProgressionSeries(
         : null,
     })];
   });
-  const overall = overallPoints(rows, input.kind !== "cumulative", `${input.kind}:overall`);
+  const overall = overallPoints(rows.filter((row) => Number(row.confirmed_banned ?? 0) === 0),
+    input.kind !== "cumulative", `${input.kind}:overall`);
   const freshnessAt = rows.length ? Math.max(...rows.map((row) => row.freshness_at)) : null;
   const confidences = nearby.map((entry) => entry.confidence);
   const firstObservedAt = playerRows.length ? Math.min(...playerRows.map((row) => Number(row.freshness_at))) : null;

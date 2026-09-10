@@ -128,7 +128,6 @@ const DETAIL_INTERVAL_SQL = `SELECT i.aid, i.local_date, i.ended_at, i.elapsed_d
   JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id
   JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
   JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
-    AND p.confirmed_banned = 0
   WHERE i.mode = ? AND i.cycle_id = ? AND i.aid = ? AND i.status = 'valid'
   ORDER BY i.local_date, i.aid, i.ended_at`;
 
@@ -145,8 +144,7 @@ const STATIC_PROFILE_SQL = `SELECT p.nickname, p.experience, p.pmc_raids, p.scav
     SELECT latest.id FROM progression_snapshots latest
     WHERE latest.mode = p.mode AND latest.cycle_id = p.cycle_id AND latest.aid = p.aid
     ORDER BY latest.profile_updated_at DESC, latest.id DESC LIMIT 1
-  ) WHERE p.mode = ? AND p.cycle_id = ? AND p.aid = ?
-    AND p.confirmed_banned = 0`;
+  ) WHERE p.mode = ? AND p.cycle_id = ? AND p.aid = ?`;
 
 /** Raw cumulative points and interval endpoints used by the combined timeline. */
 const TIMELINE_SNAPSHOT_SQL = `SELECT s.aid, s.id AS point_id, s.local_date,
@@ -155,7 +153,6 @@ const TIMELINE_SNAPSHOT_SQL = `SELECT s.aid, s.id AS point_id, s.local_date,
     COALESCE(p.lifetime_pvp_hours, s.hours) AS lifetime_hours
   FROM progression_snapshots s
   JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
-    AND p.confirmed_banned = 0
   WHERE s.mode = ? AND s.cycle_id = ? AND s.aid = ? AND s.pmc_raids > 0
   ORDER BY s.aid, s.profile_updated_at, s.id`;
 
@@ -184,16 +181,16 @@ const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
   JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id
   JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
   JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid
-    AND p.confirmed_banned = 0
   WHERE i.mode = ? AND i.cycle_id = ? AND i.aid = ? AND i.status = 'valid' AND i.pmc_raids > 0
   ORDER BY i.aid, i.ended_at, i.id`;
 
+// Personal history includes banned accounts; population baselines never do.
 const POPULATION_TIMELINE_SNAPSHOT_SQL = TIMELINE_SNAPSHOT_SQL.replace("AND s.aid = ? ", "")
-  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY");
+  .replace("ORDER BY", "AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY");
 const POPULATION_TIMELINE_INTERVAL_SQL = TIMELINE_INTERVAL_SQL.replace("AND i.aid = ? ", "")
-  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
+  .replace("ORDER BY", "AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
 const POPULATION_DETAIL_INTERVAL_SQL = DETAIL_INTERVAL_SQL.replace("AND i.aid = ? ", "")
-  .replace("ORDER BY", "AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
+  .replace("ORDER BY", "AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
 
 interface TimelineIntervalRow {
   aid: number;

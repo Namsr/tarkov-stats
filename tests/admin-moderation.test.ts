@@ -289,7 +289,7 @@ test("manual ban rolls all attached databases back when audit fails", () => {
   } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("Seasonal upserts and snapshots honor a global tombstone without deleting the profile", async () => {
+test("Seasonal banned profiles retain personal snapshots and their exclusion flag", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createSqliteSeasonalStore(db);
   db.prepare("INSERT INTO excluded_players VALUES (42, 'admin_manual', 1)").run();
@@ -301,13 +301,15 @@ test("Seasonal upserts and snapshots honor a global tombstone without deleting t
   };
   const stored = await store.upsertProfile(profile);
   assert.equal(stored.confirmedBanned, true);
-  assert.equal((await store.captureSnapshot(profile)).status, "banned");
+  assert.equal((await store.captureSnapshot(profile)).status, "baseline");
+  assert.equal((await store.captureSnapshot(profile)).status, "duplicate");
   assert.equal(db.prepare("SELECT nickname FROM player_profiles WHERE aid = 42").get().nickname, "Retained");
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get().n, 1);
+  assert.equal(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 42").get().confirmed_banned, 1);
   db.close();
 });
 
-test("regular progression materialization excludes tombstoned snapshots", () => {
+test("regular progression materializes personal history while preserving the exclusion flag", () => {
   const db = new DatabaseSync(":memory:");
   createSqliteSeasonalStore(db);
   db.prepare("INSERT INTO excluded_players VALUES (42, 'admin_manual', 1)").run();
@@ -318,7 +320,7 @@ test("regular progression materialization excludes tombstoned snapshots", () => 
     .run(JSON.stringify({ nickname: "Kept", hoursPlayed: 100, experience: 1, pmcRaids: 1,
       scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 1 }));
   materializeRegularProgression(db);
-  assert.equal(db.prepare("SELECT 1 FROM player_profiles WHERE aid = 42").get(), undefined);
+  assert.equal(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 42").get().confirmed_banned, 1);
   assert.equal(db.prepare("SELECT 1 FROM progression_snapshots WHERE aid = 42").get() != null, true);
   db.close();
 });
