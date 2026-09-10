@@ -85,6 +85,8 @@ test("Arena defaults, sort preservation, and focused jump targets are explicit",
   const page = await read("components/LeaderboardPage.tsx");
   assert.match(page, /\?\? "blastGang"/);
   assert.match(page, /sort: sort === "hours" \|\| sort === "kills" \? sort : "primary"/);
+  assert.match(page, /nextMode === "lastHero"/);
+  assert.match(page, /sort === "hours" \|\| sort === "kills" \? sort : "killsPerMatch"/);
   assert.match(page, /nextMode === "arena" \? "blastGang"/);
   assert.match(page, /#leaderboard-around \[data-leaderboard-selected='true'\]/);
   assert.match(page, /scrollToPlayer/);
@@ -108,6 +110,11 @@ test("leaderboard sort pills replace the select and support direction toggle", a
   assert.match(page, /leaderboard-sort-pills/);
   assert.match(page, /\["primary", "score", "kd", "killsPerMatch", "kills", "hours"\]/);
   assert.match(page, /key !== "score" \|\| hasAlternatePrimary/);
+  // LastHero primary duplicates the per-match order, so its primary pill is
+  // hidden: score stays first and the per-match pill keeps the second slot.
+  assert.match(page, /isLastHero/);
+  assert.match(page, /key !== "primary" \|\| !isLastHero/);
+  assert.match(page, /requestedSort === "primary" && isLastHero \? "killsPerMatch"/);
   assert.match(page, /leaderboard\.pills\.score/);
   assert.match(page, /leaderboard\.column\.bestArp/);
   assert.match(page, /leaderboard-sort-pills__break/);
