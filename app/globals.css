@@ -719,7 +719,8 @@ button.search-unit__result-mode:hover { background: color-mix(in srgb, var(--acc
 .mode-switch__item--pending,
 .mode-switch__item[aria-busy="true"] { background: color-mix(in srgb, var(--accent) 20%, var(--input-bg)); color: var(--foreground); }
 
-.profile-header__title-row { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+.profile-header__title-row { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 10px; }
+.profile-header__title-row .page-title { margin: 0; }
 .leaderboard-rank { min-height: 44px; display: inline-flex; align-items: center; border: 1px solid var(--card-border); border-radius: 999px; color: var(--foreground); padding: 7px 12px; font-family: var(--heading-font); font-size: .82rem; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: .04em; line-height: 1; }
 a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms ease, transform 120ms ease; }
 .leaderboard-rank--loading { width: 68px; border: 0; }
