@@ -74,6 +74,7 @@ export function parseLeaderboardRequest(searchParams: URLSearchParams): {
   sort: LeaderboardSort;
   direction: "asc" | "desc";
   aid: number | null;
+  limit: number;
 } {
   const mode = searchParams.get("mode") ?? "regular";
   if (mode !== "regular" && mode !== "pve" && mode !== "arena" && mode !== "pvp-season") throw new Error("invalid mode");
@@ -99,7 +100,10 @@ export function parseLeaderboardRequest(searchParams: URLSearchParams): {
   if (aid != null && !Number.isSafeInteger(aid)) throw new Error("invalid aid");
   const direction = searchParams.get("dir") ?? "desc";
   if (direction !== "asc" && direction !== "desc") throw new Error("invalid direction");
-  return { config, sort, aid, direction };
+  const limitRaw = searchParams.get("limit");
+  const limit = limitRaw == null ? (aid == null ? 500 : 100) : Number(limitRaw);
+  if ((limitRaw != null && !/^[1-9]\d*$/.test(limitRaw)) || !Number.isSafeInteger(limit) || limit > 500) throw new Error("invalid limit");
+  return { config, sort, aid, direction, limit };
 }
 
 export function resetLeaderboardRuntimeForTests(): void {

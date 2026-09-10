@@ -13,6 +13,15 @@ test("leaderboard requests validate kills sorting and its direction", () => {
   assert.equal(parseLeaderboardRequest(new URLSearchParams("sort=kills&dir=asc")).direction, "asc");
   assert.throws(() => parseLeaderboardRequest(new URLSearchParams("dir=invalid")), /invalid direction/);
 });
+
+test("homepage leaderboard windows are bounded and preserve default page sizes", () => {
+  assert.equal(parseLeaderboardRequest(new URLSearchParams()).limit, 500);
+  assert.equal(parseLeaderboardRequest(new URLSearchParams("aid=123")).limit, 100);
+  assert.equal(parseLeaderboardRequest(new URLSearchParams("limit=5")).limit, 5);
+  for (const limit of ["", "0", "-1", "1.5", "501", "Infinity", "1e2", "NaN"]) {
+    assert.throws(() => parseLeaderboardRequest(new URLSearchParams({ limit })), /invalid limit/);
+  }
+});
 import type { LeaderboardScopeConfig } from "../lib/leaderboard/config";
 
 const db = new DatabaseSync(":memory:");
