@@ -19,7 +19,7 @@ import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 type SearchMode = GameMode | "all";
 
-export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }) {
+export default function SearchBar({ autoFocus = false, landing = false }: { autoFocus?: boolean; landing?: boolean }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -56,7 +56,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
   }
 
   function searchModeLabel(mode: SearchMode): string {
-    return mode === "all" ? t("search.modeAll") : modeLabel(mode);
+    return mode === "all" ? t(landing ? "home.allModes" : "search.modeAll") : modeLabel(mode);
   }
 
   function recentModeLabel(mode: RecentPlayerEntry["mode"]): string {
@@ -355,7 +355,7 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
                   closeSearchPanels();
                 }
               }}
-              placeholder={t("search.placeholder")}
+              placeholder={t(landing ? "home.searchPlaceholder" : "search.placeholder")}
               aria-label={t("search.placeholder")}
               autoFocus={autoFocus}
               className="search-unit__input"
@@ -479,7 +479,8 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
           disabled={loading || !query.trim()}
           className="tactical-button shrink-0"
         >
-          {loading ? t("common.loading") : t("search.view")}
+          {loading ? t("common.loading") : t(landing ? "home.search" : "search.view")}
+          {landing && !loading && <span aria-hidden="true">→</span>}
         </button>
       </div>
 
@@ -489,11 +490,11 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
 
       {notFound && (
         <p className="search-unit__not-found" role="status">
-          {error} {t("search.nickNotFoundBefore")}{" "}
+          {error} {!landing && <>{t("search.nickNotFoundBefore")}{" "}
           <a href="https://tarkov.dev/players" target="_blank" rel="noopener noreferrer">
             tarkov.dev/players
           </a>{" "}
-          {t("search.nickNotFoundAfter")}
+          {t("search.nickNotFoundAfter")}</>}
         </p>
       )}
 
@@ -572,8 +573,8 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
         </div>
       )}
 
-      <p className="search-unit__help">
-        {t("search.helpBefore")}{" "}
+      {(!landing || notFound || results.length > 0) && <p className="search-unit__help">
+        {t(landing ? "home.searchHelpBefore" : "search.helpBefore")}{" "}
         <a
           href="https://tarkov.dev/players"
           target="_blank"
@@ -581,9 +582,9 @@ export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }
           className="hover:text-[var(--accent)]"
         >
           tarkov.dev/players
-        </a>{" "}
-        {t("search.helpAfter")}
-      </p>
+        </a>{landing ? "" : " "}
+        {t(landing ? "home.searchHelpAfter" : "search.helpAfter")}
+      </p>}
     </div>
   );
 }

@@ -119,6 +119,7 @@ export default function CheaterScore({
   cycleId = "persistent",
   statsKnown = true,
   loading = false,
+  compact = false,
 }: {
   risk?: RiskInput | null;
   /** Kept only for the untouched PVE/Arena renderer during the migration. */
@@ -128,6 +129,7 @@ export default function CheaterScore({
   cycleId?: string;
   statsKnown?: boolean;
   loading?: boolean;
+  compact?: boolean;
 }) {
   const { t, lang } = useI18n();
   const [legacyResult, setLegacyResult] = useState<CheaterScoreResult | null>(null);
@@ -208,6 +210,7 @@ export default function CheaterScore({
   }
 
   if (!normalized?.available || normalized.score == null) {
+    if (compact) return <p className="home-empty" role="status">{t("cheater.serverUnavailable")}</p>;
     return (
       <div className="data-panel min-h-[280px] p-5">
         <p className="text-sm text-[var(--muted)]">{t("cheater.serverUnavailable")}</p>
@@ -230,19 +233,21 @@ export default function CheaterScore({
         .format(normalized.freshnessAt);
 
   return (
-    <div className="data-panel min-h-[280px] p-5">
-      <svg viewBox="0 0 320 170" className="w-full max-w-[240px] mx-auto block" role="img" aria-label={t("cheater.heading")}>
+    <div className={compact ? "home-risk-reading" : "data-panel min-h-[280px] p-5"}>
+      <svg viewBox={compact ? "0 0 320 230" : "0 0 320 170"} className={compact ? "home-risk-gauge" : "w-full max-w-[240px] mx-auto block"} role="img" aria-label={compact ? t("home.riskGauge", { score, tier: t("cheater.tier." + tier) }) : t("cheater.heading")}>
         {ARCS.map((arc) => (
           <path key={arc.d} d={arc.d} fill="none" stroke={arc.color} strokeWidth={20} strokeOpacity={0.85} strokeLinecap="round" />
         ))}
         <line x1={160} y1={160} x2={tip.x} y2={tip.y} stroke={color} strokeWidth={6} strokeLinecap="round" />
         <circle cx={160} cy={160} r={11} fill={color} />
         <circle cx={160} cy={160} r={5} style={{ fill: "var(--card-bg)" }} />
-        <text x={160} y={130} textAnchor="middle" fontSize={56} fontWeight={700} style={{ fill: "var(--foreground)" }}>
+        <text x={160} y={compact ? 222 : 130} textAnchor="middle" fontSize={56} fontWeight={700} style={{ fill: "var(--foreground)" }}>
           {score}
         </text>
+        {compact && <g fill="var(--muted)" fontSize={13} textAnchor="middle"><text x={39} y={188}>0</text><text x={280} y={188}>100</text></g>}
       </svg>
 
+      {compact ? <p className={`home-risk-status home-risk-status--${tier}`}>{t("cheater.tier." + tier)}</p> : <>
       <div className="mt-1 text-center">
         <span className="inline-block px-3 py-0.5 rounded text-sm font-bold" style={{ color, border: `1px solid ${color}66`, background: `${color}14` }}>
           {t("cheater.tier." + tier)}
@@ -270,6 +275,7 @@ export default function CheaterScore({
       )}
 
       <p className="mt-3 text-[10px] text-gray-600 text-center">{t("cheater.disclaimer")}</p>
+      </>}
     </div>
   );
 }
