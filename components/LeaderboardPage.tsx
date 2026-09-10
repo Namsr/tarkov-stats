@@ -49,8 +49,14 @@ export default function LeaderboardPage() {
   const mode = queryMode(searchParams.get("mode"));
   const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
   const hasAlternatePrimary = mode === "arena" && (arenaMode === "blastGang" || arenaMode === "lastHero");
+  // LastHero's primary order duplicates the per-match order (both rank by
+  // kills per match), so the primary pill would render a second "per match".
+  // Score (performance) stays first; the per-match pill keeps the second slot.
+  const isLastHero = mode === "arena" && arenaMode === "lastHero";
   const requestedSort = querySort(searchParams.get("sort"));
-  const sort = requestedSort === "score" && !hasAlternatePrimary ? "primary" : requestedSort;
+  const sort = requestedSort === "score" && !hasAlternatePrimary ? "primary"
+    : requestedSort === "primary" && isLastHero ? "killsPerMatch"
+    : requestedSort;
   const direction = queryDir(searchParams.get("dir"));
   const cycle = queryCycle(searchParams.get("cycle"));
   const aid = positiveAid(searchParams.get("aid"));
@@ -129,6 +135,10 @@ export default function LeaderboardPage() {
   }
 
   function changeArenaMode(nextMode: ArenaModeKey) {
+    if (nextMode === "lastHero") {
+      updateQuery({ arenaMode: nextMode, sort: sort === "hours" || sort === "kills" ? sort : "killsPerMatch" });
+      return;
+    }
     updateQuery({ arenaMode: nextMode, sort: sort === "hours" || sort === "kills" ? sort : "primary" });
   }
 
@@ -303,7 +313,7 @@ export default function LeaderboardPage() {
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "top" ? "" : " is-dim"}`}>↑</span>
                 <span aria-hidden="true" className={`leaderboard-jump-toggle__arrow${jumpDir === "end" ? "" : " is-dim"}`}>↓</span>
               </button>
-              {SORTS.filter((key) => key !== "score" || hasAlternatePrimary).map((key) => (
+              {SORTS.filter((key) => (key !== "score" || hasAlternatePrimary) && (key !== "primary" || !isLastHero)).map((key) => (
                 <Fragment key={key}>
                   {key === "kills" && <span aria-hidden="true" className="leaderboard-sort-pills__break" />}
                   <button type="button" className="leaderboard-sort-pill" aria-label={`${pillLabel(key)}: ${t(sort === key && direction === "desc" ? "leaderboard.sort.ascending" : "leaderboard.sort.descending")}`} aria-pressed={sort === key} onClick={() => handleSortClick(key)}>
