@@ -45,6 +45,8 @@ test("SQLite population publication is atomic and preserves the last good genera
   assert.ok(payload.metrics.xp.overall.length > 0);
   assert.equal(payload.metrics.xp.byHours.length, 8);
   assert.equal(payload.riskBaselines.length, 8);
+  assert.equal(payload.riskBaselines.find((band: { min: number }) => band.min === 100).baseline.n, 105);
+  assert.equal(payload.riskBaselines.find((band: { min: number }) => band.min === 100).baseline.metrics.pmc_kd_ratio.mean, 1);
   assert.equal(payload.achievementBaseline.achievements[0].stdHours, 0);
   assert.equal(payload.progressionPercentiles["2026-08-12"].pmcRaidsPerDay.length, 101);
 
@@ -104,6 +106,9 @@ test("D1 population storage publishes the same versioned snapshot contract", asy
   assert.ok(chunks.every((row) => Buffer.byteLength(String(row.payload), "utf8") < 2_000_000));
   const published = await d1PopulationSnapshot(d1, "seasonal", "s1");
   assert.equal(published?.generation, 200);
+  const riskBand = published?.payload.riskBaselines.find((band) => band.min === 100);
+  assert.equal(riskBand?.baseline.n, 105);
+  assert.equal(riskBand?.baseline.metrics.pmc_kd_ratio.mean, 1);
 });
 
 test("D1 without the snapshot migration safely reports warming", async () => {

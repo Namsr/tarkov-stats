@@ -612,7 +612,7 @@ function buildPopulationSnapshotPayload(
     min: range.min,
     max: range.max,
     baseline: buildRiskBaseline(riskRows.filter((row) => {
-      const hours = finiteNumber(row.lifetime_hours);
+      const hours = finiteNumber(row.lifetime_pvp_hours);
       return hours != null && hours >= range.min && (range.max == null || hours < range.max);
     })),
   }));
