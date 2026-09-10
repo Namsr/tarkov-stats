@@ -158,8 +158,10 @@ async function computeSeasonalComparisonCohort(
   const dimension = input.dimension ?? "hours";
   const statistic = input.statistic ?? "trimmed_mean";
   const period = input.period ?? "all";
+  // The viewed profile can be excluded; only comparison members must be eligible.
   const target = await first(store,
-    `${NORMALIZED_CTE} SELECT hours, pmc_raids FROM normalized WHERE aid = ? LIMIT 1`,
+    `SELECT lifetime_pvp_hours AS hours, pmc_raids FROM player_profiles
+      WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ? LIMIT 1`,
     [input.cycleId, input.aid],
   );
   if (!target || target.hours == null || target.pmc_raids == null) return { available: true, result: null };

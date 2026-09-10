@@ -35,7 +35,7 @@ test("persistent cohort SQL combines range counts and all metric distributions",
 test("seasonal route delegates center lookup to the identity-scoped helper", () => {
   assert.match(seasonalRoute, /querySeasonalComparisonCohort\(\{/);
   assert.match(seasonalRoute, /aid,\s*cycleId,/);
-  assert.match(seasonalHelper, /SELECT hours, pmc_raids FROM normalized WHERE aid = \? LIMIT 1/);
+  assert.match(seasonalHelper, /SELECT lifetime_pvp_hours AS hours, pmc_raids FROM player_profiles\s+WHERE mode = 'seasonal' AND cycle_id = \? AND aid = \? LIMIT 1/);
   assert.match(seasonalHelper, /WHERE mode = 'seasonal' AND cycle_id = \?/);
   assert.doesNotMatch(seasonalHelper, /progression_snapshots/);
   assert.doesNotMatch(seasonalHelper, /WITH latest AS/);

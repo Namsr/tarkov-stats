@@ -194,7 +194,7 @@ test("a cached legacy parser row refreshes once even when the exact tuple remain
     ?.pvpStatsParserVersion, 1);
 });
 
-test("normal profile loads repair a stored profile that has no progression baseline", async (t) => {
+test("normal profile loads repair a banned stored profile without an upstream fetch", async (t) => {
   let DatabaseSync: typeof import("node:sqlite").DatabaseSync;
   try {
     ({ DatabaseSync } = await import("node:sqlite"));
@@ -202,7 +202,9 @@ test("normal profile loads repair a stored profile that has no progression basel
     t.skip("node:sqlite unavailable");
     return;
   }
-  const store = createSqliteSeasonalStore(new DatabaseSync(":memory:"));
+  const db = new DatabaseSync(":memory:");
+  const store = createSqliteSeasonalStore(db);
+  db.exec("INSERT INTO excluded_players VALUES (730001, 'admin_manual', 1)");
   const linked = validateSeasonalProfile(await fixture(), {
     enabled: true,
     confirmedContract: "game_mode",
@@ -232,6 +234,8 @@ test("normal profile loads repair a stored profile that has no progression basel
   assert.equal(upstreamCalls, 0);
   assert.equal(repaired.ok && repaired.capture.status, "baseline");
   assert.equal((await store.snapshotHistory({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).length, 1);
+  assert.equal((await store.getProfile({ mode: "seasonal", cycleId: "season-2026-01", aid: 730001 })).confirmedBanned, true);
+  db.close();
 });
 
 test("forced refresh keeps a stored Seasonal snapshot when the upstream payload is temporarily invalid", async (t) => {

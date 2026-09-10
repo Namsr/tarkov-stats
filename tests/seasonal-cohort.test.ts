@@ -60,6 +60,9 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     add("cycle-a", 1, 1_000, 100, 5);
     add("cycle-a", 1, 2_000, 100, 20);
     for (let aid = 2; aid <= 21; aid += 1) add("cycle-a", aid, 2_000 + aid, 100, 20);
+    // Banned targets can compare themselves, but banned peers must not join the group.
+    add("cycle-a", 42, 2_042, 100, 20);
+    db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE cycle_id = 'cycle-a' AND aid IN (1, 42)");
 
     // Same account and same-looking cohort in another cycle must not leak in.
     add("cycle-b", 1, 9_000, 900, 90);

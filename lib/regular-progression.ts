@@ -55,7 +55,6 @@ export function materializePersistentProgression(
   try {
   const rows = db.prepare(`SELECT * FROM progression_snapshots
     WHERE mode = ? AND cycle_id = ?
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = progression_snapshots.aid)
       ${onlyAid == null ? "" : "AND aid = ?"}
     ORDER BY aid, profile_updated_at, id`).all(
       mode,
@@ -82,8 +81,9 @@ export function materializePersistentProgression(
     const upsertProfile = db.prepare(`INSERT INTO player_profiles (
       mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
       experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-      first_seen_at, last_seen_at, snapshot_count, progression_eligible
-    ) VALUES (${Array.from({ length: 18 }, () => "?").join(", ")})
+      first_seen_at, last_seen_at, snapshot_count, progression_eligible, confirmed_banned
+    ) VALUES (${Array.from({ length: 18 }, () => "?").join(", ")},
+      EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
     ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET nickname = excluded.nickname,
       profile_updated_at = excluded.profile_updated_at, last_access_at = excluded.last_access_at,
       lifetime_pvp_hours = excluded.lifetime_pvp_hours, experience = excluded.experience,
@@ -91,7 +91,8 @@ export function materializePersistentProgression(
       pmc_survived = excluded.pmc_survived, pmc_deaths = excluded.pmc_deaths,
       pmc_kills = excluded.pmc_kills, killed_pmc = excluded.killed_pmc,
       first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at,
-      snapshot_count = excluded.snapshot_count, progression_eligible = excluded.progression_eligible`);
+      snapshot_count = excluded.snapshot_count, progression_eligible = excluded.progression_eligible,
+      confirmed_banned = MAX(player_profiles.confirmed_banned, excluded.confirmed_banned)`);
     for (const [aid, history] of byAid) {
       let seriesId = 1;
       let raidIntervals = 0;
@@ -123,7 +124,7 @@ export function materializePersistentProgression(
       if (parsed.counters) upsertProfile.run(mode, PERSISTENT_CYCLE_ID, aid, parsed.nickname,
         Number(latest.profile_updated_at || latest.upstream_updated_at), Number(latest.captured_at),
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
-        Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0);
+        Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0, aid);
     }
     if (options.refreshAggregates !== false) {
       refreshSqliteProgressionAggregates(db, mode, PERSISTENT_CYCLE_ID, options.targetBucket);

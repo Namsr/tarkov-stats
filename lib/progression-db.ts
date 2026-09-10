@@ -191,16 +191,15 @@ export function createSqliteProgressionStore(
   return {
     async recordSnapshot(input) {
       validate(input);
-      if (db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").get(input.aid)) {
-        return {
-          inserted: false, status: "banned", previousUpdatedAt: null,
-          currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],
-        };
-      }
       const previous = toSnapshot(db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
       ).get(mode, PERSISTENT_CYCLE_ID, input.aid) as SnapshotRow | undefined);
       if (previous && input.upstreamUpdatedAt === previous.upstreamUpdatedAt) {
+        // Older excluded accounts may have snapshots but no personal timeline profile.
+        if (!db.prepare("SELECT 1 FROM player_profiles WHERE mode = ? AND cycle_id = ? AND aid = ?")
+          .get(mode, PERSISTENT_CYCLE_ID, input.aid)) {
+          materializePersistentProgression(db, mode, input.aid, { refreshAggregates: false });
+        }
         const previousParser = Number(previous.stats.pvpStatsParserVersion) || 0;
         const incomingParser = Number(input.stats.pvpStatsParserVersion) || 0;
         if (incomingParser > previousParser) {

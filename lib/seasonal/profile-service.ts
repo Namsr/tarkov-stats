@@ -74,7 +74,7 @@ export async function resolveSeasonalProfile(
   const storedResult = async () => {
     const loaded = await loadStore();
     const profile = loaded.profile;
-    if (!profile || profile.confirmedBanned || input.expectedUpdatedAt !== undefined) return null;
+    if (!profile || input.expectedUpdatedAt !== undefined) return null;
     if (profile.snapshotCount === 0 && loaded.store) {
       try {
         const observedAt = dependencies.now?.() ?? Date.now();

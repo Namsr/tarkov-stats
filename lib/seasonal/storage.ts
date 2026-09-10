@@ -1142,9 +1142,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
     async captureSnapshot(profile, capturedAt = Date.now()) {
       validateProfile(profile);
       const identity = [profile.mode, profile.cycleId, profile.aid];
-      if (db.prepare("SELECT 1 FROM excluded_players WHERE aid = ?").get(profile.aid)) {
-        return { inserted: false, status: "banned", snapshot: null, interval: null } as CaptureSnapshotResult;
-      }
+      // Keep personal history even when the account is excluded from population statistics.
       db.exec("BEGIN IMMEDIATE");
       try {
         const previous = toSnapshot(db.prepare(`SELECT * FROM progression_snapshots WHERE ${identityWhere} ORDER BY profile_updated_at DESC LIMIT 1`).get(...identity));

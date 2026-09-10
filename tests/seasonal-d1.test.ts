@@ -63,6 +63,24 @@ function profile(aid: number, updated: number, experience: number, raids: number
   };
 }
 
+test("D1 captures banned personal history without clearing the exclusion", async () => {
+  const db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(db);
+  const store = createD1SeasonalStore(new FakeD1(db));
+  db.exec("INSERT INTO excluded_players VALUES (42, 'admin_manual', 1)");
+  const first = profile(42, 100, 1_000, 10);
+  await store.upsertProfile(first);
+  assert.equal((await store.captureSnapshot(first)).status, "baseline");
+  assert.equal((await store.captureSnapshot(first)).status, "duplicate");
+  const next = profile(42, 86_400_100, 2_000, 20);
+  await store.upsertProfile(next);
+  assert.equal((await store.captureSnapshot(next)).status, "progression");
+  assert.equal(Number(db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get()!.n), 2);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) n FROM progression_intervals").get()!.n), 1);
+  assert.equal(Number(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 42").get()!.confirmed_banned), 1);
+  db.close();
+});
+
 test("D1 migration creates every Seasonal backend table", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8"));
