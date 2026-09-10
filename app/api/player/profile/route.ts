@@ -785,6 +785,21 @@ export async function GET(request: NextRequest) {
       const storedRisk = stored.stats.pvpStatsKnown === false
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+      const riskIsFresh = storedRisk &&
+        storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
+        Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+      if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
+        after(async () => {
+          // Match the upstream path: let the personal timeline load first.
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          await evaluateAndStoreRisk({
+            aid, mode: "regular", cycleId,
+            stats: stored.stats, achievementIds: stored.achievementIds,
+          }).catch((error) => {
+            console.error("regular stored profile risk evaluation failed", error);
+          });
+        });
+      }
       const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId });
       const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
         aid,
