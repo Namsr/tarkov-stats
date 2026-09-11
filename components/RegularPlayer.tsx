@@ -29,6 +29,7 @@ import {
   PlayerProfileResponseError,
 } from "@/lib/client-profile-request";
 import ArenaPlayer from "@/components/ArenaPlayer";
+import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 
 interface Props {
   aid: string;
@@ -513,19 +514,19 @@ function LegacyPlayer({
   if (mode === "regular" || mode === "pve") {
     const regularOverviewCards = mode === "pve"
       ? [
-          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
           { label: t("player.kdAll"), value: stats.kdRatio },
           { label: t("player.survivalRate"), value: stats.survivalRate, suffix: "%" },
           { label: t("player.totalRaids"), value: stats.totalRaids },
+          { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ]
       : [
-          { label: t("player.hoursPlayed"), value: stats.hoursPlayed },
           { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
           { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: "%" },
           { label: t("player.pmcRaids"), value: stats.pmcRaids },
+          { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ];
     const regularStatistics = (
-      <div className="space-y-5">
+      <div><h2 className="section-heading mb-7">{t("profile.section.statistics")}</h2><div className="profile-statistics">
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="section-heading">{t("player.raidStats")}</h2>
@@ -541,7 +542,7 @@ function LegacyPlayer({
             {progressionStats.map((item) => <StatCard key={item.label} {...item} />)}
           </div>
         </section>
-      </div>
+      </div></div>
     );
     const regularAchievementItems = viewModelAchievementItems(viewModel) ?? Object.entries(profile?.achievements ?? {}).map(([id, unlockedAt]) => ({
       id,
@@ -561,12 +562,12 @@ function LegacyPlayer({
         meta={
           <div className="profile-header__meta">
             <span>{t("player.sideLabel", { side: stats.side })}</span>
+            <span>{t("profile.levelValue", { n: stats.level })}</span>
             {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
-            {profileUpdatedAt !== null && <span>{t("player.profileUpdated", { date: dateTimeFormatter.format(profileUpdatedAt) })}</span>}
-            {lastPlayedAt !== null && <span>{t("player.lastPlayed", { date: dateTimeFormatter.format(lastPlayedAt) })}</span>}
           </div>
         }
-        actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={stats.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
+        actions={<ProfilePrimaryActions aid={Number(aid)} mode={mode} cycleId="persistent" nickname={stats.nickname} />}
+        activity={<ProfileActivity aid={Number(aid)} mode={mode} updatedAt={profileUpdatedAt} lastPlayedAt={lastPlayedAt} onCheck={refreshProfile} />}
         overviewCards={regularOverviewCards}
         progression={<ProgressionPanel
           aid={Number(aid)}
@@ -579,7 +580,7 @@ function LegacyPlayer({
           forceRefresh={forceProgressionRefresh}
           onRiskChange={setProgressionRisk}
         />}
-        risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" statsKnown={mode === "regular" ? pvpStatsKnown : true} /></div>}
+        risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" statsKnown={mode === "regular" ? pvpStatsKnown : true} /><p>{t("cheater.disclaimer")}</p></div></div>}
         comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} cycleId="persistent" demo={radarDemo} />}
         statistics={regularStatistics}
         achievements={

@@ -59,11 +59,13 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
       onClick={() => void submit()}
       disabled={disabled}
       aria-disabled={disabled}
+      aria-pressed={reported}
+      aria-label={label}
       aria-describedby={signedOut ? authHintId : undefined}
       title={signedOut ? undefined : label}
-      className="ghost-button profile-action__button !text-sm !normal-case !tracking-normal disabled:cursor-not-allowed disabled:opacity-60"
+      className="ghost-button profile-action__button profile-report-button !text-sm !normal-case !tracking-normal disabled:cursor-not-allowed"
     >
-      <span>{submitting ? t("common.loading") : label}</span>{" "}
+      <span>{submitting ? t("common.loading") : t(reported ? "profile.reported" : "profile.reportAction")}</span>{" "}
       <span className="report-count">({count})</span>
     </button>
   );

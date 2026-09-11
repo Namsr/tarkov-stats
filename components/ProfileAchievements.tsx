@@ -2,8 +2,7 @@
 
 import { useId, useMemo, useState } from "react";
 import Image from "next/image";
-import EarlyUnlocks from "@/components/EarlyUnlocks";
-import ProfileCollapsible from "@/components/ProfileCollapsible";
+import ProfileCollapsible, { ProfileCollapseToggle } from "@/components/ProfileCollapsible";
 import { useI18n } from "@/lib/i18n/context";
 import {
   achievementRarityKey,
@@ -36,9 +35,9 @@ type AchievementColumn = { key: AchievementSortKey; labelKey: string };
 
 const PROFILE_COLUMNS: ReadonlyArray<AchievementColumn> = [
   { key: "alphabet", labelKey: "achievement.col.name" },
-  { key: "percent", labelKey: "achievement.col.percent" },
   { key: "date", labelKey: "achievement.col.completed" },
   { key: "rarity", labelKey: "achievement.col.rarity" },
+  { key: "percent", labelKey: "achievement.col.percent" },
 ];
 const AVERAGE_COLUMNS: ReadonlyArray<AchievementColumn> = [
   { key: "alphabet", labelKey: "achievement.col.name" },
@@ -49,6 +48,7 @@ const AVERAGE_COLUMNS: ReadonlyArray<AchievementColumn> = [
 const ACHIEVEMENT_PREVIEW_COUNT = 3;
 
 function finiteOrNull(value: unknown): number | null {
+  if (value == null || typeof value === "boolean" || (typeof value === "string" && !value.trim())) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -164,6 +164,7 @@ function AchievementIcon({ imageUrl }: { imageUrl: string | null }) {
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
+      onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
     />
   ) : (
     <span className="achievement-table__icon achievement-table__icon--empty" aria-hidden="true" />
@@ -174,10 +175,12 @@ function AchievementPercentage({
   achievement,
   locale,
   t,
+  compact = false,
 }: {
   achievement: ProfileAchievementItem;
   locale: string;
   t: (key: string, vars?: Record<string, string | number>) => string;
+  compact?: boolean;
 }) {
   const sample = formatPercentage(achievement.percentage, locale);
   const official = formatPercentage(achievement.officialPercentage, locale);
@@ -191,7 +194,8 @@ function AchievementPercentage({
 
   return (
     <div className="achievement-table__percent">
-      <strong>{primary}</strong>
+      <strong>{compact && sample ? sample : primary}</strong>
+      {compact && sample && owners != null && eligible != null && <small>{t("profile.achievementSample", { owners, eligible })}</small>}
       {sample && official ? <small>{t("achievement.bsgLine", { value: official })}</small> : null}
     </div>
   );
@@ -241,10 +245,6 @@ function SortButton({
 export default function ProfileAchievements({
   items,
   loading = false,
-  playerHours = 0,
-  ownedIds,
-  mode,
-  cycleId,
   variant = "profile",
 }: {
   items: readonly unknown[] | null | undefined;
@@ -256,8 +256,8 @@ export default function ProfileAchievements({
   variant?: "profile" | "average";
 }) {
   const { t, lang } = useI18n();
-  const [sortKey, setSortKey] = useState<AchievementSortKey>(variant === "average" ? "percent" : "date");
-  const [direction, setDirection] = useState<AchievementSortDirection>("desc");
+  const [sortKey, setSortKey] = useState<AchievementSortKey>("percent");
+  const [direction, setDirection] = useState<AchievementSortDirection>(variant === "average" ? "desc" : "asc");
   const [expanded, setExpanded] = useState(false);
   const collapseId = `profile-achievements-${useId().replace(/:/g, "")}`;
   const columns = variant === "average" ? AVERAGE_COLUMNS : PROFILE_COLUMNS;
@@ -274,7 +274,6 @@ export default function ProfileAchievements({
     [achievements, direction, lang, sortKey],
   );
   const canCollapse = sorted.length > ACHIEVEMENT_PREVIEW_COUNT;
-  const owned = ownedIds ?? achievements.map((achievement) => achievement.id);
   const changeSort = (key: AchievementSortKey) => {
     if (sortKey === key) {
       setDirection((current) => current === "asc" ? "desc" : "asc");
@@ -286,11 +285,11 @@ export default function ProfileAchievements({
 
   return (
     <div className="space-y-5">
-      <section className="data-panel min-h-[240px] p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="section-heading text-base">{t("profile.section.achievements")}</h2>
+      <section className={variant === "profile" ? "profile-collection" : "data-panel min-h-[240px] p-5"}>
+        <div className={variant === "profile" ? "profile-collection__heading" : "mb-4 flex flex-wrap items-center justify-between gap-3"}>
+          <h2 className="section-heading text-base">{t("profile.section.achievements")}{variant === "profile" && <span className="profile-section-count">{sorted.length}</span>}</h2>
           <div className="achievement-mobile-sort" role="group" aria-label={t("achievement.sortLabel")}>
-            {columns.map((column) => (
+            {columns.filter((column) => variant === "average" || column.key !== "alphabet").map((column) => (
               <SortButton
                 key={column.key}
                 column={column}
@@ -317,6 +316,8 @@ export default function ProfileAchievements({
               id={collapseId}
               className="achievement-collapsible__content"
               expanded={!canCollapse || expanded}
+              previewRows={variant === "profile" ? ACHIEVEMENT_PREVIEW_COUNT : undefined}
+              rowSelector="tbody > tr, .achievement-card"
             >
             <div className="achievement-table-wrap">
               <table className="achievement-table">
@@ -336,7 +337,7 @@ export default function ProfileAchievements({
                         />
                       </th>
                     ))}
-                    <th scope="col">{t("achievement.col.description")}</th>
+                    {variant === "average" && <th scope="col">{t("achievement.col.description")}</th>}
                     {columns.filter((column) => column.key !== "alphabet").map((column) => (
                       <th
                         key={column.key}
@@ -375,13 +376,13 @@ export default function ProfileAchievements({
                         <th scope="row" className="achievement-table__name-cell">
                           <div className="achievement-table__name">
                             <AchievementIcon imageUrl={achievement.imageUrl} />
-                            <span title={name}>{name}</span>
+                            {variant === "profile" ? <div><strong>{name}</strong><p>{description ?? t("achievement.descriptionUnavailable")}</p></div> : <span title={name}>{name}</span>}
                           </div>
                         </th>
-                        <td className="achievement-table__description" title={description ?? undefined}>
+                        {variant === "average" && <td className="achievement-table__description" title={description ?? undefined}>
                           {description ?? <span className="achievement-table__muted">{t("achievement.descriptionUnavailable")}</span>}
-                        </td>
-                        <td className="achievement-table__number"><AchievementPercentage achievement={achievement} locale={lang} t={t} /></td>
+                        </td>}
+                        {variant === "average" && <td className="achievement-table__number"><AchievementPercentage achievement={achievement} locale={lang} t={t} /></td>}
                         <td className="achievement-table__number achievement-table__completed">
                           {variant === "average"
                             ? unlockTime ?? <span className="achievement-table__muted">{t("achievement.notAvailable")}</span>
@@ -390,6 +391,7 @@ export default function ProfileAchievements({
                               : <span className="achievement-table__muted">{t("achievement.dateUnavailable")}</span>}
                         </td>
                         <td className="achievement-table__rarity">{rarity}</td>
+                        {variant === "profile" && <td className="achievement-table__number"><AchievementPercentage achievement={achievement} locale={lang} t={t} compact /></td>}
                       </tr>
                     );
                   })}
@@ -423,7 +425,7 @@ export default function ProfileAchievements({
                     <dl className="achievement-card__meta">
                       <div>
                         <dt>{t("achievement.col.percent")}</dt>
-                        <dd><AchievementPercentage achievement={achievement} locale={lang} t={t} /></dd>
+                        <dd><AchievementPercentage achievement={achievement} locale={lang} t={t} compact={variant === "profile"} /></dd>
                       </div>
                       <div>
                         <dt>{t(variant === "average" ? "achievement.col.unlockTime" : "achievement.col.completed")}</dt>
@@ -444,23 +446,11 @@ export default function ProfileAchievements({
             </div>
             </ProfileCollapsible>
             {canCollapse && (
-              <button
-                type="button"
-                className="profile-collapsible__toggle achievement-collapsible__toggle"
-                aria-expanded={expanded}
-                aria-controls={collapseId}
-                onClick={() => setExpanded((value) => !value)}
-              >
-                <span>{t(expanded ? "achievement.collapse" : "achievement.expand")}</span>
-                <span aria-hidden="true">{expanded ? "↑" : "↓"}</span>
-              </button>
+              <ProfileCollapseToggle controls={collapseId} expanded={expanded} label={t(expanded ? "achievement.collapse" : "achievement.expand")} onToggle={() => setExpanded((value) => !value)} />
             )}
           </>
         )}
       </section>
-      {variant === "profile" && (
-        <EarlyUnlocks playerHours={playerHours} ownedIds={owned} mode={mode} cycleId={cycleId} />
-      )}
     </div>
   );
 }

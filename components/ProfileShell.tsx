@@ -8,6 +8,7 @@ import ProfileSectionNav from "@/components/ProfileSectionNav";
 import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
 import type { ProfileShellMode, ProfileViewMetric } from "@/types/profile-view";
+import "@/components/profile.css";
 
 const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "achievements", "mastering", "skills"] as const;
 const LEGACY_SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
@@ -22,7 +23,7 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
     ? SECTION_IDS
     : LEGACY_SECTION_IDS;
   return (
-    <main className="page-frame" data-profile-shell-mode={mode}>
+    <main className="page-frame profile-page" data-profile-shell-mode={mode}>
       <div className="mb-8 h-5 w-20 skeleton rounded" />
       <ProfileSectionNav
         label={t("profile.sectionNav")}
@@ -83,6 +84,7 @@ export default function ProfileShell({
   leaderboardRevision,
   meta,
   actions,
+  activity,
   overviewCards,
   progression,
   risk,
@@ -101,6 +103,7 @@ export default function ProfileShell({
   leaderboardRevision?: string | number | null;
   meta?: ReactNode;
   actions: ReactNode;
+  activity?: ReactNode;
   overviewCards: readonly ProfileViewMetric[];
   progression: ReactNode;
   risk: ReactNode;
@@ -124,15 +127,13 @@ export default function ProfileShell({
   }));
 
   return (
-    <main className="page-frame" data-profile-shell-mode={mode} data-profile-cycle={cycleId}>
+    <main className="page-frame profile-page" data-profile-shell-mode={mode} data-profile-cycle={cycleId}>
       <Link
         href="/"
-        className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors mb-8 inline-block"
+        className="profile-back"
       >
         {t("common.back")}
       </Link>
-
-      <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks} />
 
       <ProfileHeader
         aid={aid}
@@ -143,32 +144,27 @@ export default function ProfileShell({
         leaderboardRevision={leaderboardRevision}
         meta={meta}
         actions={actions}
+        activity={activity}
       >
-        <div className="detail-grid mt-7">
+        <ProfileSectionNav label={t("profile.sectionNav")} items={sectionLinks.filter((item) => item.id !== "overview")} />
+        <div className="profile-metrics">
           {overviewCards.map((item) => (
-            <div key={item.label} className="min-h-24">
-              <div className="h-full">
-                <div className="metric-card flex flex-col gap-2 h-full">
-                  <span className="metric-card__label">{item.label}</span>
-                  <div className="flex items-end gap-2">
-                    <span className="metric-card__value">
-                      {item.value}
-                      {item.suffix && <span className="metric-card__suffix ml-1">{item.suffix}</span>}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <dl key={item.label} className="profile-metric">
+              <dt>{item.label}</dt>
+              <dd>{item.value}{item.suffix && <span>{item.suffix}</span>}</dd>
+            </dl>
           ))}
         </div>
       </ProfileHeader>
 
       {statusNotice}
 
-      <div className="mt-5 space-y-5">
+      <div className="profile-content">
         <ProfileShellSection id="progression">{progression}</ProfileShellSection>
-        <ProfileShellSection id="risk">{risk}</ProfileShellSection>
-        <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
+        <div className="profile-analysis">
+          <ProfileShellSection id="risk">{risk}</ProfileShellSection>
+          <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
+        </div>
         <ProfileShellSection id="statistics">{statistics}</ProfileShellSection>
         {achievements !== undefined && <ProfileShellSection id="achievements">{achievements}</ProfileShellSection>}
         {mastering !== undefined && <ProfileShellSection id="mastering">{mastering}</ProfileShellSection>}

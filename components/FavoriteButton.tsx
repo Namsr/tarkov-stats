@@ -14,15 +14,18 @@ export default function FavoriteButton({
   aid,
   nickname,
   identity,
+  iconOnly = false,
 }: {
   aid: number;
   nickname?: string | null;
   identity?: FavoriteIdentity;
+  iconOnly?: boolean;
 }) {
   const { t } = useI18n();
   const { enabled, has, toggle } = useFavorites();
   const [msg, setMsg] = useState("");
   const authHintId = useId();
+  const icon = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9Z" /></svg>;
 
   if (!enabled) {
     return (
@@ -40,9 +43,10 @@ export default function FavoriteButton({
             disabled
             aria-disabled="true"
             aria-describedby={authHintId}
-            className="ghost-button profile-action__button !text-sm !normal-case !tracking-normal opacity-60 cursor-not-allowed"
+            aria-label={t("fav.add")}
+            className={`ghost-button profile-action__button !text-sm !normal-case !tracking-normal opacity-60 cursor-not-allowed ${iconOnly ? "profile-icon-button profile-favorite-button" : ""}`}
           >
-            {t("fav.add")}
+            {iconOnly ? icon : t("fav.add")}
           </button>
           <span id={authHintId} role="tooltip" className="disabled-control-tooltip">
             {t("fav.authRequired")}
@@ -69,13 +73,13 @@ export default function FavoriteButton({
         title={active ? t("fav.inFavorites") : t("fav.add")}
         aria-pressed={active}
         aria-label={active ? t("fav.remove") : t("fav.add")}
-          className={`ghost-button profile-action__button !text-sm !normal-case !tracking-normal ${
+          className={`ghost-button profile-action__button !text-sm !normal-case !tracking-normal ${iconOnly ? "profile-icon-button profile-favorite-button" : ""} ${
             active
             ? "!border-[var(--accent)] !text-[var(--accent)] bg-[var(--accent)]/10"
             : ""
         }`}
       >
-        {active ? t("fav.inFavorites") : t("fav.add")}
+        {iconOnly ? icon : active ? t("fav.inFavorites") : t("fav.add")}
       </button>
       {msg && (
         <span className="profile-action__status text-[var(--danger)]">

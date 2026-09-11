@@ -30,7 +30,7 @@ test("profile badge is scoped to the active mode and explicit profile revision",
   assert.match(header, /revision=\{leaderboardRevision\}/);
   assert.match(header, /mode === "seasonal" \? "pvp-season" : mode/);
   assert.match(regular, /leaderboardRevision=\{`\$\{profileUpdatedAt/);
-  assert.match(arena, /leaderboardArenaMode=\{selectedMode\}/);
+  assert.match(arena, /leaderboardArenaMode=\{selectedMode === "overall" \? "blastGang" : selectedMode\}/);
   assert.match(arena, /profile\.fetchedAt/);
   assert.match(seasonal, /leaderboardRevision=\{`\$\{cycleId}:\$\{profile\.profileUpdatedAt}/);
   assert.match(badge, /mode === "pvp-season" && cycleId/);
