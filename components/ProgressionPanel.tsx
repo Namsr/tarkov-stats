@@ -325,132 +325,47 @@ export default function ProgressionPanel({
     };
   }, [cycleId, eligibleFavorites, mode, selectedAid, t]);
 
-  return (
-    <section className="mt-5" aria-labelledby="progression-heading">
-      <div className="seasonal-controls">
-        <div>
-          <span className="section-kicker">{t(
-            mode === "regular"
-              ? "progression.kicker"
-              : mode === "pve" ? "progression.kicker.pve" : "seasonal.kind.cumulative",
-          )}</span>
-          <h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
-        </div>
-      </div>
-
-      {data?.comparison.status === "warming" && (
-        <div className="data-panel mt-4 p-5" role="status">
-          <p className="text-sm text-[var(--muted)]">{t("progression.comparisonWarming")}</p>
-        </div>
-      )}
-
-      <div className="data-panel mt-4 p-4 sm:p-5">
-        <label
-          htmlFor={`progression-compare-${mode}-${cycleId}-${aid}`}
-          className="grid gap-2 text-sm text-[var(--muted)]"
-        >
-          <span className="font-semibold text-[var(--foreground)]">{t("progression.compare.label")}</span>
-          <select
-            id={`progression-compare-${mode}-${cycleId}-${aid}`}
-            value={selectedAid}
-            disabled={!mainReady || favoritesLoading || !favoritesEnabled || eligibleFavorites.length === 0}
-            onChange={(event) => selectComparison(event.target.value)}
-            className="progression-timeline__compare-select min-h-11 w-full rounded border border-[var(--card-border)] bg-[var(--input-bg)] px-3 text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-            aria-busy={showSecondaryLoading || loading}
-          >
+  return <section className="profile-progression" aria-labelledby="progression-heading">
+    <div className="profile-progress-heading"><h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
+      <CompactDetails summary={t("progression.compare.label")} className="profile-progress-favorite">
+        <label htmlFor={`progression-compare-${mode}-${cycleId}-${aid}`} className="profile-select">
+          <span className="sr-only">{t("progression.compare.label")}</span>
+          <select id={`progression-compare-${mode}-${cycleId}-${aid}`} value={selectedAid} disabled={!mainReady || favoritesLoading || !favoritesEnabled || eligibleFavorites.length === 0} onChange={(event) => selectComparison(event.target.value)} aria-busy={showSecondaryLoading || loading}>
             <option value="">{t("progression.compare.clear")}</option>
-            {eligibleFavorites.map((favorite) => (
-              <option key={favoriteKey(favorite)} value={String(favorite.aid)}>
-                {favorite.nickname?.trim() || t("progression.compare.playerId", { aid: favorite.aid })}
-              </option>
-            ))}
+            {eligibleFavorites.map((favorite) => <option key={favoriteKey(favorite)} value={String(favorite.aid)}>{favorite.nickname?.trim() || t("progression.compare.playerId", { aid: favorite.aid })}</option>)}
           </select>
         </label>
-        {compareNotice && (
-          <p className="mt-2 text-sm text-[var(--muted)]" role="status" aria-live="polite">
-            {compareNotice}
-          </p>
-        )}
-        {showSecondaryLoading && (
-          <p className="mt-2 text-sm text-[var(--muted)]" role="status" aria-live="polite">
-            {t("progression.compare.loading")}
-          </p>
-        )}
-        {showSecondaryError && (
-          <p className="mt-2 text-sm text-[var(--danger)]" role="status" aria-live="polite">
-            {t("progression.compare.error")}
-          </p>
-        )}
-        {activeSecondary && !showSecondaryLoading && !secondaryHasPoints && !showSecondaryError && (
-          <p className="mt-2 text-sm text-[var(--muted)]" role="status" aria-live="polite">
-            {t("progression.compare.noHistory")}
-          </p>
-        )}
-      </div>
-
-      {loading && (
-        <div className="mt-4 grid gap-4" role="status" aria-label={t("common.loading")}>
-          <div className="h-72 skeleton rounded-xl" />
+        {compareNotice && <p className="profile-chart-notice" role="status">{compareNotice}</p>}
+      </CompactDetails>
+    </div>
+    {data?.comparison.status === "warming" && <p className="profile-chart-notice" role="status">{t("progression.comparisonWarming")}</p>}
+    {showSecondaryLoading && <p className="profile-chart-notice" role="status">{t("progression.compare.loading")}</p>}
+    {showSecondaryError && <p className="profile-chart-notice" role="status">{t("progression.compare.error")}</p>}
+    {activeSecondary && !showSecondaryLoading && !secondaryHasPoints && !showSecondaryError && <p className="profile-chart-notice" role="status">{t("progression.compare.noHistory")}</p>}
+    {loading && <div className="h-72 skeleton rounded-xl" role="status" aria-label={t("common.loading")} />}
+    {error && <p className="profile-chart-notice" role="status">{t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable")}</p>}
+    {!loading && !error && <>
+      {history && !history.ready && !hasPoints && <p className="profile-chart-notice" role="status">{t("progression.collecting")}</p>}
+      {data && <ProgressionTimelineChart key={mainIdentityKey} data={data} title={t("progression.timeline.title")} comparison={activeSecondary && secondaryHasPoints ? activeSecondary : undefined} />}
+      {history && <CompactDetails summary={t("progression.dataDetails")} className="profile-progress-details">
+        <div className="seasonal-chart__meta">
+          <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
+          <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
+          <span>{t("progression.intervals", { n: history.intervalCount })}</span>
+          <span>{t("progression.allIntervals", { n: history.allIntervalCount ?? history.intervalCount })}</span>
+          <span>{t("progression.raidIntervals", { n: history.raidIntervalCount ?? 0 })}</span>
+          {history.firstObservedAt && <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>}
+          {history.lastObservedAt && <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>}
         </div>
-      )}
-
-      {error && (
-        <div className="data-panel mt-4 p-5" role="status">
-          <p className="text-sm text-[var(--muted)]">{t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable")}</p>
-        </div>
-      )}
-
-      {!loading && !error && (
-        <>
-          {history && !history.ready && !hasPoints && (
-            <div className="data-panel mt-4 p-5" role="status">
-              <p className="text-sm text-[var(--muted)]">{t("progression.collecting")}</p>
-            </div>
-          )}
-
-          {data && (hasPoints || history?.ready) && (
-            <ProgressionTimelineChart
-              data={data}
-              title={t("progression.timeline.title")}
-              comparison={activeSecondary && secondaryHasPoints ? activeSecondary : undefined}
-            />
-          )}
-
-          {history && (
-            <CompactDetails summary={t("progression.dataDetails")} className="mt-4">
-              <div className="seasonal-chart__meta">
-                <span>{t(history.ready ? "progression.ready" : "progression.collecting")}</span>
-                <span>{t("progression.baselineSnapshot", { n: history.snapshotCount > 0 ? 1 : 0 })}</span>
-                <span>{t("progression.snapshots", { n: history.snapshotCount })}</span>
-                <span>{t("progression.intervals", { n: history.intervalCount })}</span>
-                <span>{t("progression.allIntervals", { n: history.allIntervalCount ?? history.intervalCount })}</span>
-                <span>{t("progression.changedIntervals", { n: history.changedIntervalCount ?? history.intervalCount })}</span>
-                <span>{t("progression.raidIntervals", { n: history.raidIntervalCount ?? 0 })}</span>
-                <span>{t("progression.tempoPoints", { n: history.tempoPointCount ?? 0 })}</span>
-                <span>{t("progression.formPoints", { n: history.formPointCount ?? 0 })}</span>
-                {history.firstObservedAt && (
-                  <span>{t("progression.firstObserved", { date: new Date(history.firstObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-                )}
-                {history.lastObservedAt && (
-                  <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>
-                )}
-              </div>
-            </CompactDetails>
-          )}
-
-          {history?.ready && <section className="mt-5">
-            <h3 className="section-heading mb-3">{t("seasonal.longTerm")}</h3>
-            <div className="data-ledger">
-              <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
-              <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
-              <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />
-              <StatCard label={t("seasonal.metric.overallPmcKd")} value={number(longTerm?.overallPmcKd)} />
-              <StatCard label={t("seasonal.metric.intervals")} value={longTerm?.intervals ?? history?.intervalCount ?? "—"} />
-              <StatCard label={t("seasonal.metric.coveredRaids")} value={longTerm?.coveredRaids ?? "—"} />
-            </div>
-          </section>}
-        </>
-      )}
-    </section>
-  );
+        {history.ready && <section className="profile-statistics"><div><h3>{t("seasonal.longTerm")}</h3><div className="data-ledger">
+          <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
+          <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
+          <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />
+          <StatCard label={t("seasonal.metric.overallPmcKd")} value={number(longTerm?.overallPmcKd)} />
+          <StatCard label={t("seasonal.metric.intervals")} value={longTerm?.intervals ?? history.intervalCount} />
+          <StatCard label={t("seasonal.metric.coveredRaids")} value={longTerm?.coveredRaids ?? "—"} />
+        </div></div></section>}
+      </CompactDetails>}
+    </>}
+  </section>;
 }

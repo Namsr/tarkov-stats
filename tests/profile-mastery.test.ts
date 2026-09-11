@@ -95,24 +95,16 @@ test("weapon mastery normalizes profile rows, joins names, and sorts progress de
   ]).map((row) => row.id), ["level3", "level1"]);
 });
 
-test("weapon mastery table exposes sortable headers and a mobile list", () => {
+test("weapon mastery keeps sortable headers and one responsive disclosure", () => {
   const source = readFileSync("components/ProfileMastering.tsx", "utf8");
-  assert.match(source, /aria-sort=\{ariaSortValue/);
+  assert.match(source, /aria-sort=/);
   assert.match(source, /className="mastering-table__sort/);
   assert.match(source, /<caption className="sr-only">/);
-  assert.match(source, /className="mastering-cards" role="list"/);
-  assert.match(source, /displayedWeaponMasteryProgress\(progress\)\.toLocaleString/);
-  assert.match(source, /const positiveRows = sorted\.filter\(\(row\) => displayedWeaponMasteryProgress\(row\.progress\) > 0\)/);
-  assert.match(source, /const zeroRows = sorted\.filter\(\(row\) => displayedWeaponMasteryProgress\(row\.progress\) === 0\)/);
-  assert.match(source, /const showZeroTail = !positiveCanCollapse \|\| positiveExpanded/);
-  assert.match(source, /if \(positiveExpanded\) setZeroExpanded\(false\)/);
-  assert.match(source, /previewCount=\{MASTERY_PREVIEW_COUNT\}/);
-  assert.match(source, /collapsed=\{positiveCanCollapse && !positiveExpanded\}/);
-  assert.match(source, /aria-hidden=\{collapsed && previewCount !== undefined && index > previewCount/);
-  assert.match(source, /aria-expanded=\{positiveExpanded\}/);
-  assert.match(source, /aria-controls=\{positivePanelId\}/);
-  assert.match(source, /mastering\.zeroExpand/);
-  assert.match(source, /profile-collapsible__preview-tail/);
+  assert.match(source, /showZero \|\| displayedWeaponMasteryProgress\(row.progress\) > 0/);
+  assert.match(source, /previewRows=\{5\}/);
+  assert.match(source, /<ProfileCollapseToggle/);
+  assert.match(source, /type="checkbox" checked=\{showZero\}/);
+  assert.match(source, /if \(event.target.checked\) setExpanded\(true\)/);
 });
 
 test("mastery rows use the displayed rounded value for zero partitioning", () => {

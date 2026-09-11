@@ -97,29 +97,21 @@ test("Arena presentation preserves nullable values and namespaced filters", () =
   assert.match(risk, /viewBox="0 0 320 170"/);
 });
 
-test("Arena profile reuses the PvP shell and shows one selected mode", () => {
+test("Arena profile shares the profile header and selects an overall or mode scope", () => {
   const profile = read("components/ArenaPlayer.tsx");
-  const account = read("components/ArenaAccountCard.tsx");
-  assert.match(profile, /<ProfileSectionNav[\s\S]*?<ProfileHeader/);
+  const bars = read("components/ArenaModeBars.tsx");
   assert.match(profile, /<ProfileHeader[\s\S]*?mode="arena"/);
-  assert.match(profile, /profile\.section\.overview/);
-  assert.match(profile, /profile\.section\.risk/);
-  assert.match(profile, /profile\.section\.comparison/);
-  assert.match(profile, /arena\.section\.modes/);
-  assert.doesNotMatch(profile, /profile\.section\.(?:progression|statistics|achievements|mastering|skills)/);
-  assert.equal((account.match(/<StatCard/g) ?? []).length, 4);
-  assert.match(account, /arena\.account\.hours/);
-  assert.match(account, /arena\.counter\.matches/);
-  assert.match(account, /arena\.counter\.kills/);
-  assert.match(account, /arena\.metric\.win_rate/);
-  assert.doesNotMatch(account, /arena\.metric\.kd_ratio/);
-  assert.match(profile, /function mostPlayedMode/);
+  assert.match(profile, /<ProfileSectionNav/);
   assert.match(profile, /arenaModeFromUrl/);
-  assert.match(profile, /className="arena-mode-picker"/);
-  assert.match(profile, /key=\{selectedMode\}/);
+  assert.match(profile, /useState<ArenaStoredMode>\("overall"\)/);
+  assert.match(profile, /aria-pressed=\{selectedMode === mode\}/);
   assert.match(profile, /mode=\{selectedMode\}/);
-  assert.match(profile, /favorite=\{comparedFavorite\}/);
-  assert.match(profile, /scope="overall"/);
+  assert.match(profile, /<ArenaModeBars/);
+  assert.match(profile, /favorite=\{favoriteStats\}/);
+  assert.match(profile, /metric.hours/);
+  assert.doesNotMatch(profile, /<ProgressionPanel|<ProfileAchievements|<ProfileSkills/);
+  assert.match(bars, /metric === "win_rate" \? 100/);
+  assert.match(bars, /stopPropagation\(\)/);
 });
 
 test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {

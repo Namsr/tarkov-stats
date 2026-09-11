@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { tarkovDevMode, type GameMode } from "@/types/seasonal";
+import { isProfileStale, PROFILE_STALE_MS } from "@/lib/profile-refresh-policy";
 
 /** tarkov.dev profile URL (regular mode) for an account id. */
 function tarkovDevUrl(aid: number, mode: GameMode): string {
@@ -15,6 +16,7 @@ export default function RefreshButton({
   aid,
   mode = "regular",
   stale = false,
+  updatedAt,
   missing = false,
   className = "",
   onCheck,
@@ -22,15 +24,33 @@ export default function RefreshButton({
   aid: number;
   mode?: GameMode;
   stale?: boolean;
+  updatedAt?: number | null;
   missing?: boolean;
   className?: string;
   onCheck?: () => Promise<RefreshCheckResult>;
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<"idle" | "waiting" | "checking" | RefreshCheckResult | "error">("idle");
+  const [aged, setAged] = useState(() => isProfileStale(updatedAt));
   const awaitingReturn = useRef(false);
   const checking = useRef(false);
-  const prominent = stale || missing;
+  const isStale = updatedAt === undefined ? stale : aged;
+  const prominent = isStale || missing;
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () => {
+      clearTimeout(timer);
+      setAged(isProfileStale(updatedAt));
+      if (updatedAt != null && Number.isFinite(updatedAt) && updatedAt > 0) {
+        const remaining = updatedAt + PROFILE_STALE_MS - Date.now();
+        if (remaining > 0) timer = setTimeout(update, Math.min(remaining, 2_147_483_647));
+      }
+    };
+    update();
+    document.addEventListener("visibilitychange", update);
+    return () => { clearTimeout(timer); document.removeEventListener("visibilitychange", update); };
+  }, [updatedAt]);
 
   const check = useCallback(async () => {
     if (!onCheck || checking.current) return;
@@ -63,13 +83,13 @@ export default function RefreshButton({
         href={tarkovDevUrl(aid, mode)}
         target="_blank"
         rel="noopener noreferrer"
-        title={t(missing ? "player.refreshMissingHint" : stale ? "player.refreshStaleHint" : "player.refreshHint")}
+        title={t(missing ? "player.refreshMissingHint" : isStale ? "player.refreshStaleHint" : "player.refreshHint")}
         onClick={() => {
           if (!onCheck) return;
           awaitingReturn.current = true;
           setStatus("waiting");
         }}
-        className={`${prominent ? "tactical-button motion-safe:animate-pulse" : "ghost-button"} profile-action__button !text-sm !normal-case !tracking-normal ${className}`}
+        className={`ghost-button profile-refresh-button ${prominent ? "is-stale" : ""} profile-action__button !text-sm !normal-case !tracking-normal ${className}`}
       >
         {t(missing ? "player.refreshCache" : "player.refresh")}
       </a>

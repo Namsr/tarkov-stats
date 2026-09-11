@@ -12,9 +12,9 @@ import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
 import CheaterScore from "@/components/CheaterScore";
+import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
-import { isProfileStale } from "@/lib/profile-refresh-policy";
 import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
@@ -193,9 +193,6 @@ export default function SeasonalPlayer({
   const [loading, setLoading] = useState(!initialProfile);
   const [error, setError] = useState("");
   const [modeUnavailable, setModeUnavailable] = useState(false);
-  const [profileIsStale, setProfileIsStale] = useState(
-    initialProfile ? isProfileStale(initialProfile.profileUpdatedAt) : false,
-  );
   const [progressionRefreshRevision, setProgressionRefreshRevision] = useState(0);
   const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const [displayNickname, setDisplayNickname] = useState<string | undefined>(initialProfile?.nickname);
@@ -229,7 +226,6 @@ export default function SeasonalPlayer({
       setSkillItems(null);
       setMasteryItems(null);
       setServerRisk(null);
-      setProfileIsStale(false);
     }
 
     loadPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)
@@ -261,7 +257,6 @@ export default function SeasonalPlayer({
         if (nickname) upsertRecentPlayer({ aid: String(aid), nickname, mode: "pvp-season", cycle: cycleId });
         setProfile(nextProfile);
         setDisplayNickname(nextProfile.nickname);
-        setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
         setModeUnavailable(false);
       })
       .catch((caught: unknown) => {
@@ -315,7 +310,6 @@ export default function SeasonalPlayer({
         setMasteryItems(masteryFromViewModel(body.viewModel));
         setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
         setModeUnavailable(false);
-        setProfileIsStale(isProfileStale(nextProfile.profileUpdatedAt));
         setError("");
         setProgressionRefreshRevision((current) => current + 1);
         return changed ? "updated" : "unchanged";
@@ -361,11 +355,6 @@ export default function SeasonalPlayer({
   }
 
   const stats = seasonalStatsFor(profile, levelBands);
-  const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Europe/Moscow",
-  });
   const comparisonStats = {
     hoursPlayed: profile.lifetimePvpHours,
     pmcRaids: profile.counters.pmcRaids,
@@ -377,7 +366,7 @@ export default function SeasonalPlayer({
     level: stats.level,
   };
   const statistics = (
-    <div className="space-y-5">
+    <div><h2 className="section-heading mb-7">{t("profile.section.statistics")}</h2><div className="profile-statistics">
       <section>
         <div className="mb-3 flex items-baseline justify-between gap-4">
           <h2 className="section-heading">{t("player.raidStats")}</h2>
@@ -402,7 +391,7 @@ export default function SeasonalPlayer({
           <StatCard label={t("player.experience")} value={profile.counters.experience.toLocaleString()} />
         </div>
       </section>
-    </div>
+    </div></div>
   );
 
   return (
@@ -410,25 +399,25 @@ export default function SeasonalPlayer({
       aid={aid}
       mode="seasonal"
       cycleId={cycleId}
-      kicker={t("seasonal.profileKicker", { cycle: cycleId, aid })}
+      kicker={`#${aid}`}
       title={profile.nickname}
       leaderboardRevision={`${cycleId}:${profile.profileUpdatedAt}:${progressionRefreshRevision}`}
       meta={
         <div className="profile-header__meta">
           <span>{t("player.sideLabel", { side: profile.side ?? unknownValue })}</span>
+          {stats.level != null && <span>{t("profile.levelValue", { n: stats.level })}</span>}
           {stats.prestige != null && stats.prestige > 0 && (
             <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
           )}
-          <span>{t("player.profileUpdated", { date: dateTimeFormatter.format(profile.profileUpdatedAt) })}</span>
-          <span>{t("player.lastPlayed", { date: dateTimeFormatter.format(profile.lastAccessAt) })}</span>
         </div>
       }
-      actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={profile.nickname} stale={profileIsStale} onCheck={refreshProfile} />}
+      actions={<ProfilePrimaryActions aid={aid} mode="seasonal" cycleId={cycleId} nickname={profile.nickname} />}
+      activity={<ProfileActivity aid={aid} mode="seasonal" updatedAt={profile.profileUpdatedAt} lastPlayedAt={profile.lastAccessAt} onCheck={refreshProfile} />}
       overviewCards={[
-        { label: t("player.hoursPlayed"), value: displayNumber(profile.lifetimePvpHours, 1, unknownValue), suffix: t("unit.h") },
         { label: t("player.pmcKd"), value: displayNumber(stats.pmcKdRatio, 2, unknownValue) },
         { label: t("seasonal.pmcSurvival"), value: displayNumber(stats.pmcSurvivalRate, 1, unknownValue), suffix: "%" },
         { label: t("player.pmcRaids"), value: profile.counters.pmcRaids },
+        { label: t("metric.hours"), value: displayNumber(profile.lifetimePvpHours, 0, unknownValue) },
       ]}
       progression={<ProgressionPanel
         aid={aid}
@@ -441,8 +430,8 @@ export default function SeasonalPlayer({
         forceRefresh={forceProgressionRefresh}
         onRiskChange={setProgressionRisk}
       />}
-      risk={<div><h2 className="section-heading mb-3">{t("cheater.heading")}</h2><CheaterScore risk={serverRisk ?? progressionRisk} mode="seasonal" cycleId={cycleId} /></div>}
-      comparison={<PlayerRadarComparison aid={aid} stats={comparisonStats} mode="seasonal" cycleId={cycleId} />}
+      risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={serverRisk ?? progressionRisk} mode="seasonal" cycleId={cycleId} /><p>{t("cheater.disclaimer")}</p></div></div>}
+      comparison={<PlayerRadarComparison aid={aid} nickname={profile.nickname} stats={comparisonStats} mode="seasonal" cycleId={cycleId} />}
       statistics={statistics}
       achievements={
         <ProfileAchievements
