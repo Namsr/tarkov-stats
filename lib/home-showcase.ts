@@ -2,9 +2,31 @@ import type { PlayerProfileViewModel } from "@/types/player-profile-view";
 import type { ProfileComparisonStats, PublicRiskView } from "@/types/profile-view";
 import type { ProgressionTimelineResponse } from "@/types/seasonal";
 
+// Fallback when no showcase group is configured or the showcase API is down.
 // Pick once when the homepage mounts, then keep every section on that account.
 export const HOME_EXAMPLE_AIDS = [8008486, 7325281] as const;
 export const HOME_COMPARISON_AID = 10493246;
+
+export interface ShowcaseItem {
+  aid: number;
+  nickname: string | null;
+  enabled: boolean;
+  sort: number;
+}
+
+export interface ShowcaseConfig {
+  groupId: number | null;
+  groupName: string | null;
+  aids: number[];
+  items: ShowcaseItem[];
+  updatedAt: number | null;
+}
+
+export function pickShowcaseAid(config: ShowcaseConfig | null): number {
+  const aids = (config?.aids ?? []).filter((aid) => Number.isSafeInteger(aid) && aid > 0);
+  const pool = aids.length ? aids : [...HOME_EXAMPLE_AIDS];
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 export interface HomeProfile {
   identity: { aid: number; mode: string; cycleId: string };
