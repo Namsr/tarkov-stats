@@ -1,5 +1,5 @@
 export const LEADERBOARD_FORMULA_VERSION = 3;
-export const LEADERBOARD_METRIC_VERSION = 4;
+export const LEADERBOARD_METRIC_VERSION = 5;
 
 export const PERFORMANCE_CONFIDENCE_HOURS = 10;
 
@@ -58,7 +58,7 @@ export function kdValue(kills: number | null, deaths: number | null): {
   if (kills == null || deaths == null || !validCount(kills) || !validCount(deaths)) {
     return { value: null, deathless: false, orderClass: 0 };
   }
-  if (deaths === 0) return { value: null, deathless: true, orderClass: kills > 0 ? 2 : 0 };
+  if (deaths === 0) return { value: kills, deathless: true, orderClass: kills > 0 ? 2 : 0 };
   return { value: kills / deaths, deathless: false, orderClass: 1 };
 }
 
