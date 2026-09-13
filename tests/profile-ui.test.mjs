@@ -122,10 +122,10 @@ test("profile omits empty skills anchors and keeps achievements full width", asy
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
 
   assert.match(skills, /export function hasVisibleSkills\(skills: readonly unknown\[\] \| null \| undefined\)/);
-  assert.match(skills, /Number\.isFinite\(progress\) && progress > 0/);
+  assert.match(skills, /normalizeProfileSkill\(skill\) !== null/);
   assert.match(regular, /hasVisibleSkills\(regularSkillItems\)\s*\?\s*<ProfileSkills/);
   assert.match(seasonal, /hasVisibleSkills\(skillItems\)\s*\?\s*<ProfileSkills/);
-  assert.match(achievements, /<div className="space-y-5">[\s\S]*<EarlyUnlocks/);
+  assert.match(achievements, /className="achievement-table-wrap"/);
   assert.doesNotMatch(achievements, /<aside>[\s\S]*<EarlyUnlocks/);
 });
 
@@ -145,18 +145,18 @@ test("profile achievements use sortable desktop columns and readable mobile card
   assert.match(achievements, /referrerPolicy="no-referrer"/);
   assert.match(achievements, /achievement\.samplePrimary/);
   assert.match(achievements, /achievement\.bsgLine/);
-  assert.match(achievements, /const \[sortKey, setSortKey\] = useState<AchievementSortKey>\(variant === "average" \? "percent" : "date"\)/);
+  assert.match(achievements, /useState<AchievementSortKey>\("percent"\)/);
   assert.match(achievements, /key: "percent"/);
   assert.match(achievements, /achievement-table__number-header/);
   assert.match(achievements, /<div className="achievement-cards" role="list">/);
   assert.match(achievements, /const ACHIEVEMENT_PREVIEW_COUNT = 3/);
-  assert.match(achievements, /aria-expanded=\{expanded\}/);
-  assert.match(achievements, /aria-controls=\{collapseId\}/);
+  assert.match(collapsible, /aria-expanded=\{expanded\}/);
+  assert.match(achievements, /controls=\{collapseId\}/);
   assert.match(achievements, /profile-collapsible__preview-tail/);
   assert.match(achievements, /achievement\.expand/);
   assert.match(collapsible, /content\.scrollHeight/);
-  assert.match(collapsible, /const measuredHeight = useRef<number \| null>\(null\)/);
-  assert.match(collapsible, /if \(measuredHeight\.current === height\) return/);
+  assert.match(collapsible, /row\.inert = hidden/);
+  assert.match(collapsible, /positions\[previewRows\]/);
   assert.match(collapsible, /observer\.observe\(content\)/);
   assert.doesNotMatch(collapsible, /observer\.observe\(node\)/);
   assert.match(styles, /\.achievement-table-wrap \{[^}]*overflow-x: auto/);
@@ -202,7 +202,7 @@ test("average profiles always reuse the responsive profile achievements section"
   assert.match(achievements, /variant\?: "profile" \| "average"/);
   assert.match(achievements, /const AVERAGE_COLUMNS[\s\S]*key: "hours"[\s\S]*achievement\.col\.unlockTime/);
   assert.match(achievements, /variant === "average" && \(normalized\.owners \?\? 0\) <= 0/);
-  assert.match(achievements, /variant === "profile" && \([\s\S]*<EarlyUnlocks/);
+  assert.match(achievements, /variant === "average" && <th scope="col">/);
   assert.match(achievements, /formatHours\(achievement\.unlockHours/);
 
   assert.match(route, /nameRu: m\?\.nameRu \?\? null/);
@@ -450,7 +450,7 @@ test("radar statistic switch identifies requests by method", async () => {
   assert.match(source, /favoriteProfile\?\.requestId === favoriteRequestId \? favoriteProfile\.stats : null/);
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
-  assert.match(source, /name=\{`radar-statistic-\$\{aid\}`\}/);
+  assert.match(source, /select value=\{statistic\} onChange=/);
 });
 
 test("regular radar period switch identifies requests by freshness", async () => {
@@ -464,18 +464,18 @@ test("regular radar period switch identifies requests by freshness", async () =>
   assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
   assert.match(source, /payload\.requestId === cohortRequestId/);
   assert.match(source, /params\.delete\("period"\)/);
-  assert.match(source, /name=\{`radar-period-\$\{aid\}`\}/);
+  assert.match(source, /select value=\{period\} onChange=/);
 });
 
 test("radar keeps raw player values independent from baseline availability", async () => {
   const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
-
-  assert.match(source, /const activeBaseline = active\?\.available \? active\.average\.value : null/);
-  assert.match(source, /formatValue\(active\.metric, playerValues\[active\.metric\.key\]\)/);
-  assert.match(source, /ratioText\(playerValues\[active\.metric\.key\], activeBaseline\)/);
-  assert.match(source, /active\.available[\s\S]*?radar\.baselineUnavailable/);
-  assert.match(source, /axis\.available[\s\S]*?formatValue\(axis\.metric, axis\.average\.value\)[\s\S]*?radar\.baselineUnavailable/);
-  assert.match(source, /\{t\("radar\.baselineUnavailable"\)\}/);
+  const radar = await readFile("components/ProfileRadar.tsx", "utf8");
+  assert.match(source, /a: playerValues\?\.\[metric\.key\] \?\? null/);
+  assert.match(source, /cohort\?\.quality === "sufficient" && cohort.twoDimensional/);
+  assert.match(radar, /value\(metric.a, metric\)/);
+  assert.match(radar, /points.every\(\(p\) => p != null\)/);
+  assert.match(radar, /homePercentageDifference\(metric.a, metric.b\)/);
+  assert.match(radar, /radar.baselineUnavailable/);
 });
 
 test("profile refresh checks automatically after returning without requiring F5", async () => {
@@ -510,7 +510,7 @@ test("Seasonal missing profiles keep the shell and refresh after returning", asy
   assert.match(shell, /Array\.from\(\{ length: 4 \}\)/);
   assert.match(seasonal, /<SeasonalProfileActions[\s\S]*?missing[\s\S]*?onCheck=\{refreshProfile\}/);
   assert.match(seasonal, /refresh: "1"/);
-  assert.match(seasonal, /stale=\{profileIsStale\}/);
+  assert.match(seasonal, /<ProfileActivity[\s\S]*updatedAt=\{profile.profileUpdatedAt\}/);
   assert.match(seasonal, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
   assert.match(dictionary, /"player\.refreshStaleHint": "This profile was last updated more than three days ago\./);
   assert.match(dictionary, /"player\.refreshStaleHint": "Профиль не обновлялся больше трёх дней\./);
@@ -531,8 +531,34 @@ test("profile freshness becomes stale only after three full days", async () => {
 
   assert.equal(PROFILE_STALE_MS, 3 * 24 * 60 * 60 * 1000);
   assert.equal(isProfileStale(now - PROFILE_STALE_MS + 1, now), false);
+  assert.equal(isProfileStale(now - PROFILE_STALE_MS, now), true);
   assert.equal(isProfileStale(now - PROFILE_STALE_MS - 1, now), true);
   assert.equal(isProfileStale(null, now), false);
+});
+
+test("profile skills reject unknown counters and preserve level boundaries", async () => {
+  const { normalizeProfileSkill } = await import("../lib/profile-skills.ts");
+  for (const value of [null, {}, { Id: "BotReload", Progress: 300 }, { Id: "Strength", Progress: true }, { Id: "Strength", Progress: -1 }, { Id: "Strength", Progress: Infinity }]) {
+    assert.equal(normalizeProfileSkill(value), null);
+  }
+  assert.deepEqual(normalizeProfileSkill({ Id: "Strength", Progress: 5075.5 }), { id: "Strength", progress: 5075.5, level: 50, percent: 75.5, elite: false });
+  assert.deepEqual(normalizeProfileSkill({ id: "Strength", progress: 5200 }), { id: "Strength", progress: 5200, level: 51, percent: 100, elite: true });
+});
+
+test("profile history preserves reset boundaries and gaps, and deduplicates date labels", async () => {
+  const { profileProgressionSegments, profileProgressionTime, profileChartTicks } = await import("../lib/profile-progression.ts");
+  const points = [
+    { seriesId: "old", pmcRaids: 100, value: 3, level: 20 },
+    { seriesId: "new", pmcRaids: 1, value: 2, level: 1 },
+    { seriesId: "new", pmcRaids: 2, value: NaN, level: null },
+    { seriesId: "new", pmcRaids: 3, value: 4, level: 2 },
+  ];
+  assert.deepEqual(profileProgressionSegments(points, "kd", true).map((s) => s.map((p) => p.value)), [[3], [2], [4]]);
+  assert.deepEqual(profileProgressionSegments(points, "level", false).map((s) => s.map((p) => p.value)), [[1], [2]]);
+  assert.equal(profileProgressionTime({ date: "2026-09-01" }), Date.parse("2026-09-01T00:00:00+03:00"));
+  assert.equal(profileProgressionTime({ date: "invalid" }), null);
+  assert.equal(profileProgressionTime({ observedAt: 1234, date: "invalid" }), 1234);
+  assert.deepEqual(profileChartTicks([1, 1, 1.1, 2, Infinity], (n) => n.toFixed(0)), [{ value: 1, label: "1" }, { value: 2, label: "2" }]);
 });
 
 test("unknown regular PvP stats are not rendered or scored as zero", async () => {
@@ -564,7 +590,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.ok(progression > 0 && cheatingRisk > progression && radar > cheatingRisk);
   const shell = await readFile("components/ProfileShell.tsx", "utf8");
   assert.match(profile, /progression=\{<ProgressionPanel/);
-  assert.match(profile, /risk=\{<div><h2 className="section-heading mb-3">\{t\("cheater\.heading"\)\}<\/h2><CheaterScore/);
+  assert.match(profile, /risk=\{<div className="profile-risk">[\s\S]*<CheaterScore compact/);
   assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
   assert.doesNotMatch(score, /section-kicker">\{t\("cheater\.heading"\)\}/);
   assert.match(profile, /<ProgressionPanel[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
@@ -611,109 +637,24 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /function timelineHasPlayerHistory/);
   assert.match(panel, /timeline\.metrics\.xp, timeline\.metrics\.pvp_kd, timeline\.metrics\.ai_kd, timeline\.metrics\.survival/);
   assert.match(panel, /progression\.compare\.(?:authRequired|noFavorites|noEligible|historyLoading|noHistory|error)/);
-  assert.match(panel, /min-h-11/);
-  assert.match(panel, /aria-live="polite"/);
+  assert.match(panel, /profile-select/);
+  assert.match(panel, /role="status"/);
   assert.match(chart, /cumulativeLevelBands/);
-  assert.match(chart, /niceXpDomain/);
-  assert.match(chart, /chartPath/);
   assert.match(chart, /clipPath/);
-  assert.match(chart, /data-metric=\{(?:metric|item)\.key\}/);
-  assert.match(chart, /role="radio"/);
-  assert.match(chart, /aria-checked=\{active\}/);
-  assert.doesNotMatch(chart, /previewMetric/);
-  assert.match(chart, /const \[compareOverall, setCompareOverall\] = useState\(true\)/);
-  assert.match(chart, /focusPlayer/);
-  assert.match(chart, /animated(?:Raid)?DomainRef = useRef/);
-  assert.match(chart, /requestAnimationFrame\(step\)/);
-  assert.match(chart, /cancelAnimationFrame\(frame\)/);
-  assert.match(chart, /prefers-reduced-motion/);
-  assert.match(chart, /const PLAYER_MARKER_CLEARANCE = 14/);
-  assert.match(chart, /resolveMetricDomain/);
-  assert.match(chart, /targetForegroundPoints\.player/);
-  assert.match(chart, /targetXpPoints\.player/);
-  assert.match(chart, /function seriesPath/);
-  assert.match(chart, /const MAX_AGGREGATE_POINTS = 48/);
-  assert.match(chart, /seriesKey === "player"[\s\S]*compactProgressionPoints\(sourcePoints, MAX_AGGREGATE_POINTS\)/);
-  assert.match(chart, /const \[metricReveal, setMetricReveal\] = useState\(1\)/);
-  assert.match(chart, /metricRevealRaids/);
-  assert.match(chart, /progression-timeline__metric-reveal/);
-  assert.match(chart, /clipPath=\{`url\(#\$\{clipId\}-metric-reveal\)`\}/);
-  assert.match(chart, /const rawYForPoint =/);
-  assert.match(chart, /Math\.min\(animatedYDomains\.metric\.min, resolvedMetricDomain\.min\)/);
-  assert.match(chart, /seriesPath\(seriesPoints, timelineAxis, xForPoint, rawYForPoint, PAD\.top\)/);
-  assert.match(chart, /seriesPath\(\[from, to\], timelineAxis, xForPoint, rawYForPoint, PAD\.top\)/);
-  assert.match(chart, /y: \(rawYForPoint\(from\) \+ rawYForPoint\(to\)\) \/ 2/);
-  assert.doesNotMatch(chart, /markerCollisionRingRadii|playerMarkerRings|progression-timeline__point--ring/);
-  assert.doesNotMatch(chart, /metricLineShouldBeAboveXp|visualYForPoint|metricAboveXp/);
-  assert.doesNotMatch(chart, /splitLanes|laneHeight|metricLane|xpLane|lane-divider/);
-  assert.match(chart, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
-  assert.doesNotMatch(chart, /xp_per_day|pmc_raids_per_day|pmc_kills_per_day|non_pmc_kills_per_day/);
-  assert.doesNotMatch(chart, /pmc_kills_per_raid|non_pmc_kills_per_raid/);
-  for (const metric of ["pvp_kd", "ai_kd", "survival"]) {
-    assert.match(chart, new RegExp(`key: "${metric}"`));
-  }
-  const focusBackground = chart.match(/<rect[\s\S]*?className="progression-timeline__focus-background"[\s\S]*?\/>/)?.[0] ?? "";
-  assert.match(focusBackground, /aria-hidden="true"/);
-  assert.match(focusBackground, /pointerEvents="all"/);
-  assert.match(focusBackground, /onClick=\{\(\) => setFocusPlayer\(\(current\) => !current\)\}/);
-  const lineHitArea = chart.match(/<path[\s\S]*?className="progression-timeline__hit-area"[\s\S]*?\/>/)?.[0] ?? "";
-  assert.ok(lineHitArea, "line hit area should remain a sibling of the focus background");
-  assert.doesNotMatch(lineHitArea, /onClick|setFocusPlayer/);
-  const point = chart.match(/<circle[\s\S]*?className=\{`progression-timeline__point[\s\S]*?\/>/)?.[0] ?? "";
-  assert.ok(point, "point interaction should remain independent from the focus background");
-  assert.doesNotMatch(point, /onClick|setFocusPlayer/);
-  assert.match(chart, /progression-timeline__focus-hint/);
-  assert.doesNotMatch(chart, /progression-timeline__focus-toggle/);
-  assert.doesNotMatch(chart, /progression\.timeline\.focus\.(?:player|all)/);
-  assert.match(chart, /tooltip(?:Anchor|Position|Overlay)/i);
-  assert.match(chart, /role="(?:status|tooltip)"/);
-  assert.match(chart, /aria-live="polite"/);
-  assert.doesNotMatch(chart, /className="progression-timeline__tooltip"/);
-  assert.doesNotMatch(chart, /<title>\{label\}<\/title>/);
-  assert.match(chart, /onPointerEnter/);
-  assert.match(chart, /progression-timeline__hit-area/);
-  assert.match(chart, /progression\.timeline\.tooltip\.interval/);
-  assert.match(chart, /progression\.timeline\.tooltip\.levelDelta/);
-  assert.match(chart, /const includeLevelDelta = selected === null/);
-  const pointTooltip = chart.match(/const tooltipPointText = \([\s\S]*?\n  \};/)?.[0] ?? "";
-  assert.match(pointTooltip, /dateLabel\(point\.date\)/);
-  assert.doesNotMatch(pointTooltip, /tooltip\.pointTitle|tooltip\.date/);
-  assert.match(chart, /const tooltipPointAriaLabel =/);
-  const intervalTooltip = chart.match(/const tooltipIntervalText = \([\s\S]*?\n  \};/)?.[0] ?? "";
-  assert.match(intervalTooltip, /progression\.timeline\.tooltip\.interval/);
-  assert.doesNotMatch(intervalTooltip, /metricLabel|SERIES_LABELS\[series\]/);
-  assert.match(chart, /const tooltipIntervalAriaLabel =/);
-  assert.match(chart, /x=\{PAD\.left - 2\}/);
-  assert.match(chart, /x=\{WIDTH - PAD\.right - 2\}[^>]*textAnchor="end"[^>]*axis-label--metric/);
-  assert.match(chart, /const targetXpDomain = focusPlayer\s*\?\s*progressionValueDomain/);
-  assert.match(chart, /const animatedYDomainsRef = useRef/);
-  assert.match(chart, /progression-timeline__level-tick/);
-  assert.doesNotMatch(chart, /progression-timeline__(?:risk|snapshot)-(?:rail|marker|dot)/);
-  assert.doesNotMatch(chart, /riskMarkers|markerList|markerPoints/);
-  assert.match(chart, /overall: \{ dash: "1 5", opacity: \.5, width: 1\.5/);
-  assert.doesNotMatch(chart, /new Map\(source\.map\(\(marker\) => \[marker\.date/);
-  assert.match(chart, /progression-timeline__area--xp/);
-  assert.match(chart, /progression-timeline__legend/);
-  assert.match(chart, /legend-item--overall \$\{overallLegendState\.highlighted/);
-  assert.match(chart, /onPointerEnter=\{\(\) => setLayerHover\("xp"\)\}/);
-  assert.match(chart, /onPointerEnter=\{\(\) => setSeriesHover\(selectedMetric, "overall"\)\}/);
-  assert.match(chart, /const legendItemState = \(layer: TimelineLayer, series\?: HoverSeriesKey\)/);
-  assert.match(chart, /type HoverSeriesKey = SeriesKey \| "selected"/);
-  assert.match(chart, /comparison\?: \{[\s\S]*?aid: number[\s\S]*?nickname: string[\s\S]*?timeline: ProgressionTimelineResponse/);
-  assert.match(chart, /const selectedXpSource = useMemo/);
-  assert.match(chart, /const selectedMetricSource = useMemo/);
-  assert.match(chart, /comparison\?\.timeline\.metrics\.xp\?\.player/);
-  assert.doesNotMatch(chart, /comparison\?\.timeline\.metrics\.xp\?\.(?:nearby|overall)/);
-  assert.match(chart, /const targetPlayerXpPoints = \[\.\.\.targetXpPoints\.player, \.\.\.targetSelectedXpPoints\]/);
-  assert.match(chart, /const targetPlayerMetricPoints = \[\.\.\.targetForegroundPoints\.player, \.\.\.targetSelectedForegroundPoints\]/);
-  assert.match(chart, /metricDomainSamplesFor\(targetPlayerMetricPoints\)/);
-  assert.match(chart, /timelineAxis === "days"/);
-  assert.match(chart, /SELECTED_SERIES_STYLE = \{ dash: "7 4 1 4"/);
-  assert.match(chart, /progression-timeline__legend-item--selected/);
-  assert.match(chart, /r=\{active \? 7 : seriesKey === "player" \|\| isSelectedSeries \? 4 : 2\.5\}/);
-  assert.match(chart, /tooltipPointText\(hoveredPoint\.point, hoveredPoint\.metric, hoveredPoint\.series\)/);
-  assert.match(chart, /progression-timeline__axis-label--metric \$\{metricLayerHighlighted/);
-  assert.match(chart, /progression-timeline__axis-guide-item--level \$\{xpLayerHighlighted/);
+  assert.match(chart, /data-metric=\{value\}/);
+  assert.match(chart, /aria-pressed=\{metric === value\}/);
+  assert.match(chart, /profileProgressionSegments\(source, metric, allHistory\)/);
+  assert.match(chart, /comparison\?\.timeline.metrics\[key\]\?\.player/);
+  assert.match(chart, /profileProgressionSegments\(comparisonSource, metric, allHistory\)/);
+  assert.match(chart, /data.identity.mode === "pve" \? "ai_kd" : "pvp_kd"/);
+  assert.match(chart, /const showOverall = overall && axis === "raids" && average.length > 0/);
+  assert.match(chart, /profileChartTicks/);
+  assert.match(chart, /profileProgressionTime/);
+  assert.match(chart, /role="status"/);
+  assert.match(chart, /onPointerMove/);
+  assert.match(chart, /onFocus/);
+  assert.match(chart, /event.key === "Escape"/);
+  assert.doesNotMatch(chart, /<title>/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
   assert.match(dictionary, /"progression\.series\.overall": "Медианный игрок PvP"/);
   assert.match(dictionary, /"progression\.pointTipRange":/);
@@ -738,32 +679,16 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
-test("progression hover states reserve space and never switch to a plus cursor", async () => {
-  const styles = await readFile("app/globals.css", "utf8");
+test("profile charts reserve space and keep tooltips accessible", async () => {
+  const styles = await readFile("components/profile.css", "utf8");
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
-
-  assert.match(styles, /progression-timeline__chart-frame[^}]*height: 360px/);
-  assert.match(styles, /progression-timeline__metric-radio[^}]*min-height: 44px/);
-  assert.doesNotMatch(styles, /progression-timeline__hit-area[^}]*cursor: crosshair/);
-  assert.match(styles, /progression-timeline__line--dim[^}]*opacity/);
-  assert.match(styles, /progression-timeline__line--segment-context[^}]*opacity/);
-  assert.match(styles, /progression-timeline__interval-highlight[^}]*stroke-linecap: round/);
-  assert.match(styles, /progression-timeline__level-grid[^}]*stroke-width: \.75[^}]*stroke-dasharray: none/);
-  assert.match(styles, /progression-timeline__line--overall[^}]*stroke-width: 1\.5/);
-  assert.match(styles, /progression-timeline__line--selected[^}]*stroke-dasharray: 7 4 1 4/);
-  assert.match(styles, /progression-timeline__point--selected[^}]*fill: var\(--timeline-metric-color\)/);
-  assert.match(styles, /progression-timeline__legend-swatch--selected[^}]*repeating-linear-gradient/);
-  assert.match(styles, /@media \(max-width: 420px\)[\s\S]*progression-timeline__compare-select[^}]*min-height: 44px/);
-  assert.match(styles, /progression-timeline__point--overall[^}]*opacity: \.58/);
-  assert.match(styles, /progression-timeline__hit-area[^}]*stroke-width: 11/);
-  assert.match(styles, /progression-timeline__point[^}]*pointer-events: all/);
-  assert.match(styles, /progression-timeline__point--dim[^}]*filter: blur/);
-  assert.match(chart, /strokeWidth=\{11\}/);
-  assert.match(chart, /r=\{active \? 7 : seriesKey === "player" \|\| isSelectedSeries \? 4 : 2\.5\}/);
-  assert.match(chart, /prefers-reduced-motion/);
-  assert.match(chart, /const activeInterval = hoveredInterval\?\.layer === layer/);
-  assert.doesNotMatch(chart, /progression-timeline__interval-guide/);
-  assert.match(chart, /progression-timeline__tooltipOverlay--\$\{tooltipPlacement\?\.horizontal/);
+  assert.match(chart, /className="profile-line-chart" style=\{\{ height \}\}/);
+  assert.match(chart, /className="profile-chart-hit"/);
+  assert.match(chart, /tabIndex=\{0\}/);
+  assert.match(chart, /tooltipRef/);
+  assert.match(styles, /profile-chart-tooltip/);
+  assert.match(styles, /prefers-reduced-motion/);
+  assert.doesNotMatch(styles, /cursor: (?:plus|zoom-in)/);
 });
 
 test("progression uses revision-aware five-hour bundle and timeline caches", async () => {
@@ -943,7 +868,7 @@ test("PvE profiles use the persistent shell and mode-scoped UI data", async () =
   assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)/);
   assert.match(regular, /<ProfileShell[\s\S]*?mode=\{mode\}[\s\S]*?overviewCards=\{regularOverviewCards\}/);
   assert.match(regular, /<ProgressionPanel[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
-  assert.match(regular, /<CheaterScore risk=\{serverRisk \?\? progressionRisk\}[\s\S]*?mode=\{mode\}[\s\S]*?statsKnown=\{mode === "regular" \? pvpStatsKnown : true\}/);
+  assert.match(regular, /<CheaterScore compact risk=\{serverRisk \?\? progressionRisk\}[\s\S]*?mode=\{mode\}[\s\S]*?statsKnown=\{mode === "regular" \? pvpStatsKnown : true\}/);
   assert.match(regular, /<PlayerRadarComparison[\s\S]*?stats=\{stats\} mode=\{mode\} cycleId="persistent"/);
   assert.match(regular, /<ProfileAchievements[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
   assert.match(regular, /hasVisibleSkills\(regularSkillItems\)/);

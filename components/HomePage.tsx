@@ -11,7 +11,7 @@ import HomeComparison from "@/components/home/HomeComparison";
 import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
-import { HOME_EXAMPLE_AIDS, HOME_COMPARISON_AID, type HomeProfile, type HomeCohort } from "@/lib/home-showcase";
+import { HOME_EXAMPLE_AIDS, pickShowcaseAid, type HomeProfile, type HomeCohort, type ShowcaseConfig } from "@/lib/home-showcase";
 import type { ProgressionTimelineResponse } from "@/types/seasonal";
 import "@/components/home/home.css";
 
@@ -19,20 +19,31 @@ export default function HomePage() {
   const { t, lang } = useI18n();
   const [aid, setAid] = useState<number | null>(null);
   const [profile, setProfile] = useState<HomeProfile | null>();
-  const [other, setOther] = useState<HomeProfile | null>();
   const [timeline, setTimeline] = useState<ProgressionTimelineResponse | null>();
   const [cohort, setCohort] = useState<HomeCohort | null>();
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    setAid(HOME_EXAMPLE_AIDS[Math.floor(Math.random() * HOME_EXAMPLE_AIDS.length)]);
+    let cancelled = false;
+    const controller = new AbortController();
+    async function resolveAid() {
+      try {
+        const response = await fetch("/api/home/showcase", { cache: "no-store", signal: controller.signal });
+        const config = response.ok ? await response.json() as ShowcaseConfig : null;
+        if (!cancelled) setAid(pickShowcaseAid(config));
+      } catch {
+        if (!cancelled) setAid(pickShowcaseAid(null));
+      }
+    }
+    void resolveAid();
+    return () => { cancelled = true; controller.abort(); };
   }, []);
 
   useEffect(() => {
     if (aid == null) return;
     let cancelled = false;
     const controller = new AbortController();
-    setProfile(undefined); setOther(undefined); setTimeline(undefined); setCohort(undefined);
+    setProfile(undefined); setTimeline(undefined); setCohort(undefined);
     async function loadProfile(id: number, update: typeof setProfile) {
       try {
         const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?aid=${id}&mode=regular`);
@@ -47,7 +58,6 @@ export default function HomePage() {
       } catch { if (!cancelled) update(null); }
     }
     void loadProfile(aid, setProfile);
-    void loadProfile(HOME_COMPARISON_AID, setOther);
     void load<ProgressionTimelineResponse>(`/api/progression/timeline?aid=${aid}&mode=regular&cycle=persistent`, setTimeline);
     void load<HomeCohort>(`/api/average/cohort?aid=${aid}&mode=regular&cycle=persistent&statistic=trimmed_mean&period=all`, setCohort);
     return () => { cancelled = true; controller.abort(); };
@@ -116,7 +126,7 @@ export default function HomePage() {
 
       <section id="compare" className="home-section home-wrap">
         {heading("home.compareTitle", "comparison", "home.openCompare")}
-        <HomeComparison profile={profile} other={other} cohort={cohort} />
+        <HomeComparison profile={profile} cohort={cohort} />
       </section>
       <HomeLeaderboard />
     </main>

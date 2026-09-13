@@ -14,6 +14,7 @@ export default function ProfileHeader({
   leaderboardRevision,
   meta,
   actions,
+  activity,
   children,
 }: {
   aid: number;
@@ -25,6 +26,7 @@ export default function ProfileHeader({
   leaderboardRevision?: string | number | null;
   meta?: ReactNode;
   actions: ReactNode;
+  activity?: ReactNode;
   children: ReactNode;
 }) {
   const leaderboardMode = mode === "seasonal" ? "pvp-season" : mode;
@@ -51,10 +53,13 @@ export default function ProfileHeader({
           <div className="profile-header__actions" aria-live="polite">
             {actions}
           </div>
-          <div className="profile-header__mode">
-            <ProfileModeSwitch current={mode} page="player" aid={aid} seasonalCycleId={seasonalCycleId} />
-          </div>
         </div>
+      </div>
+      <div className="profile-header__bar">
+        <div className="profile-header__mode">
+          <ProfileModeSwitch current={mode} page="player" aid={aid} seasonalCycleId={seasonalCycleId} />
+        </div>
+        {activity}
       </div>
       {children}
     </section>

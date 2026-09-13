@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n/context";
+import CheaterScore from "@/components/CheaterScore";
 import type {
   ArenaModeKey,
   ArenaModeRisk,
@@ -61,9 +62,11 @@ function reasonLabel(reason: ArenaRiskMetric["reason"], t: (key: string) => stri
 export default function ArenaRiskPanel({
   risk,
   scope,
+  compact = false,
 }: {
   risk: ArenaProfileRisk | null;
   scope: RiskScope;
+  compact?: boolean;
 }) {
   const { lang, t } = useI18n();
   const item = scopedRisk(risk, scope);
@@ -79,6 +82,8 @@ export default function ArenaRiskPanel({
         timeStyle: "short",
       }).format(evaluatedAt)
     : null;
+
+  if (compact) return <div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={{ score, tier }} mode="arena" /><p>{t("arena.risk.disclaimer")}</p></div></div>;
 
   return (
     <div className="data-panel h-full min-h-[360px] p-4 sm:p-5">

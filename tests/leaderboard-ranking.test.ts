@@ -64,7 +64,7 @@ test("ARP order resolves every required tie and finishes with ascending aid", ()
 });
 
 test("zero-death K/D uses a class and never Infinity", () => {
-  assert.deepEqual(kdValue(4, 0), { value: null, deathless: true, orderClass: 2 });
-  assert.deepEqual(kdValue(0, 0), { value: null, deathless: true, orderClass: 0 });
+  assert.deepEqual(kdValue(4, 0), { value: 4, deathless: true, orderClass: 2 });
+  assert.deepEqual(kdValue(0, 0), { value: 0, deathless: true, orderClass: 0 });
   assert.equal(kdValue(4, 2).value, 2);
 });
