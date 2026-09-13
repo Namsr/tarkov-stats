@@ -15,7 +15,7 @@ export default function HomeComparison({ profile, cohort }: {
   const [mode, setMode] = useState<"average" | "favorite">("average");
   const [active, setActive] = useState<{ index: number; x: number; y: number } | null>(null);
   const [favAid, setFavAid] = useState<number | null>(null);
-  const [favProfile, setFavProfile] = useState<HomeProfile | null | undefined>(undefined);
+  const [favoriteResult, setFavoriteResult] = useState<{ aid: number; profile: HomeProfile | null } | null>(null);
   const { favorites, authStatus, loading: favsLoading } = useFavorites();
   const tooltipRef = useRef<HTMLDivElement>(null);
   const { ref, width } = useChartWidth(720);
@@ -25,27 +25,29 @@ export default function HomeComparison({ profile, cohort }: {
   const regularFavorites = favorites.filter((favorite) => favorite.mode === "regular");
   const defaultFavAid = regularFavorites.find((favorite) => favorite.isMain)?.aid ?? regularFavorites[0]?.aid ?? null;
   const effectiveFavAid = favAid != null && regularFavorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
+  const canCompareFavorite = authStatus === "authenticated" && !favsLoading && effectiveFavAid != null;
+  const favProfile = canCompareFavorite && favoriteResult?.aid === effectiveFavAid ? favoriteResult.profile : undefined;
   const favEntry = regularFavorites.find((favorite) => favorite.aid === effectiveFavAid);
   const favName = favProfile?.viewModel.identity.nickname ?? favEntry?.nickname ?? (effectiveFavAid != null ? `AID ${effectiveFavAid}` : "");
   const otherName = mode === "average" ? t("radar.series.average") : favName;
   useEffect(() => {
-    if (mode !== "favorite" || isGuest || effectiveFavAid == null) return;
+    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null) return;
     let cancelled = false;
-    setFavProfile(undefined);
     async function loadFavorite() {
       try {
         const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?aid=${effectiveFavAid}&mode=regular`);
-        if (!cancelled) setFavProfile(response.ok && response.body.identity?.aid === effectiveFavAid && response.body.viewModel ? response.body : null);
-      } catch { if (!cancelled) setFavProfile(null); }
+        if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: response.ok && response.body.identity?.aid === effectiveFavAid && response.body.viewModel ? response.body : null });
+      } catch { if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: null }); }
     }
     void loadFavorite();
     return () => { cancelled = true; };
-  }, [mode, isGuest, effectiveFavAid]);
+  }, [mode, canCompareFavorite, effectiveFavAid]);
 
   const favProfileKnown = favProfile && favProfile.comparisonStats?.pvpStatsKnown !== false;
-  const loading = profile === undefined || cohort === undefined || (mode === "favorite" && !isGuest && (favsLoading || (regularFavorites.length > 0 && favProfile === undefined)));
+  const loading = profile === undefined || cohort === undefined || (mode === "favorite" && (favsLoading || (canCompareFavorite && favProfile === undefined)));
   const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || Boolean(favProfileKnown));
   const statusKey = mode === "favorite" && isGuest ? "home.favoriteNeedAuth"
+    : mode === "favorite" && authStatus === "error" ? "home.comparisonUnavailable"
     : mode === "favorite" && !favsLoading && regularFavorites.length === 0 ? "home.noFavorites"
     : loading ? "common.loading" : "home.comparisonUnavailable";
   const metrics = HOME_RADAR_METRICS.map((metric) => {

@@ -27,12 +27,12 @@ async function postShowcase(action: string, extra: Record<string, unknown>): Pro
   return body ?? {};
 }
 
-function ShowcasePanel({ groups, available = true, t, lang, reload }: {
+function ShowcasePanel({ groups, available = true, t, lang, onChange }: {
   groups: ShowcaseGroup[];
   available?: boolean;
   t: T;
   lang: string;
-  reload: () => Promise<void>;
+  onChange: (groups: ShowcaseGroup[]) => void;
 }) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [newGroupName, setNewGroupName] = useState("");
@@ -57,19 +57,18 @@ function ShowcasePanel({ groups, available = true, t, lang, reload }: {
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const formatCount = (value: number) => new Intl.NumberFormat(locale).format(value);
 
-  function showError(err: unknown) {
-    const detail = err instanceof Error && err.message ? `: ${err.message}` : "";
-    setError(`${t("admin.error.save")}${detail}`);
-  }
-
   async function mutate(action: string, extra: Record<string, unknown>) {
     setBusy(true);
     setError("");
     try {
-      await postShowcase(action, extra);
-      await reload();
-    } catch (err) {
-      showError(err);
+      const result = await postShowcase(action, extra);
+      if (!result.ok || !Array.isArray(result.groups)) throw new Error("Invalid showcase response");
+      onChange(result.groups);
+      if (action === "create_group" && result.group) setSelectedId(result.group.id);
+      return true;
+    } catch {
+      setError(t("admin.error.save"));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -81,8 +80,7 @@ function ShowcasePanel({ groups, available = true, t, lang, reload }: {
       setError(`${t("admin.error.save")}: ${t("admin.showcase.invalidName")}`);
       return;
     }
-    setNewGroupName("");
-    void mutate("create_group", { name });
+    void mutate("create_group", { name }).then((saved) => { if (saved) setNewGroupName(""); });
   }
 
   function handleDeleteGroup(id: number, name: string) {
@@ -151,7 +149,7 @@ function ShowcaseGroupEditor({ group, t, busy, onMutate, onValidationError }: {
   group: ShowcaseGroup;
   t: T;
   busy: boolean;
-  onMutate: (action: string, extra: Record<string, unknown>) => Promise<void>;
+  onMutate: (action: string, extra: Record<string, unknown>) => Promise<boolean>;
   onValidationError: (messageKey: string) => void;
 }) {
   const [addAid, setAddAid] = useState("");
@@ -175,9 +173,9 @@ function ShowcaseGroupEditor({ group, t, busy, onMutate, onValidationError }: {
       return;
     }
     const nickname = addNickname.trim();
-    setAddAid("");
-    setAddNickname("");
-    void onMutate("add_item", { groupId: group.id, aid, nickname: nickname ? nickname : null });
+    void onMutate("add_item", { groupId: group.id, aid, nickname: nickname ? nickname : null }).then((saved) => {
+      if (saved) { setAddAid(""); setAddNickname(""); }
+    });
   }
 
   function handleMove(aid: number, direction: -1 | 1) {
@@ -240,7 +238,7 @@ function ShowcaseItemRow({ groupId, item, isFirst, isLast, t, busy, onMove, onMu
   t: T;
   busy: boolean;
   onMove: (aid: number, direction: -1 | 1) => void;
-  onMutate: (action: string, extra: Record<string, unknown>) => Promise<void>;
+  onMutate: (action: string, extra: Record<string, unknown>) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(item.nickname ?? "");
   const [editing, setEditing] = useState(false);
@@ -252,15 +250,16 @@ function ShowcaseItemRow({ groupId, item, isFirst, isLast, t, busy, onMove, onMu
   const dirty = draft.trim() !== (item.nickname ?? "");
 
   function handleSaveNickname() {
-    setEditing(false);
     const nickname = draft.trim();
-    void onMutate("update_item", { groupId, aid: item.aid, nickname: nickname ? nickname : null });
+    void onMutate("update_item", { groupId, aid: item.aid, nickname: nickname ? nickname : null }).then((saved) => {
+      if (saved) setEditing(false);
+    });
   }
 
   return (
     <li style={{ borderTop: "1px solid var(--card-border)", paddingTop: 12, display: "grid", gap: 10 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-        <strong style={{ fontVariantNumeric: "tabular-nums" }}>AID {item.aid}</strong>
+        <strong style={{ fontVariantNumeric: "tabular-nums" }}>{t("admin.showcase.aid")} {item.aid}</strong>
         <Link className="admin-account__profile-link" href={`/player/regular/${item.aid}`} prefetch={false}>{t("admin.showcase.openProfile")}</Link>
         <span className="admin-badge">{item.enabled ? t("admin.showcase.enabled") : t("admin.showcase.disabled")}</span>
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: ".76rem", color: "var(--muted-strong)" }}>

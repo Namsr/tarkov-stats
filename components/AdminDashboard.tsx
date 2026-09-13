@@ -176,7 +176,7 @@ export default function AdminDashboard() {
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
-      {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} reload={load} />}
+      {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}

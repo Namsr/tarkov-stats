@@ -103,6 +103,18 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
   db.exec(SHOWCASE_SCHEMA);
   db.exec("PRAGMA foreign_keys = ON");
 
+  function write<T>(operation: () => T): T {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   function groupById(id: number): ShowcaseGroup | null {
     const row = db.prepare("SELECT * FROM home_showcase_groups WHERE id = ?").get(id) as
       | Record<string, unknown>
@@ -173,105 +185,120 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
     },
 
     createGroup(name) {
-      const clean = normalizeName(name);
-      const count = (db.prepare("SELECT COUNT(*) AS n FROM home_showcase_groups").get() as { n: number }).n;
-      if (count >= SHOWCASE_MAX_GROUPS) throw new RangeError("too many groups");
-      const now = Date.now();
-      const existing = (db.prepare("SELECT COUNT(*) AS n FROM home_showcase_groups").get() as { n: number }).n;
-      const info = db.prepare(
-        "INSERT INTO home_showcase_groups (name, is_active, created_at, updated_at) VALUES (?, ?, ?, ?)"
-      ).run(clean, existing === 0 ? 1 : 0, now, now);
-      return groupById(Number(info.lastInsertRowid))!;
+      return write(() => {
+        const clean = normalizeName(name);
+        const count = (db.prepare("SELECT COUNT(*) AS n FROM home_showcase_groups").get() as { n: number }).n;
+        if (count >= SHOWCASE_MAX_GROUPS) throw new RangeError("too many groups");
+        const now = Date.now();
+        const info = db.prepare(
+          "INSERT INTO home_showcase_groups (name, is_active, created_at, updated_at) VALUES (?, ?, ?, ?)"
+        ).run(clean, count === 0 ? 1 : 0, now, now);
+        return groupById(Number(info.lastInsertRowid))!;
+      });
     },
 
     renameGroup(id, name) {
-      validateGroupId(id);
-      const clean = normalizeName(name);
-      const group = groupById(id);
-      if (!group) throw new RangeError("group not found");
-      const now = Date.now();
-      db.prepare("UPDATE home_showcase_groups SET name = ?, updated_at = ? WHERE id = ?").run(clean, now, id);
-      return groupById(id)!;
+      return write(() => {
+        validateGroupId(id);
+        const clean = normalizeName(name);
+        const group = groupById(id);
+        if (!group) throw new RangeError("group not found");
+        const now = Date.now();
+        db.prepare("UPDATE home_showcase_groups SET name = ?, updated_at = ? WHERE id = ?").run(clean, now, id);
+        return groupById(id)!;
+      });
     },
 
     deleteGroup(id) {
-      validateGroupId(id);
-      const group = groupById(id);
-      if (!group) throw new RangeError("group not found");
-      const wasActive = group.isActive;
-      db.prepare("DELETE FROM home_showcase_items WHERE group_id = ?").run(id);
-      db.prepare("DELETE FROM home_showcase_groups WHERE id = ?").run(id);
-      if (wasActive) {
-        const next = db.prepare("SELECT id FROM home_showcase_groups ORDER BY id ASC LIMIT 1").get() as
-          | { id: number }
-          | undefined;
-        if (next) db.prepare("UPDATE home_showcase_groups SET is_active = 1, updated_at = ? WHERE id = ?").run(Date.now(), Number(next.id));
-      }
+      return write(() => {
+        validateGroupId(id);
+        const group = groupById(id);
+        if (!group) throw new RangeError("group not found");
+        const wasActive = group.isActive;
+        db.prepare("DELETE FROM home_showcase_items WHERE group_id = ?").run(id);
+        db.prepare("DELETE FROM home_showcase_groups WHERE id = ?").run(id);
+        if (wasActive) {
+          const next = db.prepare("SELECT id FROM home_showcase_groups ORDER BY id ASC LIMIT 1").get() as
+            | { id: number }
+            | undefined;
+          if (next) db.prepare("UPDATE home_showcase_groups SET is_active = 1, updated_at = ? WHERE id = ?").run(Date.now(), Number(next.id));
+        }
+      });
     },
 
     setActive(id) {
-      validateGroupId(id);
-      if (!groupById(id)) throw new RangeError("group not found");
-      const now = Date.now();
-      db.prepare("UPDATE home_showcase_groups SET is_active = 0").run();
-      db.prepare("UPDATE home_showcase_groups SET is_active = 1, updated_at = ? WHERE id = ?").run(now, id);
-      return allGroups();
+      return write(() => {
+        validateGroupId(id);
+        if (!groupById(id)) throw new RangeError("group not found");
+        const now = Date.now();
+        db.prepare("UPDATE home_showcase_groups SET is_active = 0").run();
+        db.prepare("UPDATE home_showcase_groups SET is_active = 1, updated_at = ? WHERE id = ?").run(now, id);
+        return allGroups();
+      });
     },
 
     addItem(groupId, aid, nickname) {
-      validateGroupId(groupId);
-      validateAid(aid);
-      const group = groupById(groupId);
-      if (!group) throw new RangeError("group not found");
-      if (group.items.length >= SHOWCASE_MAX_ITEMS) throw new RangeError("group is full");
-      if (group.items.some((item) => item.aid === aid)) throw new RangeError("already in group");
-      const now = Date.now();
-      db.prepare(
-        "INSERT INTO home_showcase_items (group_id, aid, sort, enabled, nickname, added_at) VALUES (?, ?, ?, 1, ?, ?)"
-      ).run(groupId, aid, nextSort(groupId), normalizeNickname(nickname), now);
-      touch(groupId, now);
-      return groupById(groupId)!;
+      return write(() => {
+        validateGroupId(groupId);
+        validateAid(aid);
+        const group = groupById(groupId);
+        if (!group) throw new RangeError("group not found");
+        if (group.items.length >= SHOWCASE_MAX_ITEMS) throw new RangeError("group is full");
+        if (group.items.some((item) => item.aid === aid)) throw new RangeError("already in group");
+        const now = Date.now();
+        db.prepare(
+          "INSERT INTO home_showcase_items (group_id, aid, sort, enabled, nickname, added_at) VALUES (?, ?, ?, 1, ?, ?)"
+        ).run(groupId, aid, nextSort(groupId), normalizeNickname(nickname), now);
+        touch(groupId, now);
+        return groupById(groupId)!;
+      });
     },
 
     removeItem(groupId, aid) {
-      validateGroupId(groupId);
-      validateAid(aid);
-      if (!groupById(groupId)) throw new RangeError("group not found");
-      db.prepare("DELETE FROM home_showcase_items WHERE group_id = ? AND aid = ?").run(groupId, aid);
-      touch(groupId, Date.now());
-      return groupById(groupId)!;
+      return write(() => {
+        validateGroupId(groupId);
+        validateAid(aid);
+        if (!groupById(groupId)) throw new RangeError("group not found");
+        db.prepare("DELETE FROM home_showcase_items WHERE group_id = ? AND aid = ?").run(groupId, aid);
+        touch(groupId, Date.now());
+        return groupById(groupId)!;
+      });
     },
 
     updateItem(groupId, aid, patch) {
-      validateGroupId(groupId);
-      validateAid(aid);
-      const group = groupById(groupId);
-      if (!group) throw new RangeError("group not found");
-      if (!group.items.some((item) => item.aid === aid)) throw new RangeError("item not found");
-      const current = group.items.find((item) => item.aid === aid)!;
-      const enabled = patch.enabled ?? current.enabled;
-      const nickname = patch.nickname !== undefined ? normalizeNickname(patch.nickname) : current.nickname;
-      db.prepare("UPDATE home_showcase_items SET enabled = ?, nickname = ? WHERE group_id = ? AND aid = ?").run(
-        enabled ? 1 : 0, nickname, groupId, aid
-      );
-      touch(groupId, Date.now());
-      return groupById(groupId)!;
+      return write(() => {
+        validateGroupId(groupId);
+        validateAid(aid);
+        const group = groupById(groupId);
+        if (!group) throw new RangeError("group not found");
+        if (!group.items.some((item) => item.aid === aid)) throw new RangeError("item not found");
+        const current = group.items.find((item) => item.aid === aid)!;
+        const enabled = patch.enabled ?? current.enabled;
+        const nickname = patch.nickname !== undefined ? normalizeNickname(patch.nickname) : current.nickname;
+        db.prepare("UPDATE home_showcase_items SET enabled = ?, nickname = ? WHERE group_id = ? AND aid = ?").run(
+          enabled ? 1 : 0, nickname, groupId, aid
+        );
+        touch(groupId, Date.now());
+        return groupById(groupId)!;
+      });
     },
 
     reorder(groupId, aids) {
-      validateGroupId(groupId);
-      const group = groupById(groupId);
-      if (!group) throw new RangeError("group not found");
-      if (!Array.isArray(aids) || aids.length !== group.items.length) throw new TypeError("invalid order");
-      const known = new Set(group.items.map((item) => item.aid));
-      if (!aids.every((aid) => Number.isSafeInteger(aid) && known.has(aid)) || new Set(aids).size !== aids.length) {
-        throw new TypeError("invalid order");
-      }
-      const now = Date.now();
-      const update = db.prepare("UPDATE home_showcase_items SET sort = ? WHERE group_id = ? AND aid = ?");
-      aids.forEach((aid, index) => update.run(index, groupId, aid));
-      touch(groupId, now);
-      return groupById(groupId)!;
+      return write(() => {
+        validateGroupId(groupId);
+        const group = groupById(groupId);
+        if (!group) throw new RangeError("group not found");
+        if (!Array.isArray(aids) || aids.length !== group.items.length) throw new TypeError("invalid order");
+        const known = new Set(group.items.map((item) => item.aid));
+        if (!aids.every((aid) => Number.isSafeInteger(aid) && known.has(aid)) || new Set(aids).size !== aids.length) {
+          throw new TypeError("invalid order");
+        }
+        const now = Date.now();
+        const update = db.prepare("UPDATE home_showcase_items SET sort = ? WHERE group_id = ? AND aid = ?");
+        aids.forEach((aid, index) => update.run(index, groupId, aid));
+        touch(groupId, now);
+        return groupById(groupId)!;
+      });
     },
   };
 }
