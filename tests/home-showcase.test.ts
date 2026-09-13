@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { homePercentageDifference, homeProgressPoints, homeRadarRatio } from "../lib/home-showcase.ts";
+import { HOME_EXAMPLE_AIDS, homePercentageDifference, homeProgressPoints, homeRadarRatio, pickShowcaseAid } from "../lib/home-showcase.ts";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
 
 test("homepage comparison reports signed percentages without inventing a zero baseline", () => {
@@ -39,4 +39,18 @@ test("homepage progression uses current-series levels and excludes unknown value
   ]);
   assert.deepEqual(homeProgressPoints(timeline, "pvp_kd"), [{ raids: 16, value: 2.4, at: 4000 }]);
   assert.deepEqual(homeProgressPoints(timeline, "survival"), []);
+});
+
+test("pickShowcaseAid uses configured aids and falls back to example aids", () => {
+  const examples: number[] = [...HOME_EXAMPLE_AIDS];
+  assert.ok(examples.includes(pickShowcaseAid(null)));
+  assert.ok(examples.includes(pickShowcaseAid({ groupId: null, groupName: null, aids: [], items: [], updatedAt: null })));
+  assert.equal(pickShowcaseAid({ groupId: 1, groupName: "g", aids: [12345], items: [], updatedAt: null }), 12345);
+  assert.equal(
+    pickShowcaseAid({ groupId: 1, groupName: "g", aids: [0, -5, Number.NaN, 777], items: [], updatedAt: null }),
+    777,
+  );
+  assert.ok(examples.includes(
+    pickShowcaseAid({ groupId: 1, groupName: "g", aids: [0, -2, 1.5, Number.NaN], items: [], updatedAt: null }),
+  ));
 });

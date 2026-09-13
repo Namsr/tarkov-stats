@@ -9,7 +9,10 @@ import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
-type Tab = "overview" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
+import ShowcasePanel from "@/components/AdminShowcase";
+import type { ShowcaseGroup } from "@/lib/admin/showcase-db";
+
+type Tab = "overview" | "showcase" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
@@ -32,7 +35,7 @@ type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedByte
 type SystemMetricSnapshot = SystemMetricPoint & { memoryTotalBytes: number; swapTotalBytes: number; diskTotalBytes: number; diskAvailableBytes: number };
 type SystemMetrics = { available: boolean; configured: boolean; reason?: string; latest: SystemMetricSnapshot | null; points: SystemMetricPoint[]; sampleCount?: number; from?: number; to?: number };
 
-const tabs: Tab[] = ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"];
+const tabs: Tab[] = ["overview", "showcase", "traffic", "accounts", "suspicious", "health", "monitoring"];
 const periods: AdminPeriod[] = ["15m", "24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
@@ -65,6 +68,7 @@ export default function AdminDashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
+  const [showcase, setShowcase] = useState<{ groups: ShowcaseGroup[]; available: boolean } | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [healthSignal, setHealthSignal] = useState<HealthSignal | null>(null);
   const [audit, setAudit] = useState<DataAudit | null>(null);
@@ -93,6 +97,8 @@ export default function AdminDashboard() {
           try { setAudit(await getJson<DataAudit>("/api/admin/data-audit")); }
           catch { setAuditError(t("admin.error.load")); }
         }
+      } else if (tab === "showcase") {
+        setShowcase(await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase"));
       } else if (tab === "traffic") {
         setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
       } else if (tab === "monitoring") {
@@ -157,7 +163,7 @@ export default function AdminDashboard() {
         {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} onClick={() => chooseTab(item)}><span>{t("admin.tab." + item)}</span>{item === "health" && healthSignal && (healthSignal.activeIssueCount > 0 || healthSignal.storageAvailable === false) && <span className={`admin-tab-alert admin-tab-alert--${healthSignal.status}`} aria-label={t("admin.health.tabAlert", { n: healthSignal.activeIssueCount })}>{healthSignal.activeIssueCount || "!"}</span>}</button>)}
       </div>
 
-      <section className="admin-filters" aria-label={t("admin.filters") }>
+      {tab !== "showcase" && <section className="admin-filters" aria-label={t("admin.filters") }>
         <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>
         {tab !== "monitoring" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
         {(tab === "accounts" || tab === "suspicious") && <>
@@ -165,11 +171,12 @@ export default function AdminDashboard() {
           <label><span>{t("admin.mode")}</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="">{t("admin.mode.all")}</option>{["regular", "pve", "arena", "seasonal"].map((item) => <option key={item} value={item}>{t("admin.mode." + item)}</option>)}</select></label>
           <label><span>{t("admin.sort")}</span><select value={sort} onChange={(event) => setSort(event.target.value as "last" | "requests" | "snapshots")}><option value="last">{t("admin.sort.last")}</option><option value="requests">{t("admin.sort.requests")}</option><option value="snapshots">{t("admin.sort.snapshots")}</option></select></label>
         </>}
-      </section>
+      </section>}
 
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
+      {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}

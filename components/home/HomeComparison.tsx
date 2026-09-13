@@ -1,29 +1,59 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { HOME_RADAR_METRICS, homePercentageDifference, homeRadarRatio, type HomeProfile, type HomeCohort } from "@/lib/home-showcase";
+import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
+import { useFavorites } from "@/lib/favorites/context";
 import { useChartWidth } from "./useChartWidth";
 
-export default function HomeComparison({ profile, other, cohort }: {
+export default function HomeComparison({ profile, cohort }: {
   profile: HomeProfile | null | undefined;
-  other: HomeProfile | null | undefined;
   cohort: HomeCohort | null | undefined;
 }) {
   const { t, lang } = useI18n();
-  const [mode, setMode] = useState<"player" | "average">("player");
+  const [mode, setMode] = useState<"average" | "favorite">("average");
   const [active, setActive] = useState<{ index: number; x: number; y: number } | null>(null);
+  const [favAid, setFavAid] = useState<number | null>(null);
+  const [favoriteResult, setFavoriteResult] = useState<{ aid: number; profile: HomeProfile | null } | null>(null);
+  const { favorites, authStatus, loading: favsLoading } = useFavorites();
   const tooltipRef = useRef<HTMLDivElement>(null);
   const { ref, width } = useChartWidth(720);
   const mobile = width < 500, height = mobile ? 350 : 430, radius = mobile ? Math.min(115, (width - 70) * .4) : 150;
   const name = profile?.viewModel.identity.nickname ?? "";
-  const otherName = mode === "average" ? t("radar.series.average") : other?.viewModel.identity.nickname ?? "";
-  const loading = profile === undefined || cohort === undefined || (mode === "player" && other === undefined);
-  const ready = profile && profile.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || (other && other.comparisonStats?.pvpStatsKnown !== false));
+  const isGuest = authStatus === "unauthenticated";
+  const regularFavorites = favorites.filter((favorite) => favorite.mode === "regular");
+  const defaultFavAid = regularFavorites.find((favorite) => favorite.isMain)?.aid ?? regularFavorites[0]?.aid ?? null;
+  const effectiveFavAid = favAid != null && regularFavorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
+  const canCompareFavorite = authStatus === "authenticated" && !favsLoading && effectiveFavAid != null;
+  const favProfile = canCompareFavorite && favoriteResult?.aid === effectiveFavAid ? favoriteResult.profile : undefined;
+  const favEntry = regularFavorites.find((favorite) => favorite.aid === effectiveFavAid);
+  const favName = favProfile?.viewModel.identity.nickname ?? favEntry?.nickname ?? (effectiveFavAid != null ? `AID ${effectiveFavAid}` : "");
+  const otherName = mode === "average" ? t("radar.series.average") : favName;
+  useEffect(() => {
+    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null) return;
+    let cancelled = false;
+    async function loadFavorite() {
+      try {
+        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?aid=${effectiveFavAid}&mode=regular`);
+        if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: response.ok && response.body.identity?.aid === effectiveFavAid && response.body.viewModel ? response.body : null });
+      } catch { if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: null }); }
+    }
+    void loadFavorite();
+    return () => { cancelled = true; };
+  }, [mode, canCompareFavorite, effectiveFavAid]);
+
+  const favProfileKnown = favProfile && favProfile.comparisonStats?.pvpStatsKnown !== false;
+  const loading = profile === undefined || cohort === undefined || (mode === "favorite" && (favsLoading || (canCompareFavorite && favProfile === undefined)));
+  const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || Boolean(favProfileKnown));
+  const statusKey = mode === "favorite" && isGuest ? "home.favoriteNeedAuth"
+    : mode === "favorite" && authStatus === "error" ? "home.comparisonUnavailable"
+    : mode === "favorite" && !favsLoading && regularFavorites.length === 0 ? "home.noFavorites"
+    : loading ? "common.loading" : "home.comparisonUnavailable";
   const metrics = HOME_RADAR_METRICS.map((metric) => {
     const average = cohort?.averages[metric.key];
     const baseline = average && average.count >= (metric.key === "pmc_survival_rate" ? 1 : 20) ? average.value : null;
-    return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : other?.comparisonStats?.[metric.stat] ?? null };
+    return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : favProfile?.comparisonStats?.[metric.stat] ?? null };
   });
   const point = (index: number, r: number) => { const angle = ([-150, -90, -30, 30, 90, 150][index] * Math.PI) / 180; return { x: width / 2 + Math.cos(angle) * r, y: height / 2 + Math.sin(angle) * r }; };
   const polygon = (points: { x: number; y: number }[]) => points.map((p) => `${p.x},${p.y}`).join(" ");
@@ -50,12 +80,20 @@ export default function HomeComparison({ profile, other, cohort }: {
 
   return <>
     <div className="home-segments home-compare-switch" role="group" aria-label={t("home.compareWith")}>
-      <button type="button" aria-pressed={mode === "player"} onClick={() => { setMode("player"); setActive(null); }}>{t("home.anotherPlayer")}</button>
       <button type="button" aria-pressed={mode === "average"} onClick={() => { setMode("average"); setActive(null); }}>{t("home.averagePlayer")}</button>
+      <button type="button" aria-pressed={mode === "favorite"} title={isGuest ? t("home.favoriteNeedAuth") : undefined}
+        onClick={() => { if (isGuest) window.location.href = "/api/auth/google"; else { setMode("favorite"); setActive(null); } }}>{t("home.favoritePlayer")}</button>
     </div>
+    {isGuest && <p className="home-risk-note">{t("home.favoriteNeedAuth")}</p>}
+    {mode === "favorite" && !isGuest && !favsLoading && regularFavorites.length > 0 && <label className="home-compare-favorite">
+      <span>{t("home.favoritePlayer")}</span>
+      <select value={effectiveFavAid ?? ""} onChange={(event) => { setFavAid(Number(event.target.value)); setActive(null); }}>
+        {regularFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
+      </select>
+    </label>}
     {ready && <div className="home-radar-legend"><span><i aria-hidden="true" />{name}</span><span><i className="home-other-key" aria-hidden="true" />{otherName}</span></div>}
     <div ref={ref} className="home-comparison-chart">
-      {!ready ? <p className="home-empty" role="status">{t(loading ? "common.loading" : "home.comparisonUnavailable")}</p> : <>
+      {!ready ? <p className="home-empty" role="status">{t(statusKey)}</p> : <>
         <svg viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t("home.radarTitle")}>
           {[.25, .5, .75, 1].map((ratio) => <polygon key={ratio} points={polygon(metrics.map((_, index) => point(index, radius * ratio)))} fill="none" stroke="var(--card-border)" strokeWidth={ratio === 1 ? 1.5 : 1} />)}
           {metrics.map((metric, index) => { const p = point(index, radius); return <line key={metric.key} x1={width / 2} y1={height / 2} x2={p.x} y2={p.y} stroke="var(--card-border)" />; })}
