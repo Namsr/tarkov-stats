@@ -116,6 +116,7 @@ html[data-theme="light"] .home-risk-status--severe { color: #c22a27; }
 .home-leaderboard tbody tr:first-child { background: var(--card-bg); }
 .home-leaderboard td:nth-child(3) { font-weight: 600; }
 .home-leader-hours { color: var(--muted); }
+.home-leaderboard-switching { opacity: .55; transition: opacity 160ms ease; }
 .home-loading-panel { min-height: 260px; display: grid; place-content: center; justify-items: center; gap: 20px; color: var(--muted); border: 1px solid var(--card-border); border-radius: 12px; padding: 24px; text-align: center; }
 .home-page .home-empty { min-height: 230px; display: grid; align-content: center; padding: 24px; color: var(--muted); text-align: center; }
 .home-page .home-board-status { margin-block: 12px; color: var(--muted); font-size: 14px; }
