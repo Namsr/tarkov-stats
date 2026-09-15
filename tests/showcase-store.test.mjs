@@ -1,7 +1,82 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createShowcaseStore, SHOWCASE_MAX_GROUPS, SHOWCASE_MAX_ITEMS } from "../lib/admin/showcase-db.ts";
+
+function runInitializationProbe(source) {
+  const directory = mkdtempSync(join(tmpdir(), "showcase-init-"));
+  try {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { DatabaseSync } from "node:sqlite";
+      import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+      import { dirname } from "node:path";
+      import { getShowcaseStore } from ${JSON.stringify(new URL("../lib/admin/showcase-db.ts", import.meta.url).href)};
+      const errors = [];
+      console.warn = (message) => errors.push(message);
+      let now = Date.now();
+      Date.now = () => now;
+      ${source}
+    `], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, ADMIN_ANALYTICS_SQLITE_PATH: join(directory, "nested", "showcase.db") },
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("showcase retries a failed database open after cooldown and shares the recovered store", () => {
+  runInitializationProbe(`
+    const directory = dirname(process.env.ADMIN_ANALYTICS_SQLITE_PATH);
+    writeFileSync(directory, "blocks mkdir");
+    assert.equal(await getShowcaseStore(), null);
+    unlinkSync(directory);
+    mkdirSync(directory);
+    assert.equal(await getShowcaseStore(), null);
+    assert.equal(errors.length, 1, "requests during cooldown must not retry or repeat warnings");
+    now += 30_000;
+    const [first, second] = await Promise.all([getShowcaseStore(), getShowcaseStore()]);
+    assert.ok(first, "opening must recover without restarting the process");
+    assert.equal(first, second);
+    const group = first.createGroup("Recovered");
+    assert.equal((await getShowcaseStore()).listGroups()[0].id, group.id);
+  `);
+});
+
+test("showcase closes a connection after SQLITE_FULL and recreates the schema on retry", () => {
+  runInitializationProbe(`
+    const exec = DatabaseSync.prototype.exec;
+    let failedDb;
+    DatabaseSync.prototype.exec = function(sql) {
+      if (sql.includes("CREATE TABLE") && !failedDb) {
+        failedDb = this;
+        exec.call(this, "PRAGMA max_page_count = 1");
+      }
+      return exec.call(this, sql);
+    };
+    assert.equal(await getShowcaseStore(), null);
+    DatabaseSync.prototype.exec = exec;
+    assert.match(errors[0], /database or disk is full/);
+    assert.throws(() => failedDb.prepare("SELECT 1"), /not open|closed/i);
+    now += 30_000;
+    const store = await getShowcaseStore();
+    assert.ok(store, "schema initialization must recover after SQLITE_FULL");
+    const group = store.createGroup("After full disk");
+    store.addItem(group.id, 101, "Player");
+    assert.deepEqual(store.getActive().aids, [101]);
+    const reader = new DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH, { readOnly: true });
+    assert.equal(reader.prepare("SELECT name FROM home_showcase_groups WHERE id = ?").get(group.id).name, group.name);
+    reader.close();
+    assert.equal(errors.length, 1);
+  `);
+});
 
 function setup(t) {
   const db = new DatabaseSync(":memory:");

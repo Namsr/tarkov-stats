@@ -303,38 +303,33 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
   };
 }
 
-let dbPromise: Promise<SqliteDatabase> | null = null;
-
-async function getDb(): Promise<SqliteDatabase> {
-  if (!dbPromise) {
-    dbPromise = (async () => {
-      const fs = await import("node:fs");
-      const path = await import("node:path");
-      const file = showcasePath();
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sqlite = (await import("node:sqlite" as string)) as any;
-      const db = new sqlite.DatabaseSync(file);
-      db.exec("PRAGMA busy_timeout = 5000;");
-      return db;
-    })();
-  }
-  return dbPromise;
-}
-
-let storePromise: Promise<ShowcaseStore> | null = null;
+let storePromise: Promise<ShowcaseStore | null> | null = null;
+let retryAfter = 0;
 
 export async function getShowcaseStore(): Promise<ShowcaseStore | null> {
   if (!storePromise) {
+    // Avoid repeating initialization and warnings on every request during an outage.
+    if (Date.now() < retryAfter) return null;
     storePromise = (async () => {
+      let db: SqliteDatabase | null = null;
       try {
-        return createShowcaseStore(await getDb());
+        const fs = await import("node:fs");
+        const path = await import("node:path");
+        const file = showcasePath();
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sqlite = (await import("node:sqlite" as string)) as any;
+        db = new sqlite.DatabaseSync(file);
+        db.exec("PRAGMA busy_timeout = 5000;");
+        return createShowcaseStore(db);
       } catch (error) {
+        try { db?.close(); } catch { /* Preserve the initialization error. */ }
         console.warn("home showcase unavailable: " + (error as Error).message);
-        return null as unknown as ShowcaseStore;
+        retryAfter = Date.now() + 5_000;
+        storePromise = null;
+        return null;
       }
     })();
   }
-  const store = await storePromise;
-  return store ?? null;
+  return storePromise;
 }
