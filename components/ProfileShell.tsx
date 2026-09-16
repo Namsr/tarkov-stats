@@ -84,6 +84,7 @@ export default function ProfileShell({
   cycleId,
   kicker,
   title,
+  prestige,
   leaderboardRevision,
   meta,
   actions,
@@ -103,6 +104,7 @@ export default function ProfileShell({
   cycleId: string;
   kicker: string;
   title?: string;
+  prestige?: number | null;
   leaderboardRevision?: string | number | null;
   meta?: ReactNode;
   actions: ReactNode;
@@ -144,6 +146,7 @@ export default function ProfileShell({
         seasonalCycleId={mode === "seasonal" ? cycleId : undefined}
         kicker={kicker}
         title={title}
+        prestige={prestige}
         leaderboardRevision={leaderboardRevision}
         meta={meta}
         actions={actions}

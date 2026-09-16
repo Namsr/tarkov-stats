@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import LeaderboardRankLink from "@/components/LeaderboardRankLink";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfilePortrait from "@/components/ProfilePortrait";
+import ProfilePrestige from "@/components/ProfilePrestige";
 import type { ArenaModeKey } from "@/types/arena";
 import type { GameMode } from "@/types/seasonal";
 
@@ -11,6 +12,7 @@ export default function ProfileHeader({
   seasonalCycleId,
   kicker,
   title,
+  prestige,
   leaderboardArenaMode,
   leaderboardRevision,
   meta,
@@ -23,6 +25,7 @@ export default function ProfileHeader({
   seasonalCycleId?: string;
   kicker: string;
   title?: string;
+  prestige?: number | null;
   leaderboardArenaMode?: ArenaModeKey;
   leaderboardRevision?: string | number | null;
   meta?: ReactNode;
@@ -48,7 +51,10 @@ export default function ProfileHeader({
             <p className="page-kicker">{kicker}</p>
             {title ? (
               <div className="profile-header__title-row">
-                <h1 className="page-title break-words">{title}</h1>
+                <div className="profile-header__name">
+                  <h1 className="page-title break-words">{title}</h1>
+                  <ProfilePrestige level={prestige} />
+                </div>
                 <LeaderboardRankLink
                   aid={aid}
                   mode={leaderboardMode}

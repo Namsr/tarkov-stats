@@ -310,6 +310,7 @@ function LegacyPlayer({
           cycleId="persistent"
           kicker={`#${aid}`}
           title={mode === "regular" ? profileSummary?.nickname : undefined}
+          prestige={mode === "regular" ? profileSummary?.prestige : undefined}
           meta={mode === "regular" && profileSummary?.side ? <div className="profile-header__meta">{t("player.sideLabel", { side: profileSummary.side })}</div> : undefined}
           actions={
             <ProfileActions
@@ -348,12 +349,10 @@ function LegacyPlayer({
           mode={mode}
           kicker={`#${aid}`}
           title={profileSummary?.nickname}
-          meta={mode !== "arena" && (profileSummary?.side || Number(profileSummary?.prestige) > 0) ? (
+          prestige={mode !== "arena" ? profileSummary?.prestige : undefined}
+          meta={mode !== "arena" && profileSummary?.side ? (
             <div className="profile-header__meta">
               {profileSummary?.side && <span>{t("player.sideLabel", { side: profileSummary.side })}</span>}
-              {Number(profileSummary?.prestige) > 0 && (
-                <span>{t("player.prestigeLabel", { n: Number(profileSummary?.prestige) })}</span>
-              )}
             </div>
           ) : undefined}
           actions={
@@ -395,6 +394,7 @@ function LegacyPlayer({
           cycleId="persistent"
           kicker={`#${aid}`}
           title={mode === "regular" ? profileSummary?.nickname : undefined}
+          prestige={mode === "regular" ? profileSummary?.prestige : undefined}
           actions={<ProfileActions aid={Number(aid)} mode={mode} nickname={mode === "regular" ? profileSummary?.nickname : undefined} onCheck={refreshProfile} />}
           overviewCards={[
             t("player.hoursPlayed"),
@@ -558,12 +558,12 @@ function LegacyPlayer({
         cycleId="persistent"
         kicker={`#${aid}`}
         title={stats.nickname}
+        prestige={stats.prestige}
         leaderboardRevision={`${profileUpdatedAt ?? "unknown"}:${progressionRefreshRevision}`}
         meta={
           <div className="profile-header__meta">
             <span>{t("player.sideLabel", { side: stats.side })}</span>
             <span>{t("profile.levelValue", { n: stats.level })}</span>
-            {stats.prestige > 0 && <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>}
           </div>
         }
         actions={<ProfilePrimaryActions aid={Number(aid)} mode={mode} cycleId="persistent" nickname={stats.nickname} />}
@@ -614,12 +614,10 @@ function LegacyPlayer({
         mode={mode}
         kicker={`#${aid}`}
         title={stats.nickname}
+        prestige={mode !== "arena" ? stats.prestige : undefined}
         meta={
           <div className="profile-header__meta">
             {mode !== "arena" && <span>{t("player.sideLabel", { side: stats.side })}</span>}
-            {mode !== "arena" && stats.prestige > 0 && (
-              <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
-            )}
             {profileUpdatedAt !== null && (
               <span>
                 {t("player.profileUpdated", {

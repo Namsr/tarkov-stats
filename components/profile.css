@@ -19,6 +19,10 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-portrait__image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; visibility: hidden; }
 .profile-portrait__image[data-loaded="true"] { visibility: visible; }
 .profile-page .profile-header__title-row { margin-top: 6px; gap: 16px; }
+.profile-header__name { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+.profile-header__name .page-title { min-width: 0; }
+.profile-prestige { display: block; flex: 0 0 auto; width: 44px; height: 44px; object-fit: contain; }
+.profile-prestige-fallback { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
 .profile-page .page-title { font-size: clamp(32px, 4.1vw, 52px); font-weight: 580; line-height: 1.1; letter-spacing: -.045em; text-transform: none; }
 .profile-page .page-kicker { font-size: 13px; font-weight: 500; letter-spacing: .02em; }
 .profile-page .profile-header__meta { gap: 8px 18px; font-size: 14px; }
