@@ -72,6 +72,18 @@ test("ARP ranks without tie metrics and LastHero does not require deaths", () =>
   assert.equal(materializeCandidate({ ...row, deaths: null }, { config: lastHero, formula: null }).member.status, "ranked");
 });
 
+test("prestige flows into stats without affecting order and busts the fingerprint", async () => {
+  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
+  const { sourceFingerprint } = await import("../lib/leaderboard/materialize.ts");
+  const plain = materializeCandidate(row, { config: baseConfig, formula });
+  assert.equal(plain.member.stats.prestige, null);
+  const prestiged = materializeCandidate({ ...row, prestige: 2 }, { config: baseConfig, formula });
+  assert.equal(prestiged.member.stats.prestige, 2);
+  assert.notEqual(prestiged.member.sourceFingerprint, plain.member.sourceFingerprint);
+  assert.equal(prestiged.member.sourceFingerprint, sourceFingerprint({ ...row, prestige: 2 }));
+  assert.deepEqual(prestiged.orders.map((order) => order.sort).sort(), plain.orders.map((order) => order.sort).sort());
+});
+
 test("ordinary changes stay incremental while incompatible publication inputs force full", () => {
   const current = { formulaVersion: LEADERBOARD_FORMULA_VERSION, params: { ...baseConfig, formula, metricVersion: LEADERBOARD_METRIC_VERSION,
     exclusionFingerprint: "ban-a" } };

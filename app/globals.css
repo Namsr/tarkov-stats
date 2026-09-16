@@ -798,6 +798,10 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-card__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .leaderboard-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .leaderboard-card__name { min-width: 0; overflow-wrap: anywhere; color: var(--foreground); font-weight: 800; }
+.leaderboard-player { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.leaderboard-player__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-card__player { display: inline-flex; align-items: center; gap: 0; min-width: 0; }
+.leaderboard-prestige { width: 18px; height: 18px; margin-left: 6px; flex: none; object-fit: contain; }
 .leaderboard-card__rank { color: var(--muted-strong); font-variant-numeric: tabular-nums; }
 .leaderboard-card__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; border-top: 1px solid var(--card-border); padding-top: 10px; }
 .leaderboard-card dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }

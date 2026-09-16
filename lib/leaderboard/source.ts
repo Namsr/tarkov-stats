@@ -55,8 +55,10 @@ function standardRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
   const mode = config.mode === "pve" ? "mode='pve' AND" : "";
   const revision = changeRevision(db, config.mode === "regular" ? "regular" : "pve");
   const sourceRevision = revision ? `${revision}${table}.aid)` : "0";
+  const prestige = cols.has("prestige") ? `${table}.prestige` : "NULL";
   const sql = `SELECT aid,nickname,profile_updated_at,${exact} exact_kills,pmc_deaths,pmc_raids,hours,
-      ${lastPlayed} activity_at,pvp_stats_known,${pvpVersion} pvp_stats_version,COALESCE(${sourceRevision},0) source_revision
+      ${lastPlayed} activity_at,pvp_stats_known,${pvpVersion} pvp_stats_version,COALESCE(${sourceRevision},0) source_revision,
+      ${prestige} prestige
     FROM ${table} WHERE ${mode} NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=${table}.aid)
       ${aid == null ? "" : `AND ${table}.aid=?`}
     ORDER BY aid`;
@@ -72,7 +74,7 @@ function standardRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
           activityAt: numberOrNull(row.activity_at), activitySource: numberOrNull(row.activity_at) == null ? null : "skill",
           matches: known ? integerOrNull(row.pmc_raids) : null, kills: known ? integerOrNull(row.exact_kills) : null,
           deaths: known ? integerOrNull(row.pmc_deaths) : null, hours: numberOrNull(row.hours),
-          currentArp: null, bestArp: null,
+          currentArp: null, bestArp: null, prestige: integerOrNull(row.prestige) ?? 0,
         } satisfies LeaderboardSourceRow;
       }
     },
@@ -113,7 +115,7 @@ function arenaRows(db: any, config: LeaderboardScopeConfig, aid?: number): Itera
           activitySource: gameplayAt != null ? "gameplay_date" : fetchedAt != null ? "profile_check" : null,
           matches: integerOrNull(row.games_count), kills: integerOrNull(row.kills), deaths: integerOrNull(row.deaths),
           hours: numberOrNull(row.hours), currentArp: numberOrNull(row.current_arp),
-          bestArp: numberOrNull(row.best_arp) ?? bestArpFromRaw(row.best_arp_raw),
+          bestArp: numberOrNull(row.best_arp) ?? bestArpFromRaw(row.best_arp_raw), prestige: null,
         } satisfies LeaderboardSourceRow;
       }
     },
@@ -133,10 +135,19 @@ function seasonalRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
     WHERE c.cycle_id=p.cycle_id AND c.aid=p.aid)` : "0";
   const globalExclusion = databaseAttached(db, "players_db")
     ? "AND NOT EXISTS (SELECT 1 FROM players_db.excluded_players e WHERE e.aid=p.aid)" : "";
+  const snapshotsExist = Boolean(db.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type='table' AND name='progression_snapshots'`).get());
+  // Latest dated prestige for the same (mode, cycle, aid): snapshots are
+  // append-only, so the newest profile_updated_at (id breaks ties) is current.
+  const prestige = snapshotsExist
+    ? `(SELECT s.prestige FROM progression_snapshots s
+        WHERE s.mode='seasonal' AND s.cycle_id=p.cycle_id AND s.aid=p.aid AND s.prestige IS NOT NULL
+        ORDER BY s.profile_updated_at DESC, s.id DESC LIMIT 1)`
+    : "NULL";
   const sql = `SELECT p.aid,p.nickname,p.profile_updated_at,${exactKills} exact_kills,p.pmc_deaths,p.pmc_raids,
       p.lifetime_pvp_hours hours,${activity} activity_at,${version} pvp_stats_version,
       ${parserVersion} pvp_stats_parser_version,
-      COALESCE(${revision},0) source_revision
+      COALESCE(${revision},0) source_revision,${prestige} prestige
     FROM player_profiles p
     WHERE p.mode='seasonal' AND p.cycle_id=? AND p.confirmed_banned=0
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid) ${globalExclusion}
@@ -154,7 +165,7 @@ function seasonalRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
           matches: known ? integerOrNull(row.pmc_raids) : null,
           kills: known ? integerOrNull(row.exact_kills) : null,
           deaths: known ? integerOrNull(row.pmc_deaths) : null,
-          hours: numberOrNull(row.hours), currentArp: null, bestArp: null,
+          hours: numberOrNull(row.hours), currentArp: null, bestArp: null, prestige: integerOrNull(row.prestige),
         } satisfies LeaderboardSourceRow;
       }
     },
