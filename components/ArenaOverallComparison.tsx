@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import ProfileRadar from "@/components/ProfileRadar";
-import { toArenaCohort, ARENA_METRIC_KEYS } from "@/components/arena-ui";
+import { toArenaCohort } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
 import type {
   ArenaCohortResult,
@@ -31,7 +30,7 @@ export default function ArenaOverallComparison({
   playerName?: string;
   compareFavorite?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [cohort, setCohort] = useState<ArenaCohortResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -77,18 +76,43 @@ export default function ArenaOverallComparison({
 
   const required = Math.max(20, cohort?.required ?? 20);
   const cohortReady = Boolean(cohort && cohort.mode === mode && cohort.statistic === statistic && cohort.quality === "sufficient" && cohort.sampleN >= required);
-  const rows = ARENA_METRIC_KEYS.map((key) => {
+  const rows = (["headshot_rate", "kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const).map((key) => {
     const average = cohort?.metrics[key];
     const baseline = cohortReady && average?.value != null && average.value > 0 && average.count >= 20 ? average.value : null;
     return {
-      key, label: t("arena.metric." + key), shortLabel: t("profile.arenaAxis." + key),
+      key, label: t("arena.metric." + key),
       a: player.metrics[key], b: compareFavorite ? favorite?.metrics[key] ?? null : baseline,
       baseline, digits: key === "damage_per_match" ? 0 : key === "win_rate" || key === "headshot_rate" ? 1 : 2,
       percent: key === "win_rate" || key === "headshot_rate",
     };
   });
-  return <div aria-busy={loading || undefined}>
+  const format = (value: number | null, digits: number, percent = false) => value == null || !Number.isFinite(value)
+    ? t("common.notAvailable") : value.toLocaleString(lang, { maximumFractionDigits: digits }) + (percent ? "%" : "");
+  return <div className="arena-comparison-bars" aria-busy={loading || undefined}>
     {(loading || error) && <p className="profile-chart-notice" role="status">{error || t("arena.radar.loading")}</p>}
-    <ProfileRadar key={`${aid}:${mode}:${statistic}:${compareFavorite}:${favoriteName}`} metrics={rows} playerName={playerName || t("radar.series.player")} otherName={compareFavorite ? favoriteName || t("radar.series.favorite") : t("radar.series.average")} />
+    <div className="arena-bars-legend"><span><i className="arena-bars-player-key" />{playerName || t("radar.series.player")}</span><span><i className="arena-bars-average-key" />{t("arena.combat.averageMarker")}</span>{compareFavorite && <span><i className="arena-bars-favorite-key" />{favoriteName || t("radar.series.favorite")}</span>}</div>
+    {rows.map((row) => {
+      const ratio = row.a != null && row.baseline != null ? row.a / row.baseline : null;
+      const favoriteRatio = compareFavorite && row.b != null && row.baseline != null ? row.b / row.baseline : null;
+      const difference = row.a != null && row.b != null ? row.percent ? row.a - row.b : row.b > 0 ? (row.a / row.b - 1) * 100 : null : null;
+      return <div className="arena-comparison-row" key={row.key} data-arena-metric={row.key}>
+        <div className="arena-comparison-row__heading"><div><h3>{row.label}</h3><p>{t("radar.series.average")}: {format(row.baseline, row.digits, row.percent)}</p>{compareFavorite && <p>{favoriteName || t("radar.series.favorite")}: {format(row.b, row.digits, row.percent)}</p>}</div>
+          <div className="arena-comparison-row__value"><strong>{format(row.a, row.digits, row.percent)}</strong>
+            {difference != null && <p>{difference > 0 ? "+" : ""}{format(difference, 1)}{row.percent ? ` ${t("arena.combat.pp")}` : "%"} {t(compareFavorite ? "arena.combat.vsFavorite" : "arena.combat.vsAverage")}</p>}
+          </div>
+        </div>
+        <div className="arena-comparison-track" role="img" aria-label={`${row.label}: ${format(row.a, row.digits, row.percent)}; ${t("radar.series.average")}: ${format(row.baseline, row.digits, row.percent)}${compareFavorite ? `; ${favoriteName || t("radar.series.favorite")}: ${format(row.b, row.digits, row.percent)}` : ""}`}>
+          {ratio != null && <span className="arena-comparison-fill" style={{ width: `${Math.max(0, Math.min(100, ratio * 50))}%` }} />}
+          {row.baseline != null && <span className="arena-comparison-average" aria-hidden="true" />}
+          {favoriteRatio != null && <span className="arena-comparison-favorite" style={{ left: `${Math.max(0, Math.min(100, favoriteRatio * 50))}%` }} aria-hidden="true" />}
+        </div>
+        {(ratio != null && ratio > 2 || favoriteRatio != null && favoriteRatio > 2) && <p className="arena-comparison-overflow">{t("arena.combat.overRange", { name: ratio != null && ratio > 2 ? playerName || t("radar.series.player") : favoriteName || t("radar.series.favorite") })}</p>}
+      </div>;
+    })}
+    <div className="arena-comparison-axis" aria-hidden="true"><span>0×</span><span>1×</span><span>2×</span></div>
+    <p className="arena-combat-footnote">{t("arena.combat.fixedAverage")}</p>
+    {!loading && !error && <p className="arena-combat-footnote">{cohortReady
+      ? t(mode === "overall" ? "arena.radar.overallPopulation" : "arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString(lang) ?? "0", percent: cohort?.percent ?? 30 })
+      : t("arena.radar.insufficient", { n: cohort?.sampleN ?? 0, target: required })}</p>}
   </div>;
 }

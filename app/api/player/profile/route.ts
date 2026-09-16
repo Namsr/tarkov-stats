@@ -43,6 +43,8 @@ import {
   buildSeasonalComparisonStats,
 } from "@/lib/profile-comparison";
 import { getArenaProfile, getArenaProfileRisk, getStoredArenaProfileRisk, isArenaProfileRiskFresh, persistArenaProfile } from "@/lib/arena/service";
+import { rateArena } from "@/lib/arena/ts-rating";
+import { arenaTsReference } from "@/lib/arena/ts-rating-reference";
 
 const PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
 type PersistentMode = "regular" | "pve";
@@ -369,6 +371,7 @@ async function arenaProfileResponse(input: {
     return NextResponse.json({
       profile,
       arena: stored,
+      tsRating: rateArena(stored, arenaTsReference),
       risk,
       identity: { aid, mode: "arena", cycleId },
       profileUpdatedAt: stored.profileUpdatedAt || null,
@@ -392,6 +395,7 @@ async function arenaProfileResponse(input: {
       return NextResponse.json({
         profile: null,
         arena: stored,
+        tsRating: rateArena(stored, arenaTsReference),
         risk,
         identity: { aid, mode: "arena", cycleId },
         profileUpdatedAt: stored.profileUpdatedAt || null,
