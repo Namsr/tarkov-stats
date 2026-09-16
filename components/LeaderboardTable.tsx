@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { useLayoutEffect, useRef } from "react";
@@ -29,6 +30,34 @@ function displayRank(row: LeaderboardRow, sort: LeaderboardSort): string {
 function RankCell({ row, sort, href }: { row: LeaderboardRow; sort: LeaderboardSort; href: string }) {
   const rank = displayRank(row, sort);
   return rank === "—" ? rank : <Link href={href} prefetch={false}>{rank}</Link>;
+}
+
+export function prestigeIconUrl(level: number): string {
+  return `https://assets.tarkov.dev/prestige-${level}-icon.webp`;
+}
+
+function prestigeLevelOf(row: LeaderboardRow): number | null {
+  const prestige = row.stats.prestige;
+  return typeof prestige === "number" && Number.isSafeInteger(prestige) && prestige > 0 ? prestige : null;
+}
+
+function PrestigeBadge({ level, label }: { level: number; label: string }) {
+  return (
+    <Image
+      className="leaderboard-prestige"
+      src={prestigeIconUrl(level)}
+      alt=""
+      title={label}
+      aria-label={label}
+      width={18}
+      height={18}
+      loading="lazy"
+      unoptimized
+      onError={(event) => {
+        event.currentTarget.style.visibility = "hidden";
+      }}
+    />
+  );
 }
 
 // FLIP: rows glide to their new positions on resort instead of swapping instantly.
@@ -128,6 +157,8 @@ export default function LeaderboardTable({
               }
               const profileQuery = profileParams.toString();
               const profileHref = `/player/${meta.mode}/${row.aid}${profileQuery ? `?${profileQuery}` : ""}`;
+              const prestige = prestigeLevelOf(row);
+              const showPrestige = prestige != null && meta.mode !== "arena";
               return (
                 <tr
                   key={row.aid}
@@ -141,7 +172,10 @@ export default function LeaderboardTable({
                     <RankCell row={row} sort={meta.sort} href={`/leaderboard?${focusParams}`} />
                   </td>
                   <th scope="row">
-                    <Link href={profileHref} prefetch={false}>{row.nickname || `#${row.aid}`}</Link>
+                    <span className="leaderboard-player">
+                      <Link href={profileHref} prefetch={false} className="leaderboard-player__name">{row.nickname || `#${row.aid}`}</Link>
+                      {showPrestige && <PrestigeBadge level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
+                    </span>
                     {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                   </th>
                   {showBestArp && <td className="leaderboard-table__number">{formatNumber(row.stats.bestArp, locale)}</td>}
@@ -173,6 +207,8 @@ export default function LeaderboardTable({
           const profileQuery = profileParams.toString();
           const profileHref = `/player/${meta.mode}/${row.aid}${profileQuery ? `?${profileQuery}` : ""}`;
           const rank = displayRank(row, meta.sort);
+          const prestige = prestigeLevelOf(row);
+          const showPrestige = prestige != null && meta.mode !== "arena";
           return (
             <li
               key={row.aid}
@@ -184,9 +220,12 @@ export default function LeaderboardTable({
               tabIndex={row.selected ? -1 : undefined}
             >
               <div className="leaderboard-card__top">
-                <Link href={profileHref} prefetch={false} className="leaderboard-card__name">
-                  {row.nickname || `#${row.aid}`}
-                </Link>
+                <span className="leaderboard-card__player">
+                  <Link href={profileHref} prefetch={false} className="leaderboard-card__name">
+                    {row.nickname || `#${row.aid}`}
+                  </Link>
+                  {showPrestige && <PrestigeBadge level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
+                </span>
                 {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                 <span className="leaderboard-card__rank">
                   {rank === "—" ? rank : <Link href={`/leaderboard?${focusParams}`} prefetch={false}>{rank}</Link>}
