@@ -26,7 +26,6 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
   const [fallback, setFallback] = useState<{ key: string; points: ProgressionPoint[] } | null>(null);
   const { ref, width } = useChartWidth(1120);
   const svgRef = useRef<SVGSVGElement>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
   const titleId = useId(), clipId = useId();
   const key = metric === "level" ? "xp" : metric === "kd" ? data.identity.mode === "pve" ? "ai_kd" : "pvp_kd" : "survival";
   const series = data.metrics[key];
@@ -87,7 +86,6 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
   const n = (v: number, digits = 0) => v.toLocaleString(lang, { maximumFractionDigits: digits });
   const date = (at: number | null) => at == null ? "—" : new Date(at).toLocaleDateString(lang, { day: "numeric", month: "short", timeZone: "Europe/Moscow" });
   const format = (v: number) => n(v, metric === "level" ? 0 : metric === "kd" ? 2 : 1) + (metric === "survival" ? "%" : "");
-  const metricLabel = t(metric === "level" ? "metric.level" : metric === "kd" ? data.identity.mode === "pve" ? "progression.timeline.metric.aiKd" : "metric.pmc_kd_ratio" : "metric.survival_rate");
   const ticks = profileChartTicks(axis === "days" ? [minX, (minX + maxX) / 2, maxX] : [0, maxX / 3, maxX * 2 / 3, maxX], (v) => axis === "days" ? date(v) : n(v));
   const yTicks = profileChartTicks(Array.from({ length: 4 }, (_, i) => low + (high - low) * i / 3), (v) => n(v, metric === "level" ? 0 : 1));
   const path = (points: ChartPoint[]) => points.map((p, i) => `${i ? "L" : "M"}${x(p.x)},${y(p.y)}`).join(" ");
@@ -105,20 +103,28 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
       else accepted.push(box);
     }
   }, [axis, width, minX, maxX, lang]);
-  useLayoutEffect(() => {
-    const tip = tooltipRef.current;
-    if (!active || !tip) return;
-    const { width: w, height: h } = tip.getBoundingClientRect();
-    const tx = active.x + 14 + w > width - 8 ? active.x - w - 14 : active.x + 14;
-    const ty = active.y + 14 + h > height - 8 ? active.y - h - 14 : active.y + 14;
-    tip.style.left = `${Math.max(8, Math.min(tx, width - w - 8))}px`;
-    tip.style.top = `${Math.max(8, Math.min(ty, height - h - 8))}px`;
-  }, [active, width, height, lang]);
-  function show(item: ChartPoint, event?: { clientX: number; clientY: number; currentTarget: SVGCircleElement }) {
-    const box = event?.currentTarget.ownerSVGElement?.getBoundingClientRect();
-    setActive({ item, x: event && box ? event.clientX - box.left : x(item.x), y: event && box ? event.clientY - box.top : y(item.y) });
+  function show(item: ChartPoint) {
+    setActive({ item, x: x(item.x), y: y(item.y) });
   }
   const clear = () => setActive(null);
+  const [shown, setShown] = useState<typeof active>(null);
+  useEffect(() => { if (active) setShown(active); }, [active]);
+  const shownColor = shown?.item.kind === "overall" ? "var(--profile-positive)" : shown?.item.kind === "selected" ? "var(--profile-other)" : "var(--foreground)";
+  const activeXLabel = active ? (axis === "days" ? date(active.item.x) : n(active.item.x)) : "";
+  const activeYLabel = active ? format(active.item.y) : "";
+  const CHAR_W = 7.2, LABEL_PAD = 3;
+  const textWidth = (s: string) => String(s).length * CHAR_W;
+  const labelRect = (lx: number, baseY: number, anchor: "start" | "middle" | "end", str: string) => {
+    const w = textWidth(str);
+    const x0 = anchor === "start" ? lx : anchor === "end" ? lx - w : lx - w / 2;
+    return { x0, x1: x0 + w, y0: baseY - 11, y1: baseY + 3 };
+  };
+  const rectsOverlap = (a: { x0: number; x1: number; y0: number; y1: number }, b: { x0: number; x1: number; y0: number; y1: number }) =>
+    a.x0 - LABEL_PAD < b.x1 && b.x0 - LABEL_PAD < a.x1 && a.y0 - LABEL_PAD < b.y1 && b.y0 - LABEL_PAD < a.y1;
+  const activeYRect = active ? labelRect(left - 10, active.y + 4, "end", activeYLabel) : null;
+  const activeXRect = active ? labelRect(active.x, height - 6, "middle", activeXLabel) : null;
+  const shownXLabel = shown ? (axis === "days" ? date(shown.item.x) : n(shown.item.x)) : "";
+  const shownYLabel = shown ? format(shown.item.y) : "";
 
   return <section className="profile-progress-chart" aria-labelledby={titleId}>
     <h3 id={titleId} className="sr-only">{title ?? t("progression.timeline.title")}</h3>
@@ -133,10 +139,19 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
       <div className="profile-chart-legend"><span><i aria-hidden="true" />{t("radar.series.player")}</span><button type="button" className="profile-legend-toggle" aria-pressed={overall && axis === "raids"} disabled={!average.length} onClick={() => { if (axis === "days") { setAxis("raids"); setOverall(true); } else setOverall((value) => !value); clear(); }}><i className="is-overall" aria-hidden="true" />{overallLabel}</button>{comparison && <span><i className="is-other" aria-hidden="true" />{comparison.nickname}</span>}</div>
     </div>
     <div ref={ref} className="profile-line-chart" style={{ height }}>
-      {all.length ? <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title ?? t("progression.timeline.title")} onClick={(event) => { if (event.target === event.currentTarget) clear(); }}>
+      {all.length ? <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title ?? t("progression.timeline.title")} onPointerLeave={clear}>
         <defs><clipPath id={clipId}><rect x={left - 6} y={top - 6} width={width - left - right + 12} height={height - top - bottom + 12} /></clipPath></defs>
-        {yTicks.map((tick) => <g key={tick.label} aria-hidden="true"><line x1={left} x2={width - right} y1={y(tick.value)} y2={y(tick.value)} stroke="var(--card-border)" /><text x={left - 10} y={y(tick.value) + 4} textAnchor="end">{tick.label}</text></g>)}
-        {ticks.map((tick, i) => <text key={tick.label} className="profile-chart-x-label" x={x(tick.value)} y={height - 6} textAnchor={i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"}>{tick.label}</text>)}
+        {yTicks.map((tick) => {
+          const rect = labelRect(left - 10, y(tick.value) + 4, "end", tick.label);
+          const faded = activeYRect ? rectsOverlap(rect, activeYRect) : false;
+          return <g key={tick.label} aria-hidden="true"><line x1={left} x2={width - right} y1={y(tick.value)} y2={y(tick.value)} stroke="var(--card-border)" /><text className="profile-chart-tick" style={{ opacity: faded ? 0 : 1 }} x={left - 10} y={y(tick.value) + 4} textAnchor="end">{tick.label}</text></g>;
+        })}
+        {ticks.map((tick, i) => {
+          const anchor = i === 0 ? "start" as const : i === ticks.length - 1 ? "end" as const : "middle" as const;
+          const rect = labelRect(x(tick.value), height - 6, anchor, tick.label);
+          const faded = activeXRect ? rectsOverlap(rect, activeXRect) : false;
+          return <text key={tick.label} className="profile-chart-x-label profile-chart-tick" style={{ opacity: faded ? 0 : 1 }} x={x(tick.value)} y={height - 6} textAnchor={anchor}>{tick.label}</text>;
+        })}
         <g clipPath={`url(#${clipId})`}>
           {overallPoints.length > 0 && <path className="profile-chart-line is-overall" data-series="overall" d={path(overallPoints)} />}
           {comparison && selectedSegments.map((segment, i) => <path key={`selected-${i}`} data-series="selected" className="profile-chart-line is-selected" d={path(makePoints(segment, "selected"))} />)}
@@ -145,10 +160,18 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
             {item.kind === "overall" ? <rect x={x(item.x) - 3} y={y(item.y) - 3} width="6" height="6" fill="var(--profile-positive)" /> : <circle cx={x(item.x)} cy={y(item.y)} r="4" fill="var(--background)" stroke={item.kind === "selected" ? "var(--profile-other)" : "var(--foreground)"} strokeWidth="2" />}
           </g>)}
         </g>
-        {all.map((item, i) => <circle key={`${item.kind}:${item.point.pointId}:${i}`} className="profile-chart-hit" data-kind={item.kind} cx={x(item.x)} cy={y(item.y)} r="13" fill="transparent" role="button" tabIndex={0} aria-label={`${item.kind === "overall" ? overallLabel : item.kind === "selected" ? comparison?.nickname : t("radar.series.player")}, ${item.kind === "overall" ? t("profile.raidRange", { min: item.point.raidMin ?? item.point.pmcRaids, max: item.point.raidMax ?? item.point.pmcRaids }) : date(profileProgressionTime(item.point))}: ${metricLabel} ${format(item.y)}`}
-          onPointerEnter={(event) => show(item, event)} onPointerMove={(event) => show(item, event)} onPointerLeave={(event) => { if (!event.currentTarget.matches(":focus-visible")) clear(); }} onFocus={() => show(item)} onBlur={clear} onClick={(event) => show(item, event)} onKeyDown={(event) => { if (event.key === "Escape") clear(); if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(item); } }} />)}
+        <g className="profile-chart-fade" opacity={active ? 1 : 0} aria-hidden="true">
+          {shown && <>
+            <line className="profile-chart-crosshair" x1={shown.x} x2={shown.x} y1={shown.y} y2={height - bottom} stroke={shownColor} />
+            <line className="profile-chart-crosshair" x1={left} x2={shown.x} y1={shown.y} y2={shown.y} stroke={shownColor} />
+            <circle cx={shown.x} cy={shown.y} r="6" fill={shownColor} />
+            <text x={left - 10} y={shown.y + 4} textAnchor="end" className="profile-chart-axis-active" style={{ fill: shownColor }}>{shownYLabel}</text>
+            <text x={shown.x} y={height - 6} textAnchor="middle" className="profile-chart-axis-active" style={{ fill: shownColor }}>{shownXLabel}</text>
+          </>}
+        </g>
+        {all.map((item, i) => <circle key={`${item.kind}:${item.point.pointId}:${i}`} className="profile-chart-hit" data-kind={item.kind} cx={x(item.x)} cy={y(item.y)} r="13" fill="transparent"
+          onPointerEnter={() => show(item)} onPointerMove={() => show(item)} onPointerLeave={clear} />)}
       </svg> : <p className="profile-chart-notice" role="status">{t("progression.noHistory")}</p>}
-      {active && <div ref={tooltipRef} className="profile-chart-tooltip" role="status"><strong>{active.item.kind === "overall" ? overallLabel : active.item.kind === "selected" ? comparison?.nickname : date(profileProgressionTime(active.item.point))}</strong><div><span>{metricLabel}</span><b>{format(active.item.y)}</b></div><div><span>{t("metric.pmc_raids")}</span><b>{active.item.kind === "overall" ? `${n(active.item.point.raidMin ?? active.item.point.pmcRaids)}–${n(active.item.point.raidMax ?? active.item.point.pmcRaids)}` : n(active.item.point.pmcRaids)}</b></div>{active.item.kind === "overall" && <div><span>{t("profile.players")}</span><b>{n(active.item.point.n)}</b></div>}</div>}
     </div>
     <div className="profile-progress-foot">
       <div className="profile-segments" role="group" aria-label={t("progression.timeline.axisHorizontal")}><button type="button" aria-pressed={axis === "raids"} onClick={() => { setAxis("raids"); clear(); }}>{t("progression.timeline.axisPmcRaids")}</button><button type="button" aria-pressed={axis === "days"} onClick={() => { setAxis("days"); clear(); }}>{t("progression.timeline.axisDays")}</button></div>

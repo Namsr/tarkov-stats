@@ -652,8 +652,9 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /profileProgressionTime/);
   assert.match(chart, /role="status"/);
   assert.match(chart, /onPointerMove/);
-  assert.match(chart, /onFocus/);
-  assert.match(chart, /event.key === "Escape"/);
+  assert.match(chart, /onPointerEnter/);
+  assert.match(chart, /profile-chart-crosshair/);
+  assert.doesNotMatch(chart, /profile-chart-tooltip/);
   assert.doesNotMatch(chart, /<title>/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
   assert.match(dictionary, /"progression\.series\.overall": "Медианный игрок PvP"/);
@@ -684,8 +685,8 @@ test("profile charts reserve space and keep tooltips accessible", async () => {
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
   assert.match(chart, /className="profile-line-chart" style=\{\{ height \}\}/);
   assert.match(chart, /className="profile-chart-hit"/);
-  assert.match(chart, /tabIndex=\{0\}/);
-  assert.match(chart, /tooltipRef/);
+  assert.match(chart, /onPointerLeave/);
+  assert.doesNotMatch(chart, /tooltipRef/);
   assert.match(styles, /profile-chart-tooltip/);
   assert.match(styles, /prefers-reduced-motion/);
   assert.doesNotMatch(styles, /cursor: (?:plus|zoom-in)/);
