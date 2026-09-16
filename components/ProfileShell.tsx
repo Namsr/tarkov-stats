@@ -31,9 +31,12 @@ export function ProfileShellLoading({ mode, aid, title }: { mode: GameMode; aid?
       />
       <section id="overview" tabIndex={-1} className="profile-header surface profile-anchor-section">
         <div className="profile-header__top">
-          <div className="profile-header__identity">
-            <div className="page-kicker">{aid == null ? <span className="inline-block h-4 w-24 skeleton rounded" /> : `#${aid}`}</div>
-            {title ? <h1 className="page-title break-words">{title}</h1> : <div className="mt-3 h-10 w-56 skeleton rounded" />}
+          <div className="profile-header__person">
+            <div className="profile-portrait skeleton" aria-hidden="true" />
+            <div className="profile-header__identity">
+              <div className="page-kicker">{aid == null ? <span className="inline-block h-4 w-24 skeleton rounded" /> : `#${aid}`}</div>
+              {title ? <h1 className="page-title break-words">{title}</h1> : <div className="mt-3 h-10 w-56 max-w-full skeleton rounded" />}
+            </div>
           </div>
           <div className="profile-header__controls">
             <div className="profile-header__actions">

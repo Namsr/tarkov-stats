@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import LeaderboardRankLink from "@/components/LeaderboardRankLink";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
+import ProfilePortrait from "@/components/ProfilePortrait";
 import type { ArenaModeKey } from "@/types/arena";
 import type { GameMode } from "@/types/seasonal";
 
@@ -33,21 +34,32 @@ export default function ProfileHeader({
   return (
     <section id="overview" tabIndex={-1} className="profile-header surface profile-anchor-section">
       <div className="profile-header__top">
-        <div className="profile-header__identity">
-          <p className="page-kicker">{kicker}</p>
-          {title ? (
-            <div className="profile-header__title-row">
-              <h1 className="page-title break-words">{title}</h1>
-              <LeaderboardRankLink
-                aid={aid}
-                mode={leaderboardMode}
-                arenaMode={leaderboardArenaMode}
-                cycleId={seasonalCycleId}
-                revision={leaderboardRevision}
-              />
-            </div>
-          ) : null}
-          {meta}
+        <div className="profile-header__person">
+          {title && (
+            <ProfilePortrait
+              key={`${mode}:${seasonalCycleId}:${aid}`}
+              aid={aid}
+              mode={mode}
+              cycleId={seasonalCycleId}
+              nickname={title}
+            />
+          )}
+          <div className="profile-header__identity">
+            <p className="page-kicker">{kicker}</p>
+            {title ? (
+              <div className="profile-header__title-row">
+                <h1 className="page-title break-words">{title}</h1>
+                <LeaderboardRankLink
+                  aid={aid}
+                  mode={leaderboardMode}
+                  arenaMode={leaderboardArenaMode}
+                  cycleId={seasonalCycleId}
+                  revision={leaderboardRevision}
+                />
+              </div>
+            ) : null}
+            {meta}
+          </div>
         </div>
         <div className="profile-header__controls">
           <div className="profile-header__actions" aria-live="polite">

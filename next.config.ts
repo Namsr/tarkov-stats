@@ -10,14 +10,15 @@ const isDev = process.env.NODE_ENV === "development";
 //   cloudflareinsights.com — приём метрик ручного Web Analytics beacon
 //   lh3.googleusercontent.com — аватар залогиненного через Google пользователя
 //   assets.tarkov.dev — официальные изображения достижений
-// Браузер ходит на upstream (tarkov.dev) только через наши /api/* роуты, поэтому
-// в connect-src его НЕТ — нужен лишь 'self'. В dev добавляем 'unsafe-eval'
+//   imagemagic.tarkov.dev — портреты персонажей
+// JSON upstream (tarkov.dev) доступен только через наши /api/* роуты, поэтому
+// в connect-src его НЕТ. Портреты разрешены отдельно в img-src. В dev добавляем 'unsafe-eval'
 // (React refresh) и ws: (HMR).
 const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data: https://lh3.googleusercontent.com https://assets.tarkov.dev",
+  "img-src 'self' blob: data: https://lh3.googleusercontent.com https://assets.tarkov.dev https://imagemagic.tarkov.dev",
   "font-src 'self'",
   `connect-src 'self' https://challenges.cloudflare.com https://cloudflareinsights.com${isDev ? " ws:" : ""}`,
   "frame-src https://challenges.cloudflare.com",
