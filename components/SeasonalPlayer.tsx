@@ -401,14 +401,12 @@ export default function SeasonalPlayer({
       cycleId={cycleId}
       kicker={`#${aid}`}
       title={profile.nickname}
+      prestige={stats.prestige}
       leaderboardRevision={`${cycleId}:${profile.profileUpdatedAt}:${progressionRefreshRevision}`}
       meta={
         <div className="profile-header__meta">
           <span>{t("player.sideLabel", { side: profile.side ?? unknownValue })}</span>
           {stats.level != null && <span>{t("profile.levelValue", { n: stats.level })}</span>}
-          {stats.prestige != null && stats.prestige > 0 && (
-            <span>{t("player.prestigeLabel", { n: stats.prestige })}</span>
-          )}
         </div>
       }
       actions={<ProfilePrimaryActions aid={aid} mode="seasonal" cycleId={cycleId} nickname={profile.nickname} />}
