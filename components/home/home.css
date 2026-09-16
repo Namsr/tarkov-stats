@@ -68,6 +68,8 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-chart-line { fill: none; stroke: var(--foreground); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
 .home-chart-point { fill: var(--background); stroke: var(--foreground); stroke-width: 2; }
 .home-chart-grid { stroke: var(--card-border); stroke-width: 1; }
+.home-chart-container svg { cursor: crosshair; touch-action: pan-y; }
+.home-chart-container svg:focus-visible { outline: 2px solid var(--foreground); outline-offset: 4px; }
 .home-chart-tooltip { position: absolute; pointer-events: none; background: var(--card-bg); color: var(--foreground); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 13px; font-size: 14px; box-shadow: 0 8px 24px #0002; z-index: 2; max-width: calc(100% - 8px); }
 .home-chart-foot { padding: 15px 0 0 48px; color: var(--muted); font-size: 14px; }
 .home-risk-section { margin-block: 54px; background: var(--card-bg); border-block: 1px solid var(--card-border); padding-block: 68px; }

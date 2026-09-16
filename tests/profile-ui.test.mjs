@@ -654,6 +654,8 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /onPointerMove/);
   assert.match(chart, /onFocus/);
   assert.match(chart, /event.key === "Escape"/);
+  assert.match(chart, /ChartCrosshair/);
+  assert.doesNotMatch(chart, /profile-chart-tooltip/);
   assert.doesNotMatch(chart, /<title>/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
   assert.match(dictionary, /"progression\.series\.overall": "Медианный игрок PvP"/);
@@ -679,13 +681,15 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
-test("profile charts reserve space and keep tooltips accessible", async () => {
+test("profile charts reserve space and keep point inspection accessible", async () => {
   const styles = await readFile("components/profile.css", "utf8");
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
   assert.match(chart, /className="profile-line-chart" style=\{\{ height \}\}/);
   assert.match(chart, /className="profile-chart-hit"/);
+  assert.match(chart, /onPointerLeave/);
   assert.match(chart, /tabIndex=\{0\}/);
-  assert.match(chart, /tooltipRef/);
+  assert.match(chart, /aria-label=\{pointLabel\(item\)\}/);
+  assert.doesNotMatch(chart, /tooltipRef/);
   assert.match(styles, /profile-chart-tooltip/);
   assert.match(styles, /prefers-reduced-motion/);
   assert.doesNotMatch(styles, /cursor: (?:plus|zoom-in)/);
@@ -765,8 +769,8 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(chart, /spacedLevelLabels\(/);
   assert.match(chart, /progression\.xpLevelValue/);
   assert.match(chart, /aria-label=\{label\}/);
-  assert.match(chart, /function moscowTimestamp\(timestamp: number\)/);
-  assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt\)/);
+  assert.match(chart, /function moscowTimestamp\(timestamp: number, lang: string\)/);
+  assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt, lang\)/);
   assert.doesNotMatch(chart, /point\.periodStartAt[\s\S]*toISOString\(\)\.slice/);
   assert.match(route, /getRegularProgressionAverage\(\)/);
   assert.match(route, /AVERAGE_CACHE_CONTROL/);

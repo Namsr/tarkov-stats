@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import ChartCrosshair from "@/components/ChartCrosshair";
+import { chartPointAtPointer } from "@/lib/chart-interaction";
 import { useChartWidth } from "@/components/home/useChartWidth";
 import { profileChartTicks, profileProgressionSegments, profileProgressionTime, type ProfileProgressMetric } from "@/lib/profile-progression";
 import { cumulativeLevelBands, levelAtExperience } from "@/lib/seasonal/ui";
@@ -22,11 +24,11 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
   const [axis, setAxis] = useState<"raids" | "days">("raids");
   const [overall, setOverall] = useState(true);
   const [fullRange, setFullRange] = useState(false);
-  const [active, setActive] = useState<{ item: ChartPoint; x: number; y: number } | null>(null);
+  const [active, setActive] = useState<ChartPoint | null>(null);
+  const [shown, setShown] = useState<ChartPoint | null>(null);
   const [fallback, setFallback] = useState<{ key: string; points: ProgressionPoint[] } | null>(null);
   const { ref, width } = useChartWidth(1120);
   const svgRef = useRef<SVGSVGElement>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
   const titleId = useId(), clipId = useId();
   const key = metric === "level" ? "xp" : metric === "kd" ? data.identity.mode === "pve" ? "ai_kd" : "pvp_kd" : "survival";
   const series = data.metrics[key];
@@ -81,7 +83,7 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
   if (metric === "level") { low = Math.floor(low); high = Math.ceil(high); }
   if (metric === "survival") high = Math.min(100, high);
   if (high <= low) low = Math.max(0, high - 1);
-  const height = width < 500 ? 235 : 270, left = width < 400 ? 36 : 44, right = 18, top = 20, bottom = 34;
+  const height = width < 500 ? 235 : 270, left = metric === "survival" ? 66 : width < 400 ? 44 : 54, right = 18, top = 20, bottom = 34;
   const x = (v: number) => left + (v - minX) / Math.max(1, maxX - minX) * (width - left - right);
   const y = (v: number) => height - bottom - (v - low) / Math.max(1e-9, high - low) * (height - top - bottom);
   const n = (v: number, digits = 0) => v.toLocaleString(lang, { maximumFractionDigits: digits });
@@ -105,20 +107,14 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
       else accepted.push(box);
     }
   }, [axis, width, minX, maxX, lang]);
-  useLayoutEffect(() => {
-    const tip = tooltipRef.current;
-    if (!active || !tip) return;
-    const { width: w, height: h } = tip.getBoundingClientRect();
-    const tx = active.x + 14 + w > width - 8 ? active.x - w - 14 : active.x + 14;
-    const ty = active.y + 14 + h > height - 8 ? active.y - h - 14 : active.y + 14;
-    tip.style.left = `${Math.max(8, Math.min(tx, width - w - 8))}px`;
-    tip.style.top = `${Math.max(8, Math.min(ty, height - h - 8))}px`;
-  }, [active, width, height, lang]);
-  function show(item: ChartPoint, event?: { clientX: number; clientY: number; currentTarget: SVGCircleElement }) {
-    const box = event?.currentTarget.ownerSVGElement?.getBoundingClientRect();
-    setActive({ item, x: event && box ? event.clientX - box.left : x(item.x), y: event && box ? event.clientY - box.top : y(item.y) });
+  function show(item: ChartPoint) {
+    setActive(item);
+    setShown(item);
   }
   const clear = () => setActive(null);
+  const displayed = shown && all.find((item) => item.kind === shown.kind && item.point.pointId === shown.point.pointId);
+  const shownColor = displayed?.kind === "overall" ? "var(--profile-positive)" : displayed?.kind === "selected" ? "var(--profile-other)" : "var(--foreground)";
+  const pointLabel = (item: ChartPoint) => `${item.kind === "overall" ? overallLabel : item.kind === "selected" ? comparison?.nickname : t("radar.series.player")}, ${item.kind === "overall" ? t("profile.raidRange", { min: item.point.raidMin ?? item.point.pmcRaids, max: item.point.raidMax ?? item.point.pmcRaids }) : date(profileProgressionTime(item.point))}: ${metricLabel} ${format(item.y)}, ${t("home.pointRaids", { n: n(item.point.pmcRaids) })}`;
 
   return <section className="profile-progress-chart" aria-labelledby={titleId}>
     <h3 id={titleId} className="sr-only">{title ?? t("progression.timeline.title")}</h3>
@@ -133,10 +129,16 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
       <div className="profile-chart-legend"><span><i aria-hidden="true" />{t("radar.series.player")}</span><button type="button" className="profile-legend-toggle" aria-pressed={overall && axis === "raids"} disabled={!average.length} onClick={() => { if (axis === "days") { setAxis("raids"); setOverall(true); } else setOverall((value) => !value); clear(); }}><i className="is-overall" aria-hidden="true" />{overallLabel}</button>{comparison && <span><i className="is-other" aria-hidden="true" />{comparison.nickname}</span>}</div>
     </div>
     <div ref={ref} className="profile-line-chart" style={{ height }}>
-      {all.length ? <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title ?? t("progression.timeline.title")} onClick={(event) => { if (event.target === event.currentTarget) clear(); }}>
+      {all.length ? <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title ?? t("progression.timeline.title")}
+        onPointerMove={(event) => { if (event.pointerType === "touch") return; const index = chartPointAtPointer(all.map((item) => ({ x: x(item.x), y: y(item.y) })), event); if (index == null) clear(); else show(all[index]); }}
+        onPointerLeave={(event) => { if (event.pointerType !== "touch" && !event.currentTarget.querySelector(":focus-visible")) clear(); }}
+        onClick={(event) => { const index = chartPointAtPointer(all.map((item) => ({ x: x(item.x), y: y(item.y) })), event); if (index == null) clear(); else show(all[index]); }}>
         <defs><clipPath id={clipId}><rect x={left - 6} y={top - 6} width={width - left - right + 12} height={height - top - bottom + 12} /></clipPath></defs>
-        {yTicks.map((tick) => <g key={tick.label} aria-hidden="true"><line x1={left} x2={width - right} y1={y(tick.value)} y2={y(tick.value)} stroke="var(--card-border)" /><text x={left - 10} y={y(tick.value) + 4} textAnchor="end">{tick.label}</text></g>)}
-        {ticks.map((tick, i) => <text key={tick.label} className="profile-chart-x-label" x={x(tick.value)} y={height - 6} textAnchor={i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"}>{tick.label}</text>)}
+        {yTicks.map((tick) => <g key={tick.label} aria-hidden="true"><line x1={left} x2={width - right} y1={y(tick.value)} y2={y(tick.value)} stroke="var(--card-border)" /><text data-chart-tick x={left - 10} y={y(tick.value) + 4} textAnchor="end">{tick.label}</text></g>)}
+        {ticks.map((tick, i) => {
+          const anchor = i === 0 ? "start" as const : i === ticks.length - 1 ? "end" as const : "middle" as const;
+          return <text key={tick.label} className="profile-chart-x-label" data-chart-tick x={x(tick.value)} y={height - 6} textAnchor={anchor}>{tick.label}</text>;
+        })}
         <g clipPath={`url(#${clipId})`}>
           {overallPoints.length > 0 && <path className="profile-chart-line is-overall" data-series="overall" d={path(overallPoints)} />}
           {comparison && selectedSegments.map((segment, i) => <path key={`selected-${i}`} data-series="selected" className="profile-chart-line is-selected" d={path(makePoints(segment, "selected"))} />)}
@@ -145,10 +147,10 @@ export default function ProgressionTimelineChart({ data, title, comparison }: {
             {item.kind === "overall" ? <rect x={x(item.x) - 3} y={y(item.y) - 3} width="6" height="6" fill="var(--profile-positive)" /> : <circle cx={x(item.x)} cy={y(item.y)} r="4" fill="var(--background)" stroke={item.kind === "selected" ? "var(--profile-other)" : "var(--foreground)"} strokeWidth="2" />}
           </g>)}
         </g>
-        {all.map((item, i) => <circle key={`${item.kind}:${item.point.pointId}:${i}`} className="profile-chart-hit" data-kind={item.kind} cx={x(item.x)} cy={y(item.y)} r="13" fill="transparent" role="button" tabIndex={0} aria-label={`${item.kind === "overall" ? overallLabel : item.kind === "selected" ? comparison?.nickname : t("radar.series.player")}, ${item.kind === "overall" ? t("profile.raidRange", { min: item.point.raidMin ?? item.point.pmcRaids, max: item.point.raidMax ?? item.point.pmcRaids }) : date(profileProgressionTime(item.point))}: ${metricLabel} ${format(item.y)}`}
-          onPointerEnter={(event) => show(item, event)} onPointerMove={(event) => show(item, event)} onPointerLeave={(event) => { if (!event.currentTarget.matches(":focus-visible")) clear(); }} onFocus={() => show(item)} onBlur={clear} onClick={(event) => show(item, event)} onKeyDown={(event) => { if (event.key === "Escape") clear(); if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(item); } }} />)}
+        <ChartCrosshair point={displayed ? { x: x(displayed.x), y: y(displayed.y), xLabel: axis === "days" ? date(displayed.x) : n(displayed.x), yLabel: format(displayed.y), color: shownColor } : null} visible={!!active} left={left} bottom={height - bottom} labelY={height - 6} width={width} />
+        {all.map((item, i) => <circle key={`${item.kind}:${item.point.pointId}:${i}`} className="profile-chart-hit" data-kind={item.kind} cx={x(item.x)} cy={y(item.y)} r="13" fill="transparent" role="button" tabIndex={0} aria-label={pointLabel(item)}
+          onFocus={() => show(item)} onBlur={clear} onKeyDown={(event) => { if (event.key === "Escape") clear(); if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(item); } }} />)}
       </svg> : <p className="profile-chart-notice" role="status">{t("progression.noHistory")}</p>}
-      {active && <div ref={tooltipRef} className="profile-chart-tooltip" role="status"><strong>{active.item.kind === "overall" ? overallLabel : active.item.kind === "selected" ? comparison?.nickname : date(profileProgressionTime(active.item.point))}</strong><div><span>{metricLabel}</span><b>{format(active.item.y)}</b></div><div><span>{t("metric.pmc_raids")}</span><b>{active.item.kind === "overall" ? `${n(active.item.point.raidMin ?? active.item.point.pmcRaids)}–${n(active.item.point.raidMax ?? active.item.point.pmcRaids)}` : n(active.item.point.pmcRaids)}</b></div>{active.item.kind === "overall" && <div><span>{t("profile.players")}</span><b>{n(active.item.point.n)}</b></div>}</div>}
     </div>
     <div className="profile-progress-foot">
       <div className="profile-segments" role="group" aria-label={t("progression.timeline.axisHorizontal")}><button type="button" aria-pressed={axis === "raids"} onClick={() => { setAxis("raids"); clear(); }}>{t("progression.timeline.axisPmcRaids")}</button><button type="button" aria-pressed={axis === "days"} onClick={() => { setAxis("days"); clear(); }}>{t("progression.timeline.axisDays")}</button></div>
