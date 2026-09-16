@@ -652,8 +652,9 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(chart, /profileProgressionTime/);
   assert.match(chart, /role="status"/);
   assert.match(chart, /onPointerMove/);
-  assert.match(chart, /onPointerEnter/);
-  assert.match(chart, /profile-chart-crosshair/);
+  assert.match(chart, /onFocus/);
+  assert.match(chart, /event.key === "Escape"/);
+  assert.match(chart, /ChartCrosshair/);
   assert.doesNotMatch(chart, /profile-chart-tooltip/);
   assert.doesNotMatch(chart, /<title>/);
   assert.match(dictionary, /"progression\.series\.overall": "Median PvP player"/);
@@ -680,12 +681,14 @@ test("progression APIs keep Seasonal queries on the configured active cycle", as
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
-test("profile charts reserve space and keep tooltips accessible", async () => {
+test("profile charts reserve space and keep point inspection accessible", async () => {
   const styles = await readFile("components/profile.css", "utf8");
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
   assert.match(chart, /className="profile-line-chart" style=\{\{ height \}\}/);
   assert.match(chart, /className="profile-chart-hit"/);
   assert.match(chart, /onPointerLeave/);
+  assert.match(chart, /tabIndex=\{0\}/);
+  assert.match(chart, /aria-label=\{pointLabel\(item\)\}/);
   assert.doesNotMatch(chart, /tooltipRef/);
   assert.match(styles, /profile-chart-tooltip/);
   assert.match(styles, /prefers-reduced-motion/);

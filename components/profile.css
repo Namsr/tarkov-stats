@@ -188,10 +188,6 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-chart-line.is-selected { stroke: var(--profile-other); stroke-dasharray: 7 6; }
 .profile-chart-hit { outline: none; cursor: crosshair; touch-action: pan-y; }
 .profile-chart-hit:focus-visible { stroke: var(--foreground); stroke-width: 1.5; stroke-dasharray: 3 3; }
-.profile-chart-crosshair { stroke-dasharray: 5 4; stroke-width: 1.5; opacity: .95; }
-.profile-chart-fade { transition: opacity .18s ease; }
-.profile-chart-tick { transition: opacity .18s ease; }
-.profile-chart-axis-active { font-weight: 700; font-variant-numeric: tabular-nums; transition: opacity .18s ease; }
 .profile-progress-foot { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 17px; }
 .profile-progress-foot .profile-segments { padding: 0; border: 0; background: none; }
 .profile-progress-foot .profile-segments button { background: none; color: var(--muted); border-radius: 0; padding-inline: 0; margin-right: 22px; font-weight: 400; }

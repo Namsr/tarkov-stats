@@ -979,10 +979,15 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .seasonal-chart__corridor { opacity: .12; }
 .seasonal-chart__empty { min-height: 180px; display: grid; place-items: center; color: var(--muted); font-size: .9rem; }
 .seasonal-chart__meta { display: flex; flex-wrap: wrap; gap: 7px 16px; border-top: 1px solid var(--card-border); padding-top: 12px; color: var(--muted); font-size: .69rem; }
-.seasonal-chart__crosshair { stroke-dasharray: 5 4; stroke-width: 1.5; }
-.seasonal-chart__fade { transition: opacity .18s ease; }
-.seasonal-chart__tick { transition: opacity .18s ease; }
-.seasonal-chart__axis-active { font-weight: 700; font-variant-numeric: tabular-nums; transition: opacity .18s ease; }
+.seasonal-chart__hit { cursor: crosshair; outline: none; }
+.seasonal-chart__hit:focus-visible { stroke: var(--foreground); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.seasonal-chart .chart-crosshair__label { font-size: 10px; }
+.chart-crosshair, [data-chart-tick] { transition: opacity .18s ease; }
+.chart-crosshair__guide { stroke-dasharray: 5 4; stroke-width: 1.5; }
+.chart-crosshair__label { font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  .chart-crosshair, [data-chart-tick] { transition: none; }
+}
 
 .progression-timeline {
   --timeline-xp: #f2a65a;

@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import ChartCrosshair from "@/components/ChartCrosshair";
+import { chartPointAtPointer } from "@/lib/chart-interaction";
 import { chartBounds, chartPath, levelAtExperience, populationWithinPlayerRaidRange, raidTicks, spacedLevelLabels, type LevelBand } from "@/lib/seasonal/ui";
 import type {
   ProgressionKind,
@@ -29,45 +31,26 @@ const COLORS: Record<SeriesKey, string> = {
 
 type ChartData = ProgressionSeriesResponse | SeasonalAverageSeries;
 
-function fmt(value: number, kind: ProgressionKind): string {
+function fmt(value: number, kind: ProgressionKind, lang: string): string {
   return kind === "cumulative"
-    ? Math.round(value).toLocaleString()
-    : value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    ? Math.round(value).toLocaleString(lang)
+    : value.toLocaleString(lang, { maximumFractionDigits: 1 });
 }
 
-function moscowDate(date: string): string {
-  return new Date(`${date}T00:00:00+03:00`).toLocaleDateString(undefined, {
+function moscowDate(date: string, lang: string): string {
+  return new Date(`${date}T00:00:00+03:00`).toLocaleDateString(lang, {
     timeZone: "Europe/Moscow",
   });
 }
 
-function moscowTimestamp(timestamp: number): string {
-  return new Date(timestamp).toLocaleDateString(undefined, {
+function moscowTimestamp(timestamp: number, lang: string): string {
+  return new Date(timestamp).toLocaleDateString(lang, {
     timeZone: "Europe/Moscow",
   });
 }
 
 function coordinate(point: ProgressionPoint): number {
   return point.pmcRaids;
-}
-
-const CHAR_W = 6.5;
-const LABEL_PAD = 3;
-
-function textWidth(text: string): number {
-  return String(text).length * CHAR_W;
-}
-
-type LabelRect = { x0: number; x1: number; y0: number; y1: number };
-
-function labelRect(xPos: number, baseY: number, anchor: "start" | "middle" | "end", text: string): LabelRect {
-  const w = textWidth(text);
-  const x0 = anchor === "start" ? xPos : anchor === "end" ? xPos - w : xPos - w / 2;
-  return { x0, x1: x0 + w, y0: baseY - 11, y1: baseY + 3 };
-}
-
-function rectsOverlap(a: LabelRect, b: LabelRect): boolean {
-  return a.x0 - LABEL_PAD < b.x1 && b.x0 - LABEL_PAD < a.x1 && a.y0 - LABEL_PAD < b.y1 && b.y0 - LABEL_PAD < a.y1;
 }
 
 function axisPoints(points: readonly ProgressionPoint[]) {
@@ -115,7 +98,7 @@ export default function SeasonalProgressionChart({
   averageOnly?: boolean;
   mode?: "regular" | "pve" | "seasonal";
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const persistent = mode !== "seasonal";
   const [visible, setVisible] = useState<Record<SeriesKey, boolean>>({
     player: !averageOnly,
@@ -123,6 +106,11 @@ export default function SeasonalProgressionChart({
     overall: true,
   });
   const [active, setActive] = useState<{ key: SeriesKey; point: ProgressionPoint } | null>(null);
+  const [lastPoint, setLastPoint] = useState<typeof active>(null);
+  function show(key: SeriesKey, point: ProgressionPoint) {
+    setActive({ key, point });
+    setLastPoint({ key, point });
+  }
   const keys = (averageOnly ? ["overall"] : ["player", "nearby", "overall"]) as SeriesKey[];
   const pointsFor = (key: SeriesKey): ProgressionPoint[] => key === "overall"
     ? data.overall
@@ -163,13 +151,12 @@ export default function SeasonalProgressionChart({
   const x = (day: number) => PAD.left + ((day - bounds.minDay) / (bounds.maxDay - bounds.minDay)) * plotWidth;
   const y = (value: number) => PAD.top + plotHeight - ((value - bounds.minValue) / (bounds.maxValue - bounds.minValue)) * plotHeight;
   const activeShown = active && shown.includes(active.key) ? active : null;
-  const activeDay = activeShown ? coordinate(activeShown.point) : 0;
-  const activeX = activeShown ? x(activeDay) : 0;
-  const activeY = activeShown ? y(activeShown.point.value) : 0;
-  const activeYText = activeShown ? fmt(activeShown.point.value, data.kind) : "";
-  const activeXText = activeShown ? String(Math.round(coordinate(activeShown.point))) : "";
-  const activeYRect = activeShown ? labelRect(PAD.left - 10, activeY + 4, "end", activeYText) : null;
-  const activeXRect = activeShown ? labelRect(activeX, HEIGHT - 18, "middle", activeXText) : null;
+  const hitPoints = shown.flatMap((key) => displayedPointsFor(key).map((point) => ({ key, point, x: x(coordinate(point)), y: y(point.value) })));
+  const displayed = lastPoint && hitPoints.find(({ key, point }) => key === lastPoint.key && point.pointId === lastPoint.point.pointId);
+  const inspect = (event: { currentTarget: SVGSVGElement; clientX: number; clientY: number }) => {
+    const index = chartPointAtPointer(hitPoints, event);
+    if (index == null) setActive(null); else show(hitPoints[index].key, hitPoints[index].point);
+  };
   const markerByDate = new Map(riskMarkers.map((marker) => [marker.date, marker]));
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const xTicks = raidTicks(bounds.minDay, bounds.maxDay);
@@ -196,7 +183,7 @@ export default function SeasonalProgressionChart({
               type="button"
               key={key}
               aria-pressed={visible[key]}
-              onClick={() => setVisible((current) => ({ ...current, [key]: !current[key] }))}
+              onClick={() => { setVisible((current) => ({ ...current, [key]: !current[key] })); setActive(null); }}
               className={visible[key] ? "is-active" : ""}
             >
               <span style={{ background: COLORS[key] }} aria-hidden="true" />
@@ -210,30 +197,26 @@ export default function SeasonalProgressionChart({
         <p className="seasonal-chart__empty">{t(persistent ? "progression.noHistory" : "seasonal.noHistory")}</p>
       ) : (
         <div className="seasonal-chart__scroll">
-          <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={title} onPointerLeave={() => setActive(null)}>
+          <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="group" aria-label={title}
+            onPointerMove={(event) => { if (event.pointerType !== "touch") inspect(event); }}
+            onClick={inspect}
+            onPointerLeave={(event) => { if (event.pointerType !== "touch" && !event.currentTarget.querySelector(":focus-visible")) setActive(null); }}>
             {ticks.map((tick) => {
               const value = bounds.minValue + (bounds.maxValue - bounds.minValue) * tick;
-              const text = fmt(value, data.kind);
+              const text = fmt(value, data.kind, lang);
               const baseY = y(value) + 4;
-              const hidden = activeYRect
-                ? rectsOverlap(labelRect(PAD.left - 10, baseY, "end", text), activeYRect)
-                : false;
               return (
                 <g key={tick}>
                   <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y(value)} y2={y(value)} className="seasonal-chart__grid" />
-                  <text x={PAD.left - 10} y={baseY} textAnchor="end" className="seasonal-chart__axis seasonal-chart__tick" style={{ opacity: hidden ? 0 : 1 }}>{text}</text>
+                  <text data-chart-tick x={PAD.left - 10} y={baseY} textAnchor="end" className="seasonal-chart__axis">{text}</text>
                 </g>
               );
             })}
             {xTicks.map((tick) => {
-              const text = String(tick);
-              const hidden = activeXRect
-                ? rectsOverlap(labelRect(x(tick), HEIGHT - 18, "middle", text), activeXRect)
-                : false;
               return (
                 <g key={`raid-${tick}`}>
                   <line x1={x(tick)} x2={x(tick)} y1={PAD.top} y2={HEIGHT - PAD.bottom} className="seasonal-chart__grid" />
-                  <text x={x(tick)} y={HEIGHT - 18} textAnchor="middle" className="seasonal-chart__axis seasonal-chart__tick" style={{ opacity: hidden ? 0 : 1 }}>{tick}</text>
+                  <text data-chart-tick x={x(tick)} y={HEIGHT - 18} textAnchor="middle" className="seasonal-chart__axis">{tick.toLocaleString(lang)}</text>
                 </g>
               );
             })}
@@ -281,17 +264,7 @@ export default function SeasonalProgressionChart({
                 })}
               </g>
             ))}
-            <g opacity={activeShown ? 1 : 0} className="seasonal-chart__fade" aria-hidden="true">
-              {activeShown && (
-                <>
-                  <line x1={activeX} x2={activeX} y1={activeY} y2={HEIGHT - PAD.bottom} stroke={COLORS[activeShown.key]} className="seasonal-chart__crosshair" />
-                  <line x1={PAD.left} x2={activeX} y1={activeY} y2={activeY} stroke={COLORS[activeShown.key]} className="seasonal-chart__crosshair" />
-                  <circle cx={activeX} cy={activeY} r={6} fill={COLORS[activeShown.key]} />
-                  <text x={PAD.left - 10} y={activeY + 4} textAnchor="end" className="seasonal-chart__axis seasonal-chart__axis-active" style={{ fill: COLORS[activeShown.key] }}>{activeYText}</text>
-                  <text x={activeX} y={HEIGHT - 18} textAnchor="middle" className="seasonal-chart__axis seasonal-chart__axis-active" style={{ fill: COLORS[activeShown.key] }}>{activeXText}</text>
-                </>
-              )}
-            </g>
+            <ChartCrosshair point={displayed ? { x: displayed.x, y: displayed.y, xLabel: Math.round(coordinate(displayed.point)).toLocaleString(lang), yLabel: fmt(displayed.point.value, data.kind, lang), color: COLORS[displayed.key] } : null} visible={!!activeShown} left={PAD.left} bottom={HEIGHT - PAD.bottom} labelY={HEIGHT - 18} width={WIDTH} />
             {shown.map((key) => (
               <g key={`hits-${key}`}>
                 {displayedPointsFor(key).map((point) => {
@@ -299,21 +272,21 @@ export default function SeasonalProgressionChart({
                   const pointX = coordinate(point);
                   const value = data.kind === "cumulative" && levelBands.length > 0
                     ? t("progression.xpLevelValue", {
-                        xp: fmt(point.value, data.kind),
+                        xp: fmt(point.value, data.kind, lang),
                         level: levelAtExperience(point.value, levelBands),
                       })
-                    : fmt(point.value, data.kind);
+                    : fmt(point.value, data.kind, lang);
                   const series = t((persistent ? "progression.series." : "seasonal.series.") + key);
-                  const periodStart = point.periodStartAt == null ? null : moscowTimestamp(point.periodStartAt);
-                  const period = periodStart ? `${periodStart} → ${moscowDate(point.date)}` : moscowDate(point.date);
+                  const periodStart = point.periodStartAt == null ? null : moscowTimestamp(point.periodStartAt, lang);
+                  const period = periodStart ? `${periodStart} → ${moscowDate(point.date, lang)}` : moscowDate(point.date, lang);
                   const scoreTooltipValues = {
                     series,
                     period,
                     min: point.raidMin ?? pointX,
                     max: point.raidMax ?? pointX,
-                    deltaXp: point.deltaExperience == null ? "—" : Math.round(point.deltaExperience).toLocaleString(),
+                    deltaXp: point.deltaExperience == null ? "—" : Math.round(point.deltaExperience).toLocaleString(lang),
                     deltaRaids: point.deltaPmcRaids == null ? "—" : point.deltaPmcRaids,
-                    days: point.elapsedDays == null ? "—" : point.elapsedDays.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+                    days: point.elapsedDays == null ? "—" : point.elapsedDays.toLocaleString(lang, { maximumFractionDigits: 1 }),
                     value,
                     sampleN: point.sampleN ?? point.n,
                     status: t(point.preliminary ? "progression.preliminary" : "progression.stable"),
@@ -325,7 +298,7 @@ export default function SeasonalProgressionChart({
                     : point.raidMin != null && point.raidMax != null
                       ? t("progression.pointTipRange", {
                           series,
-                          date: moscowDate(point.date),
+                          date: moscowDate(point.date, lang),
                           min: point.raidMin,
                           max: point.raidMax,
                           value,
@@ -333,7 +306,7 @@ export default function SeasonalProgressionChart({
                         })
                       : t("progression.pointTip", {
                           series,
-                          date: moscowDate(point.date),
+                          date: moscowDate(point.date, lang),
                           raids: pointX,
                           value,
                           n: point.n,
@@ -348,11 +321,13 @@ export default function SeasonalProgressionChart({
                       cy={y(point.value)}
                       r={13}
                       fill="transparent"
+                      className="seasonal-chart__hit"
+                      role="button"
+                      tabIndex={0}
                       aria-label={label}
-                      onPointerEnter={() => setActive({ key, point })}
-                      onPointerMove={() => setActive({ key, point })}
-                      onPointerLeave={() => setActive(null)}
-                      style={{ cursor: "crosshair" }}
+                      onFocus={() => show(key, point)}
+                      onBlur={() => setActive(null)}
+                      onKeyDown={(event) => { if (event.key === "Escape") setActive(null); if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(key, point); } }}
                     />
                   );
                 })}
@@ -366,9 +341,9 @@ export default function SeasonalProgressionChart({
       )}
 
       <div className="seasonal-chart__meta">
-        <span>{t("seasonal.sampleN", { n: data.n.toLocaleString() })}</span>
+        <span>{t("seasonal.sampleN", { n: data.n.toLocaleString(lang) })}</span>
         <span>{t("seasonal.confidenceValue", { n: Math.round(data.confidence * 100) })}</span>
-        {data.freshnessAt && <span>{t("seasonal.freshness", { date: new Date(data.freshnessAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>}
+        {data.freshnessAt && <span>{t("seasonal.freshness", { date: new Date(data.freshnessAt).toLocaleString(lang, { timeZone: "Europe/Moscow" }) })}</span>}
       </div>
     </section>
   );
