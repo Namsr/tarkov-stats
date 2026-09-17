@@ -49,6 +49,11 @@ function binCount(value: string | null): number {
     : MAX_HISTOGRAM_BINS;
 }
 
+function isDynamicComputeTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error &&
+    (error as { name?: unknown }).name === "DynamicComputeTimeoutError";
+}
+
 const loadCachedAverage = unstable_cache(
   async (
     mode: CrossSectionMode,
@@ -120,6 +125,7 @@ async function arenaAverageResponse(
     timing.finish({ operation: "average", mode: "arena", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid Arena average query" }, { status: 400 });
   }
+  let averagesMs: number | undefined;
   try {
     const standard = dimension === "matches" && metric === "players" && ranges.every((range) => range.value === null);
     if (standard && averagePublicationsEnabled()) {
@@ -137,6 +143,7 @@ async function arenaAverageResponse(
       });
     }
     const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value)]);
+    const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
       arenaMode,
       statistic,
@@ -146,13 +153,15 @@ async function arenaAverageResponse(
       ranges[1].value,
       ranges[2].value,
       ranges[3].value,
-    ));
+    )).finally(() => {
+      averagesMs = timing.elapsedMs(averagesStarted);
+    });
     const result = loaded.value;
     if (!result) {
-      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503 });
+      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, averagesMs });
       return NextResponse.json({ error: "Arena averages are unavailable" }, { status: 503 });
     }
-    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
+    timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache, averagesMs });
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
       // The server cache is tagged and invalidated by the collector. Do not let
       // a browser or reverse proxy retain the first tiny backfill sample.
@@ -160,7 +169,11 @@ async function arenaAverageResponse(
     });
   } catch (error) {
     console.error("Arena average stats failed", error);
-    timing.finish({ operation: "average", mode: "arena", outcome: "error", status: 500 });
+    if (isDynamicComputeTimeout(error)) {
+      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "dynamic", cache: "miss", averagesMs });
+      return NextResponse.json({ error: "Arena averages are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+    }
+    timing.finish({ operation: "average", mode: "arena", outcome: "error", status: 500, averagesMs });
     return NextResponse.json({ error: "Failed to compute Arena averages" }, { status: 500 });
   }
 }
@@ -221,6 +234,7 @@ export async function GET(request: NextRequest) {
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
+  let averagesMs: number | undefined;
   try {
     const standard = dimension === "hours" && metric.key === "players" && maxBins === MAX_HISTOGRAM_BINS &&
       parsedMin.value === null && parsedMax.value === null;
@@ -237,6 +251,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
     const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, usesNewRange]);
+    const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
       rawMode,
       dimension,
@@ -247,7 +262,9 @@ export async function GET(request: NextRequest) {
       parsedMin.value,
       parsedMax.value,
       usesNewRange,
-    ));
+    )).finally(() => {
+      averagesMs = timing.elapsedMs(averagesStarted);
+    });
     const result = loaded.value;
     const response = NextResponse.json(result.body, {
       headers: {
@@ -258,13 +275,20 @@ export async function GET(request: NextRequest) {
     });
     timing.finish({
       operation: "average", mode: rawMode, outcome: result.storage === "sqlite" ? "success" : "unavailable",
-      status: 200, storage: result.storage, source: "dynamic", cache: loaded.cache,
+      status: 200, storage: result.storage, source: "dynamic", cache: loaded.cache, averagesMs,
     });
     return response;
   } catch (error) {
     console.error("average stats failed", error);
+    if (isDynamicComputeTimeout(error)) {
+      timing.finish({
+        operation: "average", mode: rawMode, outcome: "unavailable", status: 503,
+        source: "dynamic", cache: "miss", averagesMs,
+      });
+      return NextResponse.json({ error: "Average statistics are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+    }
     timing.finish({
-      operation: "average", mode: rawMode, outcome: "error", status: 500,
+      operation: "average", mode: rawMode, outcome: "error", status: 500, averagesMs,
     });
     return NextResponse.json({ error: "Failed to compute averages" }, { status: 500 });
   }
