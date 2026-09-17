@@ -57,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(hours, pmc_raids, aid);
+CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS mode_players (
@@ -156,7 +157,7 @@ ${ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA}
 
 const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "players", "idx_players_bracket", "idx_players_hours", "idx_players_pmc_raids", "idx_players_cohort",
-  "idx_players_nickname_nocase", "idx_players_profile_updated_at", "mode_players",
+  "idx_players_nickname_nocase", "idx_players_profile_updated_at", "idx_players_cohort_regular", "mode_players",
   "idx_mode_players_bracket", "idx_mode_players_hours", "idx_mode_players_pmc_raids", "idx_mode_players_cohort",
   "leaderboard_profile_changes", "idx_leaderboard_profile_changes_mode_change",
   "trg_players_leaderboard_change_insert", "trg_players_leaderboard_change_update",
@@ -1407,6 +1408,9 @@ async function getSqliteDb(): Promise<any | null> {
         }
         sqliteDb.exec(
           "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
+        );
+        sqliteDb.exec(
+          "CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids)"
         );
         sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);

@@ -248,3 +248,54 @@ test("cleanup removes detailed events older than 90 days", () => {
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM request_events").get().n, 1);
   assert.deepEqual(db.prepare("SELECT subject_hash FROM auth_activity_daily").all().map((row) => ({ ...row })), [{ subject_hash: "recent-hmac" }]);
 });
+
+test("average operations expose an averages compute phase and stay absent otherwise", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = createAnalyticsStore(db);
+  const now = 650 * DAY;
+  store.record({ occurredAt: now - 1_000, operation: "average", mode: "regular", outcome: "success", status: 200, source: "dynamic", cache: "miss", latencyMs: 50, averagesMs: 42 });
+  store.record({ occurredAt: now - 900, operation: "average", mode: "regular", outcome: "success", status: 200, source: "dynamic", cache: "hit", latencyMs: 5, averagesMs: 1 });
+  // Error outcomes never produce phases, even when compute timing was captured.
+  store.record({ occurredAt: now - 800, operation: "average", mode: "regular", outcome: "error", status: 500, latencyMs: 30, averagesMs: 25 });
+  // Operations without averagesMs stay phase-free.
+  store.record({ occurredAt: now - 700, operation: "player_search", outcome: "success", status: 200, latencyMs: 2 });
+
+  const summary = store.summary("24h", "all", now);
+  const average = summary.health.operations.find((operation) => operation.operation === "average" && operation.mode === "regular");
+  assert.deepEqual(average?.phases, [
+    { phase: "averages", samples: 2, p50Ms: 1, p95Ms: 42, p99Ms: 42 },
+  ]);
+  const search = summary.health.operations.find((operation) => operation.operation === "player_search");
+  assert.deepEqual(search?.phases, []);
+  assert.equal(db.prepare("SELECT averages_ms FROM request_events WHERE operation = 'average' AND cache = 'miss'").get().averages_ms, 42);
+});
+
+test("averages column migrates in place and legacy rows read as null", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE request_events (
+    id INTEGER PRIMARY KEY, occurred_at INTEGER NOT NULL, host TEXT, operation TEXT NOT NULL,
+    aid INTEGER, nickname TEXT, mode TEXT, cycle_id TEXT, outcome TEXT NOT NULL,
+    status INTEGER NOT NULL, force INTEGER, source TEXT, cache TEXT, latency_ms INTEGER NOT NULL
+  );`);
+  const now = 660 * DAY;
+  db.prepare("INSERT INTO request_events (occurred_at, operation, outcome, status, latency_ms) VALUES (?, ?, ?, ?, ?)")
+    .run(now - 1_000, "average", "success", 200, 10);
+
+  const store = createAnalyticsStore(db);
+  const columns = db.prepare("PRAGMA table_info(request_events)").all().map((row) => row.name);
+  assert.equal(columns.includes("averages_ms"), true);
+  // The row written before the column existed reads as null and yields no phase.
+  assert.equal(db.prepare("SELECT averages_ms FROM request_events").get().averages_ms, null);
+  const legacyAverage = store.summary("24h", "all", now).health.operations
+    .find((operation) => operation.operation === "average");
+  assert.deepEqual(legacyAverage?.phases, []);
+
+  // New rows record compute timing after the migration.
+  store.record({ occurredAt: now - 500, operation: "average", mode: "regular", outcome: "success", status: 200, latencyMs: 10, averagesMs: 7.6 });
+  assert.equal(db.prepare("SELECT averages_ms FROM request_events WHERE occurred_at = ?").get(now - 500).averages_ms, 8);
+  const migratedAverage = store.summary("24h", "all", now).health.operations
+    .find((operation) => operation.operation === "average" && operation.mode === "regular");
+  assert.deepEqual(migratedAverage?.phases, [
+    { phase: "averages", samples: 1, p50Ms: 8, p95Ms: 8, p99Ms: 8 },
+  ]);
+});

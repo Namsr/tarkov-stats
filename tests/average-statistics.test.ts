@@ -495,7 +495,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
       "http://local/api/average/cohort?aid=1&statistic=median&period=90d",
     ));
     assert.equal(unavailable.status, 200);
-    assert.equal(unavailable.headers.get("cache-control"), "private, no-store");
+    assert.equal(unavailable.headers.get("cache-control"), "private, max-age=60");
     assert.deepEqual(
       (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
       { statistic: "median", period: "90d" },

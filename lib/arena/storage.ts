@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS arena_mode_stats (
 );
 CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_hours
   ON arena_mode_stats(arena_mode, hours, games_count);
+CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_parser
+  ON arena_mode_stats(arena_mode, parser_version, games_count, hours);
 CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_aid_version
   ON arena_mode_stats(aid, upstream_version);
 
@@ -227,6 +229,8 @@ export function initializeArenaSchema(db: {
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp
     ON arena_mode_stats(arena_mode, best_arp DESC)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_mode_parser
+    ON arena_mode_stats(arena_mode, parser_version, games_count, hours)`);
   // Only the schema upgrade performs this write. Later cold starts remain
   // read-only and every new profile writes its own immutable history row.
   if (!historyExists) db.exec(ARENA_HISTORY_BACKFILL_SQL);
