@@ -255,3 +255,100 @@ test("PvE collector uses the JSON helper and a distinct mode queue", async () =>
   assert.match(route, /PublicProfileVersionConflictError[\s\S]*?status: 409/s);
   assert.doesNotMatch(route, /\bfetch\s*\(/);
 });
+
+test("PvE conditional feed requests skip the body on 304 but keep serving the queue", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-304-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
+  const feed = { 10: cutoff + 1_000 };
+  const ETAG = '"test-pve-etag-1"';
+  const seen = { hits: 0, conditional: 0, bodies: 0 };
+  const syncCalls = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pve/updated.json")) {
+      seen.hits += 1;
+      if (request.headers["if-none-match"] === ETAG) {
+        seen.conditional += 1;
+        response.writeHead(304).end();
+        return;
+      }
+      seen.bodies += 1;
+      response.setHeader("content-type", "application/json");
+      response.setHeader("etag", ETAG);
+      response.end(JSON.stringify(feed));
+      return;
+    }
+    if (request.url !== "/api/operator/pve/profile-sync") return response.writeHead(404).end();
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid, expectedUpdatedAt } = JSON.parse(raw);
+    syncCalls.push(aid);
+    players.prepare(`INSERT INTO mode_players
+      (mode, aid, profile_updated_at, fetched_at, stats_json, achievements) VALUES ('pve', ?, ?, ?, ?, '[]')`)
+      .run(aid, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    progression.prepare(`INSERT OR IGNORE INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, stats_json)
+      VALUES ('pve', 'persistent', ?, ?, ?, ?, 'x', ?)`).run(aid, expectedUpdatedAt, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ state: "updated", profileUpdatedAt: expectedUpdatedAt }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const summaryFrom = (stdout) => {
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    return JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+  };
+
+  try {
+    const first = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
+    assert.equal(first.feedHttpStatus, 200);
+    assert.equal(first.feedNotModified, false);
+    assert.equal(first.completed, 1);
+    assert.equal(
+      players.prepare("SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_etag'").get().value,
+      ETAG,
+    );
+    const watermark = players.prepare(
+      "SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'"
+    ).get().value;
+
+    // Unchanged feed: revalidate, skip the body, keep the accepted watermark.
+    const second = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
+    assert.equal(seen.conditional, 1);
+    assert.equal(seen.bodies, 1);
+    assert.equal(second.feedNotModified, true);
+    assert.equal(second.feedHttpStatus, 304);
+    assert.equal(second.attempted, 0);
+    assert.equal(second.maxFeedUpdatedAt, cutoff + 1_000);
+    assert.equal(
+      players.prepare("SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'").get().value,
+      watermark,
+    );
+
+    // A pending row queued by another path is still served while the feed is 304.
+    players.prepare(`INSERT INTO pve_profile_sync_queue
+      (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
+      VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)`)
+      .run(99, cutoff + 2_000, Date.now());
+    syncCalls.length = 0;
+    const third = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
+    assert.equal(third.feedNotModified, true);
+    assert.deepEqual(syncCalls, [99]);
+    assert.equal(third.attempted, 1);
+    assert.equal(third.completed, 1);
+    assert.equal(
+      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 99").get().status,
+      "completed",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -376,3 +376,113 @@ test("Arena collector uses the JSON helper, one-request default, and an isolated
   assert.doesNotMatch(syncRoute, /warmAverageCaches|after\(/);
   assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
 });
+
+test("Arena conditional feed requests skip the body on 304 but keep index backfill", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-304-"));
+  const dbPath = join(directory, "players.db");
+  const initial = 1_800_000_000_000;
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE arena_mode_stats (
+      aid INTEGER NOT NULL,
+      arena_mode TEXT NOT NULL,
+      upstream_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL,
+      PRIMARY KEY (aid, arena_mode)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+      VALUES ('arena', 1, 'One', 'one', ${Date.now()}), ('arena', 2, 'Two', 'two', ${Date.now()});
+  `);
+  const feed = { 2: initial + 100 };
+  const ETAG = '"test-arena-etag-1"';
+  const seen = { hits: 0, conditional: 0, bodies: 0 };
+  const calls = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/arena/updated.json")) {
+      seen.hits += 1;
+      if (request.headers["if-none-match"] === ETAG) {
+        seen.conditional += 1;
+        response.writeHead(304).end();
+        return;
+      }
+      seen.bodies += 1;
+      response.setHeader("content-type", "application/json");
+      response.setHeader("etag", ETAG);
+      response.end(JSON.stringify(feed));
+      return;
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    calls.push(body.aid);
+    players.prepare(`
+      INSERT INTO mode_players (mode, aid, profile_updated_at, fetched_at, stats_json, achievements)
+      VALUES ('arena', ?, ?, ?, '{}', '')
+      ON CONFLICT(mode, aid) DO UPDATE SET profile_updated_at = excluded.profile_updated_at,
+        fetched_at = excluded.fetched_at
+    `).run(body.aid, body.expectedUpdatedAt, Date.now());
+    for (const mode of ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
+      players.prepare(`INSERT INTO arena_mode_stats
+        (aid, arena_mode, upstream_version, parser_version) VALUES (?, ?, ?, ?)
+        ON CONFLICT(aid, arena_mode) DO UPDATE SET upstream_version = excluded.upstream_version,
+          parser_version = excluded.parser_version
+      `).run(body.aid, mode, body.expectedUpdatedAt, body.schemaVersion);
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      state: "updated",
+      profileUpdatedAt: body.expectedUpdatedAt,
+      schemaVersion: body.schemaVersion,
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const feedUrl = `${baseUrl}/arena/updated.json`;
+
+  try {
+    const first = summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout);
+    assert.equal(first.feedHttpStatus, 200);
+    assert.equal(first.feedNotModified, false);
+    assert.deepEqual(calls.sort((a, b) => a - b), [1, 2]);
+    assert.equal(
+      players.prepare("SELECT value FROM arena_profile_sync_meta WHERE key = 'feed_etag'").get().value,
+      ETAG,
+    );
+
+    // Unchanged feed: revalidate, skip the body, keep the accepted watermark.
+    const second = summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout);
+    assert.equal(seen.conditional, 1);
+    assert.equal(seen.bodies, 1);
+    assert.equal(second.feedNotModified, true);
+    assert.equal(second.feedHttpStatus, 304);
+    assert.equal(second.attempted, 0);
+
+    // An index-covered account with a stats gap is still backfilled on 304.
+    players.prepare("DELETE FROM arena_mode_stats WHERE aid = 2").run();
+    calls.length = 0;
+    const third = summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout);
+    assert.equal(third.feedNotModified, true);
+    assert.deepEqual(calls, [2]);
+    assert.equal(third.attempted, 1);
+    assert.equal(third.completed, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

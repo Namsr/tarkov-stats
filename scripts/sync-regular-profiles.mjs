@@ -13,6 +13,8 @@ import {
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
 
+const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
   progressionDbPath: process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
@@ -243,6 +245,8 @@ async function loadFeed() {
     previousWatermark: savedWatermark,
     maxFeedUpdatedAt: 0,
     polledAt: 0,
+    feedNotModified: false,
+    feedHttpStatus: 0,
   };
   const pendingVersions = new Map();
   const insertQueue = db.prepare(`
@@ -260,15 +264,9 @@ async function loadFeed() {
     WHERE aid = ? AND status = 'completed'
   `);
 
-  const response = await requestWithRetry(feedUrlForRun(), {
-    headers: {
-      accept: "application/json",
-      "user-agent": "TarkovStats/0.1 (+https://tarkovstats.ru)",
-    },
-  });
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("updated feed response has no readable body");
-  const decoder = new TextDecoder();
+  // One URL per poll attempt (stable across retries inside this run). Validators
+  // from the last accepted feed are reused; a changed source resets them.
+  const feed = await requestFeedWithRetry(feedUrlForRun());
   const parser = createTimestampObjectParser((aidValue, timestampValue) => {
     counters.sourceEntries += 1;
     const aid = Number(aidValue);
@@ -313,13 +311,20 @@ async function loadFeed() {
     }
   });
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    parser.append(decoder.decode(value, { stream: true }));
+  if (feed.notModified) {
+    // 304 proves the representation is unchanged, not that every tracked
+    // profile is fresh: pending/error rows, snapshot gaps, exclusions and
+    // parser backfill below still run against the accepted watermark.
+    counters.feedNotModified = true;
+    counters.feedHttpStatus = 304;
+    counters.maxFeedUpdatedAt = savedWatermark ?? 0;
+    counters.polledAt = Date.now();
+  } else {
+    counters.feedHttpStatus = 200;
+    parser.append(feed.text);
+    parser.finish();
+    counters.polledAt = Date.now();
   }
-  parser.finish(decoder.decode());
-  counters.polledAt = Date.now();
 
   let queuedRows;
   db.exec("BEGIN IMMEDIATE");
@@ -376,6 +381,22 @@ async function loadFeed() {
     }
     setMeta("last_poll_at", String(counters.polledAt));
     setMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
+    // Validators are accepted only together with the parsed queue changes
+    // above: a truncated body, a failed commit or an interruption leaves the
+    // previous validators (or none) in place so the next run refetches.
+    setMeta("feed_source_url", config.updatedUrl);
+    if (feed.notModified) {
+      // Keep the accepted validators; only the 304 poll itself is recorded.
+    } else if (feed.etag) {
+      setMeta("feed_etag", feed.etag);
+    } else {
+      deleteMeta("feed_etag");
+    }
+    if (!feed.notModified) {
+      if (feed.lastModified) setMeta("feed_last_modified", feed.lastModified);
+      else deleteMeta("feed_last_modified");
+    }
+    setMeta("last_feed_http_status", String(counters.feedHttpStatus));
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -528,17 +549,47 @@ function latestSnapshotVersion(aid) {
   return Number(row?.updated_at) || 0;
 }
 
-async function requestWithRetry(url, init) {
+function feedValidators() {
+  // Validators belong to the configured source. A changed feed URL resets
+  // them so a new source is always fetched unconditionally once.
+  if (getMeta("feed_source_url") !== config.updatedUrl) return {};
+  const etag = getMeta("feed_etag");
+  const lastModified = getMeta("feed_last_modified");
+  return { ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) };
+}
+
+async function requestFeedWithRetry(url) {
+  const { etag, lastModified } = feedValidators();
+  const headers = {};
+  if (etag) headers["if-none-match"] = etag;
+  else if (lastModified) headers["if-modified-since"] = lastModified;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
-      if (response.ok) return response;
-      const error = new Error(`updated feed HTTP ${response.status}`);
-      error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-      throw error;
+      const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal, headers });
+      if (response.status === 304) {
+        // 304 must be handled before response.ok (ok is false for 304) and
+        // before reading the body. Without stored validators a 304 proves
+        // nothing, so fail bounded like any other unexpected feed status.
+        if (!etag && !lastModified) throw feedError("updated feed unexpectedly returned 304", 304);
+        try {
+          await response.body?.cancel();
+        } catch {}
+        return { notModified: true };
+      }
+      if (!response.ok) throw feedError(`updated feed HTTP ${response.status}`, response.status);
+      // Buffer inside the timeout window: a stalled body shares the attempt
+      // budget instead of hanging the hourly queue, and validators are staged
+      // only for a fully received document.
+      const text = await response.text();
+      return {
+        notModified: false,
+        etag: response.headers.get("etag"),
+        lastModified: response.headers.get("last-modified"),
+        text,
+      };
     } catch (error) {
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
@@ -550,11 +601,22 @@ async function requestWithRetry(url, init) {
   throw lastError;
 }
 
+function feedError(text, status) {
+  const error = new Error(text);
+  error.status = status;
+  error.retryable = status === 304 || status === 408 || status === 429 || status >= 500;
+  return error;
+}
+
 function feedUrlForRun() {
   const url = new URL(config.updatedUrl);
   // Stable within each poll window: retries share a CDN object, the next run does not.
   url.searchParams.set("v", String(feedCacheSlot()));
   return url.href;
+}
+
+function getMeta(key) {
+  return db.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = ?").get(key)?.value ?? null;
 }
 
 function setMeta(key, value) {
@@ -564,10 +626,15 @@ function setMeta(key, value) {
   ).run(key, value);
 }
 
+function deleteMeta(key) {
+  db.prepare("DELETE FROM regular_profile_sync_meta WHERE key = ?").run(key);
+}
+
 function saveRunMeta(summary) {
   const values = {
     last_poll_at: summary.polledAt,
     last_feed_max_updated_at: summary.maxFeedUpdatedAt,
+    last_feed_http_status: summary.feedHttpStatus ?? "",
     last_backlog: summary.backlog,
     last_new_profiles: summary.queuedNewProfiles,
     last_updated_profiles: summary.queuedUpdatedProfiles,
