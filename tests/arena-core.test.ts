@@ -277,6 +277,50 @@ test("Arena average trims at 20, preserves exact median, and excludes fewer than
   assert.equal(threshold?.metrics.kd_ratio.reason, null);
 });
 
+test("Arena analytics use normalized metrics without loading raw payloads or counters", async () => {
+  resetArenaData();
+  for (let aid = 1; aid <= 31; aid += 1) {
+    await save(profile(aid, { kills: 20 + aid, deaths: 20 }));
+  }
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const backend = await getArenaBackend();
+  assert.equal(backend.kind, "sqlite");
+  const prepare = backend.db.prepare;
+  const projections = [];
+  backend.db.prepare = function (sql) {
+    if (/FROM arena_mode_stats WHERE/.test(sql) && /^SELECT aid, hours/.test(sql)) {
+      projections.push(sql.slice(0, sql.indexOf("FROM arena_mode_stats")));
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    for (const mode of ["overall", "teamFight"]) {
+      for (const statistic of ["trimmed_mean", "median"]) {
+        const average = await getArenaAverage({ mode, statistic });
+        const cohort = await getArenaCohort(1, mode, statistic);
+        assert.equal(average.sampleN, 31);
+        assert.equal(cohort.sampleN, 30);
+        assert.equal(cohort.quality, "sufficient");
+        assert.ok(cohort.metrics.kd_ratio.value > 0);
+      }
+    }
+    const risk = await getArenaProfileRisk(1);
+    assert.equal(risk.overall.peerCount, 30);
+    assert.equal(risk.modes[0].peerCount, 30);
+    assert.ok(projections.length > 0);
+    for (const projection of projections) {
+      assert.doesNotMatch(projection, /\b(raw_json|arena_wins|kills|deaths|damage_dealt|max_kill_streak)\b|\*/);
+      assert.match(projection, /kd_ratio/);
+      assert.match(projection, /parser_version/);
+    }
+    const stored = await getArenaProfile(1);
+    assert.equal(stored.modes.teamFight.counters.kills, 21);
+    assert.equal(stored.overall.source, "upstream");
+  } finally {
+    backend.db.prepare = prepare;
+  }
+});
+
 test("Arena population counts parsed accounts and distinct players independently of average filters", async () => {
   resetArenaData();
   await save(profile(601, { games: 0 }));

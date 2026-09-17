@@ -697,7 +697,7 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
     }`
   ).join(" UNION ALL ");
   return `WITH cohort AS (
-    SELECT * FROM players ${where}
+    SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
   ), metric_values AS (${values}), ranked AS (
     SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
       COUNT(*) OVER (PARTITION BY metric) AS n

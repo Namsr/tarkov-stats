@@ -190,17 +190,36 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
   }
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
 
-  const cohort = await store.cohort2d(100, 100, 999, "hours", "median", "all");
-  assert.equal(cohort.quality, "sufficient");
-  assert.equal(cohort.percent, 10);
-  assert.equal(cohort.n, 20);
-  assert.equal(cohort.averages.kd_ratio.value, 10.5);
-  assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
-  assert.deepEqual(cohort.actualRanges, {
-    hours: { min: 100, max: 100 },
-    pmcRaids: { min: 100, max: 100 },
-    raids: { min: 100, max: 100 },
-  });
+  const prepare = DatabaseSync.prototype.prepare;
+  const projections = [];
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (sql.startsWith("WITH cohort AS (")) {
+      projections.push(sql.slice(0, sql.indexOf("FROM players")));
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    for (const statistic of ["median", "trimmed_mean"]) {
+      const cohort = await store.cohort2d(100, 100, 999, "hours", statistic, "all");
+      assert.equal(cohort.quality, "sufficient");
+      assert.equal(cohort.percent, 10);
+      assert.equal(cohort.n, 20);
+      assert.equal(cohort.averages.kd_ratio.value, 10.5);
+      assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+      assert.deepEqual(cohort.actualRanges, {
+        hours: { min: 100, max: 100 },
+        pmcRaids: { min: 100, max: 100 },
+        raids: { min: 100, max: 100 },
+      });
+    }
+    assert.equal(projections.length, 2);
+    for (const projection of projections) {
+      assert.doesNotMatch(projection, /\*|achievements_json|stats_json/);
+      assert.match(projection, /hours, pmc_raids/);
+    }
+  } finally {
+    DatabaseSync.prototype.prepare = prepare;
+  }
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {

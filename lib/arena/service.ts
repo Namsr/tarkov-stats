@@ -176,10 +176,7 @@ function arenaWhere(input: {
 async function arenaRows(backend: Backend, input: Parameters<typeof arenaWhere>[0]): Promise<Row[]> {
   const condition = arenaWhere(input);
   return all(backend, `SELECT aid, hours, games_count, kd_ratio, win_rate, headshot_rate,
-    kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at,
-    arena_wins, arena_losses, kills, deaths, assists, headshots, damage_dealt,
-    round_mvp_count, match_mvp_count, current_kill_streak, max_kill_streak,
-    current_win_streak, max_win_streak, current_loss_streak, max_loss_streak, raw_json
+    kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at
     FROM arena_mode_stats ${condition.where}`, condition.params);
 }
 
