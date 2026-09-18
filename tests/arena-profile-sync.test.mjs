@@ -463,6 +463,9 @@ test("Arena conditional feed requests skip the body on 304 but keep index backfi
       players.prepare("SELECT value FROM arena_profile_sync_meta WHERE key = 'feed_etag'").get().value,
       ETAG,
     );
+    const completedAt = players.prepare(
+      "SELECT aid, updated_at FROM arena_profile_sync_queue ORDER BY aid"
+    ).all().map((row) => ({ ...row }));
 
     // Unchanged feed: revalidate, skip the body, keep the accepted watermark.
     const second = summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout);
@@ -471,6 +474,12 @@ test("Arena conditional feed requests skip the body on 304 but keep index backfi
     assert.equal(second.feedNotModified, true);
     assert.equal(second.feedHttpStatus, 304);
     assert.equal(second.attempted, 0);
+    assert.deepEqual(
+      players.prepare("SELECT aid, updated_at FROM arena_profile_sync_queue ORDER BY aid")
+        .all().map((row) => ({ ...row })),
+      completedAt,
+      "no-change runs must not rewrite already-satisfied queue rows",
+    );
 
     // An index-covered account with a stats gap is still backfilled on 304.
     players.prepare("DELETE FROM arena_mode_stats WHERE aid = 2").run();

@@ -410,7 +410,9 @@ async function loadFeed() {
   db.prepare(`
     UPDATE regular_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL,
       updated_at = ?
-    WHERE EXISTS (
+    WHERE (regular_profile_sync_queue.status <> 'completed'
+      OR regular_profile_sync_queue.error IS NOT NULL)
+    AND EXISTS (
       SELECT 1 FROM progression_sync.progression_snapshots s
       WHERE s.mode = 'regular' AND s.cycle_id = 'persistent'
         AND s.aid = regular_profile_sync_queue.aid

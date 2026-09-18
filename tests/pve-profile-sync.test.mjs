@@ -316,6 +316,9 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     const watermark = players.prepare(
       "SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'"
     ).get().value;
+    const completedAt = players.prepare(
+      "SELECT updated_at FROM pve_profile_sync_queue WHERE aid = 10"
+    ).get().updated_at;
 
     // Unchanged feed: revalidate, skip the body, keep the accepted watermark.
     const second = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
@@ -325,6 +328,11 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     assert.equal(second.feedHttpStatus, 304);
     assert.equal(second.attempted, 0);
     assert.equal(second.maxFeedUpdatedAt, cutoff + 1_000);
+    assert.equal(
+      players.prepare("SELECT updated_at FROM pve_profile_sync_queue WHERE aid = 10").get().updated_at,
+      completedAt,
+      "no-change runs must not rewrite already-satisfied queue rows",
+    );
     assert.equal(
       players.prepare("SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'").get().value,
       watermark,
