@@ -222,6 +222,12 @@ test("Arena profile returns a normalized stored snapshot without an upstream req
     assert.equal(body.profile, null);
     assert.equal(body.arena.nickname, "Stored Arena");
     assert.equal(body.capture.status, "stored");
+    assert.equal(body.tsRating.version, "0.1");
+    assert.equal(body.tsRating.referenceVersion, "arena-median-2026-09-16");
+    assert.ok(body.tsRating.modes.teamFight.rating > 0);
+    // The fixture's overall match count differs from the sum of its modes.
+    assert.equal(body.tsRating.overall.rating, null);
+    assert.equal(body.tsRating.overall.reason, "incomplete_coverage");
     assert.equal(body.freshness.fetchedAt, body.arena.fetchedAt);
     assert.ok(Number.isFinite(body.freshness.fetchedAt));
   });
@@ -269,6 +275,7 @@ test("forced Arena refresh preserves a stored snapshot when upstream fails", asy
       assert.equal(body.profile, null);
       assert.equal(body.arena.nickname, "Saved Arena");
       assert.equal(body.capture.status, "refresh_failed");
+      assert.ok(body.tsRating.modes.teamFight.rating > 0);
       assert.equal(body.freshness.fetchedAt, body.arena.fetchedAt);
     });
   } finally {
