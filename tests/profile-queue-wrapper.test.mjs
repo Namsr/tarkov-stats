@@ -42,4 +42,13 @@ test("versioned profile queue isolates mode failures instead of aborting", async
   assert.match(source, /run_mode regular/);
   assert.match(source, /run_mode seasonal/);
   assert.match(source, /return 0/);
+  // B3: the failed mode is retried boundedly in the same run, not only via a
+  // full-cycle systemd restart.
+  assert.match(source, /MODE_RETRY/);
+  assert.match(source, /RETRY_DELAY/);
+  // A failed cd must not silently run all steps from the wrong directory.
+  assert.match(source, /cd \/opt\/tarkovstats-auto \|\| exit 1/);
+  // A SIGTERM-stopped warmup batch exits fast instead of starting freshness modes.
+  assert.match(source, /mode=warmup status=stopped/);
+  assert.match(source, /exit 143/);
 });

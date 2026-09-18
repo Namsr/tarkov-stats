@@ -3,12 +3,15 @@
 #
 # Versioned copy of /usr/local/sbin/tarkovstats-profile-queue (live checkout is
 # /opt/tarkovstats-auto, compose project "tarkovstats"). Steps, order, RPS and
-# the warmup batch size are identical to the live wrapper; the only behavior
-# change is failure isolation: one mode failing no longer skips the remaining
-# modes (the old `set -eu` aborted the chain, so e.g. a Regular FATAL skipped
-# PvE/Arena/Seasonal entirely). Per-mode results go to the journal as
-# MODE_RESULT lines, the run ends with QUEUE_SUMMARY, and the exit status stays
-# nonzero when any mode failed so Restart=on-failure keeps firing.
+# the warmup batch size are identical to the live wrapper; behavior changes vs
+# live `set -eu` are failure isolation and a bounded retry of the failed mode:
+# one mode failing no longer skips the remaining modes (the old `set -eu`
+# aborted the chain, so e.g. a Regular FATAL skipped PvE/Arena/Seasonal
+# entirely), and each freshness mode gets one immediate retry after 10s so a
+# transient `terminated` does not wait a full hour. Per-mode results go to the
+# journal as MODE_RESULT lines, the run ends with QUEUE_SUMMARY, and the exit
+# status stays nonzero when any mode failed so Restart=on-failure keeps firing
+# (with B1 304 revalidation the repeated successful modes refetch 0 bytes).
 #
 # Server-local install (MANUAL, merge does NOT deploy this file):
 #   cp /usr/local/sbin/tarkovstats-profile-queue \
@@ -25,11 +28,15 @@
 # *-profile-sync timers on top of this queue (lock contention + doubled load).
 set -u
 umask 077
-cd /opt/tarkovstats-auto
+cd /opt/tarkovstats-auto || exit 1
 dc() { /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T "$@"; }
 node='node --experimental-strip-types --experimental-sqlite'
 log=/var/log/tarkovstats-warmup-batch.json
 failures=""
+# Bounded in-run retry for transient feed/upstream failures (B3: repeat the
+# failed mode, not the whole cycle). One retry keeps the hourly budget; a
+# persistent failure still ends nonzero for Restart=on-failure visibility.
+RETRY_DELAY=10
 
 log_line() {
   printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$1" "$2"
@@ -41,11 +48,19 @@ record_failure() {
 
 # Runs one queue step, always continues the chain. Usage:
 #   run_mode <name> <command...>
+# On failure the same mode is retried once after $RETRY_DELAY so transient
+# errors (e.g. feed `terminated`) do not skip the mode until the next hour.
 run_mode() {
   _mode_name="$1"
   shift
   "$@"
   _mode_status=$?
+  if [ "$_mode_status" -ne 0 ]; then
+    log_line MODE_RETRY "mode=$_mode_name attempt=1 status=$_mode_status retry_in=$RETRY_DELAY"
+    sleep "$RETRY_DELAY"
+    "$@"
+    _mode_status=$?
+  fi
   log_line MODE_RESULT "mode=$_mode_name status=$_mode_status"
   if [ "$_mode_status" -ne 0 ]; then
     record_failure "$_mode_name" "$_mode_status"
@@ -68,10 +83,17 @@ while :; do
     break
   fi
   cat "$log"
-  if ! state=$(tail -n 1 "$log" | python3 -c 'import json,sys; x=json.load(sys.stdin); b=x.get("bounded"); s=x.get("stopped"); p=x.get("processed"); assert type(b) is bool and s is False and type(p) is int and p>=0 and (not b or p>0); print("more" if b else "done")'); then
+  if ! state=$(tail -n 1 "$log" | python3 -c 'import json,sys; x=json.load(sys.stdin); b=x.get("bounded"); s=x.get("stopped"); p=x.get("processed"); assert type(b) is bool and type(s) is bool and type(p) is int and p>=0 and (not b or p>0); print("stopped" if s else ("more" if b else "done"))'); then
     log_line MODE_RESULT "mode=warmup status=state-parse-failed"
     record_failure warmup state-parse-failed
     break
+  fi
+  if [ "$state" = stopped ]; then
+    # SIGTERM/SIGINT inside the batch: exit fast instead of starting the
+    # freshness modes so systemd stop does not wait through them.
+    log_line MODE_RESULT "mode=warmup status=stopped"
+    log_line QUEUE_SUMMARY "ok=false failures=\"warmup:stopped\""
+    exit 143
   fi
   sleep 1
   [ "$state" = more ] || break
