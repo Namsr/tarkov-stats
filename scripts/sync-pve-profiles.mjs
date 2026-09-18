@@ -509,7 +509,9 @@ async function loadFeedWithRetry(url, tracked, excluded, savedWatermark) {
 function pveFeedError(text, status) {
   const error = new Error(text);
   error.status = status;
-  error.retryable = status === 304 || status === 408 || status === 429 || status >= 500;
+  // Unexpected 304 without validators is not retryable (same unconditional GET
+  // would repeat it); fail fast like Seasonal.
+  error.retryable = status === 408 || status === 429 || status >= 500;
   return error;
 }
 

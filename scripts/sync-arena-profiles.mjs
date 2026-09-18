@@ -310,17 +310,21 @@ async function loadFeed() {
     setMeta("last_poll_at", String(counters.polledAt));
     setMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
     // Validators are accepted only together with the parsed queue changes in
-    // this transaction. A 304 (or a failed load) keeps the previously
-    // accepted validators; index-driven candidates above still queue.
-    setMeta("feed_source_url", config.updatedUrl);
+    // this transaction. A 304 keeps the previously accepted validators; a
+    // failed load leaves validators AND source URL untouched so a source
+    // change combined with a network failure cannot pin a foreign ETag to the
+    // new source. Index-driven candidates above still queue.
     if (!feed || feed.failed) {
       // No accepted representation in this run: leave validators untouched.
-    } else if (feed.notModified) {
-      // Keep the accepted validators; only the 304 poll itself is recorded.
-    } else if (feed.etag) {
-      setMeta("feed_etag", feed.etag);
     } else {
-      deleteMeta("feed_etag");
+      setMeta("feed_source_url", config.updatedUrl);
+      if (feed.notModified) {
+        // Keep the accepted validators; only the 304 poll itself is recorded.
+      } else if (feed.etag) {
+        setMeta("feed_etag", feed.etag);
+      } else {
+        deleteMeta("feed_etag");
+      }
     }
     if (feed && !feed.notModified && !feed.failed) {
       if (feed.lastModified) setMeta("feed_last_modified", feed.lastModified);
@@ -619,7 +623,9 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
 function arenaFeedError(text, status) {
   const error = new Error(text);
   error.status = status;
-  error.retryable = status === 304 || status === 408 || status === 429 || status >= 500;
+  // Unexpected 304 without validators is not retryable (same unconditional GET
+  // would repeat it); fail fast like Seasonal.
+  error.retryable = status === 408 || status === 429 || status >= 500;
   return error;
 }
 

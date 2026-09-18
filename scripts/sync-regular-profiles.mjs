@@ -604,7 +604,9 @@ async function requestFeedWithRetry(url) {
 function feedError(text, status) {
   const error = new Error(text);
   error.status = status;
-  error.retryable = status === 304 || status === 408 || status === 429 || status >= 500;
+  // An unexpected 304 (no stored validators) proves nothing and would repeat
+  // identically on retry with the same unconditional GET, so fail fast.
+  error.retryable = status === 408 || status === 429 || status >= 500;
   return error;
 }
 
