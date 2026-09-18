@@ -266,7 +266,9 @@ async function loadFeed() {
   await withDatabaseBusyRetry(() => db.prepare(`DELETE FROM pve_profile_sync_queue
     WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = pve_profile_sync_queue.aid)`).run());
   await withDatabaseBusyRetry(() => db.prepare(`UPDATE pve_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL, updated_at = ?
-    WHERE EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
+    WHERE (pve_profile_sync_queue.status <> 'completed'
+      OR pve_profile_sync_queue.error IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
       WHERE s.mode = 'pve' AND s.cycle_id = 'persistent' AND s.aid = pve_profile_sync_queue.aid
         AND s.profile_updated_at >= pve_profile_sync_queue.feed_updated_at)`).run(Date.now()));
   const coverage = { total: 0, missing: 0, lagging: 0, current: 0 };

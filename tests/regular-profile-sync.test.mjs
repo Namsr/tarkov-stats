@@ -411,6 +411,9 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     const watermark = apiDb.prepare(
       "SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_watermark'"
     ).get().value;
+    const completedAt = apiDb.prepare(
+      "SELECT updated_at FROM regular_profile_sync_queue WHERE aid = 1"
+    ).get().updated_at;
 
     // Unchanged feed: the collector revalidates, skips the body, records the
     // 304 poll, and keeps the accepted watermark.
@@ -421,6 +424,11 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     assert.equal(second.feedHttpStatus, 304);
     assert.equal(second.attempted, 0);
     assert.equal(second.maxFeedUpdatedAt, initial);
+    assert.equal(
+      apiDb.prepare("SELECT updated_at FROM regular_profile_sync_queue WHERE aid = 1").get().updated_at,
+      completedAt,
+      "no-change runs must not rewrite already-satisfied queue rows",
+    );
     assert.equal(
       apiDb.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_watermark'").get().value,
       watermark,

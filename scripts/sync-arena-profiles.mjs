@@ -336,7 +336,9 @@ async function loadFeed() {
     WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = arena_profile_sync_queue.aid)`).run());
   await withDatabaseBusyRetry(() => db.prepare(`UPDATE arena_profile_sync_queue SET status = 'completed', error = NULL,
       http_status = NULL, updated_at = ?
-    WHERE EXISTS (SELECT 1 FROM arena_mode_stats p
+    WHERE (arena_profile_sync_queue.status <> 'completed'
+      OR arena_profile_sync_queue.error IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM arena_mode_stats p
       WHERE p.aid = arena_profile_sync_queue.aid
       GROUP BY p.aid
       HAVING COUNT(DISTINCT p.arena_mode) = 6
