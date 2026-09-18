@@ -307,3 +307,152 @@ test("coverage summary keeps exact unresolved counts below one hundred percent",
   assert.equal(summarizeCoverage(2_000_000, 1_999_999).coveragePercent, 99.9999);
   assert.equal(summarizeCoverage(50_986, 50_986).coveragePercent, 100);
 });
+
+test("conditional feed requests skip the body on 304 but keep serving the queue", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-304-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const initial = 1_720_000_000_000;
+  const feed = { 1: initial };
+  const ETAG = '"test-regular-etag-1"';
+  const seen = { hits: 0, conditional: 0, bodies: 0 };
+  const syncCalls = [];
+  const apiDb = new DatabaseSync(dbPath);
+  const progressionDb = new DatabaseSync(progressionDbPath);
+  apiDb.exec(`
+    CREATE TABLE players (aid INTEGER PRIMARY KEY, profile_updated_at INTEGER DEFAULT 0);
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    INSERT INTO players (aid, profile_updated_at) VALUES (1, 0);
+  `);
+  progressionDb.exec(`
+    CREATE TABLE progression_snapshots (
+      id INTEGER PRIMARY KEY,
+      mode TEXT NOT NULL,
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      profile_updated_at INTEGER NOT NULL,
+      UNIQUE(mode, cycle_id, aid, profile_updated_at)
+    );
+  `);
+
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/profile/updated.json")) {
+      seen.hits += 1;
+      if (request.headers["if-none-match"] === ETAG) {
+        seen.conditional += 1;
+        response.writeHead(304).end();
+        return;
+      }
+      seen.bodies += 1;
+      response.setHeader("content-type", "application/json");
+      response.setHeader("etag", ETAG);
+      response.end(JSON.stringify(feed));
+      return;
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid, expectedUpdatedAt } = JSON.parse(raw);
+    syncCalls.push(aid);
+    apiDb.prepare(`
+      INSERT INTO players (aid, profile_updated_at) VALUES (?, ?)
+      ON CONFLICT(aid) DO UPDATE SET profile_updated_at = excluded.profile_updated_at
+    `).run(aid, expectedUpdatedAt);
+    progressionDb.prepare(`
+      INSERT OR IGNORE INTO progression_snapshots (mode, cycle_id, aid, profile_updated_at)
+      VALUES ('regular', 'persistent', ?, ?)
+    `).run(aid, expectedUpdatedAt);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ profileUpdatedAt: expectedUpdatedAt }));
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const run = () => execFileAsync(process.execPath, [
+    "--experimental-sqlite",
+    "scripts/sync-regular-profiles.mjs",
+  ], {
+    cwd: new URL("..", import.meta.url),
+    env: {
+      ...process.env,
+      NODE_NO_WARNINGS: "1",
+      SQLITE_PATH: dbPath,
+      PROGRESSION_SQLITE_PATH: progressionDbPath,
+      PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+      REGULAR_PROFILE_UPDATED_URL: `http://127.0.0.1:${port}/profile/updated.json`,
+      REGULAR_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
+      REGULAR_PROFILE_SYNC_RPS: "20",
+      REGULAR_PROFILE_SYNC_MAX_RETRIES: "0",
+    },
+  });
+  const summaryFrom = (stdout) => {
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    return JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+  };
+
+  try {
+    const first = summaryFrom((await run()).stdout);
+    assert.equal(first.feedHttpStatus, 200);
+    assert.equal(first.feedNotModified, false);
+    assert.equal(first.attempted, 1);
+    assert.equal(first.completed, 1);
+    assert.equal(
+      apiDb.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_etag'").get().value,
+      ETAG,
+    );
+    assert.equal(
+      apiDb.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_source_url'").get().value,
+      `http://127.0.0.1:${port}/profile/updated.json`,
+    );
+    const watermark = apiDb.prepare(
+      "SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_watermark'"
+    ).get().value;
+
+    // Unchanged feed: the collector revalidates, skips the body, records the
+    // 304 poll, and keeps the accepted watermark.
+    const second = summaryFrom((await run()).stdout);
+    assert.equal(seen.conditional, 1);
+    assert.equal(seen.bodies, 1);
+    assert.equal(second.feedNotModified, true);
+    assert.equal(second.feedHttpStatus, 304);
+    assert.equal(second.attempted, 0);
+    assert.equal(second.maxFeedUpdatedAt, initial);
+    assert.equal(
+      apiDb.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = 'feed_watermark'").get().value,
+      watermark,
+    );
+    assert.equal(
+      apiDb.prepare("SELECT value FROM regular_profile_sync_meta WHERE key = 'last_feed_http_status'").get().value,
+      "304",
+    );
+
+    // A snapshot gap is still detected and served while the feed is 304.
+    progressionDb.prepare("DELETE FROM progression_snapshots WHERE aid = 1").run();
+    syncCalls.length = 0;
+    const third = summaryFrom((await run()).stdout);
+    assert.equal(third.feedNotModified, true);
+    assert.equal(third.feedHttpStatus, 304);
+    assert.deepEqual(syncCalls, [1]);
+    assert.equal(third.attempted, 1);
+    assert.equal(third.completed, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    apiDb.close();
+    progressionDb.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("feed source change resets stored validators", async () => {
+  const source = await readFile(new URL("../scripts/sync-regular-profiles.mjs", import.meta.url), "utf8");
+  assert.match(source, /feed_source_url/);
+  assert.match(source, /feed_etag/);
+  assert.match(source, /feed_last_modified/);
+  assert.match(source, /if-none-match/);
+  assert.match(source, /status === 304/);
+  assert.match(source, /fetchTarkovJson/);
+});

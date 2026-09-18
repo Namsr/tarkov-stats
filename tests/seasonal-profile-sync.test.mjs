@@ -90,6 +90,30 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
   assert.doesNotMatch(profileSource + indexSource, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
 });
 
+test("Seasonal feed revalidates with stored validators and keeps the queue on 304", async () => {
+  const profileSource = await readFile("scripts/sync-seasonal-profiles.mjs", "utf8");
+  assert.match(profileSource, /feed_etag/);
+  assert.match(profileSource, /feed_last_modified/);
+  assert.match(profileSource, /feed_source_url/);
+  assert.match(profileSource, /if-none-match/);
+  assert.match(profileSource, /if-modified-since/);
+  assert.match(profileSource, /status === 304/);
+  assert.match(profileSource, /notModified: true/);
+  assert.match(profileSource, /feedNotModified/);
+  assert.match(profileSource, /feedHttpStatus/);
+  assert.match(profileSource, /deleteMeta\("feed_etag"\)/);
+  assert.match(profileSource, /enqueueMissingSeasonalIndexProfiles/);
+  // 304 is handled before response.ok (ok is false for 304) and before any
+  // body read; validators are stored only after the accepted feed commits.
+  const requestFeed = profileSource.slice(profileSource.indexOf("async function requestFeed"));
+  assert.ok(
+    requestFeed.indexOf("status === 304") < requestFeed.indexOf("response.ok"),
+    "304 must be handled before the ok/body path",
+  );
+  assert.match(requestFeed, /fetchTarkovJson/);
+  assert.doesNotMatch(requestFeed, /getReader/);
+});
+
 test("Seasonal capture invalidates the average cache only after an inserted profile", async () => {
   const source = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
 

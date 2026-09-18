@@ -237,11 +237,13 @@ async function loadFeed() {
   const excluded = new Set(db.prepare("SELECT aid FROM excluded_players").all().map((row) => Number(row.aid)));
   let counters;
   let pendingVersions;
+  let feed;
   try {
-    ({ counters, pendingVersions } = await loadUpdatedFeedWithRetry(feedUrlForRun(), tracked, excluded));
+    ({ counters, pendingVersions, feed } = await loadUpdatedFeedWithRetry(feedUrlForRun(), tracked, excluded));
   } catch (error) {
     counters = emptyFeedCounters(tracked, error);
     pendingVersions = new Map();
+    feed = { notModified: false, etag: null, lastModified: null, failed: true };
     log("FEED_FAILED", { error: message(error) });
   }
 
@@ -307,6 +309,28 @@ async function loadFeed() {
     }
     setMeta("last_poll_at", String(counters.polledAt));
     setMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
+    // Validators are accepted only together with the parsed queue changes in
+    // this transaction. A 304 keeps the previously accepted validators; a
+    // failed load leaves validators AND source URL untouched so a source
+    // change combined with a network failure cannot pin a foreign ETag to the
+    // new source. Index-driven candidates above still queue.
+    if (!feed || feed.failed) {
+      // No accepted representation in this run: leave validators untouched.
+    } else {
+      setMeta("feed_source_url", config.updatedUrl);
+      if (feed.notModified) {
+        // Keep the accepted validators; only the 304 poll itself is recorded.
+      } else if (feed.etag) {
+        setMeta("feed_etag", feed.etag);
+      } else {
+        deleteMeta("feed_etag");
+      }
+    }
+    if (feed && !feed.notModified && !feed.failed) {
+      if (feed.lastModified) setMeta("feed_last_modified", feed.lastModified);
+      else deleteMeta("feed_last_modified");
+    }
+    setMeta("last_feed_http_status", String(counters.feedHttpStatus ?? ""));
   });
   await withDatabaseBusyRetry(() => db.prepare(`DELETE FROM arena_profile_sync_queue
     WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = arena_profile_sync_queue.aid)`).run());
@@ -339,6 +363,8 @@ function emptyFeedCounters(tracked, error) {
     queuedUpdatedProfiles: 0,
     maxFeedUpdatedAt: 0,
     polledAt: Date.now(),
+    feedNotModified: false,
+    feedHttpStatus: 0,
     feedError: message(error),
     requeuedUnverifiedNotFound: 0,
   };
@@ -469,16 +495,52 @@ async function syncProfile(aid, expectedUpdatedAt, schemaVersion) {
 }
 
 async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
+  const useValidators = getMeta("feed_source_url") === config.updatedUrl;
+  const savedEtag = useValidators ? getMeta("feed_etag") : null;
+  const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
     try {
-      const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal });
+      const headers = {};
+      if (savedEtag) headers["if-none-match"] = savedEtag;
+      else if (savedModified) headers["if-modified-since"] = savedModified;
+      const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal, headers });
+      if (response.status === 304) {
+        // Handle before response.ok (ok is false for 304) and before reading
+        // the body. Without stored validators a 304 proves nothing.
+        if (!savedEtag && !savedModified) {
+          throw arenaFeedError("Arena updated feed unexpectedly returned 304", 304);
+        }
+        try {
+          await response.body?.cancel();
+        } catch {}
+        return {
+          counters: {
+            arenaPlayers: tracked.size,
+            sourceEntries: 0,
+            invalidEntries: 0,
+            trackedInFeed: 0,
+            unknownInFeed: 0,
+            eligible: 0,
+            newProfiles: 0,
+            updatedProfiles: 0,
+            indexProfiles: 0,
+            queuedVersions: 0,
+            queuedNewProfiles: 0,
+            queuedUpdatedProfiles: 0,
+            maxFeedUpdatedAt: Number(getMeta("feed_watermark")) || 0,
+            polledAt: Date.now(),
+            feedNotModified: true,
+            feedHttpStatus: 304,
+          },
+          pendingVersions: new Map(),
+          feed: { notModified: true },
+        };
+      }
       if (!response.ok) {
-        const error = new Error(`Arena updated feed HTTP ${response.status}`);
-        error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-        throw error;
+        throw arenaFeedError(`Arena updated feed HTTP ${response.status}`, response.status);
       }
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Arena updated feed response has no readable body");
@@ -497,6 +559,8 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
         queuedUpdatedProfiles: 0,
         maxFeedUpdatedAt: 0,
         polledAt: 0,
+        feedNotModified: false,
+        feedHttpStatus: 200,
       };
       const pendingVersions = new Map();
       const decoder = new TextDecoder();
@@ -536,7 +600,15 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
       }
       parser.finish(decoder.decode());
       counters.polledAt = Date.now();
-      return { counters, pendingVersions };
+      return {
+        counters,
+        pendingVersions,
+        feed: {
+          notModified: false,
+          etag: response.headers.get("etag"),
+          lastModified: response.headers.get("last-modified"),
+        },
+      };
     } catch (error) {
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
@@ -546,6 +618,15 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
     }
   }
   throw lastError;
+}
+
+function arenaFeedError(text, status) {
+  const error = new Error(text);
+  error.status = status;
+  // Unexpected 304 without validators is not retryable (same unconditional GET
+  // would repeat it); fail fast like Seasonal.
+  error.retryable = status === 408 || status === 429 || status >= 500;
+  return error;
 }
 
 function feedUrlForRun() {
@@ -563,10 +644,15 @@ function setMeta(key, value) {
     .run(key, String(value));
 }
 
+function deleteMeta(key) {
+  db.prepare("DELETE FROM arena_profile_sync_meta WHERE key = ?").run(key);
+}
+
 async function saveRunMeta(summary) {
   const values = {
     last_poll_at: summary.polledAt,
     last_feed_max_updated_at: summary.maxFeedUpdatedAt,
+    last_feed_http_status: summary.feedHttpStatus ?? "",
     last_backlog: summary.backlog,
     last_new_profiles: summary.queuedNewProfiles,
     last_updated_profiles: summary.queuedUpdatedProfiles,

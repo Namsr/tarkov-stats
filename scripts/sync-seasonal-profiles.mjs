@@ -193,6 +193,8 @@ async function loadFeed() {
     preCycleIgnored: 0,
     maxFeedUpdatedAt: 0,
     polledAt: 0,
+    feedNotModified: false,
+    feedHttpStatus: 0,
   };
   const excluded = new Set(db.prepare("SELECT aid FROM excluded_players").all().map((row) => Number(row.aid)));
   const insert = db.prepare(`
@@ -200,59 +202,119 @@ async function loadFeed() {
       (cycle_id, aid, feed_updated_at, status, attempts, updated_at)
     VALUES (?, ?, ?, 'pending', 0, ?)
   `);
-  const response = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl));
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("Seasonal updated feed has no readable body");
-  const decoder = new TextDecoder();
-  const parser = createTimestampObjectParser((aidRaw, updatedRaw) => {
-    counters.sourceEntries += 1;
-    const aid = normalizeAid(aidRaw);
-    const updatedAt = normalizeUpdatedAt(updatedRaw);
-    if (aid === null || updatedAt === null) {
-      counters.invalidEntries += 1;
-      return;
+  // One URL per poll attempt (stable across retries inside this run). Validators
+  // from the last accepted feed are reused; a changed source or cycle resets
+  // them because meta is keyed by cycle and the source URL is recorded.
+  const feedResponse = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl));
+  if (feedResponse.notModified) {
+    // 304 proves the representation is unchanged, not that every tracked
+    // profile is fresh: the queue below and the seasonal index reconciliation
+    // still run against the accepted watermark.
+    counters.feedNotModified = true;
+    counters.feedHttpStatus = 304;
+    counters.maxFeedUpdatedAt = Number(getMeta("feed_watermark")) || 0;
+    counters.polledAt = Date.now();
+  } else {
+    counters.feedHttpStatus = 200;
+    const bodyText = feedResponse.text;
+    const parser = createTimestampObjectParser((aidRaw, updatedRaw) => {
+      counters.sourceEntries += 1;
+      const aid = normalizeAid(aidRaw);
+      const updatedAt = normalizeUpdatedAt(updatedRaw);
+      if (aid === null || updatedAt === null) {
+        counters.invalidEntries += 1;
+        return;
+      }
+      counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, updatedAt);
+      if (updatedAt < cycle.startsAt) {
+        counters.preCycleIgnored += 1;
+        return;
+      }
+      if (excluded.has(aid)) {
+        counters.excluded += 1;
+        return;
+      }
+      counters.queuedVersions += Number(insert.run(cycle.cycleId, aid, updatedAt, Date.now()).changes);
+    });
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      parser.append(bodyText);
+      parser.finish();
+      counters.polledAt = Date.now();
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
     }
-    counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, updatedAt);
-    if (updatedAt < cycle.startsAt) {
-      counters.preCycleIgnored += 1;
-      return;
-    }
-    if (excluded.has(aid)) {
-      counters.excluded += 1;
-      return;
-    }
-    counters.queuedVersions += Number(insert.run(cycle.cycleId, aid, updatedAt, Date.now()).changes);
-  });
+  }
+  // Poll state and validators are accepted only after the feed above was fully
+  // parsed and committed. A 304 keeps the previously accepted validators and
+  // watermark; the missing-index reconciliation below still runs.
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      parser.append(decoder.decode(value, { stream: true }));
+    saveMeta("feed_watermark", String(counters.maxFeedUpdatedAt || getMeta("feed_watermark") || ""));
+    saveMeta("last_poll_at", String(counters.polledAt));
+    saveMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
+    saveMeta("feed_source_url", config.updatedUrl);
+    if (feedResponse.notModified) {
+      // Keep the accepted validators; only the 304 poll itself is recorded.
+    } else if (feedResponse.etag) {
+      saveMeta("feed_etag", feedResponse.etag);
+    } else {
+      deleteMeta("feed_etag");
     }
-    parser.finish(decoder.decode());
-    counters.polledAt = Date.now();
+    if (!feedResponse.notModified) {
+      if (feedResponse.lastModified) saveMeta("feed_last_modified", feedResponse.lastModified);
+      else deleteMeta("feed_last_modified");
+    }
+    saveMeta("last_feed_http_status", String(counters.feedHttpStatus));
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
   }
-  saveMeta("feed_watermark", String(counters.maxFeedUpdatedAt || getMeta("feed_watermark") || ""));
-  saveMeta("last_poll_at", String(counters.polledAt));
-  saveMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
   Object.assign(counters, enqueueMissingSeasonalIndexProfiles(db, cycle.cycleId, cycle.startsAt));
   heartbeat();
   return counters;
 }
 
 async function requestFeed(url) {
+  const useValidators = getMeta("feed_source_url") === config.updatedUrl;
+  const savedEtag = useValidators ? getMeta("feed_etag") : null;
+  const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
     try {
-      const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal });
-      if (response.ok) return response;
+      const headers = {};
+      if (savedEtag) headers["if-none-match"] = savedEtag;
+      else if (savedModified) headers["if-modified-since"] = savedModified;
+      const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal, headers });
+      if (response.status === 304) {
+        // Handle before response.ok (ok is false for 304). Without stored
+        // validators a 304 proves nothing, so fail bounded like other
+        // unexpected feed statuses.
+        if (!savedEtag && !savedModified) {
+          lastError = new Error("Seasonal updated feed unexpectedly returned 304");
+          break;
+        }
+        try {
+          await response.body?.cancel();
+        } catch {}
+        return { notModified: true };
+      }
+      if (response.ok) {
+        // Buffer inside the timeout window so a stalled body shares the
+        // attempt budget and validators are staged only for a full document.
+        const text = await response.text();
+        return {
+          notModified: false,
+          etag: response.headers.get("etag"),
+          lastModified: response.headers.get("last-modified"),
+          text,
+        };
+      }
       lastError = new Error(`Seasonal updated feed HTTP ${response.status}`);
       if (![408, 429].includes(response.status) && response.status < 500) break;
     } catch (error) {
@@ -370,6 +432,11 @@ function saveMeta(key, value) {
     INSERT INTO seasonal_profile_sync_meta (cycle_id, key, value) VALUES (?, ?, ?)
     ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value
   `).run(cycle.cycleId, key, String(value));
+}
+
+function deleteMeta(key) {
+  db.prepare("DELETE FROM seasonal_profile_sync_meta WHERE cycle_id = ? AND key = ?")
+    .run(cycle.cycleId, key);
 }
 
 async function rateLimit() {
