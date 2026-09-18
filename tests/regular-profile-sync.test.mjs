@@ -464,3 +464,14 @@ test("feed source change resets stored validators", async () => {
   assert.match(source, /status === 304/);
   assert.match(source, /fetchTarkovJson/);
 });
+
+test("regular queue stops gracefully on its work budget without losing tasks", async () => {
+  const source = await readFile(new URL("../scripts/sync-regular-profiles.mjs", import.meta.url), "utf8");
+  // Budget knob mirrors PvE/Seasonal/Arena collectors; the default covers the
+  // observed worst hourly catch-up (~15.5 min at 1 RPS) with margin, so normal
+  // short runs never truncate.
+  assert.match(source, /maxRunMs: envInteger\("REGULAR_PROFILE_SYNC_MAX_RUN_MS", 50 \* 60_000, 60_000, 24 \* 60 \* 60_000\)/);
+  assert.match(source, /maxRunMs: config\.maxRunMs,/);
+  assert.match(source, /const processed = await processQueue\(startedAt\);/);
+  assert.match(source, /if \(Date\.now\(\) - startedAt >= config\.maxRunMs\) \{\s*stopping = true;\s*break;\s*\}/);
+});
