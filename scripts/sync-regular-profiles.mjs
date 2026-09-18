@@ -29,6 +29,11 @@ const config = {
   requestTimeoutMs: envInteger("REGULAR_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
   leaseMs: envInteger("REGULAR_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
   overlapMs: envInteger("REGULAR_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
+  // Graceful queue budget (PvE/Seasonal/Arena already have one). The default
+  // covers the observed worst hourly catch-up (~15.5 min for 861 attempts at
+  // 1 RPS) with margin and leaves room for the remaining modes inside the
+  // hourly queue; it does not change normal short runs.
+  maxRunMs: envInteger("REGULAR_PROFILE_SYNC_MAX_RUN_MS", 50 * 60_000, 60_000, 24 * 60 * 60_000),
 };
 
 const runId = randomUUID();
@@ -69,10 +74,11 @@ async function main() {
     updatedUrl: config.updatedUrl,
     requestsPerSecond: config.requestsPerSecond,
     overlapMs: config.overlapMs,
+    maxRunMs: config.maxRunMs,
   });
 
   const { counters: feed, coverage: preProcessingCoverage } = await loadFeed();
-  const processed = await processQueue();
+  const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM regular_profile_sync_queue GROUP BY status")
       .all().map((row) => [String(row.status), Number(row.n)])
@@ -433,7 +439,7 @@ async function loadFeed() {
   return { counters, coverage };
 }
 
-async function processQueue() {
+async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, errors: 0 };
   const next = db.prepare(`
     SELECT q.aid, q.feed_updated_at FROM regular_profile_sync_queue q
@@ -454,6 +460,10 @@ async function processQueue() {
   `);
 
   while (!stopping) {
+    if (Date.now() - startedAt >= config.maxRunMs) {
+      stopping = true;
+      break;
+    }
     const row = next.get(runId);
     if (!row) break;
     const aid = Number(row.aid);
