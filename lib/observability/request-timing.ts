@@ -166,6 +166,7 @@ export function createRequestTiming(options: Options = {}) {
         riskMs: input.riskMs,
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
+        averagesMs: input.averagesMs,
       });
       if (!sampled) return;
       const event = {

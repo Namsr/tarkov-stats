@@ -69,23 +69,38 @@ async function arenaCohortResponse(
     timing.finish({ operation: "average_cohort", mode: "arena", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid Arena cohort query" }, { status: 400 });
   }
+  timing.setRequestContext({ aid });
+  let cohortMs: number | undefined;
+  let cache: "hit" | "miss" | undefined;
   try {
-    const cohort = await getArenaCohort(aid, arenaMode, statistic);
+    const cohortStarted = timing.now();
+    let loaded: { value: Awaited<ReturnType<typeof getArenaCohort>>; cache: "hit" | "miss" };
+    try {
+      loaded = await loadDynamicAverage(
+        ["cohort", "arena", aid, arenaMode, statistic].join(":"),
+        () => getArenaCohort(aid, arenaMode, statistic),
+      );
+    } finally {
+      cohortMs = timing.elapsedMs(cohortStarted);
+    }
+    cache = loaded.cache;
+    const cohort = loaded.value;
     if (!cohort) {
-      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503 });
+      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs });
       return NextResponse.json({
         identity: { aid, mode: "arena", cycleId: "persistent" },
         code: "comparison_unavailable",
         error: "Arena comparison storage is unavailable",
       }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, storage: "sqlite" });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs });
+    // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
     return NextResponse.json({ gameMode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...cohort }, {
-      headers: { "Cache-Control": "private, no-store" },
+      headers: { "Cache-Control": "private, max-age=60" },
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503 });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, cache, storage: "sqlite", cohortMs });
     return NextResponse.json({
       identity: { aid, mode: "arena", cycleId: "persistent" },
       code: "comparison_unavailable",
@@ -196,7 +211,8 @@ export async function GET(request: NextRequest) {
         source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
       });
       return NextResponse.json({ ...loaded.value, statistic, period }, {
-        headers: { "Cache-Control": "private, no-store" },
+        // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
+        headers: { "Cache-Control": "private, max-age=60" },
       });
     } catch (error) {
       console.error("persistent comparison cohort failed", error);

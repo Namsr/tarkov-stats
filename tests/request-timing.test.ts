@@ -95,3 +95,41 @@ test("unsampled requests emit no timing log", () => {
   timing.finish({ operation: "baseline", outcome: "success", status: 200 });
   assert.deepEqual(output, []);
 });
+
+test("average compute timing forwards averages_ms and stays absent otherwise", async () => {
+  const output: string[] = [];
+  const timing = createRequestTiming({
+    sampleRate: 1,
+    now: () => 0,
+    logger: (event) => output.push(event),
+  });
+  timing.finish({
+    operation: "average",
+    mode: "regular",
+    outcome: "success",
+    status: 200,
+    source: "dynamic",
+    cache: "miss",
+    totalMs: 10,
+    averagesMs: 7.6,
+  });
+  assert.equal(output.length, 1);
+  assert.equal((JSON.parse(output[0]) as Record<string, unknown>).averages_ms, 8);
+
+  // Explicit zero is preserved (not dropped as absent).
+  const zeroed: string[] = [];
+  createRequestTiming({ sampleRate: 1, now: () => 0, logger: (event) => zeroed.push(event) })
+    .finish({ operation: "average", outcome: "success", status: 200, totalMs: 1, averagesMs: 0 });
+  assert.equal((JSON.parse(zeroed[0]) as Record<string, unknown>).averages_ms, 0);
+
+  // Operations without compute timing omit the field.
+  const other: string[] = [];
+  createRequestTiming({ sampleRate: 1, now: () => 0, logger: (event) => other.push(event) })
+    .finish({ operation: "player_search", outcome: "success", status: 200, totalMs: 3 });
+  assert.equal("averages_ms" in (JSON.parse(other[0]) as Record<string, unknown>), false);
+
+  // finish() must forward averagesMs to the persisted request event.
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile("lib/observability/request-timing.ts", "utf8");
+  assert.match(source, /averagesMs: input\.averagesMs/);
+});

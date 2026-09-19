@@ -113,7 +113,7 @@ test("dirty scheduling debounces writes and enforces the minimum and forced inte
   }, now), true);
 });
 
-test("dynamic average cache deduplicates in-flight work and expires after five minutes", async () => {
+test("dynamic average cache deduplicates in-flight work and expires after fifteen minutes", async () => {
   dynamicCache.resetDynamicAverageCacheForTests();
   let calls = 0;
   const load = async () => ++calls;
@@ -124,5 +124,5 @@ test("dynamic average cache deduplicates in-flight work and expires after five m
   assert.equal(first.value, 1);
   assert.equal(second.value, 1);
   assert.equal(second.cache, "hit");
-  assert.equal((await dynamicCache.loadDynamicAverage("same", load, 1_000 + 5 * 60_000 + 1)).value, 2);
+  assert.equal((await dynamicCache.loadDynamicAverage("same", load, 1_000 + 15 * 60_000 + 1)).value, 2);
 });

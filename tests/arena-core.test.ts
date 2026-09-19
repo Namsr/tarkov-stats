@@ -277,6 +277,50 @@ test("Arena average trims at 20, preserves exact median, and excludes fewer than
   assert.equal(threshold?.metrics.kd_ratio.reason, null);
 });
 
+test("Arena analytics use normalized metrics without loading raw payloads or counters", async () => {
+  resetArenaData();
+  for (let aid = 1; aid <= 31; aid += 1) {
+    await save(profile(aid, { kills: 20 + aid, deaths: 20 }));
+  }
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const backend = await getArenaBackend();
+  assert.equal(backend.kind, "sqlite");
+  const prepare = backend.db.prepare;
+  const projections = [];
+  backend.db.prepare = function (sql) {
+    if (/FROM arena_mode_stats WHERE/.test(sql) && /^SELECT aid, hours/.test(sql)) {
+      projections.push(sql.slice(0, sql.indexOf("FROM arena_mode_stats")));
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    for (const mode of ["overall", "teamFight"]) {
+      for (const statistic of ["trimmed_mean", "median"]) {
+        const average = await getArenaAverage({ mode, statistic });
+        const cohort = await getArenaCohort(1, mode, statistic);
+        assert.equal(average.sampleN, 31);
+        assert.equal(cohort.sampleN, 30);
+        assert.equal(cohort.quality, "sufficient");
+        assert.ok(cohort.metrics.kd_ratio.value > 0);
+      }
+    }
+    const risk = await getArenaProfileRisk(1);
+    assert.equal(risk.overall.peerCount, 30);
+    assert.equal(risk.modes[0].peerCount, 30);
+    assert.ok(projections.length > 0);
+    for (const projection of projections) {
+      assert.doesNotMatch(projection, /\b(raw_json|arena_wins|kills|deaths|damage_dealt|max_kill_streak)\b|\*/);
+      assert.match(projection, /kd_ratio/);
+      assert.match(projection, /parser_version/);
+    }
+    const stored = await getArenaProfile(1);
+    assert.equal(stored.modes.teamFight.counters.kills, 21);
+    assert.equal(stored.overall.source, "upstream");
+  } finally {
+    backend.db.prepare = prepare;
+  }
+});
+
 test("Arena population counts parsed accounts and distinct players independently of average filters", async () => {
   resetArenaData();
   await save(profile(601, { games: 0 }));
@@ -488,6 +532,95 @@ test("Arena risk needs 30 peers, ignores headshots, preserves mode scores, and r
     assert.equal(damageTeamFight?.score, Math.round(Math.max(...Object.values(damageTeamFight!.metrics)
       .map((metric) => metric.points ?? Number.NEGATIVE_INFINITY))));
     assert.equal(damageOnly?.score, damageOnly?.overall.score);
+  }
+});
+
+test("Arena batched risk recompute matches pre-batch results across modes", async () => {
+  resetArenaData();
+  await save(profile(900, { kills: 120, deaths: 8 }));
+  for (let aid = 901; aid <= 930; aid += 1) await save(profile(aid, { kills: 20 + (aid % 4), deaths: 20 }));
+  const first = await getArenaProfileRisk(900);
+  assert.ok(first);
+  assert.equal(first.score, first.overall.score);
+  assert.ok((first.score ?? 0) > 0);
+  assert.equal(first.tier, first.score < 20 ? "low" : first.score < 45 ? "medium" : first.score < 70 ? "high" : "severe");
+  assert.equal(first.overall.peerCount, 30);
+  assert.equal(first.modes.length, 5);
+  for (const modeRisk of first.modes) {
+    assert.deepEqual(Object.keys(modeRisk.metrics), [
+      "kd_ratio", "win_rate", "kills_per_match", "damage_per_match",
+    ]);
+    assert.equal(modeRisk.peerCount, 30);
+  }
+  const teamFight = first.modes.find((mode) => mode.mode === "teamFight");
+  assert.equal(teamFight.percent, 10);
+  assert.ok(teamFight.reasons.some((reason) => reason.startsWith("high_")));
+  const normalize = (risk) => ({ ...risk, freshness: { ...risk.freshness, evaluatedAt: 0 } });
+  const second = await getArenaProfileRisk(900);
+  assert.deepEqual(normalize(second), normalize(first));
+
+  const missingDb = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    missingDb.prepare("DELETE FROM arena_mode_stats WHERE aid = ? AND arena_mode = ?").run(900, "teamFight");
+  } finally {
+    missingDb.close();
+  }
+  const missingMode = await getArenaProfileRisk(900);
+  const missingTeamFight = missingMode?.modes.find((mode) => mode.mode === "teamFight");
+  assert.equal(missingTeamFight?.score, null);
+  assert.equal(missingTeamFight?.peerCount, 0);
+  assert.ok(missingTeamFight?.reasons.includes("target_unavailable"));
+
+  assert.equal(await getArenaProfileRisk(999999), null);
+
+  resetArenaData();
+  await save(profile(950, { games: 1 }));
+  const belowMinimum = await getArenaProfileRisk(950);
+  assert.equal(belowMinimum?.score, null);
+  assert.ok(belowMinimum?.overall.reasons.includes("target_below_minimum_matches"));
+  for (const modeRisk of belowMinimum?.modes ?? []) {
+    assert.ok(modeRisk.reasons.includes("target_below_minimum_matches"));
+    assert.equal(modeRisk.peerCount, 0);
+  }
+
+  await save(profile(951));
+  const staleDb = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    staleDb.prepare("UPDATE arena_mode_stats SET parser_version = 0 WHERE aid = 951").run();
+  } finally {
+    staleDb.close();
+  }
+  assert.equal(await getArenaProfileRisk(951), null);
+});
+
+test("Arena risk scans batch to three queries with the narrow risk projection", async () => {
+  resetArenaData();
+  await save(profile(900, { kills: 120, deaths: 8 }));
+  for (let aid = 901; aid <= 930; aid += 1) await save(profile(aid, { kills: 20 + (aid % 4), deaths: 20 }));
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const backend = await getArenaBackend();
+  assert.equal(backend.kind, "sqlite");
+  const prepare = backend.db.prepare;
+  const selects = [];
+  backend.db.prepare = function (sql) {
+    if (/FROM arena_mode_stats/.test(sql) && /^\s*SELECT/i.test(sql)) selects.push(sql);
+    return prepare.call(this, sql);
+  };
+  try {
+    const risk = await getArenaProfileRisk(900);
+    assert.equal(risk?.overall.peerCount, 30);
+    assert.equal(selects.length, 3);
+    assert.ok(selects.some((sql) => /arena_mode IN \(/.test(sql)));
+    assert.ok(selects.some((sql) => / OR /.test(sql) && /BETWEEN/.test(sql)));
+    for (const sql of selects) {
+      const projection = sql.slice(0, sql.indexOf("FROM arena_mode_stats"));
+      assert.doesNotMatch(projection, /\b(raw_json|arena_wins|arena_losses|kills|deaths|assists|headshots|damage_dealt|round_mvp_count|match_mvp_count|current_kill_streak|max_kill_streak|current_win_streak|max_win_streak|current_loss_streak|max_loss_streak|headshot_rate)\b|\*/);
+      assert.match(projection, /kd_ratio/);
+      assert.match(projection, /parser_version/);
+      assert.match(projection, /arena_mode/);
+    }
+  } finally {
+    backend.db.prepare = prepare;
   }
 });
 
