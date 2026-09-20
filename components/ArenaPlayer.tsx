@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import ArenaOverallComparison from "@/components/ArenaOverallComparison";
-import ArenaRiskPanel from "@/components/ArenaRiskPanel";
+import ArenaCombatSummary from "@/components/ArenaCombatSummary";
+import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import ProfileHeader from "@/components/ProfileHeader";
@@ -23,8 +24,10 @@ import { useI18n } from "@/lib/i18n/context";
 import type { ArenaProfile, ArenaProfileRisk, ArenaStatistic } from "@/types/arena";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 import ArenaModeBars from "@/components/ArenaModeBars";
-import type { ArenaCounters, ArenaStoredMode } from "@/types/arena";
+import type { ArenaStoredMode } from "@/types/arena";
+import type { ArenaTsRating } from "@/lib/arena/ts-rating";
 import "@/components/profile.css";
+import "@/components/arena-profile.css";
 import { upsertRecentPlayer } from "@/lib/recent-players";
 import { isReload } from "@/lib/is-reload";
 
@@ -40,6 +43,7 @@ interface ArenaResponse {
   profile?: unknown;
   risk?: ArenaProfileRisk | null;
   arenaRisk?: ArenaProfileRisk | null;
+  tsRating?: ArenaTsRating | null;
   profileUpdatedAt?: number | null;
   freshness?: { fetchedAt?: number | null; updatedAt?: number | null };
   capture?: { inserted?: boolean; status?: string };
@@ -222,6 +226,7 @@ export default function ArenaPlayer({ aid }: Props) {
   const [legacyBody, setLegacyBody] = useState<ArenaResponse | null>(isLegacyArenaResponse(initialBody) ? initialBody ?? null : null);
   const [profile, setProfile] = useState<ArenaProfile | null>(initialProfile);
   const [risk, setRisk] = useState<ArenaProfileRisk | null>(responseRisk(initialBody));
+  const [tsRating, setTsRating] = useState<ArenaTsRating | null>(initialBody?.tsRating ?? null);
   const [loading, setLoading] = useState(initialProfile === null);
   const [error, setError] = useState("");
   const [unavailable, setUnavailable] = useState(false);
@@ -269,6 +274,7 @@ export default function ArenaPlayer({ aid }: Props) {
           setLegacyBody(result.body);
           setProfile(null);
           setRisk(null);
+          setTsRating(null);
           setUnavailable(false);
           return;
         }
@@ -277,6 +283,7 @@ export default function ArenaPlayer({ aid }: Props) {
         if (!nextProfile) return;
         setProfile(nextProfile);
         setRisk(responseRisk(result.body));
+        setTsRating(result.body.tsRating ?? null);
         if (nextProfile.nickname) upsertRecentPlayer({ aid, nickname: nextProfile.nickname, mode: "arena" });
       })
       .catch((caught: unknown) => {
@@ -310,6 +317,7 @@ export default function ArenaPlayer({ aid }: Props) {
           setLegacyBody(body);
           setProfile(null);
           setRisk(null);
+          setTsRating(null);
           setUnavailable(false);
           return "unchanged";
         }
@@ -317,6 +325,7 @@ export default function ArenaPlayer({ aid }: Props) {
         if (!nextProfile) throw new Error(t("arena.profile.error"));
         setProfile(nextProfile);
         setRisk(responseRisk(body));
+        setTsRating(body.tsRating ?? null);
         setUnavailable(false);
         setError("");
         if (nextProfile.nickname) upsertRecentPlayer({ aid, nickname: nextProfile.nickname, mode: "arena" });
@@ -355,6 +364,7 @@ export default function ArenaPlayer({ aid }: Props) {
     const controller = new AbortController();
     const params = new URLSearchParams({ aid: String(effectiveFavoriteAid), mode: "arena" });
     setFavoriteLoading(true);
+    setFavoriteProfile(null);
     setFavoriteError(false);
     fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "default" })
       .then(async (response) => {
@@ -398,7 +408,7 @@ export default function ArenaPlayer({ aid }: Props) {
   const scopeName = t(selectedMode === "overall" ? "profile.allModes" : "arena.mode." + selectedMode);
   const favoriteName = selectedFavorite?.nickname ?? favoriteProfile?.nickname ?? null;
   const canCompareFavorite = authStatus === "authenticated" && eligibleFavorites.length > 0;
-  const comparedFavorite = showFavorite && canCompareFavorite ? favoriteProfile : null;
+  const comparedFavorite = showFavorite && canCompareFavorite && favoriteProfile?.aid === effectiveFavoriteAid ? favoriteProfile : null;
   const favoriteStats = selectedMode === "overall" ? comparedFavorite?.overall : comparedFavorite?.modes[selectedMode];
   const number = (value: number | null, digits = 0) => value == null || !Number.isFinite(value) ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits });
   const changeMode = (mode: ArenaStoredMode) => {
@@ -408,37 +418,25 @@ export default function ArenaPlayer({ aid }: Props) {
     else params.set("arenaMode", mode);
     window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
   };
-  const groups: Array<{ title: string; rows: Array<[keyof ArenaCounters, string]> }> = [
-    { title: "profile.arenaCombat", rows: [["kills", "arena.counter.kills"], ["deaths", "arena.counter.deaths"], ["assists", "arena.counter.assists"], ["headshots", "arena.counter.headshots"], ["damage", "arena.counter.damage"], ["max_kill_streak", "arena.counter.maxKillStreak"]] },
-    { title: "profile.arenaResults", rows: [["wins", "arena.counter.wins"], ["losses", "arena.counter.losses"], ["round_mvp", "arena.counter.roundMvp"], ["match_mvp", "arena.counter.matchMvp"], ["max_win_streak", "arena.counter.maxWinStreak"], ["max_loss_streak", "arena.counter.maxLossStreak"]] },
-  ];
   return <main className="page-frame profile-page" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>
     <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={profile.nickname || t("arena.account.unknown")}
       leaderboardArenaMode={selectedMode === "overall" ? "blastGang" : selectedMode}
       leaderboardRevision={`${profile.profileUpdatedAt}:${profile.fetchedAt ?? "unknown"}:${profile.parserVersion}`}
-      meta={<div className="profile-header__meta"><span>{t("fav.mode.arena")}</span>{profile.overall.bestArp != null && <span>{t("arena.bestArp")}: {number(profile.overall.bestArp)}</span>}</div>}
+      meta={<div className="profile-header__meta"><span>{t("fav.mode.arena")}</span>{profile.overall.bestArp != null && <span>{t("arena.bestArp")}: {number(profile.overall.bestArp)}</span>}<span>{t("metric.hours")}: {number(profile.overall.hours)} {t("unit.h")}</span></div>}
       actions={<ProfilePrimaryActions aid={numericAid} mode="arena" cycleId="persistent" nickname={profile.nickname} />}
       activity={<ProfileActivity aid={numericAid} mode="arena" updatedAt={profile.profileUpdatedAt} onCheck={refreshProfile} />}>
-      <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "arena-modes", label: t("arena.byMode") }, { id: "arena-risk", label: t("profile.section.risk") }, { id: "arena-comparison", label: t("profile.section.comparison") }, { id: "statistics", label: t("profile.section.statistics") }]} />
+      <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "arena-overview", label: t("profile.section.overview") }, { id: "arena-comparison", label: t("profile.section.statistics") }, { id: "statistics", label: t("arena.combat.details") }, { id: "arena-modes", label: t("arena.byMode") }]} />
       <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>{(["overall", ...ARENA_MODE_KEYS] as const).map((mode) => <button key={mode} type="button" aria-pressed={selectedMode === mode} onClick={() => changeMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}</div>
-      <div className="profile-metrics">{[
-        { label: t("arena.metric.kd_ratio"), value: number(scopeStats.metrics.kd_ratio, 2) },
-        { label: t("arena.metric.win_rate"), value: number(scopeStats.metrics.win_rate, 1), suffix: scopeStats.metrics.win_rate == null ? "" : "%" },
-        { label: t("arena.counter.matches"), value: number(scopeStats.counters.matches) },
-        { label: t("metric.hours"), value: number(profile.overall.hours) },
-      ].map((item) => <dl key={item.label} className="profile-metric"><dt>{item.label}</dt><dd>{item.value}{item.suffix && <span>{item.suffix}</span>}</dd></dl>)}</div>
     </ProfileHeader>
     <div className="profile-content">
-      <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} />
-      <div className="profile-analysis">
-        <section id="arena-risk" tabIndex={-1} className="profile-anchor-section"><ArenaRiskPanel compact risk={risk} scope={selectedMode} /></section>
+      <ArenaCombatSummary profile={profile} risk={risk} rating={tsRating} scope={selectedMode} onModeChange={changeMode} />
         <section id="arena-comparison" tabIndex={-1} className="profile-anchor-section profile-comparison">
-          <h2 className="section-heading">{t("profile.section.comparison")}</h2>
+          <h2 className="section-heading">{t("profile.section.statistics")}</h2>
           <div className="profile-comparison-controls">
-            <div className="profile-segments" role="group" aria-label={t("home.compareWith")}><button type="button" aria-pressed={!showFavorite || !canCompareFavorite} onClick={() => setShowFavorite(false)}>{t("home.averagePlayer")}</button>
-              <span className={canCompareFavorite ? undefined : "disabled-control-hint"} tabIndex={canCompareFavorite ? undefined : 0} role={canCompareFavorite ? undefined : "group"} aria-label={canCompareFavorite ? undefined : t("home.anotherPlayer")} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"}>
-                <button type="button" aria-pressed={showFavorite && canCompareFavorite} disabled={!canCompareFavorite} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"} onClick={() => setShowFavorite(true)}>{t("home.anotherPlayer")}</button>
+            <div className="profile-segments" role="group" aria-label={t("home.compareWith")}><button type="button" aria-pressed={!showFavorite || !canCompareFavorite} onClick={() => setShowFavorite(false)}>{t(selectedMode === "overall" ? "home.averagePlayer" : "arena.combat.similar")}</button>
+              <span className={canCompareFavorite ? undefined : "disabled-control-hint"} tabIndex={canCompareFavorite ? undefined : 0} role={canCompareFavorite ? undefined : "group"} aria-label={canCompareFavorite ? undefined : t("arena.combat.favorite")} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"}>
+                <button type="button" aria-pressed={showFavorite && canCompareFavorite} disabled={!canCompareFavorite} aria-describedby={canCompareFavorite ? undefined : "arena-favorite-hint"} onClick={() => setShowFavorite(true)}>{t("arena.combat.favorite")}</button>
                 {!canCompareFavorite && <span id="arena-favorite-hint" role="tooltip" className="disabled-control-tooltip">{t(authStatus === "authenticated" ? "arena.favorite.empty" : "arena.favorite.authRequired")}</span>}
               </span>
             </div>
@@ -452,10 +450,10 @@ export default function ArenaPlayer({ aid }: Props) {
             window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
           }}><option value="trimmed_mean">{t("arena.statistic.trimmedMean")}</option><option value="median">{t("arena.statistic.median")}</option></select></label><span className="profile-scope-name">{scopeName}</span></div>
           {showFavorite && (favoriteLoading || favoriteError) && <p className="profile-chart-notice" role="status">{t(favoriteError ? "arena.favorite.error" : "arena.favorite.loading")}</p>}
-          <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
+          <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}:${profile.profileUpdatedAt}:${profile.fetchedAt}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
         </section>
-      </div>
-      <section id="statistics" tabIndex={-1} className="profile-anchor-section"><div className="profile-collection__heading"><h2 className="section-heading">{t("profile.section.statistics")}</h2><span className="profile-scope-name">{scopeName}</span></div><div className="profile-statistics">{groups.map((group) => <div key={group.title}><h3>{t(group.title)}</h3><div className="data-ledger">{group.rows.map(([key, label]) => <StatCard key={key} label={t(label)} value={number(scopeStats.counters[key])} />)}</div></div>)}</div></section>
+      <ArenaDetailedStatistics profile={profile} scope={selectedMode} risk={risk} rating={tsRating} />
+      <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} />
     </div>
     {error && <p className="profile-chart-notice" role="status">{error}</p>}
   </main>;
