@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -34,6 +35,7 @@ const config = {
   leaseMs: envInteger("PVE_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
   overlapMs: envInteger("PVE_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
 };
+config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
 const db = new DatabaseSync(config.dbPath);
 db.exec(`PRAGMA busy_timeout = ${config.dbBusyTimeoutMs}`);
@@ -219,6 +221,19 @@ async function loadFeed() {
     const queuedAt = Date.now();
     const queuedRows = new Map(db.prepare("SELECT aid, feed_updated_at, status FROM pve_profile_sync_queue").all()
       .map((row) => [Number(row.aid), row]));
+    // A 304 only validates the feed, not the local snapshot store. Reconcile
+    // tracked profiles even when the response had no entries to parse.
+    for (const [aid, profile] of tracked) {
+      if (excluded.has(aid) || profile.playerUpdatedAt < PVE_FEED_CUTOFF_MS) continue;
+      const target = Math.max(profile.playerUpdatedAt, Number(queuedRows.get(aid)?.feed_updated_at) || 0);
+      if (target <= (profile.snapshotUpdatedAt ?? 0)) continue;
+      const pending = pendingVersions.get(aid);
+      pendingVersions.set(aid, {
+        feedUpdatedAt: Math.max(target, pending?.feedUpdatedAt ?? 0),
+        kind: pending?.kind ?? "updated",
+        snapshotUpdatedAt: profile.snapshotUpdatedAt,
+      });
+    }
     const insert = db.prepare(`INSERT INTO pve_profile_sync_queue
       (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
       VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)`);
@@ -293,7 +308,7 @@ async function processQueue(startedAt) {
         WHERE s.mode = 'pve' AND s.cycle_id = 'persistent' AND s.aid = q.aid
           AND s.profile_updated_at >= q.feed_updated_at)
       AND COALESCE(q.last_run_id, '') <> ?
-    ORDER BY q.aid LIMIT 1`);
+    ORDER BY q.updated_at, q.aid LIMIT 1`);
   const update = db.prepare(`UPDATE pve_profile_sync_queue
     SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, last_run_id = ?, updated_at = ?
     WHERE aid = ? AND feed_updated_at = ?`);

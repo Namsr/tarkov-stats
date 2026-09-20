@@ -24,12 +24,20 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
   let etag = '"regular-v1"';
   const lastModified = "Mon, 24 Aug 2026 00:00:00 GMT";
   const requests = [];
+  let terminateOnce = false;
   const server = createServer((request, response) => {
     requests.push({
       etag: request.headers["if-none-match"] ?? null,
       lastModified: request.headers["if-modified-since"] ?? null,
     });
     if (request.headers["if-none-match"] === etag) return response.writeHead(304).end();
+    if (terminateOnce) {
+      terminateOnce = false;
+      response.writeHead(200, { etag: '"unaccepted-partial"' });
+      response.write('{"999":"Partial",');
+      setTimeout(() => response.destroy(), 20);
+      return;
+    }
     response.setHeader("etag", etag);
     response.setHeader("last-modified", lastModified);
     for (const character of body) response.write(character);
@@ -73,6 +81,7 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
 
     body = JSON.stringify({ "5": "Replacement", "6": "Next" });
     etag = '"regular-v3"';
+    terminateOnce = true;
     await launch(dbPath, url, "--force");
     const replaced = new DatabaseSync(dbPath);
     assert.deepEqual(replaced.prepare("SELECT aid, nickname FROM player_index ORDER BY aid").all()
@@ -81,6 +90,7 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
       { aid: 6, nickname: "Next" },
     ]);
     replaced.close();
+    assert.equal(requests.length, 5, "one interrupted stream is retried from a fresh staging table");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });

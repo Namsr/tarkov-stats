@@ -1,62 +1,33 @@
 import { spawn } from "node:child_process";
-import { setPriority } from "node:os";
+import { superviseWorker } from "./supervise-worker.mjs";
 
-const childEnvironment = { ...process.env };
 let stopping = false;
-
 const server = spawn(process.execPath, ["--experimental-sqlite", "server.js"], {
-  env: childEnvironment,
-  stdio: "inherit",
+  env: process.env, stdio: "inherit",
 });
-const progressionMaterializer = spawn(process.execPath, [
-  "--experimental-strip-types",
-  "--experimental-sqlite",
-  "scripts/materialize-progression-population.mjs",
-], {
-  env: childEnvironment,
-  stdio: "inherit",
-});
-const averageMaterializer = spawn(process.execPath, [
-  "--experimental-strip-types",
-  "--experimental-sqlite",
-  "--experimental-loader",
-  "./scripts/ts-alias-loader.mjs",
-  "scripts/materialize-average-publications.mjs",
-], {
-  env: childEnvironment,
-  stdio: "inherit",
-});
-if (progressionMaterializer.pid) {
-  try {
-    setPriority(progressionMaterializer.pid, 19);
-  } catch (error) {
-    console.warn(`failed to lower progression materializer priority: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-if (averageMaterializer.pid) {
-  try {
-    setPriority(averageMaterializer.pid, 19);
-  } catch (error) {
-    console.warn(`failed to lower average materializer priority: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
+const progressionMaterializer = superviseWorker("progression", [
+  "--experimental-strip-types", "--experimental-sqlite", "scripts/materialize-progression-population.mjs",
+], { restartDelayMs: 15 * 60_000, restartEnv: { PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS: "0" } });
+const averageMaterializer = superviseWorker("average", [
+  "--experimental-strip-types", "--experimental-sqlite", "--experimental-loader",
+  "./scripts/ts-alias-loader.mjs", "scripts/materialize-average-publications.mjs",
+]);
 function stop(signal) {
   if (stopping) return;
   stopping = true;
+  progressionMaterializer.stop(signal);
+  averageMaterializer.stop(signal);
   server.kill(signal);
-  progressionMaterializer.kill(signal);
-  averageMaterializer.kill(signal);
 }
-
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
-
+server.once("error", (error) => {
+  console.error(`web spawn failed: ${error.message}`);
+  stop("SIGTERM");
+  process.exitCode = 1;
+});
 server.once("exit", (code, signal) => {
-  if (!stopping) {
-    progressionMaterializer.kill("SIGTERM");
-    averageMaterializer.kill("SIGTERM");
-  }
+  stop("SIGTERM");
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);
 });

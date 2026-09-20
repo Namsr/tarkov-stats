@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 
 import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -150,9 +151,18 @@ export async function loadUpdatedVersions(url, options = {}) {
 }
 
 /** Select only rows produced before the current parser, not current-parser rows with genuinely absent metrics. */
-export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES) {
+export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES, { checkpoint = {}, limitPerMode = Infinity } = {}) {
   const wanted = new Set(modes);
   const candidates = [];
+  const counts = new Map();
+  const cursor = (mode) => Number(checkpoint.modes?.[mode]?.lastAid) || 0;
+  const add = (candidate) => {
+    if (checkpoint.skipped?.[skippedKey(candidate)]) return false;
+    candidates.push(candidate);
+    const count = (counts.get(candidate.mode) ?? 0) + 1;
+    counts.set(candidate.mode, count);
+    return count >= limitPerMode;
+  };
   if (wanted.has("regular")) {
   for (const row of players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
@@ -164,8 +174,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
         FROM progression_scan.progression_snapshots s
         WHERE s.mode='regular' AND s.cycle_id='persistent' AND s.aid=p.aid
         ORDER BY s.profile_updated_at DESC,s.id DESC LIMIT 1),0) < ?
-    ORDER BY p.aid`).all(CURRENT_PVP_PARSER)) {
-    candidates.push({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
+    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_PVP_PARSER, cursor("regular"))) {
+    if (add({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
   }
   }
   if (wanted.has("pve")) {
@@ -176,10 +186,10 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
       AND CASE WHEN json_valid(p.stats_json)
         THEN COALESCE(json_extract(p.stats_json,'$.pvpStatsParserVersion'),0) ELSE 0 END < ?
-    ORDER BY p.aid`).all(CURRENT_PVP_PARSER)) {
+    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_PVP_PARSER, cursor("pve"))) {
     const aid = Number(row.aid);
     const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
-    if (sourceVersion > 0) candidates.push({ mode: "pve", aid, sourceVersion });
+    if (sourceVersion > 0 && add({ mode: "pve", aid, sourceVersion })) break;
   }
   }
   if (wanted.has("arena")) {
@@ -194,8 +204,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     WHERE p.mode='arena' AND p.profile_updated_at>0
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
       AND (s.aid IS NULL OR s.mode_count<6 OR s.parser_version<?)
-    ORDER BY p.aid`).all(CURRENT_ARENA_PARSER)) {
-    candidates.push({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) });
+    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_ARENA_PARSER, cursor("arena"))) {
+    if (add({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
   }
   }
   if (cycleId && wanted.has("pvp-season")) {
@@ -207,8 +217,8 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
         AND p.confirmed_banned=0
         AND NOT EXISTS (SELECT 1 FROM progression_scan.excluded_players e WHERE e.aid=p.aid)
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      ORDER BY p.aid`).all(cycleId, CURRENT_PVP_PARSER)) {
-      candidates.push({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId });
+      ORDER BY (p.aid <= ?), p.aid`).iterate(cycleId, CURRENT_PVP_PARSER, cursor("pvp-season"))) {
+      if (add({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId })) break;
     }
   }
   return candidates;
@@ -278,6 +288,8 @@ export async function requestCandidate(candidate, options) {
 }
 
 export async function runWarmup(options) {
+  const now = options.now ?? Date.now;
+  const startedAt = now();
   const checkpoint = loadCheckpoint(options.checkpointPath);
   const modes = options.modes ?? WARMUP_MODES;
   const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
@@ -294,13 +306,14 @@ export async function runWarmup(options) {
         saveCheckpoint(options.checkpointPath, checkpoint);
         return { processed, bounded: false, stopped: true, checkpoint };
       }
-      if (processed >= options.maxProfiles) {
+      if (processed >= options.maxProfiles || now() - startedAt >= (options.maxRunMs ?? Infinity)) {
         saveCheckpoint(options.checkpointPath, checkpoint);
         return { processed, bounded: true, stopped: false, checkpoint };
       }
       if (checkpoint.skipped[skippedKey(candidate)]) continue;
       state.attempted += 1;
       state.lastAid = candidate.aid;
+      checkpoint.nextMode = modes[(modes.indexOf(mode) + 1) % modes.length];
       state.completedAt = null;
       saveCheckpoint(options.checkpointPath, checkpoint);
       let result;
@@ -337,6 +350,7 @@ async function main() {
   const checkpointPath = process.env.LEADERBOARD_WARMUP_CHECKPOINT || "/data/leaderboard-warmup-state.json";
   const lockPath = process.env.LEADERBOARD_WARMUP_LOCK || "/data/leaderboard-warmup.lock";
   const maxProfiles = integer(process.env.LEADERBOARD_WARMUP_MAX_PROFILES, 100, 1, 100_000);
+  const maxRunMs = integer(process.env.LEADERBOARD_WARMUP_MAX_RUN_MS, 180_000, 1_000, 900_000);
   const maxRetries = integer(process.env.LEADERBOARD_WARMUP_MAX_RETRIES, 3, 0, 10);
   const timeoutMs = integer(process.env.LEADERBOARD_WARMUP_TIMEOUT_MS, 120_000, 30_000, 300_000);
   const secret = process.env.PROFILE_REFRESH_SECRET || "";
@@ -348,21 +362,32 @@ async function main() {
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
   try {
-    const modes = warmupModesFromArgs();
+    const checkpoint = loadCheckpoint(checkpointPath);
+    const requestedModes = warmupModesFromArgs();
+    const pivot = Math.max(0, requestedModes.indexOf(checkpoint.nextMode));
+    const modes = [...requestedModes.slice(pivot), ...requestedModes.slice(0, pivot)];
     players = new DatabaseSync(dbPath, { readOnly: true });
     players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
     const cycleId = validCycleId(process.env.SEASONAL_CYCLE_ID);
-    const pveVersions = !modes.includes("pve") ? new Map() : await (async () => {
+    const needsPveVersions = modes.includes("pve") && players.prepare(`SELECT 1 FROM mode_players p
+      WHERE p.mode = 'pve' AND p.profile_updated_at <= 0
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
+        AND CASE WHEN json_valid(p.stats_json) THEN COALESCE(json_extract(p.stats_json, '$.pvpStatsParserVersion'), 0) ELSE 0 END < ?
+      LIMIT 1`).get(CURRENT_PVP_PARSER);
+    const pveVersions = !needsPveVersions ? new Map() : await (async () => {
       const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
       pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
       return loadUpdatedVersions(pveUpdatedUrl, {
         maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
       });
     })();
-    const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes);
-    const pace = createRequestPacer();
+    const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes, {
+      checkpoint, limitPerMode: Math.ceil(maxProfiles / modes.length),
+    });
+    const pace = createRequestPacer({ intervalMs: 1_000 });
     const result = await runWarmup({
-      candidates, checkpointPath, maxProfiles, modes,
+      candidates, checkpointPath, maxProfiles,
+      maxRunMs: remainingRunBudget(maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS), modes,
       request: (candidate) => requestCandidate(candidate, {
         baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
         secret, maxRetries, timeoutMs, pace, fetch, shouldStop: () => stopping,

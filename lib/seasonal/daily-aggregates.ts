@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, percentileRank, pvpKillsFor, quantile, tempoScore, trimmedMean } from "./analytics.ts";
+import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, createPercentileRank, pvpKillsFor, quantile, tempoScore, trimmedMean } from "./analytics.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
@@ -79,24 +79,25 @@ export function scoreIntervals(rows: IntervalRow[]): ScoreUpdate[] {
     const population = [...latest.values()].filter((row) =>
       isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids)));
     const sampleN = population.length;
-    const tempoPopulation = population.map(intervalMetrics);
-    const formPopulation = population.map(intervalMetrics);
+    const metrics = population.map(intervalMetrics);
+    const ranks = Object.fromEntries(Object.keys(intervalMetrics(rowsInBucket[0])).map((key) => [
+      key, createPercentileRank(metrics.map((entry) => entry[key as keyof typeof entry])),
+    ]));
     for (const row of rowsInBucket) {
       const metric = intervalMetrics(row);
-      const rank = (value: number, values: number[]) => percentileRank(value, values) ?? 50;
       const scoreable = isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids));
       const tempo = scoreable ? tempoScore({
-        xpPerDay: rank(metric.xpDay, tempoPopulation.map((entry) => entry.xpDay)),
-        pmcRaidsPerDay: rank(metric.raidsDay, tempoPopulation.map((entry) => entry.raidsDay)),
-        killedPmcPerDay: rank(metric.pvpDay, tempoPopulation.map((entry) => entry.pvpDay)),
-        nonPmcKillsPerDay: rank(metric.nonPmcDay, tempoPopulation.map((entry) => entry.nonPmcDay)),
+        xpPerDay: ranks.xpDay(metric.xpDay) ?? 50,
+        pmcRaidsPerDay: ranks.raidsDay(metric.raidsDay) ?? 50,
+        killedPmcPerDay: ranks.pvpDay(metric.pvpDay) ?? 50,
+        nonPmcKillsPerDay: ranks.nonPmcDay(metric.nonPmcDay) ?? 50,
       }) : null;
       const form = scoreable ? formScore({
-        survivalRate: rank(metric.survival, formPopulation.map((entry) => entry.survival)),
-        pvpKd: rank(metric.pvpKd, formPopulation.map((entry) => entry.pvpKd)),
-        aiScavKd: rank(metric.aiKd, formPopulation.map((entry) => entry.aiKd)),
-        killedPmcPerRaid: rank(metric.pvpRaid, formPopulation.map((entry) => entry.pvpRaid)),
-        nonPmcKillsPerRaid: rank(metric.nonPmcRaid, formPopulation.map((entry) => entry.nonPmcRaid)),
+        survivalRate: ranks.survival(metric.survival) ?? 50,
+        pvpKd: ranks.pvpKd(metric.pvpKd) ?? 50,
+        aiScavKd: ranks.aiKd(metric.aiKd) ?? 50,
+        killedPmcPerRaid: ranks.pvpRaid(metric.pvpRaid) ?? 50,
+        nonPmcKillsPerRaid: ranks.nonPmcRaid(metric.nonPmcRaid) ?? 50,
       }) : null;
       updates.push({ id: Number(row.id), tempo, form, sampleN: scoreable ? sampleN : null });
     }
@@ -143,7 +144,11 @@ export function materializeRows(cycleId: string, pointsByKind: Record<Progressio
     const buckets = new Map<number, AggregatePoint[]>();
     for (const point of pointsByKind[kind]) {
       const bucket = raidBucket(point.raids);
-      if (bucket > 0) buckets.set(bucket, [...(buckets.get(bucket) ?? []), point]);
+      if (bucket > 0) {
+        const members = buckets.get(bucket) ?? [];
+        members.push(point);
+        buckets.set(bucket, members);
+      }
     }
     for (const [bucket, members] of buckets) {
       const latest = new Map<number, AggregatePoint>();

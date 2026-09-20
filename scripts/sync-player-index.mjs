@@ -89,7 +89,7 @@ CREATE TABLE player_index_next (
 `);
 }
 
-async function requestIndex(url, db, force) {
+async function requestIndex(url, db, force, signal) {
   const headers = {
   };
 
@@ -100,10 +100,13 @@ async function requestIndex(url, db, force) {
     if (lastModified) headers["if-modified-since"] = lastModified;
   }
 
-  const res = await fetchTarkovJson(url, { headers, cache: "no-store" });
+  const res = await fetchTarkovJson(url, { headers, cache: "no-store", signal });
   if (res.status === 304) return { unchanged: true };
   if (!res.ok) {
-    throw new Error(`index download failed: HTTP ${res.status}`);
+    await res.body?.cancel();
+    throw Object.assign(new Error(`index download failed: HTTP ${res.status}`), {
+      retryable: res.status === 429 || res.status >= 500,
+    });
   }
 
   return {
@@ -112,6 +115,28 @@ async function requestIndex(url, db, force) {
     etag: res.headers.get("etag"),
     lastModified: res.headers.get("last-modified"),
   };
+}
+
+async function downloadIndex(url, db, force, dryRun) {
+  for (let attempt = 0; ; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15 * 60_000);
+    try {
+      const downloaded = await requestIndex(url, db, force, controller.signal);
+      if (downloaded.unchanged) return downloaded;
+      const syncedAt = Date.now();
+      const result = await consumeIndex(db, downloaded.res, syncedAt, dryRun, currentRowCount(db));
+      return { ...downloaded, syncedAt, result };
+    } catch (error) {
+      const transport = error?.retryable === true || controller.signal.aborted ||
+        /terminated|fetch failed|ECONNRESET|ETIMEDOUT|UND_ERR_/i.test(`${error.message} ${error.cause?.code ?? ""}`);
+      if (!transport || attempt >= 2) throw error;
+      console.warn(`index transport retry ${attempt + 1}/2: ${error.message} (${error.cause?.code ?? "no cause code"})`);
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function skipWs(buffer, pos) {
@@ -371,7 +396,7 @@ async function main() {
   console.log(`syncing player index from ${url}`);
   console.log(`sqlite: ${resolved}`);
 
-  const downloaded = await requestIndex(url, db, force);
+  const downloaded = await downloadIndex(url, db, force, dryRun);
   if (downloaded.unchanged) {
     if (!dryRun) {
       setMeta(db, "last_poll_at", Date.now());
@@ -383,8 +408,7 @@ async function main() {
     return;
   }
 
-  const syncedAt = Date.now();
-  const result = await consumeIndex(db, downloaded.res, syncedAt, dryRun, currentRowCount(db));
+  const { syncedAt, result } = downloaded;
   console.log(
     `downloaded ${(result.bytes / 1024 / 1024).toFixed(1)} MiB, ` +
       `${result.sourceRows.toLocaleString("en-US")} source rows`

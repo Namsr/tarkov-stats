@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -35,6 +36,7 @@ const config = {
   // hourly queue; it does not change normal short runs.
   maxRunMs: envInteger("REGULAR_PROFILE_SYNC_MAX_RUN_MS", 50 * 60_000, 60_000, 24 * 60 * 60_000),
 };
+config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
 const runId = randomUUID();
 const db = new DatabaseSync(config.dbPath);
@@ -451,7 +453,7 @@ async function processQueue(startedAt) {
           AND s.profile_updated_at >= q.feed_updated_at
       )
       AND COALESCE(q.last_run_id, '') <> ?
-    ORDER BY q.aid LIMIT 1
+    ORDER BY q.updated_at, q.aid LIMIT 1
   `);
   const update = db.prepare(`
     UPDATE regular_profile_sync_queue

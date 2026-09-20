@@ -186,6 +186,12 @@ const TIMELINE_INTERVAL_SQL = `SELECT i.aid, i.id AS point_id, i.local_date,
 
 // Personal history includes banned accounts; population baselines never do.
 const POPULATION_TIMELINE_SNAPSHOT_SQL = TIMELINE_SNAPSHOT_SQL.replace("AND s.aid = ? ", "")
+  .replace("s.stats_json", `CASE WHEN json_valid(s.stats_json) THEN
+    CASE WHEN json_type(s.stats_json, '$.pvpStatsKnown') IS NULL THEN
+      json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio'))
+    ELSE json_set(json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio')),
+      '$.pvpStatsKnown', json(s.stats_json -> '$.pvpStatsKnown')) END
+    ELSE '{}' END AS stats_json`)
   .replace("ORDER BY", "AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY");
 const POPULATION_TIMELINE_INTERVAL_SQL = TIMELINE_INTERVAL_SQL.replace("AND i.aid = ? ", "")
   .replace("ORDER BY", "AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY");
@@ -583,21 +589,29 @@ function percentileGrid(
   ]));
 }
 
+type PopulationRows<T> = readonly T[] | (() => readonly T[]);
+function populationRows<T>(source: PopulationRows<T>): readonly T[] {
+  return typeof source === "function" ? source() : source;
+}
+
 function buildPopulationSnapshotPayload(
-  snapshotRows: readonly Record<string, unknown>[],
-  intervalRows: readonly Record<string, unknown>[],
-  riskRows: readonly Record<string, unknown>[],
-  achievementRows: readonly Record<string, unknown>[],
-  detailIntervalRows: readonly DetailDbRow[],
+  snapshotRows: PopulationRows<Record<string, unknown>>,
+  intervalRows: PopulationRows<Record<string, unknown>>,
+  riskRows: PopulationRows<Record<string, unknown>>,
+  achievementRows: PopulationRows<Record<string, unknown>>,
+  detailIntervalRows: PopulationRows<DetailDbRow>,
   seasonStartsAt: number | null,
   mode: ProgressionIdentity["mode"],
   cycleId: string,
 ): PopulationSnapshotPayload {
   const identity = { mode, cycleId, aid: -1 };
-  const source = timelineMetricRows(snapshotRows, intervalRows);
   const metricKeys: ProgressionMetricKey[] = ["xp", ...TIMELINE_CUMULATIVE_METRICS, ...TIMELINE_LEGACY_METRICS];
   const metrics = Object.fromEntries(metricKeys.map((metric) => {
-    const rows = source[metric] ?? [];
+    // Release each metric's input before constructing the next metric.
+    const rows = metric === "xp" ? timelineSnapshotRows(populationRows(snapshotRows))
+      : metric === "survival" || metric === "pvp_kd" || metric === "ai_kd"
+        ? timelineCumulativeMetricRows(populationRows(snapshotRows), metric)
+        : timelineLegacyMetricRows(populationRows(intervalRows), metric);
     const overall = buildProgressionMetricSeries(rows, identity, metric);
     const byHours = PLAYTIME_RANGES.map((range) => {
       const scoped = rows.filter((row) => row.lifetime_hours != null && Number(row.lifetime_hours) >= range.min &&
@@ -608,10 +622,11 @@ function buildPopulationSnapshotPayload(
     });
     return [metric, { overall: overall.overall, byHours, freshnessAt: overall.freshnessAt }];
   })) as PopulationSnapshotPayload["metrics"];
+  const risks = populationRows(riskRows);
   const riskBaselines = PLAYTIME_RANGES.map((range) => ({
     min: range.min,
     max: range.max,
-    baseline: buildRiskBaseline(riskRows.filter((row) => {
+    baseline: buildRiskBaseline(risks.filter((row) => {
       const hours = finiteNumber(row.lifetime_pvp_hours);
       return hours != null && hours >= range.min && (range.max == null || hours < range.max);
     })),
@@ -619,9 +634,9 @@ function buildPopulationSnapshotPayload(
   return {
     metrics,
     riskBaselines,
-    achievementBaseline: buildAchievementBaseline(achievementRows, seasonStartsAt),
+    achievementBaseline: buildAchievementBaseline(populationRows(achievementRows), seasonStartsAt),
     progressionPercentiles: percentileGrid(buildProgressionPercentileDistributions(
-      detailRows(detailIntervalRows, { ...identity, kind: "cumulative" }),
+      detailRows(populationRows(detailIntervalRows), { ...identity, kind: "cumulative" }),
     )),
   };
 }
@@ -644,11 +659,11 @@ export function materializeSqlitePopulationSnapshot(
   now = Date.now(),
 ): { generation: number; generatedAt: number } {
   initializeSeasonalSchema(db);
-  const snapshots = db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL).all(mode, cycleId);
-  const intervals = db.prepare(POPULATION_TIMELINE_INTERVAL_SQL).all(mode, cycleId);
-  const riskRows = db.prepare(POPULATION_RISK_SQL).all(mode, cycleId);
-  const achievementRows = db.prepare(POPULATION_ACHIEVEMENT_SQL).all(mode, cycleId);
-  const detailIntervals = db.prepare(POPULATION_DETAIL_INTERVAL_SQL).all(mode, cycleId) as unknown as DetailDbRow[];
+  const snapshots = () => db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL).all(mode, cycleId);
+  const intervals = () => db.prepare(POPULATION_TIMELINE_INTERVAL_SQL).all(mode, cycleId);
+  const riskRows = () => db.prepare(POPULATION_RISK_SQL).all(mode, cycleId);
+  const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).all(mode, cycleId);
+  const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).all(mode, cycleId) as unknown as DetailDbRow[];
   const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
   const payload = JSON.stringify(buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
     finiteNumber(cycle?.starts_at), mode, cycleId));
