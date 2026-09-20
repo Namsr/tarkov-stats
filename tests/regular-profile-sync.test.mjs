@@ -287,7 +287,6 @@ test("coverage uses every tracked non-excluded regular profile", async () => {
   assert.match(source, /snapshotMissing/);
   assert.match(source, /snapshotLagging/);
   assert.match(source, /snapshotCurrent/);
-  assert.match(source, /missingFromFeed: Math\.max\(0, coverageSummary\.coverageTotal - trackedNonExcludedInFeed\)/);
   assert.doesNotMatch(source, /const coverageTotal = feed\.trackedInFeed/);
 });
 
@@ -398,6 +397,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     const first = summaryFrom((await run()).stdout);
     assert.equal(first.feedHttpStatus, 200);
     assert.equal(first.feedNotModified, false);
+    assert.equal(first.missingFromFeed, 0);
     assert.equal(first.attempted, 1);
     assert.equal(first.completed, 1);
     assert.equal(
@@ -422,6 +422,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     assert.equal(seen.bodies, 1);
     assert.equal(second.feedNotModified, true);
     assert.equal(second.feedHttpStatus, 304);
+    assert.equal(second.missingFromFeed, null, "304 does not measure feed membership");
     assert.equal(second.attempted, 0);
     assert.equal(second.maxFeedUpdatedAt, initial);
     assert.equal(
@@ -444,6 +445,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     const third = summaryFrom((await run()).stdout);
     assert.equal(third.feedNotModified, true);
     assert.equal(third.feedHttpStatus, 304);
+    assert.equal(third.missingFromFeed, null);
     assert.deepEqual(syncCalls, [1]);
     assert.equal(third.attempted, 1);
     assert.equal(third.completed, 1);

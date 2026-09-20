@@ -114,7 +114,7 @@ async function main() {
     ...feed,
     ...processed,
     backlog,
-    missingFromFeed: Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
+    missingFromFeed: feed.feedNotModified ? null : Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
     snapshotMissing,
     snapshotLagging,
     snapshotCurrent,
