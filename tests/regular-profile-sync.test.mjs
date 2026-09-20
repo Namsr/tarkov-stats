@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -12,11 +13,20 @@ import {
   createTimestampObjectParser,
   feedCacheSlot,
   normalizeUpdatedAt,
+  remainingRunBudget,
   snapshotTargetVersion,
   summarizeCoverage,
 } from "../scripts/regular-profile-sync-core.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("shared queue deadline preserves a tighter mode budget and rejects invalid timestamps", () => {
+  assert.equal(remainingRunBudget(100, undefined, 1000), 100);
+  assert.equal(remainingRunBudget(100, "1050", 1000), 50);
+  assert.equal(remainingRunBudget(100, "2000", 1000), 100);
+  assert.equal(remainingRunBudget(100, "900", 1000), 0);
+  assert.throws(() => remainingRunBudget(100, "invalid", 1000), /positive timestamp/);
+});
 
 test("updated feed parser streams aid-to-version objects across arbitrary chunks", () => {
   const json = '{"13134885":1720000000000,"42":"1720000001"}';
@@ -112,6 +122,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   const initial = 1_720_000_000_000;
   let feed = { 1: initial, 2: initial - 10_000 };
   const calls = new Map();
+  const orderedCalls = [];
   const failOnce = new Set();
   const failAlways = new Set();
   const apiDb = new DatabaseSync(dbPath);
@@ -146,6 +157,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     for await (const chunk of request) raw += chunk;
     const { aid, expectedUpdatedAt } = JSON.parse(raw);
     calls.set(aid, (calls.get(aid) ?? 0) + 1);
+    orderedCalls.push(aid);
     if (aid === 3) {
       response.writeHead(404).end();
       return;
@@ -168,7 +180,8 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
-  const run = (maxRetries = 0) => execFileAsync(process.execPath, [
+  const run = (maxRetries = 0, preload = null, deadline = "") => execFileAsync(process.execPath, [
+    ...(preload ? ["--import", pathToFileURL(preload).href] : []),
     "--experimental-sqlite",
     "scripts/sync-regular-profiles.mjs",
   ], {
@@ -183,6 +196,8 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
       REGULAR_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
       REGULAR_PROFILE_SYNC_RPS: "20",
       REGULAR_PROFILE_SYNC_MAX_RETRIES: String(maxRetries),
+      REGULAR_PROFILE_SYNC_MAX_RUN_MS: "3000000",
+      PROFILE_QUEUE_DEADLINE_MS: deadline,
     },
   });
 
@@ -261,6 +276,24 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     assert.equal(apiDb.prepare(
       "SELECT status FROM regular_profile_sync_queue WHERE aid = 5"
     ).get().status, "completed");
+    const preload = join(directory, "advance-clock.mjs");
+    await writeFile(preload, `const originalFetch = globalThis.fetch;
+      const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+      globalThis.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[1]?.method === "POST") offset += 60001;
+        return response;
+      };`);
+    feed = { ...feed, 8: initial + 7_000, 9: initial + 8_000 };
+    failAlways.add(8);
+    orderedCalls.length = 0;
+    const budgetRun = await run(0, preload, String(Date.now() + 30_000));
+    assert.deepEqual(orderedCalls, [8]);
+    assert.match(budgetRun.stdout, /"stopped":true/);
+    assert.equal(apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 9").get().status, "pending");
+    orderedCalls.length = 0;
+    await run();
+    assert.deepEqual(orderedCalls, [9, 8], "a recurring low-AID failure cannot starve older pending work");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();
@@ -287,7 +320,6 @@ test("coverage uses every tracked non-excluded regular profile", async () => {
   assert.match(source, /snapshotMissing/);
   assert.match(source, /snapshotLagging/);
   assert.match(source, /snapshotCurrent/);
-  assert.match(source, /missingFromFeed: Math\.max\(0, coverageSummary\.coverageTotal - trackedNonExcludedInFeed\)/);
   assert.doesNotMatch(source, /const coverageTotal = feed\.trackedInFeed/);
 });
 
@@ -398,6 +430,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     const first = summaryFrom((await run()).stdout);
     assert.equal(first.feedHttpStatus, 200);
     assert.equal(first.feedNotModified, false);
+    assert.equal(first.missingFromFeed, 0);
     assert.equal(first.attempted, 1);
     assert.equal(first.completed, 1);
     assert.equal(
@@ -422,6 +455,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     assert.equal(seen.bodies, 1);
     assert.equal(second.feedNotModified, true);
     assert.equal(second.feedHttpStatus, 304);
+    assert.equal(second.missingFromFeed, null, "304 does not measure feed membership");
     assert.equal(second.attempted, 0);
     assert.equal(second.maxFeedUpdatedAt, initial);
     assert.equal(
@@ -444,6 +478,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     const third = summaryFrom((await run()).stdout);
     assert.equal(third.feedNotModified, true);
     assert.equal(third.feedHttpStatus, 304);
+    assert.equal(third.missingFromFeed, null);
     assert.deepEqual(syncCalls, [1]);
     assert.equal(third.attempted, 1);
     assert.equal(third.completed, 1);

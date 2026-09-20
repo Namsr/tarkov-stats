@@ -312,18 +312,31 @@ export function buildSequentialIntervals(
 
 /** Percentile rank with average ranks for ties, mapped to endpoints 0 and 100. */
 export function percentileRank(value: number, population: readonly number[]): number | null {
-  assertFinite(value, "value");
+  return createPercentileRank(population)(value);
+}
+
+/** Reuse one sorted population for repeated ranks within a raid bucket. */
+export function createPercentileRank(population: readonly number[]): (value: number) => number | null {
   const values = population.filter(Number.isFinite).sort((a, b) => a - b);
-  if (values.length === 0) return null;
-  if (values.length === 1) return 50;
-  let below = 0;
-  let equal = 0;
-  for (const candidate of values) {
-    if (candidate < value) below += 1;
-    else if (candidate === value) equal += 1;
-  }
-  const averageZeroBasedRank = below + Math.max(0, equal - 1) / 2;
-  return clamp((averageZeroBasedRank / (values.length - 1)) * 100, 0, 100);
+  return (value) => {
+    assertFinite(value, "value");
+    if (values.length === 0) return null;
+    if (values.length === 1) return 50;
+    const bound = (inclusive: boolean) => {
+      let low = 0;
+      let high = values.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (values[mid] < value || (inclusive && values[mid] === value)) low = mid + 1;
+        else high = mid;
+      }
+      return low;
+    };
+    const below = bound(false);
+    const equal = bound(true) - below;
+    const averageZeroBasedRank = below + Math.max(0, equal - 1) / 2;
+    return clamp((averageZeroBasedRank / (values.length - 1)) * 100, 0, 100);
+  };
 }
 
 function weightedScore<T extends Record<string, number>>(values: T, weights: Record<keyof T, number>): number {

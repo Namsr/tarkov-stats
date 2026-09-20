@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -35,6 +36,7 @@ const config = {
   maxRunMs: envInteger("SEASONAL_FEED_MAX_RUN_MS", 13 * 60_000, 60_000, 24 * 60 * 60_000),
   leaseMs: envInteger("SEASONAL_FEED_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
 };
+config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
 const cycle = loadSeasonalCycleConfig();
 if (!cycle || !isSeasonalCollectorReady()) {

@@ -3,6 +3,19 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+test("warmup time budget stops before another request without marking a signal stop", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-budget-"));
+  let now = 0;
+  const result = await runWarmup({
+    candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }, { mode: "regular", aid: 2, sourceVersion: 100 }],
+    checkpointPath: join(dir, "state.json"), maxProfiles: 100, maxRunMs: 10, now: () => now,
+    request: async () => { now = 10; return { kind: "completed" }; },
+  });
+  assert.equal(result.processed, 1);
+  assert.equal(result.bounded, true);
+  assert.equal(result.stopped, false);
+});
 import { DatabaseSync } from "node:sqlite";
 import {
   acquireWarmupLock,
@@ -64,6 +77,12 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   ]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["arena"])
     .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 9]]);
+  assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["regular", "arena"], {
+    limitPerMode: 1, checkpoint: { modes: { regular: { lastAid: 1 }, arena: { lastAid: 5 } } },
+  }).map(({ mode, aid }) => [mode, aid]), [["regular", 10], ["arena", 9]]);
+  assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["regular"], {
+    limitPerMode: 1, checkpoint: { modes: { regular: { lastAid: 10 } } },
+  }).map(({ aid }) => aid), [1], "cursor wraps instead of dropping earlier failures forever");
 
   const requested = [];
   const first = await runWarmup({

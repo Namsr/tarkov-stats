@@ -1,3 +1,11 @@
+/** Shared queue deadline limits admission; an in-flight request finishes normally. */
+export function remainingRunBudget(maxRunMs, deadline, now = Date.now()) {
+  if (deadline == null || deadline === "") return maxRunMs;
+  const end = Number(deadline);
+  if (!Number.isSafeInteger(end) || end <= 0) throw new Error("PROFILE_QUEUE_DEADLINE_MS must be a positive timestamp");
+  return Math.min(maxRunMs, Math.max(0, end - now));
+}
+
 export function createTimestampObjectParser(onEntry) {
   let buffer = "";
   let position = 0;

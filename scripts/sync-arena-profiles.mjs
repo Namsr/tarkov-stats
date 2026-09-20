@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -38,6 +39,7 @@ const config = {
   leaseMs: envInteger("ARENA_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
   schemaVersion: ARENA_PARSER_VERSION,
 };
+config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
 const db = new DatabaseSync(config.dbPath);
 db.exec(`PRAGMA busy_timeout = ${config.dbBusyTimeoutMs}`);

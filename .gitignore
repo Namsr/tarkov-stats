@@ -72,6 +72,8 @@ GEMINI.md
 !/ops/systemd/tarkovstats-leaderboard-materialize.service
 !/ops/systemd/tarkovstats-leaderboard-materialize.timer
 !/ops/profile-queue.sh
+!/ops/deploy.sh
+!/ops/systemd/tarkovstats-profile-queue-no-restart.conf
 
 # local runtime data
 /data/*.db

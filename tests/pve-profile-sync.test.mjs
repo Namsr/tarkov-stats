@@ -338,7 +338,18 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
       watermark,
     );
 
-    // A pending row queued by another path is still served while the feed is 304.
+    // Both an already-completed local gap and an independent pending row
+    // must be repaired without downloading an unchanged feed again.
+    progression.prepare("DELETE FROM progression_snapshots WHERE mode = 'pve' AND aid = 10").run();
+    for (const [aid, status] of [[20, "skipped"], [21, "stale"], [22, "not_found"]]) {
+      players.prepare(`INSERT INTO mode_players VALUES ('pve', ?, ?, ?, ?, '[]')`)
+        .run(aid, cutoff + 1_000, cutoff + 1_001, stats);
+      players.prepare(`INSERT INTO pve_profile_sync_queue
+        (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, 1)`)
+        .run(aid, cutoff + 1_000, status);
+    }
+    players.prepare(`INSERT INTO mode_players VALUES ('pve', 23, ?, ?, ?, '[]')`)
+      .run(cutoff - 1, cutoff, stats);
     players.prepare(`INSERT INTO pve_profile_sync_queue
       (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
       VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)`)
@@ -346,9 +357,13 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     syncCalls.length = 0;
     const third = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
     assert.equal(third.feedNotModified, true);
-    assert.deepEqual(syncCalls, [99]);
-    assert.equal(third.attempted, 1);
-    assert.equal(third.completed, 1);
+    assert.deepEqual(syncCalls, [99, 10], "older pending work precedes a newly reopened lower AID");
+    assert.equal(third.attempted, 2);
+    assert.equal(third.completed, 2);
+    assert.equal(seen.bodies, 1);
+    assert.deepEqual(players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid BETWEEN 20 AND 22 ORDER BY aid")
+      .all().map((row) => row.status), ["skipped", "stale", "not_found"]);
+    assert.equal(players.prepare("SELECT aid FROM pve_profile_sync_queue WHERE aid = 23").get(), undefined);
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 99").get().status,
       "completed",

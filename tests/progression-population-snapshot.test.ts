@@ -167,13 +167,12 @@ test("VPS delays and deprioritizes the isolated population worker", async () => 
   const { readFile } = await import("node:fs/promises");
   const start = await readFile("scripts/start-web.mjs", "utf8");
   const worker = await readFile("scripts/materialize-progression-population.mjs", "utf8");
-  assert.match(start, /spawn\(process\.execPath,[\s\S]*materialize-progression-population\.mjs/);
-  assert.match(start, /setPriority\(progressionMaterializer\.pid, 19\)/);
+  assert.match(start, /superviseWorker\("progression",[\s\S]*materialize-progression-population\.mjs/);
   assert.match(worker, /const intervalMs = 21_600_000/);
   assert.match(worker, /PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS/);
   assert.match(worker, /: 300_000/);
   assert.match(worker, /if \(running\) return \{ skipped: true \}/);
-  assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("interval"\)[\s\S]*materializeProgressionPopulation\("interval"\)[\s\S]*\}, intervalMs\)/);
+  assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("interval"\)[\s\S]*\}, intervalMs\)/);
   assert.match(worker, /setTimeout\(resolve, initialDelayMs\)/);
   assert.match(worker, /await materializeProgressionPopulation\("startup"\)/);
 });

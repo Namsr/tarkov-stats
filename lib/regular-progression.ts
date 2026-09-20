@@ -53,16 +53,20 @@ export function materializePersistentProgression(
   initializeSeasonalSchema(db);
   db.exec("SAVEPOINT materialize_persistent_progression");
   try {
-  const rows = db.prepare(`SELECT * FROM progression_snapshots
+  const aids = db.prepare(`SELECT DISTINCT aid FROM progression_snapshots
     WHERE mode = ? AND cycle_id = ?
       ${onlyAid == null ? "" : "AND aid = ?"}
-    ORDER BY aid, profile_updated_at, id`).all(
+    ORDER BY aid`).all(
       mode,
       PERSISTENT_CYCLE_ID,
       ...(onlyAid == null ? [] : [onlyAid]),
-    ) as SnapshotRow[];
-  const byAid = new Map<number, SnapshotRow[]>();
-  for (const row of rows) byAid.set(Number(row.aid), [...(byAid.get(Number(row.aid)) ?? []), row]);
+    ) as { aid: number }[];
+  // Raw profile JSON dominates the database. Retain one player's history,
+  // not every snapshot (and repeated copies of each growing history).
+  const historyQuery = db.prepare(`SELECT id, aid, profile_updated_at, upstream_updated_at,
+    captured_at, nickname, stats_json FROM progression_snapshots
+    WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at, id`);
+  let snapshotCount = 0;
   let intervalCount = 0;
     const updateSnapshot = db.prepare(`UPDATE progression_snapshots SET profile_updated_at = ?,
       upstream_updated_at = ?, local_date = ?, series_id = ?, experience = ?, pmc_raids = ?,
@@ -93,7 +97,9 @@ export function materializePersistentProgression(
       first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at,
       snapshot_count = excluded.snapshot_count, progression_eligible = excluded.progression_eligible,
       confirmed_banned = MAX(player_profiles.confirmed_banned, excluded.confirmed_banned)`);
-    for (const [aid, history] of byAid) {
+    for (const { aid } of aids) {
+      const history = historyQuery.all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
+      snapshotCount += history.length;
       let seriesId = 1;
       let raidIntervals = 0;
       let previous: { row: SnapshotRow; counters: Counters | null; valid: boolean } | null = null;
@@ -130,7 +136,7 @@ export function materializePersistentProgression(
       refreshSqliteProgressionAggregates(db, mode, PERSISTENT_CYCLE_ID, options.targetBucket);
     }
     db.exec("RELEASE materialize_persistent_progression");
-    return { snapshots: rows.length, intervals: intervalCount };
+    return { snapshots: snapshotCount, intervals: intervalCount };
   } catch (error) {
     db.exec("ROLLBACK TO materialize_persistent_progression");
     db.exec("RELEASE materialize_persistent_progression");

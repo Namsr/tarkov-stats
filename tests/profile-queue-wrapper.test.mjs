@@ -1,54 +1,48 @@
-import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test from "node:test";
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
+const shell = process.platform === 'win32'
+  ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
+const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
-// The queue driver is server-local (/usr/local/sbin/tarkovstats-profile-queue)
-// and deploys manually, so the repo copy is pinned by structure, not by
-// execution. These assertions keep the versioned copy faithful to the live
-// wrapper while enforcing the B3 failure-isolation contract.
-test("versioned profile queue keeps the live steps, order and budgets", async () => {
-  const source = await readFile("ops/profile-queue.sh", "utf8");
-  const stepScripts = [
-    "scripts/warmup-leaderboard-profiles.mjs",
-    "scripts/sync-regular-profiles.mjs",
-    "scripts/sync-pve-profiles.mjs",
-    "scripts/sync-arena-profiles.mjs",
-    "scripts/sync-seasonal-profiles.mjs",
-  ];
-  let previous = -1;
-  for (const script of stepScripts) {
-    const at = source.indexOf(script);
-    assert.ok(at > previous, `${script} runs in the live order`);
-    previous = at;
+test('queue retries only failures, preserves error status and runs one warmup after freshness', async () => {
+  const source = await readFile('ops/profile-queue.sh', 'utf8');
+  for (const scenario of ['success', 'retry', 'persistent', 'stopped', 'invalid', 'budget']) {
+    const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
+    try {
+      const path = dir.replaceAll('\\', '/');
+      const mock = `dc() {
+        case "$*" in
+          *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}';;
+          *sync-regular-profiles*) echo regular >> calls
+            if [ "$SCENARIO" = persistent ]; then return 7; fi
+            if [ "$SCENARIO" = retry ] && [ ! -f retried ]; then touch retried; return 7; fi;;
+          *sync-pve-profiles*) echo pve >> calls;;
+          *sync-arena-profiles*) echo arena >> calls;;
+          *sync-seasonal-profiles*) echo seasonal >> calls;;
+          *) return 88;;
+        esac
+      }
+      sleep() { :; }
+      date() { if [ "$SCENARIO" = budget ] && [ "$*" = +%s ] && [ -f calls ]; then echo 4102444800; else command date "$@"; fi; }
+      python3() { cat >/dev/null; case "$SCENARIO" in stopped) echo stopped;; invalid) return 1;; *) echo done;; esac; }
+      `;
+      const script = source.replace('cd /opt/tarkovstats-auto || exit 1', `cd ${quote(path)} || exit 1`)
+        .replace(/^dc\(\).*$/m, () => mock)
+        .replace('log=/var/log/tarkovstats-warmup-batch.json', `log=${quote(path + '/warmup.json')}`);
+      const file = join(dir, 'queue.sh');
+      await writeFile(file, script.replaceAll('\r\n','\n'));
+      const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' ? 1 : scenario === 'stopped' ? 143 : 0, result.stderr);
+      assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
+        scenario === 'budget' ? ['regular'] : [...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','arena','seasonal','warmup']);
+      if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
+    } finally { await rm(dir, { recursive: true, force: true }); }
   }
-  assert.match(source, /LEADERBOARD_WARMUP_MAX_PROFILES=100000/);
-  assert.match(source, /REGULAR_PROFILE_SYNC_RPS=1/);
-  assert.match(source, /PVE_PROFILE_SYNC_RPS=1/);
-  assert.match(source, /ARENA_PROFILE_SYNC_RPS=1/);
-  assert.match(source, /SEASONAL_FEED_RPS=1/);
-  assert.match(source, /docker compose -p tarkovstats -f docker-compose\.vps\.yml exec -T/);
-  assert.match(source, /cd \/opt\/tarkovstats-auto/);
-});
-
-test("versioned profile queue isolates mode failures instead of aborting", async () => {
-  const source = await readFile("ops/profile-queue.sh", "utf8");
-  assert.match(source, /^set -u$/m);
-  assert.doesNotMatch(source, /^set -e$/m);
-  assert.doesNotMatch(source, /^set -eu$/m);
-  assert.match(source, /MODE_RESULT/);
-  assert.match(source, /QUEUE_SUMMARY/);
-  assert.match(source, /exit 1/);
-  // A failing step must record and continue, never skip the remaining modes.
-  assert.match(source, /run_mode regular/);
-  assert.match(source, /run_mode seasonal/);
-  assert.match(source, /return 0/);
-  // B3: the failed mode is retried boundedly in the same run, not only via a
-  // full-cycle systemd restart.
-  assert.match(source, /MODE_RETRY/);
-  assert.match(source, /RETRY_DELAY/);
-  // A failed cd must not silently run all steps from the wrong directory.
-  assert.match(source, /cd \/opt\/tarkovstats-auto \|\| exit 1/);
-  // A SIGTERM-stopped warmup batch exits fast instead of starting freshness modes.
-  assert.match(source, /mode=warmup status=stopped/);
-  assert.match(source, /exit 143/);
+  const dropIn = await readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf','utf8');
+  assert.match(dropIn, /^Restart=no$/m);
 });

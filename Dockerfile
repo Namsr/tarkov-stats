@@ -19,6 +19,8 @@ RUN npm run build
 
 # ---------- 3. Финальный образ (минимальный) ----------
 FROM node:22-alpine AS runner
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -47,6 +49,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs .
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-leaderboards.mjs ./scripts/materialize-leaderboards.mjs
