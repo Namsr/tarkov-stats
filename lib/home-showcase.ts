@@ -1,6 +1,27 @@
 import type { PlayerProfileViewModel } from "@/types/player-profile-view";
 import type { ProfileComparisonStats, PublicRiskView } from "@/types/profile-view";
-import type { ProgressionTimelineResponse } from "@/types/seasonal";
+// The store runs both under Next.js (alias @/types) and plain node --experimental-strip-types.
+// Keep the mode contract here so the module stays self-contained in both loaders.
+const SHOWCASE_MODES = ["regular", "pve", "arena", "seasonal"] as const;
+export type GameMode = (typeof SHOWCASE_MODES)[number];
+export type ProgressionPoint = {
+  pmcRaids: number;
+  level?: number | null;
+  value: number;
+  seriesId?: number | null;
+  observedAt?: number | null;
+};
+export type ProgressionMetricSeries = { player: ProgressionPoint[] };
+export type ProgressionTimelineResponse = {
+  metrics: Partial<Record<string, ProgressionMetricSeries>>;
+};
+export const GAME_MODES = SHOWCASE_MODES;
+export function isGameMode(value: unknown): value is GameMode {
+  return typeof value === "string" && (SHOWCASE_MODES as readonly string[]).includes(value);
+}
+export function appRouteMode(mode: GameMode): string {
+  return mode === "seasonal" ? "pvp-season" : mode;
+}
 
 // Fallback when no showcase group is configured or the showcase API is down.
 // Pick once when the homepage mounts, then keep every section on that account.
@@ -17,9 +38,42 @@ export interface ShowcaseItem {
 export interface ShowcaseConfig {
   groupId: number | null;
   groupName: string | null;
+  mode: GameMode;
   aids: number[];
   items: ShowcaseItem[];
+  seasonalCycleId: string | null;
   updatedAt: number | null;
+}
+
+export const HOME_SHOWCASE_MODES = GAME_MODES;
+
+/** The homepage opens in this mode until a visitor picks another one. */
+export function showcaseMode(config: Pick<ShowcaseConfig, "mode"> | null | undefined): GameMode {
+  return config && isGameMode(config.mode) ? config.mode : "regular";
+}
+
+/** Seasonal needs the current cycle id; other modes ignore it. */
+export function showcaseProfileHref(mode: GameMode, aid: number, seasonalCycleId: string | null): string {
+  const base = `/player/${appRouteMode(mode)}/${aid}`;
+  return mode === "seasonal" && seasonalCycleId ? `${base}?cycle=${encodeURIComponent(seasonalCycleId)}` : base;
+}
+
+/** Which sections have data for the mode. Arena has no timeline, seasonal has no cohort. */
+export const SHOWCASE_SECTIONS = {
+  timeline: { regular: true, pve: true, arena: false, seasonal: true },
+  cohort: { regular: true, pve: true, arena: true, seasonal: false },
+} as const satisfies Record<"timeline" | "cohort", Record<GameMode, boolean>>;
+
+export function showcaseTimelineCycle(mode: GameMode, seasonalCycleId: string | null): string | null {
+  if (mode === "arena") return null;
+  if (mode === "seasonal") return seasonalCycleId;
+  return "persistent";
+}
+
+export function showcaseCohortParams(mode: GameMode): { cycle: string; arenaMode?: string } | null {
+  if (mode === "seasonal") return null;
+  if (mode === "arena") return { cycle: "persistent", arenaMode: "overall" };
+  return { cycle: "persistent" };
 }
 
 export function pickShowcaseAid(config: ShowcaseConfig | null): number {

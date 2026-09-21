@@ -54,6 +54,13 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-segments { display: inline-flex; gap: 4px; padding: 4px; background: var(--input-bg); border-radius: 12px; border: 1px solid var(--card-border); max-width: 100%; }
 .home-segments button { border: 0; border-radius: 8px; background: transparent; color: var(--muted); padding: 11px 19px; font-size: 15px; font-weight: 550; white-space: nowrap; min-height: 44px; transition: background .15s, color .15s; }
 .home-segments button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
+.home-showcase-modes { margin-bottom: 26px; }
+.home-showcase-switching { opacity: .55; transition: opacity .15s; }
+.home-profile-top .profile-portrait { width: 72px; height: 72px; }
+.home-showcase-modes { margin-bottom: 22px; }
+.home-showcase-modes button { min-height: 38px; padding: 8px 14px; font-size: 14px; }
+.home-profile-top .profile-portrait { width: 88px; height: 88px; border-radius: 10px; }
+.home-showcase-switching { opacity: .55; transition: opacity .15s; }
 .home-progress-controls { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .home-context-name { font-size: 15px; color: var(--muted); }
 .home-page .home-progress-summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 30px 0 12px; }
@@ -155,8 +162,14 @@ html[data-theme="light"] .home-risk-status--severe { color: #c22a27; }
   .home-profile-preview { padding: 23px 22px 0; }
   .home-profile-top { padding-bottom: 25px; gap: 10px; }
   .home-player-identity { gap: 12px; }
+  .home-showcase-modes { width: 100%; }
+  .home-showcase-modes button { flex: 1; padding: 11px 10px; }
+  .home-player-identity .profile-portrait { width: 56px; height: 56px; }
   .home-player-name { font-size: 23px; }
   .home-faction { width: 47px; height: 47px; font-size: 10px; }
+  .home-showcase-modes { margin-bottom: 16px; }
+  .home-showcase-modes button { padding: 8px 12px; font-size: 13px; }
+  .home-profile-top .profile-portrait { width: 62px; height: 62px; }
   .home-level-value { flex-direction: column; gap: 5px; align-items: flex-end; }
   .home-level-value strong { font-size: 35px; }
   .home-level-value > span { font-size: 12px; }

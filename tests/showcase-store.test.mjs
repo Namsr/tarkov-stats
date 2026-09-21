@@ -77,6 +77,71 @@ test("showcase closes a connection after SQLITE_FULL and recreates the schema on
     assert.equal(errors.length, 1);
   `);
 });
+test("showcase groups default to the regular mode and keep a chosen mode", (t) => {
+  const { store, first } = setup(t);
+  assert.equal(first.mode, "regular");
+  assert.equal(store.getActive().mode, "regular");
+  const pve = store.createGroup("PvE showcase", "pve");
+  assert.equal(pve.mode, "pve");
+  assert.equal(store.listGroups().find((group) => group.id === pve.id).mode, "pve");
+});
+
+test("setGroupMode switches the mode without touching other groups or items", (t) => {
+  const { store, first, second } = setup(t);
+  const before = store.listGroups();
+  const updated = store.setGroupMode(first.id, "arena");
+  assert.equal(updated.mode, "arena");
+  const groups = store.listGroups();
+  assert.equal(groups.find((group) => group.id === first.id).mode, "arena");
+  assert.equal(groups.find((group) => group.id === second.id).mode, "regular");
+  assert.deepEqual(groups.map((group) => group.items), before.map((group) => group.items));
+  assert.ok(groups.find((group) => group.id === first.id).updatedAt > 0);
+});
+
+test("invalid modes throw and leave the showcase configuration intact", (t) => {
+  const { store, first } = setup(t);
+  const before = store.listGroups();
+  for (const invalid of [() => store.createGroup("Bad", "battle-royale"), () => store.setGroupMode(first.id, "ffa"), () => store.setGroupMode(9999, "pve")]) {
+    assert.throws(invalid);
+    assert.deepEqual(store.listGroups(), before);
+  }
+  assert.equal(store.getActive().mode, "regular");
+});
+
+test("legacy showcase databases gain the mode column without losing data", (t) => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE home_showcase_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE home_showcase_items (
+      group_id INTEGER NOT NULL REFERENCES home_showcase_groups(id) ON DELETE CASCADE,
+      aid INTEGER NOT NULL,
+      sort INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      nickname TEXT,
+      added_at INTEGER NOT NULL,
+      PRIMARY KEY (group_id, aid)
+    );
+    INSERT INTO home_showcase_groups (name, is_active, created_at, updated_at) VALUES ('Legacy', 1, 1000, 2000);
+    INSERT INTO home_showcase_items (group_id, aid, sort, enabled, nickname, added_at) VALUES (1, 101, 0, 1, 'Old player', 1500);
+  `);
+  const store = createShowcaseStore(db);
+  assert.equal(store.getActive().mode, "regular");
+  assert.deepEqual(store.getActive().aids, [101]);
+  const pve = store.createGroup("Seasonal showcase", "seasonal");
+  assert.equal(pve.mode, "seasonal");
+  assert.equal(store.listGroups().find((group) => group.name === "Legacy").mode, "regular");
+  store.setGroupMode(1, "pve");
+  assert.equal(store.getActive().mode, "pve");
+  assert.deepEqual(store.getActive().aids, [101]);
+});
+
 
 function setup(t) {
   const db = new DatabaseSync(":memory:");

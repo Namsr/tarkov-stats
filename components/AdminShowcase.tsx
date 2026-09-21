@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ShowcaseGroup, ShowcaseItem } from "@/lib/admin/showcase-db";
+import { GAME_MODES } from "@/types/seasonal";
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -197,6 +198,19 @@ function ShowcaseGroupEditor({ group, t, busy, onMutate, onValidationError }: {
           <input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={80} disabled={busy} />
         </label>
         <button type="button" className="ghost-button" disabled={busy || !renameValue.trim() || renameValue.trim() === group.name} onClick={handleRename}>{t("admin.showcase.rename")}</button>
+      </div>
+      <div className="admin-moderation" style={{ marginTop: 12 }}>
+        <label>
+          <span>{t("admin.showcase.mode")}</span>
+          <select
+            value={group.mode}
+            disabled={busy}
+            onChange={(event) => { void onMutate("set_group_mode", { id: group.id, mode: event.target.value }); }}
+          >
+            {GAME_MODES.map((mode) => <option key={mode} value={mode}>{t("fav.mode." + mode)}</option>)}
+          </select>
+        </label>
+        <span style={{ fontSize: ".78rem", color: "var(--muted-strong)", maxWidth: 420 }}>{t("admin.showcase.modeHint")}</span>
       </div>
       <div className="admin-moderation" style={{ marginTop: 12 }}>
         <label>
