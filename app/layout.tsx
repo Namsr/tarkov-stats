@@ -5,6 +5,7 @@ import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
 import SkipLink from "@/components/SkipLink";
 import FaqWidget from "@/components/FaqWidget";
+import PageviewBeacon from "@/components/PageviewBeacon";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
 import { dict, type Lang } from "@/lib/i18n/dictionary";
@@ -63,6 +64,7 @@ export default async function RootLayout({
             </div>
             <SiteFooter />
             <FaqWidget />
+            <PageviewBeacon />
           </FavoritesProvider>
         </LanguageProvider>
         {analyticsToken ? (

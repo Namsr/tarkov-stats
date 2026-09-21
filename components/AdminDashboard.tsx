@@ -23,11 +23,13 @@ type HealthIssue = { operation: string; mode: string | null; aid: number | null;
 type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
 type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[] };
 type AveragePublication = { scope: string; generation: number | null; generatedAt: number | null; dirtyAt: number | null; lastStartedAt: number | null; lastCompletedAt: number | null; lastDurationMs: number | null; lastError: string | null; variants: number; status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error" };
-type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
+type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
 type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
 type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localRecordCount: number | null; differenceCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
 type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
 type Rank = { key: string; pageviews: number; visits: number };
+type OwnRank = { key: string; pageviews: number; visitors: number };
+type OwnTraffic = { available: boolean; pageviews: number; visits: number; visitors: number; series: SeriesPoint[]; pages: OwnRank[]; referrers: OwnRank[] };
 type Traffic = { available: boolean; reason?: string; sampled: boolean; pageviews: number; visits: number; series: SeriesPoint[]; domains: Rank[]; pages: Rank[]; referrers: Rank[]; countries: Rank[]; devices: Rank[]; browsers: Rank[] };
 type Account = { aid: number; nickname: string | null; modes: string[]; requestCount: number; snapshotCount: number; lastRequestedAt: number; reportedAt?: number; reportedMode?: string; reportedModes?: string[]; outcomes: Record<string, number>; refreshCount: number; sources: string[]; moderation?: AccountModeration; risk?: AccountModeration["risk"]; reportCount?: number; confirmedBan?: boolean; review?: AccountModeration["review"]; canRestoreManualBan?: boolean };
 type Accounts = { available: boolean; accounts: Account[]; nextCursor: string | null };
@@ -198,11 +200,32 @@ function Overview({ summary, lang, t }: { summary: Summary | null; lang: string;
     {summary.traffic?.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}
     <div className="admin-metrics">{(["visits", "pageviews", "accountRequests", "newSuspicious", "severeRisk", "errors"] as MetricName[]).map((name) => <StatCard key={name} label={t("admin.metric." + name)} value={formatNumber(finite(metrics[name]))} benchmarkDiff={metricDiff(finite(metrics[name]), finite(previous[name]))} />)}</div>
     <TrendChart series={summary.series ?? []} lang={lang} t={t} />
+    <OwnPanel own={summary.own} previous={summary.previousOwn} storageAvailable={summary.storageAvailable} lang={lang} t={t} />
     {summary.auth && <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.auth.heading")}</h2><div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.auth.activeUsers")} value={formatNumber(summary.auth.activeUsers)} /><StatCard label={t("admin.auth.signIns")} value={formatNumber(summary.auth.signIns)} /></div></section>}
   </div>;
 }
 
-function TrendChart({ series, lang, t }: { series: SeriesPoint[]; lang: string; t: T }) {
+function OwnPanel({ own, previous, storageAvailable, lang, t }: { own: OwnTraffic | null; previous: OwnTraffic | null; storageAvailable: boolean; lang: string; t: T }) {
+  // The storage warning above already covers the unavailable case.
+  if (!storageAvailable || !own) return null;
+  if (own.pageviews === 0) {
+    return <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.own.heading")}</h2><p className="admin-chart-description">{t("admin.own.description")}</p><p className="admin-empty">{t("admin.own.empty")}</p></section>;
+  }
+  return <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.own.heading")}</h2><p className="admin-chart-description">{t("admin.own.description")}</p>
+    <div className="admin-metrics admin-metrics--small">
+      <StatCard label={t("admin.own.visits")} value={formatNumber(finite(own.visits))} benchmarkDiff={metricDiff(finite(own.visits), finite(previous?.visits))} />
+      <StatCard label={t("admin.own.pageviews")} value={formatNumber(finite(own.pageviews))} benchmarkDiff={metricDiff(finite(own.pageviews), finite(previous?.pageviews))} />
+      <StatCard label={t("admin.own.visitors")} value={formatNumber(finite(own.visitors))} benchmarkDiff={metricDiff(finite(own.visitors), finite(previous?.visitors))} />
+    </div>
+    <TrendChart series={own.series ?? []} lang={lang} t={t} headingKey="admin.own.chart.heading" descriptionKey="admin.own.chart.description" />
+    <div className="admin-ranks">
+      <RankList title={t("admin.own.pages")} rows={(own.pages ?? []).map((row) => ({ key: row.key, pageviews: row.pageviews, visits: row.visitors }))} visitsKey="admin.own.rank.visitors" t={t} />
+      <RankList title={t("admin.own.referrers")} rows={(own.referrers ?? []).map((row) => ({ key: row.key, pageviews: row.pageviews, visits: row.visitors }))} visitsKey="admin.own.rank.visitors" t={t} />
+    </div>
+  </section>;
+}
+
+function TrendChart({ series, lang, t, headingKey = "admin.chart.heading", descriptionKey = "admin.chart.description" }: { series: SeriesPoint[]; lang: string; t: T; headingKey?: string; descriptionKey?: string }) {
   const points = useMemo(() => {
     const buckets = new Map<number, { at: string; time: number; pageviews: number; visits: number }>();
     for (const point of series) {
@@ -269,7 +292,7 @@ function TrendChart({ series, lang, t }: { series: SeriesPoint[]; lang: string; 
   const dateTransform = selectedX < 20 ? "translateX(0)" : selectedX > 80 ? "translateX(-100%)" : "translateX(-50%)";
 
   const labelTransform = anchorFor(selectedX) === "start" ? "translate(8px, -50%)" : anchorFor(selectedX) === "end" ? "translate(calc(-100% - 8px), -50%)" : "translate(-50%, -50%)";
-  return <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.chart.heading")}</h2><p className="admin-chart-description">{t("admin.chart.description")}</p><div className="admin-chart-wrap" tabIndex={0} role="group" aria-label={t("admin.chart.aria")} aria-keyshortcuts="ArrowLeft ArrowRight Home End" onKeyDown={moveByKeyboard}>
+  return <section className="data-panel admin-panel"><h2 className="section-heading">{t(headingKey)}</h2><p className="admin-chart-description">{t(descriptionKey)}</p><div className="admin-chart-wrap" tabIndex={0} role="group" aria-label={t("admin.chart.aria")} aria-keyshortcuts="ArrowLeft ArrowRight Home End" onKeyDown={moveByKeyboard}>
     <div className="admin-chart-stage">
       <svg className="admin-chart" viewBox="0 0 100 58" preserveAspectRatio="none" aria-hidden="true" onPointerMove={moveToPointer} onPointerDown={moveToPointer}>
       <line className="admin-chart__grid" x1={left} x2={right} y1={top} y2={top} /><line className="admin-chart__grid" x1={left} x2={right} y1={bottom} y2={bottom} />
@@ -453,9 +476,9 @@ function formatUptime(seconds: number, t: T): string {
   return days > 0 ? t("admin.monitoring.uptimeDays", { days, hours }) : t("admin.monitoring.uptimeHours", { hours });
 }
 
-function RankList({ title, rows, t }: { title: string; rows: Rank[]; t: T }) {
+function RankList({ title, rows, t, visitsKey = "admin.rank.visits" }: { title: string; rows: Rank[]; t: T; visitsKey?: string }) {
   const max = Math.max(1, ...rows.map((row) => row.pageviews));
-  return <section className="data-panel admin-panel"><h2 className="section-heading">{title}</h2>{rows.length ? <ol className="admin-rank-list">{rows.slice(0, 10).map((row) => <li key={row.key}><div><span title={row.key}>{row.key}</span><strong>{formatNumber(row.pageviews)}</strong></div><div className="admin-rank-bar" aria-hidden><i style={{ width: `${row.pageviews / max * 100}%` }} /></div><small>{t("admin.rank.visits", { n: formatNumber(row.visits) })}</small></li>)}</ol> : <p className="admin-empty">{t("admin.empty")}</p>}</section>;
+  return <section className="data-panel admin-panel"><h2 className="section-heading">{title}</h2>{rows.length ? <ol className="admin-rank-list">{rows.slice(0, 10).map((row) => <li key={row.key}><div><span title={row.key}>{row.key}</span><strong>{formatNumber(row.pageviews)}</strong></div><div className="admin-rank-bar" aria-hidden><i style={{ width: `${row.pageviews / max * 100}%` }} /></div><small>{t(visitsKey, { n: formatNumber(row.visits) })}</small></li>)}</ol> : <p className="admin-empty">{t("admin.empty")}</p>}</section>;
 }
 
 function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts | null; suspicious: boolean; lang: string; t: T; reload: () => Promise<void> }) {
