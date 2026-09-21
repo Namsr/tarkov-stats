@@ -3,6 +3,7 @@ import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/types";
 import { rejectInvalidAdminMutation } from "@/lib/admin/mutation";
 import { requireAdmin } from "@/lib/admin-auth";
 import { getShowcaseStore } from "@/lib/admin/showcase-db";
+import { isGameMode } from "@/types/seasonal";
 
 export const runtime = "nodejs";
 
@@ -26,6 +27,7 @@ type Action =
   | "rename_group"
   | "delete_group"
   | "set_active"
+  | "set_group_mode"
   | "add_item"
   | "remove_item"
   | "update_item"
@@ -43,12 +45,18 @@ export async function POST(request: Request) {
     switch (action) {
       case "create_group": {
         if (typeof body.name !== "string") return bad();
-        const group = store.createGroup(body.name);
+        if (body.mode != null && typeof body.mode !== "string") return bad();
+        const group = store.createGroup(body.name, isGameMode(body.mode) ? body.mode : "regular");
         return ok({ group, groups: store.listGroups() });
       }
       case "rename_group": {
         if (!Number.isSafeInteger(body.id) || typeof body.name !== "string") return bad();
         const group = store.renameGroup(Number(body.id), body.name as string);
+        return ok({ group, groups: store.listGroups() });
+      }
+      case "set_group_mode": {
+        if (!Number.isSafeInteger(body.id) || typeof body.mode !== "string") return bad();
+        const group = store.setGroupMode(Number(body.id), body.mode as never);
         return ok({ group, groups: store.listGroups() });
       }
       case "delete_group": {

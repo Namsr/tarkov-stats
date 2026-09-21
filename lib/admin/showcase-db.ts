@@ -1,3 +1,11 @@
+// The store runs both under Next.js (alias @/types) and plain node --experimental-strip-types.
+// Keep the mode contract here so the module stays self-contained in both loaders.
+const SHOWCASE_MODES = ["regular", "pve", "arena", "seasonal"] as const;
+export type GameMode = (typeof SHOWCASE_MODES)[number];
+function isGameMode(value: unknown): value is GameMode {
+  return typeof value === "string" && (SHOWCASE_MODES as readonly string[]).includes(value);
+}
+
 export interface ShowcaseItem {
   aid: number;
   nickname: string | null;
@@ -9,6 +17,7 @@ export interface ShowcaseGroup {
   id: number;
   name: string;
   isActive: boolean;
+  mode: GameMode;
   createdAt: number;
   updatedAt: number;
   items: ShowcaseItem[];
@@ -17,6 +26,7 @@ export interface ShowcaseGroup {
 export interface ShowcaseConfig {
   groupId: number | null;
   groupName: string | null;
+  mode: GameMode;
   aids: number[];
   items: ShowcaseItem[];
   updatedAt: number | null;
@@ -27,6 +37,7 @@ CREATE TABLE IF NOT EXISTS home_showcase_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'regular',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -77,6 +88,27 @@ function normalizeNickname(value: string | null | undefined): string | null {
   return text;
 }
 
+function validateMode(mode: unknown): GameMode {
+  if (!isGameMode(mode)) throw new TypeError("invalid mode");
+  return mode;
+}
+
+function rowMode(value: unknown): GameMode {
+  return isGameMode(value) ? value : "regular";
+}
+
+function rowToGroup(row: Record<string, unknown>, items: ShowcaseItem[]): ShowcaseGroup {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    isActive: Number(row.is_active) === 1,
+    mode: rowMode(row.mode),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    items,
+  };
+}
+
 function rowToItem(row: Record<string, unknown>): ShowcaseItem {
   return {
     aid: Number(row.aid),
@@ -86,11 +118,20 @@ function rowToItem(row: Record<string, unknown>): ShowcaseItem {
   };
 }
 
+/** Add the group mode column to showcase databases created before it existed. */
+export function migrateGroupModes(db: SqliteDatabase): void {
+  const columns = db.prepare("PRAGMA table_info(home_showcase_groups)").all() as Record<string, unknown>[];
+  if (!columns.some((column) => column.name === "mode")) {
+    db.exec("ALTER TABLE home_showcase_groups ADD COLUMN mode TEXT NOT NULL DEFAULT 'regular'");
+  }
+}
+
 export interface ShowcaseStore {
   listGroups(): ShowcaseGroup[];
   getActive(): ShowcaseConfig;
-  createGroup(name: string): ShowcaseGroup;
+  createGroup(name: string, mode?: GameMode): ShowcaseGroup;
   renameGroup(id: number, name: string): ShowcaseGroup;
+  setGroupMode(id: number, mode: GameMode): ShowcaseGroup;
   deleteGroup(id: number): void;
   setActive(id: number): ShowcaseGroup[];
   addItem(groupId: number, aid: number, nickname?: string | null): ShowcaseGroup;
@@ -102,6 +143,13 @@ export interface ShowcaseStore {
 export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
   db.exec(SHOWCASE_SCHEMA);
   db.exec("PRAGMA foreign_keys = ON");
+  migrateGroupModes(db);
+
+  function groupItems(id: number, enabledOnly = false): ShowcaseItem[] {
+    return (db.prepare(
+      `SELECT aid, nickname, enabled, sort FROM home_showcase_items WHERE group_id = ?${enabledOnly ? " AND enabled = 1" : ""} ORDER BY sort ASC, aid ASC`
+    ).all(id) as Record<string, unknown>[]).map(rowToItem);
+  }
 
   function write<T>(operation: () => T): T {
     db.exec("BEGIN IMMEDIATE");
@@ -120,34 +168,12 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
       | Record<string, unknown>
       | undefined;
     if (!row) return null;
-    const items = db.prepare(
-      "SELECT aid, nickname, enabled, sort FROM home_showcase_items WHERE group_id = ? ORDER BY sort ASC, aid ASC"
-    ).all(id) as Record<string, unknown>[];
-    return {
-      id: Number(row.id),
-      name: String(row.name),
-      isActive: Number(row.is_active) === 1,
-      createdAt: Number(row.created_at),
-      updatedAt: Number(row.updated_at),
-      items: items.map(rowToItem),
-    };
+    return rowToGroup(row, groupItems(id));
   }
 
   function allGroups(): ShowcaseGroup[] {
     const rows = db.prepare("SELECT * FROM home_showcase_groups ORDER BY id ASC").all() as Record<string, unknown>[];
-    return rows.map((row) => {
-      const items = db.prepare(
-        "SELECT aid, nickname, enabled, sort FROM home_showcase_items WHERE group_id = ? ORDER BY sort ASC, aid ASC"
-      ).all(Number(row.id)) as Record<string, unknown>[];
-      return {
-        id: Number(row.id),
-        name: String(row.name),
-        isActive: Number(row.is_active) === 1,
-        createdAt: Number(row.created_at),
-        updatedAt: Number(row.updated_at),
-        items: items.map(rowToItem),
-      };
-    });
+    return rows.map((row) => rowToGroup(row, groupItems(Number(row.id))));
   }
 
   function touch(groupId: number, now: number): void {
@@ -170,29 +196,29 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
       const row = db.prepare("SELECT * FROM home_showcase_groups WHERE is_active = 1 ORDER BY id ASC LIMIT 1").get() as
         | Record<string, unknown>
         | undefined;
-      if (!row) return { groupId: null, groupName: null, aids: [], items: [], updatedAt: null };
+      if (!row) return { groupId: null, groupName: null, mode: "regular", aids: [], items: [], updatedAt: null };
       const groupId = Number(row.id);
-      const items = (db.prepare(
-        "SELECT aid, nickname, enabled, sort FROM home_showcase_items WHERE group_id = ? AND enabled = 1 ORDER BY sort ASC, aid ASC"
-      ).all(groupId) as Record<string, unknown>[]).map(rowToItem);
+      const items = groupItems(groupId, true);
       return {
         groupId,
         groupName: String(row.name),
+        mode: rowMode(row.mode),
         aids: items.map((item) => item.aid),
         items,
         updatedAt: Number(row.updated_at),
       };
     },
 
-    createGroup(name) {
+    createGroup(name, mode = "regular") {
       return write(() => {
         const clean = normalizeName(name);
+        const groupMode = validateMode(mode);
         const count = (db.prepare("SELECT COUNT(*) AS n FROM home_showcase_groups").get() as { n: number }).n;
         if (count >= SHOWCASE_MAX_GROUPS) throw new RangeError("too many groups");
         const now = Date.now();
         const info = db.prepare(
-          "INSERT INTO home_showcase_groups (name, is_active, created_at, updated_at) VALUES (?, ?, ?, ?)"
-        ).run(clean, count === 0 ? 1 : 0, now, now);
+          "INSERT INTO home_showcase_groups (name, is_active, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+        ).run(clean, count === 0 ? 1 : 0, groupMode, now, now);
         return groupById(Number(info.lastInsertRowid))!;
       });
     },
@@ -205,6 +231,16 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
         if (!group) throw new RangeError("group not found");
         const now = Date.now();
         db.prepare("UPDATE home_showcase_groups SET name = ?, updated_at = ? WHERE id = ?").run(clean, now, id);
+        return groupById(id)!;
+      });
+    },
+
+    setGroupMode(id, mode) {
+      return write(() => {
+        validateGroupId(id);
+        const groupMode = validateMode(mode);
+        if (!groupById(id)) throw new RangeError("group not found");
+        db.prepare("UPDATE home_showcase_groups SET mode = ?, updated_at = ? WHERE id = ?").run(groupMode, Date.now(), id);
         return groupById(id)!;
       });
     },
@@ -305,17 +341,25 @@ export function createShowcaseStore(db: SqliteDatabase): ShowcaseStore {
 
 let storePromise: Promise<ShowcaseStore | null> | null = null;
 let retryAfter = 0;
+let activePath: string | null = null;
 
 export async function getShowcaseStore(): Promise<ShowcaseStore | null> {
+  const targetPath = showcasePath();
+  if (storePromise && activePath !== targetPath) {
+    storePromise = null;
+    activePath = null;
+    retryAfter = 0;
+  }
   if (!storePromise) {
     // Avoid repeating initialization and warnings on every request during an outage.
     if (Date.now() < retryAfter) return null;
+    activePath = targetPath;
     storePromise = (async () => {
       let db: SqliteDatabase | null = null;
       try {
         const fs = await import("node:fs");
         const path = await import("node:path");
-        const file = showcasePath();
+        const file = targetPath;
         fs.mkdirSync(path.dirname(file), { recursive: true });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const sqlite = (await import("node:sqlite" as string)) as any;
