@@ -67,3 +67,14 @@ test("home showcase links and labels follow the displayed snapshot mode", async 
   // The opening mode comes from the admin-configured showcase, not a hardcoded one.
   assert.match(component, /setMode\(showcaseMode\(config\)\)/);
 });
+
+test("home showcase achievement icons are the rarest unlocked ones", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /import \{ rarestAchievements \} from "@\/lib\/profile-achievements";/);
+  assert.match(component, /const ACHIEVEMENT_ICON_COUNT = 5;/);
+  // The filter drops achievements without artwork, then the picker sorts the rest.
+  assert.match(component, /rarestAchievements\(view\.achievements\.items\.filter\(achievementWithImage\), ACHIEVEMENT_ICON_COUNT\)/);
+  // The strip used to render the first five ids the profile API happened to send.
+  assert.doesNotMatch(component, /slice\(0, 5\)/);
+});
+

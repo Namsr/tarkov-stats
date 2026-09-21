@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compareAchievementScarcity,
   localizedAchievementDescription,
   localizedAchievementName,
+  rarestAchievements,
   sortProfileAchievements,
   type ProfileAchievementItem,
 // @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts module.
@@ -97,4 +99,56 @@ test("achievement description follows the interface locale and falls back to the
   assert.equal(localizedAchievementDescription(row, "en"), "English");
   assert.equal(localizedAchievementDescription(row, "ru"), "Русский");
   assert.equal(localizedAchievementDescription({ ...row, description: "" }, "en"), "Русский");
+});
+
+test("rarest achievements lead with the rarest category and the smallest share", () => {
+  const rows = [
+    { ...achievement("common-high", 1, "Common high", "common"), percentage: 60 },
+    { ...achievement("legendary", 2, "Legendary", "legendary"), percentage: 40 },
+    { ...achievement("common-low", 3, "Common low", "common"), percentage: 1 },
+    { ...achievement("rare-bsg", 4, "Rare BSG", "rare"), officialPercentage: 3 },
+    { ...achievement("rare-sample", 5, "Rare sample", "rare"), percentage: 7 },
+    { ...achievement("seasonal", 6, "Seasonal", "seasonal"), percentage: 90 },
+  ];
+  assert.deepEqual(rarestAchievements(rows, 3).map((row) => row.id), [
+    "seasonal", "legendary", "rare-bsg",
+  ]);
+  assert.deepEqual(rarestAchievements(rows, rows.length).map((row) => row.id), [
+    "seasonal", "legendary", "rare-bsg", "rare-sample", "common-low", "common-high",
+  ]);
+});
+
+test("rarest achievements keep unknown categories and missing shares behind known ones", () => {
+  const rows = [
+    { ...achievement("unknown-category", 1, "Unknown category", "mythic"), percentage: 0.1 },
+    { ...achievement("no-category", 2, "No category", ""), percentage: 0.2 },
+    { ...achievement("common-no-share", 3, "Common no share", "common") },
+    { ...achievement("common-share", 4, "Common share", "common"), percentage: 50 },
+  ];
+  assert.deepEqual(rarestAchievements(rows, rows.length).map((row) => row.id), [
+    "common-share", "common-no-share", "unknown-category", "no-category",
+  ]);
+});
+
+test("rarest achievements cap the list and leave the source array alone", () => {
+  const rows = [
+    { ...achievement("b", 1, "B", "rare") },
+    { ...achievement("a", 2, "A", "legendary") },
+  ];
+  const snapshot = [...rows];
+  assert.deepEqual(rarestAchievements(rows, 1).map((row) => row.id), ["a"]);
+  assert.deepEqual(rarestAchievements(rows, 9).map((row) => row.id), ["a", "b"]);
+  assert.deepEqual(rarestAchievements([], 5), []);
+  assert.deepEqual(rarestAchievements(rows, 0), []);
+  assert.deepEqual(rarestAchievements(rows, Number.NaN), []);
+  // The caller renders component state: sorting in place would reorder it there.
+  assert.deepEqual(rows, snapshot);
+});
+
+test("achievements of equal scarcity keep a stable id order", () => {
+  const left = { ...achievement("aaa", 1, "A", "rare"), percentage: 5 };
+  const right = { ...achievement("bbb", 2, "B", "rare"), percentage: 5 };
+  assert.ok(compareAchievementScarcity(left, right) < 0);
+  assert.ok(compareAchievementScarcity(right, left) > 0);
+  assert.equal(compareAchievementScarcity(left, { ...left }), 0);
 });
