@@ -458,10 +458,24 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                       type="button"
                       aria-label={t("search.removeRecent", { nickname: entry.nickname })}
                       title={t("search.removeRecent", { nickname: entry.nickname })}
+                      onPointerDown={(event) => {
+                        // Не даём крестику забирать фокус из инпута: иначе после
+                        // удаления кнопки фокус улетит в body и обработчики
+                        // focusout/focusin закроют всю подсказку.
+                        event.preventDefault();
+                      }}
+                      onMouseDown={(event) => {
+                        // Fallback для браузеров без Pointer Events.
+                        event.preventDefault();
+                      }}
                       onClick={(event) => {
                         event.stopPropagation();
                         removeRecentPlayer(entry.aid);
                         setRecentPlayers((current) => current.filter((item) => item.aid !== entry.aid));
+                        // Держим меню открытым и возвращаем фокус в инпут,
+                        // чтобы удаление с клавиатуры тоже не закрывало список.
+                        setRecentOpen(true);
+                        inputRef.current?.focus();
                       }}
                       className="search-unit__recent-remove"
                     >
