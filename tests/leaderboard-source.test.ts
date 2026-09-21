@@ -117,6 +117,14 @@ test("PvP season uses the latest dated prestige snapshot", () => {
     VALUES ('seasonal','s1',20,600,1),('seasonal','s1',20,600,5)`);
   assert.equal(prestigeOf(20), 5);
   assert.equal(prestigeOf(21), null);
+  // Corrupt negative prestige never wins: latest valid snapshot is kept.
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,700,-1)`);
+  assert.equal(prestigeOf(20), 5);
+  // Confirmed zero prestige is kept (badge hidden downstream, not stale).
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,800,0)`);
+  assert.equal(prestigeOf(20), 0);
 });
 
 test("change windows pin a monotonic cutoff and leave concurrent changes for the next run", () => {

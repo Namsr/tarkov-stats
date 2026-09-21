@@ -74,7 +74,7 @@ function standardRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
           activityAt: numberOrNull(row.activity_at), activitySource: numberOrNull(row.activity_at) == null ? null : "skill",
           matches: known ? integerOrNull(row.pmc_raids) : null, kills: known ? integerOrNull(row.exact_kills) : null,
           deaths: known ? integerOrNull(row.pmc_deaths) : null, hours: numberOrNull(row.hours),
-          currentArp: null, bestArp: null, prestige: integerOrNull(row.prestige) ?? 0,
+          currentArp: null, bestArp: null, prestige: integerOrNull(row.prestige),
         } satisfies LeaderboardSourceRow;
       }
     },
@@ -141,7 +141,7 @@ function seasonalRows(db: any, config: LeaderboardScopeConfig, aid?: number): It
   // append-only, so the newest profile_updated_at (id breaks ties) is current.
   const prestige = snapshotsExist
     ? `(SELECT s.prestige FROM progression_snapshots s
-        WHERE s.mode='seasonal' AND s.cycle_id=p.cycle_id AND s.aid=p.aid AND s.prestige IS NOT NULL
+        WHERE s.mode='seasonal' AND s.cycle_id=p.cycle_id AND s.aid=p.aid AND s.prestige IS NOT NULL AND s.prestige >= 0
         ORDER BY s.profile_updated_at DESC, s.id DESC LIMIT 1)`
     : "NULL";
   const sql = `SELECT p.aid,p.nickname,p.profile_updated_at,${exactKills} exact_kills,p.pmc_deaths,p.pmc_raids,

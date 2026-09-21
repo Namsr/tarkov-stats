@@ -33,6 +33,7 @@ function RankCell({ row, sort, href }: { row: LeaderboardRow; sort: LeaderboardS
 }
 
 export function prestigeIconUrl(level: number): string {
+  if (!Number.isSafeInteger(level) || level <= 0) return "";
   return `https://assets.tarkov.dev/prestige-${level}-icon.webp`;
 }
 
@@ -44,17 +45,21 @@ function prestigeLevelOf(row: LeaderboardRow): number | null {
 function PrestigeBadge({ level, label }: { level: number; label: string }) {
   return (
     <Image
+      key={level}
       className="leaderboard-prestige"
       src={prestigeIconUrl(level)}
-      alt=""
+      alt={label}
       title={label}
-      aria-label={label}
       width={18}
       height={18}
       loading="lazy"
       unoptimized
+      referrerPolicy="no-referrer"
       onError={(event) => {
-        event.currentTarget.style.visibility = "hidden";
+        event.currentTarget.style.display = "none";
+      }}
+      onLoad={(event) => {
+        event.currentTarget.style.display = "";
       }}
     />
   );
@@ -174,7 +179,7 @@ export default function LeaderboardTable({
                   <th scope="row">
                     <span className="leaderboard-player">
                       <Link href={profileHref} prefetch={false} className="leaderboard-player__name">{row.nickname || `#${row.aid}`}</Link>
-                      {showPrestige && <PrestigeBadge level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
+                      {showPrestige && <PrestigeBadge key={prestige} level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
                     </span>
                     {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                   </th>
@@ -224,7 +229,7 @@ export default function LeaderboardTable({
                   <Link href={profileHref} prefetch={false} className="leaderboard-card__name">
                     {row.nickname || `#${row.aid}`}
                   </Link>
-                  {showPrestige && <PrestigeBadge level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
+                  {showPrestige && <PrestigeBadge key={prestige} level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
                 </span>
                 {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
                 <span className="leaderboard-card__rank">

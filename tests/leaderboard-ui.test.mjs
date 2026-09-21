@@ -195,9 +195,40 @@ test("leaderboard nicknames show a compact prestige badge from assets.tarkov.dev
   assert.match(css, /\.leaderboard-prestige \{[^}]*width: 18px/);
   assert.match(css, /\.leaderboard-prestige \{[^}]*height: 18px/);
   assert.match(css, /\.leaderboard-prestige \{[^}]*object-fit: contain/);
-  // Missing images (future levels, 404) hide instead of breaking the row.
+  // Missing images (future levels, 404) collapse instead of breaking the row.
   assert.match(table, /onError/);
+  assert.match(table, /display.*none/);
   assert.match(table, /loading="lazy"/);
+  // Accessible name comes from the shared prestige label (matches ProfilePrestige).
+  assert.match(table, /alt=\{label\}/);
+  assert.match(table, /referrerPolicy="no-referrer"/);
+});
+
+test("prestige badge recovers after an image error followed by a successful load", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  const badge = table.slice(table.indexOf("function PrestigeBadge("), table.indexOf("const flipActive"));
+  for (const handler of ["onError", "onLoad"]) {
+    assert.ok(badge.includes(handler), `${handler} handler must be present`);
+  }
+  const event = { currentTarget: { style: { display: "" } } };
+  const bodies = {};
+  for (const handler of ["onError", "onLoad"]) {
+    const body = badge.match(new RegExp(`${handler}=\\{\\(event\\) => \\{([\\s\\S]*?)\\}\\}`))?.[1];
+    assert.ok(body, `${handler} handler must be present`);
+    bodies[handler] = body;
+  }
+  new Function("event", bodies.onError)(event);
+  assert.equal(event.currentTarget.style.display, "none");
+  new Function("event", bodies.onLoad)(event);
+  assert.equal(event.currentTarget.style.display, "");
+  // Remount on level change so a previous 404 never hides the next valid badge.
+  assert.match(table, /<PrestigeBadge key=\{prestige\}/);
+  assert.match(table, /key=\{level\}/);
+});
+
+test("prestige icon URL rejects invalid levels", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  assert.match(table, /Number\.isSafeInteger\(level\)/);
 });
 
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
