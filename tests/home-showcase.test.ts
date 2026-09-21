@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { HOME_EXAMPLE_AIDS, homePercentageDifference, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortParams, showcaseMode, showcaseProfileHref, showcaseTimelineCycle } from "../lib/home-showcase.ts";
+import { HOME_EXAMPLE_AIDS, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortParams, showcaseMode, showcaseProfileHref, showcaseTimelineCycle } from "../lib/home-showcase.ts";
+import type { HomeProfile } from "../lib/home-showcase";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
 
 test("homepage comparison reports signed percentages without inventing a zero baseline", () => {
@@ -81,4 +82,21 @@ test("showcaseTimelineCycle and showcaseCohortParams encode the section capabili
   assert.deepEqual(showcaseCohortParams("pve"), { cycle: "persistent" });
   assert.deepEqual(showcaseCohortParams("arena"), { cycle: "persistent", arenaMode: "overall" });
   assert.equal(showcaseCohortParams("seasonal"), null);
+});
+
+test("homeProfileSide reads the faction from every mode payload shape", () => {
+  const payload = (value: unknown) => value as unknown as HomeProfile;
+  assert.equal(homeProfileSide(null), "");
+  assert.equal(homeProfileSide(undefined), "");
+  assert.equal(homeProfileSide(payload({})), "");
+  // PVP and PvE parse the faction into the stats snapshot.
+  assert.equal(homeProfileSide(payload({ stats: { side: "Usec" } })), "Usec");
+  // Seasonal sends no stats snapshot and keeps the faction on the profile DTO.
+  assert.equal(homeProfileSide(payload({ profile: { side: "Bear" } })), "Bear");
+  // The raw upstream profile (nested info) is the last resort.
+  assert.equal(homeProfileSide(payload({ profile: { info: { side: "Usec" } } })), "Usec");
+  // Arena exposes no faction: the label stays empty instead of guessing one.
+  assert.equal(homeProfileSide(payload({ arena: { nickname: "Arena" } })), "");
+  // A parsed snapshot wins when a payload carries several shapes.
+  assert.equal(homeProfileSide(payload({ stats: { side: "Bear" }, profile: { side: "Usec" } })), "Bear");
 });
