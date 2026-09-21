@@ -162,7 +162,7 @@ export default function HomePage() {
 
       <section id="progress" className="home-section home-wrap">
         {heading("home.progressTitle", "progression", "home.openHistory")}
-        <HomeProgress timeline={display?.timeline ?? undefined} name={name} />
+        <HomeProgress timeline={display?.timeline} name={name} />
       </section>
 
       <section id="risk" className="home-section home-risk-section">
@@ -176,7 +176,7 @@ export default function HomePage() {
 
       <section id="compare" className="home-section home-wrap">
         {heading("home.compareTitle", "comparison", "home.openCompare")}
-        <HomeComparison profile={display?.profile ?? undefined} cohort={display?.cohort ?? undefined} />
+        <HomeComparison profile={display?.profile} cohort={display?.cohort} />
       </section>
       <HomeLeaderboard />
     </main>
