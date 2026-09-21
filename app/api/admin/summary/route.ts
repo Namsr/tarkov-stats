@@ -25,6 +25,8 @@ export async function GET(request: NextRequest) {
   ]);
   const local = store?.summary(period, domain, now) ?? null;
   const previousLocal = store?.summary(period, domain, now - duration, false) ?? null;
+  const own = store?.pageviewSummary(period, domain, now) ?? null;
+  const previousOwn = store?.pageviewSummary(period, domain, now - duration, false) ?? null;
   const averagePublications = await getAveragePublicationStates(now);
   const metrics = {
     visits: traffic.visits,
@@ -49,6 +51,8 @@ export async function GET(request: NextRequest) {
     metrics,
     previous,
     series: traffic.series,
+    own,
+    previousOwn,
     health: local?.health ?? null,
     freshness: local?.freshness ?? null,
     auth: local?.auth ?? { activeUsers: 0, signIns: 0 },

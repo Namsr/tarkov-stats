@@ -1,6 +1,8 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { periodMilliseconds } from "./types.ts";
+// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
+import { PAGEVIEW_SESSION_GAP_MS } from "./pageviews.ts";
 
 export type RequestOutcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
 
@@ -143,9 +145,37 @@ export interface AccountAnalyticsRow {
   snapshotCount: number;
 }
 
+/** First-party pageview fact. Paths must arrive normalized ("/player/:account", never "/admin"); no IPs or user agents. */
+export interface PageviewEvent {
+  occurredAt?: number;
+  host?: string | null;
+  path: string;
+  visitorId: string;
+  referrerHost?: string | null;
+}
+
+export interface OwnRank {
+  key: string;
+  pageviews: number;
+  visitors: number;
+}
+
+export interface OwnTraffic {
+  available: boolean;
+  pageviews: number;
+  /** Sessions: a new visit starts after 30 minutes without a pageview from the same visitor. */
+  visits: number;
+  visitors: number;
+  series: Array<{ at: string; domains: Record<string, { pageviews: number; visits: number }> }>;
+  pages: OwnRank[];
+  referrers: OwnRank[];
+}
+
 export interface AnalyticsStore {
   record(event: RequestEvent): void;
   recordAuth(subjectHash: string, kind: "sign_in" | "activity", now?: number): void;
+  recordPageview(event: PageviewEvent): void;
+  pageviewSummary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDetails?: boolean): OwnTraffic;
   summary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDiagnostics?: boolean): LocalSummary;
   healthSignal(domain: AdminDomain, now?: number): { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null };
   accounts(options: AccountListOptions): { accounts: AccountAnalyticsRow[]; nextCursor: string | null };
@@ -193,6 +223,16 @@ CREATE TABLE IF NOT EXISTS auth_activity_daily (
   PRIMARY KEY (day, subject_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_auth_activity_day ON auth_activity_daily(day);
+CREATE TABLE IF NOT EXISTS page_views (
+  id INTEGER PRIMARY KEY,
+  occurred_at INTEGER NOT NULL,
+  host TEXT,
+  path TEXT NOT NULL,
+  visitor_id TEXT NOT NULL,
+  referrer_host TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_page_views_time ON page_views(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_page_views_visitor_time ON page_views(visitor_id, occurred_at);
 `;
 
 const RETENTION_MS = 90 * 86_400_000;
@@ -207,6 +247,16 @@ interface AnalyticsStoreOptions {
 
 function whereFor(period: AdminPeriod, domain: AdminDomain, now: number): { sql: string; args: unknown[] } {
   const args: unknown[] = [now - periodMilliseconds(period), now];
+  let sql = "occurred_at >= ? AND occurred_at < ?";
+  if (domain !== "all") {
+    sql += " AND host = ?";
+    args.push(domain);
+  }
+  return { sql, args };
+}
+
+function pageviewWhere(period: AdminPeriod, domain: AdminDomain, now: number, lookbackMs = 0): { sql: string; args: unknown[] } {
+  const args: unknown[] = [now - periodMilliseconds(period) - lookbackMs, now];
   let sql = "occurred_at >= ? AND occurred_at < ?";
   if (domain !== "all") {
     sql += " AND host = ?";
@@ -457,6 +507,76 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           sign_ins = sign_ins + excluded.sign_ins,
           activities = activities + excluded.activities`)
         .run(day, subjectHash, kind === "sign_in" ? 1 : 0, kind === "activity" ? 1 : 0);
+    },
+    recordPageview(event) {
+      const occurredAt = event.occurredAt ?? Date.now();
+      db.prepare(`INSERT INTO page_views (occurred_at, host, path, visitor_id, referrer_host)
+        VALUES (?, ?, ?, ?, ?)`)
+        .run(occurredAt, event.host ?? null, event.path, event.visitorId, event.referrerHost ?? null);
+      const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
+      if (occurredAt - lastCleanup >= CLEANUP_INTERVAL_MS) this.cleanup(occurredAt);
+    },
+    pageviewSummary(period, domain, now = Date.now(), includeDetails = true): OwnTraffic {
+      const from = now - periodMilliseconds(period);
+      // Look back one session gap so visits continued from just before the
+      // period are not miscounted as new; the inner filter below keeps totals strict.
+      const wide = pageviewWhere(period, domain, now, PAGEVIEW_SESSION_GAP_MS);
+      const marked = `WITH ordered AS (
+          SELECT occurred_at, host, path, visitor_id, referrer_host,
+            LAG(occurred_at) OVER (PARTITION BY visitor_id ORDER BY occurred_at) AS prev
+          FROM page_views WHERE ${wide.sql}
+        ), marked AS (
+          SELECT occurred_at, host, path, visitor_id, referrer_host,
+            CASE WHEN prev IS NULL OR occurred_at - prev > ? THEN 1 ELSE 0 END AS is_new
+          FROM ordered WHERE occurred_at >= ?
+        )`;
+      const totals = db.prepare(`${marked}
+        SELECT COUNT(*) AS pageviews, COUNT(DISTINCT visitor_id) AS visitors,
+          COALESCE(SUM(is_new), 0) AS visits FROM marked`)
+        .get(...wide.args, PAGEVIEW_SESSION_GAP_MS, from) as Record<string, unknown>;
+      const empty: OwnTraffic = {
+        available: true,
+        pageviews: Number(totals.pageviews ?? 0),
+        visits: Number(totals.visits ?? 0),
+        visitors: Number(totals.visitors ?? 0),
+        series: [], pages: [], referrers: [],
+      };
+      if (!includeDetails) return empty;
+      const bucketMs = bucketMilliseconds(period);
+      const seriesRows = db.prepare(`${marked}
+        SELECT CAST(occurred_at / ? AS INTEGER) * ? AS bucket, host,
+          COUNT(*) AS pageviews, COALESCE(SUM(is_new), 0) AS visits
+        FROM marked GROUP BY bucket, host ORDER BY bucket`)
+        .all(...wide.args, PAGEVIEW_SESSION_GAP_MS, from, bucketMs, bucketMs) as Record<string, unknown>[];
+      const buckets = new Map<number, Record<string, { pageviews: number; visits: number }>>();
+      for (const row of seriesRows) {
+        const bucket = Number(row.bucket);
+        const host = typeof row.host === "string" && row.host ? row.host : "(unknown)";
+        const domains = buckets.get(bucket) ?? {};
+        domains[host] = {
+          pageviews: Number(row.pageviews ?? 0),
+          visits: Number(row.visits ?? 0),
+        };
+        buckets.set(bucket, domains);
+      }
+      empty.series = [...buckets].sort(([a], [b]) => a - b)
+        .map(([bucket, domains]) => ({ at: new Date(bucket).toISOString(), domains }));
+      const pageRows = db.prepare(`${marked}
+        SELECT path, COUNT(*) AS pageviews, COUNT(DISTINCT visitor_id) AS visitors
+        FROM marked GROUP BY path ORDER BY pageviews DESC, path LIMIT 10`)
+        .all(...wide.args, PAGEVIEW_SESSION_GAP_MS, from) as Record<string, unknown>[];
+      empty.pages = pageRows.map((row) => ({
+        key: String(row.path), pageviews: Number(row.pageviews ?? 0), visitors: Number(row.visitors ?? 0),
+      }));
+      const referrerRows = db.prepare(`${marked}
+        SELECT referrer_host, COUNT(*) AS pageviews, COUNT(DISTINCT visitor_id) AS visitors
+        FROM marked WHERE referrer_host IS NOT NULL
+        GROUP BY referrer_host ORDER BY pageviews DESC, referrer_host LIMIT 10`)
+        .all(...wide.args, PAGEVIEW_SESSION_GAP_MS, from) as Record<string, unknown>[];
+      empty.referrers = referrerRows.map((row) => ({
+        key: String(row.referrer_host), pageviews: Number(row.pageviews ?? 0), visitors: Number(row.visitors ?? 0),
+      }));
+      return empty;
     },
     healthSignal(domain, now = Date.now()) {
       return queryHealthSignal(db, domain, now);
@@ -720,6 +840,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
     cleanup(now = Date.now()) {
       const result = db.prepare("DELETE FROM request_events WHERE occurred_at < ?").run(now - RETENTION_MS);
       db.prepare("DELETE FROM auth_activity_daily WHERE day < ?").run(new Date(now - RETENTION_MS).toISOString().slice(0, 10));
+      db.prepare("DELETE FROM page_views WHERE occurred_at < ?").run(now - RETENTION_MS);
       db.prepare("INSERT INTO analytics_meta (key, value) VALUES ('last_cleanup_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(now));
       return Number(result.changes ?? 0);
     },
