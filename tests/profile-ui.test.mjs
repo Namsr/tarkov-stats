@@ -250,7 +250,7 @@ test("profile mode switch stays below profile actions and is available before pr
   assert.match(modes, /pendingNavigation\.fromMode === current &&[\s\S]*pendingNavigation\.pathname === pathname/);
   assert.match(modes, /window\.setTimeout\(\(\) => setPendingNavigation\(null\), PENDING_TIMEOUT_MS\)/);
   assert.match(modes, /onNavigate=\{\(\) => \{[\s\S]*warmProfile\(mode\)[\s\S]*window\.dispatchEvent\(new Event\("profile-mode-navigate"\)\)/);
-  assert.match(modes, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`\)/);
+  assert.match(modes, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`(?:,\s*controller\.signal)?\)/);
   assert.doesNotMatch(modes, /event\.preventDefault\(\)[\s\S]*router\.push\(target/);
   assert.equal((modes.match(/profile-mode-navigate/g) ?? []).length, 1);
   assert.match(styles, /\.profile-header__mode \.mode-switch/);

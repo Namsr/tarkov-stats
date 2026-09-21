@@ -277,6 +277,8 @@ export default function ProgressionPanel({
 
     const controller = new AbortController();
     secondaryController.current = controller;
+    const abortForNavigation = () => controller.abort();
+    window.addEventListener("profile-mode-navigate", abortForNavigation, { once: true });
     const cacheKey = `${mode}\0${cycleId}\0${favorite.aid}`;
     const cached = timelineCache.get(cacheKey) ?? null;
     const nickname = favorite.nickname?.trim() || t("progression.compare.playerId", { aid: favorite.aid });
@@ -320,6 +322,7 @@ export default function ProgressionPanel({
 
     void loadSecondary();
     return () => {
+      window.removeEventListener("profile-mode-navigate", abortForNavigation);
       controller.abort();
       if (secondaryController.current === controller) secondaryController.current = null;
     };

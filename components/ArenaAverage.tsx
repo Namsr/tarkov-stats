@@ -24,7 +24,7 @@ import {
 import { buildNumericHistogram } from "@/lib/histogram";
 import { useI18n } from "@/lib/i18n/context";
 import type { ArenaAverageBucket, ArenaAverageResult, ArenaDimension, ArenaStatistic } from "@/types/arena";
-import { loadAverageJson, scheduleAveragePrefetch } from "@/lib/client-average-request";
+import { cancelAveragePrefetches, loadAverageJson, scheduleAveragePrefetch } from "@/lib/client-average-request";
 
 type ArenaFilterField = "minHours" | "maxHours" | "minMatches" | "maxMatches";
 
@@ -658,7 +658,10 @@ export default function ArenaAverage({ seasonalCycleId }: { seasonalCycleId?: st
       .finally(() => {
         if (!controller.signal.aborted) setOverviewLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      cancelAveragePrefetches();
+    };
   }, [statistic, urlReady]);
   return (
     <main className="page-frame">
