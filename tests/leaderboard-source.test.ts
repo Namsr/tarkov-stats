@@ -87,10 +87,44 @@ test("PvP season uses only its cycle-certified exact tuple and skill activity", 
   assert.deepEqual(rows[0], {
     aid: 20, nickname: "Season", sourceUpdatedAt: 300, sourceRevision: 2, parserVersion: 1,
     activityAt: 250, activitySource: "skill", matches: 20, kills: 16, deaths: 4, hours: 60,
-    currentArp: null, bestArp: null,
+    currentArp: null, bestArp: null, prestige: null,
   });
   assert.equal(rows[1].kills, null);
   assert.equal(rows.some((row) => row.aid === 22), false);
+});
+
+test("standard source exposes current prestige and arena reports none", () => {
+  db.exec("ALTER TABLE players ADD COLUMN prestige INTEGER DEFAULT 0");
+  db.exec("UPDATE players SET prestige=3 WHERE aid=1");
+  const rows = [...leaderboardSourceRows(db, regular)];
+  assert.equal(rows.find((row) => row.aid === 1)?.prestige, 3);
+  assert.equal(rows.find((row) => row.aid === 2)?.prestige, 0);
+  const arena = [...leaderboardSourceRows(db, blast, 10)][0];
+  assert.equal(arena.prestige, null);
+});
+
+test("PvP season uses the latest dated prestige snapshot", () => {
+  db.exec(`CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,mode TEXT,
+    cycle_id TEXT,aid INTEGER,profile_updated_at INTEGER,prestige INTEGER)`);
+  const prestigeOf = (aid: number) => leaderboardSourceRows(db, seasonal, aid)[Symbol.iterator]().next().value?.prestige;
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,300,2),('seasonal','s1',20,400,4)`);
+  assert.equal(prestigeOf(20), 4);
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,500,NULL)`);
+  assert.equal(prestigeOf(20), 4);
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,600,1),('seasonal','s1',20,600,5)`);
+  assert.equal(prestigeOf(20), 5);
+  assert.equal(prestigeOf(21), null);
+  // Corrupt negative prestige never wins: latest valid snapshot is kept.
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,700,-1)`);
+  assert.equal(prestigeOf(20), 5);
+  // Confirmed zero prestige is kept (badge hidden downstream, not stale).
+  db.exec(`INSERT INTO progression_snapshots(mode,cycle_id,aid,profile_updated_at,prestige)
+    VALUES ('seasonal','s1',20,800,0)`);
+  assert.equal(prestigeOf(20), 0);
 });
 
 test("change windows pin a monotonic cutoff and leave concurrent changes for the next run", () => {

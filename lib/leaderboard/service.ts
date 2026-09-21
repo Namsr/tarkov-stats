@@ -43,7 +43,7 @@ interface OrderRow extends Record<string, unknown> {
 
 const EMPTY_STATS: LeaderboardStats = {
   raidsOrMatches: null, kills: null, deaths: null, kd: null, deathless: false,
-  killsPerMatch: null, hours: null, arp: null, currentArp: null, bestArp: null, arpSource: null,
+  killsPerMatch: null, hours: null, prestige: null, arp: null, currentArp: null, bestArp: null, arpSource: null,
 };
 
 function countAtOrBefore(sorted: number[], ordinal: number): number {
@@ -60,6 +60,16 @@ function countAtOrBefore(sorted: number[], ordinal: number): number {
 function keyFrom(row: OrderRow, prefix = ""): OrderKey | null {
   const keys = [row[`${prefix}k1`], row[`${prefix}k2`], row[`${prefix}k3`], row[`${prefix}k4`], row[`${prefix}k5`], row[`${prefix}stable_key`]];
   return keys.every((value) => typeof value === "number") ? keys as unknown as OrderKey : null;
+}
+
+/** Old generations were published before prestige existed in stats_json. */
+function statsWithPrestige(value: unknown): LeaderboardStats {
+  const stats = (value ?? {}) as Record<string, unknown>;
+  const prestige = stats.prestige;
+  return {
+    ...(stats as unknown as LeaderboardStats),
+    prestige: typeof prestige === "number" && Number.isSafeInteger(prestige) && prestige >= 0 ? prestige : null,
+  };
 }
 
 export function createLeaderboardReader(db: any, exclusionTable = "players_db.excluded_players",
@@ -201,7 +211,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
     return { aid: Number(order.aid), nickname: String(order.nickname), position,
       primaryRank, groupStart: order.status === "insufficient_sample" ? groupStart ?? null : null,
       status: order.status as LeaderboardRow["status"],
-      score: order.score == null ? null : Number(order.score), stats: JSON.parse(String(order.stats_json)),
+      score: order.score == null ? null : Number(order.score), stats: statsWithPrestige(JSON.parse(String(order.stats_json))),
       selected: Number(order.aid) === selectedAid };
   }
 
@@ -256,7 +266,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
       bannedOrdinals(config, snap.generation, "primary"), null, null, counts.ranked + 1)
       : { aid, nickname: String(previous.nickname), position: null, primaryRank: null,
         groupStart: previous.status === "insufficient_sample" ? counts.ranked + 1 : null,
-        status: previous.status, score: previous.score, stats: JSON.parse(String(previous.stats_json)), selected: true };
+        status: previous.status, score: previous.score, stats: statsWithPrestige(JSON.parse(String(previous.stats_json))), selected: true };
     return finish(snap, { meta: metadata(config, snap, "primary", counts), subject });
   }
 
@@ -347,7 +357,7 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
       subject = saved ?? { aid, nickname: String(previous.nickname), position: null,
         primaryRank: livePrimaryRank,
         groupStart: previous.status === "insufficient_sample" ? counts.ranked + 1 : null,
-        status: previous.status, score: previous.score, stats: JSON.parse(String(previous.stats_json)), selected: true };
+        status: previous.status, score: previous.score, stats: statsWithPrestige(JSON.parse(String(previous.stats_json))), selected: true };
       if (saved && oldSelected) {
         const selectedOrdinal = Number((oldSelected as { ordinal: unknown }).ordinal);
         const before = selectedRows(config, snap.generation, sort, "o.ordinal<?", [selectedOrdinal], 99, "DESC").reverse();

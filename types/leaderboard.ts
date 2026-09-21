@@ -23,6 +23,8 @@ export interface LeaderboardStats {
   deathless: boolean;
   killsPerMatch: number | null;
   hours: number | null;
+  /** Current prestige level (players.prestige / latest seasonal snapshot). Null when unknown (e.g. Arena). */
+  prestige: number | null;
   /** Value used for ARP ordering: current when available, otherwise confirmed best. */
   arp: number | null;
   currentArp: number | null;

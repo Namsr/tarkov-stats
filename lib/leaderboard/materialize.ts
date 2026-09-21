@@ -30,6 +30,8 @@ export interface LeaderboardSourceRow {
   hours: number | null;
   currentArp: number | null;
   bestArp: number | null;
+  /** Current prestige level; null when the source has no prestige signal (e.g. Arena). */
+  prestige?: number | null;
 }
 
 export interface MaterializeContext {
@@ -48,7 +50,7 @@ const metric = (value: number | null): value is number => value != null && Numbe
 export function sourceFingerprint(row: LeaderboardSourceRow): string {
   return [row.nickname, row.sourceUpdatedAt, row.parserVersion, row.activityAt ?? "", row.activitySource ?? "",
     row.matches ?? "", row.kills ?? "", row.deaths ?? "", row.hours ?? "",
-    row.currentArp ?? "", row.bestArp ?? ""].join("|");
+    row.currentArp ?? "", row.bestArp ?? "", row.prestige ?? ""].join("|");
 }
 
 function statsFor(row: LeaderboardSourceRow, context: MaterializeContext): LeaderboardStats {
@@ -67,6 +69,7 @@ function statsFor(row: LeaderboardSourceRow, context: MaterializeContext): Leade
     deathless: kd.deathless,
     killsPerMatch: count(row.kills) && count(row.matches) && row.matches > 0 ? row.kills / row.matches : null,
     hours: row.hours,
+    prestige: row.prestige ?? null,
     arp: row.currentArp ?? row.bestArp,
     currentArp: row.currentArp,
     bestArp: row.bestArp,

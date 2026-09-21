@@ -176,6 +176,61 @@ test("leaderboard hours units and best ARP labels live in the dictionary", async
   assert.doesNotMatch(dict, /"leaderboard\.column\.bestArp": "BEST ARP"/);
 });
 
+test("leaderboard nicknames show a compact prestige badge from assets.tarkov.dev", async () => {
+  const [table, css] = await Promise.all([
+    read("components/LeaderboardTable.tsx"),
+    read("app/globals.css"),
+  ]);
+  assert.match(table, /prestigeIconUrl/);
+  assert.match(table, /https:\/\/assets\.tarkov\.dev\/prestige-/);
+  assert.match(table, /prestige-\$\{level\}-icon\.webp/);
+  assert.match(table, /leaderboard-prestige/);
+  assert.match(table, /player\.prestigeLabel/);
+  assert.match(table, /meta\.mode !== "arena"/);
+  // Badge renders next to the nickname in both the desktop row and the mobile card.
+  assert.ok(((table.match(/<PrestigeBadge/g) ?? []).length) >= 2);
+  assert.match(table, /leaderboard-player__name/);
+  assert.match(table, /leaderboard-card__player/);
+  // Compact 18px badge that cannot stretch the row: fixed size, no layout shift.
+  assert.match(css, /\.leaderboard-prestige \{[^}]*width: 18px/);
+  assert.match(css, /\.leaderboard-prestige \{[^}]*height: 18px/);
+  assert.match(css, /\.leaderboard-prestige \{[^}]*object-fit: contain/);
+  // Missing images (future levels, 404) collapse instead of breaking the row.
+  assert.match(table, /onError/);
+  assert.match(table, /display.*none/);
+  assert.match(table, /loading="lazy"/);
+  // Accessible name comes from the shared prestige label (matches ProfilePrestige).
+  assert.match(table, /alt=\{label\}/);
+  assert.match(table, /referrerPolicy="no-referrer"/);
+});
+
+test("prestige badge recovers after an image error followed by a successful load", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  const badge = table.slice(table.indexOf("function PrestigeBadge("), table.indexOf("const flipActive"));
+  for (const handler of ["onError", "onLoad"]) {
+    assert.ok(badge.includes(handler), `${handler} handler must be present`);
+  }
+  const event = { currentTarget: { style: { display: "" } } };
+  const bodies = {};
+  for (const handler of ["onError", "onLoad"]) {
+    const body = badge.match(new RegExp(`${handler}=\\{\\(event\\) => \\{([\\s\\S]*?)\\}\\}`))?.[1];
+    assert.ok(body, `${handler} handler must be present`);
+    bodies[handler] = body;
+  }
+  new Function("event", bodies.onError)(event);
+  assert.equal(event.currentTarget.style.display, "none");
+  new Function("event", bodies.onLoad)(event);
+  assert.equal(event.currentTarget.style.display, "");
+  // Remount on level change so a previous 404 never hides the next valid badge.
+  assert.match(table, /<PrestigeBadge key=\{prestige\}/);
+  assert.match(table, /key=\{level\}/);
+});
+
+test("prestige icon URL rejects invalid levels", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  assert.match(table, /Number\.isSafeInteger\(level\)/);
+});
+
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
   const css = await read("app/globals.css");
   assert.match(css, /\.leaderboard-mode-switch \{[^}]*grid-template-columns: repeat\(4,/);
