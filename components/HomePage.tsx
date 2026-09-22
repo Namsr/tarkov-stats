@@ -24,6 +24,8 @@ import {
   type HomeProfile,
   type ShowcaseConfig,
 } from "@/lib/home-showcase";
+import { rarestAchievements } from "@/lib/profile-achievements";
+import type { ProfileViewAchievement } from "@/types/player-profile-view";
 import { GAME_MODES, type GameMode, type ProgressionTimelineResponse } from "@/types/seasonal";
 import "@/components/home/home.css";
 import "@/components/profile.css";
@@ -33,6 +35,14 @@ interface ShowcaseSnapshot {
   profile: HomeProfile | null;
   timeline: ProgressionTimelineResponse | null;
   cohort: HomeCohort | null;
+}
+
+/** One row of artwork on the showcase card: the five rarest unlocks. */
+const ACHIEVEMENT_ICON_COUNT = 5;
+
+/** Only achievements with artwork can render an icon, so the picker gets a typed list. */
+function achievementWithImage(item: ProfileViewAchievement): item is ProfileViewAchievement & { imageUrl: string } {
+  return Boolean(item.imageUrl);
 }
 
 export default function HomePage() {
@@ -155,7 +165,7 @@ export default function HomePage() {
           </dl>
           <div className="home-profile-bottom">
             <div className="home-achievement-count"><strong>{n(view.progression.achievementsCount)}</strong><span>{t("metric.achv_count")}</span></div>
-            <div className="home-achievement-icons">{view.achievements.items.filter((item) => item.imageUrl).slice(0, 5).map((item) => <Image key={item.id} src={item.imageUrl!} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
+            <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>
         </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && <button className="home-text-link" onClick={() => setAttempt((value) => value + 1)}>{t("leaderboard.retry")}</button>}</div>}
