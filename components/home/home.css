@@ -32,10 +32,11 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-profile-preview { border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); padding: 32px 36px 0; overflow: hidden; }
 .home-profile-top { display: flex; justify-content: space-between; align-items: center; padding-bottom: 34px; }
 .home-player-identity { display: flex; align-items: center; gap: 22px; min-width: 0; }
-.home-faction { font-size: 13px; font-weight: 850; letter-spacing: .12em; border: 1px solid var(--card-border); border-radius: 12px; width: 62px; height: 62px; flex: none; display: grid; place-items: center; color: var(--muted); }
 .home-player-name { display: block; font-size: 30px; font-weight: 620; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .home-player-name:hover { text-decoration: underline; text-underline-offset: 6px; }
-.home-player-mode { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.home-player-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 14px; color: var(--muted); margin-top: 2px; }
+.home-player-side { font-size: 13px; font-weight: 700; color: var(--foreground); opacity: .75; }
+.home-player-side::before { content: "·"; margin-inline-end: 9px; font-weight: 400; opacity: .6; }
 .home-level-value { display: flex; align-items: center; gap: 17px; }
 .home-level-value > span { font-size: 14px; color: var(--muted); }
 .home-level-value strong { font-size: 48px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
@@ -166,7 +167,7 @@ html[data-theme="light"] .home-risk-status--severe { color: #c22a27; }
   .home-showcase-modes button { flex: 1; padding: 11px 10px; }
   .home-player-identity .profile-portrait { width: 56px; height: 56px; }
   .home-player-name { font-size: 23px; }
-  .home-faction { width: 47px; height: 47px; font-size: 10px; }
+  .home-player-side { font-size: 12px; }
   .home-showcase-modes { margin-bottom: 16px; }
   .home-showcase-modes button { padding: 8px 12px; font-size: 13px; }
   .home-profile-top .profile-portrait { width: 62px; height: 62px; }
@@ -217,7 +218,6 @@ html[data-theme="light"] .home-risk-status--severe { color: #c22a27; }
   .home-wrap { width: calc(100% - 32px); }
   .home-profile-preview { padding-inline: 17px; }
   .home-player-name { font-size: 20px; }
-  .home-faction { width: 40px; height: 44px; font-size: 9px; }
   .home-profile-metrics dd { font-size: 31px; }
   .home-segments button { padding-inline: 9px; font-size: 13px; }
   .home-compare-switch { width: 100%; }
