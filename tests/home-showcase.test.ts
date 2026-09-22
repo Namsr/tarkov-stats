@@ -99,4 +99,9 @@ test("homeProfileSide reads the faction from every mode payload shape", () => {
   assert.equal(homeProfileSide(payload({ arena: { nickname: "Arena" } })), "");
   // A parsed snapshot wins when a payload carries several shapes.
   assert.equal(homeProfileSide(payload({ stats: { side: "Bear" }, profile: { side: "Usec" } })), "Bear");
+  // The parsers emit "Unknown" when the upstream faction is missing.
+  assert.equal(homeProfileSide(payload({ stats: { side: "Unknown" } })), "");
+  assert.equal(homeProfileSide(payload({ profile: { side: "PMC" } })), "");
+  assert.equal(homeProfileSide(payload({ stats: { side: "Unknown" }, profile: { side: "Usec" } })), "Usec");
+  assert.equal(homeProfileSide(payload({ stats: { side: " " }, profile: { info: { side: " Bear " } } })), "Bear");
 });

@@ -102,8 +102,9 @@ export interface HomeProfile {
  * An unknown faction stays empty instead of showing a placeholder.
  */
 export function homeProfileSide(profile: HomeProfile | null | undefined): string {
-  const side = profile?.stats?.side ?? profile?.profile?.side ?? profile?.profile?.info?.side;
-  return typeof side === "string" ? side.trim() : "";
+  const side = [profile?.stats?.side, profile?.profile?.side, profile?.profile?.info?.side]
+    .find((value) => typeof value === "string" && /^(bear|usec)$/i.test(value.trim()));
+  return side?.trim() ?? "";
 }
 
 export const HOME_RADAR_METRICS = [
