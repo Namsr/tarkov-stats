@@ -5,53 +5,70 @@ import { useI18n } from "@/lib/i18n/context";
 import { HOME_RADAR_METRICS, homePercentageDifference, homeRadarRatio, type HomeProfile, type HomeCohort } from "@/lib/home-showcase";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import { useFavorites } from "@/lib/favorites/context";
+import type { GameMode } from "@/types/seasonal";
 import { useChartWidth } from "./useChartWidth";
 
-export default function HomeComparison({ profile, cohort }: {
+export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   profile: HomeProfile | null | undefined;
   cohort: HomeCohort | null | undefined;
+  /** Game mode of the displayed snapshot: the block never mixes modes. */
+  gameMode: GameMode;
+  /** Cycle of the displayed snapshot, carried by the seasonal favorite request. */
+  cycleId: string | null;
 }) {
   const { t, lang } = useI18n();
   const [mode, setMode] = useState<"average" | "favorite">("average");
   const [active, setActive] = useState<{ index: number; x: number; y: number } | null>(null);
   const [favAid, setFavAid] = useState<number | null>(null);
-  const [favoriteResult, setFavoriteResult] = useState<{ aid: number; profile: HomeProfile | null } | null>(null);
+  const [favoriteResult, setFavoriteResult] = useState<{ key: string; profile: HomeProfile | null } | null>(null);
   const { favorites, authStatus, loading: favsLoading } = useFavorites();
   const tooltipRef = useRef<HTMLDivElement>(null);
   const { ref, width } = useChartWidth(720);
   const mobile = width < 500, height = mobile ? 350 : 430, radius = mobile ? Math.min(115, (width - 70) * .4) : 150;
   const name = profile?.viewModel.identity.nickname ?? "";
   const isGuest = authStatus === "unauthenticated";
-  const regularFavorites = favorites.filter((favorite) => favorite.mode === "regular");
-  const defaultFavAid = regularFavorites.find((favorite) => favorite.isMain)?.aid ?? regularFavorites[0]?.aid ?? null;
-  const effectiveFavAid = favAid != null && regularFavorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
+  const modeFavorites = favorites.filter((favorite) => favorite.mode === gameMode);
+  const defaultFavAid = modeFavorites.find((favorite) => favorite.isMain)?.aid ?? modeFavorites[0]?.aid ?? null;
+  const effectiveFavAid = favAid != null && modeFavorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
   const canCompareFavorite = authStatus === "authenticated" && !favsLoading && effectiveFavAid != null;
-  const favProfile = canCompareFavorite && favoriteResult?.aid === effectiveFavAid ? favoriteResult.profile : undefined;
-  const favEntry = regularFavorites.find((favorite) => favorite.aid === effectiveFavAid);
+  // One cache key per aid and mode: the previous mode's payload must never be
+  // read as the current one while the next request is in flight.
+  const favoriteKey = effectiveFavAid == null ? null : `${gameMode}:${cycleId ?? "persistent"}:${effectiveFavAid}`;
+  const favProfile = canCompareFavorite && favoriteResult?.key === favoriteKey ? favoriteResult.profile : undefined;
+  const favEntry = modeFavorites.find((favorite) => favorite.aid === effectiveFavAid);
   const favName = favProfile?.viewModel.identity.nickname ?? favEntry?.nickname ?? (effectiveFavAid != null ? `AID ${effectiveFavAid}` : "");
   const otherName = mode === "average" ? t("radar.series.average") : favName;
   useEffect(() => {
-    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null) return;
+    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null || favoriteKey == null) return;
+    const key: string = favoriteKey;
     let cancelled = false;
+    const params = new URLSearchParams({ aid: String(effectiveFavAid), mode: gameMode });
+    if (cycleId != null) params.set("cycle", cycleId);
     async function loadFavorite() {
       try {
-        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?aid=${effectiveFavAid}&mode=regular`);
-        if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: response.ok && response.body.identity?.aid === effectiveFavAid && response.body.viewModel ? response.body : null });
-      } catch { if (!cancelled) setFavoriteResult({ aid: effectiveFavAid, profile: null }); }
+        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`);
+        const body = response.body;
+        const identityMatches = body.identity?.aid === effectiveFavAid && body.identity?.mode === gameMode
+          && (cycleId == null || body.identity?.cycleId === cycleId);
+        if (!cancelled) setFavoriteResult({ key, profile: response.ok && identityMatches && body.viewModel ? body : null });
+      } catch { if (!cancelled) setFavoriteResult({ key, profile: null }); }
     }
     void loadFavorite();
     return () => { cancelled = true; };
-  }, [mode, canCompareFavorite, effectiveFavAid]);
+  }, [mode, canCompareFavorite, effectiveFavAid, favoriteKey, gameMode, cycleId]);
 
   const favProfileKnown = favProfile && favProfile.comparisonStats?.pvpStatsKnown !== false;
   const loading = profile === undefined || cohort === undefined || (mode === "favorite" && (favsLoading || (canCompareFavorite && favProfile === undefined)));
   const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || Boolean(favProfileKnown));
   const statusKey = mode === "favorite" && isGuest ? "home.favoriteNeedAuth"
     : mode === "favorite" && authStatus === "error" ? "home.comparisonUnavailable"
-    : mode === "favorite" && !favsLoading && regularFavorites.length === 0 ? "home.noFavorites"
+    : mode === "favorite" && !favsLoading && modeFavorites.length === 0 ? "home.noFavorites"
     : loading ? "common.loading" : "home.comparisonUnavailable";
+  // The homepage passes a normalized cohort, but a payload without radar
+  // averages must still degrade to an empty baseline set instead of throwing.
+  const averages: HomeCohort["averages"] = cohort?.averages ?? {};
   const metrics = HOME_RADAR_METRICS.map((metric) => {
-    const average = cohort?.averages[metric.key];
+    const average = averages[metric.key];
     const baseline = average && average.count >= (metric.key === "pmc_survival_rate" ? 1 : 20) ? average.value : null;
     return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : favProfile?.comparisonStats?.[metric.stat] ?? null };
   });
@@ -85,10 +102,10 @@ export default function HomeComparison({ profile, cohort }: {
         onClick={() => { if (isGuest) window.location.href = "/api/auth/google"; else { setMode("favorite"); setActive(null); } }}>{t("home.favoritePlayer")}</button>
     </div>
     {isGuest && <p className="home-risk-note">{t("home.favoriteNeedAuth")}</p>}
-    {mode === "favorite" && !isGuest && !favsLoading && regularFavorites.length > 0 && <label className="home-compare-favorite">
+    {mode === "favorite" && !isGuest && !favsLoading && modeFavorites.length > 0 && <label className="home-compare-favorite">
       <span>{t("home.favoritePlayer")}</span>
       <select value={effectiveFavAid ?? ""} onChange={(event) => { setFavAid(Number(event.target.value)); setActive(null); }}>
-        {regularFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
+        {modeFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
       </select>
     </label>}
     {ready && <div className="home-radar-legend"><span><i aria-hidden="true" />{name}</span><span><i className="home-other-key" aria-hidden="true" />{otherName}</span></div>}

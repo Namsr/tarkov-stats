@@ -15,8 +15,9 @@ import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import {
   HOME_EXAMPLE_AIDS,
   homeProfileSide,
+  homeCohort,
   pickShowcaseAid,
-  showcaseCohortParams,
+  showcaseCohortRequest,
   showcaseMode,
   showcaseProfileHref,
   showcaseTimelineCycle,
@@ -78,7 +79,7 @@ export default function HomePage() {
     let cancelled = false;
     const controller = new AbortController();
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
-    const cohort = showcaseCohortParams(mode);
+    const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
     async function loadProfile(): Promise<HomeProfile | null> {
       const params = new URLSearchParams({ aid: String(aid), mode });
       if (mode === "seasonal" && cycle) params.set("cycle", cycle);
@@ -97,8 +98,8 @@ export default function HomePage() {
       loadProfile(),
       cycle == null ? Promise.resolve(null)
         : load<ProgressionTimelineResponse>(`/api/progression/timeline?aid=${aid}&mode=${mode}&cycle=${cycle}`),
-      cohort == null ? Promise.resolve(null)
-        : load<HomeCohort>(`/api/average/cohort?aid=${aid}&mode=${mode}&cycle=${cohort.cycle}&statistic=trimmed_mean&period=all${cohort.arenaMode ? `&arenaMode=${cohort.arenaMode}` : ""}`),
+      cohortUrl == null ? Promise.resolve(null)
+        : load<unknown>(cohortUrl).then(homeCohort),
     ]).then(([profile, timeline, cohortData]) => {
       if (!cancelled) setSnapshot({ mode, profile, timeline, cohort: cohortData });
     });
@@ -187,7 +188,7 @@ export default function HomePage() {
 
       <section id="compare" className="home-section home-wrap">
         {heading("home.compareTitle", "comparison", "home.openCompare")}
-        <HomeComparison profile={display?.profile} cohort={display?.cohort} />
+        <HomeComparison profile={display?.profile} cohort={display?.cohort} gameMode={displayMode} cycleId={display?.profile?.identity.cycleId ?? null} />
       </section>
       <HomeLeaderboard />
     </main>

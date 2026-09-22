@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { HOME_EXAMPLE_AIDS, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortParams, showcaseMode, showcaseProfileHref, showcaseTimelineCycle } from "../lib/home-showcase.ts";
+import { HOME_EXAMPLE_AIDS, homeCohort, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortRequest, showcaseMode, showcaseProfileHref, showcaseTimelineCycle } from "../lib/home-showcase.ts";
 import type { HomeProfile } from "../lib/home-showcase";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
 
@@ -72,16 +72,56 @@ test("showcaseProfileHref builds the route for each mode and keeps the cycle for
   assert.equal(showcaseProfileHref("seasonal", 42, null), "/player/pvp-season/42");
 });
 
-test("showcaseTimelineCycle and showcaseCohortParams encode the section capabilities", () => {
+test("showcaseTimelineCycle and showcaseCohortRequest encode the section capabilities", () => {
   assert.equal(showcaseTimelineCycle("regular", null), "persistent");
   assert.equal(showcaseTimelineCycle("pve", null), "persistent");
   assert.equal(showcaseTimelineCycle("arena", null), null);
   assert.equal(showcaseTimelineCycle("seasonal", "cycle-1"), "cycle-1");
   assert.equal(showcaseTimelineCycle("seasonal", null), null);
-  assert.deepEqual(showcaseCohortParams("regular"), { cycle: "persistent" });
-  assert.deepEqual(showcaseCohortParams("pve"), { cycle: "persistent" });
-  assert.deepEqual(showcaseCohortParams("arena"), { cycle: "persistent", arenaMode: "overall" });
-  assert.equal(showcaseCohortParams("seasonal"), null);
+  assert.equal(
+    showcaseCohortRequest("regular", 42, null),
+    "/api/average/cohort?aid=42&mode=regular&cycle=persistent&statistic=trimmed_mean&period=all",
+  );
+  assert.equal(
+    showcaseCohortRequest("pve", 42, null),
+    "/api/average/cohort?aid=42&mode=pve&cycle=persistent&statistic=trimmed_mean&period=all",
+  );
+  // Arena cohorts carry match metrics, not the six raid axes of this radar.
+  assert.equal(showcaseCohortRequest("arena", 42, null), null);
+  // Seasonal keeps its own route and needs the active cycle.
+  assert.equal(
+    showcaseCohortRequest("seasonal", 42, "cycle-1"),
+    "/api/seasonal/cohort?aid=42&mode=seasonal&cycle=cycle-1&statistic=trimmed_mean&period=all",
+  );
+  assert.equal(showcaseCohortRequest("seasonal", 42, null), null);
+});
+
+test("homeCohort keeps radar averages and rejects foreign payloads", () => {
+  assert.equal(homeCohort(null), null);
+  assert.equal(homeCohort({}), null);
+  // Arena cohorts key metrics per match: they must not crash the radar block.
+  assert.equal(homeCohort({ quality: "sufficient", metrics: { kd_ratio: { value: 1.1, count: 34648 } } }), null);
+  assert.equal(homeCohort({ quality: "sufficient", averages: {} }), null);
+  const persistent = {
+    quality: "sufficient",
+    averages: {
+      kd_ratio: { value: 8.9, count: 60 },
+      pmc_kd_ratio: { value: 1.37, count: 60 },
+      kills_per_raid: { value: 3.69, count: 60 },
+      pmc_survival_rate: { value: 44.6, count: 60 },
+      longest_win_streak: { value: 17.7, count: 60 },
+      level: { value: null, count: 0 },
+      unknown_metric: { value: 1, count: 1 },
+    },
+  };
+  const parsed = homeCohort(persistent);
+  assert.equal(parsed?.quality, "sufficient");
+  assert.deepEqual(parsed?.averages.kd_ratio, { value: 8.9, count: 60 });
+  assert.deepEqual(parsed?.averages.level, { value: null, count: 0 });
+  assert.ok(!Object.keys(parsed?.averages ?? {}).includes("unknown_metric"));
+  // Non-finite values and counts degrade instead of leaking into the radar.
+  const dirty = homeCohort({ quality: "unavailable", averages: { kd_ratio: { value: Number.NaN, count: "x" } } });
+  assert.deepEqual(dirty?.averages.kd_ratio, { value: null, count: 0 });
 });
 
 test("homeProfileSide reads the faction from every mode payload shape", () => {

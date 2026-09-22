@@ -51,13 +51,37 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode \}\)/);
   assert.match(component, /mode === "seasonal" && cycle\) params\.set\("cycle", cycle\)/);
   // Timeline and cohort capability come from the shared helpers: arena has no
-  // timeline, seasonal has no cohort.
+  // timeline, and neither arena's match-metric cohort nor a cycle-less seasonal
+  // config can feed the radar.
   assert.match(component, /showcaseTimelineCycle\(mode, seasonalCycleId\)/);
-  assert.match(component, /showcaseCohortParams\(mode\)/);
+  assert.match(component, /showcaseCohortRequest\(mode, aid, seasonalCycleId\)/);
   assert.match(component, /cycle == null \? Promise\.resolve\(null\)/);
-  assert.match(component, /cohort == null \? Promise\.resolve\(null\)/);
+  assert.match(component, /cohortUrl == null \? Promise\.resolve\(null\)/);
+  // The cohort payload is normalized at the boundary, so a mismatched shape
+  // (arena metrics, error bodies) degrades instead of crashing the block.
+  assert.match(component, /load<unknown>\(cohortUrl\)\.then\(homeCohort\)/);
   assert.match(helpers, /timeline: \{ regular: true, pve: true, arena: false, seasonal: true \}/);
-  assert.match(helpers, /cohort: \{ regular: true, pve: true, arena: true, seasonal: false \}/);
+  assert.match(helpers, /cohort: \{ regular: true, pve: true, arena: false, seasonal: true \}/);
+});
+
+test("home comparison block follows the displayed game mode", async () => {
+  const [component, comparison] = await Promise.all([
+    read("components/HomePage.tsx"),
+    read("components/home/HomeComparison.tsx"),
+  ]);
+  // The block receives the snapshot's own mode and cycle, so a stale card never
+  // compares against another mode's data.
+  assert.match(component, /<HomeComparison profile=\{display\?\.profile\} cohort=\{display\?\.cohort\} gameMode=\{displayMode\} cycleId=\{display\?\.profile\?\.identity\.cycleId \?\? null\}/);
+  // Favorites are filtered by the shown mode and fetched in that mode.
+  assert.match(comparison, /favorites\.filter\(\(favorite\) => favorite\.mode === gameMode\)/);
+  assert.match(comparison, /new URLSearchParams\(\{ aid: String\(effectiveFavAid\), mode: gameMode \}\)/);
+  assert.match(comparison, /if \(cycleId != null\) params\.set\("cycle", cycleId\)/);
+  // The loaded favorite must come back for the same identity before it renders.
+  assert.match(comparison, /body\.identity\?\.mode === gameMode/);
+  assert.match(comparison, /body\.identity\?\.cycleId === cycleId/);
+  // The block used to be hardwired to the regular mode.
+  assert.doesNotMatch(comparison, /favorite\.mode === "regular"/);
+  assert.doesNotMatch(comparison, /mode=regular/);
 });
 
 test("home showcase links and labels follow the displayed snapshot mode", async () => {
