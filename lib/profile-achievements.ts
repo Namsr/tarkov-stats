@@ -136,3 +136,54 @@ export function sortProfileAchievements(
     return left.id.localeCompare(right.id, locale, { sensitivity: "base" });
   });
 }
+
+/** Scarcity fields shared by the profile table rows and the homepage icon strip. */
+export interface AchievementScarcity {
+  id: string;
+  rarity: string | null;
+  percentage: number | null;
+  officialPercentage: number | null;
+}
+
+// Rarest-first rank: 0 is the rarest known category. A category outside the
+// supported set has no place in that order, so it never leads it.
+function scarcityRank(value: string | null): number | null {
+  const rank = rarityRank(value);
+  if (rank == null || rank >= RARITY_ORDER.length) return null;
+  return RARITY_ORDER.length - rank;
+}
+
+/**
+ * Orders achievements from the rarest down: rarest category first, then the
+ * smallest completion share (our sample, then BSG), then the id. Rows without a
+ * known category or share stay behind the rows that have one.
+ */
+export function compareAchievementScarcity(
+  left: AchievementScarcity,
+  right: AchievementScarcity,
+): number {
+  const rank = scarcityRank(left.rarity);
+  const otherRank = scarcityRank(right.rarity);
+  if (rank !== otherRank) {
+    if (rank == null) return 1;
+    if (otherRank == null) return -1;
+    return rank - otherRank;
+  }
+  const share = left.percentage ?? left.officialPercentage;
+  const otherShare = right.percentage ?? right.officialPercentage;
+  if (share !== otherShare) {
+    if (share == null) return 1;
+    if (otherShare == null) return -1;
+    return share - otherShare;
+  }
+  return left.id.localeCompare(right.id);
+}
+
+/** Takes the rarest `limit` achievements without touching the source array. */
+export function rarestAchievements<T extends AchievementScarcity>(
+  achievements: readonly T[],
+  limit: number,
+): T[] {
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+  return [...achievements].sort(compareAchievementScarcity).slice(0, limit);
+}

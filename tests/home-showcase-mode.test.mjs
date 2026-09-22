@@ -91,3 +91,33 @@ test("home showcase links and labels follow the displayed snapshot mode", async 
   // The opening mode comes from the admin-configured showcase, not a hardcoded one.
   assert.match(component, /setMode\(showcaseMode\(config\)\)/);
 });
+
+test("home showcase shows the faction beside the mode instead of the empty square", async () => {
+  const [component, css, helpers] = await Promise.all([
+    read("components/HomePage.tsx"),
+    read("components/home/home.css"),
+    read("lib/home-showcase.ts"),
+  ]);
+  // The 62px square stayed blank whenever a mode shipped no parsed stats (seasonal).
+  assert.doesNotMatch(component, /home-faction/);
+  assert.doesNotMatch(css, /\.home-faction/);
+  // The faction is read from every known payload shape...
+  assert.match(helpers, /export function homeProfileSide/);
+  assert.match(component, /homeProfileSide\(display\?\.profile\)/);
+  // ...and rendered next to the mode line, directly under the nickname.
+  assert.match(component, /home-player-mode"><span>\{t\("fav\.mode\." \+ displayMode\)\}<\/span>\{side && <span className="home-player-side">\{side\}<\/span>\}/);
+  assert.match(css, /\.home-player-mode \{[^}]*display: flex/);
+  assert.match(css, /\.home-player-side \{[^}]*color/);
+  assert.match(css, /\.home-player-side::before \{ content: "·"/);
+});
+
+test("home showcase achievement icons are the rarest unlocked ones", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /import \{ rarestAchievements \} from "@\/lib\/profile-achievements";/);
+  assert.match(component, /const ACHIEVEMENT_ICON_COUNT = 5;/);
+  // The filter drops achievements without artwork, then the picker sorts the rest.
+  assert.match(component, /rarestAchievements\(view\.achievements\.items\.filter\(achievementWithImage\), ACHIEVEMENT_ICON_COUNT\)/);
+  // The strip used to render the first five ids the profile API happened to send.
+  assert.doesNotMatch(component, /slice\(0, 5\)/);
+});
+
