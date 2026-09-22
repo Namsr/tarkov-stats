@@ -14,6 +14,7 @@ import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import {
   HOME_EXAMPLE_AIDS,
+  homeProfileSide,
   pickShowcaseAid,
   showcaseCohortParams,
   showcaseMode,
@@ -114,6 +115,7 @@ export default function HomePage() {
   const displayMode: GameMode = display?.mode ?? mode;
   const view = display?.profile?.viewModel;
   const name = view?.identity.nickname ?? "";
+  const side = homeProfileSide(display?.profile);
   const displayAid = aid ?? HOME_EXAMPLE_AIDS[0];
   const href = showcaseProfileHref(displayMode, displayAid, seasonalCycleId);
   const unavailable = display != null && display.profile == null && !switching;
@@ -151,8 +153,7 @@ export default function HomePage() {
           <div className="home-profile-top">
             <div className="home-player-identity">
               <ProfilePortrait key={`${displayMode}:${displayAid}`} aid={displayAid} mode={displayMode} cycleId={displayMode === "seasonal" ? seasonalCycleId ?? undefined : undefined} nickname={name} />
-              <span className="home-faction" aria-hidden="true">{display?.profile?.stats?.side?.toUpperCase()}</span>
-              <div><Link prefetch={false} className="home-player-name" href={href}>{name}</Link><div className="home-player-mode">{t("fav.mode." + displayMode)}</div></div>
+              <div><Link prefetch={false} className="home-player-name" href={href}>{name}</Link><div className="home-player-mode"><span>{t("fav.mode." + displayMode)}</span>{side && <span className="home-player-side">{side}</span>}</div></div>
             </div>
             <div className="home-level-value"><span>{t("metric.level")}</span><strong>{n(view.progression.level)}</strong></div>
           </div>

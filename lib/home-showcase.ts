@@ -84,10 +84,27 @@ export function pickShowcaseAid(config: ShowcaseConfig | null): number {
 
 export interface HomeProfile {
   identity: { aid: number; mode: string; cycleId: string };
+  /** PVP and PvE return the parsed stats snapshot, which carries the faction. */
   stats?: { side?: string };
+  /**
+   * Raw upstream profile for PVP/PvE, Seasonal profile DTO for seasonal. The
+   * seasonal response has no parsed stats snapshot, so its faction lives here.
+   */
+  profile?: { side?: string; info?: { side?: string } } | null;
   viewModel: PlayerProfileViewModel;
   comparisonStats: ProfileComparisonStats;
   risk: PublicRiskView | null;
+}
+
+/**
+ * Faction of the showcase account, e.g. "Bear" or "Usec". Each mode ships the
+ * same value under a different key, so every known shape is read in order.
+ * An unknown faction stays empty instead of showing a placeholder.
+ */
+export function homeProfileSide(profile: HomeProfile | null | undefined): string {
+  const side = [profile?.stats?.side, profile?.profile?.side, profile?.profile?.info?.side]
+    .find((value) => typeof value === "string" && /^(bear|usec)$/i.test(value.trim()));
+  return side?.trim() ?? "";
 }
 
 export const HOME_RADAR_METRICS = [
