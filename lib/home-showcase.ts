@@ -58,10 +58,11 @@ export function showcaseProfileHref(mode: GameMode, aid: number, seasonalCycleId
   return mode === "seasonal" && seasonalCycleId ? `${base}?cycle=${encodeURIComponent(seasonalCycleId)}` : base;
 }
 
-/** Which sections have data for the mode. Arena has no timeline, seasonal has no cohort. */
+/** Which sections have data for the mode. Arena has no timeline, and its cohort
+ * is keyed by match metrics, so it cannot feed the six-axis raid radar. */
 export const SHOWCASE_SECTIONS = {
   timeline: { regular: true, pve: true, arena: false, seasonal: true },
-  cohort: { regular: true, pve: true, arena: true, seasonal: false },
+  cohort: { regular: true, pve: true, arena: false, seasonal: true },
 } as const satisfies Record<"timeline" | "cohort", Record<GameMode, boolean>>;
 
 export function showcaseTimelineCycle(mode: GameMode, seasonalCycleId: string | null): string | null {
@@ -70,10 +71,46 @@ export function showcaseTimelineCycle(mode: GameMode, seasonalCycleId: string | 
   return "persistent";
 }
 
-export function showcaseCohortParams(mode: GameMode): { cycle: string; arenaMode?: string } | null {
-  if (mode === "seasonal") return null;
-  if (mode === "arena") return { cycle: "persistent", arenaMode: "overall" };
-  return { cycle: "persistent" };
+/**
+ * Comparison cohort URL for the displayed mode, or null when the mode has none.
+ * Seasonal keeps its own route; arena cohorts carry match metrics, not the six
+ * raid axes this radar draws, so the block degrades to its unavailable state.
+ */
+export function showcaseCohortRequest(mode: GameMode, aid: number, seasonalCycleId: string | null): string | null {
+  if (mode === "arena") return null;
+  if (mode === "seasonal") {
+    return seasonalCycleId == null ? null : `/api/seasonal/cohort?${cohortQuery(aid, mode, seasonalCycleId)}`;
+  }
+  return `/api/average/cohort?${cohortQuery(aid, mode, "persistent")}`;
+}
+
+function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
+  return new URLSearchParams({
+    aid: String(aid), mode, cycle, statistic: "trimmed_mean", period: "all",
+  }).toString();
+}
+
+/**
+ * Reads a cohort payload into the radar view model. Payloads without the six
+ * radar averages (arena match metrics, error bodies, fallbacks) return null so
+ * the block shows its own unavailable state instead of rendering a stray shape.
+ */
+export function homeCohort(payload: unknown): HomeCohort | null {
+  if (payload == null || typeof payload !== "object") return null;
+  const { quality, averages } = payload as { quality?: unknown; averages?: unknown };
+  if (typeof quality !== "string" || averages == null || typeof averages !== "object") return null;
+  const source = averages as Record<string, unknown>;
+  const picked: HomeCohort["averages"] = {};
+  for (const metric of HOME_RADAR_METRICS) {
+    const entry = source[metric.key];
+    if (entry == null || typeof entry !== "object") continue;
+    const { value, count } = entry as { value?: unknown; count?: unknown };
+    picked[metric.key] = {
+      value: typeof value === "number" && Number.isFinite(value) ? value : null,
+      count: typeof count === "number" && Number.isFinite(count) ? count : 0,
+    };
+  }
+  return Object.keys(picked).length ? { quality, averages: picked } : null;
 }
 
 export function pickShowcaseAid(config: ShowcaseConfig | null): number {
