@@ -56,6 +56,7 @@ export async function GET(request: NextRequest) {
     health: local?.health ?? null,
     freshness: local?.freshness ?? null,
     auth: local?.auth ?? { activeUsers: 0, signIns: 0 },
+    audience: store?.audienceSummary(period, domain, now) ?? null,
     suspicious,
     storageAvailable: Boolean(store),
     traffic: { available: traffic.available, reason: traffic.reason, sampled: traffic.sampled, from: traffic.from, to: traffic.to },
