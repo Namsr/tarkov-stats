@@ -34,14 +34,8 @@ type Row = Record<string, unknown>;
 
 const COHORT_PERCENTS = [10, 15, 20, 30] as const;
 const RISK_METRICS = ["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const;
-// Risk-only scans score RISK_METRICS and never read headshot_rate (only
-// getArenaAverage/metricSummary need it). Keep this projection tied to
-// RISK_METRICS: filter/version keys plus the four risk metrics. Never add
-// raw_json, counters, headshot_rate, or `*` here; arenaRows() keeps the wider
-// PR-58 projection for the average/cohort paths.
+// Peer scans below read only the selected numeric metrics.
 const ARENA_RISK_PROJECTION = "aid, arena_mode, hours, games_count, kd_ratio, win_rate, kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at";
-const ARENA_RISK_TOMBSTONE_SQL =
-  "NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = arena_mode_stats.aid)";
 export const ARENA_RISK_CALCULATION_VERSION = 2;
 /** Stored Arena risk is reused for cache hits; background refresh keeps it fresh. */
 export const ARENA_RISK_TTL_MS = 5 * 60 * 60 * 1000;
@@ -288,6 +282,82 @@ function emptyCohort(aid: number, mode: ArenaStoredMode, statistic: ArenaStatist
   };
 }
 
+type MetricSamples = { sampleN: number; values: Map<ArenaMetricKey, number[]> };
+
+/** Stream narrow rows into numeric columns, without retaining a peer object graph. */
+async function arenaMetricSamples(
+  backend: Backend, sql: string, params: unknown[], metrics: readonly ArenaMetricKey[],
+): Promise<Map<string, MetricSamples>> {
+  const result = new Map<string, MetricSamples>();
+  const append = (mode: string, read: (index: number, metric: ArenaMetricKey) => unknown) => {
+    let group = result.get(mode);
+    if (!group) {
+      group = { sampleN: 0, values: new Map(metrics.map((metric) => [metric, []])) };
+      result.set(mode, group);
+    }
+    group.sampleN++;
+    for (let index = 0; index < metrics.length; index++) {
+      const metric = metrics[index];
+      const value = numberOrNull(read(index, metric));
+      if (value !== null) group.values.get(metric)!.push(value);
+    }
+  };
+  if (backend.kind === "sqlite") {
+    const statement = backend.db.prepare(sql);
+    // Available in Node 22.16+. Older SQLite runners retain the object-row path.
+    const arrays = typeof statement.setReturnArrays === "function";
+    if (arrays) statement.setReturnArrays(true);
+    for (const row of statement.iterate(...params)) {
+      append(String(arrays ? row[0] : row.arena_mode), (index, metric) => arrays ? row[index + 1] : row[metric]);
+    }
+  } else {
+    for (const row of await all(backend, sql, params)) append(String(row.arena_mode), (_index, metric) => row[metric]);
+  }
+  return result;
+}
+
+async function arenaCohortSummary(
+  backend: Backend,
+  input: Parameters<typeof arenaWhere>[0],
+  kind: ArenaStatistic,
+): Promise<{ sampleN: number; metrics: Record<ArenaMetricKey, ArenaMetricValue> }> {
+  const condition = arenaWhere(input);
+  const groups = await arenaMetricSamples(backend,
+    `SELECT arena_mode, ${ARENA_METRIC_KEYS.join(", ")} FROM arena_mode_stats ${condition.where}`,
+    condition.params, ARENA_METRIC_KEYS);
+  const group = groups.get(input.mode);
+  const metrics = emptyMetrics();
+  for (const metric of ARENA_METRIC_KEYS) {
+    const values = group?.values.get(metric) ?? [];
+    metrics[metric] = {
+      value: values.length >= 20 ? statistic(values, kind) : null, count: values.length,
+      reason: values.length === 0 ? "no_valid_values" : values.length >= 20 ? null : "insufficient_values",
+    };
+  }
+  return { sampleN: group?.sampleN ?? 0, metrics };
+}
+
+function arenaRangeCountQuery(aid: number, mode: ArenaStoredMode, hours: number, matches: number) {
+  const ranges = COHORT_PERCENTS.map((percent) => ({
+    hours: proportionalBounds(hours, percent), matches: proportionalBounds(matches, percent),
+  }));
+  const widest = ranges[ranges.length - 1];
+  const condition = arenaWhere({ mode, exceptAid: aid, eligible: true,
+    minHours: widest.hours.min, maxHours: widest.hours.max,
+    minMatches: widest.matches.min, maxMatches: widest.matches.max });
+  return { sql: `SELECT '${mode}' AS arena_mode, ${COHORT_PERCENTS.map((percent) =>
+    `SUM(CASE WHEN hours BETWEEN ? AND ? AND games_count BETWEEN ? AND ? THEN 1 ELSE 0 END) AS n${percent}`
+  ).join(", ")} FROM arena_mode_stats ${condition.where}`, params: [
+    ...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.matches.min, range.matches.max]),
+    ...condition.params,
+  ] };
+}
+
+function arenaSelectedRange(counts: Row | undefined, minimum: number) {
+  const percent = COHORT_PERCENTS.find((p) => Number(counts?.[`n${p}`] ?? 0) >= minimum) ?? 30;
+  return { percent, sampleN: Number(counts?.[`n${percent}`] ?? 0) };
+}
+
 export async function getArenaCohort(
   aid: number,
   arenaMode: ArenaStoredMode,
@@ -305,7 +375,7 @@ export async function getArenaCohort(
     return emptyCohort(aid, arenaMode, statisticKind);
   }
   if (arenaMode === "overall") {
-    const rows = await arenaRows(backend, { mode: "overall", exceptAid: aid, eligible: true });
+    const summary = await arenaCohortSummary(backend, { mode: "overall", exceptAid: aid, eligible: true }, statisticKind);
     return {
       aid,
       mode: "overall",
@@ -314,41 +384,36 @@ export async function getArenaCohort(
       target: { hours: targetHours, matches: targetMatches },
       percent: 30,
       bounds: { hours: { min: null, max: null }, matches: { min: 10, max: null } },
-      sampleN: rows.length,
+      sampleN: summary.sampleN,
       required: 20,
-      quality: rows.length >= 20 ? "sufficient" : "unavailable",
-      reason: rows.length >= 20 ? null : "insufficient_cohort",
-      metrics: metricSummary(rows, statisticKind, 20),
+      quality: summary.sampleN >= 20 ? "sufficient" : "unavailable",
+      reason: summary.sampleN >= 20 ? null : "insufficient_cohort",
+      metrics: summary.metrics,
     };
   }
   if (targetHours === null || targetMatches === null) return emptyCohort(aid, arenaMode, statisticKind);
-  const maxHours = proportionalBounds(targetHours, 30);
-  const maxMatches = proportionalBounds(targetMatches, 30);
-  const candidates = await arenaRows(backend, {
-    mode: arenaMode, exceptAid: aid, eligible: true,
-    minHours: maxHours.min, maxHours: maxHours.max,
-    minMatches: maxMatches.min, maxMatches: maxMatches.max,
-  });
-  const selected = COHORT_PERCENTS.map((percent) => {
-    const hours = proportionalBounds(targetHours, percent);
-    const matches = proportionalBounds(targetMatches, percent);
-    const rows = candidates.filter((row) => {
-      const hoursValue = numberOrNull(row.hours);
-      const matchesValue = numberOrNull(row.games_count);
-      return hoursValue !== null && matchesValue !== null &&
-        hoursValue >= hours.min! && hoursValue <= hours.max! &&
-        matchesValue >= matches.min! && matchesValue <= matches.max!;
-    });
-    return { percent, hours, matches, rows };
-  }).find((candidate) => candidate.rows.length >= 20);
-  if (!selected) {
+  const countQuery = arenaRangeCountQuery(aid, arenaMode, targetHours, targetMatches);
+  const selected = arenaSelectedRange((await all(backend, countQuery.sql, countQuery.params))[0], 20);
+  const hours = proportionalBounds(targetHours, selected.percent);
+  const matches = proportionalBounds(targetMatches, selected.percent);
+  if (selected.sampleN < 20) {
     return {
       ...emptyCohort(aid, arenaMode, statisticKind),
       target: { hours: targetHours, matches: targetMatches },
-      bounds: { hours: maxHours, matches: maxMatches },
-      sampleN: candidates.length,
+      bounds: { hours, matches },
+      sampleN: selected.sampleN,
       reason: "insufficient_cohort",
     };
+  }
+  const summary = await arenaCohortSummary(backend, {
+    mode: arenaMode, exceptAid: aid, eligible: true,
+    minHours: hours.min, maxHours: hours.max, minMatches: matches.min, maxMatches: matches.max,
+  }, statisticKind);
+  if (summary.sampleN < 20) {
+    return { ...emptyCohort(aid, arenaMode, statisticKind),
+      percent: selected.percent,
+      target: { hours: targetHours, matches: targetMatches }, bounds: { hours, matches },
+      sampleN: summary.sampleN, reason: "insufficient_cohort" };
   }
   return {
     aid,
@@ -357,12 +422,12 @@ export async function getArenaCohort(
     statistic: statisticKind,
     target: { hours: targetHours, matches: targetMatches },
     percent: selected.percent,
-    bounds: { hours: selected.hours, matches: selected.matches },
-    sampleN: selected.rows.length,
+    bounds: { hours, matches },
+    sampleN: summary.sampleN,
     required: 20,
     quality: "sufficient",
     reason: null,
-    metrics: metricSummary(selected.rows, statisticKind, 20),
+    metrics: summary.metrics,
   };
 }
 
@@ -457,18 +522,19 @@ function riskOverallUnavailable(reason: string, peerCount = 0): ArenaOverallRisk
   };
 }
 
-function riskMetrics(target: Row, rows: Row[]): Pick<ArenaModeRisk, "score" | "reasons" | "metrics"> {
+function riskMetrics(target: Row, summary: MetricSamples | undefined): Pick<ArenaModeRisk, "score" | "reasons" | "metrics"> {
   const metrics = {} as ArenaModeRisk["metrics"];
   const points: number[] = [];
   for (const metric of RISK_METRICS) {
     const value = numberOrNull(target[metric]);
-    const values = metricValues(rows, metric);
+    const values = summary?.values.get(metric) ?? [];
+    const count = values.length;
     if (value === null) {
-      metrics[metric] = { ...emptyRiskMetric("missing_metric"), count: values.length };
+      metrics[metric] = { ...emptyRiskMetric("missing_metric"), count };
       continue;
     }
-    if (values.length < 30) {
-      metrics[metric] = { ...emptyRiskMetric("insufficient_peers"), value, count: values.length };
+    if (count < 30) {
+      metrics[metric] = { ...emptyRiskMetric("insufficient_peers"), value, count };
       continue;
     }
     const mean = values.reduce((sum, entry) => sum + entry, 0) / values.length;
@@ -476,12 +542,12 @@ function riskMetrics(target: Row, rows: Row[]): Pick<ArenaModeRisk, "score" | "r
     const variance = identical ? 0 : values.reduce((sum, entry) => sum + (entry - mean) ** 2, 0) / values.length;
     const std = Math.sqrt(variance);
     if (identical || std === 0) {
-      metrics[metric] = { value, count: values.length, mean, std, z: null, points: null, available: false, reason: "zero_std" };
+      metrics[metric] = { value, count, mean, std, z: null, points: null, available: false, reason: "zero_std" };
       continue;
     }
     const z = (value - mean) / std;
     const score = 100 * Math.max(0, Math.min(1, (z - 2) / 4));
-    metrics[metric] = { value, count: values.length, mean, std, z, points: score, available: true, reason: null };
+    metrics[metric] = { value, count, mean, std, z, points: score, available: true, reason: null };
     points.push(score);
   }
   return {
@@ -493,106 +559,98 @@ function riskMetrics(target: Row, rows: Row[]): Pick<ArenaModeRisk, "score" | "r
   };
 }
 
-/** (a) All 6 risk targets (overall + 5 modes) in ONE query. No eligible filter: parser/matches checks stay in JS. */
+/** All 6 targets in one lookup; eligibility and failure reasons stay in JS. */
 async function arenaRiskTargets(backend: Backend, aid: number): Promise<Map<string, Row>> {
   const modes = ["overall", ...ARENA_MODE_KEYS];
   const placeholders = modes.map(() => "?").join(", ");
   const rows = await all(
     backend,
-    `SELECT ${ARENA_RISK_PROJECTION} FROM arena_mode_stats WHERE aid = ? AND arena_mode IN (${placeholders}) AND ${ARENA_RISK_TOMBSTONE_SQL}`,
+    `SELECT ${ARENA_RISK_PROJECTION} FROM arena_mode_stats WHERE aid = ? AND arena_mode IN (${placeholders})
+      AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = arena_mode_stats.aid)`,
     [aid, ...modes],
   );
   return new Map(rows.map((row) => [String(row.arena_mode), row]));
 }
 
-/** (b) Overall peer scan stays ONE query with the narrow risk projection. */
-async function arenaRiskOverallPeers(backend: Backend, aid: number): Promise<Row[]> {
-  return all(
-    backend,
-    `SELECT ${ARENA_RISK_PROJECTION} FROM arena_mode_stats WHERE arena_mode = ? AND aid != ? AND games_count >= 10 AND parser_version = ? AND ${ARENA_RISK_TOMBSTONE_SQL}`,
-    ["overall", aid, ARENA_PARSER_VERSION],
-  );
+type RiskSamples = MetricSamples & { percent: 10 | 15 | 20 | 30 };
+
+/** Count ranges through the existing indexes, then load only selected peers. */
+async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<string, Row>): Promise<Map<string, RiskSamples>> {
+  const countQueries: ReturnType<typeof arenaRangeCountQuery>[] = [];
+  for (const mode of ARENA_MODE_KEYS) {
+    const target = targets.get(mode);
+    const hours = numberOrNull(target?.hours);
+    const matches = numberOrNull(target?.games_count);
+    if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
+        matches === null || matches < 10 || hours === null) continue;
+    countQueries.push(arenaRangeCountQuery(aid, mode, hours, matches));
+  }
+  // Keep each statement below D1's parameter limit as well as SQLite's.
+  const countRows: Row[] = [];
+  const batchSize = backend.kind === "d1" ? 4 : ARENA_MODE_KEYS.length;
+  for (let start = 0; start < countQueries.length; start += batchSize) {
+    const batch = countQueries.slice(start, start + batchSize);
+    countRows.push(...await all(backend, batch.map((query) => query.sql).join(" UNION ALL "),
+      batch.flatMap((query) => query.params)));
+  }
+  const ranges = new Map(countRows.map((row) => [String(row.arena_mode), arenaSelectedRange(row, 30)]));
+  const result = new Map<string, RiskSamples>();
+  const selects: string[] = [];
+  const params: unknown[] = [];
+  for (const mode of ["overall", ...ARENA_MODE_KEYS] as const) {
+    const target = targets.get(mode);
+    if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
+        (numberOrNull(target.games_count) ?? 0) < 10) continue;
+    const input: Parameters<typeof arenaWhere>[0] = { mode, exceptAid: aid, eligible: true };
+    if (mode !== "overall") {
+      const range = ranges.get(mode);
+      if (!range) continue;
+      result.set(mode, { sampleN: range.sampleN, percent: range.percent, values: new Map() });
+      if (range.sampleN < 30) continue;
+      const hours = proportionalBounds(Number(target.hours), range.percent);
+      const matches = proportionalBounds(Number(target.games_count), range.percent);
+      Object.assign(input, { minHours: hours.min, maxHours: hours.max, minMatches: matches.min, maxMatches: matches.max });
+    }
+    const condition = arenaWhere(input);
+    selects.push(`SELECT arena_mode, ${RISK_METRICS.join(", ")} FROM arena_mode_stats ${condition.where}`);
+    params.push(...condition.params);
+  }
+  if (selects.length) {
+    const groups = await arenaMetricSamples(backend, selects.join(" UNION ALL "), params, RISK_METRICS);
+    for (const [mode, group] of groups) result.set(mode, { ...group, percent: ranges.get(mode)?.percent ?? 30 });
+    // A concurrent writer can remove all selected peers after the count query.
+    for (const [mode, group] of result) {
+      if (group.sampleN >= 30 && !groups.has(mode)) group.sampleN = 0;
+    }
+  }
+  return result;
 }
 
-type ArenaRiskModeBox = {
-  mode: ArenaModeKey;
-  minHours: number;
-  maxHours: number;
-  minMatches: number;
-  maxMatches: number;
-};
-
-/**
- * (c) All per-mode candidate windows in ONE query. Each OR group reuses the
- * exact ±30% SQL box from the old per-mode scan (`hours`/`games_count`
- * BETWEEN the proportionalBounds(30) edges, inclusive like the old >=/<=),
- * AND-ed with the shared eligible predicates, so the merged box per mode is
- * equal to today's box and the JS 10/15/20/30% narrowing below is unchanged.
- */
-async function arenaRiskModeCandidates(
-  backend: Backend,
-  aid: number,
-  boxes: ArenaRiskModeBox[],
-): Promise<Map<string, Row[]>> {
-  const byMode = new Map<string, Row[]>(boxes.map((box) => [box.mode, []]));
-  if (boxes.length === 0) return byMode;
-  const groups = boxes
-    .map(() => "(arena_mode = ? AND hours BETWEEN ? AND ? AND games_count BETWEEN ? AND ?)")
-    .join(" OR ");
-  const params: unknown[] = [ARENA_PARSER_VERSION, aid];
-  for (const box of boxes) {
-    params.push(box.mode, box.minHours, box.maxHours, box.minMatches, box.maxMatches);
-  }
-  const rows = await all(
-    backend,
-    `SELECT ${ARENA_RISK_PROJECTION} FROM arena_mode_stats WHERE games_count >= 10 AND parser_version = ? AND aid != ? AND ${ARENA_RISK_TOMBSTONE_SQL} AND (${groups})`,
-    params,
-  );
-  for (const row of rows) {
-    const list = byMode.get(String(row.arena_mode));
-    if (list) list.push(row);
-  }
-  return byMode;
-}
-
-function riskModeFromTargetAndCandidates(mode: ArenaModeKey, target: Row | undefined, candidates: Row[]): ArenaModeRisk {
+function riskModeFromSummary(mode: ArenaModeKey, target: Row | undefined, summary: RiskSamples | undefined): ArenaModeRisk {
   const targetHours = numberOrNull(target?.hours);
   const targetMatches = numberOrNull(target?.games_count);
   if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
       targetHours === null || targetMatches === null) return riskModeUnavailable(mode, "target_unavailable");
   if (targetMatches < 10) return riskModeUnavailable(mode, "target_below_minimum_matches");
-  // Candidates arrive pre-filtered by the merged ±30% SQL box (equal to the
-  // old per-mode SQL box); the exact 10/15/20/30% narrowing below is unchanged.
-  const selected = COHORT_PERCENTS.map((percent) => {
-    const hours = proportionalBounds(targetHours, percent);
-    const matches = proportionalBounds(targetMatches, percent);
-    return {
-      percent,
-      rows: candidates.filter((row) => {
-        const h = numberOrNull(row.hours);
-        const m = numberOrNull(row.games_count);
-        return h !== null && m !== null && h >= hours.min! && h <= hours.max! && m >= matches.min! && m <= matches.max!;
-      }),
-    };
-  }).find((candidate) => candidate.rows.length >= 30);
-  if (!selected) return riskModeUnavailable(mode, "insufficient_peers", candidates.length);
-  const result = riskMetrics(target, selected.rows);
+  const peerCount = summary?.sampleN ?? 0;
+  if (peerCount < 30) return riskModeUnavailable(mode, "insufficient_peers", peerCount);
+  const result = riskMetrics(target, summary);
   return {
     mode,
     score: result.score,
-    peerCount: selected.rows.length,
-    percent: selected.percent,
+    peerCount,
+    percent: summary!.percent,
     reasons: result.reasons,
     metrics: result.metrics,
   };
 }
 
-function riskOverallFromTargetAndRows(target: Row, rows: Row[]): ArenaOverallRisk {
+function riskOverallFromSummary(target: Row, summary: MetricSamples | undefined): ArenaOverallRisk {
   const matches = numberOrNull(target.games_count);
   if (matches === null || matches < 10) {
     return riskOverallUnavailable("target_below_minimum_matches");
   }
-  return { mode: "overall", peerCount: rows.length, ...riskMetrics(target, rows) };
+  return { mode: "overall", peerCount: summary?.sampleN ?? 0, ...riskMetrics(target, summary) };
 }
 
 /** Display-only Arena anomaly score. It never calls generic moderation storage. */
@@ -647,38 +705,13 @@ export function coalesceArenaRiskRefresh(
 async function computeArenaProfileRisk(aid: number): Promise<ArenaProfileRisk | null> {
   const backend = await getArenaBackend();
   if (!backend) return null;
-  // Batched risk recompute: 3 SELECTs (targets + overall peers + merged
-  // per-mode windows) + 1 upsert. Was ~12 SELECTs (overall target + overall
-  // peers + 5 × (per-mode target + per-mode window)) + 1 upsert.
   const targets = await arenaRiskTargets(backend, aid);
   const overall = targets.get("overall");
   if (!overall || numberOrNull(overall.parser_version) !== ARENA_PARSER_VERSION) return null;
-  // ±30% SQL boxes only for modes with a usable target; missing/below-minimum
-  // targets resolve to riskModeUnavailable with the same reasons/peerCounts.
-  const boxes: ArenaRiskModeBox[] = [];
-  for (const mode of ARENA_MODE_KEYS) {
-    const target = targets.get(mode);
-    const targetHours = numberOrNull(target?.hours);
-    const targetMatches = numberOrNull(target?.games_count);
-    if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
-        targetHours === null || targetMatches === null || targetMatches < 10) continue;
-    const maxHours = proportionalBounds(targetHours, 30);
-    const maxMatches = proportionalBounds(targetMatches, 30);
-    boxes.push({
-      mode,
-      minHours: maxHours.min!,
-      maxHours: maxHours.max!,
-      minMatches: maxMatches.min!,
-      maxMatches: maxMatches.max!,
-    });
-  }
-  const [overallPeers, candidatesByMode] = await Promise.all([
-    arenaRiskOverallPeers(backend, aid),
-    arenaRiskModeCandidates(backend, aid, boxes),
-  ]);
-  const overallRisk = riskOverallFromTargetAndRows(overall, overallPeers);
+  const summaries = await arenaRiskSamples(backend, aid, targets);
+  const overallRisk = riskOverallFromSummary(overall, summaries.get("overall"));
   const modes = ARENA_MODE_KEYS.map((mode) =>
-    riskModeFromTargetAndCandidates(mode, targets.get(mode), candidatesByMode.get(mode) ?? []));
+    riskModeFromSummary(mode, targets.get(mode), summaries.get(mode)));
   const score = overallRisk.score;
   const risk: ArenaProfileRisk = {
     aid,
