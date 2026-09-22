@@ -214,6 +214,7 @@ test("Arena schema adds BestArp before its index and preserves legacy rows", () 
     memory.prepare(`INSERT INTO arena_mode_stats
       (aid,arena_mode,hours,upstream_version,parser_version,raw_json,fetched_at)
       VALUES (504,'overall',10,100,1,'{}',200)`).run();
+    memory.exec(readFileSync("scripts/arena-risk-index-d1.sql", "utf8"));
     initializeArenaSchema(memory);
     initializeArenaSchema(memory);
     assert.equal(memory.prepare("SELECT COUNT(*) n FROM arena_mode_stats WHERE aid=504").get().n, 1);
@@ -221,6 +222,16 @@ test("Arena schema adds BestArp before its index and preserves legacy rows", () 
     assert.ok(memory.prepare("PRAGMA table_info(arena_mode_stats_history)").all().some((row) => row.name === "best_arp"));
     assert.ok(memory.prepare(`SELECT 1 FROM sqlite_master
       WHERE type='index' AND name='idx_arena_mode_stats_best_arp'`).get());
+    const comparisonColumns = ["arena_mode", "parser_version", "games_count", "hours", "aid",
+      "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match"];
+    assert.deepEqual(memory.prepare("PRAGMA index_info(idx_arena_mode_stats_comparison)").all().map((row) => row.name), comparisonColumns);
+    assert.equal(memory.prepare("SELECT 1 FROM sqlite_master WHERE name='idx_arena_mode_stats_mode_parser'").get(), undefined);
+    memory.exec("DROP INDEX idx_arena_mode_stats_comparison");
+    const migration = readFileSync("scripts/arena-comparison-index-d1.sql", "utf8");
+    memory.exec(migration);
+    memory.exec(migration);
+    assert.deepEqual(memory.prepare("PRAGMA index_info(idx_arena_mode_stats_comparison)").all().map((row) => row.name), comparisonColumns);
+    assert.equal(memory.prepare("SELECT COUNT(*) n FROM arena_mode_stats WHERE aid=504").get().n, 1);
   } finally {
     memory.close();
   }
@@ -593,7 +604,7 @@ test("Arena batched risk recompute matches pre-batch results across modes", asyn
   assert.equal(await getArenaProfileRisk(951), null);
 });
 
-test("Arena risk scans batch to three queries with the narrow risk projection", async () => {
+test("Arena risk streams selected numeric peers through a covering index", async () => {
   resetArenaData();
   await save(profile(900, { kills: 120, deaths: 8 }));
   for (let aid = 901; aid <= 930; aid += 1) await save(profile(aid, { kills: 20 + (aid % 4), deaths: 20 }));
@@ -601,26 +612,189 @@ test("Arena risk scans batch to three queries with the narrow risk projection", 
   const backend = await getArenaBackend();
   assert.equal(backend.kind, "sqlite");
   const prepare = backend.db.prepare;
-  const selects = [];
+  const buffered = [];
+  const streamed = [];
   backend.db.prepare = function (sql) {
-    if (/FROM arena_mode_stats/.test(sql) && /^\s*SELECT/i.test(sql)) selects.push(sql);
-    return prepare.call(this, sql);
+    const statement = prepare.call(this, sql);
+    if (/FROM arena_mode_stats/.test(sql) && /^\s*SELECT/i.test(sql)) {
+      const all = statement.all;
+      statement.all = function (...args) {
+        const rows = all.apply(this, args);
+        buffered.push(rows.length);
+        return rows;
+      };
+      const iterate = statement.iterate;
+      statement.iterate = function* (...args) {
+        const plan = prepare.call(backend.db, `EXPLAIN QUERY PLAN ${sql}`).all(...args);
+        assert.match(plan.map((row) => row.detail).join("\n"), /COVERING INDEX idx_arena_mode_stats_comparison/);
+        assert.doesNotMatch(sql, /raw_json|headshot_rate|upstream_version|fetched_at/);
+        for (const row of iterate.apply(this, args)) {
+          streamed.push(row);
+          yield row;
+        }
+      };
+    }
+    return statement;
   };
   try {
     const risk = await getArenaProfileRisk(900);
     assert.equal(risk?.overall.peerCount, 30);
-    assert.equal(selects.length, 3);
-    assert.ok(selects.some((sql) => /arena_mode IN \(/.test(sql)));
-    assert.ok(selects.some((sql) => / OR /.test(sql) && /BETWEEN/.test(sql)));
-    for (const sql of selects) {
-      const projection = sql.slice(0, sql.indexOf("FROM arena_mode_stats"));
-      assert.doesNotMatch(projection, /\b(raw_json|arena_wins|arena_losses|kills|deaths|assists|headshots|damage_dealt|round_mvp_count|match_mvp_count|current_kill_streak|max_kill_streak|current_win_streak|max_win_streak|current_loss_streak|max_loss_streak|headshot_rate)\b|\*/);
-      assert.match(projection, /kd_ratio/);
-      assert.match(projection, /parser_version/);
-      assert.match(projection, /arena_mode/);
-    }
+    assert.deepEqual(buffered, [6, 5]); // Targets and range counts, never peer objects.
+    assert.equal(streamed.length, 6 * 30);
+    assert.equal(streamed[0].length, 5); // Mode plus four numeric metrics.
   } finally {
     backend.db.prepare = prepare;
+  }
+});
+
+test("Arena indexed selection matches reference filtering and formulas across modes and boundaries", async () => {
+  resetArenaData();
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { db } = await getArenaBackend();
+  const modes = ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"];
+  const metrics = ["kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match"];
+  const insert = db.prepare(`INSERT INTO arena_mode_stats
+    (aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate, kills_per_match,
+     damage_per_match, upstream_version, parser_version, raw_json, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1800000000000, ?, '{}', 1800000000000)`);
+  db.exec("BEGIN");
+  for (let aid = 1; aid <= 301; aid++) {
+    for (const [modeIndex, mode] of modes.entries()) {
+      const hours = [70, 80, 85, 90, 95, 100, 105, 110, 115, 120, 130][(aid + modeIndex) % 11];
+      insert.run(aid, mode, hours, 80 + ((aid * 7 + modeIndex * 3) % 41),
+        aid % 13 ? ((aid * 7) % 40) / 10 : null, aid % 17 ? (aid % 100) : null,
+        aid % 19 ? (aid % 80) : null, 0.1, 1e9 + (aid % 3) / 100,
+        aid % 31 ? 2 : 0);
+    }
+  }
+  db.exec(`INSERT INTO excluded_players VALUES (13, 'test', 1), (20, 'test', 1);
+    UPDATE arena_mode_stats SET hours = NULL WHERE aid = 7 AND arena_mode = 'lastHero';
+    UPDATE arena_mode_stats SET games_count = 9 WHERE aid = 8 AND arena_mode = 'checkpoint';
+    UPDATE arena_mode_stats SET kd_ratio = 'invalid', damage_per_match = NULL WHERE aid = 9;
+    UPDATE arena_mode_stats SET hours = 0, games_count = 10 WHERE aid = 10;
+    COMMIT`);
+  // Preserve index traversal order when comparing floating-point reductions.
+  const rows = db.prepare("SELECT * FROM arena_mode_stats ORDER BY arena_mode, games_count, hours, aid").all();
+  const valid = (value) => typeof value === "number" && Number.isFinite(value);
+  const sameNumber = (actual, expected) => {
+    if (expected === null) assert.equal(actual, null);
+    else assert.ok(Math.abs(actual - expected) <= 1e-8 * Math.max(1, Math.abs(expected)), `${actual} != ${expected}`);
+  };
+  const peersFor = (target, minimum) => {
+    const eligible = rows.filter((row) => row.arena_mode === target.arena_mode && row.aid !== target.aid &&
+      ![13, 20].includes(row.aid) && row.parser_version === 2 && row.games_count >= 10);
+    if (target.arena_mode === "overall") return { peers: eligible, percent: 30 };
+    for (const percent of [10, 15, 20, 30]) {
+      const peers = eligible.filter((row) => valid(row.hours) && valid(row.games_count) &&
+        row.hours >= Math.max(0, target.hours * (1 - percent / 100)) && row.hours <= target.hours * (1 + percent / 100) &&
+        row.games_count >= Math.max(0, target.games_count * (1 - percent / 100)) && row.games_count <= target.games_count * (1 + percent / 100));
+      if (peers.length >= minimum || percent === 30) return { peers, percent };
+    }
+  };
+  for (const aid of [1, 2, 3, 7, 8, 9, 10, 13, 20, 31]) {
+    const risk = await getArenaProfileRisk(aid);
+    if ([13, 20, 31].includes(aid)) {
+      assert.equal(risk, null);
+      continue;
+    }
+    for (const mode of modes) {
+      const target = rows.find((row) => row.aid === aid && row.arena_mode === mode);
+      const targetAvailable = target.games_count >= 10 && (mode === "overall" || valid(target.hours));
+      for (const kind of ["trimmed_mean", "median"]) {
+        const cohort = await getArenaCohort(aid, mode, kind);
+        if (!targetAvailable) { assert.equal(cohort.reason, "target_unavailable"); continue; }
+        const { peers, percent } = peersFor(target, 20);
+        assert.equal(cohort.sampleN, peers.length);
+        assert.equal(cohort.percent, percent);
+        assert.equal(cohort.quality, peers.length >= 20 ? "sufficient" : "unavailable");
+        for (const metric of metrics) {
+          if (mode !== "overall" && peers.length < 20) {
+            assert.equal(cohort.metrics[metric].count, 0);
+            continue;
+          }
+          const values = peers.map((row) => row[metric]).filter(valid).sort((a, b) => a - b);
+          assert.equal(cohort.metrics[metric].count, values.length);
+          const trim = Math.floor(values.length * 0.05);
+          const kept = values.slice(trim, values.length - trim);
+          const expected = values.length < 20 ? null : kind === "median"
+            ? (values[Math.floor((values.length - 1) / 2)] + values[Math.floor(values.length / 2)]) / 2
+            : kept.reduce((sum, v) => sum + v, 0) / kept.length;
+          sameNumber(cohort.metrics[metric].value, expected);
+        }
+      }
+      const actualRisk = mode === "overall" ? risk.overall : risk.modes.find((entry) => entry.mode === mode);
+      if (!targetAvailable) { assert.equal(actualRisk.score, null); assert.equal(actualRisk.peerCount, 0); continue; }
+      const { peers, percent } = peersFor(target, 30);
+      assert.equal(actualRisk.peerCount, peers.length);
+      if (mode !== "overall") assert.equal(actualRisk.percent, peers.length >= 30 ? percent : 30);
+      if (mode !== "overall" && peers.length < 30) { assert.equal(actualRisk.score, null); continue; }
+      const points = [];
+      for (const metric of metrics.filter((key) => key !== "headshot_rate")) {
+        const values = peers.map((row) => row[metric]).filter(valid);
+        const actual = actualRisk.metrics[metric];
+        assert.equal(actual.count, values.length);
+        if (!valid(target[metric])) { assert.equal(actual.reason, "missing_metric"); continue; }
+        if (values.length < 30) { assert.equal(actual.reason, "insufficient_peers"); continue; }
+        const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+        const variance = values.every((v) => v === values[0]) ? 0 : values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+        const std = Math.sqrt(variance);
+        sameNumber(actual.mean, mean);
+        sameNumber(actual.std, std);
+        if (std === 0) { assert.equal(actual.reason, "zero_std"); continue; }
+        const z = (target[metric] - mean) / std;
+        const score = 100 * Math.max(0, Math.min(1, (z - 2) / 4));
+        sameNumber(actual.z, z);
+        sameNumber(actual.points, score);
+        points.push(score);
+      }
+      assert.equal(actualRisk.score, points.length ? Math.round(Math.max(...points)) : null);
+    }
+  }
+});
+
+test("Arena numeric scans preserve object-row SQLite and D1 results and D1 bind limits", async () => {
+  resetArenaData();
+  await save(profile(900, { kills: 120, deaths: 8 }));
+  for (let aid = 901; aid <= 930; aid++) await save(profile(aid, { kills: 20 + aid % 4 }));
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { db } = await getArenaBackend();
+  const normalize = (risk) => ({ ...risk, freshness: { ...risk.freshness, evaluatedAt: 0 } });
+  const expectedRisk = normalize(await getArenaProfileRisk(900));
+  const expectedCohort = await getArenaCohort(900, "teamFight");
+  const prepare = db.prepare;
+  db.prepare = function (sql) {
+    const statement = prepare.call(this, sql);
+    statement.setReturnArrays = undefined;
+    return statement;
+  };
+  try {
+    assert.deepEqual(normalize(await getArenaProfileRisk(900)), expectedRisk);
+    assert.deepEqual(await getArenaCohort(900, "teamFight"), expectedCohort);
+  } finally {
+    db.prepare = prepare;
+  }
+  const key = Symbol.for("__cloudflare-context__");
+  const previous = globalThis[key];
+  const parameterCounts = [];
+  globalThis[key] = { env: { DB: {
+    prepare(sql) {
+      const statement = db.prepare(sql);
+      return { bind(...params) {
+        parameterCounts.push(params.length);
+        assert.ok(params.length <= 100, "D1 parameter limit");
+        return { all: async () => ({ results: statement.all(...params) }),
+          run: async () => statement.run(...params) };
+      } };
+    },
+  } } };
+  try {
+    assert.equal((await getArenaBackend()).kind, "d1");
+    assert.deepEqual(normalize(await getArenaProfileRisk(900)), expectedRisk);
+    assert.deepEqual(await getArenaCohort(900, "teamFight"), expectedCohort);
+    assert.ok(parameterCounts.length >= 7);
+  } finally {
+    if (previous === undefined) delete globalThis[key];
+    else globalThis[key] = previous;
   }
 });
 
