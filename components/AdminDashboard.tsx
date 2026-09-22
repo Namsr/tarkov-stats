@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
+import AdminAudienceCharts from "@/components/AdminAudienceCharts";
+import type { AudienceSummary } from "@/lib/admin/analytics-db";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
@@ -23,7 +25,7 @@ type HealthIssue = { operation: string; mode: string | null; aid: number | null;
 type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
 type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[] };
 type AveragePublication = { scope: string; generation: number | null; generatedAt: number | null; dirtyAt: number | null; lastStartedAt: number | null; lastCompletedAt: number | null; lastDurationMs: number | null; lastError: string | null; variants: number; status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error" };
-type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
+type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
 type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
 type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localRecordCount: number | null; differenceCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
 type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
@@ -202,6 +204,7 @@ function Overview({ summary, lang, t }: { summary: Summary | null; lang: string;
     <TrendChart series={summary.series ?? []} lang={lang} t={t} />
     <OwnPanel own={summary.own} previous={summary.previousOwn} storageAvailable={summary.storageAvailable} lang={lang} t={t} />
     {summary.auth && <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.auth.heading")}</h2><div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.auth.activeUsers")} value={formatNumber(summary.auth.activeUsers)} /><StatCard label={t("admin.auth.signIns")} value={formatNumber(summary.auth.signIns)} /></div></section>}
+    {summary.audience && <AdminAudienceCharts key={`${summary.period}:${summary.domain}`} audience={summary.audience} />}
   </div>;
 }
 

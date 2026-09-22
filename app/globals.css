@@ -1714,7 +1714,10 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-monitoring-status time { font-variant-numeric: tabular-nums; }
 .admin-monitoring-metric .metric-card__value { font-size: clamp(1.5rem, 2vw, 2rem); }
 .admin-monitoring-metric--rate .metric-card__value { white-space: nowrap; }
-.admin-monitoring-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-monitoring-grid, .admin-audience-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-audience-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-top: 18px; font-variant-numeric: tabular-nums; }
+.admin-audience-total strong { font-size: 2rem; line-height: 1.2; }
+.admin-audience-total span { color: var(--muted); font-size: .72rem; }
 .admin-monitoring-chart { min-width: 0; }
 .admin-monitoring-chart__wrap { min-height: 224px; margin-top: 14px; }
 .admin-monitoring-chart__stage { height: 184px; }
@@ -1971,7 +1974,7 @@ a.help-card:hover { border-color: var(--foreground); }
   .admin-health-chart-grid { grid-template-columns: 1fr; }
   .admin-health-status { align-items: stretch; flex-direction: column; }
   .admin-health-report { flex-basis: auto; }
-  .admin-monitoring-grid { grid-template-columns: 1fr; }
+  .admin-monitoring-grid, .admin-audience-grid { grid-template-columns: 1fr; }
   .admin-monitoring-status { align-items: flex-start; flex-direction: column; gap: 4px; }
   .admin-monitoring-chart__wrap { min-height: 204px; }
   .admin-monitoring-chart__stage { height: 164px; }

@@ -120,6 +120,16 @@ export interface LocalSummary {
   auth: { activeUsers: number; signIns: number };
 }
 
+export interface AudienceGrowth {
+  total: number;
+  series: Array<{ day: string; total: number; added: number }>;
+}
+
+export interface AudienceSummary {
+  users: AudienceGrowth;
+  visitors: AudienceGrowth;
+}
+
 export interface AccountListOptions {
   period: AdminPeriod;
   domain: AdminDomain;
@@ -174,6 +184,7 @@ export interface OwnTraffic {
 export interface AnalyticsStore {
   record(event: RequestEvent): void;
   recordAuth(subjectHash: string, kind: "sign_in" | "activity", now?: number): void;
+  audienceSummary(period: AdminPeriod, domain: AdminDomain, now?: number): AudienceSummary;
   recordPageview(event: PageviewEvent): void;
   pageviewSummary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDetails?: boolean): OwnTraffic;
   summary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDiagnostics?: boolean): LocalSummary;
@@ -458,6 +469,61 @@ function ensureRequestDiagnosticColumns(db: any): void {
   }
 }
 
+// Keep only the first observed UTC day per identity, independently of the
+// 90-day event retention. Triggers keep this atomic with the existing writers.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureAudienceHistory(db: any): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS auth_users (
+      subject_hash TEXT PRIMARY KEY, first_day TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_users_first_day ON auth_users(first_day);
+    CREATE TABLE IF NOT EXISTS audience_visitors (
+      visitor_id TEXT NOT NULL, host TEXT NOT NULL, first_day TEXT NOT NULL,
+      PRIMARY KEY (visitor_id, host)
+    );
+    CREATE INDEX IF NOT EXISTS idx_audience_visitors_host_day ON audience_visitors(host, first_day);
+    CREATE TRIGGER IF NOT EXISTS track_first_auth_day AFTER INSERT ON auth_activity_daily BEGIN
+      INSERT INTO auth_users (subject_hash, first_day) VALUES (NEW.subject_hash, NEW.day)
+      ON CONFLICT(subject_hash) DO UPDATE SET first_day = MIN(first_day, excluded.first_day);
+    END;
+    CREATE TRIGGER IF NOT EXISTS track_first_visit_day AFTER INSERT ON page_views BEGIN
+      INSERT INTO audience_visitors (visitor_id, host, first_day)
+      VALUES (NEW.visitor_id, COALESCE(NEW.host, ''), strftime('%Y-%m-%d', NEW.occurred_at / 1000.0, 'unixepoch'))
+      ON CONFLICT(visitor_id, host) DO UPDATE SET first_day = MIN(first_day, excluded.first_day);
+    END;`);
+  if (db.prepare("SELECT 1 FROM analytics_meta WHERE key = 'audience_first_seen_v1'").get()) return;
+  try {
+    db.exec(`SAVEPOINT backfill_audience;
+      INSERT INTO auth_users (subject_hash, first_day)
+        SELECT subject_hash, MIN(day) FROM auth_activity_daily GROUP BY subject_hash
+        ON CONFLICT(subject_hash) DO UPDATE SET first_day = MIN(first_day, excluded.first_day);
+      INSERT INTO audience_visitors (visitor_id, host, first_day)
+        SELECT visitor_id, COALESCE(host, ''), strftime('%Y-%m-%d', MIN(occurred_at) / 1000.0, 'unixepoch')
+        FROM page_views GROUP BY visitor_id, COALESCE(host, '')
+        ON CONFLICT(visitor_id, host) DO UPDATE SET first_day = MIN(first_day, excluded.first_day);
+      INSERT OR IGNORE INTO analytics_meta (key, value) VALUES ('audience_first_seen_v1', '1');
+      RELEASE backfill_audience;`);
+  } catch (error) {
+    db.exec("ROLLBACK TO backfill_audience; RELEASE backfill_audience;");
+    throw error;
+  }
+}
+
+function audienceGrowth(rows: Array<{ day: string; added: number }>, from: number, now: number): AudienceGrowth {
+  const dayMs = 86_400_000;
+  const firstDay = new Date(from).toISOString().slice(0, 10);
+  const additions = new Map(rows.map((row) => [row.day, Number(row.added)]));
+  let total = rows.reduce((sum, row) => sum + (row.day < firstDay ? Number(row.added) : 0), 0);
+  const series: AudienceGrowth["series"] = [];
+  for (let at = Math.floor(from / dayMs) * dayMs; at <= now; at += dayMs) {
+    const day = new Date(at).toISOString().slice(0, 10);
+    const added = additions.get(day) ?? 0;
+    total += added;
+    series.push({ day, added, total });
+  }
+  return { total, series };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {}): AnalyticsStore {
   const journal = db.prepare("PRAGMA main.journal_mode = DELETE").get() as { journal_mode?: unknown } | undefined;
@@ -468,6 +534,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
   db.exec(ADMIN_ANALYTICS_SCHEMA);
   ensureRequestDiagnosticColumns(db);
   removeExactAuthTimestamps(db);
+  ensureAudienceHistory(db);
   return {
     record(event) {
       const occurredAt = event.occurredAt ?? Date.now();
@@ -507,6 +574,18 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           sign_ins = sign_ins + excluded.sign_ins,
           activities = activities + excluded.activities`)
         .run(day, subjectHash, kind === "sign_in" ? 1 : 0, kind === "activity" ? 1 : 0);
+    },
+    audienceSummary(period, domain, now = Date.now()) {
+      const today = new Date(now).toISOString().slice(0, 10);
+      const from = now - periodMilliseconds(period);
+      const users = db.prepare(`SELECT first_day AS day, COUNT(*) AS added FROM auth_users
+        WHERE first_day <= ? GROUP BY first_day ORDER BY first_day`).all(today);
+      const visitors = db.prepare(`SELECT first_day AS day, COUNT(*) AS added FROM (
+          SELECT visitor_id, MIN(first_day) AS first_day FROM audience_visitors
+          ${domain === "all" ? "" : "WHERE host = ?"} GROUP BY visitor_id
+        ) WHERE first_day <= ? GROUP BY first_day ORDER BY first_day`)
+        .all(...(domain === "all" ? [] : [domain]), today);
+      return { users: audienceGrowth(users, from, now), visitors: audienceGrowth(visitors, from, now) };
     },
     recordPageview(event) {
       const occurredAt = event.occurredAt ?? Date.now();
