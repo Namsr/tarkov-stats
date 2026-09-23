@@ -1013,6 +1013,14 @@ function arenaCounters(group: ArenaCounterGroup | undefined): ArenaCounters {
   };
 }
 
+function arenaModeCounters(group: ArenaCounterGroup | undefined): ArenaCounters {
+  const counters = arenaCounters(group);
+  if (counters.matches === null && ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null)) {
+    counters.matches = 0;
+  }
+  return counters;
+}
+
 function rate(numerator: number | null, denominator: number | null, percent = false): number | null {
   if (numerator === null || denominator === null || denominator <= 0) return null;
   const value = numerator / denominator * (percent ? 100 : 1);
@@ -1031,14 +1039,18 @@ function arenaMetrics(counters: ArenaCounters): ArenaMetrics {
 }
 
 function completeCounterSum(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
-  const values = modes.map((mode) => mode.counters[key]);
+  const playedModes = modes.filter((mode) => mode.counters.matches !== null && mode.counters.matches > 0);
+  if (playedModes.length === 0) return 0;
+  const values = playedModes.map((mode) => mode.counters[key]);
   if (!values.every((value): value is number => value !== null)) return null;
   const sum = values.reduce((total, value) => total + value, 0);
   return Number.isFinite(sum) && sum >= 0 && (key === "damage" || Number.isSafeInteger(sum)) ? sum : null;
 }
 
 function completeCounterMax(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
-  const values = modes.map((mode) => mode.counters[key]);
+  const playedModes = modes.filter((mode) => mode.counters.matches !== null && mode.counters.matches > 0);
+  if (playedModes.length === 0) return 0;
+  const values = playedModes.map((mode) => mode.counters[key]);
   if (!values.every((value): value is number => value !== null)) return null;
   const max = Math.max(...values);
   return Number.isFinite(max) && max >= 0 && (key === "damage" || Number.isSafeInteger(max)) ? max : null;
@@ -1122,7 +1134,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
   };
   const publicModes = Object.fromEntries(
     ARENA_MODES.map(([mode, upstreamKey]) => {
-      const modeCounters = arenaCounters(counters?.[upstreamKey] as ArenaCounterGroup | undefined);
+      const modeCounters = arenaModeCounters(counters?.[upstreamKey] as ArenaCounterGroup | undefined);
       const value: PublicArenaModeStats = {
         mode: mode as PublicArenaModeKey,
         hours: null,
@@ -1144,7 +1156,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     fetchedAt: null,
-    parserVersion: 2,
+    parserVersion: 3,
     overall: publicOverall,
     modes: publicModes,
   };

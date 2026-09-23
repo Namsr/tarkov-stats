@@ -59,7 +59,7 @@ export interface ArenaOverallStats {
   metrics: ArenaMetrics;
   /** Exact upstream UnrankedOverall BestArp. Null means the counter was absent. */
   bestArp: number | null;
-  /** Direct upstream totals win. Complete five-mode sums are the only fallback. */
+  /** Direct upstream totals win. Complete played-mode sums are the fallback. */
   source: "upstream" | "complete_mode_sum" | "unavailable";
 }
 
