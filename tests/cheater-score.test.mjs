@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { scoreCheater } from "../lib/cheater-score.ts";
+import { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION, scoreCheater } from "../lib/cheater-score.ts";
 
 const account14280186 = {
   nickname: "7LL",
@@ -70,6 +70,11 @@ test("extreme combat and progression profile saturates at 100", () => {
   assert.equal(result.factors.find((factor) => factor.key === "pmc_kd_ratio")?.points, 30);
   assert.equal(result.factors.find((factor) => factor.key === "prestige")?.points, 22);
   assert.ok((result.factors.find((factor) => factor.key === "ach_early")?.points ?? 0) > 16);
+});
+
+test("stored risk version invalidates the previous seasonal population", () => {
+  assert.equal(ADMIN_RISK_SCORE_VERSION, 1);
+  assert.equal(SEASONAL_RISK_SCORE_VERSION, 2);
 });
 
 test("one extreme stat cannot create a severe score by itself", () => {

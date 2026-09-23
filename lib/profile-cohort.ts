@@ -94,9 +94,10 @@ export function comparisonAxisBounds(center: number, percent: ComparisonCohortPe
   const ratio = percent / 100;
   if (axis === "hours") {
     const epsilon = 1e-9 * Math.max(1, Math.abs(center));
+    const max = Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10;
     return {
       min: Math.max(0, Math.floor((center * (1 - ratio) + epsilon) * 10) / 10),
-      max: Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10,
+      max: max === 0 ? 0 : max,
     };
   }
   const epsilon = 1e-9 * Math.max(1, Math.abs(center));
@@ -143,13 +144,15 @@ export function makeComparisonCohortResult(input: {
   dimension?: "hours" | "pmc_raids";
   percent: ComparisonCohortPercent;
   n: number;
+  required?: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
+  const required = input.required ?? COMPARISON_COHORT_TARGET;
   const axes = comparisonAxes(input.center, input.percent);
-  const sufficient = input.reason == null && input.n >= COMPARISON_COHORT_TARGET;
+  const sufficient = input.reason == null && input.n >= required;
   return {
     mode: input.mode,
     cycleId: input.cycleId,
@@ -160,9 +163,9 @@ export function makeComparisonCohortResult(input: {
     bounds: dimension === "hours" ? axes.hours.bounds : axes.pmcRaids.bounds,
     axes,
     actualRanges: input.actualRanges,
-    target: COMPARISON_COHORT_TARGET,
-    required: COMPARISON_COHORT_TARGET,
-    targetN: COMPARISON_COHORT_TARGET,
+    target: required,
+    required,
+    targetN: required,
     twoDimensional: true,
     percent: input.percent,
     n: input.n,

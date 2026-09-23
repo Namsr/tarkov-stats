@@ -1,5 +1,5 @@
 import { bracketFor } from "@/lib/brackets";
-import { scoreCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
+import { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION, scoreCheater, scoreSeasonalCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
@@ -7,7 +7,7 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export const ADMIN_RISK_SCORE_VERSION = 1;
+export { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION };
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {
@@ -36,8 +36,11 @@ export async function evaluateAndStoreRisk(input: {
   if (input.mode === "seasonal") {
     if (!input.cycleId) throw new TypeError("seasonal risk requires cycleId");
     [baseline, achievementBaseline] = await Promise.all([
-      getSeasonalRiskBaseline(input.cycleId, bracket.lo, bracket.hi),
-      getSeasonalAchievementBaseline(input.cycleId),
+      getSeasonalRiskBaseline(input.cycleId, {
+        hours: input.stats.hoursPlayed,
+        pmcRaids: input.stats.pmcRaids,
+      }, input.aid),
+      getSeasonalAchievementBaseline(input.cycleId, input.aid),
     ]);
   } else {
     const baselineMode: CrossSectionMode = input.mode;
@@ -82,7 +85,9 @@ export async function evaluateAndStoreRisk(input: {
       stats,
     };
   }
-  const result = scoreCheater(input.stats, baseline, achievementInput);
+  const result = input.mode === "seasonal"
+    ? scoreSeasonalCheater(input.stats, baseline, achievementInput)
+    : scoreCheater(input.stats, baseline, achievementInput);
   const evaluationTime = input.evaluatedAt ?? Date.now();
   await saveRiskEvaluation({
     aid: input.aid,
@@ -91,7 +96,7 @@ export async function evaluateAndStoreRisk(input: {
     score: result.score,
     tier: result.tier,
     factors: result.factors,
-    scoreVersion: ADMIN_RISK_SCORE_VERSION,
+    scoreVersion: input.mode === "seasonal" ? SEASONAL_RISK_SCORE_VERSION : ADMIN_RISK_SCORE_VERSION,
     profileUpdatedAt: Number(input.stats.profileUpdatedAt) || 0,
     evaluatedAt: evaluationTime,
     sampleN: result.sampleN,

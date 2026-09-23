@@ -20,6 +20,7 @@ test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
     hours: { min: 90, max: 110 },
     pmcRaids: { min: 18, max: 22 },
   });
+  assert.deepEqual(comparisonRangeFor({ hours: 0, pmcRaids: 5 }, 10).hours, { min: 0, max: 0 });
 });
 
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
@@ -48,4 +49,15 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   assert.deepEqual(result.identity, { aid: 42, mode: "seasonal", cycleId: "cycle-a" });
   assert.deepEqual(result.actualRanges.hours, { min: 71, max: 129 });
   assert.equal(result.averages.kd_ratio.value, null);
+});
+
+test("seasonal cohort selection covers every window at the average threshold", () => {
+  for (const [counts, expected] of [
+    [{ 10: 20, 15: 20, 20: 20, 30: 20 }, 10],
+    [{ 10: 19, 15: 20, 20: 20, 30: 20 }, 15],
+    [{ 10: 19, 15: 19, 20: 20, 30: 20 }, 20],
+    [{ 10: 19, 15: 19, 20: 19, 30: 20 }, 30],
+  ] as const) {
+    assert.equal(selectComparisonPercent(counts), expected);
+  }
 });

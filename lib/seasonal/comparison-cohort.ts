@@ -10,6 +10,7 @@ import {
   COMPARISON_RADAR_METRICS,
   comparisonRangeFor,
   makeComparisonCohortResult,
+  selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
   type ComparisonCohortResult,
@@ -38,7 +39,8 @@ WITH normalized AS (
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate
   FROM player_profiles
   WHERE mode = 'seasonal' AND cycle_id = ? AND confirmed_banned = 0
-    AND lifetime_pvp_hours IS NOT NULL AND pmc_raids > 0
+    AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = player_profiles.aid)
+    AND lifetime_pvp_hours >= 0 AND pmc_raids > 0
 )
 `;
 
@@ -79,7 +81,7 @@ function rangeWhere(input: {
 }) {
   const range = comparisonRangeFor(input.center, input.percent);
   const where = [
-    "hours > 0", "pmc_raids > 0", "hours >= ?", "hours <= ?",
+    "pmc_raids > 0", "hours >= ?", "hours <= ?",
     "pmc_raids >= ?", "pmc_raids <= ?", "aid != ?",
   ];
   const params: unknown[] = [
@@ -166,7 +168,11 @@ async function computeSeasonalComparisonCohort(
   );
   if (!target || target.hours == null || target.pmc_raids == null) return { available: true, result: null };
   const center = { hours: Number(target.hours), pmcRaids: Number(target.pmc_raids) };
-  if (!(center.hours > 0) || !(center.pmcRaids > 0)) {
+  if (!Number.isFinite(center.hours) || !Number.isFinite(center.pmcRaids) ||
+      center.hours < 0 || center.pmcRaids < 0) {
+    return { available: true, result: null };
+  }
+  if (!(center.pmcRaids > 0)) {
     return { available: true, result: makeComparisonCohortResult({
       mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
       percent: 30, n: 0, actualRanges: { hours: null, pmcRaids: null, raids: null }, reason: "no_activity",
@@ -188,10 +194,20 @@ async function computeSeasonalComparisonCohort(
   const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
     percent, Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
-  const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
-    counts[percent] >= COMPARISON_COHORT_TARGET
-  ) ?? 30;
-  const selected = rangeWhere({ center, percent: selectedPercent, excludeAid: input.aid, period, now });
+  const selectedPercent = selectComparisonPercent(counts);
+  const populationFallback = counts[selectedPercent] < COMPARISON_COHORT_TARGET;
+  let selected: { where: string; params: unknown[] };
+  if (populationFallback) {
+    const populationWhere = ["aid != ?"];
+    const populationParams: unknown[] = [input.aid];
+    if (period === "90d") {
+      populationWhere.push("profile_updated_at >= ?");
+      populationParams.push(Math.floor(now - 90 * 86_400_000));
+    }
+    selected = { where: `WHERE ${populationWhere.join(" AND ")}`, params: populationParams };
+  } else {
+    selected = rangeWhere({ center, percent: selectedPercent, excludeAid: input.aid, period, now });
+  }
   const rows = await all(store, metricsSql(selected.where, statistic), [input.cycleId, ...selected.params]);
   const group = rows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
@@ -203,22 +219,17 @@ async function computeSeasonalComparisonCohort(
     raids: group?.raids_min == null || group?.raids_max == null ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
   };
-  if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
-    return { available: true, result: makeComparisonCohortResult({
-      mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
-      percent: selectedPercent, n, actualRanges, reason: "insufficient_cohort",
-    }) };
-  }
   const metricRows = new Map(rows.map((row) => [String(row.metric), row]));
   const averages = Object.fromEntries(COMPARISON_RADAR_METRICS.map((metric) => {
     const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
-    const minimum = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
+    const minimum = populationFallback ? 1 : metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
     return [metric, { value: count < minimum || row?.a == null ? null : Number(row.a), count }];
   })) as ComparisonCohortResult["averages"];
   return { available: true, result: makeComparisonCohortResult({
     mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
     percent: selectedPercent, n, actualRanges, averages,
+    required: populationFallback ? 1 : COMPARISON_COHORT_TARGET,
   }) };
 }
 

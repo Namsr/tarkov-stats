@@ -8,6 +8,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+import { scoreSeasonalCheater } from "../lib/cheater-score.ts";
 
 test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment boundaries", async () => {
   const directory = mkdtempSync(join(tmpdir(), "seasonal-average-"));
@@ -49,7 +50,7 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       .run('["ach-a"]', now);
     db.close();
 
-    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline, getSeasonalRiskBaseline } = await import("../lib/seasonal/average-db.ts");
+    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline, getSeasonalRiskBaseline, selectSeasonalRiskPercent } = await import("../lib/seasonal/average-db.ts");
     const query = await getSeasonalAverageCrossSectionQuery();
     assert.ok(query);
     const all = await query({ cycleId: "s1", period: "all", statistic: "median", dimension: "hours", metric: "players", min: null, max: null, now });
@@ -83,16 +84,88 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     assert.equal(baseline?.achievements[0]?.prevalencePct, 100);
     assert.equal(baseline?.achievements[0]?.unlockDayP20, 190);
 
-    const riskBaseline = await getSeasonalRiskBaseline("s1", 0, 50);
-    assert.equal(riskBaseline?.n, 2);
-    assert.equal(riskBaseline?.metrics.pmc_survival_rate?.n, 2);
+    const riskFixture = new DatabaseSync(databasePath);
+    const riskProfile = riskFixture.prepare(`INSERT INTO player_profiles (
+      mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+      experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+      total_raids, survived, deaths, total_kills, longest_win_streak, level,
+      first_seen_at, last_seen_at, confirmed_banned
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const riskSnapshot = riskFixture.prepare(`INSERT INTO progression_snapshots (
+      mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
+      experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths,
+      pmc_deaths, pmc_kills, total_kills, killed_pmc, run_through, level, prestige,
+      longest_win_streak, achv_count, achievements
+    ) VALUES (?, ?, ?, ?, ?, ?, '2026-01-01', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const addRiskPlayer = (aid, cycle, hours, raids, banned = 0) => {
+      const updated = now - 1_000;
+      const survived = Math.floor(raids * 0.5);
+      riskProfile.run("seasonal", cycle, aid, `risk-${aid}`, updated, updated, hours, 100, raids, 0,
+        survived, 1, raids * 2, raids, raids, survived, 1, raids, 5, 10, updated, updated, banned);
+      riskSnapshot.run("seasonal", cycle, aid, updated, updated, updated, 100, raids, raids, 0,
+        survived, survived, 1, raids * 2, raids * 2, raids, raids, 0, 10, 1, 5, 5, "[]");
+    };
+    addRiskPlayer(5, "s1", 100, 5);
+    for (let aid = 100; aid <= 134; aid += 1) addRiskPlayer(aid, "s1", 1_000, 100);
+    addRiskPlayer(200, "s1", 100, 5, 1);
+    addRiskPlayer(201, "s1", 100, 5);
+    addRiskPlayer(202, "s2", 100, 5);
+    riskFixture.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (201, 'admin_manual', ?)")
+      .run(now);
+    riskFixture.close();
+
+    const riskBaseline = await getSeasonalRiskBaseline("s1", { hours: 100, pmcRaids: 5 }, 5);
+    assert.equal(riskBaseline?.n, 37);
+    assert.equal(riskBaseline?.metrics.pmc_survival_rate?.n, 37);
+    for (const [counts, expected] of [
+      [{ 10: 30, 15: 30, 20: 30, 30: 30 }, 10],
+      [{ 10: 29, 15: 30, 20: 30, 30: 30 }, 15],
+      [{ 10: 29, 15: 29, 20: 30, 30: 30 }, 20],
+      [{ 10: 29, 15: 29, 20: 29, 30: 30 }, 30],
+    ] as const) {
+      assert.equal(selectSeasonalRiskPercent(counts), expected);
+    }
+    const riskAchievementBaseline = await getSeasonalAchievementBaseline("s1", 5);
+    assert.equal(riskAchievementBaseline?.eligibleN, 37);
+    const targetStats = {
+      pmcRaids: 5,
+      hoursPlayed: 100,
+      pmcKdRatio: 20,
+      pmcSurvivalRate: 50,
+      pmcKillsPerRaid: 1,
+      longestWinStreak: 5,
+      prestige: 0,
+    };
+    const extreme = scoreSeasonalCheater(targetStats, riskBaseline, null);
+    assert.ok(extreme.score > 0);
+    const zeroRaids = scoreSeasonalCheater({
+      ...targetStats,
+      pmcRaids: 0,
+      pmcKdRatio: 100,
+      pmcSurvivalRate: 100,
+      pmcKillsPerRaid: 100,
+      longestWinStreak: 100,
+    }, riskBaseline, null);
+    assert.equal(zeroRaids.score, 0);
+    assert.equal(zeroRaids.tier, "low");
+    const invalidMetrics = scoreSeasonalCheater({
+      ...targetStats,
+      pmcKdRatio: Number.NaN,
+      pmcSurvivalRate: Number.NaN,
+      pmcKillsPerRaid: Number.NaN,
+      longestWinStreak: Number.NaN,
+      prestige: Number.NaN,
+    }, riskBaseline, null);
+    assert.equal(invalidMetrics.score, 0);
+    const sparse = scoreSeasonalCheater(targetStats, { ...riskBaseline, n: 0, metrics: {} }, null);
+    assert.equal(Number.isFinite(sparse.score), true);
 
     // Mutating only the copied PvP enrichment must not alter Seasonal combat.
     const update = new DatabaseSync(databasePath);
     update.prepare("UPDATE player_profiles SET lifetime_pvp_hours = 999, linked_pvp_achievements = '[\"ach-b\"]' WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 1").run();
     update.close();
-    const afterEnrichment = await query({ cycleId: "s1", period: "all", statistic: "median", dimension: "hours", metric: "players", min: null, max: null, now });
-    assert.equal(afterEnrichment?.averages?.total_kills, all.averages?.total_kills);
+    const afterEnrichment = await getSeasonalRiskBaseline("s1", { hours: 100, pmcRaids: 5 }, 5);
+    assert.equal(afterEnrichment?.metrics.pmc_survival_rate?.mean, riskBaseline?.metrics.pmc_survival_rate?.mean);
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;

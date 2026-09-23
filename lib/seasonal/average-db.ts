@@ -19,7 +19,6 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import type { Baseline } from "../cheater-score.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
 
@@ -558,6 +557,37 @@ function finiteValue(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+const SEASONAL_RISK_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
+const SEASONAL_RISK_COHORT_TARGET = 30;
+type SeasonalRiskCohortPercent = (typeof SEASONAL_RISK_COHORT_PERCENTAGES)[number];
+
+function seasonalRiskRangeFor(
+  center: { hours: number; pmcRaids: number },
+  percent: SeasonalRiskCohortPercent,
+) {
+  const ratio = percent / 100;
+  const hourEpsilon = 1e-9 * Math.max(1, Math.abs(center.hours));
+  const raidEpsilon = 1e-9 * Math.max(1, Math.abs(center.pmcRaids));
+  return {
+    hours: {
+      min: Math.max(0, Math.floor((center.hours * (1 - ratio) + hourEpsilon) * 10) / 10),
+      max: Math.ceil((center.hours * (1 + ratio) - hourEpsilon) * 10) / 10,
+    },
+    pmcRaids: {
+      min: Math.max(0, Math.floor(center.pmcRaids * (1 - ratio) + raidEpsilon)),
+      max: Math.ceil(center.pmcRaids * (1 + ratio) - raidEpsilon),
+    },
+  };
+}
+
+export function selectSeasonalRiskPercent(
+  counts: Readonly<Record<SeasonalRiskCohortPercent, number>>,
+): SeasonalRiskCohortPercent {
+  return SEASONAL_RISK_COHORT_PERCENTAGES.find((percent) =>
+    counts[percent] >= SEASONAL_RISK_COHORT_TARGET
+  ) ?? 30;
+}
+
 function percentile20(values: number[]): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
@@ -577,6 +607,7 @@ function summary(values: number[]): { mean: number; std: number; early: number }
 
 export async function getSeasonalAchievementBaseline(
   cycleId: string,
+  excludeAid?: number,
 ): Promise<SeasonalAchievementBaseline | null> {
   try {
     const d1 = await getSeasonalD1();
@@ -615,9 +646,10 @@ export async function getSeasonalAchievementBaseline(
       JOIN season_cycles cycle ON cycle.mode = 'seasonal' AND cycle.cycle_id = ?
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
-        AND (latest.pmc_raids >= 1 OR latest.scav_raids >= 1)
+        AND latest.pmc_raids >= 1
+        ${excludeAid == null ? "" : "AND p.aid != ?"}
         AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`,
-      [cycleId, cycleId, cycleId, cycleId]);
+      [cycleId, cycleId, cycleId, cycleId, ...(excludeAid == null ? [] : [excludeAid])]);
 
     const eligible = rows.flatMap((row) => {
       const achievements = parseSeasonalAchievementUnlocks(row.achievements);
@@ -676,36 +708,26 @@ export async function getSeasonalAchievementBaseline(
   }
 }
 
-/**
- * Builds a Seasonal-only numeric baseline for the risk model. It deliberately
- * reads the latest current-cycle Seasonal snapshots instead of the regular
- * PlayerStore, even when a caller also has a regular store available.
- */
 export async function getSeasonalRiskBaseline(
   cycleId: string,
-  minHours: number,
-  maxHours: number | null,
-): Promise<Baseline | null> {
+  center: { hours: number; pmcRaids: number },
+  excludeAid: number,
+) {
+  if (!Number.isFinite(center.hours) || center.hours < 0 ||
+      !Number.isFinite(center.pmcRaids) || center.pmcRaids < 0) return null;
   try {
     const d1 = await getSeasonalD1();
     let backend: AverageBackend;
     if (d1) backend = { kind: "d1", db: d1 };
     else {
       if (!database) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const sqlite = (await import("node:sqlite" as string)) as any;
+        const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => D1DatabaseLike };
         database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
         initializeSeasonalSchema(database);
       }
       backend = { kind: "sqlite", db: database };
     }
-    const range = maxHours === null
-      ? "p.lifetime_pvp_hours >= ?"
-      : "p.lifetime_pvp_hours >= ? AND p.lifetime_pvp_hours < ?";
-    const params = maxHours === null
-      ? [cycleId, cycleId, cycleId, minHours]
-      : [cycleId, cycleId, cycleId, minHours, maxHours];
-    const rows = await backendRows(backend, `WITH latest AS (
+    const population = `WITH latest AS (
       SELECT s.* FROM progression_snapshots s
       JOIN (
         SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
@@ -715,16 +737,52 @@ export async function getSeasonalRiskBaseline(
       ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
         AND current.profile_updated_at = s.profile_updated_at
       WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-    ) SELECT latest.pmc_raids, latest.pmc_survived, latest.pmc_deaths,
-        latest.pmc_kills, latest.killed_pmc, latest.longest_win_streak,
-        latest.prestige, p.lifetime_pvp_hours AS hours
+    ), eligible AS (
+      SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.pmc_raids,
+        latest.pmc_survived, latest.pmc_deaths, latest.pmc_kills,
+        latest.killed_pmc, latest.longest_win_streak, latest.prestige
       FROM player_profiles p
       JOIN latest ON latest.aid = p.aid
         AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
-        AND latest.pmc_raids >= 1 AND ${range}`,
-      params);
+        AND p.lifetime_pvp_hours >= 0 AND latest.pmc_raids > 0
+    )`;
+    const selectedRange = (percent: SeasonalRiskCohortPercent) => {
+      const range = seasonalRiskRangeFor(center, percent);
+      return {
+        where: "WHERE aid != ? AND hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?",
+        params: [excludeAid, range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max],
+      };
+    };
+    const widest = selectedRange(30);
+    const countConditions = SEASONAL_RISK_COHORT_PERCENTAGES.map((percent) => {
+      const range = seasonalRiskRangeFor(center, percent);
+      return {
+        sql: "hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?",
+        params: [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max],
+      };
+    });
+    const countRow = await backendFirst(backend,
+      `${population} SELECT ${SEASONAL_RISK_COHORT_PERCENTAGES.map((percent, index) =>
+        `SUM(CASE WHEN ${countConditions[index].sql} THEN 1 ELSE 0 END) AS count_${percent}`
+      ).join(", ")} FROM eligible ${widest.where}`,
+      [cycleId, cycleId, cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
+    );
+    const counts = Object.fromEntries(SEASONAL_RISK_COHORT_PERCENTAGES.map((percent) => [
+      percent, Number(countRow?.[`count_${percent}`] ?? 0),
+    ])) as Record<SeasonalRiskCohortPercent, number>;
+    const selectedPercent = selectSeasonalRiskPercent(counts);
+    const populationFallback = counts[selectedPercent] < SEASONAL_RISK_COHORT_TARGET;
+    const selected = populationFallback
+      ? { where: "WHERE aid != ?", params: [excludeAid] }
+      : selectedRange(selectedPercent);
+    const rows = await backendRows(backend,
+      `${population} SELECT pmc_raids, pmc_survived, pmc_deaths,
+        pmc_kills, killed_pmc, longest_win_streak, prestige
+      FROM eligible ${selected.where}`,
+      [cycleId, cycleId, cycleId, ...selected.params],
+    );
     const metrics: Record<string, number[]> = {
       pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [],
       longest_win_streak: [], prestige: [],
@@ -750,14 +808,13 @@ export async function getSeasonalRiskBaseline(
       const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
       return { n: values.length, mean, std: Math.sqrt(Math.max(0, variance)) };
     };
-    const baseline: Baseline = {
+    return {
       n: rows.length,
       metrics: Object.fromEntries(Object.entries(metrics).flatMap(([key, values]) => {
         const result = meanStd(values);
         return result ? [[key, result]] : [];
       })),
     };
-    return baseline;
   } catch (error) {
     console.warn("seasonal risk baseline unavailable: " + (error as Error).message);
     return null;

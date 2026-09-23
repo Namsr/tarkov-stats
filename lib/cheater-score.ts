@@ -12,6 +12,9 @@
 
 import type { ParsedPlayerStats } from "../types/tarkov";
 
+export const ADMIN_RISK_SCORE_VERSION = 1;
+export const SEASONAL_RISK_SCORE_VERSION = 2;
+
 export interface MetricBaseline {
   /** Players in the bracket that actually HAVE this metric (value > 0). The z-score
    * is only trusted once enough of them exist — see scoreCheater. */
@@ -298,4 +301,34 @@ export function scoreCheater(
   const score = Math.min(100, Math.round(factors.reduce((s, f) => s + f.points, 0)));
   factors.sort((a, b) => b.points - a.points);
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
+}
+
+function finiteSeasonalMetric(value: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+export function scoreSeasonalCheater(
+  stats: ParsedPlayerStats,
+  baseline: Baseline | null,
+  achievements?: AchievementInput | null,
+): CheaterScoreResult {
+  if (!Number.isFinite(stats.pmcRaids) || stats.pmcRaids <= 0) {
+    return scoreCheater({
+      ...stats,
+      prestige: 0,
+      pmcRaids: 0,
+      pmcSurvivalRate: 0,
+      pmcKdRatio: 0,
+      pmcKillsPerRaid: 0,
+      longestWinStreak: 0,
+    }, null, null);
+  }
+  return scoreCheater({
+    ...stats,
+    prestige: finiteSeasonalMetric(stats.prestige),
+    pmcSurvivalRate: finiteSeasonalMetric(stats.pmcSurvivalRate),
+    pmcKdRatio: finiteSeasonalMetric(stats.pmcKdRatio),
+    pmcKillsPerRaid: finiteSeasonalMetric(stats.pmcKillsPerRaid),
+    longestWinStreak: finiteSeasonalMetric(stats.longestWinStreak),
+  }, baseline, achievements);
 }

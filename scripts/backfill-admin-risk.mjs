@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
-import { scoreCheater } from "../lib/cheater-score.ts";
+import { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION, scoreCheater, scoreSeasonalCheater } from "../lib/cheater-score.ts";
+import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline } from "../lib/seasonal/average-db.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
 
 const playersPath = process.env.SQLITE_PATH || "/data/players.db";
@@ -128,7 +129,54 @@ async function scoreRow(row, mode, cycleId) {
   } : null);
   await saveRiskEvaluation({
     aid: Number(row.aid), mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: 1,
+    factors: result.factors, scoreVersion: ADMIN_RISK_SCORE_VERSION,
+    profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
+  });
+}
+
+async function scoreSeasonalRow(row, cycleId) {
+  const baseStats = statsFromRow(row);
+  const pmcRaids = Number(row.pmc_raids);
+  const pmcSurvived = Number(row.pmc_survived);
+  const pmcDeaths = Number(row.pmc_deaths);
+  const pmcKills = Number(row.pmc_kills);
+  const killedPmc = Number(row.killed_pmc);
+  const stats = {
+    ...baseStats,
+    pmcRaids,
+    pmcSurvived,
+    pmcDeaths,
+    pmcKills,
+    killedPmc,
+    pmcKillsPerRaid: pmcRaids > 0 ? pmcKills / pmcRaids : 0,
+    pmcKdRatio: pmcDeaths > 0 ? killedPmc / pmcDeaths : killedPmc,
+    pmcSurvivalRate: pmcRaids > 0 ? pmcSurvived / pmcRaids * 100 : 0,
+  };
+  const [baseline, achievementBaseline] = await Promise.all([
+    getSeasonalRiskBaseline(cycleId, {
+      hours: stats.hoursPlayed,
+      pmcRaids: stats.pmcRaids,
+    }, Number(row.aid)),
+    getSeasonalAchievementBaseline(cycleId, Number(row.aid)),
+  ]);
+  const ownedIds = parsedJson(row.achievements, []).filter((id) => typeof id === "string");
+  const result = scoreSeasonalCheater(stats, baseline, achievementBaseline ? {
+    ownedIds,
+    seasonal: true,
+    playerUnlockDays: {},
+    stats: achievementBaseline.achievements.map((achievement) => ({
+      id: achievement.ach_id,
+      owners: achievement.owners,
+      eligibleN: achievement.eligibleN,
+      samplePct: achievement.prevalencePct,
+      meanHours: achievement.meanHours,
+      earlyHours: achievement.earlyHours,
+      unlockDayP20: achievement.unlockDayP20,
+    })),
+  } : null);
+  await saveRiskEvaluation({
+    aid: Number(row.aid), mode: "seasonal", cycleId, score: result.score, tier: result.tier,
+    factors: result.factors, scoreVersion: SEASONAL_RISK_SCORE_VERSION,
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
   });
 }
@@ -163,7 +211,7 @@ if (existsSync(progressionPath)) {
               AND latest.cycle_id = s.cycle_id AND latest.aid = s.aid)
           AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)`;
       for (const row of db.prepare(sql).iterate()) {
-        await scoreRow(row, "seasonal", String(row.cycle_id));
+        await scoreSeasonalRow(row, String(row.cycle_id));
         scored += 1;
       }
     }
