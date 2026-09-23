@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
 import CheaterScore from "@/components/CheaterScore";
 import ProfilePortrait from "@/components/ProfilePortrait";
+import ProfilePrestige from "@/components/ProfilePrestige";
 import SearchBar from "@/components/SearchBar";
 import HomeComparison from "@/components/home/HomeComparison";
 import HomeLeaderboard from "@/components/home/HomeLeaderboard";
@@ -14,6 +15,7 @@ import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import {
   HOME_EXAMPLE_AIDS,
+  homeProfilePrestige,
   homeProfileSide,
   homeCohort,
   pickShowcaseAid,
@@ -117,6 +119,7 @@ export default function HomePage() {
   const view = display?.profile?.viewModel;
   const name = view?.identity.nickname ?? "";
   const side = homeProfileSide(display?.profile);
+  const prestige = homeProfilePrestige(display?.profile, displayMode);
   const displayAid = aid ?? HOME_EXAMPLE_AIDS[0];
   const href = showcaseProfileHref(displayMode, displayAid, seasonalCycleId);
   const unavailable = display != null && display.profile == null && !switching;
@@ -154,7 +157,7 @@ export default function HomePage() {
           <div className="home-profile-top">
             <div className="home-player-identity">
               <ProfilePortrait key={`${displayMode}:${displayAid}`} aid={displayAid} mode={displayMode} cycleId={displayMode === "seasonal" ? seasonalCycleId ?? undefined : undefined} nickname={name} />
-              <div><Link prefetch={false} className="home-player-name" href={href}>{name}</Link><div className="home-player-mode"><span>{t("fav.mode." + displayMode)}</span>{side && <span className="home-player-side">{side}</span>}</div></div>
+              <div><div className="home-player-name-row"><Link prefetch={false} className="home-player-name" href={href}>{name}</Link><ProfilePrestige level={prestige} /></div><div className="home-player-mode"><span>{t("fav.mode." + displayMode)}</span>{side && <span className="home-player-side">{side}</span>}</div></div>
             </div>
             <div className="home-level-value"><span>{t("metric.level")}</span><strong>{n(view.progression.level)}</strong></div>
           </div>
