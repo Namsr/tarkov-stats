@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
-import { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION, scoreCheater, scoreSeasonalCheater } from "../lib/cheater-score.ts";
+import { adminRiskScoreVersion, scoreCheater, scoreSeasonalCheater } from "../lib/cheater-score.ts";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline } from "../lib/seasonal/average-db.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
 
@@ -129,7 +129,7 @@ async function scoreRow(row, mode, cycleId) {
   } : null);
   await saveRiskEvaluation({
     aid: Number(row.aid), mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: ADMIN_RISK_SCORE_VERSION,
+    factors: result.factors, scoreVersion: adminRiskScoreVersion(mode, cycleId),
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
   });
 }
@@ -176,7 +176,7 @@ async function scoreSeasonalRow(row, cycleId) {
   } : null);
   await saveRiskEvaluation({
     aid: Number(row.aid), mode: "seasonal", cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: SEASONAL_RISK_SCORE_VERSION,
+    factors: result.factors, scoreVersion: adminRiskScoreVersion("seasonal", cycleId),
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
   });
 }

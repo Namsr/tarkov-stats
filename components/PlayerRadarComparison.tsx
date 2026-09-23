@@ -28,6 +28,7 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  strategy?: "matched" | "population";
   identity?: { aid?: number; mode?: GameMode; cycleId?: string };
   twoDimensional?: boolean;
   period?: AveragePeriod;
@@ -71,6 +72,7 @@ interface CohortRange {
 
 interface NormalizedCohort {
   requestId: string;
+  strategy: "matched" | "population";
   dimension: Dimension;
   center: number;
   targetN: number;
@@ -193,6 +195,7 @@ function normalizeResponse(
 
   return {
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
+    strategy: input.strategy === "population" ? "population" : "matched",
     dimension: "hours",
     center: hoursCenter,
     targetN: Number(input.targetN ?? input.target ?? 20),
@@ -224,6 +227,7 @@ function demoCohort(
   const percent = 15;
   return {
     requestId: `demo:${hoursCenter}:${raidsCenter}:${statistic}:${period}`,
+    strategy: "matched",
     dimension: "hours",
     center: hoursCenter,
     targetN: 20,
@@ -449,8 +453,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value > 0
-      && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value >= 0
+      && average.count >= (cohort.strategy === "population" || metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

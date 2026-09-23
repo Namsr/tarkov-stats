@@ -40,7 +40,7 @@ WITH normalized AS (
   FROM player_profiles
   WHERE mode = 'seasonal' AND cycle_id = ? AND confirmed_banned = 0
     AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = player_profiles.aid)
-    AND lifetime_pvp_hours >= 0 AND pmc_raids > 0
+    AND lifetime_pvp_hours > 0 AND pmc_raids > 0
 )
 `;
 
@@ -81,7 +81,7 @@ function rangeWhere(input: {
 }) {
   const range = comparisonRangeFor(input.center, input.percent);
   const where = [
-    "pmc_raids > 0", "hours >= ?", "hours <= ?",
+    "hours > 0", "pmc_raids > 0", "hours >= ?", "hours <= ?",
     "pmc_raids >= ?", "pmc_raids <= ?", "aid != ?",
   ];
   const params: unknown[] = [
@@ -172,7 +172,7 @@ async function computeSeasonalComparisonCohort(
       center.hours < 0 || center.pmcRaids < 0) {
     return { available: true, result: null };
   }
-  if (!(center.pmcRaids > 0)) {
+  if (!(center.hours > 0) || !(center.pmcRaids > 0)) {
     return { available: true, result: makeComparisonCohortResult({
       mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
       percent: 30, n: 0, actualRanges: { hours: null, pmcRaids: null, raids: null }, reason: "no_activity",
@@ -229,7 +229,7 @@ async function computeSeasonalComparisonCohort(
   return { available: true, result: makeComparisonCohortResult({
     mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
     percent: selectedPercent, n, actualRanges, averages,
-    required: populationFallback ? 1 : COMPARISON_COHORT_TARGET,
+    strategy: populationFallback ? "population" : "matched",
   }) };
 }
 

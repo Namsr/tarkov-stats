@@ -1,5 +1,5 @@
 import { bracketFor } from "@/lib/brackets";
-import { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION, scoreCheater, scoreSeasonalCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
+import { adminRiskScoreVersion, scoreCheater, scoreSeasonalCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
@@ -7,7 +7,7 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export { ADMIN_RISK_SCORE_VERSION, SEASONAL_RISK_SCORE_VERSION };
+export { adminRiskScoreVersion };
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {
@@ -96,7 +96,7 @@ export async function evaluateAndStoreRisk(input: {
     score: result.score,
     tier: result.tier,
     factors: result.factors,
-    scoreVersion: input.mode === "seasonal" ? SEASONAL_RISK_SCORE_VERSION : ADMIN_RISK_SCORE_VERSION,
+    scoreVersion: adminRiskScoreVersion(input.mode, input.cycleId ?? "persistent"),
     profileUpdatedAt: Number(input.stats.profileUpdatedAt) || 0,
     evaluatedAt: evaluationTime,
     sampleN: result.sampleN,

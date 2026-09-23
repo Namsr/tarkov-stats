@@ -713,7 +713,7 @@ export async function getSeasonalRiskBaseline(
   center: { hours: number; pmcRaids: number },
   excludeAid: number,
 ) {
-  if (!Number.isFinite(center.hours) || center.hours < 0 ||
+  if (!Number.isFinite(center.hours) || center.hours <= 0 ||
       !Number.isFinite(center.pmcRaids) || center.pmcRaids < 0) return null;
   try {
     const d1 = await getSeasonalD1();
@@ -746,7 +746,7 @@ export async function getSeasonalRiskBaseline(
         AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
-        AND p.lifetime_pvp_hours >= 0 AND latest.pmc_raids > 0
+        AND p.lifetime_pvp_hours > 0 AND latest.pmc_raids > 0
     )`;
     const selectedRange = (percent: SeasonalRiskCohortPercent) => {
       const range = seasonalRiskRangeFor(center, percent);

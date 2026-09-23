@@ -15,6 +15,10 @@ import type { ParsedPlayerStats } from "../types/tarkov";
 export const ADMIN_RISK_SCORE_VERSION = 1;
 export const SEASONAL_RISK_SCORE_VERSION = 2;
 
+export function adminRiskScoreVersion(mode: string, cycleId: string): number {
+  return mode === "seasonal" && cycleId ? SEASONAL_RISK_SCORE_VERSION : ADMIN_RISK_SCORE_VERSION;
+}
+
 export interface MetricBaseline {
   /** Players in the bracket that actually HAVE this metric (value > 0). The z-score
    * is only trusted once enough of them exist — see scoreCheater. */
@@ -312,9 +316,17 @@ export function scoreSeasonalCheater(
   baseline: Baseline | null,
   achievements?: AchievementInput | null,
 ): CheaterScoreResult {
-  if (!Number.isFinite(stats.pmcRaids) || stats.pmcRaids <= 0) {
+  const validCombat = [
+    stats.pmcRaids,
+    stats.pmcSurvivalRate,
+    stats.pmcKdRatio,
+    stats.pmcKillsPerRaid,
+  ].every(Number.isFinite);
+  if (!Number.isFinite(stats.hoursPlayed) || stats.hoursPlayed <= 0 ||
+      !validCombat || stats.pmcRaids <= 0) {
     return scoreCheater({
       ...stats,
+      hoursPlayed: 0,
       prestige: 0,
       pmcRaids: 0,
       pmcSurvivalRate: 0,

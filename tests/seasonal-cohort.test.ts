@@ -75,6 +75,8 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     for (let aid = 80; aid <= 84; aid += 1) {
       add("cycle-a", aid, 500_000_000_000 + aid, 1_000, 100);
     }
+    add("cycle-a", 90, 500_000_000_090, 0, 5);
+    add("cycle-a", 91, 500_000_000_091, null, 5);
     db.close();
 
     const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
@@ -90,6 +92,7 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     assert.equal(lookup.result.axes.hours.center, 100);
     assert.equal(lookup.result.axes.pmcRaids.center, 20);
     assert.equal(lookup.result.percent, 10);
+    assert.equal(lookup.result.strategy, "matched");
     assert.equal(lookup.result.n, 20);
     assert.deepEqual(lookup.result.actualRanges, {
       hours: { min: 100, max: 100 },
@@ -124,7 +127,8 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     assert.ok(fallback.result);
     assert.equal(fallback.result.percent, 30);
     assert.equal(fallback.result.n, 31);
-    assert.equal(fallback.result.required, 1);
+    assert.equal(fallback.result.strategy, "population");
+    assert.equal(fallback.result.required, 20);
     assert.equal(fallback.result.quality, "sufficient");
     assert.equal(fallback.result.reason, null);
     assert.deepEqual(fallback.result.actualRanges, {
@@ -142,9 +146,27 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     });
     assert.ok(freshWindow.result);
     assert.equal(freshWindow.result.n, 5);
-    assert.equal(freshWindow.result.required, 1);
+    assert.equal(freshWindow.result.strategy, "population");
+    assert.equal(freshWindow.result.required, 20);
     assert.equal(freshWindow.result.quality, "sufficient");
     assert.equal(freshWindow.result.reason, null);
+
+    const zeroHours = await querySeasonalComparisonCohort({
+      aid: 90,
+      cycleId: "cycle-a",
+      now: 500_000_000_000,
+    });
+    assert.ok(zeroHours.result);
+    assert.equal(zeroHours.result.strategy, "matched");
+    assert.equal(zeroHours.result.reason, "no_activity");
+    assert.equal(zeroHours.result.n, 0);
+
+    const missingHours = await querySeasonalComparisonCohort({
+      aid: 91,
+      cycleId: "cycle-a",
+      now: 500_000_000_000,
+    });
+    assert.equal(missingHours.result, null);
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;

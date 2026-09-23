@@ -28,7 +28,7 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
-import { SEASONAL_RISK_SCORE_VERSION, evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import { adminRiskScoreVersion, evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -509,7 +509,7 @@ export async function GET(request: NextRequest) {
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
     const seasonalRiskIsFresh = result.ok && storedRisk &&
-      storedRisk.scoreVersion === SEASONAL_RISK_SCORE_VERSION &&
+      storedRisk.scoreVersion === adminRiskScoreVersion("seasonal", cycleId) &&
       storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
@@ -521,7 +521,7 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRisk = result.ok && storedRisk?.scoreVersion === SEASONAL_RISK_SCORE_VERSION
+    const publicRisk = result.ok && storedRisk?.scoreVersion === adminRiskScoreVersion("seasonal", cycleId)
       ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok

@@ -138,6 +138,20 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     };
     const extreme = scoreSeasonalCheater(targetStats, riskBaseline, null);
     assert.ok(extreme.score > 0);
+    const achievementEvidence = {
+      ownedIds: ["seasonal-ach"],
+      seasonal: true,
+      playerUnlockDays: { "seasonal-ach": 0 },
+      stats: [{
+        id: "seasonal-ach",
+        owners: 10,
+        eligibleN: 30,
+        samplePct: 0,
+        meanHours: 0,
+        earlyHours: 0,
+        unlockDayP20: 10,
+      }],
+    };
     const zeroRaids = scoreSeasonalCheater({
       ...targetStats,
       pmcRaids: 0,
@@ -155,8 +169,18 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       pmcKillsPerRaid: Number.NaN,
       longestWinStreak: Number.NaN,
       prestige: Number.NaN,
-    }, riskBaseline, null);
+    }, riskBaseline, achievementEvidence);
     assert.equal(invalidMetrics.score, 0);
+    const missingMetrics = scoreSeasonalCheater({
+      ...targetStats,
+      pmcKdRatio: undefined,
+    }, riskBaseline, achievementEvidence);
+    assert.equal(missingMetrics.score, 0);
+    const zeroHours = scoreSeasonalCheater({
+      ...targetStats,
+      hoursPlayed: 0,
+    }, riskBaseline, achievementEvidence);
+    assert.equal(zeroHours.score, 0);
     const sparse = scoreSeasonalCheater(targetStats, { ...riskBaseline, n: 0, metrics: {} }, null);
     assert.equal(Number.isFinite(sparse.score), true);
 

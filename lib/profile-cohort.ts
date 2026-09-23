@@ -42,6 +42,7 @@ export type ComparisonCohortReason =
   | "insufficient_cohort";
 
 export interface ComparisonCohortResult {
+  strategy: "matched" | "population";
   mode: ComparisonCohortMode;
   cycleId: string;
   aid: number;
@@ -144,16 +145,19 @@ export function makeComparisonCohortResult(input: {
   dimension?: "hours" | "pmc_raids";
   percent: ComparisonCohortPercent;
   n: number;
-  required?: number;
+  strategy?: "matched" | "population";
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
-  const required = input.required ?? COMPARISON_COHORT_TARGET;
+  const strategy = input.strategy ?? "matched";
   const axes = comparisonAxes(input.center, input.percent);
-  const sufficient = input.reason == null && input.n >= required;
+  const sufficient = input.reason == null && (
+    strategy === "population" ? input.n > 0 : input.n >= COMPARISON_COHORT_TARGET
+  );
   return {
+    strategy,
     mode: input.mode,
     cycleId: input.cycleId,
     aid: input.aid,
@@ -163,9 +167,9 @@ export function makeComparisonCohortResult(input: {
     bounds: dimension === "hours" ? axes.hours.bounds : axes.pmcRaids.bounds,
     axes,
     actualRanges: input.actualRanges,
-    target: required,
-    required,
-    targetN: required,
+    target: COMPARISON_COHORT_TARGET,
+    required: COMPARISON_COHORT_TARGET,
+    targetN: COMPARISON_COHORT_TARGET,
     twoDimensional: true,
     percent: input.percent,
     n: input.n,
