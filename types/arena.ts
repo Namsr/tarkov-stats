@@ -145,7 +145,7 @@ export interface ArenaMatchedCohortResult extends ArenaCohortBase {
 }
 
 export interface ArenaPopulationCohortResult extends ArenaCohortBase {
-  mode: "overall";
+  mode: ArenaStoredMode;
   strategy: "population";
 }
 
