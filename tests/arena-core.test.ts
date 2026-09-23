@@ -500,7 +500,7 @@ test("Arena risk needs 30 peers, ignores headshots, preserves mode scores, and r
   const riskDb = new DatabaseSync(process.env.SQLITE_PATH);
   try {
     const saved = JSON.parse(riskDb.prepare("SELECT risk_json FROM arena_risk_evaluations WHERE aid = 300").get().risk_json);
-    assert.equal(saved.version.calculation, 2);
+    assert.equal(saved.version.calculation, 3);
   } finally {
     riskDb.close();
   }
@@ -576,6 +576,49 @@ test("Arena risk needs 30 peers, ignores headshots, preserves mode scores, and r
       .map((metric) => metric.points ?? Number.NEGATIVE_INFINITY))));
     assert.equal(damageOnly?.score, damageOnly?.overall.score);
   }
+});
+
+test("Arena risk uses the population when matched LastHero peers are sparse or hours are missing", async () => {
+  resetArenaData();
+  const aid = 1_400_198;
+  const target = profile(aid, { games: 725, hours: 1_430, kills: 56, deaths: 33 });
+  const lastHero = target.stat.arenaOverAllCounters.UnrankedLastHero.Counters;
+  lastHero.GamesCount = 725;
+  lastHero.Kills = 40_600;
+  lastHero.Deaths = 24_200;
+  lastHero.DamageDealt = 10_295_000;
+  await save(target);
+  for (let offset = 1; offset <= 34; offset += 1) {
+    const matched = offset <= 16;
+    await save(profile(aid + offset, {
+      games: matched ? 725 : 20,
+      hours: matched ? 1_430 : 100,
+      kills: 20 + offset % 4,
+      deaths: 20,
+    }));
+  }
+
+  const cohort = await getArenaCohort(aid, "lastHero");
+  assert.equal(cohort?.quality, "unavailable");
+  assert.equal(cohort?.reason, "insufficient_cohort");
+  assert.equal(cohort?.sampleN, 16);
+
+  let risk = await getArenaProfileRisk(aid);
+  let lastHeroRisk = risk?.modes.find((mode) => mode.mode === "lastHero");
+  assert.equal(lastHeroRisk?.peerCount, 34);
+  assert.ok((lastHeroRisk?.score ?? 0) > 0);
+  assert.equal(risk?.version.calculation, 3);
+
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    db.prepare("UPDATE arena_mode_stats SET hours = NULL WHERE aid = ? AND arena_mode = 'lastHero'").run(aid);
+  } finally {
+    db.close();
+  }
+  risk = await getArenaProfileRisk(aid);
+  lastHeroRisk = risk?.modes.find((mode) => mode.mode === "lastHero");
+  assert.equal(lastHeroRisk?.peerCount, 34);
+  assert.ok((lastHeroRisk?.score ?? 0) > 0);
 });
 
 test("Arena batched risk recompute matches pre-batch results across modes", async () => {
@@ -672,7 +715,7 @@ test("Arena risk streams selected numeric peers through a covering index", async
     const risk = await getArenaProfileRisk(900);
     assert.equal(risk?.overall.peerCount, 30);
     assert.deepEqual(buffered, [6, 5]); // Targets and range counts, never peer objects.
-    assert.equal(streamed.length, 6 * 30);
+    assert.equal(streamed.length, 5 * 30);
     assert.equal(streamed[0].length, 5); // Mode plus four numeric metrics.
   } finally {
     backend.db.prepare = prepare;
@@ -708,13 +751,18 @@ test("Arena indexed selection matches reference filtering and formulas across mo
   // Preserve index traversal order when comparing floating-point reductions.
   const rows = db.prepare("SELECT * FROM arena_mode_stats ORDER BY arena_mode, games_count, hours, aid").all();
   const valid = (value) => typeof value === "number" && Number.isFinite(value);
-  const sameNumber = (actual, expected) => {
+  const sameNumber = (actual, expected, label = "") => {
     if (expected === null) assert.equal(actual, null);
-    else assert.ok(Math.abs(actual - expected) <= 1e-8 * Math.max(1, Math.abs(expected)), `${actual} != ${expected}`);
+    else assert.ok(Math.abs(actual - expected) <= 1e-8 * Math.max(1, Math.abs(expected)), `${label}${actual} != ${expected}`);
   };
+  const meanOf = (values) => {
+    const anchor = values.reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
+    return anchor + values.reduce((sum, value) => sum + (value - anchor), 0) / values.length;
+  };
+  const eligiblePeersFor = (target) => rows.filter((row) => row.arena_mode === target.arena_mode && row.aid !== target.aid &&
+    ![13, 20].includes(row.aid) && row.parser_version === ARENA_PARSER_VERSION && row.games_count >= 10);
   const peersFor = (target, minimum) => {
-    const eligible = rows.filter((row) => row.arena_mode === target.arena_mode && row.aid !== target.aid &&
-      ![13, 20].includes(row.aid) && row.parser_version === ARENA_PARSER_VERSION && row.games_count >= 10);
+    const eligible = eligiblePeersFor(target);
     if (target.arena_mode === "overall") return { peers: eligible, percent: 30 };
     for (const percent of [10, 15, 20, 30]) {
       const peers = eligible.filter((row) => valid(row.hours) && valid(row.games_count) &&
@@ -722,6 +770,17 @@ test("Arena indexed selection matches reference filtering and formulas across mo
         row.games_count >= Math.max(0, target.games_count * (1 - percent / 100)) && row.games_count <= target.games_count * (1 + percent / 100));
       if (peers.length >= minimum || percent === 30) return { peers, percent };
     }
+  };
+  const riskPeersFor = (target) => {
+    const eligible = eligiblePeersFor(target);
+    if (target.arena_mode === "overall" || !valid(target.hours)) return { peers: eligible, percent: 30 };
+    for (const percent of [10, 15, 20, 30]) {
+      const peers = eligible.filter((row) => valid(row.hours) && valid(row.games_count) &&
+        row.hours >= Math.max(0, target.hours * (1 - percent / 100)) && row.hours <= target.hours * (1 + percent / 100) &&
+        row.games_count >= Math.max(0, target.games_count * (1 - percent / 100)) && row.games_count <= target.games_count * (1 + percent / 100));
+      if (peers.length >= 30) return { peers, percent };
+    }
+    return { peers: eligible, percent: 30 };
   };
   for (const aid of [1, 2, 3, 7, 8, 9, 10, 13, 20, 31]) {
     const risk = await getArenaProfileRisk(aid);
@@ -755,11 +814,10 @@ test("Arena indexed selection matches reference filtering and formulas across mo
         }
       }
       const actualRisk = mode === "overall" ? risk.overall : risk.modes.find((entry) => entry.mode === mode);
-      if (!targetAvailable) { assert.equal(actualRisk.score, null); assert.equal(actualRisk.peerCount, 0); continue; }
-      const { peers, percent } = peersFor(target, 30);
+      if (target.games_count < 10) { assert.equal(actualRisk.score, null); assert.equal(actualRisk.peerCount, 0); continue; }
+      const { peers, percent } = riskPeersFor(target);
       assert.equal(actualRisk.peerCount, peers.length);
-      if (mode !== "overall") assert.equal(actualRisk.percent, peers.length >= 30 ? percent : 30);
-      if (mode !== "overall" && peers.length < 30) { assert.equal(actualRisk.score, null); continue; }
+      if (mode !== "overall") assert.equal(actualRisk.percent, percent);
       const points = [];
       for (const metric of metrics.filter((key) => key !== "headshot_rate")) {
         const values = peers.map((row) => row[metric]).filter(valid);
@@ -767,15 +825,15 @@ test("Arena indexed selection matches reference filtering and formulas across mo
         assert.equal(actual.count, values.length);
         if (!valid(target[metric])) { assert.equal(actual.reason, "missing_metric"); continue; }
         if (values.length < 30) { assert.equal(actual.reason, "insufficient_peers"); continue; }
-        const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
-        const variance = values.every((v) => v === values[0]) ? 0 : values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+        const mean = meanOf(values);
+        const variance = values.every((v) => v === values[0]) ? 0 : Math.max(0, values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length);
         const std = Math.sqrt(variance);
         sameNumber(actual.mean, mean);
         sameNumber(actual.std, std);
         if (std === 0) { assert.equal(actual.reason, "zero_std"); continue; }
         const z = (target[metric] - mean) / std;
         const score = 100 * Math.max(0, Math.min(1, (z - 2) / 4));
-        sameNumber(actual.z, z);
+        sameNumber(actual.z, z, `${aid}:${mode}:${metric}: `);
         sameNumber(actual.points, score);
         points.push(score);
       }
