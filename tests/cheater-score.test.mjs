@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { scoreCheater } from "../lib/cheater-score.ts";
+import { hasValidRiskInputs, scoreCheater } from "../lib/cheater-score.ts";
 
 const account14280186 = {
   nickname: "7LL",
@@ -122,6 +122,7 @@ test("achievement evidence cannot overcome invalid combat inputs", () => {
     longestWinStreak: 10,
   };
   const validResult = scoreCheater(valid, productionBracket, lateAchievement);
+  assert.equal(hasValidRiskInputs(valid), true);
   assert.ok((validResult.factors.find((factor) => factor.key === "ach_early")?.points ?? 0) > 0);
 
   for (const invalid of [
@@ -131,6 +132,7 @@ test("achievement evidence cannot overcome invalid combat inputs", () => {
     { ...valid, prestige: Number.NaN },
     { ...valid, longestWinStreak: Number.NaN },
   ]) {
+    assert.equal(hasValidRiskInputs(invalid), false);
     const result = scoreCheater(invalid, productionBracket, lateAchievement);
     assert.equal(result.score, 0);
     assert.equal(result.factors.find((factor) => factor.key === "ach_early")?.points ?? 0, 0);

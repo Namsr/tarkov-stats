@@ -19,6 +19,7 @@ registerHooks({
 
 const { createSqliteModerationStore } = await import("../lib/admin/moderation-db.ts");
 const { ArenaRiskUnsupportedError, evaluateAndStoreRisk, riskScoreVersion } = await import("../lib/admin/risk-service.ts");
+const { hasValidRiskInputs } = await import("../lib/cheater-score.ts");
 
 const risk = (aid, mode, score, profileUpdatedAt = 10) => ({
   aid,
@@ -92,17 +93,40 @@ test("generic risk evaluation rejects Arena before touching a store", async () =
 
 test("risk versions are isolated from untouched modes and cycles", () => {
   assert.equal(riskScoreVersion("regular", "persistent"), 2);
-  assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
+  assert.equal(riskScoreVersion("pve", "persistent"), 1);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 1);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
+});
+
+test("backfill guard executes the shared invalid-input predicate", () => {
+  const valid = {
+    pvpStatsKnown: true,
+    hoursPlayed: 100,
+    pmcRaids: 5,
+    prestige: 0,
+    pmcSurvivalRate: 50,
+    pmcKdRatio: 8,
+    pmcKillsPerRaid: 1,
+    longestWinStreak: 0,
+  };
+  assert.equal(hasValidRiskInputs(valid), true);
+  assert.equal(hasValidRiskInputs({ ...valid, longestWinStreak: Number.NaN }), false);
+  assert.equal(hasValidRiskInputs({ ...valid, prestige: undefined }), false);
 });
 
 test("risk backfill only rescans legacy PvE mode rows", async () => {
   const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
+  const service = await readFile("lib/admin/risk-service.ts", "utf8");
+  assert.match(service, /input\.mode === "regular"[\s\S]*store\.riskBaseline/);
+  assert.match(service, /store\.baseline\(bracket\.lo, bracket\.hi\)/);
   assert.match(source, /FROM mode_players p\s+WHERE p\.mode = 'pve'/);
   assert.match(source, /scoreVersion: riskScoreVersion\(mode, cycleId\)/);
   assert.match(source, /function optionalNumber\(value\)/);
+  assert.match(source, /statsFromRow\(row, mode\)/);
+  assert.match(source, /mode === "regular" \|\| mode === "pve"/);
+  assert.match(source, /regularRiskBaselineFor\(stats, Number\(row\.aid\)\)/);
   assert.match(source, /const hasUsableMetrics = baseline != null/);
+  assert.match(source, /hasUsableMetrics && hasValidRiskInputs\(stats\)/);
   assert.match(source, /scoreCheater\(\{ \.\.\.stats, pmcRaids: 0 \}, null, null\)/);
   assert.doesNotMatch(source, /await scoreRow\(row, "arena"/);
 });

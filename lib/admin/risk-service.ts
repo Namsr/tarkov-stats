@@ -57,7 +57,9 @@ export async function evaluateAndStoreRisk(input: {
     [baseline, achievementBaseline] = store
       ? await Promise.all([
           canScore
-            ? store.riskBaseline(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid)
+            ? input.mode === "regular"
+              ? store.riskBaseline(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid)
+              : store.baseline(bracket.lo, bracket.hi)
             : Promise.resolve(null),
           store.achievementBaseline(),
         ])

@@ -829,7 +829,7 @@ async function computePersistentTwoDimensionalCohort(input: {
   let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
     ? "matched"
     : null;
-  if (strategy === null) {
+  if (strategy === null && input.mode === "regular") {
     const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
     resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
     const populationGroup = resultRows.find((row) => row.metric === "__group__");
@@ -858,7 +858,7 @@ async function computePersistentTwoDimensionalCohort(input: {
       percent: 30,
       n,
       actualRanges,
-      strategy: "population",
+      strategy: input.mode === "regular" ? "population" : "matched",
       reason: "insufficient_cohort",
     });
   }

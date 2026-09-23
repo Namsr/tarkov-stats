@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
-import { scoreCheater } from "../lib/cheater-score.ts";
+import { hasValidRiskInputs, scoreCheater } from "../lib/cheater-score.ts";
 import { riskScoreVersion } from "../lib/admin/risk-version.ts";
 import { COMPARISON_COHORT_PERCENTAGES, RISK_COHORT_TARGET, comparisonRangeFor } from "../lib/profile-cohort.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
@@ -17,9 +17,9 @@ function optionalNumber(value) {
   return value == null || value === "" ? undefined : Number(value);
 }
 
-function statsFromRow(row) {
+function statsFromRow(row, mode) {
   const stored = parsedJson(row.stats_json, {});
-  return {
+  const stats = {
     nickname: String(stored.nickname ?? row.nickname ?? ""),
     level: Number(stored.level ?? row.level ?? 0),
     prestige: optionalNumber(stored.prestige ?? row.prestige),
@@ -55,6 +55,11 @@ function statsFromRow(row) {
     avgLifespan: Number(stored.avgLifespan ?? 0),
     totalLootValue: Number(stored.totalLootValue ?? 0),
   };
+  if (mode === "regular" || mode === "pve") {
+    const known = stored.pvpStatsKnown ?? row.pvp_stats_known;
+    stats.pvpStatsKnown = known === true || known === 1 || known === "1";
+  }
+  return stats;
 }
 
 const achievementBaselines = new Map();
@@ -91,24 +96,24 @@ function legacyBaselineFor(mode, bracket) {
   };
 }
 
-function riskBaselineFor(mode, stats, excludeAid) {
+function regularRiskBaselineFor(stats, excludeAid) {
   if (!playersDb || !Number.isFinite(stats.hoursPlayed) || !Number.isFinite(stats.pmcRaids) || stats.hoursPlayed <= 0 || stats.pmcRaids <= 0) {
     return null;
   }
-  const source = sourceFor(mode);
+  const source = sourceFor("regular");
   const modeWhere = source.modeWhere.replace(/ AND $/, "");
   const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(stats, percent));
-  const cutoff = mode === "regular" ? Date.now() - 90 * 86_400_000 : null;
+  const cutoff = Date.now() - 90 * 86_400_000;
   const common = [
     ...(modeWhere ? [modeWhere] : []),
     "p.hours > 0",
     "p.pmc_raids > 0",
     "p.aid != ?",
-    ...(mode === "regular" ? ["p.pvp_stats_known = 1"] : []),
-    ...(cutoff == null ? [] : ["p.profile_updated_at >= ?"]),
+    "p.pvp_stats_known = 1",
+    "p.profile_updated_at >= ?",
     "NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)",
   ].join(" AND ");
-  const commonParams = [...source.params, excludeAid, ...(cutoff == null ? [] : [Math.floor(cutoff)])];
+  const commonParams = [...source.params, excludeAid, Math.floor(cutoff)];
   const countColumns = COMPARISON_COHORT_PERCENTAGES.map((percent) =>
     `SUM(CASE WHEN p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
   ).join(", ");
@@ -170,18 +175,17 @@ function achievementInputFor(mode) {
 
 async function scoreRow(row, mode, cycleId) {
   const baselineMode = mode === "seasonal" ? "regular" : mode;
-  const stats = statsFromRow(row);
-  if (mode === "regular") stats.pvpStatsKnown = Number(row.pvp_stats_known) === 1;
+  const stats = statsFromRow(row, mode);
   const bracket = Number.isFinite(stats.hoursPlayed) ? bracketFor(stats.hoursPlayed) : null;
-  const baselineKey = mode === "seasonal"
-    ? `${baselineMode}:${bracket?.key ?? "invalid"}`
-    : `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${row.aid}`;
+  const baselineKey = mode === "regular"
+    ? `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${row.aid}`
+    : `${baselineMode}:${bracket?.key ?? "invalid"}`;
   if (!baselines.has(baselineKey)) {
     baselines.set(
       baselineKey,
-      mode === "seasonal"
-        ? bracket ? legacyBaselineFor(baselineMode, bracket) : null
-        : riskBaselineFor(baselineMode, stats, Number(row.aid)),
+      mode === "regular"
+        ? regularRiskBaselineFor(stats, Number(row.aid))
+        : bracket ? legacyBaselineFor(baselineMode, bracket) : null,
     );
   }
   if (!achievementBaselines.has(baselineMode)) {
@@ -197,7 +201,7 @@ async function scoreRow(row, mode, cycleId) {
   const hasUsableMetrics = baseline != null && baseline.n > 0 && Object.values(baseline.metrics).some((metric) =>
     metric.n > 0 && Number.isFinite(metric.mean) && Number.isFinite(metric.std)
   );
-  const result = hasUsableMetrics
+  const result = hasUsableMetrics && hasValidRiskInputs(stats)
     ? scoreCheater(stats, baseline, achievementInput)
     : scoreCheater({ ...stats, pmcRaids: 0 }, null, null);
   await saveRiskEvaluation({

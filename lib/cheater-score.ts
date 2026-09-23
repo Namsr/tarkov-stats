@@ -168,7 +168,7 @@ const MIN_SAMPLE = 30; // bracket players needed before z-scores are trusted
 const Z_LO = 2; // z at which a metric starts contributing
 const Z_HI = 6; // z at which it's maximally suspicious
 
-function hasValidScoreInputs(stats: ParsedPlayerStats): boolean {
+export function hasValidRiskInputs(stats: ParsedPlayerStats): boolean {
   return stats.pvpStatsKnown !== false &&
     Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0 &&
     Number.isFinite(stats.pmcRaids) && stats.pmcRaids >= 0 &&
@@ -249,7 +249,7 @@ export function scoreCheater(
   baseline: Baseline | null,
   achievements?: AchievementInput | null
 ): CheaterScoreResult {
-  if (!hasValidScoreInputs(stats) || stats.pmcRaids <= 0) {
+  if (!hasValidRiskInputs(stats) || stats.pmcRaids <= 0) {
     return zeroRiskResult();
   }
   const sampleN = baseline?.n ?? 0;
