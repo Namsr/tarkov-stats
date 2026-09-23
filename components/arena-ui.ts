@@ -396,6 +396,19 @@ export async function loadArenaPopulationCohort(
   }
 }
 
+/**
+ * Decides whether the UI may replace a weak matched cohort with the
+ * whole-population average. Only `insufficient_cohort` qualifies: the matched
+ * window around the player was computed but found too few peers. A
+ * `target_unavailable` cohort (fewer than ten games, a missing row, or a stale
+ * parser version) keeps its honest "insufficient" state because the player is
+ * outside the population's `games_count >= 10` eligibility floor.
+ */
+export function shouldFallbackToPopulation(cohort: ArenaCohortResult): boolean {
+  if (cohort.quality === "sufficient" && cohort.sampleN >= Math.max(20, cohort.required)) return false;
+  return cohort.reason === "insufficient_cohort";
+}
+
 function looksLikeCohort(value: unknown): value is ArenaCohortResult {
   return isRecord(value) && isRecord(value.metrics) && isRecord(value.target) && "sampleN" in value;
 }

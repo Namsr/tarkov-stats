@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { loadArenaPopulationCohort, toArenaCohort } from "@/components/arena-ui";
+import { loadArenaPopulationCohort, shouldFallbackToPopulation, toArenaCohort } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
 import type {
   ArenaCohortResult,
@@ -55,7 +55,7 @@ export default function ArenaOverallComparison({
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));
         }
-        if (mode === "overall" || result.reason !== "insufficient_cohort") {
+        if (mode === "overall" || !shouldFallbackToPopulation(result)) {
           return result;
         }
         return await loadArenaPopulationCohort(

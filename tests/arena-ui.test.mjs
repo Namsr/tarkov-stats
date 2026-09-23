@@ -101,7 +101,6 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   const profile = read("components/ArenaPlayer.tsx");
   const bars = read("components/ArenaModeBars.tsx");
   const overallComparison = read("components/ArenaOverallComparison.tsx");
-  const modeComparison = read("components/ArenaModeComparison.tsx");
   assert.match(profile, /<ProfileHeader[\s\S]*?mode="arena"/);
   assert.match(profile, /<ProfileSectionNav/);
   assert.match(profile, /arenaModeFromUrl/);
@@ -115,13 +114,20 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(bars, /metric === "win_rate" \? 100/);
   assert.match(bars, /stopPropagation\(\)/);
   assert.match(overallComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
-  assert.match(modeComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
   assert.match(overallComparison, /loadArenaPopulationCohort/);
-  assert.match(modeComparison, /loadArenaPopulationCohort/);
   assert.match(overallComparison, /body\.schemaVersion/);
-  assert.match(modeComparison, /body\.schemaVersion/);
-  assert.match(modeComparison, /result\.reason !== "insufficient_cohort"/);
-  assert.match(overallComparison, /mode === "overall" \|\| result\.reason !== "insufficient_cohort"/);
+  assert.match(overallComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
+  assert.match(overallComparison, /loadArenaPopulationCohort/);
+  assert.match(overallComparison, /body\.schemaVersion/);
+  assert.match(overallComparison, /mode === "overall" \|\| !shouldFallbackToPopulation\(result\)/);
+});
+
+test("Arena population fallback replaces only insufficient matched cohorts", async () => {
+  const { shouldFallbackToPopulation } = await loadArenaUi();
+  assert.equal(shouldFallbackToPopulation({ quality: "sufficient", sampleN: 21, required: 20, reason: null }), false);
+  assert.equal(shouldFallbackToPopulation({ quality: "unavailable", sampleN: 16, required: 20, reason: "insufficient_cohort" }), true);
+  assert.equal(shouldFallbackToPopulation({ quality: "unavailable", sampleN: 0, required: 20, reason: "target_unavailable" }), false);
+  assert.equal(shouldFallbackToPopulation({ quality: "unavailable", sampleN: 5, required: 20, reason: "target_unavailable" }), false);
 });
 
 test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {
