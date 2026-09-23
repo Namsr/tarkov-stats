@@ -708,6 +708,14 @@ export async function getSeasonalAchievementBaseline(
   }
 }
 
+export function seasonalRiskMatchesIdentity(
+  risk: { aid: number; mode: string; cycleId: string } | null | undefined,
+  identity: { aid: number; cycleId: string },
+): risk is { aid: number; mode: string; cycleId: string } {
+  return Boolean(risk && risk.aid === identity.aid && risk.mode === "seasonal" &&
+    risk.cycleId === identity.cycleId);
+}
+
 export async function getSeasonalRiskBaseline(
   cycleId: string,
   center: { hours: number; pmcRaids: number },

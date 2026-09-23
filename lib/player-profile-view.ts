@@ -218,19 +218,11 @@ export function buildRegularProfileViewModel(
   return buildPersistentProfileViewModel(input, risk);
 }
 
-export function storedRiskMatchesIdentity(
-  risk: StoredRiskEvaluation | null | undefined,
-  identityValue: ProfileIdentity,
-): risk is StoredRiskEvaluation {
-  return Boolean(risk && risk.aid === identityValue.aid && risk.mode === identityValue.mode &&
-    risk.cycleId === identityValue.cycleId);
-}
-
 export function toPublicRiskView(
   risk: StoredRiskEvaluation | null | undefined,
   identityValue: ProfileIdentity,
 ): ProfileViewRisk | null {
-  if (!storedRiskMatchesIdentity(risk, identityValue)) return null;
+  if (!risk) return null;
   return {
     score: Number.isFinite(risk.score) ? risk.score : null,
     tier: risk.tier,

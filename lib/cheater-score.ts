@@ -14,9 +14,16 @@ import type { ParsedPlayerStats } from "../types/tarkov";
 
 export const ADMIN_RISK_SCORE_VERSION = 1;
 export const SEASONAL_RISK_SCORE_VERSION = 2;
+export const ADMIN_RISK_SCORE_VERSIONS = {
+  regular: ADMIN_RISK_SCORE_VERSION,
+  pve: ADMIN_RISK_SCORE_VERSION,
+  seasonal: SEASONAL_RISK_SCORE_VERSION,
+} as const;
 
 export function adminRiskScoreVersion(mode: string, cycleId: string): number {
-  return mode === "seasonal" && cycleId ? SEASONAL_RISK_SCORE_VERSION : ADMIN_RISK_SCORE_VERSION;
+  if (mode === "seasonal" && !cycleId) return ADMIN_RISK_SCORE_VERSION;
+  return ADMIN_RISK_SCORE_VERSIONS[mode as keyof typeof ADMIN_RISK_SCORE_VERSIONS]
+    ?? ADMIN_RISK_SCORE_VERSION;
 }
 
 export interface MetricBaseline {

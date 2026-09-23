@@ -50,7 +50,7 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       .run('["ach-a"]', now);
     db.close();
 
-    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline, getSeasonalRiskBaseline, selectSeasonalRiskPercent } = await import("../lib/seasonal/average-db.ts");
+    const { getSeasonalAverageCrossSectionQuery, getSeasonalAchievementBaseline, getSeasonalRiskBaseline, seasonalRiskMatchesIdentity, selectSeasonalRiskPercent } = await import("../lib/seasonal/average-db.ts");
     const query = await getSeasonalAverageCrossSectionQuery();
     assert.ok(query);
     const all = await query({ cycleId: "s1", period: "all", statistic: "median", dimension: "hours", metric: "players", min: null, max: null, now });
@@ -83,6 +83,12 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     assert.equal(baseline?.achievements[0]?.owners, 2);
     assert.equal(baseline?.achievements[0]?.prevalencePct, 100);
     assert.equal(baseline?.achievements[0]?.unlockDayP20, 190);
+
+    const storedRiskIdentity = { aid: 5, mode: "seasonal", cycleId: "s1" };
+    assert.equal(seasonalRiskMatchesIdentity(storedRiskIdentity, { aid: 5, cycleId: "s1" }), true);
+    assert.equal(seasonalRiskMatchesIdentity(storedRiskIdentity, { aid: 5, cycleId: "s2" }), false);
+    assert.equal(seasonalRiskMatchesIdentity({ ...storedRiskIdentity, mode: "regular" }, { aid: 5, cycleId: "s1" }), false);
+    assert.equal(seasonalRiskMatchesIdentity(storedRiskIdentity, { aid: 6, cycleId: "s1" }), false);
 
     const riskFixture = new DatabaseSync(databasePath);
     const riskProfile = riskFixture.prepare(`INSERT INTO player_profiles (

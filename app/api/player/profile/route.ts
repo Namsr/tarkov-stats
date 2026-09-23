@@ -17,6 +17,7 @@ import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
+import { seasonalRiskMatchesIdentity } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
@@ -35,7 +36,6 @@ import {
   buildPersistentProfileViewModel,
   buildRegularProfileViewModel,
   buildSeasonalProfileViewModel,
-  storedRiskMatchesIdentity,
   toPublicRiskView,
 } from "@/lib/player-profile-view";
 import {
@@ -509,11 +509,14 @@ export async function GET(request: NextRequest) {
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
-    const seasonalRiskIsFresh = result.ok &&
-      storedRiskMatchesIdentity(storedRisk, { aid, mode: "seasonal", cycleId }) &&
-      storedRisk.scoreVersion === adminRiskScoreVersion("seasonal", cycleId) &&
-      storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
-      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    const currentStoredRisk = seasonalRiskMatchesIdentity(storedRisk, { aid, cycleId })
+      ? storedRisk
+      : null;
+    const seasonalRiskIsCurrent = result.ok && currentStoredRisk !== null;
+    const seasonalRiskIsFresh = seasonalRiskIsCurrent && currentStoredRisk !== null &&
+      currentStoredRisk.scoreVersion === adminRiskScoreVersion("seasonal", cycleId) &&
+      currentStoredRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
+      Date.now() - currentStoredRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
       after(async () => {
         // Keep a stale population-wide scan behind an immediate mode switch.
@@ -523,8 +526,9 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRisk = result.ok && storedRisk?.scoreVersion === adminRiskScoreVersion("seasonal", cycleId)
-      ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
+    const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&
+      currentStoredRisk.scoreVersion === adminRiskScoreVersion("seasonal", cycleId)
+      ? toPublicRiskView(currentStoredRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok
       ? await enrichSeasonalViewModel(
@@ -593,7 +597,7 @@ export async function GET(request: NextRequest) {
         capture: { inserted: boolean; status: string };
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
-        const riskIsFresh = storedRiskMatchesIdentity(storedRisk, { aid, mode: "pve", cycleId }) &&
+        const riskIsFresh = storedRisk &&
           storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
           Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
         if (!riskIsFresh) {
@@ -792,7 +796,7 @@ export async function GET(request: NextRequest) {
       const storedRisk = stored.stats.pvpStatsKnown === false
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-      const riskIsFresh = storedRiskMatchesIdentity(storedRisk, { aid, mode: "regular", cycleId }) &&
+      const riskIsFresh = storedRisk &&
         storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
         Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
       if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
@@ -903,7 +907,7 @@ export async function GET(request: NextRequest) {
     const publicRisk = stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-    const riskIsFresh = storedRiskMatchesIdentity(publicRisk, { aid, mode: "regular", cycleId }) &&
+    const riskIsFresh = publicRisk &&
       publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (stats.pvpStatsKnown !== false && !riskIsFresh) {
