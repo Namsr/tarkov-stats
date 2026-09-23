@@ -28,7 +28,11 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
-import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import {
+  adminRiskScoreVersionForMode,
+  evaluateAndStoreRisk,
+  evaluateAndStoreSeasonalRisk,
+} from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -591,6 +595,7 @@ export async function GET(request: NextRequest) {
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
         const riskIsFresh = storedRisk &&
+          storedRisk.scoreVersion === adminRiskScoreVersionForMode("pve") &&
           storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
           Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
         if (!riskIsFresh) {

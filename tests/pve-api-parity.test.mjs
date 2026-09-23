@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [profile, cohort, average, progressionAverage, db] = await Promise.all([
+const [profile, cohort, average, progressionAverage, db, riskService] = await Promise.all([
   readFile("app/api/player/profile/route.ts", "utf8"),
   readFile("app/api/average/cohort/route.ts", "utf8"),
   readFile("app/api/average/route.ts", "utf8"),
   readFile("app/api/progression/average/route.ts", "utf8"),
   readFile("lib/db.ts", "utf8"),
+  readFile("lib/admin/risk-service.ts", "utf8"),
 ]);
 
 test("PvE profile responses use the PvE portrait, risk, baseline, and snapshot stream", () => {
@@ -40,6 +41,17 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);
+});
+
+test("PvE stored risk version changes schedule refresh while retaining the safe stale response", () => {
+  const pveBranch = profile.slice(profile.indexOf('if (mode === "pve") {'));
+  assert.match(riskService, /export const ADMIN_RISK_SCORE_VERSION = 2/);
+  assert.match(riskService, /return mode === "pve" \? ADMIN_RISK_SCORE_VERSION : 1/);
+  assert.match(
+    pveBranch,
+    /storedRisk\.scoreVersion === adminRiskScoreVersionForMode\("pve"\)[\s\S]*?if \(!riskIsFresh\)/,
+  );
+  assert.match(pveBranch, /const publicRisk = toPublicRiskView\(storedRisk/);
 });
 
 test("PvE average progression has a separate mode cache", () => {

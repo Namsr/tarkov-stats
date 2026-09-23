@@ -7,7 +7,11 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export const ADMIN_RISK_SCORE_VERSION = 1;
+export const ADMIN_RISK_SCORE_VERSION = 2;
+
+export function adminRiskScoreVersionForMode(mode: GameMode): number {
+  return mode === "pve" ? ADMIN_RISK_SCORE_VERSION : 1;
+}
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {
@@ -15,6 +19,44 @@ export class ArenaRiskUnsupportedError extends TypeError {
     super("Arena risk is display-only");
     this.name = "ArenaRiskUnsupportedError";
   }
+}
+
+const PVE_RISK_FIELDS = [
+  "hoursPlayed",
+  "pmcRaids",
+  "pmcSurvivalRate",
+  "pmcKdRatio",
+  "pmcKillsPerRaid",
+  "longestWinStreak",
+  "prestige",
+] as const;
+
+function pveRiskNeedsZero(stats: ParsedPlayerStats): boolean {
+  if (stats.pvpStatsKnown === false || !Number.isSafeInteger(stats.pmcRaids) || stats.pmcRaids < 0) {
+    return true;
+  }
+  if (stats.pmcRaids === 0 || !(stats.hoursPlayed > 0)) return true;
+  return PVE_RISK_FIELDS.some((field) => {
+    const value = stats[field];
+    return !Number.isFinite(value) || value < 0;
+  });
+}
+
+function zeroPveRisk(stats: ParsedPlayerStats): CheaterScoreResult {
+  const result = scoreCheater(stats, null, null);
+  return {
+    score: 0,
+    tier: "low",
+    factors: result.factors.map((factor) => ({
+      ...factor,
+      value: Number.isFinite(factor.value) ? factor.value : 0,
+      points: 0,
+      z: null,
+      available: false,
+    })),
+    sampleN: 0,
+    basedOnSample: false,
+  };
 }
 
 /** Computes and stores one profile risk snapshot; callers may safely run this via Next after(). */
@@ -30,21 +72,32 @@ export async function evaluateAndStoreRisk(input: {
 }): Promise<CheaterScoreResult> {
   if (!Number.isSafeInteger(input.aid) || input.aid <= 0) throw new TypeError("invalid aid");
   if (input.mode === "arena") throw new ArenaRiskUnsupportedError();
-  const bracket = bracketFor(input.stats.hoursPlayed);
+  const zeroRisk = input.mode === "pve" && pveRiskNeedsZero(input.stats);
+  const bracket = input.mode === "pve" ? null : bracketFor(input.stats.hoursPlayed);
   let baseline: Baseline | null = null;
   let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;
   if (input.mode === "seasonal") {
     if (!input.cycleId) throw new TypeError("seasonal risk requires cycleId");
     [baseline, achievementBaseline] = await Promise.all([
-      getSeasonalRiskBaseline(input.cycleId, bracket.lo, bracket.hi),
+      getSeasonalRiskBaseline(input.cycleId, bracket!.lo, bracket!.hi),
       getSeasonalAchievementBaseline(input.cycleId),
     ]);
-  } else {
+  } else if (!zeroRisk) {
     const baselineMode: CrossSectionMode = input.mode;
     const store = input.playerStore === undefined ? await getStore(baselineMode) : input.playerStore;
-    [baseline, achievementBaseline] = store
-      ? await Promise.all([store.baseline(bracket.lo, bracket.hi), store.achievementBaseline()])
-      : [null, null];
+    if (store) {
+      if (input.mode === "pve") {
+        [baseline, achievementBaseline] = await Promise.all([
+          store.riskBaseline2d(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid),
+          store.achievementBaseline(),
+        ]);
+      } else {
+        [baseline, achievementBaseline] = await Promise.all([
+          store.baseline(bracket!.lo, bracket!.hi),
+          store.achievementBaseline(),
+        ]);
+      }
+    }
   }
   let achievementInput: AchievementInput | null = null;
   if (achievementBaseline) {
@@ -82,7 +135,9 @@ export async function evaluateAndStoreRisk(input: {
       stats,
     };
   }
-  const result = scoreCheater(input.stats, baseline, achievementInput);
+  const result = zeroRisk
+    ? zeroPveRisk(input.stats)
+    : scoreCheater(input.stats, baseline, achievementInput);
   const evaluationTime = input.evaluatedAt ?? Date.now();
   await saveRiskEvaluation({
     aid: input.aid,
@@ -91,7 +146,7 @@ export async function evaluateAndStoreRisk(input: {
     score: result.score,
     tier: result.tier,
     factors: result.factors,
-    scoreVersion: ADMIN_RISK_SCORE_VERSION,
+    scoreVersion: adminRiskScoreVersionForMode(input.mode),
     profileUpdatedAt: Number(input.stats.profileUpdatedAt) || 0,
     evaluatedAt: evaluationTime,
     sampleN: result.sampleN,
