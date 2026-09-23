@@ -107,6 +107,7 @@ async function arenaAverageResponse(
   const dimension = params.get("dimension") ?? "matches";
   const metric = params.get("metric") ?? "players";
   const period = params.get("period");
+  const publicationOnly = params.get("publicationOnly") === "1";
   const ranges = [
     arenaRange(params, "minHours"), arenaRange(params, "maxHours"),
     arenaRange(params, "minMatches"), arenaRange(params, "maxMatches"),
@@ -128,19 +129,23 @@ async function arenaAverageResponse(
   let averagesMs: number | undefined;
   try {
     const standard = dimension === "matches" && metric === "players" && ranges.every((range) => range.value === null);
-    if (standard && averagePublicationsEnabled()) {
+    if (standard && (averagePublicationsEnabled() || publicationOnly)) {
       const publication = await readAveragePublication<Record<string, unknown>>(
         "arena",
         standardArenaVariant(arenaMode, statistic),
       );
       if (!publication) {
         timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "publication" });
-        return NextResponse.json({ error: "Arena averages are warming" }, { status: 503, headers: { "Retry-After": "5" } });
+        return NextResponse.json({ error: publicationOnly ? "Arena average publication unavailable" : "Arena averages are warming" }, { status: 503, headers: { "Retry-After": "5" } });
       }
       timing.finish({ operation: "average", mode: "arena", outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
       return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...publication.payload }, {
         headers: publicationHeaders(publication),
       });
+    }
+    if (publicationOnly) {
+      timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "publication" });
+      return NextResponse.json({ error: "Arena average publication unavailable" }, { status: 503, headers: { "Retry-After": "5" } });
     }
     const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value)]);
     const averagesStarted = timing.now();

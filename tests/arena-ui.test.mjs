@@ -120,8 +120,8 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(modeComparison, /loadArenaPopulationCohort/);
   assert.match(overallComparison, /body\.schemaVersion/);
   assert.match(modeComparison, /body\.schemaVersion/);
-  assert.match(modeComparison, /result\.quality === "sufficient" && result\.sampleN >= Math\.max\(20, result\.required\)/);
-  assert.match(overallComparison, /mode === "overall" \|\| \(result\.quality === "sufficient"/);
+  assert.match(modeComparison, /result\.reason !== "insufficient_cohort"/);
+  assert.match(overallComparison, /mode === "overall" \|\| result\.reason !== "insufficient_cohort"/);
 });
 
 test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {
@@ -377,7 +377,7 @@ test("Arena helpers execute the nullable and legacy normalization rules", async 
   );
   assert.equal(loaded?.strategy, "population");
   assert.deepEqual(requests, [
-    "/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean",
+    "/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean&publicationOnly=1",
   ]);
   const malformed = await loadArenaPopulationCohort(
     17,

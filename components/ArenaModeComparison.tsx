@@ -83,7 +83,7 @@ export default function ArenaModeComparison({
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));
         }
-        if (result.quality === "sufficient" && result.sampleN >= Math.max(20, result.required)) return result;
+        if (result.reason !== "insufficient_cohort") return result;
         return await loadArenaPopulationCohort(
           aid,
           mode,

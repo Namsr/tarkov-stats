@@ -55,7 +55,7 @@ export default function ArenaOverallComparison({
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));
         }
-        if (mode === "overall" || (result.quality === "sufficient" && result.sampleN >= Math.max(20, result.required))) {
+        if (mode === "overall" || result.reason !== "insufficient_cohort") {
           return result;
         }
         return await loadArenaPopulationCohort(

@@ -384,7 +384,7 @@ export async function loadArenaPopulationCohort(
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ArenaCohortResult | null> {
-  const query = new URLSearchParams({ mode: "arena", arenaMode: mode, statistic });
+  const query = new URLSearchParams({ mode: "arena", arenaMode: mode, statistic, publicationOnly: "1" });
   try {
     const response = await fetchImpl(`/api/average?${query}`, { signal });
     if (!response.ok) return null;

@@ -158,6 +158,24 @@ test("Arena average validates its isolated query contract and defaults to matche
   }
 });
 
+test("publication-only Arena fallback never falls back to dynamic averages", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  publications.resetAveragePublicationForTests();
+  try {
+    const response = await getAverage(new NextRequest(
+      "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean&publicationOnly=1",
+    ));
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error, "Arena average publication unavailable");
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+  }
+});
+
 test("standard Arena mode reads the atomically published response", async () => {
   const publications = await import("../lib/average-publication.ts");
   const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
@@ -291,7 +309,7 @@ test("Arena population fallback also trusts the published average payload", asyn
       publications.standardArenaVariant("lastHero", "trimmed_mean"), payload,
     ]]), Date.now() - 10, Date.now());
     const response = await getAverage(new NextRequest(
-      "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean",
+      "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean&publicationOnly=1",
     ));
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("x-average-source"), "publication");
