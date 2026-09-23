@@ -329,6 +329,15 @@ export function toArenaAverage(value: unknown): ArenaAverageResult | null {
   return candidates.find(looksLikeAverage) ?? null;
 }
 
+/**
+ * Validates a published or dynamic /api/average payload before it is shown as a
+ * population cohort. Only the unfiltered whole-population variant qualifies: a
+ * non-null range in `filterIdentity` describes a narrower slice and must not be
+ * presented as the Arena-wide comparison.
+ *
+ * `bounds.matches.min` mirrors the eligibility floor `games_count >= 10` from
+ * `arenaWhere({ eligible: true })` in lib/arena/service.ts; keep the two in sync.
+ */
 export function toArenaPopulationCohort(
   value: unknown,
   aid: number,
