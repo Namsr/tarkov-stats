@@ -181,6 +181,20 @@ test("Arena overall falls back to complete played-mode totals and maxima", () =>
   assert.equal(partial.metrics.damage_per_match, null);
 });
 
+test("Arena overall includes modes with unknown match counts", () => {
+  const source = profile(512);
+  for (const [index, name] of modeNames.entries()) {
+    source.stat.arenaOverAllCounters[name].Counters.Kills = index === 0 ? 10 : 0;
+  }
+  source.stat.arenaOverAllCounters.UnrankedShootOutDuo = { Counters: { Kills: 7 } };
+  source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 10 } };
+  const arena = parseArenaProfileStats(source).arenaProfile;
+  assert.equal(arena.modes.shootOutDuo.counters.matches, null);
+  assert.equal(arena.overall.counters.kills, 17);
+  assert.equal(arena.overall.counters.assists, null);
+  assert.equal(arena.overall.counters.max_kill_streak, null);
+});
+
 test("Arena storage writes all modes atomically, keeps nulls, and rejects stale versions", async () => {
   const store = await getStore("arena");
   assert.ok(store);

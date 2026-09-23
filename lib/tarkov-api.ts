@@ -1039,18 +1039,18 @@ function arenaMetrics(counters: ArenaCounters): ArenaMetrics {
 }
 
 function completeCounterSum(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
-  const playedModes = modes.filter((mode) => mode.counters.matches !== null && mode.counters.matches > 0);
-  if (playedModes.length === 0) return 0;
-  const values = playedModes.map((mode) => mode.counters[key]);
+  const availableModes = modes.filter((mode) => mode.counters.matches !== 0);
+  if (availableModes.length === 0) return 0;
+  const values = availableModes.map((mode) => mode.counters[key]);
   if (!values.every((value): value is number => value !== null)) return null;
   const sum = values.reduce((total, value) => total + value, 0);
   return Number.isFinite(sum) && sum >= 0 && (key === "damage" || Number.isSafeInteger(sum)) ? sum : null;
 }
 
 function completeCounterMax(modes: PublicArenaModeStats[], key: keyof ArenaCounters): number | null {
-  const playedModes = modes.filter((mode) => mode.counters.matches !== null && mode.counters.matches > 0);
-  if (playedModes.length === 0) return 0;
-  const values = playedModes.map((mode) => mode.counters[key]);
+  const availableModes = modes.filter((mode) => mode.counters.matches !== 0);
+  if (availableModes.length === 0) return 0;
+  const values = availableModes.map((mode) => mode.counters[key]);
   if (!values.every((value): value is number => value !== null)) return null;
   const max = Math.max(...values);
   return Number.isFinite(max) && max >= 0 && (key === "damage" || Number.isSafeInteger(max)) ? max : null;
