@@ -349,6 +349,7 @@ async function arenaProfileResponse(input: {
         riskMs = timing.elapsedMs(riskStarted);
       }
       if (!isArenaProfileRiskFresh(risk, stored.profileUpdatedAt)) {
+        risk = null;
         scheduleArenaRiskRefresh();
       }
     } else {
@@ -521,7 +522,7 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRisk = result.ok
+    const publicRisk = result.ok && storedRisk?.scoreVersion === riskScoreVersion("seasonal", result.profile.cycleId)
       ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok
@@ -606,7 +607,9 @@ export async function GET(request: NextRequest) {
             console.error("PvE admin risk evaluation failed", error);
           }));
         }
-        const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId });
+        const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("pve", cycleId)
+          ? toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId })
+          : null;
         const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({
           aid,
           mode: "pve",
@@ -807,7 +810,9 @@ export async function GET(request: NextRequest) {
           });
         });
       }
-      const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId });
+      const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+        ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
+        : null;
       const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
         aid,
         mode: "regular",
@@ -900,13 +905,13 @@ export async function GET(request: NextRequest) {
       console.error("regular profile capture after response failed", error);
     }));
 
-    const publicRisk = stats.pvpStatsKnown === false
+    const storedRisk = stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-    const riskIsFresh = publicRisk &&
-      publicRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
-      publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
-      Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    const riskIsFresh = storedRisk &&
+      storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
+      storedRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
+      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (stats.pvpStatsKnown !== false && !riskIsFresh) {
       after(async () => {
         // Let the browser's personal-timeline request finish before the
@@ -917,7 +922,9 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
+    const publicRiskView = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+      ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
+      : null;
     const regularViewModel = await enrichRegularViewModel(
       buildRegularProfileViewModel({
         aid,

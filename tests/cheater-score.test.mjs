@@ -127,6 +127,9 @@ test("achievement evidence cannot overcome invalid combat inputs", () => {
   for (const invalid of [
     { ...valid, pmcKdRatio: Number.NaN },
     { ...valid, pmcKdRatio: undefined },
+    { ...valid, hoursPlayed: 0 },
+    { ...valid, prestige: Number.NaN },
+    { ...valid, longestWinStreak: Number.NaN },
   ]) {
     const result = scoreCheater(invalid, productionBracket, lateAchievement);
     assert.equal(result.score, 0);

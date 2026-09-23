@@ -170,7 +170,7 @@ const Z_HI = 6; // z at which it's maximally suspicious
 
 function hasValidScoreInputs(stats: ParsedPlayerStats): boolean {
   return stats.pvpStatsKnown !== false &&
-    Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed >= 0 &&
+    Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0 &&
     Number.isFinite(stats.pmcRaids) && stats.pmcRaids >= 0 &&
     SIGNALS.every((signal) => Number.isFinite(signal.get(stats)));
 }

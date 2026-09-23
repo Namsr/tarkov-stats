@@ -167,6 +167,15 @@ function rangeFromInput(input: { min?: number; max?: number; percent?: number } 
   };
 }
 
+function finiteNonNegative(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function finiteCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 function normalizeResponse(
   input: CohortResponse,
   hoursCenter: number,
@@ -183,14 +192,11 @@ function normalizeResponse(
     const raw = input.averages?.[metric.key];
     averages[metric.key] =
       typeof raw === "number"
-        ? { value: Number.isFinite(raw) ? raw : null, count: n }
+        ? { value: finiteNonNegative(raw), count: finiteCount(n) }
         : raw && typeof raw === "object"
           ? {
-              value:
-                typeof raw.value === "number" && Number.isFinite(raw.value)
-                  ? raw.value
-                  : null,
-              count: Number(raw.count ?? 0),
+              value: finiteNonNegative(raw.value),
+              count: finiteCount(raw.count),
             }
           : { value: null, count: 0 };
   }
@@ -258,7 +264,7 @@ function demoCohort(
 
 function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
   return Object.fromEntries(
-    METRICS.map((metric) => [metric.key, metric.get(stats)]),
+    METRICS.map((metric) => [metric.key, finiteNonNegative(metric.get(stats))]),
   ) as Record<MetricKey, number | null>;
 }
 
@@ -459,8 +465,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     const average = cohort?.averages[metric.key];
     const hasAverage = cohort?.strategy === "population"
       ? average?.value != null && average.count >= 1
-      : average?.value != null && average.value > 0
-        && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE);
+      : average?.value != null && average.value >= 0
+        && average.count >= MIN_AXIS_SAMPLE;
     const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && hasAverage ? average?.value ?? null : null;
     return {
       key: metric.key, label: t(metric.labelKey),

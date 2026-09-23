@@ -92,8 +92,8 @@ test("generic risk evaluation rejects Arena before touching a store", async () =
 
 test("risk versions are isolated from untouched modes and cycles", () => {
   assert.equal(riskScoreVersion("regular", "persistent"), 2);
-  assert.equal(riskScoreVersion("pve", "persistent"), 1);
-  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 1);
+  assert.equal(riskScoreVersion("pve", "persistent"), 2);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
 
@@ -101,5 +101,8 @@ test("risk backfill only rescans legacy PvE mode rows", async () => {
   const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   assert.match(source, /FROM mode_players p\s+WHERE p\.mode = 'pve'/);
   assert.match(source, /scoreVersion: riskScoreVersion\(mode, cycleId\)/);
+  assert.match(source, /function optionalNumber\(value\)/);
+  assert.match(source, /const hasUsableMetrics = baseline != null/);
+  assert.match(source, /scoreCheater\(\{ \.\.\.stats, pmcRaids: 0 \}, null, null\)/);
   assert.doesNotMatch(source, /await scoreRow\(row, "arena"/);
 });

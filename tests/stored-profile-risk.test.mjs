@@ -5,7 +5,7 @@ import test from "node:test";
 // Execute the stored-profile scheduling block with the route's side effects stubbed.
 const route = readFileSync(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
 const start = route.indexOf("      const riskIsFresh = storedRisk &&", route.indexOf("  if (!force) {"));
-const end = route.indexOf("      const publicRisk = toPublicRiskView(storedRisk", start);
+const end = route.indexOf("      const publicRisk = storedRisk?.scoreVersion", start);
 assert.ok(start >= 0 && end > start);
 const schedule = new Function("stored", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", "riskScoreVersion", route.slice(start, end));
 
@@ -23,7 +23,7 @@ test("stored PvP profiles schedule only missing or stale risk after the response
     const stored = { stats: { pvpStatsKnown: known, profileUpdatedAt: updatedAt }, achievementIds: ["achievement"] };
     const callbacks = [];
     const evaluations = [];
-    schedule(stored, risk, (fn) => callbacks.push(fn), async (input) => evaluations.push(input), (fn) => fn(), 3003626, "persistent", (...versionArgs) => versionArgs[0] === "seasonal" ? 1 : 2);
+    schedule(stored, risk, (fn) => callbacks.push(fn), async (input) => evaluations.push(input), (fn) => fn(), 3003626, "persistent", () => 2);
     assert.equal(callbacks.length, expected);
     assert.equal(evaluations.length, 0);
     for (const callback of callbacks) await callback();

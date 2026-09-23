@@ -37,7 +37,8 @@ export async function evaluateAndStoreRisk(input: {
 }): Promise<CheaterScoreResult> {
   if (!Number.isSafeInteger(input.aid) || input.aid <= 0) throw new TypeError("invalid aid");
   if (input.mode === "arena") throw new ArenaRiskUnsupportedError();
-  const canScore = Number.isFinite(input.stats.pmcRaids) && input.stats.pmcRaids > 0 &&
+  const canScore = Number.isFinite(input.stats.hoursPlayed) && input.stats.hoursPlayed > 0 &&
+    Number.isFinite(input.stats.pmcRaids) && input.stats.pmcRaids > 0 &&
     (input.mode !== "regular" || input.stats.pvpStatsKnown !== false);
   const bracket = bracketFor(input.stats.hoursPlayed);
   let baseline: Baseline | null = null;

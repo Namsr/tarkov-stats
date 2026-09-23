@@ -858,7 +858,8 @@ async function computePersistentTwoDimensionalCohort(input: {
       percent: 30,
       n,
       actualRanges,
-      reason: "target_unavailable",
+      strategy: "population",
+      reason: "insufficient_cohort",
     });
   }
 

@@ -13,16 +13,20 @@ function parsedJson(value, fallback) {
   try { return JSON.parse(String(value ?? "")); } catch { return fallback; }
 }
 
+function optionalNumber(value) {
+  return value == null || value === "" ? undefined : Number(value);
+}
+
 function statsFromRow(row) {
   const stored = parsedJson(row.stats_json, {});
   return {
     nickname: String(stored.nickname ?? row.nickname ?? ""),
     level: Number(stored.level ?? row.level ?? 0),
-    prestige: Number(stored.prestige ?? row.prestige ?? 0),
+    prestige: optionalNumber(stored.prestige ?? row.prestige),
     experience: Number(stored.experience ?? row.experience ?? 0),
     side: String(stored.side ?? row.side ?? ""),
     totalRaids: Number(stored.totalRaids ?? row.total_raids ?? 0),
-    pmcRaids: Number(stored.pmcRaids ?? row.pmc_raids ?? 0),
+    pmcRaids: optionalNumber(stored.pmcRaids ?? row.pmc_raids),
     scavRaids: Number(stored.scavRaids ?? row.scav_raids ?? 0),
     survivedRaids: Number(stored.survivedRaids ?? row.survived ?? 0),
     survivalRate: Number(stored.survivalRate ?? row.survival_rate ?? 0),
@@ -30,20 +34,20 @@ function statsFromRow(row) {
     killedPmc: Number(stored.killedPmc ?? row.killed_pmc ?? 0),
     killsPerRaid: Number(stored.killsPerRaid ?? row.kills_per_raid ?? 0),
     kdRatio: Number(stored.kdRatio ?? row.kd_ratio ?? 0),
-    pmcKdRatio: Number(stored.pmcKdRatio ?? row.pmc_kd_ratio ?? 0),
+    pmcKdRatio: optionalNumber(stored.pmcKdRatio ?? row.pmc_kd_ratio),
     deaths: Number(stored.deaths ?? row.deaths ?? 0),
     pmcDeaths: Number(stored.pmcDeaths ?? row.pmc_deaths ?? 0),
     runThrough: Number(stored.runThrough ?? row.run_through ?? 0),
     pmcSurvived: Number(stored.pmcSurvived ?? row.pmc_survived ?? 0),
-    pmcSurvivalRate: Number(stored.pmcSurvivalRate ?? row.pmc_survival_rate ?? 0),
+    pmcSurvivalRate: optionalNumber(stored.pmcSurvivalRate ?? row.pmc_survival_rate),
     pmcKills: Number(stored.pmcKills ?? row.pmc_kills ?? 0),
-    pmcKillsPerRaid: Number(stored.pmcKillsPerRaid ?? row.pmc_kills_per_raid ?? 0),
+    pmcKillsPerRaid: optionalNumber(stored.pmcKillsPerRaid ?? row.pmc_kills_per_raid),
     pmcExitKilled: Number(stored.pmcExitKilled ?? 0),
     pmcExitLeft: Number(stored.pmcExitLeft ?? 0),
     pmcExitTransit: Number(stored.pmcExitTransit ?? 0),
     pmcExitMia: Number(stored.pmcExitMia ?? 0),
-    hoursPlayed: Number(stored.hoursPlayed ?? row.hours ?? row.lifetime_pvp_hours ?? 0),
-    longestWinStreak: Number(stored.longestWinStreak ?? row.longest_win_streak ?? 0),
+    hoursPlayed: optionalNumber(stored.hoursPlayed ?? row.hours ?? row.lifetime_pvp_hours),
+    longestWinStreak: optionalNumber(stored.longestWinStreak ?? row.longest_win_streak),
     achievementsCount: Number(stored.achievementsCount ?? row.achv_count ?? 0),
     registrationDate: Number(stored.registrationDate ?? 0),
     lastActiveDate: Number(stored.lastActiveDate ?? 0),
@@ -168,15 +172,15 @@ async function scoreRow(row, mode, cycleId) {
   const baselineMode = mode === "seasonal" ? "regular" : mode;
   const stats = statsFromRow(row);
   if (mode === "regular") stats.pvpStatsKnown = Number(row.pvp_stats_known) === 1;
-  const bracket = bracketFor(stats.hoursPlayed);
+  const bracket = Number.isFinite(stats.hoursPlayed) ? bracketFor(stats.hoursPlayed) : null;
   const baselineKey = mode === "seasonal"
-    ? `${baselineMode}:${bracket.key}`
+    ? `${baselineMode}:${bracket?.key ?? "invalid"}`
     : `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${row.aid}`;
   if (!baselines.has(baselineKey)) {
     baselines.set(
       baselineKey,
       mode === "seasonal"
-        ? legacyBaselineFor(baselineMode, bracket)
+        ? bracket ? legacyBaselineFor(baselineMode, bracket) : null
         : riskBaselineFor(baselineMode, stats, Number(row.aid)),
     );
   }
