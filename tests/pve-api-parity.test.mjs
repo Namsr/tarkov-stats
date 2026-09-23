@@ -56,6 +56,8 @@ test("PvE stored risk version changes schedule refresh while retaining the safe 
     pveBranch,
     /toPublicRiskView\(\s*hasCurrentRiskVersion\(storedRisk, "pve"\) \? storedRisk : null/,
   );
+  assert.match(profile, /toPublicRiskView\(storedRisk, \{ aid, mode: "seasonal"/);
+  assert.match(profile, /toPublicRiskView\(storedRisk, \{ aid, mode: "regular"/);
 });
 
 test("shared radar accepts explicit population strategy and one-value population metrics", () => {

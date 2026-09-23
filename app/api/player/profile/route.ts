@@ -519,7 +519,7 @@ export async function GET(request: NextRequest) {
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
-    const seasonalRiskIsFresh = result.ok && hasCurrentRiskVersion(storedRisk, "seasonal") && storedRisk &&
+    const seasonalRiskIsFresh = result.ok && storedRisk &&
       storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
@@ -532,7 +532,7 @@ export async function GET(request: NextRequest) {
       });
     }
     const publicRisk = result.ok
-      ? toPublicRiskView(hasCurrentRiskVersion(storedRisk, "seasonal") ? storedRisk : null, { aid, mode: "seasonal", cycleId })
+      ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok
       ? await enrichSeasonalViewModel(
@@ -803,7 +803,7 @@ export async function GET(request: NextRequest) {
       const storedRisk = stored.stats.pvpStatsKnown === false
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-      const riskIsFresh = hasCurrentRiskVersion(storedRisk, "regular") && storedRisk &&
+      const riskIsFresh = storedRisk &&
         storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
         Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
       if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
@@ -818,10 +818,7 @@ export async function GET(request: NextRequest) {
           });
         });
       }
-      const publicRisk = toPublicRiskView(
-        hasCurrentRiskVersion(storedRisk, "regular") ? storedRisk : null,
-        { aid, mode: "regular", cycleId },
-      );
+      const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId });
       const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
         aid,
         mode: "regular",
@@ -917,7 +914,7 @@ export async function GET(request: NextRequest) {
     const publicRisk = stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-    const riskIsFresh = hasCurrentRiskVersion(publicRisk, "regular") && publicRisk &&
+    const riskIsFresh = publicRisk &&
       publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (stats.pvpStatsKnown !== false && !riskIsFresh) {
@@ -930,10 +927,7 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRiskView = toPublicRiskView(
-      hasCurrentRiskVersion(publicRisk, "regular") ? publicRisk : null,
-      { aid, mode: "regular", cycleId },
-    );
+    const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
     const regularViewModel = await enrichRegularViewModel(
       buildRegularProfileViewModel({
         aid,

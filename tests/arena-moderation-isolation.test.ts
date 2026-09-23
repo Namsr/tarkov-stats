@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
@@ -123,4 +127,92 @@ test("PvE backfill uses the runtime invalid-input guard before achievements", as
   assert.match(source, /pvpStatsKnown: pve/);
   assert.match(source, /\? stored\.pvpStatsKnown === true/);
   assert.match(source, /if \(!zeroRisk && !achievementBaselines\.has\(baselineMode\)\)/);
+});
+
+test("executed PvE backfill stores zero for unknown combat metrics with achievements", () => {
+  const directory = mkdtempSync(join(tmpdir(), "tarkov-pve-risk-backfill-"));
+  const playersPath = join(directory, "players.db");
+  const adminPath = join(directory, "admin.db");
+  const bansPath = join(directory, "bans.db");
+  const progressionPath = join(directory, "progression.db");
+  const reportsPath = join(directory, "reports.db");
+  for (const path of [bansPath, progressionPath, reportsPath]) new DatabaseSync(path).close();
+  const players = new DatabaseSync(playersPath);
+  players.exec(`CREATE TABLE mode_players (
+    mode TEXT NOT NULL,
+    aid INTEGER NOT NULL,
+    nickname TEXT,
+    hours REAL,
+    pmc_raids INTEGER,
+    total_raids INTEGER,
+    pmc_survival_rate REAL,
+    pmc_kd_ratio REAL,
+    pmc_kills_per_raid REAL,
+    longest_win_streak INTEGER,
+    prestige INTEGER,
+    achievements TEXT,
+    pvp_stats_known INTEGER,
+    profile_updated_at INTEGER,
+    stats_json TEXT NOT NULL
+  )`);
+  players.exec("CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY, reason TEXT NOT NULL, created_at INTEGER NOT NULL)");
+  players.exec("CREATE TABLE players (aid INTEGER PRIMARY KEY)");
+  const insert = players.prepare(`INSERT INTO mode_players
+    (mode, aid, nickname, hours, pmc_raids, total_raids, pmc_survival_rate, pmc_kd_ratio,
+     pmc_kills_per_raid, longest_win_streak, prestige, achievements, pvp_stats_known,
+     profile_updated_at, stats_json)
+    VALUES ('pve', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const validStats = (aid: number, owned: boolean) => JSON.stringify({
+    pvpStatsKnown: true,
+    hoursPlayed: 1000,
+    pmcRaids: 1000,
+    pmcSurvivalRate: 50,
+    pmcKdRatio: 1,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 10,
+    prestige: 0,
+    nickname: `p${aid}`,
+    achievementsCount: owned ? 1 : 0,
+  });
+  const targetStats = JSON.stringify({
+    pvpStatsKnown: true,
+    hoursPlayed: 5,
+    pmcRaids: 5,
+    pmcSurvivalRate: 0,
+    pmcKdRatio: 0,
+    pmcKillsPerRaid: 0,
+    nickname: "invalid-target",
+    achievementsCount: 1,
+  });
+  insert.run(1, "invalid-target", 5, 5, 5, 0, 0, 0, 0, 0, JSON.stringify(["rare"]), 1, 1, targetStats);
+  for (let aid = 2; aid <= 11; aid += 1) {
+    insert.run(aid, `owner${aid}`, 1000, 1000, 1000, 50, 1, 2, 10, 0, JSON.stringify(["rare"]), 1, 1, validStats(aid, true));
+  }
+  for (let aid = 12; aid <= 335; aid += 1) {
+    insert.run(aid, `peer${aid}`, 1000, 1000, 1000, 50, 1, 2, 10, 0, "[]", 1, 1, validStats(aid, false));
+  }
+  players.close();
+
+  const result = spawnSync(process.execPath, [
+    "--experimental-strip-types",
+    "--experimental-sqlite",
+    "scripts/backfill-admin-risk.mjs",
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SQLITE_PATH: playersPath,
+      ADMIN_ANALYTICS_SQLITE_PATH: adminPath,
+      BANS_SQLITE_PATH: bansPath,
+      PROGRESSION_SQLITE_PATH: progressionPath,
+      REPORTS_SQLITE_PATH: reportsPath,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const admin = new DatabaseSync(adminPath);
+  const row = admin.prepare("SELECT score, score_version FROM risk_evaluations WHERE aid = 1 AND mode = 'pve'").get();
+  admin.close();
+  assert.equal(Number(row.score), 0);
+  assert.equal(Number(row.score_version), 2);
 });
