@@ -5,6 +5,7 @@ import { useI18n } from "@/lib/i18n/context";
 import ArenaRadar from "@/components/ArenaRadar";
 import {
   ARENA_METRIC_KEYS,
+  loadArenaPopulationCohort,
   toArenaCohort,
 } from "@/components/arena-ui";
 import { arenaCounterValue, formatArenaMetric } from "@/components/arena-ui";
@@ -82,7 +83,14 @@ export default function ArenaModeComparison({
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));
         }
-        return result;
+        if (result.quality === "sufficient" && result.sampleN >= Math.max(20, result.required)) return result;
+        return await loadArenaPopulationCohort(
+          aid,
+          mode,
+          statistic,
+          body.schemaVersion,
+          controller.signal,
+        ) ?? result;
       })
       .then((result) => {
         if (active) setCohort(result);
@@ -114,7 +122,7 @@ export default function ArenaModeComparison({
               : error
                 ? error
                 : cohortReady
-                  ? t("arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString() ?? "0", percent: cohort?.percent ?? 30 })
+                  ? t(cohort?.strategy === "population" ? "arena.radar.populationReady" : "arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString() ?? "0", percent: cohort?.percent ?? 30 })
                   : t("arena.radar.insufficient", { n: cohort?.sampleN ?? 0, target: required })}
           </p>
         </div>

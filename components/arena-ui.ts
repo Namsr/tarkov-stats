@@ -11,6 +11,7 @@ import {
   type ArenaModeStats,
   type ArenaOverallStats,
   type ArenaProfile,
+  type ArenaStatistic,
 } from "@/types/arena";
 
 export { ARENA_METRIC_KEYS, ARENA_MODE_KEYS };
@@ -326,6 +327,64 @@ export function toArenaAverage(value: unknown): ArenaAverageResult | null {
   if (!isRecord(value)) return null;
   const candidates = [value.arenaAverage, value.average, value.result, value.data, value];
   return candidates.find(looksLikeAverage) ?? null;
+}
+
+export function toArenaPopulationCohort(
+  value: unknown,
+  aid: number,
+  mode: ArenaModeKey,
+  statistic: ArenaStatistic,
+  schemaVersion: unknown,
+): ArenaCohortResult | null {
+  const average = toArenaAverage(value);
+  const identity = average?.filterIdentity;
+  if (!isRecord(value) || value.mode !== "arena" ||
+      typeof schemaVersion !== "number" || !Number.isSafeInteger(schemaVersion) || value.schemaVersion !== schemaVersion ||
+      !average || !identity || identity.mode !== mode || identity.statistic !== statistic ||
+      identity.dimension !== "matches" || identity.metric !== "players" ||
+      identity.minHours !== null || identity.maxHours !== null ||
+      identity.minMatches !== null || identity.maxMatches !== null ||
+      !Number.isSafeInteger(average.sampleN) || average.sampleN < 0 ||
+      !ARENA_METRIC_KEYS.every((metric) => {
+        const item = average.metrics[metric];
+        return isRecord(item) && (item.value === null || typeof item.value === "number" && Number.isFinite(item.value)) &&
+          typeof item.count === "number" && Number.isSafeInteger(item.count) && item.count >= 0 &&
+          (item.reason === null || item.reason === "no_valid_values" || item.reason === "insufficient_values");
+      })) return null;
+  return {
+    aid,
+    mode,
+    strategy: "population",
+    statistic,
+    target: { hours: null, matches: null },
+    percent: 30,
+    bounds: { hours: { min: null, max: null }, matches: { min: 10, max: null } },
+    sampleN: average.sampleN,
+    required: 20,
+    quality: average.sampleN >= 20 ? "sufficient" : "unavailable",
+    reason: average.sampleN >= 20 ? null : "insufficient_cohort",
+    metrics: average.metrics,
+  };
+}
+
+export async function loadArenaPopulationCohort(
+  aid: number,
+  mode: ArenaModeKey,
+  statistic: ArenaStatistic,
+  schemaVersion: unknown,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ArenaCohortResult | null> {
+  const query = new URLSearchParams({ mode: "arena", arenaMode: mode, statistic });
+  try {
+    const response = await fetchImpl(`/api/average?${query}`, { signal });
+    if (!response.ok) return null;
+    const body = await response.json().catch(() => null);
+    return toArenaPopulationCohort(body, aid, mode, statistic, schemaVersion);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    return null;
+  }
 }
 
 function looksLikeCohort(value: unknown): value is ArenaCohortResult {

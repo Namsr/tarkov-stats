@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { toArenaCohort } from "@/components/arena-ui";
+import { loadArenaPopulationCohort, toArenaCohort } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
 import type {
   ArenaCohortResult,
@@ -55,7 +55,16 @@ export default function ArenaOverallComparison({
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));
         }
-        return result;
+        if (mode === "overall" || (result.quality === "sufficient" && result.sampleN >= Math.max(20, result.required))) {
+          return result;
+        }
+        return await loadArenaPopulationCohort(
+          aid,
+          mode,
+          statistic,
+          body.schemaVersion,
+          controller.signal,
+        ) ?? result;
       })
       .then((result) => {
         if (active) setCohort(result);
@@ -112,7 +121,7 @@ export default function ArenaOverallComparison({
     <div className="arena-comparison-axis" aria-hidden="true"><span>0×</span><span>1×</span><span>2×</span></div>
     <p className="arena-combat-footnote">{t("arena.combat.fixedAverage")}</p>
     {!loading && !error && <p className="arena-combat-footnote">{cohortReady
-      ? t(mode === "overall" ? "arena.radar.overallPopulation" : "arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString(lang) ?? "0", percent: cohort?.percent ?? 30 })
+      ? t(cohort?.strategy === "population" ? "arena.radar.populationReady" : "arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString(lang) ?? "0", percent: cohort?.percent ?? 30 })
       : t("arena.radar.insufficient", { n: cohort?.sampleN ?? 0, target: required })}</p>}
   </div>;
 }

@@ -100,6 +100,8 @@ test("Arena presentation preserves nullable values and namespaced filters", () =
 test("Arena profile shares the profile header and selects an overall or mode scope", () => {
   const profile = read("components/ArenaPlayer.tsx");
   const bars = read("components/ArenaModeBars.tsx");
+  const overallComparison = read("components/ArenaOverallComparison.tsx");
+  const modeComparison = read("components/ArenaModeComparison.tsx");
   assert.match(profile, /<ProfileHeader[\s\S]*?mode="arena"/);
   assert.match(profile, /<ProfileSectionNav/);
   assert.match(profile, /arenaModeFromUrl/);
@@ -112,6 +114,12 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.doesNotMatch(profile, /<ProgressionPanel|<ProfileAchievements|<ProfileSkills/);
   assert.match(bars, /metric === "win_rate" \? 100/);
   assert.match(bars, /stopPropagation\(\)/);
+  assert.match(overallComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
+  assert.match(modeComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
+  assert.match(overallComparison, /loadArenaPopulationCohort/);
+  assert.match(modeComparison, /loadArenaPopulationCohort/);
+  assert.match(overallComparison, /body\.schemaVersion/);
+  assert.match(modeComparison, /body\.schemaVersion/);
 });
 
 test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {
@@ -289,7 +297,7 @@ test("Arena averages reuse the common portrait header without a profile-period s
 });
 
 test("Arena helpers execute the nullable and legacy normalization rules", async () => {
-  const { finiteNumber, isArenaProfile, normalizeArenaMetrics, toArenaProfile } = await loadArenaUi();
+  const { finiteNumber, isArenaProfile, loadArenaPopulationCohort, normalizeArenaMetrics, toArenaPopulationCohort, toArenaProfile } = await loadArenaUi();
   assert.equal(finiteNumber(null), null);
   assert.equal(finiteNumber(undefined), null);
   assert.equal(finiteNumber(0), 0);
@@ -300,6 +308,93 @@ test("Arena helpers execute the nullable and legacy normalization rules", async 
     kills_per_match: null,
     damage_per_match: null,
   });
+
+  const metrics = Object.fromEntries([
+    "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
+  ].map((metric) => [metric, { value: 1, count: 34, reason: null }]));
+  const populationAverage = {
+    mode: "arena",
+    schemaVersion: 2,
+    filterIdentity: {
+      mode: "lastHero",
+      statistic: "trimmed_mean",
+      dimension: "matches",
+      metric: "players",
+      minHours: null,
+      maxHours: null,
+      minMatches: null,
+      maxMatches: null,
+    },
+    sampleN: 34,
+    metrics,
+    buckets: [],
+  };
+  const population = toArenaPopulationCohort(
+    populationAverage,
+    17,
+    "lastHero",
+    "trimmed_mean",
+    2,
+  );
+  assert.equal(population.strategy, "population");
+  assert.equal(population.sampleN, 34);
+  assert.equal(population.quality, "sufficient");
+  assert.equal(population.metrics.kd_ratio.value, 1);
+  assert.deepEqual(population.bounds.matches, { min: 10, max: null });
+  assert.equal(toArenaPopulationCohort({
+    ...populationAverage,
+    filterIdentity: { ...populationAverage.filterIdentity, minMatches: 10 },
+  }, 17, "lastHero", "trimmed_mean", 2), null);
+  assert.equal(toArenaPopulationCohort({
+    ...populationAverage,
+    metrics: { ...metrics, kd_ratio: { value: "1", count: 34, reason: null } },
+  }, 17, "lastHero", "trimmed_mean", 2), null);
+  assert.equal(toArenaPopulationCohort({
+    ...populationAverage,
+    mode: "regular",
+  }, 17, "lastHero", "trimmed_mean", 2), null);
+  assert.equal(toArenaPopulationCohort(
+    populationAverage,
+    17,
+    "lastHero",
+    "trimmed_mean",
+    1,
+  ), null);
+
+  const requests = [];
+  const loaded = await loadArenaPopulationCohort(
+    17,
+    "lastHero",
+    "trimmed_mean",
+    2,
+    new AbortController().signal,
+    async (input) => {
+      requests.push(String(input));
+      return Response.json(populationAverage);
+    },
+  );
+  assert.equal(loaded?.strategy, "population");
+  assert.deepEqual(requests, [
+    "/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean",
+  ]);
+  const malformed = await loadArenaPopulationCohort(
+    17,
+    "lastHero",
+    "trimmed_mean",
+    2,
+    new AbortController().signal,
+    async () => new Response("not json"),
+  );
+  assert.equal(malformed, null);
+  const failed = await loadArenaPopulationCohort(
+    17,
+    "lastHero",
+    "trimmed_mean",
+    2,
+    new AbortController().signal,
+    async () => { throw new Error("network unavailable"); },
+  );
+  assert.equal(failed, null);
 
   const normalized = toArenaProfile({
     aid: 17,

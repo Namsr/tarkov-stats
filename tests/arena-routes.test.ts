@@ -49,7 +49,19 @@ const insert = db.prepare(`INSERT INTO arena_mode_stats (
 
 for (let aid = 1; aid <= 22; aid += 1) {
   for (const mode of modes) {
-    insert.run(aid, mode, 100, 100, aid, 50, 25, 2, 500, ARENA_PARSER_VERSION);
+    const sparseLastHero = mode === "lastHero" && aid > 1 && aid <= 17;
+    insert.run(
+      aid,
+      mode,
+      sparseLastHero ? 1_000 : 100,
+      sparseLastHero ? 1_000 : 100,
+      aid,
+      50,
+      25,
+      2,
+      500,
+      ARENA_PARSER_VERSION,
+    );
   }
 }
 
@@ -189,6 +201,20 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
   assert.deepEqual(body.target, { hours: 100, matches: 100 });
   assert.equal(body.quality, "sufficient");
   assert.equal(body.sampleN, 21);
+
+  const sparseResponse = await getCohort(new NextRequest(
+    "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=lastHero&statistic=trimmed_mean",
+  ));
+  assert.equal(sparseResponse.status, 200);
+  const sparse = await sparseResponse.json();
+  assert.equal(sparse.mode, "lastHero");
+  assert.equal(sparse.strategy, "matched");
+  assert.equal(sparse.quality, "unavailable");
+  assert.equal(sparse.sampleN, 5);
+  assert.deepEqual(sparse.bounds, {
+    hours: { min: 70, max: 130 },
+    matches: { min: 70, max: 130 },
+  });
 
   const overallResponse = await getCohort(new NextRequest(
     "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=overall&statistic=trimmed_mean",
