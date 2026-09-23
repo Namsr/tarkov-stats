@@ -144,6 +144,24 @@ export function homeProfileSide(profile: HomeProfile | null | undefined): string
   return side?.trim() ?? "";
 }
 
+/**
+ * Prestige of the showcase account, e.g. 6. Mirrors the profile header:
+ * Arena has no prestige, other modes read progression first and fall back
+ * to the statistics copy. Non-positive or non-integer values stay null so
+ * the badge stays hidden instead of showing a placeholder.
+ */
+export function homeProfilePrestige(
+  profile: HomeProfile | null | undefined,
+  mode?: GameMode,
+): number | null {
+  if (mode === "arena") return null;
+  const prestige = profile?.viewModel?.progression?.prestige
+    ?? profile?.viewModel?.statistics?.prestige;
+  return typeof prestige === "number" && Number.isSafeInteger(prestige) && prestige > 0
+    ? prestige
+    : null;
+}
+
 export const HOME_RADAR_METRICS = [
   { key: "kd_ratio", stat: "kdRatio", label: "radar.metric.kd", digits: 2 },
   { key: "pmc_kd_ratio", stat: "pmcKdRatio", label: "radar.metric.pmcKd", digits: 2 },

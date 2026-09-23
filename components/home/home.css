@@ -34,6 +34,10 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-player-identity { display: flex; align-items: center; gap: 22px; min-width: 0; }
 .home-player-name { display: block; font-size: 30px; font-weight: 620; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .home-player-name:hover { text-decoration: underline; text-underline-offset: 6px; }
+.home-player-name-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.home-player-name-row .home-player-name { min-width: 0; }
+.home-player-name-row .profile-prestige { width: 32px; height: 32px; }
+.home-player-name-row .profile-prestige-fallback { font-size: 12px; }
 .home-player-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 14px; color: var(--muted); margin-top: 2px; }
 .home-player-side { font-size: 13px; font-weight: 700; color: var(--foreground); opacity: .75; }
 .home-player-side::before { content: "·"; margin-inline-end: 9px; font-weight: 400; opacity: .6; }
@@ -167,6 +171,8 @@ html[data-theme="light"] .home-risk-status--severe { color: #c22a27; }
   .home-showcase-modes button { flex: 1; padding: 11px 10px; }
   .home-player-identity .profile-portrait { width: 56px; height: 56px; }
   .home-player-name { font-size: 23px; }
+  .home-player-name-row { gap: 8px; }
+  .home-player-name-row .profile-prestige { width: 26px; height: 26px; }
   .home-player-side { font-size: 12px; }
   .home-showcase-modes { margin-bottom: 16px; }
   .home-showcase-modes button { padding: 8px 12px; font-size: 13px; }
