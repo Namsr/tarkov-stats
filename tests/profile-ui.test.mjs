@@ -478,6 +478,7 @@ test("regular radar period switch identifies requests by freshness", async () =>
 test("radar keeps raw player values independent from baseline availability", async () => {
   const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
   const radar = await readFile("components/ProfileRadar.tsx", "utf8");
+  assert.match(source, /finiteNonNegativeMetricValue\(metric\.get\(stats\)\)/);
   assert.match(source, /a: playerValues\?\.\[metric\.key\] \?\? null/);
   assert.match(source, /cohort\?\.quality === "sufficient" && cohort.twoDimensional/);
   assert.match(radar, /value\(metric.a, metric\)/);

@@ -116,12 +116,20 @@ test("homeCohort keeps radar averages and rejects foreign payloads", () => {
   };
   const parsed = homeCohort(persistent);
   assert.equal(parsed?.quality, "sufficient");
+  assert.equal(parsed?.strategy, "matched");
   assert.deepEqual(parsed?.averages.kd_ratio, { value: 8.9, count: 60 });
   assert.deepEqual(parsed?.averages.level, { value: null, count: 0 });
   assert.ok(!Object.keys(parsed?.averages ?? {}).includes("unknown_metric"));
   // Non-finite values and counts degrade instead of leaking into the radar.
   const dirty = homeCohort({ quality: "unavailable", averages: { kd_ratio: { value: Number.NaN, count: "x" } } });
   assert.deepEqual(dirty?.averages.kd_ratio, { value: null, count: 0 });
+  const population = homeCohort({
+    quality: "sufficient",
+    strategy: "population",
+    averages: { kd_ratio: { value: 0, count: 1 } },
+  });
+  assert.equal(population?.strategy, "population");
+  assert.deepEqual(population?.averages.kd_ratio, { value: 0, count: 1 });
 });
 
 test("homeProfileSide reads the faction from every mode payload shape", () => {

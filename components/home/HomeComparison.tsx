@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { HOME_RADAR_METRICS, homePercentageDifference, homeRadarRatio, type HomeProfile, type HomeCohort } from "@/lib/home-showcase";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
+import { comparisonCohortMetricValue, finiteNonNegativeMetricValue } from "@/lib/profile-cohort";
 import { useFavorites } from "@/lib/favorites/context";
 import type { GameMode } from "@/types/seasonal";
 import { useChartWidth } from "./useChartWidth";
@@ -69,10 +70,13 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   // The homepage passes a normalized cohort, but a payload without radar
   // averages must still degrade to an empty baseline set instead of throwing.
   const averages: HomeCohort["averages"] = cohort?.averages ?? {};
+  const cohortStrategy = cohort?.strategy ?? "matched";
   const metrics = HOME_RADAR_METRICS.map((metric) => {
     const average = averages[metric.key];
-    const baseline = average && average.count >= (metric.key === "pmc_survival_rate" ? 1 : 20) ? average.value : null;
-    return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : favProfile?.comparisonStats?.[metric.stat] ?? null };
+    const baseline = comparisonCohortMetricValue(cohortStrategy, average ?? { value: null, count: 0 });
+    const playerValue = finiteNonNegativeMetricValue(profile?.comparisonStats?.[metric.stat]);
+    const favoriteValue = finiteNonNegativeMetricValue(favProfile?.comparisonStats?.[metric.stat]);
+    return { ...metric, baseline, a: playerValue, b: mode === "average" ? baseline : favoriteValue };
   });
   const point = (index: number, r: number) => { const angle = ([-150, -90, -30, 30, 90, 150][index] * Math.PI) / 180; return { x: width / 2 + Math.cos(angle) * r, y: height / 2 + Math.sin(angle) * r }; };
   const polygon = (points: { x: number; y: number }[]) => points.map((p) => `${p.x},${p.y}`).join(" ");

@@ -97,7 +97,7 @@ function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
  */
 export function homeCohort(payload: unknown): HomeCohort | null {
   if (payload == null || typeof payload !== "object") return null;
-  const { quality, averages } = payload as { quality?: unknown; averages?: unknown };
+  const { quality, strategy, averages } = payload as { quality?: unknown; strategy?: unknown; averages?: unknown };
   if (typeof quality !== "string" || averages == null || typeof averages !== "object") return null;
   const source = averages as Record<string, unknown>;
   const picked: HomeCohort["averages"] = {};
@@ -106,11 +106,15 @@ export function homeCohort(payload: unknown): HomeCohort | null {
     if (entry == null || typeof entry !== "object") continue;
     const { value, count } = entry as { value?: unknown; count?: unknown };
     picked[metric.key] = {
-      value: typeof value === "number" && Number.isFinite(value) ? value : null,
-      count: typeof count === "number" && Number.isFinite(count) ? count : 0,
+      value: typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null,
+      count: typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : 0,
     };
   }
-  return Object.keys(picked).length ? { quality, averages: picked } : null;
+  return Object.keys(picked).length ? {
+    quality,
+    strategy: strategy === "population" ? "population" : "matched",
+    averages: picked,
+  } : null;
 }
 
 export function pickShowcaseAid(config: ShowcaseConfig | null): number {
@@ -173,6 +177,7 @@ export const HOME_RADAR_METRICS = [
 
 export interface HomeCohort {
   quality: string;
+  strategy: "matched" | "population";
   averages: Partial<Record<typeof HOME_RADAR_METRICS[number]["key"], { value: number | null; count: number }>>;
 }
 

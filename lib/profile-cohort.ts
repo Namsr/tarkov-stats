@@ -138,17 +138,18 @@ export function selectComparisonPercent(
   return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= COMPARISON_COHORT_TARGET) ?? 30;
 }
 
+export function finiteNonNegativeMetricValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 export function comparisonCohortMetricValue(
   strategy: ComparisonCohortStrategy,
   metric: { value: unknown; count: unknown },
 ): number | null {
-  if (typeof metric.value !== "number" || typeof metric.count !== "number") return null;
-  const value = metric.value;
-  const count = metric.count;
+  const value = finiteNonNegativeMetricValue(metric.value);
+  const count = finiteNonNegativeMetricValue(metric.count);
   const minimum = strategy === "population" ? 1 : COMPARISON_COHORT_TARGET;
-  return Number.isFinite(value) && value >= 0 && Number.isFinite(count) && count >= minimum
-    ? value
-    : null;
+  return value !== null && count !== null && count >= minimum ? value : null;
 }
 
 export function makeComparisonCohortResult(input: {

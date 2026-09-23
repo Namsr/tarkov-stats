@@ -5,6 +5,7 @@ import {
   COMPARISON_COHORT_TARGET,
   comparisonCohortMetricValue,
   comparisonRangeFor,
+  finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
   makeEmptyPopulationCohortResult,
   selectComparisonPercent,
@@ -22,6 +23,15 @@ test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
     hours: { min: 90, max: 110 },
     pmcRaids: { min: 18, max: 22 },
   });
+});
+
+test("player radar metrics preserve zero and reject invalid values", () => {
+  assert.equal(finiteNonNegativeMetricValue(0), 0);
+  assert.equal(finiteNonNegativeMetricValue(4.5), 4.5);
+  assert.equal(finiteNonNegativeMetricValue(null), null);
+  assert.equal(finiteNonNegativeMetricValue(-1), null);
+  assert.equal(finiteNonNegativeMetricValue(Number.NaN), null);
+  assert.equal(finiteNonNegativeMetricValue(Number.POSITIVE_INFINITY), null);
 });
 
 test("cohort metric values use one finite non-negative strategy rule", () => {

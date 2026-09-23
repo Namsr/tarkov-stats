@@ -9,7 +9,7 @@ import ProfileRadar from "@/components/ProfileRadar";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
-import { comparisonCohortMetricValue } from "@/lib/profile-cohort";
+import { comparisonCohortMetricValue, finiteNonNegativeMetricValue } from "@/lib/profile-cohort";
 import type { GameMode } from "@/types/seasonal";
 
 type Dimension = "hours" | "pmc_raids";
@@ -254,7 +254,7 @@ function demoCohort(
 
 function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
   return Object.fromEntries(
-    METRICS.map((metric) => [metric.key, metric.get(stats)]),
+    METRICS.map((metric) => [metric.key, finiteNonNegativeMetricValue(metric.get(stats))]),
   ) as Record<MetricKey, number | null>;
 }
 
