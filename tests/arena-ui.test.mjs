@@ -406,7 +406,7 @@ test("Arena helpers execute the nullable and legacy normalization rules", async 
     nickname: "Zero",
     profileUpdatedAt: 1,
     fetchedAt: null,
-    parserVersion: 2,
+    parserVersion: 3,
     overall: { source: "upstream", hours: null, counters: { matches: null, kills: 0 }, metrics: { kd_ratio: 0 } },
     modes: { teamFight: { mode: "teamFight", hours: null, counters: { matches: null, kills: 0 }, metrics: { kd_ratio: 0 } } },
   }, 17);

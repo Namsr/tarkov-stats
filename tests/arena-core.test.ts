@@ -28,6 +28,7 @@ const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const { getArenaAverage, getArenaCohort, getArenaProfile, getArenaProfileRisk } = await import("../lib/arena/service.ts");
 const {
   ARENA_HISTORY_INSERT_SQL,
+  ARENA_PARSER_VERSION,
   ARENA_UPSERT_SQL,
   arenaUpsertStatements,
   initializeArenaSchema,
@@ -102,7 +103,7 @@ test("Arena parser preserves zeroes, missing counters, source counters, and inco
   assert.equal(arena.modes.teamFight.counters.kills, 0);
   assert.equal(arena.modes.teamFight.metrics.kd_ratio, null);
   assert.equal(arena.modes.teamFight.counters.headshots, null);
-  assert.equal(arena.modes.shootOutDuo.counters.matches, null);
+  assert.equal(arena.modes.shootOutDuo.counters.matches, 0);
   assert.equal(arena.overall.counters.headshots, null);
 });
 
@@ -143,7 +144,7 @@ test("Arena parser computes five exact formulas and rejects invalid raw counter 
   assert.equal(fractional.metrics.kills_per_match, null);
 });
 
-test("Arena overall falls back only to complete five-mode additive totals and maxima", () => {
+test("Arena overall falls back to complete played-mode totals and maxima", () => {
   const source = profile(511);
   for (const [index, name] of modeNames.entries()) {
     const counters = source.stat.arenaOverAllCounters[name].Counters;
@@ -151,16 +152,47 @@ test("Arena overall falls back only to complete five-mode additive totals and ma
     counters.MaxKillsWithoutDeaths = 20 + index;
   }
   source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 100 } };
-  const complete = parseArenaProfileStats(source).arenaProfile.overall;
-  assert.equal(complete.source, "upstream");
-  assert.equal(complete.counters.kills, 60);
-  assert.equal(complete.counters.max_kill_streak, 24);
-  assert.equal(complete.counters.current_kill_streak, null);
+  const complete = parseArenaProfileStats(source).arenaProfile;
+  assert.equal(complete.overall.source, "upstream");
+  assert.equal(complete.overall.counters.kills, 60);
+  assert.equal(complete.overall.counters.max_kill_streak, 24);
+  assert.equal(complete.overall.counters.current_kill_streak, null);
 
-  delete source.stat.arenaOverAllCounters.UnrankedShootOutDuo.Counters.DamageDealt;
+  const shootOutDuo = source.stat.arenaOverAllCounters.UnrankedShootOutDuo;
+  source.stat.arenaOverAllCounters.UnrankedShootOutDuo = undefined;
+  source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 80 } };
+  const unplayed = parseArenaProfileStats(source).arenaProfile;
+  assert.equal(unplayed.modes.shootOutDuo.counters.matches, 0);
+  assert.equal(unplayed.overall.counters.matches, 80);
+  assert.equal(unplayed.overall.counters.wins, 40);
+  assert.equal(unplayed.overall.counters.losses, 24);
+  assert.equal(unplayed.overall.counters.kills, 46);
+  assert.equal(unplayed.overall.counters.assists, 8);
+  assert.equal(unplayed.overall.counters.headshots, 22);
+  assert.equal(unplayed.overall.counters.damage, 37_600);
+  assert.equal(unplayed.overall.counters.round_mvp, 8);
+  assert.equal(unplayed.overall.counters.match_mvp, 4);
+  assert.equal(unplayed.overall.counters.max_kill_streak, 23);
+
+  source.stat.arenaOverAllCounters.UnrankedShootOutDuo = shootOutDuo;
+  delete shootOutDuo.Counters.DamageDealt;
   const partial = parseArenaProfileStats(source).arenaProfile.overall;
   assert.equal(partial.counters.damage, null);
   assert.equal(partial.metrics.damage_per_match, null);
+});
+
+test("Arena overall includes modes with unknown match counts", () => {
+  const source = profile(512);
+  for (const [index, name] of modeNames.entries()) {
+    source.stat.arenaOverAllCounters[name].Counters.Kills = index === 0 ? 10 : 0;
+  }
+  source.stat.arenaOverAllCounters.UnrankedShootOutDuo = { Counters: { Kills: 7 } };
+  source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 10 } };
+  const arena = parseArenaProfileStats(source).arenaProfile;
+  assert.equal(arena.modes.shootOutDuo.counters.matches, null);
+  assert.equal(arena.overall.counters.kills, 17);
+  assert.equal(arena.overall.counters.assists, null);
+  assert.equal(arena.overall.counters.max_kill_streak, null);
 });
 
 test("Arena storage writes all modes atomically, keeps nulls, and rejects stale versions", async () => {
@@ -664,7 +696,7 @@ test("Arena indexed selection matches reference filtering and formulas across mo
       insert.run(aid, mode, hours, 80 + ((aid * 7 + modeIndex * 3) % 41),
         aid % 13 ? ((aid * 7) % 40) / 10 : null, aid % 17 ? (aid % 100) : null,
         aid % 19 ? (aid % 80) : null, 0.1, 1e9 + (aid % 3) / 100,
-        aid % 31 ? 2 : 0);
+        aid % 31 ? ARENA_PARSER_VERSION : 0);
     }
   }
   db.exec(`INSERT INTO excluded_players VALUES (13, 'test', 1), (20, 'test', 1);
@@ -682,7 +714,7 @@ test("Arena indexed selection matches reference filtering and formulas across mo
   };
   const peersFor = (target, minimum) => {
     const eligible = rows.filter((row) => row.arena_mode === target.arena_mode && row.aid !== target.aid &&
-      ![13, 20].includes(row.aid) && row.parser_version === 2 && row.games_count >= 10);
+      ![13, 20].includes(row.aid) && row.parser_version === ARENA_PARSER_VERSION && row.games_count >= 10);
     if (target.arena_mode === "overall") return { peers: eligible, percent: 30 };
     for (const percent of [10, 15, 20, 30]) {
       const peers = eligible.filter((row) => valid(row.hours) && valid(row.games_count) &&

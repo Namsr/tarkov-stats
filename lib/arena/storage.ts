@@ -10,7 +10,7 @@ import {
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 from "../../types/arena.ts";
 
-export const ARENA_PARSER_VERSION = 2;
+export const ARENA_PARSER_VERSION = 3;
 
 export const ARENA_STORAGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS arena_mode_stats (
