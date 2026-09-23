@@ -48,6 +48,7 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   });
   assert.equal(result.required, COMPARISON_COHORT_TARGET);
   assert.equal(result.quality, "unavailable");
+  assert.equal(result.strategy, "matched");
   assert.equal(result.reliability, "insufficient");
   assert.equal(result.reason, "insufficient_cohort");
   assert.deepEqual(result.identity, { aid: 42, mode: "seasonal", cycleId: "cycle-a" });

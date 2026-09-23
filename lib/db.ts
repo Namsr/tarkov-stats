@@ -884,7 +884,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     n,
     actualRanges,
     averages,
-    strategy,
+    strategy: strategy ?? "matched",
   });
 }
 

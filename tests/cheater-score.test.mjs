@@ -111,6 +111,29 @@ test("prestige six at veteran playtime is not suspicious by pace alone", () => {
   assert.equal(result.factors.find((factor) => factor.key === "prestige")?.points, 0);
 });
 
+test("achievement evidence cannot overcome invalid combat inputs", () => {
+  const valid = {
+    ...account14280186,
+    hoursPlayed: 100,
+    prestige: 0,
+    pmcKdRatio: 1.2,
+    pmcSurvivalRate: 50,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 10,
+  };
+  const validResult = scoreCheater(valid, productionBracket, lateAchievement);
+  assert.ok((validResult.factors.find((factor) => factor.key === "ach_early")?.points ?? 0) > 0);
+
+  for (const invalid of [
+    { ...valid, pmcKdRatio: Number.NaN },
+    { ...valid, pmcKdRatio: undefined },
+  ]) {
+    const result = scoreCheater(invalid, productionBracket, lateAchievement);
+    assert.equal(result.score, 0);
+    assert.equal(result.factors.find((factor) => factor.key === "ach_early")?.points ?? 0, 0);
+  }
+});
+
 test("Seasonal rare achievement signal requires reliable current-cycle timing data", () => {
   const quietSeasonal = {
     ...account14280186,

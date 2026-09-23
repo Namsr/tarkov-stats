@@ -39,7 +39,8 @@ interface CohortResponse {
   percent?: number;
   n?: number;
   quality?: "sufficient" | "unavailable";
-  strategy?: "matched" | "population" | null;
+  strategy: "matched" | "population";
+  required: number;
   reason?: string;
   bounds?: {
     min?: number;
@@ -78,7 +79,8 @@ interface NormalizedCohort {
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
-  strategy: "matched" | "population" | null;
+  strategy: "matched" | "population";
+  required: number;
   reason: string;
   twoDimensional: boolean;
   hoursRange: CohortRange | null;
@@ -197,11 +199,12 @@ function normalizeResponse(
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: "hours",
     center: hoursCenter,
-    targetN: Number(input.targetN ?? input.target ?? 20),
+    targetN: Number(input.targetN ?? input.required ?? input.target ?? 20),
+    required: Number(input.required ?? input.targetN ?? input.target ?? 20),
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
-    strategy: input.strategy === "population" ? "population" : input.strategy === "matched" ? "matched" : null,
+    strategy: input.strategy === "population" ? "population" : "matched",
     reason: input.reason ?? "insufficient",
     twoDimensional: input.twoDimensional === true || Boolean(input.ranges?.hours && (input.ranges.pmcRaids ?? input.ranges.raids)),
     hoursRange: rangeFromInput(
@@ -233,6 +236,7 @@ function demoCohort(
     percent,
     n: 184,
     quality: "sufficient",
+    required: 20,
     strategy: "matched",
     reason: "",
     twoDimensional: true,
@@ -453,8 +457,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value > 0
-      && (cohort.strategy === "population" || average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE)) ? average.value : null;
+    const hasAverage = cohort?.strategy === "population"
+      ? average?.value != null && average.count >= 1
+      : average?.value != null && average.value > 0
+        && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE);
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && hasAverage ? average?.value ?? null : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

@@ -6,7 +6,7 @@ export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
 export type ComparisonCohortMode = "regular" | "pve" | "seasonal";
-export type ComparisonCohortStrategy = "matched" | "population" | null;
+export type ComparisonCohortStrategy = "matched" | "population";
 
 export interface ComparisonAxisBounds {
   min: number;
@@ -149,12 +149,12 @@ export function makeComparisonCohortResult(input: {
   n: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
-  strategy?: Exclude<ComparisonCohortStrategy, null>;
+  strategy?: ComparisonCohortStrategy;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
   const axes = comparisonAxes(input.center, input.percent);
-  const strategy = input.strategy ?? (input.reason == null && input.n >= COMPARISON_COHORT_TARGET ? "matched" : null);
+  const strategy = input.strategy ?? "matched";
   const sufficient = input.reason == null && (input.n >= COMPARISON_COHORT_TARGET || (strategy === "population" && input.n > 0));
   return {
     mode: input.mode,

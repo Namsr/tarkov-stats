@@ -472,6 +472,7 @@ test("radar keeps raw player values independent from baseline availability", asy
   const radar = await readFile("components/ProfileRadar.tsx", "utf8");
   assert.match(source, /a: playerValues\?\.\[metric\.key\] \?\? null/);
   assert.match(source, /cohort\?\.quality === "sufficient" && cohort.twoDimensional/);
+  assert.match(source, /cohort\?\.strategy === "population"[\s\S]*?average\.count >= 1/);
   assert.match(radar, /value\(metric.a, metric\)/);
   assert.match(radar, /points.every\(\(p\) => p != null\)/);
   assert.match(radar, /homePercentageDifference\(metric.a, metric.b\)/);

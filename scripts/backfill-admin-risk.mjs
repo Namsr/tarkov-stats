@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
 import { scoreCheater } from "../lib/cheater-score.ts";
+import { riskScoreVersion } from "../lib/admin/risk-version.ts";
+import { COMPARISON_COHORT_PERCENTAGES, RISK_COHORT_TARGET, comparisonRangeFor } from "../lib/profile-cohort.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
 
 const playersPath = process.env.SQLITE_PATH || "/data/players.db";
@@ -61,7 +63,7 @@ function sourceFor(mode) {
     : { table: "mode_players", modeWhere: "p.mode = ? AND ", params: [mode] };
 }
 
-function baselineFor(mode, bracket) {
+function legacyBaselineFor(mode, bracket) {
   if (!playersDb) return null;
   const source = sourceFor(mode);
   const columns = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
@@ -75,6 +77,59 @@ function baselineFor(mode, bracket) {
     WHERE ${source.modeWhere}p.hours >= ? ${upper}
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`)
     .get(...source.params, bracket.lo, ...(bracket.hi == null ? [] : [bracket.hi]));
+  return {
+    n: Number(row.n),
+    metrics: Object.fromEntries(columns.map((column) => {
+      const mean = Number(row[`mean_${column}`] ?? 0);
+      const square = Number(row[`square_${column}`] ?? 0);
+      return [column, { n: Number(row[`cnt_${column}`]), mean, std: Math.sqrt(Math.max(0, square - mean * mean)) }];
+    })),
+  };
+}
+
+function riskBaselineFor(mode, stats, excludeAid) {
+  if (!playersDb || !Number.isFinite(stats.hoursPlayed) || !Number.isFinite(stats.pmcRaids) || stats.hoursPlayed <= 0 || stats.pmcRaids <= 0) {
+    return null;
+  }
+  const source = sourceFor(mode);
+  const modeWhere = source.modeWhere.replace(/ AND $/, "");
+  const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(stats, percent));
+  const cutoff = mode === "regular" ? Date.now() - 90 * 86_400_000 : null;
+  const common = [
+    ...(modeWhere ? [modeWhere] : []),
+    "p.hours > 0",
+    "p.pmc_raids > 0",
+    "p.aid != ?",
+    ...(mode === "regular" ? ["p.pvp_stats_known = 1"] : []),
+    ...(cutoff == null ? [] : ["p.profile_updated_at >= ?"]),
+    "NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)",
+  ].join(" AND ");
+  const commonParams = [...source.params, excludeAid, ...(cutoff == null ? [] : [Math.floor(cutoff)])];
+  const countColumns = COMPARISON_COHORT_PERCENTAGES.map((percent) =>
+    `SUM(CASE WHEN p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
+  ).join(", ");
+  const countRow = playersDb.prepare(`SELECT ${countColumns} FROM ${source.table} p WHERE ${common}`)
+    .get(...commonParams, ...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]));
+  const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
+    percent,
+    Number(countRow?.[`count_${percent}`] ?? 0),
+  ]));
+  const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= RISK_COHORT_TARGET) ?? 30;
+  const selectedRange = ranges.find((range) => range.percent === selectedPercent);
+  const matched = counts[selectedPercent] >= RISK_COHORT_TARGET;
+  const where = matched
+    ? `${common} AND p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ?`
+    : common;
+  const params = matched
+    ? [...commonParams, selectedRange.hours.min, selectedRange.hours.max, selectedRange.pmcRaids.min, selectedRange.pmcRaids.max]
+    : commonParams;
+  const columns = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
+  const moments = columns.flatMap((column) => [
+    `COUNT(CASE WHEN p.${column} > 0 THEN 1 END) cnt_${column}`,
+    `AVG(CASE WHEN p.${column} > 0 THEN p.${column} END) mean_${column}`,
+    `AVG(CASE WHEN p.${column} > 0 THEN p.${column} * p.${column} END) square_${column}`,
+  ]).join(", ");
+  const row = playersDb.prepare(`SELECT COUNT(*) n, ${moments} FROM ${source.table} p WHERE ${where}`).get(...params);
   return {
     n: Number(row.n),
     metrics: Object.fromEntries(columns.map((column) => {
@@ -112,23 +167,38 @@ function achievementInputFor(mode) {
 async function scoreRow(row, mode, cycleId) {
   const baselineMode = mode === "seasonal" ? "regular" : mode;
   const stats = statsFromRow(row);
+  if (mode === "regular") stats.pvpStatsKnown = Number(row.pvp_stats_known) === 1;
   const bracket = bracketFor(stats.hoursPlayed);
-  const baselineKey = `${baselineMode}:${bracket.key}`;
+  const baselineKey = mode === "seasonal"
+    ? `${baselineMode}:${bracket.key}`
+    : `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${row.aid}`;
   if (!baselines.has(baselineKey)) {
-    baselines.set(baselineKey, baselineFor(baselineMode, bracket));
+    baselines.set(
+      baselineKey,
+      mode === "seasonal"
+        ? legacyBaselineFor(baselineMode, bracket)
+        : riskBaselineFor(baselineMode, stats, Number(row.aid)),
+    );
   }
   if (!achievementBaselines.has(baselineMode)) {
     achievementBaselines.set(baselineMode, achievementInputFor(baselineMode));
   }
+  const baseline = baselines.get(baselineKey);
   const achievementBaseline = achievementBaselines.get(baselineMode);
   const achievementIds = parsedJson(row.achievements, []).filter((id) => typeof id === "string");
-  const result = scoreCheater(stats, baselines.get(baselineKey), achievementBaseline ? {
+  const achievementInput = achievementBaseline ? {
     ownedIds: achievementIds,
     stats: achievementBaseline.stats,
-  } : null);
+  } : null;
+  const hasUsableMetrics = baseline != null && baseline.n > 0 && Object.values(baseline.metrics).some((metric) =>
+    metric.n > 0 && Number.isFinite(metric.mean) && Number.isFinite(metric.std)
+  );
+  const result = hasUsableMetrics
+    ? scoreCheater(stats, baseline, achievementInput)
+    : scoreCheater({ ...stats, pmcRaids: 0 }, null, null);
   await saveRiskEvaluation({
     aid: Number(row.aid), mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: 2,
+    factors: result.factors, scoreVersion: riskScoreVersion(mode, cycleId),
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
   });
 }

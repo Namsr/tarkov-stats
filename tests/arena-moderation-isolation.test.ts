@@ -18,7 +18,7 @@ registerHooks({
 });
 
 const { createSqliteModerationStore } = await import("../lib/admin/moderation-db.ts");
-const { ArenaRiskUnsupportedError, evaluateAndStoreRisk } = await import("../lib/admin/risk-service.ts");
+const { ArenaRiskUnsupportedError, evaluateAndStoreRisk, riskScoreVersion } = await import("../lib/admin/risk-service.ts");
 
 const risk = (aid, mode, score, profileUpdatedAt = 10) => ({
   aid,
@@ -90,8 +90,16 @@ test("generic risk evaluation rejects Arena before touching a store", async () =
   );
 });
 
+test("risk versions are isolated from untouched modes and cycles", () => {
+  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.equal(riskScoreVersion("pve", "persistent"), 1);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 1);
+  assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
+});
+
 test("risk backfill only rescans legacy PvE mode rows", async () => {
   const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   assert.match(source, /FROM mode_players p\s+WHERE p\.mode = 'pve'/);
+  assert.match(source, /scoreVersion: riskScoreVersion\(mode, cycleId\)/);
   assert.doesNotMatch(source, /await scoreRow\(row, "arena"/);
 });

@@ -259,6 +259,7 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   const cohort = await store.cohort2d(100, 5, 999, "hours", "median", "all");
   assert.equal(cohort.quality, "sufficient");
   assert.equal(cohort.strategy, "population");
+  assert.equal(cohort.required, 20);
   assert.equal(cohort.n, 24);
   assert.equal(cohort.actualRanges.hours.min, 100);
   assert.equal(cohort.actualRanges.hours.max, 200);
@@ -266,6 +267,15 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   assert.equal(cohort.actualRanges.pmcRaids.max, 200);
   assert.equal(cohort.averages.kd_ratio.value, 103.5);
   assert.notEqual(cohort.reason, "insufficient_cohort");
+
+  reset();
+  add(1, { hours: 100, raids: 100, value: 0 });
+  add(999, { hours: 100, raids: 5, value: 999 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const onePeer = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  assert.equal(onePeer.strategy, "population");
+  assert.equal(onePeer.required, 20);
+  assert.deepEqual(onePeer.averages.kd_ratio, { value: 0, count: 1 });
 });
 
 test("risk uses the two-dimensional population fallback for five raids, while zero raids score zero", async () => {

@@ -3,11 +3,12 @@ import { scoreCheater, type AchievementInput, type AchievementStat, type Baselin
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
+import { riskScoreVersion } from "@/lib/admin/risk-version";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export const ADMIN_RISK_SCORE_VERSION = 2;
+export { ADMIN_RISK_SCORE_VERSIONS, riskScoreVersion } from "@/lib/admin/risk-version";
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {
@@ -108,7 +109,7 @@ export async function evaluateAndStoreRisk(input: {
     score: result.score,
     tier: result.tier,
     factors: result.factors,
-    scoreVersion: ADMIN_RISK_SCORE_VERSION,
+    scoreVersion: riskScoreVersion(input.mode, input.cycleId),
     profileUpdatedAt: Number(input.stats.profileUpdatedAt) || 0,
     evaluatedAt: evaluationTime,
     sampleN: result.sampleN,
