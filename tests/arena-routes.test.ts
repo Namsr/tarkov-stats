@@ -37,6 +37,7 @@ const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
 const { GET: getFavoriteStats } = await import("../app/api/favorites/stats/route.ts");
+const { ARENA_METRIC_KEYS, toArenaPopulationCohort } = await import("../components/arena-ui.ts");
 const { NextRequest } = await import("next/server");
 
 assert.ok(await getStore("arena"));
@@ -232,6 +233,89 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
     "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=teamFight&period=90d",
   ))).status, 400);
 });
+test("Arena population fallback validates the real average payload before trusting it", async () => {
+  const cohortResponse = await getCohort(new NextRequest(
+    "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=lastHero&statistic=trimmed_mean",
+  ));
+  assert.equal(cohortResponse.status, 200);
+  const cohort = await cohortResponse.json();
+  assert.equal(cohort.strategy, "matched");
+  assert.equal(cohort.quality, "unavailable");
+  assert.equal(cohort.sampleN, 5);
+
+  const averageResponse = await getAverage(new NextRequest(
+    "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean",
+  ));
+  assert.equal(averageResponse.status, 200);
+  const average = await averageResponse.json();
+  assert.equal(average.mode, "arena");
+  assert.deepEqual(average.filterIdentity, {
+    mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
+    minHours: null, maxHours: null, minMatches: null, maxMatches: null,
+  });
+
+  const fallback = toArenaPopulationCohort(average, 1, "lastHero", "trimmed_mean", cohort.schemaVersion);
+  assert.ok(fallback);
+  assert.equal(fallback.strategy, "population");
+  assert.equal(fallback.mode, "lastHero");
+  assert.equal(fallback.sampleN, 22);
+  assert.equal(fallback.quality, "sufficient");
+  assert.equal(fallback.reason, null);
+  assert.equal(fallback.required, 20);
+  assert.deepEqual(fallback.bounds.matches, { min: 10, max: null });
+  for (const metric of ARENA_METRIC_KEYS) {
+    assert.ok(fallback.metrics[metric].count >= 20, `${metric} needs a usable population sample`);
+    assert.ok(fallback.metrics[metric].value !== null, `${metric} needs a population mean`);
+  }
+
+  // A narrowed identity describes a different slice and must never pass as the population cohort.
+  assert.equal(toArenaPopulationCohort(
+    { ...average, filterIdentity: { ...average.filterIdentity, minMatches: 10 } },
+    1, "lastHero", "trimmed_mean", cohort.schemaVersion,
+  ), null);
+});
+
+test("Arena population fallback also trusts the published average payload", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average-publications-fallback.db");
+  publications.resetAveragePublicationForTests();
+  try {
+    const payload = await getArenaAverage({
+      mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
+    });
+    assert.ok(payload);
+    await publications.publishAverageScope("arena", new Map([[
+      publications.standardArenaVariant("lastHero", "trimmed_mean"), payload,
+    ]]), Date.now() - 10, Date.now());
+    const response = await getAverage(new NextRequest(
+      "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean",
+    ));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-average-source"), "publication");
+    const body = await response.json();
+    const cohortResponse = await getCohort(new NextRequest(
+      "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=lastHero&statistic=trimmed_mean",
+    ));
+    assert.equal(cohortResponse.status, 200);
+    const cohort = await cohortResponse.json();
+    const fallback = toArenaPopulationCohort(body, 1, "lastHero", "trimmed_mean", cohort.schemaVersion);
+    assert.ok(fallback);
+    assert.equal(fallback.strategy, "population");
+    assert.equal(fallback.sampleN, 22);
+    assert.equal(fallback.quality, "sufficient");
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
+  }
+});
+
+
 
 test("Arena profile returns a normalized stored snapshot without an upstream request", async () => {
   const aid = 40_001;

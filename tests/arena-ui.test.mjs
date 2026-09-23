@@ -120,6 +120,8 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(modeComparison, /loadArenaPopulationCohort/);
   assert.match(overallComparison, /body\.schemaVersion/);
   assert.match(modeComparison, /body\.schemaVersion/);
+  assert.match(modeComparison, /result\.quality === "sufficient" && result\.sampleN >= Math\.max\(20, result\.required\)/);
+  assert.match(overallComparison, /mode === "overall" \|\| \(result\.quality === "sufficient"/);
 });
 
 test("Arena histogram keeps full context, matches PvP bar sizing, and defers range requests", async () => {
