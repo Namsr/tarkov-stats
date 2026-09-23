@@ -116,9 +116,6 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(overallComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
   assert.match(overallComparison, /loadArenaPopulationCohort/);
   assert.match(overallComparison, /body\.schemaVersion/);
-  assert.match(overallComparison, /cohort\?\.strategy === "population" \? "arena\.radar\.populationReady"/);
-  assert.match(overallComparison, /loadArenaPopulationCohort/);
-  assert.match(overallComparison, /body\.schemaVersion/);
   assert.match(overallComparison, /mode === "overall" \|\| !shouldFallbackToPopulation\(result\)/);
 });
 
