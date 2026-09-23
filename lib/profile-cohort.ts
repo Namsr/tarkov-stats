@@ -5,6 +5,7 @@ export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
 export type ComparisonCohortMode = "regular" | "pve" | "seasonal";
+export type ComparisonCohortStrategy = "matched" | "population";
 
 export interface ComparisonAxisBounds {
   min: number;
@@ -42,7 +43,7 @@ export type ComparisonCohortReason =
   | "insufficient_cohort";
 
 export interface ComparisonCohortResult {
-  strategy: "matched" | "population";
+  strategy: ComparisonCohortStrategy;
   mode: ComparisonCohortMode;
   cycleId: string;
   aid: number;
@@ -137,6 +138,19 @@ export function selectComparisonPercent(
   return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= COMPARISON_COHORT_TARGET) ?? 30;
 }
 
+export function comparisonCohortMetricValue(
+  strategy: ComparisonCohortStrategy,
+  metric: { value: unknown; count: unknown },
+): number | null {
+  if (typeof metric.value !== "number" || typeof metric.count !== "number") return null;
+  const value = metric.value;
+  const count = metric.count;
+  const minimum = strategy === "population" ? 1 : COMPARISON_COHORT_TARGET;
+  return Number.isFinite(value) && value >= 0 && Number.isFinite(count) && count >= minimum
+    ? value
+    : null;
+}
+
 export function makeComparisonCohortResult(input: {
   mode: ComparisonCohortMode;
   cycleId: string;
@@ -145,7 +159,7 @@ export function makeComparisonCohortResult(input: {
   dimension?: "hours" | "pmc_raids";
   percent: ComparisonCohortPercent;
   n: number;
-  strategy?: "matched" | "population";
+  strategy?: ComparisonCohortStrategy;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
   reason?: ComparisonCohortReason | null;
@@ -183,4 +197,15 @@ export function makeComparisonCohortResult(input: {
       raids: { ...axes.pmcRaids.bounds, percent: input.percent },
     },
   };
+}
+
+export function makeEmptyPopulationCohortResult(
+  input: Omit<Parameters<typeof makeComparisonCohortResult>[0], "n" | "strategy" | "reason" | "averages">,
+): ComparisonCohortResult {
+  return makeComparisonCohortResult({
+    ...input,
+    n: 0,
+    strategy: "population",
+    reason: "insufficient_cohort",
+  });
 }

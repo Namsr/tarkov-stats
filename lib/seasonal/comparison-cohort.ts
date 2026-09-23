@@ -10,6 +10,7 @@ import {
   COMPARISON_RADAR_METRICS,
   comparisonRangeFor,
   makeComparisonCohortResult,
+  makeEmptyPopulationCohortResult,
   selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
@@ -219,6 +220,12 @@ async function computeSeasonalComparisonCohort(
     raids: group?.raids_min == null || group?.raids_max == null ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
   };
+  if (populationFallback && n === 0) {
+    return { available: true, result: makeEmptyPopulationCohortResult({
+      mode: "seasonal", cycleId: input.cycleId, aid: input.aid, center, dimension,
+      percent: selectedPercent, actualRanges,
+    }) };
+  }
   const metricRows = new Map(rows.map((row) => [String(row.metric), row]));
   const averages = Object.fromEntries(COMPARISON_RADAR_METRICS.map((metric) => {
     const row = metricRows.get(metric);

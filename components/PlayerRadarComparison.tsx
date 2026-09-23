@@ -9,6 +9,7 @@ import ProfileRadar from "@/components/ProfileRadar";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
+import { comparisonCohortMetricValue } from "@/lib/profile-cohort";
 import type { GameMode } from "@/types/seasonal";
 
 type Dimension = "hours" | "pmc_raids";
@@ -103,7 +104,6 @@ interface MetricDefinition {
   suffix?: string;
 }
 
-const MIN_AXIS_SAMPLE = 20;
 const METRICS: MetricDefinition[] = [
   { key: "kd_ratio", labelKey: "radar.metric.kd", get: (s) => s.kdRatio, decimals: 2 },
   { key: "pmc_kd_ratio", labelKey: "radar.metric.pmcKd", get: (s) => s.pmcKdRatio, decimals: 2 },
@@ -453,8 +453,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value >= 0
-      && average.count >= (cohort.strategy === "population" || metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional
+      ? comparisonCohortMetricValue(cohort.strategy, average ?? { value: null, count: 0 })
+      : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

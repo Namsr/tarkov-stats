@@ -261,6 +261,8 @@ test("profile mode switching is available during loading and capture is post-res
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
   const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+  const profileView = await readFile("lib/player-profile-view.ts", "utf8");
+  const backfill = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   const route = await readFile("app/api/player/profile/route.ts", "utf8");
 
   assert.match(regular, /const forceRefresh = isReload\(\)/);
@@ -296,13 +298,17 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(pveBranch, /pve profile capture after response failed/);
   assert.match(pveBranch, /\{ inserted: false, status: "queued" \}/);
   assert.doesNotMatch(pveBranch, /await persistRegularProfileSnapshot\(pveSnapshot/);
-  assert.match(route, /const riskIsFresh = publicRisk &&[\s\S]*Date\.now\(\) - publicRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
+  assert.match(route, /const riskIsFresh = storedRiskMatchesIdentity\(publicRisk, \{ aid, mode: "regular", cycleId \}\) &&[\s\S]*Date\.now\(\) - publicRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
+  assert.match(pveBranch, /const riskIsFresh = storedRiskMatchesIdentity\(storedRisk, \{ aid, mode: "pve", cycleId \}\)/);
   assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
-  assert.match(route, /const seasonalRiskIsFresh = result\.ok && storedRisk &&[\s\S]*storedRisk\.scoreVersion === adminRiskScoreVersion\("seasonal", cycleId\)[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
+  assert.match(route, /const seasonalRiskIsFresh = result\.ok &&\s*storedRiskMatchesIdentity\(storedRisk, \{ aid, mode: "seasonal", cycleId \}\) &&[\s\S]*storedRisk\.scoreVersion === adminRiskScoreVersion\("seasonal", cycleId\)[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /const publicRisk = result\.ok && storedRisk\?\.scoreVersion === adminRiskScoreVersion\("seasonal", cycleId\)/);
   assert.match(radar, /strategy: input\.strategy === "population" \? "population" : "matched"/);
-  assert.match(radar, /average\?\.value != null && average\.value >= 0/);
-  assert.match(radar, /cohort\.strategy === "population" \|\| metric\.key === "pmc_survival_rate" \? 1 : MIN_AXIS_SAMPLE/);
+  assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
+  assert.match(profileView, /return Boolean\(risk && risk\.aid === identityValue\.aid && risk\.mode === identityValue\.mode &&\s*risk\.cycleId === identityValue\.cycleId\)/);
+  assert.match(profileView, /if \(!storedRiskMatchesIdentity\(risk, identityValue\)\) return null/);
+  assert.match(backfill, /scoreVersion: adminRiskScoreVersion\(mode, cycleId\)/);
+  assert.match(backfill, /scoreVersion: adminRiskScoreVersion\("seasonal", cycleId\)/);
   assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreSeasonalRisk/);
   assert.ok(route.indexOf("const storedRisk = result.ok") < route.indexOf("if (result.ok && !seasonalRiskIsFresh)"));
   assert.match(route, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);

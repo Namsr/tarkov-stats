@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
+  comparisonCohortMetricValue,
   comparisonRangeFor,
   makeComparisonCohortResult,
+  makeEmptyPopulationCohortResult,
   selectComparisonPercent,
 // @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts extension.
 } from "../lib/profile-cohort.ts";
@@ -20,6 +22,17 @@ test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
     hours: { min: 90, max: 110 },
     pmcRaids: { min: 18, max: 22 },
   });
+});
+
+test("cohort metric values use one finite non-negative strategy rule", () => {
+  assert.equal(comparisonCohortMetricValue("population", { value: 0, count: 1 }), 0);
+  assert.equal(comparisonCohortMetricValue("population", { value: 2, count: 0 }), null);
+  assert.equal(comparisonCohortMetricValue("matched", { value: 0, count: 20 }), 0);
+  assert.equal(comparisonCohortMetricValue("matched", { value: 2, count: 19 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: -1, count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: null, count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: "2", count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: Number.NaN, count: 1 }), null);
 });
 
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
@@ -67,6 +80,19 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   assert.equal(population.required, COMPARISON_COHORT_TARGET);
   assert.equal(population.quality, "sufficient");
   assert.equal(population.reason, null);
+  const emptyPopulation = makeEmptyPopulationCohortResult({
+    mode: "seasonal",
+    cycleId: "cycle-a",
+    aid: 42,
+    center: { hours: 100, pmcRaids: 20 },
+    percent: 30,
+    actualRanges: { hours: null, pmcRaids: null, raids: null },
+  });
+  assert.equal(emptyPopulation.strategy, "population");
+  assert.equal(emptyPopulation.reason, "insufficient_cohort");
+  assert.equal(emptyPopulation.required, COMPARISON_COHORT_TARGET);
+  assert.equal(emptyPopulation.n, 0);
+  assert.equal(emptyPopulation.quality, "unavailable");
 });
 
 test("seasonal cohort selection covers every window at the average threshold", () => {

@@ -307,23 +307,21 @@ export function scoreCheater(
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
 }
 
-function finiteSeasonalMetric(value: number): number {
-  return Number.isFinite(value) && value >= 0 ? value : 0;
-}
-
 export function scoreSeasonalCheater(
   stats: ParsedPlayerStats,
   baseline: Baseline | null,
   achievements?: AchievementInput | null,
 ): CheaterScoreResult {
-  const validCombat = [
+  const validInputs = [
+    stats.hoursPlayed,
     stats.pmcRaids,
     stats.pmcSurvivalRate,
     stats.pmcKdRatio,
     stats.pmcKillsPerRaid,
-  ].every(Number.isFinite);
-  if (!Number.isFinite(stats.hoursPlayed) || stats.hoursPlayed <= 0 ||
-      !validCombat || stats.pmcRaids <= 0) {
+    stats.longestWinStreak,
+    stats.prestige,
+  ].every((value) => Number.isFinite(value) && value >= 0);
+  if (!validInputs || stats.hoursPlayed <= 0 || stats.pmcRaids <= 0) {
     return scoreCheater({
       ...stats,
       hoursPlayed: 0,
@@ -335,12 +333,5 @@ export function scoreSeasonalCheater(
       longestWinStreak: 0,
     }, null, null);
   }
-  return scoreCheater({
-    ...stats,
-    prestige: finiteSeasonalMetric(stats.prestige),
-    pmcSurvivalRate: finiteSeasonalMetric(stats.pmcSurvivalRate),
-    pmcKdRatio: finiteSeasonalMetric(stats.pmcKdRatio),
-    pmcKillsPerRaid: finiteSeasonalMetric(stats.pmcKillsPerRaid),
-    longestWinStreak: finiteSeasonalMetric(stats.longestWinStreak),
-  }, baseline, achievements);
+  return scoreCheater(stats, baseline, achievements);
 }

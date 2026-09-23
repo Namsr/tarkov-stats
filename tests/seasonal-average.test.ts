@@ -176,6 +176,21 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       pmcKdRatio: undefined,
     }, riskBaseline, achievementEvidence);
     assert.equal(missingMetrics.score, 0);
+    const missingStreak = scoreSeasonalCheater({
+      ...targetStats,
+      longestWinStreak: undefined,
+    }, riskBaseline, achievementEvidence);
+    assert.equal(missingStreak.score, 0);
+    const missingPrestige = scoreSeasonalCheater({
+      ...targetStats,
+      prestige: undefined,
+    }, riskBaseline, achievementEvidence);
+    assert.equal(missingPrestige.score, 0);
+    const negativeStreak = scoreSeasonalCheater({
+      ...targetStats,
+      longestWinStreak: -1,
+    }, riskBaseline, achievementEvidence);
+    assert.equal(negativeStreak.score, 0);
     const zeroHours = scoreSeasonalCheater({
       ...targetStats,
       hoursPlayed: 0,
