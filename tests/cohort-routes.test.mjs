@@ -27,7 +27,7 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   const compute = db.slice(db.indexOf("async function computePersistentTwoDimensionalCohort"), db.indexOf("function argsFor"));
   assert.match(compute, /SUM\(CASE WHEN hours >= \?/);
   assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
-  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 1);
+  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 2);
   assert.match(db, /metric_values AS/);
   assert.match(db, /PARTITION BY metric/);
 });

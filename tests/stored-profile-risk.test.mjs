@@ -7,22 +7,23 @@ const route = readFileSync(new URL("../app/api/player/profile/route.ts", import.
 const start = route.indexOf("      const riskIsFresh = storedRisk &&", route.indexOf("  if (!force) {"));
 const end = route.indexOf("      const publicRisk = toPublicRiskView(storedRisk", start);
 assert.ok(start >= 0 && end > start);
-const schedule = new Function("stored", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", route.slice(start, end));
+const schedule = new Function("stored", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", "ADMIN_RISK_SCORE_VERSION", route.slice(start, end));
 
 test("stored PvP profiles schedule only missing or stale risk after the response", async () => {
   const updatedAt = Date.now() - 60_000;
-  const fresh = { profileUpdatedAt: updatedAt, evaluatedAt: Date.now() };
+  const fresh = { profileUpdatedAt: updatedAt, evaluatedAt: Date.now(), scoreVersion: 2 };
   for (const [risk, known, expected] of [
     [null, true, 1],
     [{ ...fresh, profileUpdatedAt: updatedAt - 1 }, true, 1],
     [{ ...fresh, evaluatedAt: Date.now() - 6 * 60 * 60 * 1000 }, true, 1],
+    [{ ...fresh, scoreVersion: 1 }, true, 1],
     [fresh, true, 0],
     [null, false, 0],
   ]) {
     const stored = { stats: { pvpStatsKnown: known, profileUpdatedAt: updatedAt }, achievementIds: ["achievement"] };
     const callbacks = [];
     const evaluations = [];
-    schedule(stored, risk, (fn) => callbacks.push(fn), async (input) => evaluations.push(input), (fn) => fn(), 3003626, "persistent");
+    schedule(stored, risk, (fn) => callbacks.push(fn), async (input) => evaluations.push(input), (fn) => fn(), 3003626, "persistent", 2);
     assert.equal(callbacks.length, expected);
     assert.equal(evaluations.length, 0);
     for (const callback of callbacks) await callback();

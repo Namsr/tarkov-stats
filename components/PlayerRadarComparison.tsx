@@ -39,6 +39,7 @@ interface CohortResponse {
   percent?: number;
   n?: number;
   quality?: "sufficient" | "unavailable";
+  strategy?: "matched" | "population" | null;
   reason?: string;
   bounds?: {
     min?: number;
@@ -77,6 +78,7 @@ interface NormalizedCohort {
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
+  strategy: "matched" | "population" | null;
   reason: string;
   twoDimensional: boolean;
   hoursRange: CohortRange | null;
@@ -199,6 +201,7 @@ function normalizeResponse(
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
+    strategy: input.strategy === "population" ? "population" : input.strategy === "matched" ? "matched" : null,
     reason: input.reason ?? "insufficient",
     twoDimensional: input.twoDimensional === true || Boolean(input.ranges?.hours && (input.ranges.pmcRaids ?? input.ranges.raids)),
     hoursRange: rangeFromInput(
@@ -230,6 +233,7 @@ function demoCohort(
     percent,
     n: 184,
     quality: "sufficient",
+    strategy: "matched",
     reason: "",
     twoDimensional: true,
     hoursRange: {
@@ -450,7 +454,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
     const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value > 0
-      && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
+      && (cohort.strategy === "population" || average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE)) ? average.value : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

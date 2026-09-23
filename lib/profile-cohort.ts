@@ -1,10 +1,12 @@
 import type { RadarMetric } from "@/lib/db";
 
 export const COMPARISON_COHORT_TARGET = 20;
+export const RISK_COHORT_TARGET = 30;
 export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
 export type ComparisonCohortMode = "regular" | "pve" | "seasonal";
+export type ComparisonCohortStrategy = "matched" | "population" | null;
 
 export interface ComparisonAxisBounds {
   min: number;
@@ -62,6 +64,7 @@ export interface ComparisonCohortResult {
   targetN: number;
   twoDimensional: true;
   percent: ComparisonCohortPercent;
+  strategy: ComparisonCohortStrategy;
   n: number;
   quality: "sufficient" | "unavailable";
   reliability: "sufficient" | "insufficient";
@@ -131,8 +134,9 @@ export function comparisonRangeFor(
 
 export function selectComparisonPercent(
   counts: Readonly<Record<ComparisonCohortPercent, number>>,
+  target = COMPARISON_COHORT_TARGET,
 ): ComparisonCohortPercent {
-  return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= COMPARISON_COHORT_TARGET) ?? 30;
+  return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= target) ?? 30;
 }
 
 export function makeComparisonCohortResult(input: {
@@ -145,11 +149,13 @@ export function makeComparisonCohortResult(input: {
   n: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
+  strategy?: Exclude<ComparisonCohortStrategy, null>;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
   const axes = comparisonAxes(input.center, input.percent);
-  const sufficient = input.reason == null && input.n >= COMPARISON_COHORT_TARGET;
+  const strategy = input.strategy ?? (input.reason == null && input.n >= COMPARISON_COHORT_TARGET ? "matched" : null);
+  const sufficient = input.reason == null && (input.n >= COMPARISON_COHORT_TARGET || (strategy === "population" && input.n > 0));
   return {
     mode: input.mode,
     cycleId: input.cycleId,
@@ -165,6 +171,7 @@ export function makeComparisonCohortResult(input: {
     targetN: COMPARISON_COHORT_TARGET,
     twoDimensional: true,
     percent: input.percent,
+    strategy,
     n: input.n,
     quality: sufficient ? "sufficient" : "unavailable",
     reliability: sufficient ? "sufficient" : "insufficient",

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
+  RISK_COHORT_TARGET,
   comparisonRangeFor,
   makeComparisonCohortResult,
   selectComparisonPercent,
@@ -25,6 +26,10 @@ test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
   assert.equal(
     selectComparisonPercent({ 10: 19, 15: 19, 20: 19, 30: 19 }),
+    30,
+  );
+  assert.equal(
+    selectComparisonPercent({ 10: 29, 15: 29, 20: 29, 30: 30 }, RISK_COHORT_TARGET),
     30,
   );
   const result = makeComparisonCohortResult({

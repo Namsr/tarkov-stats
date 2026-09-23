@@ -87,6 +87,11 @@ interface SignalDef {
 }
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const safeNumber = (value: number) => Number.isFinite(value) ? value : 0;
+
+function zeroRiskResult(): CheaterScoreResult {
+  return { score: 0, tier: "low", factors: [], sampleN: 0, basedOnSample: false };
+}
 
 // Prestige is only suspicious in context. One early prestige is weak evidence;
 // several prestiges at a pace far faster than roughly one per 650 account-hours
@@ -237,11 +242,14 @@ export function scoreCheater(
   baseline: Baseline | null,
   achievements?: AchievementInput | null
 ): CheaterScoreResult {
+  if (stats.pvpStatsKnown === false || !Number.isFinite(stats.pmcRaids) || stats.pmcRaids <= 0) {
+    return zeroRiskResult();
+  }
   const sampleN = baseline?.n ?? 0;
   const basedOnSample = sampleN >= MIN_SAMPLE;
 
   const factors: ScoreFactor[] = SIGNALS.map((sig) => {
-    const value = sig.get(stats);
+    const value = safeNumber(sig.get(stats));
     const abs = sig.absolute
       ? clamp01(sig.absolute(stats, value))
       : clamp01((value - sig.normal) / (sig.extreme - sig.normal));

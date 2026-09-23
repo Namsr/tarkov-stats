@@ -16,9 +16,11 @@ import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
   COMPARISON_RADAR_METRICS,
+  RISK_COHORT_TARGET,
   comparisonRangeFor,
   emptyComparisonAverages,
   makeComparisonCohortResult,
+  selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
   type ComparisonCohortResult,
@@ -687,6 +689,61 @@ function twoDimensionalRangeWhere(
   };
 }
 
+function twoDimensionalPopulationWhere(
+  mode: Extract<CrossSectionMode, "regular" | "pve">,
+  excludeAid: number,
+  period: AveragePeriod,
+): { where: string; params: unknown[] } {
+  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
+  return {
+    where: cohortEligibilityWhere(
+      mode,
+      averagePeriodWhere(
+        mode,
+        cohortSelectionPeriod(mode, period),
+        "WHERE hours > 0 AND pmc_raids > 0 AND aid != ?",
+        cutoff,
+      ),
+    ),
+    params: [excludeAid],
+  };
+}
+
+async function computePersistentRiskBaseline(input: {
+  mode: Extract<CrossSectionMode, "regular" | "pve">;
+  center: { hours: number; pmcRaids: number };
+  excludeAid: number;
+  period: AveragePeriod;
+  readFirst: CohortFirstReader;
+}): Promise<BaselineResult> {
+  const { center } = input;
+  if (!Number.isFinite(center.hours) || !Number.isFinite(center.pmcRaids) || center.hours <= 0 || center.pmcRaids <= 0) {
+    return { n: 0, metrics: {} };
+  }
+  const widest = twoDimensionalRangeWhere(input.mode, center, 30, input.excludeAid, input.period);
+  const countRanges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(center, percent));
+  const countRow = await input.readFirst(
+    `SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent) =>
+      `SUM(CASE WHEN hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
+    ).join(", ")} FROM players ${widest.where}`,
+    [
+      ...countRanges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]),
+      ...widest.params,
+    ],
+  );
+  const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
+    percent,
+    Number(countRow?.[`count_${percent}`] ?? 0),
+  ])) as Record<ComparisonCohortPercent, number>;
+  const selectedPercent = selectComparisonPercent(counts, RISK_COHORT_TARGET);
+  const selected = twoDimensionalRangeWhere(input.mode, center, selectedPercent, input.excludeAid, input.period);
+  const selectedBaseline = await input.readFirst(baselineSql(selected.where), selected.params) as Record<string, number> | null;
+  if (counts[selectedPercent] >= RISK_COHORT_TARGET) return toBaseline(selectedBaseline);
+  const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
+  const populationBaseline = await input.readFirst(baselineSql(population.where), population.params) as Record<string, number> | null;
+  return toBaseline(populationBaseline);
+}
+
 function persistentComparisonMetricsSql(where: string, statistic: AverageStatistic): string {
   const selected = statistic === "median"
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
@@ -725,7 +782,12 @@ async function computePersistentTwoDimensionalCohort(input: {
   readAll: CohortAllReader;
 }): Promise<ComparisonCohortResult> {
   const { center } = input;
-  if (center.hours <= 0 || center.pmcRaids <= 0) {
+  if (
+    !Number.isFinite(center.hours) ||
+    !Number.isFinite(center.pmcRaids) ||
+    center.hours <= 0 ||
+    center.pmcRaids <= 0
+  ) {
     return makeComparisonCohortResult({
       mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
@@ -754,9 +816,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     percent,
     Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
-  const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
-    counts[percent] >= COMPARISON_COHORT_TARGET
-  ) ?? 30;
+  const selectedPercent = selectComparisonPercent(counts, COMPARISON_COHORT_TARGET);
   const selected = twoDimensionalRangeWhere(
     input.mode,
     center,
@@ -765,7 +825,17 @@ async function computePersistentTwoDimensionalCohort(input: {
     input.period,
   );
   const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
-  const group = selectedRows.find((row) => row.metric === "__group__");
+  let resultRows = selectedRows;
+  let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
+    ? "matched"
+    : null;
+  if (strategy === null) {
+    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
+    resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
+    const populationGroup = resultRows.find((row) => row.metric === "__group__");
+    if (Number(populationGroup?.n ?? 0) > 0) strategy = "population";
+  }
+  const group = resultRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
@@ -778,26 +848,26 @@ async function computePersistentTwoDimensionalCohort(input: {
       ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
   };
-  if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
+  if (strategy === null) {
     return makeComparisonCohortResult({
       mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
       aid: input.excludeAid,
       center,
       dimension: input.dimension,
-      percent: selectedPercent,
+      percent: 30,
       n,
       actualRanges,
-      reason: "insufficient_cohort",
+      reason: "target_unavailable",
     });
   }
 
-  const metricRows = new Map(selectedRows.map((row) => [String(row.metric), row]));
+  const metricRows = new Map(resultRows.map((row) => [String(row.metric), row]));
   const averages = emptyComparisonAverages();
   for (const metric of COMPARISON_RADAR_METRICS) {
     const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
-    const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
+    const minimumPopulatedCount = strategy === "population" || metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
     if (count < minimumPopulatedCount) {
       averages[metric] = { value: null, count };
       continue;
@@ -814,6 +884,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     n,
     actualRanges,
     averages,
+    strategy,
   });
 }
 
@@ -1004,6 +1075,7 @@ export interface PlayerStore {
    * z-scores behind the cheating-risk score.
    */
   baseline(minHours: number | null, maxHours: number | null): Promise<BaselineResult>;
+  riskBaseline(centerHours: number, centerPmcRaids: number, excludeAid: number): Promise<BaselineResult>;
 }
 
 export interface PlayerIndexResult {
@@ -1352,6 +1424,16 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           | null;
         return toBaseline(row);
       },
+      async riskBaseline(centerHours, centerPmcRaids, excludeAid) {
+        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
+        return computePersistentRiskBaseline({
+          mode,
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          period: "all",
+          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
+        });
+      },
     };
   } catch {
     return null;
@@ -1697,6 +1779,16 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const { where, params } = legacyHoursRangeClause(min, max);
         const row = db.prepare(baselineSql(where)).get(...params) as Record<string, number> | undefined;
         return toBaseline(row);
+      },
+      async riskBaseline(centerHours, centerPmcRaids, excludeAid) {
+        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
+        return computePersistentRiskBaseline({
+          mode,
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          period: "all",
+          readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+        });
       },
     };
   } catch (e) {

@@ -128,7 +128,7 @@ async function scoreRow(row, mode, cycleId) {
   } : null);
   await saveRiskEvaluation({
     aid: Number(row.aid), mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: 1,
+    factors: result.factors, scoreVersion: 2,
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
   });
 }

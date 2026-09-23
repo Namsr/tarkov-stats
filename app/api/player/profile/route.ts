@@ -28,7 +28,7 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
-import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import { ADMIN_RISK_SCORE_VERSION, evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -509,6 +509,7 @@ export async function GET(request: NextRequest) {
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
     const seasonalRiskIsFresh = result.ok && storedRisk &&
+      storedRisk.scoreVersion === ADMIN_RISK_SCORE_VERSION &&
       storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
@@ -591,6 +592,7 @@ export async function GET(request: NextRequest) {
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
         const riskIsFresh = storedRisk &&
+          storedRisk.scoreVersion === ADMIN_RISK_SCORE_VERSION &&
           storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
           Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
         if (!riskIsFresh) {
@@ -790,6 +792,7 @@ export async function GET(request: NextRequest) {
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
       const riskIsFresh = storedRisk &&
+        storedRisk.scoreVersion === ADMIN_RISK_SCORE_VERSION &&
         storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
         Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
       if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
@@ -901,6 +904,7 @@ export async function GET(request: NextRequest) {
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
     const riskIsFresh = publicRisk &&
+      publicRisk.scoreVersion === ADMIN_RISK_SCORE_VERSION &&
       publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (stats.pvpStatsKnown !== false && !riskIsFresh) {

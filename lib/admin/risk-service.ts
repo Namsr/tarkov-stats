@@ -7,7 +7,7 @@ import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export const ADMIN_RISK_SCORE_VERSION = 1;
+export const ADMIN_RISK_SCORE_VERSION = 2;
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {
@@ -15,6 +15,12 @@ export class ArenaRiskUnsupportedError extends TypeError {
     super("Arena risk is display-only");
     this.name = "ArenaRiskUnsupportedError";
   }
+}
+
+function hasUsableRiskMetrics(baseline: Baseline | null): boolean {
+  return baseline != null && baseline.n > 0 && Object.values(baseline.metrics).some((metric) =>
+    metric.n > 0 && Number.isFinite(metric.mean) && Number.isFinite(metric.std)
+  );
 }
 
 /** Computes and stores one profile risk snapshot; callers may safely run this via Next after(). */
@@ -30,20 +36,29 @@ export async function evaluateAndStoreRisk(input: {
 }): Promise<CheaterScoreResult> {
   if (!Number.isSafeInteger(input.aid) || input.aid <= 0) throw new TypeError("invalid aid");
   if (input.mode === "arena") throw new ArenaRiskUnsupportedError();
+  const canScore = Number.isFinite(input.stats.pmcRaids) && input.stats.pmcRaids > 0 &&
+    (input.mode !== "regular" || input.stats.pvpStatsKnown !== false);
   const bracket = bracketFor(input.stats.hoursPlayed);
   let baseline: Baseline | null = null;
   let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;
   if (input.mode === "seasonal") {
     if (!input.cycleId) throw new TypeError("seasonal risk requires cycleId");
-    [baseline, achievementBaseline] = await Promise.all([
-      getSeasonalRiskBaseline(input.cycleId, bracket.lo, bracket.hi),
-      getSeasonalAchievementBaseline(input.cycleId),
-    ]);
+    [baseline, achievementBaseline] = canScore
+      ? await Promise.all([
+          getSeasonalRiskBaseline(input.cycleId, bracket.lo, bracket.hi),
+          getSeasonalAchievementBaseline(input.cycleId),
+        ])
+      : [null, null];
   } else {
     const baselineMode: CrossSectionMode = input.mode;
     const store = input.playerStore === undefined ? await getStore(baselineMode) : input.playerStore;
     [baseline, achievementBaseline] = store
-      ? await Promise.all([store.baseline(bracket.lo, bracket.hi), store.achievementBaseline()])
+      ? await Promise.all([
+          canScore
+            ? store.riskBaseline(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid)
+            : Promise.resolve(null),
+          store.achievementBaseline(),
+        ])
       : [null, null];
   }
   let achievementInput: AchievementInput | null = null;
@@ -82,7 +97,9 @@ export async function evaluateAndStoreRisk(input: {
       stats,
     };
   }
-  const result = scoreCheater(input.stats, baseline, achievementInput);
+  const result = canScore && hasUsableRiskMetrics(baseline)
+    ? scoreCheater(input.stats, baseline, achievementInput)
+    : scoreCheater({ ...input.stats, pmcRaids: 0 }, null, null);
   const evaluationTime = input.evaluatedAt ?? Date.now();
   await saveRiskEvaluation({
     aid: input.aid,
