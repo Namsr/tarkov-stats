@@ -19,6 +19,7 @@ registerHooks({
 
 const { createSqliteModerationStore } = await import("../lib/admin/moderation-db.ts");
 const { ArenaRiskUnsupportedError, evaluateAndStoreRisk } = await import("../lib/admin/risk-service.ts");
+const { pveRiskNeedsZero } = await import("../lib/admin/risk-version.ts");
 
 const risk = (aid, mode, score, profileUpdatedAt = 10) => ({
   aid,
@@ -94,4 +95,32 @@ test("risk backfill only rescans legacy PvE mode rows", async () => {
   const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   assert.match(source, /FROM mode_players p\s+WHERE p\.mode = 'pve'/);
   assert.doesNotMatch(source, /await scoreRow\(row, "arena"/);
+});
+
+test("PvE backfill uses the runtime invalid-input guard before achievements", async () => {
+  const valid = {
+    pvpStatsKnown: true,
+    hoursPlayed: 5,
+    pmcRaids: 5,
+    pmcSurvivalRate: 50,
+    pmcKdRatio: 1,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 3,
+    prestige: 0,
+  };
+  assert.equal(pveRiskNeedsZero(valid), false);
+  for (const override of [
+    { longestWinStreak: Number.NaN },
+    { prestige: undefined },
+    { pmcKdRatio: Number.POSITIVE_INFINITY },
+    { pvpStatsKnown: false },
+    { pvpStatsKnown: undefined },
+  ]) {
+    assert.equal(pveRiskNeedsZero({ ...valid, ...override }), true);
+  }
+  const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
+  assert.match(source, /pveRiskNeedsZero\(stats\)/);
+  assert.match(source, /pvpStatsKnown: pve/);
+  assert.match(source, /\? stored\.pvpStatsKnown === true/);
+  assert.match(source, /if \(!zeroRisk && !achievementBaselines\.has\(baselineMode\)\)/);
 });

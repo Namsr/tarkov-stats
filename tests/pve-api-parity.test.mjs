@@ -50,15 +50,19 @@ test("PvE stored risk version changes schedule refresh while retaining the safe 
   assert.match(riskVersion, /return mode === "pve" \? ADMIN_RISK_SCORE_VERSION : 1/);
   assert.match(
     pveBranch,
-    /storedRisk\.scoreVersion === adminRiskScoreVersionForMode\("pve"\)[\s\S]*?if \(!riskIsFresh\)/,
+    /hasCurrentRiskVersion\(storedRisk, "pve"\)[\s\S]*?if \(!riskIsFresh\)/,
   );
-  assert.match(pveBranch, /const publicRisk = toPublicRiskView\(storedRisk/);
+  assert.match(
+    pveBranch,
+    /toPublicRiskView\(\s*hasCurrentRiskVersion\(storedRisk, "pve"\) \? storedRisk : null/,
+  );
 });
 
 test("shared radar accepts explicit population strategy and one-value population metrics", () => {
   assert.match(radar, /strategy\?: "matched" \| "population"/);
-  assert.match(radar, /targetN: Number\(input\.required \?\? input\.targetN/);
-  assert.match(radar, /cohort\.strategy === "population" \|\| metric\.key === "pmc_survival_rate" \? 1 : MIN_AXIS_SAMPLE/);
+  assert.match(radar, /targetN: Math\.max\(20, finiteNonNegative\(rawTargetN\) \? rawTargetN : 20\)/);
+  assert.match(radar, /cohort\.strategy === "population" \? 1 : MIN_AXIS_SAMPLE/);
+  assert.match(radar, /function finiteNonNegative\(value: unknown\): value is number/);
   assert.doesNotMatch(radar, /average\.value > 0/);
 });
 

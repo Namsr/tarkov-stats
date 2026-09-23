@@ -71,12 +71,13 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const averages: HomeCohort["averages"] = cohort?.averages ?? {};
   const metrics = HOME_RADAR_METRICS.map((metric) => {
     const average = averages[metric.key];
-    const baseline = average && average.count >= (metric.key === "pmc_survival_rate" ? 1 : 20) ? average.value : null;
+    const baseline = average && average.value != null && average.value >= 0
+      && average.count >= (cohort?.strategy === "population" ? 1 : 20) ? average.value : null;
     return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : favProfile?.comparisonStats?.[metric.stat] ?? null };
   });
   const point = (index: number, r: number) => { const angle = ([-150, -90, -30, 30, 90, 150][index] * Math.PI) / 180; return { x: width / 2 + Math.cos(angle) * r, y: height / 2 + Math.sin(angle) * r }; };
   const polygon = (points: { x: number; y: number }[]) => points.map((p) => `${p.x},${p.y}`).join(" ");
-  const number = (value: number | null, digits: number) => value == null || !Number.isFinite(value) ? "—" : value.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const number = (value: number | null, digits: number) => value == null || !Number.isFinite(value) || value < 0 ? "—" : value.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   const valueText = (value: number | null, index: number) => number(value, metrics[index].digits) + (value != null && index === 3 ? "%" : "");
   const differenceText = (index: number) => { const difference = homePercentageDifference(metrics[index].a, metrics[index].b); return difference == null ? "—" : `${difference > 0 ? "+" : difference < 0 ? "−" : ""}${number(Math.abs(difference), 1)}%`; };
   const differenceLabel = t("home.radarDifference", { name: mode === "average" ? t("home.averageTarget") : otherName });

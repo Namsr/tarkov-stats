@@ -157,6 +157,10 @@ const DEMO_FAVORITE: Record<MetricKey, number> = {
   level: 29,
 };
 
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function rangeFromInput(input: { min?: number; max?: number; percent?: number } | undefined, fallbackPercent: number): CohortRange | null {
   if (!input || !Number.isFinite(Number(input.min)) || !Number.isFinite(Number(input.max))) return null;
   return {
@@ -176,30 +180,29 @@ function normalizeResponse(
   statistic: AverageStatistic,
   period: AveragePeriod
 ): NormalizedCohort {
-  const n = Number(input.n ?? 0);
+  const rawN = Number(input.n ?? 0);
+  const n = finiteNonNegative(rawN) ? rawN : 0;
   const averages = {} as NormalizedCohort["averages"];
   for (const metric of METRICS) {
     const raw = input.averages?.[metric.key];
     averages[metric.key] =
       typeof raw === "number"
-        ? { value: Number.isFinite(raw) ? raw : null, count: n }
+        ? { value: finiteNonNegative(raw) ? raw : null, count: n }
         : raw && typeof raw === "object"
           ? {
-              value:
-                typeof raw.value === "number" && Number.isFinite(raw.value)
-                  ? raw.value
-                  : null,
-              count: Number(raw.count ?? 0),
+              value: finiteNonNegative(raw.value) ? raw.value : null,
+              count: finiteNonNegative(Number(raw.count ?? 0)) ? Number(raw.count) : 0,
             }
           : { value: null, count: 0 };
   }
 
+  const rawTargetN = Number(input.required ?? input.targetN ?? input.target ?? 20);
   return {
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: "hours",
     center: hoursCenter,
-    targetN: Number(input.required ?? input.targetN ?? input.target ?? 20),
-    strategy: input.strategy ?? "matched",
+    targetN: Math.max(20, finiteNonNegative(rawTargetN) ? rawTargetN : 20),
+    strategy: input.strategy === "population" ? "population" : "matched",
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
@@ -255,7 +258,10 @@ function demoCohort(
 
 function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
   return Object.fromEntries(
-    METRICS.map((metric) => [metric.key, metric.get(stats)]),
+    METRICS.map((metric) => {
+      const value = metric.get(stats);
+      return [metric.key, finiteNonNegative(value) ? value : null];
+    }),
   ) as Record<MetricKey, number | null>;
 }
 
@@ -455,7 +461,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
     const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null
-      && average.count >= (cohort.strategy === "population" || metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE)
+      && average.count >= (cohort.strategy === "population" ? 1 : MIN_AXIS_SAMPLE)
       ? average.value : null;
     return {
       key: metric.key, label: t(metric.labelKey),

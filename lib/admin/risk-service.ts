@@ -3,7 +3,7 @@ import { scoreCheater, type AchievementInput, type AchievementStat, type Baselin
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
-import { adminRiskScoreVersionForMode } from "@/lib/admin/risk-version";
+import { adminRiskScoreVersionForMode, pveRiskNeedsZero } from "@/lib/admin/risk-version";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
@@ -16,27 +16,6 @@ export class ArenaRiskUnsupportedError extends TypeError {
     super("Arena risk is display-only");
     this.name = "ArenaRiskUnsupportedError";
   }
-}
-
-const PVE_RISK_FIELDS = [
-  "hoursPlayed",
-  "pmcRaids",
-  "pmcSurvivalRate",
-  "pmcKdRatio",
-  "pmcKillsPerRaid",
-  "longestWinStreak",
-  "prestige",
-] as const;
-
-function pveRiskNeedsZero(stats: ParsedPlayerStats): boolean {
-  if (stats.pvpStatsKnown === false || !Number.isSafeInteger(stats.pmcRaids) || stats.pmcRaids < 0) {
-    return true;
-  }
-  if (stats.pmcRaids === 0 || !(stats.hoursPlayed > 0)) return true;
-  return PVE_RISK_FIELDS.some((field) => {
-    const value = stats[field];
-    return !Number.isFinite(value) || value < 0;
-  });
 }
 
 function zeroPveRisk(stats: ParsedPlayerStats): CheaterScoreResult {

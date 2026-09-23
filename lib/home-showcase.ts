@@ -97,7 +97,7 @@ function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
  */
 export function homeCohort(payload: unknown): HomeCohort | null {
   if (payload == null || typeof payload !== "object") return null;
-  const { quality, averages } = payload as { quality?: unknown; averages?: unknown };
+  const { quality, strategy, averages } = payload as { quality?: unknown; strategy?: unknown; averages?: unknown };
   if (typeof quality !== "string" || averages == null || typeof averages !== "object") return null;
   const source = averages as Record<string, unknown>;
   const picked: HomeCohort["averages"] = {};
@@ -106,11 +106,15 @@ export function homeCohort(payload: unknown): HomeCohort | null {
     if (entry == null || typeof entry !== "object") continue;
     const { value, count } = entry as { value?: unknown; count?: unknown };
     picked[metric.key] = {
-      value: typeof value === "number" && Number.isFinite(value) ? value : null,
-      count: typeof count === "number" && Number.isFinite(count) ? count : 0,
+      value: typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null,
+      count: typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : 0,
     };
   }
-  return Object.keys(picked).length ? { quality, averages: picked } : null;
+  return Object.keys(picked).length ? {
+    quality,
+    strategy: strategy === "population" ? "population" : "matched",
+    averages: picked,
+  } : null;
 }
 
 export function pickShowcaseAid(config: ShowcaseConfig | null): number {
@@ -173,6 +177,7 @@ export const HOME_RADAR_METRICS = [
 
 export interface HomeCohort {
   quality: string;
+  strategy: "matched" | "population";
   averages: Partial<Record<typeof HOME_RADAR_METRICS[number]["key"], { value: number | null; count: number }>>;
 }
 
@@ -191,13 +196,13 @@ export function homeProgressPoints(timeline: ProgressionTimelineResponse, metric
 }
 
 export function homePercentageDifference(value: number | null, baseline: number | null): number | null {
-  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline)) return null;
+  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || value < 0 || baseline < 0) return null;
   if (baseline === 0) return value === 0 ? 0 : null;
   return Math.round((value - baseline) / Math.abs(baseline) * 1000) / 10;
 }
 
 export function homeRadarRatio(value: number | null, baseline: number | null): number | null {
-  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || baseline <= 0) return null;
+  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || value < 0 || baseline <= 0) return null;
   // Same cohort-relative scale as PlayerRadarComparison: the mean is at 50%.
   return value <= 0 ? 0 : 0.5 + Math.atan(Math.log(value / baseline)) / Math.PI;
 }

@@ -504,6 +504,7 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   assert.equal(storedVersion, ADMIN_RISK_SCORE_VERSION);
   assert.equal(adminRiskScoreVersionForMode("pve"), 2);
   assert.equal(adminRiskScoreVersionForMode("regular"), 1);
+  assert.equal(adminRiskScoreVersionForMode("seasonal"), 1);
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {

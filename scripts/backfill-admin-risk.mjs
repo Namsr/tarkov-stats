@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
 import { scoreCheater } from "../lib/cheater-score.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
-import { adminRiskScoreVersionForMode } from "../lib/admin/risk-version.ts";
+import { adminRiskScoreVersionForMode, pveRiskNeedsZero } from "../lib/admin/risk-version.ts";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   comparisonRangeFor,
@@ -17,43 +17,55 @@ function parsedJson(value, fallback) {
   try { return JSON.parse(String(value ?? "")); } catch { return fallback; }
 }
 
-function statsFromRow(row) {
+function statsFromRow(row, mode) {
   const stored = parsedJson(row.stats_json, {});
+  const pve = mode === "pve";
+  const numberValue = (storedKey, rowKey, fallback = 0) => {
+    const storedValue = stored[storedKey];
+    const rowValue = rowKey == null ? undefined : row[rowKey];
+    if (pve && (storedValue == null || !Object.prototype.hasOwnProperty.call(stored, storedKey))) return Number.NaN;
+    return Number(storedValue ?? rowValue ?? fallback);
+  };
   return {
     nickname: String(stored.nickname ?? row.nickname ?? ""),
-    level: Number(stored.level ?? row.level ?? 0),
-    prestige: Number(stored.prestige ?? row.prestige ?? 0),
-    experience: Number(stored.experience ?? row.experience ?? 0),
+    level: numberValue("level", "level"),
+    prestige: numberValue("prestige", "prestige"),
+    experience: numberValue("experience", "experience"),
     side: String(stored.side ?? row.side ?? ""),
-    totalRaids: Number(stored.totalRaids ?? row.total_raids ?? 0),
-    pmcRaids: Number(stored.pmcRaids ?? row.pmc_raids ?? 0),
-    scavRaids: Number(stored.scavRaids ?? row.scav_raids ?? 0),
-    survivedRaids: Number(stored.survivedRaids ?? row.survived ?? 0),
-    survivalRate: Number(stored.survivalRate ?? row.survival_rate ?? 0),
-    totalKills: Number(stored.totalKills ?? row.total_kills ?? 0),
-    killedPmc: Number(stored.killedPmc ?? row.killed_pmc ?? 0),
-    killsPerRaid: Number(stored.killsPerRaid ?? row.kills_per_raid ?? 0),
-    kdRatio: Number(stored.kdRatio ?? row.kd_ratio ?? 0),
-    pmcKdRatio: Number(stored.pmcKdRatio ?? row.pmc_kd_ratio ?? 0),
-    deaths: Number(stored.deaths ?? row.deaths ?? 0),
-    pmcDeaths: Number(stored.pmcDeaths ?? row.pmc_deaths ?? 0),
-    runThrough: Number(stored.runThrough ?? row.run_through ?? 0),
-    pmcSurvived: Number(stored.pmcSurvived ?? row.pmc_survived ?? 0),
-    pmcSurvivalRate: Number(stored.pmcSurvivalRate ?? row.pmc_survival_rate ?? 0),
-    pmcKills: Number(stored.pmcKills ?? row.pmc_kills ?? 0),
-    pmcKillsPerRaid: Number(stored.pmcKillsPerRaid ?? row.pmc_kills_per_raid ?? 0),
-    pmcExitKilled: Number(stored.pmcExitKilled ?? 0),
-    pmcExitLeft: Number(stored.pmcExitLeft ?? 0),
-    pmcExitTransit: Number(stored.pmcExitTransit ?? 0),
-    pmcExitMia: Number(stored.pmcExitMia ?? 0),
-    hoursPlayed: Number(stored.hoursPlayed ?? row.hours ?? row.lifetime_pvp_hours ?? 0),
-    longestWinStreak: Number(stored.longestWinStreak ?? row.longest_win_streak ?? 0),
-    achievementsCount: Number(stored.achievementsCount ?? row.achv_count ?? 0),
-    registrationDate: Number(stored.registrationDate ?? 0),
-    lastActiveDate: Number(stored.lastActiveDate ?? 0),
-    profileUpdatedAt: Number(stored.profileUpdatedAt ?? row.profile_updated_at ?? 0),
-    avgLifespan: Number(stored.avgLifespan ?? 0),
-    totalLootValue: Number(stored.totalLootValue ?? 0),
+    totalRaids: numberValue("totalRaids", "total_raids"),
+    pmcRaids: numberValue("pmcRaids", "pmc_raids"),
+    scavRaids: numberValue("scavRaids", "scav_raids"),
+    survivedRaids: numberValue("survivedRaids", "survived"),
+    survivalRate: numberValue("survivalRate", "survival_rate"),
+    totalKills: numberValue("totalKills", "total_kills"),
+    killedPmc: numberValue("killedPmc", "killed_pmc"),
+    killsPerRaid: numberValue("killsPerRaid", "kills_per_raid"),
+    kdRatio: numberValue("kdRatio", "kd_ratio"),
+    pmcKdRatio: numberValue("pmcKdRatio", "pmc_kd_ratio"),
+    deaths: numberValue("deaths", "deaths"),
+    pmcDeaths: numberValue("pmcDeaths", "pmc_deaths"),
+    runThrough: numberValue("runThrough", "run_through"),
+    pmcSurvived: numberValue("pmcSurvived", "pmc_survived"),
+    pmcSurvivalRate: numberValue("pmcSurvivalRate", "pmc_survival_rate"),
+    pmcKills: numberValue("pmcKills", "pmc_kills"),
+    pmcKillsPerRaid: numberValue("pmcKillsPerRaid", "pmc_kills_per_raid"),
+    pmcExitKilled: numberValue("pmcExitKilled", null),
+    pmcExitLeft: numberValue("pmcExitLeft", null),
+    pmcExitTransit: numberValue("pmcExitTransit", null),
+    pmcExitMia: numberValue("pmcExitMia", null),
+    hoursPlayed: numberValue("hoursPlayed", "hours", 0),
+    longestWinStreak: numberValue("longestWinStreak", "longest_win_streak"),
+    achievementsCount: numberValue("achievementsCount", "achv_count"),
+    registrationDate: numberValue("registrationDate", null),
+    lastActiveDate: numberValue("lastActiveDate", null),
+    profileUpdatedAt: numberValue("profileUpdatedAt", "profile_updated_at"),
+    avgLifespan: numberValue("avgLifespan", null),
+    totalLootValue: numberValue("totalLootValue", null),
+    pvpStatsKnown: pve
+      ? stored.pvpStatsKnown === true
+      : typeof stored.pvpStatsKnown === "boolean"
+        ? stored.pvpStatsKnown
+        : row.pvp_stats_known == null || Number(row.pvp_stats_known) !== 0,
   };
 }
 
@@ -168,11 +180,9 @@ function zeroRiskResult(stats) {
 
 async function scoreRow(row, mode, cycleId) {
   const baselineMode = mode === "seasonal" ? "regular" : mode;
-  const stats = statsFromRow(row);
+  const stats = statsFromRow(row, mode);
   const aid = Number(row.aid);
-  const zeroRisk = mode === "pve" && (
-    !Number.isSafeInteger(stats.pmcRaids) || stats.pmcRaids <= 0 || !(stats.hoursPlayed > 0)
-  );
+  const zeroRisk = mode === "pve" && pveRiskNeedsZero(stats);
   const bracket = bracketFor(stats.hoursPlayed);
   const baselineKey = baselineMode === "pve"
     ? `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${aid}`
@@ -180,7 +190,7 @@ async function scoreRow(row, mode, cycleId) {
   if (!zeroRisk && !baselines.has(baselineKey)) {
     baselines.set(baselineKey, baselineFor(baselineMode, stats, aid));
   }
-  if (!achievementBaselines.has(baselineMode)) {
+  if (!zeroRisk && !achievementBaselines.has(baselineMode)) {
     achievementBaselines.set(baselineMode, achievementInputFor(baselineMode));
   }
   const achievementBaseline = achievementBaselines.get(baselineMode);
