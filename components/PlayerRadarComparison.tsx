@@ -36,6 +36,8 @@ interface CohortResponse {
   center?: number;
   targetN?: number;
   target?: number;
+  required?: number;
+  strategy?: "matched" | "population";
   percent?: number;
   n?: number;
   quality?: "sufficient" | "unavailable";
@@ -74,6 +76,7 @@ interface NormalizedCohort {
   dimension: Dimension;
   center: number;
   targetN: number;
+  strategy: "matched" | "population";
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
@@ -195,7 +198,8 @@ function normalizeResponse(
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: "hours",
     center: hoursCenter,
-    targetN: Number(input.targetN ?? input.target ?? 20),
+    targetN: Number(input.required ?? input.targetN ?? input.target ?? 20),
+    strategy: input.strategy ?? "matched",
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
@@ -227,6 +231,7 @@ function demoCohort(
     dimension: "hours",
     center: hoursCenter,
     targetN: 20,
+    strategy: "matched",
     percent,
     n: 184,
     quality: "sufficient",
@@ -449,8 +454,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value > 0
-      && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null
+      && average.count >= (cohort.strategy === "population" || metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE)
+      ? average.value : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

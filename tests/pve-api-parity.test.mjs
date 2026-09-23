@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [profile, cohort, average, progressionAverage, db, riskService] = await Promise.all([
+const [profile, cohort, average, progressionAverage, db, riskVersion, radar] = await Promise.all([
   readFile("app/api/player/profile/route.ts", "utf8"),
   readFile("app/api/average/cohort/route.ts", "utf8"),
   readFile("app/api/average/route.ts", "utf8"),
   readFile("app/api/progression/average/route.ts", "utf8"),
   readFile("lib/db.ts", "utf8"),
-  readFile("lib/admin/risk-service.ts", "utf8"),
+  readFile("lib/admin/risk-version.ts", "utf8"),
+  readFile("components/PlayerRadarComparison.tsx", "utf8"),
 ]);
 
 test("PvE profile responses use the PvE portrait, risk, baseline, and snapshot stream", () => {
@@ -45,13 +46,20 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
 
 test("PvE stored risk version changes schedule refresh while retaining the safe stale response", () => {
   const pveBranch = profile.slice(profile.indexOf('if (mode === "pve") {'));
-  assert.match(riskService, /export const ADMIN_RISK_SCORE_VERSION = 2/);
-  assert.match(riskService, /return mode === "pve" \? ADMIN_RISK_SCORE_VERSION : 1/);
+  assert.match(riskVersion, /export const ADMIN_RISK_SCORE_VERSION = 2/);
+  assert.match(riskVersion, /return mode === "pve" \? ADMIN_RISK_SCORE_VERSION : 1/);
   assert.match(
     pveBranch,
     /storedRisk\.scoreVersion === adminRiskScoreVersionForMode\("pve"\)[\s\S]*?if \(!riskIsFresh\)/,
   );
   assert.match(pveBranch, /const publicRisk = toPublicRiskView\(storedRisk/);
+});
+
+test("shared radar accepts explicit population strategy and one-value population metrics", () => {
+  assert.match(radar, /strategy\?: "matched" \| "population"/);
+  assert.match(radar, /targetN: Number\(input\.required \?\? input\.targetN/);
+  assert.match(radar, /cohort\.strategy === "population" \|\| metric\.key === "pmc_survival_rate" \? 1 : MIN_AXIS_SAMPLE/);
+  assert.doesNotMatch(radar, /average\.value > 0/);
 });
 
 test("PvE average progression has a separate mode cache", () => {

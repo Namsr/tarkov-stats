@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
 import { scoreCheater } from "../lib/cheater-score.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
+import { adminRiskScoreVersionForMode } from "../lib/admin/risk-version.ts";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   comparisonRangeFor,
@@ -190,7 +191,7 @@ async function scoreRow(row, mode, cycleId) {
   } : null);
   await saveRiskEvaluation({
     aid, mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: mode === "pve" ? 2 : 1,
+    factors: result.factors, scoreVersion: adminRiskScoreVersionForMode(mode),
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
     sampleN: result.sampleN,
     confidence: Math.min(1, result.sampleN / 30),

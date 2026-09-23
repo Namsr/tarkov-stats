@@ -361,6 +361,15 @@ test("PvE sparse two-axis averages use the full live population without unavaila
   const unavailable = await pveStore.cohort2d(0, 0, 999, "hours", "median", "all");
   assert.equal(unavailable.quality, "unavailable");
   assert.equal(unavailable.averages.kd_ratio.value, null);
+
+  resetPve();
+  const emptyPopulation = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all");
+  assert.equal(emptyPopulation.strategy, "population");
+  assert.equal(emptyPopulation.required, 20);
+  assert.equal(emptyPopulation.targetN, 20);
+  assert.equal(emptyPopulation.quality, "unavailable");
+  assert.equal(emptyPopulation.reason, "insufficient_cohort");
+  assert.equal(emptyPopulation.n, 0);
 });
 
 test("PvE risk selects the first 10/15/20/30 percent window with 30 peers", async () => {
@@ -437,6 +446,18 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   assert.equal(risk.sampleN, 35);
   assert.equal(Number.isFinite(risk.score), true);
 
+  const lowRaids = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ hoursPlayed: 1, pmcRaids: 1, totalRaids: 1, pmcKdRatio: 20 }),
+    achievementIds: [],
+    playerStore: pveStore,
+    evaluatedAt: 1_800_000_000_001,
+  });
+  assert.ok(lowRaids.score > 0);
+  assert.equal(lowRaids.sampleN, 35);
+
   const zero = await evaluateAndStoreRisk({
     aid: 1,
     mode: "pve",
@@ -460,6 +481,20 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   });
   assert.equal(invalid.score, 0);
   assert.ok(invalid.factors.every((factor) => factor.available === false));
+
+  const invalidAchievement = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ pmcKdRatio: Number.NaN }),
+    achievementIds: ["rare-achievement"],
+    playerStore: {
+      riskBaseline2d() { throw new Error("invalid combat metrics must not query risk peers"); },
+      achievementBaseline() { throw new Error("invalid combat metrics must not query achievements"); },
+    },
+    evaluatedAt: 1_800_000_000_004,
+  });
+  assert.equal(invalidAchievement.score, 0);
 
   const adminDb = new DatabaseSync(adminDatabasePath);
   const storedVersion = adminDb

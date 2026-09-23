@@ -3,15 +3,12 @@ import { scoreCheater, type AchievementInput, type AchievementStat, type Baselin
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
+import { adminRiskScoreVersionForMode } from "@/lib/admin/risk-version";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
 
-export const ADMIN_RISK_SCORE_VERSION = 2;
-
-export function adminRiskScoreVersionForMode(mode: GameMode): number {
-  return mode === "pve" ? ADMIN_RISK_SCORE_VERSION : 1;
-}
+export { ADMIN_RISK_SCORE_VERSION, adminRiskScoreVersionForMode } from "@/lib/admin/risk-version";
 
 /** Arena risk has its own display-only model and must not enter legacy moderation. */
 export class ArenaRiskUnsupportedError extends TypeError {

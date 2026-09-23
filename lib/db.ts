@@ -643,9 +643,12 @@ function unavailableCohort(
     dimension,
     center,
     target: COHORT_TARGET,
+    required: COHORT_TARGET,
+    targetN: COHORT_TARGET,
     percent,
     bounds,
     n,
+    strategy: "matched",
     quality: "unavailable",
     reason,
     averages: emptyCohortMetrics(),
@@ -957,9 +960,12 @@ export interface CohortResult {
   dimension: RangeDimension;
   center: number;
   target: number;
+  required: number;
+  targetN: number;
   percent: CohortPercent;
   bounds: CohortBounds;
   n: number;
+  strategy: "matched";
   quality: "sufficient" | "unavailable";
   reason: CohortUnavailableReason | null;
   averages: Record<RadarMetric, CohortMetric>;
@@ -1362,9 +1368,12 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           dimension,
           center,
           target: COHORT_TARGET,
+          required: COHORT_TARGET,
+          targetN: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
           n: cohortN,
+          strategy: "matched",
           quality: "sufficient",
           reason: null,
           averages,
@@ -1733,9 +1742,12 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           dimension,
           center,
           target: COHORT_TARGET,
+          required: COHORT_TARGET,
+          targetN: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
           n: cohortN,
+          strategy: "matched",
           quality: "sufficient",
           reason: null,
           averages,
