@@ -72,8 +72,9 @@ test("home comparison block follows the displayed game mode", async () => {
   // The block receives the snapshot's own mode and cycle, so a stale card never
   // compares against another mode's data.
   assert.match(component, /<HomeComparison profile=\{display\?\.profile\} cohort=\{display\?\.cohort\} gameMode=\{displayMode\} cycleId=\{display\?\.profile\?\.identity\.cycleId \?\? null\}/);
-  // Favorites are filtered by the shown mode and fetched in that mode.
-  assert.match(comparison, /favorites\.filter\(\(favorite\) => favorite\.mode === gameMode\)/);
+  // Favorites are global by AID: the picker must not hide pins stored under
+  // another mode; only the radar fetch is scoped to the shown mode and cycle.
+  assert.doesNotMatch(comparison, /favorite\.mode === gameMode/);
   assert.match(comparison, /new URLSearchParams\(\{ aid: String\(effectiveFavAid\), mode: gameMode \}\)/);
   assert.match(comparison, /if \(cycleId != null\) params\.set\("cycle", cycleId\)/);
   // The loaded favorite must come back for the same identity before it renders.

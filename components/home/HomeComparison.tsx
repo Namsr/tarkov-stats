@@ -27,15 +27,17 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const mobile = width < 500, height = mobile ? 350 : 430, radius = mobile ? Math.min(115, (width - 70) * .4) : 150;
   const name = profile?.viewModel.identity.nickname ?? "";
   const isGuest = authStatus === "unauthenticated";
-  const modeFavorites = favorites.filter((favorite) => favorite.mode === gameMode);
-  const defaultFavAid = modeFavorites.find((favorite) => favorite.isMain)?.aid ?? modeFavorites[0]?.aid ?? null;
-  const effectiveFavAid = favAid != null && modeFavorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
+  // Favorites are pinned globally by AID (one row per account, whatever mode
+  // it was first starred in). The picker lists every pin; only the radar fetch
+  // below is scoped to the showcased mode and cycle.
+  const defaultFavAid = favorites.find((favorite) => favorite.isMain)?.aid ?? favorites[0]?.aid ?? null;
+  const effectiveFavAid = favAid != null && favorites.some((favorite) => favorite.aid === favAid) ? favAid : defaultFavAid;
   const canCompareFavorite = authStatus === "authenticated" && !favsLoading && effectiveFavAid != null;
   // One cache key per aid and mode: the previous mode's payload must never be
   // read as the current one while the next request is in flight.
   const favoriteKey = effectiveFavAid == null ? null : `${gameMode}:${cycleId ?? "persistent"}:${effectiveFavAid}`;
   const favProfile = canCompareFavorite && favoriteResult?.key === favoriteKey ? favoriteResult.profile : undefined;
-  const favEntry = modeFavorites.find((favorite) => favorite.aid === effectiveFavAid);
+  const favEntry = favorites.find((favorite) => favorite.aid === effectiveFavAid);
   const favName = favProfile?.viewModel.identity.nickname ?? favEntry?.nickname ?? (effectiveFavAid != null ? `AID ${effectiveFavAid}` : "");
   const otherName = mode === "average" ? t("radar.series.average") : favName;
   useEffect(() => {
@@ -62,7 +64,7 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || Boolean(favProfileKnown));
   const statusKey = mode === "favorite" && isGuest ? "home.favoriteNeedAuth"
     : mode === "favorite" && authStatus === "error" ? "home.comparisonUnavailable"
-    : mode === "favorite" && !favsLoading && modeFavorites.length === 0 ? "home.noFavorites"
+    : mode === "favorite" && !favsLoading && favorites.length === 0 ? "home.noFavorites"
     : loading ? "common.loading" : "home.comparisonUnavailable";
   // The homepage passes a normalized cohort, but a payload without radar
   // averages must still degrade to an empty baseline set instead of throwing.
@@ -102,10 +104,10 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
         onClick={() => { if (isGuest) window.location.href = "/api/auth/google"; else { setMode("favorite"); setActive(null); } }}>{t("home.favoritePlayer")}</button>
     </div>
     {isGuest && <p className="home-risk-note">{t("home.favoriteNeedAuth")}</p>}
-    {mode === "favorite" && !isGuest && !favsLoading && modeFavorites.length > 0 && <label className="home-compare-favorite">
+    {mode === "favorite" && !isGuest && !favsLoading && favorites.length > 0 && <label className="home-compare-favorite">
       <span>{t("home.favoritePlayer")}</span>
       <select value={effectiveFavAid ?? ""} onChange={(event) => { setFavAid(Number(event.target.value)); setActive(null); }}>
-        {modeFavorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
+        {favorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
       </select>
     </label>}
     {ready && <div className="home-radar-legend"><span><i aria-hidden="true" />{name}</span><span><i className="home-other-key" aria-hidden="true" />{otherName}</span></div>}
