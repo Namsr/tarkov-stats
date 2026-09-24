@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { computeAverage } from "../lib/average-compute.ts";
 import { MAX_HISTOGRAM_BINS } from "../lib/histogram.ts";
 import { getArenaAverage } from "../lib/arena/service.ts";
@@ -20,11 +21,31 @@ const periods = STANDARD_AVERAGE_PERIODS;
 const arenaModes = ARENA_MODE_KEYS;
 const pollMs = 30_000;
 const scopePauseMs = 500;
+const arenaSyncLeaseMaxAgeMs = 30 * 60_000;
 let running = false;
 let stopping = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function arenaProfileSyncActive(now = Date.now()) {
+  let db;
+  try {
+    db = new DatabaseSync(process.env.SQLITE_PATH || "/data/players.db", { readOnly: true });
+    const table = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_lease'"
+    ).get();
+    if (!table) return false;
+    const lease = db.prepare("SELECT heartbeat_at FROM arena_profile_sync_lease WHERE id = 1").get();
+    const heartbeatAt = Number(lease?.heartbeat_at);
+    const age = now - heartbeatAt;
+    return Number.isFinite(heartbeatAt) && age >= 0 && age < arenaSyncLeaseMaxAgeMs;
+  } catch {
+    return false;
+  } finally {
+    db?.close();
+  }
 }
 
 function scopes() {
@@ -105,12 +126,12 @@ async function materialize(scope, reason) {
 }
 
 async function runDue(reason, force = false) {
-  if (running || stopping) return;
+  if (running || stopping || arenaProfileSyncActive()) return;
   running = true;
   try {
     const states = new Map((await getAveragePublicationStates()).map((state) => [state.scope, state]));
     for (const scope of scopes()) {
-      if (stopping) break;
+      if (stopping || arenaProfileSyncActive()) break;
       if (force || averagePublicationDue(states.get(scope))) {
         await materialize(scope, reason);
         if (!stopping) await sleep(scopePauseMs);

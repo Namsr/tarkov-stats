@@ -10,6 +10,10 @@ const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 test('queue retries only failures, preserves error status and runs one warmup after freshness', async () => {
   const source = await readFile('ops/profile-queue.sh', 'utf8');
+  assert.ok(source.indexOf('run_mode arena') < source.indexOf('run_mode regular'));
+  assert.ok(source.indexOf('run_mode regular') < source.indexOf('run_mode pve'));
+  assert.ok(source.indexOf('run_mode pve') < source.indexOf('run_mode seasonal'));
+  assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
   for (const scenario of ['success', 'retry', 'persistent', 'stopped', 'invalid', 'budget']) {
     const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
     try {
@@ -39,7 +43,7 @@ test('queue retries only failures, preserves error status and runs one warmup af
       assert.ifError(result.error);
       assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' ? 1 : scenario === 'stopped' ? 143 : 0, result.stderr);
       assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
-        scenario === 'budget' ? ['regular'] : [...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','arena','seasonal','warmup']);
+        scenario === 'budget' ? ['arena'] : ['arena', ...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','seasonal','warmup']);
       if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
     } finally { await rm(dir, { recursive: true, force: true }); }
   }

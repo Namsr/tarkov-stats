@@ -828,6 +828,9 @@ test("average dashboard publishes standard variants outside the web process and 
   assert.match(startup, /materialize-average-publications\.mjs/);
   assert.match(startup, /setPriority\(averageMaterializer\.pid, 19\)/);
   assert.doesNotMatch(materializer, /fetch\(|\/api\/average/);
+  assert.match(materializer, /arenaProfileSyncActive/);
+  assert.match(materializer, /arena_profile_sync_lease/);
+  assert.match(materializer, /SQLITE_PATH/);
   assert.match(publication, /BEGIN IMMEDIATE/);
   assert.match(publication, /LIMIT 2/);
   assert.match(average, /readAveragePublication/);
