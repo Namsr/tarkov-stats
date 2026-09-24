@@ -9,6 +9,7 @@ import {
   COMPARISON_COHORT_TARGET,
   COMPARISON_RADAR_METRICS,
   comparisonRangeFor,
+  finiteNonNegativeCount,
   makeComparisonCohortResult,
   makeEmptyPopulationCohortResult,
   selectComparisonPercent,
@@ -193,7 +194,7 @@ async function computeSeasonalComparisonCohort(
     [input.cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
   );
   const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
-    percent, Number(countRow?.[`count_${percent}`] ?? 0),
+    percent, finiteNonNegativeCount(countRow?.[`count_${percent}`]),
   ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = selectComparisonPercent(counts);
   const populationFallback = counts[selectedPercent] < COMPARISON_COHORT_TARGET;

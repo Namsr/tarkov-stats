@@ -5,6 +5,7 @@ import {
   COMPARISON_COHORT_TARGET,
   comparisonCohortMetricValue,
   comparisonRangeFor,
+  finiteNonNegativeCount,
   finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
   makeEmptyPopulationCohortResult,
@@ -35,6 +36,10 @@ test("player radar metrics preserve zero and reject invalid values", () => {
 });
 
 test("cohort metric values use one finite non-negative strategy rule", () => {
+  assert.equal(finiteNonNegativeCount(Number.NaN), 0);
+  assert.equal(finiteNonNegativeCount(Number.POSITIVE_INFINITY), 0);
+  assert.equal(finiteNonNegativeCount(-1), 0);
+  assert.equal(finiteNonNegativeCount("20"), 20);
   assert.equal(comparisonCohortMetricValue("population", { value: 0, count: 1 }), 0);
   assert.equal(comparisonCohortMetricValue("population", { value: 2, count: 0 }), null);
   assert.equal(comparisonCohortMetricValue("matched", { value: 0, count: 20 }), 0);
@@ -48,6 +53,19 @@ test("cohort metric values use one finite non-negative strategy rule", () => {
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
   assert.equal(
     selectComparisonPercent({ 10: 19, 15: 19, 20: 19, 30: 19 }),
+    30,
+  );
+  assert.equal(
+    selectComparisonPercent({ 10: Number.NaN, 15: 20, 20: 20, 30: 20 }),
+    15,
+  );
+  assert.equal(
+    selectComparisonPercent({
+      10: Number.NaN,
+      15: Number.POSITIVE_INFINITY,
+      20: -1,
+      30: Number.NaN,
+    }),
     30,
   );
   const result = makeComparisonCohortResult({

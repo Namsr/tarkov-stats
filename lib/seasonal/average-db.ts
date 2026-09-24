@@ -580,11 +580,16 @@ function seasonalRiskRangeFor(
   };
 }
 
+function finiteRiskCount(value: unknown): number {
+  const count = finiteValue(value);
+  return count != null && count >= 0 ? count : 0;
+}
+
 export function selectSeasonalRiskPercent(
   counts: Readonly<Record<SeasonalRiskCohortPercent, number>>,
 ): SeasonalRiskCohortPercent {
   return SEASONAL_RISK_COHORT_PERCENTAGES.find((percent) =>
-    counts[percent] >= SEASONAL_RISK_COHORT_TARGET
+    finiteRiskCount(counts[percent]) >= SEASONAL_RISK_COHORT_TARGET
   ) ?? 30;
 }
 
@@ -778,7 +783,7 @@ export async function getSeasonalRiskBaseline(
       [cycleId, cycleId, cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
     );
     const counts = Object.fromEntries(SEASONAL_RISK_COHORT_PERCENTAGES.map((percent) => [
-      percent, Number(countRow?.[`count_${percent}`] ?? 0),
+      percent, finiteRiskCount(countRow?.[`count_${percent}`]),
     ])) as Record<SeasonalRiskCohortPercent, number>;
     const selectedPercent = selectSeasonalRiskPercent(counts);
     const populationFallback = counts[selectedPercent] < SEASONAL_RISK_COHORT_TARGET;

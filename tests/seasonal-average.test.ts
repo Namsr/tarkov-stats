@@ -128,6 +128,8 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
       [{ 10: 29, 15: 30, 20: 30, 30: 30 }, 15],
       [{ 10: 29, 15: 29, 20: 30, 30: 30 }, 20],
       [{ 10: 29, 15: 29, 20: 29, 30: 30 }, 30],
+      [{ 10: Number.NaN, 15: 30, 20: 30, 30: 30 }, 15],
+      [{ 10: Number.NaN, 15: Number.POSITIVE_INFINITY, 20: -1, 30: Number.NaN }, 30],
     ] as const) {
       assert.equal(selectSeasonalRiskPercent(counts), expected);
     }

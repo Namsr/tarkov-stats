@@ -132,10 +132,17 @@ export function comparisonRangeFor(
   };
 }
 
+export function finiteNonNegativeCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 export function selectComparisonPercent(
   counts: Readonly<Record<ComparisonCohortPercent, number>>,
 ): ComparisonCohortPercent {
-  return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= COMPARISON_COHORT_TARGET) ?? 30;
+  return COMPARISON_COHORT_PERCENTAGES.find((percent) =>
+    finiteNonNegativeCount(counts[percent]) >= COMPARISON_COHORT_TARGET
+  ) ?? 30;
 }
 
 export function finiteNonNegativeMetricValue(value: unknown): number | null {
