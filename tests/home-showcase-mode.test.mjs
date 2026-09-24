@@ -48,7 +48,7 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   const component = await read("components/HomePage.tsx");
   const helpers = await read("lib/home-showcase.ts");
   // Profile always loads for the selected mode; seasonal carries the cycle.
-  assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode \}\)/);
+  assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
   assert.match(component, /mode === "seasonal" && cycle\) params\.set\("cycle", cycle\)/);
   // Timeline and cohort capability come from the shared helpers: arena has no
   // timeline, and neither arena's match-metric cohort nor a cycle-less seasonal
@@ -112,6 +112,18 @@ test("home showcase shows the faction beside the mode instead of the empty squar
   assert.match(css, /\.home-player-mode \{[^}]*display: flex/);
   assert.match(css, /\.home-player-side \{[^}]*color/);
   assert.match(css, /\.home-player-side::before \{ content: "·"/);
+});
+
+test("home risk renders the stored showcase risk immediately", async () => {
+  const [component, route] = await Promise.all([
+    read("components/HomePage.tsx"),
+    read("app/api/player/profile/route.ts"),
+  ]);
+  assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
+  assert.match(component, /<CheaterScore compact risk=\{display\?\.profile\?\.risk \?\? null\}[\s\S]*?mode=\{displayMode\}/);
+  assert.match(route, /allowStaleRisk = request\.nextUrl\.searchParams\.get\("allowStaleRisk"\) === "1"/);
+  assert.match(route, /scoreVersion === riskScoreVersion\("pve", cycleId\) \|\| allowStaleRisk/);
+  assert.match(route, /scoreVersion === riskScoreVersion\("regular", cycleId\) \|\| allowStaleRisk/);
 });
 
 test("home showcase achievement icons are the rarest unlocked ones", async () => {

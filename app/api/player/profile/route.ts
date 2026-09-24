@@ -470,6 +470,7 @@ export async function GET(request: NextRequest) {
 
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
+  const allowStaleRisk = request.nextUrl.searchParams.get("allowStaleRisk") === "1";
   const profileHeaders = force
     ? noStore
     : {
@@ -532,7 +533,7 @@ export async function GET(request: NextRequest) {
       });
     }
     const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&
-      currentStoredRisk.scoreVersion === riskScoreVersion("seasonal", cycleId)
+      (currentStoredRisk.scoreVersion === riskScoreVersion("seasonal", cycleId) || allowStaleRisk)
       ? toPublicRiskView(currentStoredRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok
@@ -617,7 +618,7 @@ export async function GET(request: NextRequest) {
             console.error("PvE admin risk evaluation failed", error);
           }));
         }
-        const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("pve", cycleId)
+        const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("pve", cycleId) || allowStaleRisk
           ? toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId })
           : null;
         const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({
@@ -820,7 +821,7 @@ export async function GET(request: NextRequest) {
           });
         });
       }
-      const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+      const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
         ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
         : null;
       const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
@@ -932,7 +933,7 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRiskView = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+    const publicRiskView = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
       ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
       : null;
     const regularViewModel = await enrichRegularViewModel(
