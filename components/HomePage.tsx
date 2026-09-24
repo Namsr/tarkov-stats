@@ -83,7 +83,7 @@ export default function HomePage() {
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
     async function loadProfile(): Promise<HomeProfile | null> {
-      const params = new URLSearchParams({ aid: String(aid), mode });
+      const params = new URLSearchParams({ aid: String(aid), mode, allowStaleRisk: "1" });
       if (mode === "seasonal" && cycle) params.set("cycle", cycle);
       try {
         const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`);
@@ -123,6 +123,7 @@ export default function HomePage() {
   const displayAid = aid ?? HOME_EXAMPLE_AIDS[0];
   const href = showcaseProfileHref(displayMode, displayAid, seasonalCycleId);
   const unavailable = display != null && display.profile == null && !switching;
+  const riskScorable = display?.profile?.comparisonStats?.pvpStatsKnown !== false;
   const n = (value: number | null | undefined, digits = 0) => value == null ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits });
   const sections = [
     ["stats", "profile.section.statistics"], ["progress", "home.progressShort"],
@@ -183,7 +184,8 @@ export default function HomePage() {
       <section id="risk" className="home-section home-risk-section">
         <div className="home-wrap">
           {heading("home.riskTitle", "risk", "home.openAnalysis")}
-          <CheaterScore compact risk={display?.profile?.risk ?? null} loading={display == null} />
+          <CheaterScore compact risk={display?.profile?.risk ?? null} loading={display == null}
+            mode={displayMode} cycleId={display?.profile?.identity?.cycleId ?? "persistent"} statsKnown={riskScorable} />
           {name && <p className="home-risk-account">{name}<span>{t("fav.mode." + displayMode)}</span></p>}
           <p className="home-risk-note">{t("home.riskNote")}</p>
         </div>
