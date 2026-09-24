@@ -41,7 +41,9 @@ test("TSR rewards combat results, penalizes deaths, and shrinks small samples", 
   assert.ok(rateArenaMode(small, reference).rating < rateArenaMode(large, reference).rating);
   assert.equal(rateArenaMode(small, reference).provisional, true);
   assert.equal(rateArenaMode(large, reference).provisional, false);
-  assert.equal(rateArenaMode({ ...small, matches: 9, wins: 7 }, reference).displayReady, false);
+  assert.equal(rateArenaMode({ ...small, matches: 9, wins: 7 }, reference).displayReady, true);
+  assert.equal(rateArenaMode({ ...small, matches: 1, wins: 1, losses: 0 }, reference).displayReady, true);
+  assert.equal(rateArenaMode({ ...small, matches: 0, wins: 0, losses: 0 }, reference).displayReady, false);
 });
 
 test("TSR does not turn missing or contradictory counters into zeroes", () => {
