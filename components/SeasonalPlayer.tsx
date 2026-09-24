@@ -152,6 +152,44 @@ function SeasonalProfileActions({
   );
 }
 
+interface SeasonalRiskResponse {
+  identity?: { aid?: number; mode?: string; cycleId?: string };
+  risk?: PublicRiskView | null;
+}
+
+async function pollSeasonalRisk(input: {
+  aid: number;
+  cycleId: string;
+  isCurrent: () => boolean;
+  onRisk: (risk: PublicRiskView) => void;
+}) {
+  for (const delay of [1_500, 3_000, 5_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!input.isCurrent()) return;
+    try {
+      const params = new URLSearchParams({
+        aid: String(input.aid),
+        mode: "seasonal",
+        cycle: input.cycleId,
+      });
+      const response = await fetch(`/api/player/risk?${params}`, { cache: "no-store" });
+      if (!response.ok) continue;
+      const body = await response.json() as SeasonalRiskResponse;
+      if (
+        !body.risk ||
+        body.identity?.aid !== input.aid ||
+        body.identity?.mode !== "seasonal" ||
+        body.identity?.cycleId !== input.cycleId ||
+        !input.isCurrent()
+      ) return;
+      input.onRisk(body.risk);
+      return;
+    } catch {
+      continue;
+    }
+  }
+}
+
 export default function SeasonalPlayer({
   aid,
   cycleId,
@@ -248,31 +286,12 @@ export default function SeasonalPlayer({
         const initialRisk = body.viewModel?.risk ?? body.risk ?? null;
         setServerRisk(initialRisk);
         if (initialRisk == null) {
-          setTimeout(() => {
-            if (cancelled || generation !== requestGeneration.current) return;
-            const retryParams = new URLSearchParams({
-              aid: String(aid),
-              mode: "seasonal",
-              cycle: cycleId,
-              refresh: "1",
-            });
-            void loadPlayerProfileResponse<SeasonalProfileResponse>(
-              `/api/player/profile?${retryParams}`,
-              { force: true },
-            ).then(({ ok: retryOk, body: retryBody }) => {
-              if (
-                !retryOk ||
-                !retryBody.profile ||
-                retryBody.identity?.aid !== aid ||
-                retryBody.identity?.mode !== "seasonal" ||
-                retryBody.identity?.cycleId !== cycleId ||
-                cancelled ||
-                generation !== requestGeneration.current
-              ) return;
-              const retryRisk = retryBody.viewModel?.risk ?? retryBody.risk ?? null;
-              if (retryRisk != null) setServerRisk(retryRisk);
-            }).catch(() => undefined);
-          }, 2_000);
+          void pollSeasonalRisk({
+            aid,
+            cycleId,
+            isCurrent: () => !cancelled && generation === requestGeneration.current,
+            onRisk: setServerRisk,
+          });
         }
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(body.profile));
         setSkillItems(skillsFromViewModel(body.viewModel));
