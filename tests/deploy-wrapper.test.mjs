@@ -39,7 +39,7 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         esac
       }
       logger() { echo "logger $*" >> calls; }
-      flock() { if [ "$SCENARIO" = sync-busy ]; then return 1; fi; return 0; }
+      flock() { echo "flock $*" >> calls; if [ "$SCENARIO" = sync-busy ]; then return 1; fi; return 0; }
       sleep() { :; }
       `;
       const script = source.replace('APP=/opt/tarkovstats-auto', () => `APP='${dir.replaceAll('\\','/')}'\n${mock}`)
@@ -55,8 +55,10 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         assert.equal(result.status, 75);
         assert.doesNotMatch(calls,/build --build-arg/);
         assert.doesNotMatch(calls,/git reset --hard/);
-      } else if(scenario==='current') assert.doesNotMatch(calls,/build --build-arg/);
-      else assert.match(calls,/build --build-arg SOURCE_REVISION=remote/);
+      } else if(scenario==='current') {
+        assert.doesNotMatch(calls,/build --build-arg/);
+        assert.doesNotMatch(calls,/^flock /m);
+      } else assert.match(calls,/build --build-arg SOURCE_REVISION=remote/);
       if(!['current','checkout-ahead','sync-busy'].includes(scenario)) {
         assert.match(calls,/git reset --hard remote/);
         assert.match(calls,/image tag old-image tarkovstats-web/);
