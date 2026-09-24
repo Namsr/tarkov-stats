@@ -500,7 +500,7 @@ test("Arena risk needs 30 peers, ignores headshots, preserves mode scores, and r
   const riskDb = new DatabaseSync(process.env.SQLITE_PATH);
   try {
     const saved = JSON.parse(riskDb.prepare("SELECT risk_json FROM arena_risk_evaluations WHERE aid = 300").get().risk_json);
-    assert.equal(saved.version.calculation, 3);
+    assert.equal(saved.version.calculation, 4);
   } finally {
     riskDb.close();
   }
@@ -607,7 +607,7 @@ test("Arena risk uses the population when matched LastHero peers are sparse or h
   let lastHeroRisk = risk?.modes.find((mode) => mode.mode === "lastHero");
   assert.equal(lastHeroRisk?.peerCount, 34);
   assert.ok((lastHeroRisk?.score ?? 0) > 0);
-  assert.equal(risk?.version.calculation, 3);
+  assert.equal(risk?.version.calculation, 4);
 
   const db = new DatabaseSync(process.env.SQLITE_PATH);
   try {
@@ -660,7 +660,7 @@ test("Arena batched risk recompute matches pre-batch results across modes", asyn
   assert.equal(await getArenaProfileRisk(999999), null);
 
   resetArenaData();
-  await save(profile(950, { games: 1 }));
+  await save(profile(950, { games: 0 }));
   const belowMinimum = await getArenaProfileRisk(950);
   assert.equal(belowMinimum?.score, null);
   assert.ok(belowMinimum?.overall.reasons.includes("target_below_minimum_matches"));
@@ -668,6 +668,14 @@ test("Arena batched risk recompute matches pre-batch results across modes", asyn
     assert.ok(modeRisk.reasons.includes("target_below_minimum_matches"));
     assert.equal(modeRisk.peerCount, 0);
   }
+
+  resetArenaData();
+  await save(profile(955, { games: 1 }));
+  for (let aid = 956; aid <= 990; aid += 1) await save(profile(aid));
+  const singleMatch = await getArenaProfileRisk(955);
+  const singleMatchLastHero = singleMatch?.modes.find((mode) => mode.mode === "lastHero");
+  assert.equal(singleMatchLastHero?.peerCount, 35);
+  assert.ok((singleMatch?.score ?? 0) >= 0);
 
   await save(profile(951));
   const staleDb = new DatabaseSync(process.env.SQLITE_PATH);
@@ -790,7 +798,7 @@ test("Arena indexed selection matches reference filtering and formulas across mo
     }
     for (const mode of modes) {
       const target = rows.find((row) => row.aid === aid && row.arena_mode === mode);
-      const targetAvailable = target.games_count >= 10 && (mode === "overall" || valid(target.hours));
+      const targetAvailable = target.games_count >= 1 && (mode === "overall" || valid(target.hours));
       for (const kind of ["trimmed_mean", "median"]) {
         const cohort = await getArenaCohort(aid, mode, kind);
         if (!targetAvailable) { assert.equal(cohort.reason, "target_unavailable"); continue; }
@@ -814,7 +822,7 @@ test("Arena indexed selection matches reference filtering and formulas across mo
         }
       }
       const actualRisk = mode === "overall" ? risk.overall : risk.modes.find((entry) => entry.mode === mode);
-      if (target.games_count < 10) { assert.equal(actualRisk.score, null); assert.equal(actualRisk.peerCount, 0); continue; }
+      if (target.games_count < 1) { assert.equal(actualRisk.score, null); assert.equal(actualRisk.peerCount, 0); continue; }
       const { peers, percent } = riskPeersFor(target);
       assert.equal(actualRisk.peerCount, peers.length);
       if (mode !== "overall") assert.equal(actualRisk.percent, percent);
