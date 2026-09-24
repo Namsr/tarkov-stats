@@ -190,11 +190,11 @@ test("Arena stores nullable BestArp in current and history rows and parser refre
 
   const db = new DatabaseSync(databasePath);
   try {
-    assert.equal(ARENA_PARSER_VERSION, 3);
+    assert.equal(ARENA_PARSER_VERSION, 4);
     assert.equal(db.prepare(`SELECT best_arp FROM arena_mode_stats
       WHERE aid = 201 AND arena_mode = 'overall'`).get().best_arp, 0);
     assert.equal(db.prepare(`SELECT best_arp FROM arena_mode_stats_history
-      WHERE aid = 201 AND arena_mode = 'overall' AND parser_version = 3`).get().best_arp, 0);
+      WHERE aid = 201 AND arena_mode = 'overall' AND parser_version = 4`).get().best_arp, 0);
     assert.equal(db.prepare(`SELECT best_arp FROM arena_mode_stats
       WHERE aid = 202 AND arena_mode = 'overall'`).get().best_arp, 1750);
     assert.equal(db.prepare(`SELECT best_arp FROM arena_mode_stats

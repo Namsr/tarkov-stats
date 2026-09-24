@@ -15,17 +15,16 @@ import { syncArenaIndex } from "./sync-arena-index.mjs";
 const { fetchTarkovJson, parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const {
   ARENA_COUNTER_COLUMNS,
-  arenaStoredSnapshots,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
 const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
 const { markAveragePublicationDirty } = await import("../lib/average-publication.ts");
 // Keep this queue target in lockstep with lib/arena/storage.ts. The collector
 // runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
-const ARENA_PARSER_VERSION = 3;
-const ARENA_V2_PARSER_VERSION = 2;
-const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v3_complete";
-const ARENA_V2_PUBLICATION_KEY = "offline_v2_to_v3_publication_pending";
+const ARENA_PARSER_VERSION = 4;
+const ARENA_V3_PARSER_VERSION = 3;
+const ARENA_V3_MIGRATION_KEY = "offline_v3_to_v4_complete";
+const ARENA_V3_PUBLICATION_KEY = "offline_v3_to_v4_publication_pending";
 const ARENA_DYNAMIC_CACHE_VERSION_KEY = "dynamic_cache_version";
 const ARENA_MIGRATION_BATCH_SIZE = 500;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
@@ -120,7 +119,7 @@ async function main() {
   }, Math.max(1_000, Math.floor(config.leaseMs / 3)));
   leaseHeartbeatTimer.unref?.();
 
-  const migration = await migrateEquivalentArenaV2Profiles(startedAt);
+  const migration = await migrateOfflineArenaV3Profiles(startedAt);
   if (migration.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const index = await refreshIndexIfDue(startedAt);
   if (stopping || runBudgetExpired(startedAt)) return;
@@ -171,8 +170,8 @@ async function main() {
   log("SUMMARY", summary);
 }
 
-async function migrateEquivalentArenaV2Profiles(startedAt) {
-  if (getMeta(ARENA_V2_MIGRATION_KEY) === "1") {
+async function migrateOfflineArenaV3Profiles(startedAt) {
+  if (getMeta(ARENA_V3_MIGRATION_KEY) === "1") {
     return { status: "already_complete", candidates: 0, migrated: 0, network: 0 };
   }
   const currentColumns = new Set(db.prepare("PRAGMA table_info(arena_mode_stats)").all().map((row) => String(row.name)));
@@ -189,9 +188,9 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
     return { status: "unsupported_schema", candidates: 0, migrated: 0, network: 0 };
   }
 
-  const counters = { candidates: 0, migrated: 0, different: 0, invalid: 0, mixed: 0, stale: 0 };
+  const counters = { candidates: 0, migrated: 0, invalid: 0, mixed: 0, stale: 0 };
   const pendingNetwork = [];
-  const equivalent = [];
+  const recoverable = [];
   const processedAids = new Set();
   const selectAids = db.prepare(`SELECT DISTINCT current.aid FROM arena_mode_stats current
     WHERE current.parser_version = ? AND current.aid > ?
@@ -201,8 +200,8 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
   let complete = false;
 
   const flush = async () => {
-    if (equivalent.length === 0 && pendingNetwork.length === 0) return;
-    const equivalentBatch = equivalent.splice(0);
+    if (recoverable.length === 0 && pendingNetwork.length === 0) return;
+    const recoverableBatch = recoverable.splice(0);
     const networkBatch = pendingNetwork.splice(0);
     const migrated = await writeTransaction(() => {
       assertLeaseHeld();
@@ -218,9 +217,9 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
           status = 'pending', attempts = 0, http_status = NULL, error = NULL,
           last_run_id = NULL, updated_at = excluded.updated_at`);
       let accepted = 0;
-      for (const item of equivalentBatch) {
+      for (const item of recoverableBatch) {
         if (item.rows.some((row) => Number(verify.get(
-          row.aid, row.arena_mode, ARENA_V2_PARSER_VERSION, row.upstream_version, row.fetched_at, row.raw_json
+          row.aid, row.arena_mode, ARENA_V3_PARSER_VERSION, row.upstream_version, row.fetched_at, row.raw_json
         ).n) !== 1)) {
           enqueue.run(
             Number(item.profile.aid),
@@ -237,23 +236,23 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
         enqueue.run(item.aid, item.feedUpdatedAt, ARENA_PARSER_VERSION, Date.now());
       }
       if (accepted > 0) {
-        setMeta(ARENA_V2_PUBLICATION_KEY, "1");
+        setMeta(ARENA_V3_PUBLICATION_KEY, "1");
         setMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY, String(Number(getMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY) || 0) + 1));
       }
       return accepted;
     });
     counters.migrated += migrated;
-    counters.stale += equivalentBatch.length - migrated;
+    counters.stale += recoverableBatch.length - migrated;
   };
 
   while (!stopping) {
     if (Date.now() - startedAt >= config.maxRunMs) break;
-    const aids = selectAids.all(ARENA_V2_PARSER_VERSION, afterAid, ARENA_MIGRATION_BATCH_SIZE);
+    const aids = selectAids.all(ARENA_V3_PARSER_VERSION, afterAid, ARENA_MIGRATION_BATCH_SIZE);
     if (aids.length === 0) {
       const remaining = db.prepare(`SELECT DISTINCT current.aid FROM arena_mode_stats current
         WHERE current.parser_version = ?
           AND NOT EXISTS (SELECT 1 FROM excluded_players excluded WHERE excluded.aid = current.aid)`)
-        .all(ARENA_V2_PARSER_VERSION);
+        .all(ARENA_V3_PARSER_VERSION);
       if (remaining.some((row) => !processedAids.has(Number(row.aid)))) {
         afterAid = 0;
         continue;
@@ -278,52 +277,51 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
       processedAids.add(aid);
       const profileRows = grouped.get(aid) ?? [];
       counters.candidates += 1;
-      const result = classifyArenaV2Rows(profileRows);
-      if (result.kind === "equivalent") {
-        equivalent.push({ ...result, rows: profileRows });
+      const result = classifyArenaV3Rows(profileRows);
+      if (result.kind === "recoverable") {
+        recoverable.push({ ...result, rows: profileRows });
       } else {
-        if (result.kind === "different") counters.different += 1;
-        else if (result.kind === "mixed") counters.mixed += 1;
+        if (result.kind === "mixed") counters.mixed += 1;
         else counters.invalid += 1;
         pendingNetwork.push({
           aid,
           feedUpdatedAt: Math.max(1, ...profileRows.map((row) => Number(row.upstream_version) || 0)),
         });
       }
-      if (equivalent.length + pendingNetwork.length >= ARENA_MIGRATION_BATCH_SIZE) await flush();
+      if (recoverable.length + pendingNetwork.length >= ARENA_MIGRATION_BATCH_SIZE) await flush();
     }
     await heartbeat();
   }
   if (!stopping && !runBudgetExpired(startedAt)) await flush();
   else complete = false;
-  const publicationRequired = complete && (counters.migrated > 0 || getMeta(ARENA_V2_PUBLICATION_KEY) === "1");
+  const publicationRequired = complete && (counters.migrated > 0 || getMeta(ARENA_V3_PUBLICATION_KEY) === "1");
   if (publicationRequired && await markAveragePublicationDirty("arena") === false) {
     complete = false;
   }
   const summary = {
     status: complete ? "complete" : "interrupted",
     ...counters,
-    network: counters.different + counters.invalid + counters.mixed + counters.stale,
+    network: counters.invalid + counters.mixed + counters.stale,
   };
   if (complete) {
     await writeTransaction(() => {
       assertLeaseHeld();
-      setMeta(ARENA_V2_MIGRATION_KEY, "1");
-      deleteMeta(ARENA_V2_PUBLICATION_KEY);
+      setMeta(ARENA_V3_MIGRATION_KEY, "1");
+      deleteMeta(ARENA_V3_PUBLICATION_KEY);
     });
   }
   log("MIGRATION_SUMMARY", summary);
   return summary;
 }
 
-function classifyArenaV2Rows(rows) {
+function classifyArenaV3Rows(rows) {
   const expectedModes = new Set(["overall", ...ARENA_MODE_KEYS]);
   if (!Array.isArray(rows) || rows.length !== expectedModes.size) return { kind: "invalid" };
   const byMode = new Map(rows.map((row) => [String(row.arena_mode), row]));
   if (byMode.size !== expectedModes.size || [...expectedModes].some((mode) => !byMode.has(mode))) {
     return { kind: "invalid" };
   }
-  if (rows.some((row) => Number(row.parser_version) !== ARENA_V2_PARSER_VERSION)) return { kind: "mixed" };
+  if (rows.some((row) => Number(row.parser_version) !== ARENA_V3_PARSER_VERSION)) return { kind: "mixed" };
   const upstreamVersions = new Set(rows.map((row) => Number(row.upstream_version)));
   const fetchedAtValues = new Set(rows.map((row) => Number(row.fetched_at)));
   if (upstreamVersions.size !== 1 || fetchedAtValues.size !== 1) return { kind: "mixed" };
@@ -382,13 +380,7 @@ function classifyArenaV2Rows(rows) {
   }
   if (!reparsed || reparsed.parserVersion !== ARENA_PARSER_VERSION ||
     reparsed.profileUpdatedAt !== upstreamVersion) return { kind: "invalid" };
-  const upgraded = new Map(arenaStoredSnapshots(reparsed).map((snapshot) => [snapshot.mode, snapshot]));
-  for (const mode of expectedModes) {
-    if (!storedSnapshotsEqual(rawByMode.get(mode).normalized, upgraded.get(mode))) {
-      return { kind: "different" };
-    }
-  }
-  return { kind: "equivalent", profile: reparsed, fetchedAt };
+  return { kind: "recoverable", profile: reparsed, fetchedAt };
 }
 
 function storedRowMatchesSnapshot(row, snapshot) {
@@ -404,22 +396,6 @@ function storedRowMatchesSnapshot(row, snapshot) {
     return false;
   }
   return true;
-}
-
-function storedSnapshotsEqual(left, right) {
-  if (!validStoredSnapshot(left, left?.mode) || !validStoredSnapshot(right, left?.mode)) return false;
-  if (!sameNullable(left.hours, right.hours) || !sameNullable(left.bestArp, right.bestArp)) return false;
-  for (const key of Object.keys(ARENA_COUNTER_COLUMNS)) {
-    if (!sameNullable(left.counters?.[key], right.counters?.[key])) return false;
-  }
-  for (const key of Object.keys(ARENA_METRIC_COLUMNS)) {
-    if (!sameNullable(left.metrics?.[key], right.metrics?.[key])) return false;
-  }
-  return rowOverallSource(left) === rowOverallSource(right);
-}
-
-function rowOverallSource(snapshot) {
-  return snapshot.mode === "overall" ? snapshot.source : null;
 }
 
 function validStoredSnapshot(snapshot, mode) {

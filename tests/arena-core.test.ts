@@ -144,6 +144,70 @@ test("Arena parser computes five exact formulas and rejects invalid raw counter 
   assert.equal(fractional.metrics.kills_per_match, null);
 });
 
+test("Arena v4 infers only one absent valid per-mode result and recomputes metrics", () => {
+  const source = profile(8045310);
+  const counters = (values) => {
+    source.stat.arenaOverAllCounters.UnrankedTeamFight = { Counters: values };
+    return parseArenaProfileStats(source).arenaProfile.modes.teamFight;
+  };
+
+  const inferredLosses = counters({ GamesCount: 10, ArenaWins: 4, Kills: 20, Deaths: 4 });
+  assert.equal(inferredLosses.counters.losses, 6);
+  assert.equal(inferredLosses.metrics.win_rate, 40);
+  assert.equal(inferredLosses.metrics.kd_ratio, 5);
+
+  const inferredWins = counters({ GamesCount: 10, ArenaLoses: 3, Kills: 20, Deaths: 4 });
+  assert.equal(inferredWins.counters.wins, 7);
+  assert.equal(inferredWins.metrics.win_rate, 70);
+
+  const bothMissing = counters({ GamesCount: 10, Kills: 20, Deaths: 4 });
+  assert.equal(bothMissing.counters.wins, null);
+  assert.equal(bothMissing.counters.losses, null);
+
+  const matchesMissing = counters({ ArenaWins: 4, Kills: 20, Deaths: 4 });
+  assert.equal(matchesMissing.counters.matches, null);
+  assert.equal(matchesMissing.counters.losses, null);
+
+  const invalidKnown = counters({ GamesCount: 10, ArenaWins: -1, Kills: 20, Deaths: 4 });
+  assert.equal(invalidKnown.counters.wins, null);
+  assert.equal(invalidKnown.counters.losses, null);
+
+  const invalidLosses = counters({ GamesCount: 10, ArenaLoses: -1, Kills: 20, Deaths: 4 });
+  assert.equal(invalidLosses.counters.wins, null);
+  assert.equal(invalidLosses.counters.losses, null);
+
+  const negativeResidual = counters({ GamesCount: 10, ArenaWins: 11, Kills: 20, Deaths: 4 });
+  assert.equal(negativeResidual.counters.wins, 11);
+  assert.equal(negativeResidual.counters.losses, null);
+
+  for (const name of modeNames) {
+    source.stat.arenaOverAllCounters[name] = { Counters: { Kills: 0 } };
+  }
+  source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 10, ArenaWins: 4 } };
+  const directOverall = parseArenaProfileStats(source).arenaProfile.overall;
+  assert.equal(directOverall.counters.losses, null);
+});
+
+test("Arena v4 account 8045310 keeps overall mode sums 78/58/20", () => {
+  const source = profile(8045310);
+  source.stat.arenaOverAllCounters = {
+    UnrankedOverall: { Counters: { GamesCount: 78 } },
+    UnrankedTeamFight: { Counters: { GamesCount: 3, ArenaWins: 3 } },
+    UnrankedLastHero: { Counters: { GamesCount: 1, ArenaLoses: 1 } },
+    UnrankedCheckPoint: { Counters: { GamesCount: 15, ArenaWins: 14, ArenaLoses: 1 } },
+    UnrankedBlastGang: { Counters: { GamesCount: 38, ArenaWins: 30, ArenaLoses: 8 } },
+    UnrankedShootOutDuo: { Counters: { GamesCount: 21, ArenaWins: 11, ArenaLoses: 10 } },
+  };
+  const arena = parseArenaProfileStats(source).arenaProfile;
+  assert.equal(arena.parserVersion, 4);
+  assert.equal(arena.overall.counters.matches, 78);
+  assert.equal(arena.overall.counters.wins, 58);
+  assert.equal(arena.overall.counters.losses, 20);
+  assert.equal(arena.overall.metrics.win_rate, 74.35897435897436);
+  assert.equal(arena.modes.teamFight.counters.losses, 0);
+  assert.equal(arena.modes.lastHero.counters.wins, 0);
+});
+
 test("Arena overall falls back to complete played-mode totals and maxima", () => {
   const source = profile(511);
   for (const [index, name] of modeNames.entries()) {

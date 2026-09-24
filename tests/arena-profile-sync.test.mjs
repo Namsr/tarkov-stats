@@ -542,8 +542,8 @@ test("Arena collector waits for every worker after a fatal error", async () => {
   }
 });
 
-test("Arena collector migrates equivalent v2 profiles and networks only different results", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v2-migration-"));
+test("Arena collector migrates recoverable v3 profiles offline and networks only unrecoverable rows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v3-migration-"));
   const dbPath = join(directory, "players.db");
   const players = new DatabaseSync(dbPath);
   players.exec(`
@@ -563,10 +563,10 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     );
   `);
 
-  const group = (matches) => ({ Counters: {
+  const group = (matches, includeLosses = true) => ({ Counters: {
     GamesCount: matches,
     ArenaWins: matches ? Math.round(matches * 0.4) : 0,
-    ArenaLoses: matches ? matches - Math.round(matches * 0.4) : 0,
+    ...(includeLosses ? { ArenaLoses: matches ? matches - Math.round(matches * 0.4) : 0 } : {}),
     Kills: matches * 3,
     Deaths: matches * 2,
     Assists: matches,
@@ -581,73 +581,71 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     LoseStreak: 0,
     LongestLoseStreak: 2,
   } });
+  const zeroGroups = () => ({
+    UnrankedOverall: group(0),
+    UnrankedTeamFight: group(0),
+    UnrankedLastHero: group(0),
+    UnrankedCheckPoint: group(0),
+    UnrankedBlastGang: group(0),
+    UnrankedShootOutDuo: group(0),
+  });
   const profile = (aid, updated, groups, totalInGameTime = 3600) => ({
     aid,
     updated,
     info: { nickname: `Player${aid}`, side: "PMC", experience: 1, prestigeLevel: 0 },
     stat: { totalInGameTime, arenaOverAllCounters: groups },
   });
+  const storeV3 = (arenaProfile, fetchedAt) => {
+    arenaProfile.parserVersion = 3;
+    upsertArenaSqlite(players, arenaProfile, fetchedAt);
+  };
+  const backportMissingLosses = (arenaProfile, fetchedAt) => {
+    storeV3(arenaProfile, fetchedAt);
+    for (const table of ["arena_mode_stats", "arena_mode_stats_history"]) {
+      for (const mode of ["overall", "teamFight"]) {
+        const row = players.prepare(
+          `SELECT raw_json FROM ${table} WHERE aid = ? AND arena_mode = ?`
+        ).get(arenaProfile.aid, mode);
+        const raw = JSON.parse(row.raw_json);
+        raw.normalized.counters.losses = null;
+        players.prepare(
+          `UPDATE ${table} SET arena_losses = NULL, raw_json = ? WHERE aid = ? AND arena_mode = ?`
+        ).run(JSON.stringify(raw), arenaProfile.aid, mode);
+      }
+    }
+  };
   const timestamp = 1_800_000_000_000;
-  const equivalent = parseArenaProfileStats(profile(1, timestamp, {
-    UnrankedOverall: group(0),
-    UnrankedTeamFight: group(0),
+  const equivalent = parseArenaProfileStats(profile(1, timestamp, zeroGroups())).arenaProfile;
+  const changed = parseArenaProfileStats(profile(2, timestamp, {
+    UnrankedOverall: group(10, false),
+    UnrankedTeamFight: group(10, false),
     UnrankedLastHero: group(0),
     UnrankedCheckPoint: group(0),
     UnrankedBlastGang: group(0),
     UnrankedShootOutDuo: group(0),
   })).arenaProfile;
-  const different = parseArenaProfileStats(profile(2, timestamp, {
-    UnrankedTeamFight: group(10),
-    UnrankedLastHero: group(10),
-    UnrankedCheckPoint: group(10),
-    UnrankedBlastGang: group(10),
-  })).arenaProfile;
-  const nullHours = parseArenaProfileStats(profile(3, timestamp, {
-    UnrankedOverall: group(0),
-    UnrankedTeamFight: group(0),
-    UnrankedLastHero: group(0),
-    UnrankedCheckPoint: group(0),
-    UnrankedBlastGang: group(0),
-    UnrankedShootOutDuo: group(0),
-  }, null)).arenaProfile;
-  const excluded = parseArenaProfileStats(profile(4, timestamp, {
-    UnrankedOverall: group(0),
-    UnrankedTeamFight: group(0),
-    UnrankedLastHero: group(0),
-    UnrankedCheckPoint: group(0),
-    UnrankedBlastGang: group(0),
-    UnrankedShootOutDuo: group(0),
-  })).arenaProfile;
-  upsertArenaSqlite(players, equivalent, timestamp - 1000);
-  upsertArenaSqlite(players, different, timestamp - 1000);
-  upsertArenaSqlite(players, nullHours, timestamp - 1000);
-  upsertArenaSqlite(players, excluded, timestamp - 1000);
-  players.prepare("INSERT INTO excluded_players (aid) VALUES (4)").run();
-  players.exec(`
-    UPDATE arena_mode_stats SET parser_version = 2;
-    DELETE FROM arena_mode_stats_history;
-  `);
-  const differentOverall = players.prepare(
-    "SELECT games_count, raw_json FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'overall'"
-  ).get();
-  const differentOverallRaw = JSON.parse(differentOverall.raw_json);
-  differentOverallRaw.normalized.counters.matches = null;
-  players.prepare(
-    "UPDATE arena_mode_stats SET games_count = NULL, raw_json = ? WHERE aid = 2 AND arena_mode = 'overall'"
-  ).run(JSON.stringify(differentOverallRaw));
-  const differentMode = players.prepare(
-    "SELECT games_count, raw_json FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'shootOutDuo'"
-  ).get();
-  const differentModeRaw = JSON.parse(differentMode.raw_json);
-  differentModeRaw.normalized.counters.matches = null;
-  players.prepare(
-    "UPDATE arena_mode_stats SET games_count = NULL, raw_json = ? WHERE aid = 2 AND arena_mode = 'shootOutDuo'"
-  ).run(JSON.stringify(differentModeRaw));
-  const insertIndex = players.prepare(`
+  const nullHours = parseArenaProfileStats(profile(3, timestamp, zeroGroups(), null)).arenaProfile;
+  const malformed = parseArenaProfileStats(profile(4, timestamp, zeroGroups())).arenaProfile;
+  const mixed = parseArenaProfileStats(profile(5, timestamp, zeroGroups())).arenaProfile;
+  const excluded = parseArenaProfileStats(profile(6, timestamp, zeroGroups())).arenaProfile;
+  storeV3(equivalent, timestamp - 1000);
+  backportMissingLosses(changed, timestamp - 1000);
+  storeV3(nullHours, timestamp - 1000);
+  storeV3(malformed, timestamp - 1000);
+  storeV3(mixed, timestamp - 1000);
+  storeV3(excluded, timestamp - 1000);
+  players.prepare("INSERT INTO excluded_players (aid) VALUES (6)").run();
+  const malformedRaw = JSON.parse(players.prepare(
+    "SELECT raw_json FROM arena_mode_stats WHERE aid = 4 AND arena_mode = 'overall'"
+  ).get().raw_json);
+  malformedRaw.sourceCounters = [];
+  players.prepare("UPDATE arena_mode_stats SET raw_json = ? WHERE aid = 4 AND arena_mode = 'overall'")
+    .run(JSON.stringify(malformedRaw));
+  players.prepare("UPDATE arena_mode_stats SET parser_version = 2 WHERE aid = 5 AND arena_mode = 'teamFight'").run();
+  players.prepare(`
     INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
-    VALUES ('arena', ?, ?, ?, ?)
-  `);
-  insertIndex.run(1, "Player1", "player1", Date.now());
+    VALUES ('arena', 1, 'Player1', 'player1', ?)
+  `).run(Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -663,7 +661,8 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
     calls.push(body.aid);
-    upsertArenaSqlite(players, different, timestamp);
+    const refreshed = parseArenaProfileStats(profile(body.aid, timestamp, zeroGroups())).arenaProfile;
+    upsertArenaSqlite(players, refreshed, timestamp);
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({
       state: "updated",
@@ -679,61 +678,60 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     const summary = summaryFrom(run.stdout);
     assert.deepEqual(summary.migration, {
       status: "complete",
-      candidates: 3,
-      migrated: 2,
-      different: 1,
-      invalid: 0,
-      mixed: 0,
+      candidates: 5,
+      migrated: 3,
+      invalid: 1,
+      mixed: 1,
       stale: 0,
-      network: 1,
+      network: 2,
     });
-    assert.deepEqual(calls, [2]);
-    assert.equal(summary.attempted, 1);
-    assert.equal(summary.completed, 1);
+    assert.deepEqual(calls, [4, 5]);
+    assert.equal(summary.attempted, 2);
+    assert.equal(summary.completed, 2);
     assert.equal(summary.indexCurrent, 1);
+    for (const aid of [1, 2, 3, 4, 5]) {
+      assert.equal(players.prepare(
+        "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
+      ).get(aid).n, 6);
+    }
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 1 AND parser_version = 3"
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 6 AND parser_version = 3"
     ).get().n, 6);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 2 AND parser_version = 3"
+      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 2 AND parser_version = 3"
     ).get().n, 6);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 3 AND parser_version = 3"
+      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 2 AND parser_version = 4"
     ).get().n, 6);
+    assert.deepEqual({ ...players.prepare(
+      "SELECT games_count, arena_wins, arena_losses, win_rate FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'overall'"
+    ).get() }, {
+      games_count: 10,
+      arena_wins: 4,
+      arena_losses: 6,
+      win_rate: 40,
+    });
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 4 AND parser_version = 2"
-    ).get().n, 6);
-    assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 1 AND parser_version = 3"
-    ).get().n, 6);
-    assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 3 AND parser_version = 3"
-    ).get().n, 6);
-    assert.equal(players.prepare(
-      "SELECT fetched_at FROM arena_mode_stats WHERE aid = 1 AND arena_mode = 'overall'"
+      "SELECT fetched_at FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'overall'"
     ).get().fetched_at, timestamp - 1000);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_profile_sync_queue WHERE aid = 1"
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_queue WHERE aid IN (1, 2)"
     ).get().n, 0);
     const second = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
     assert.equal(second.migration.status, "already_complete");
     assert.equal(second.attempted, 0);
-    assert.deepEqual(calls, [2]);
+    assert.deepEqual(calls, [4, 5]);
 
-    const lateEquivalent = parseArenaProfileStats(profile(5, timestamp, {
-      UnrankedOverall: group(0),
-      UnrankedTeamFight: group(0),
+    const lateChanged = parseArenaProfileStats(profile(7, timestamp, {
+      UnrankedOverall: group(10, false),
+      UnrankedTeamFight: group(10, false),
       UnrankedLastHero: group(0),
       UnrankedCheckPoint: group(0),
       UnrankedBlastGang: group(0),
       UnrankedShootOutDuo: group(0),
     })).arenaProfile;
-    upsertArenaSqlite(players, lateEquivalent, timestamp - 1000);
-    players.exec(`
-      UPDATE arena_mode_stats SET parser_version = 2 WHERE aid = 5;
-      DELETE FROM arena_mode_stats_history WHERE aid = 5;
-      DELETE FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete';
-    `);
+    backportMissingLosses(lateChanged, timestamp - 1000);
+    players.prepare("DELETE FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_complete'").run();
     const invalidPublicationPath = join(directory, "not-sqlite.db");
     await writeFile(invalidPublicationPath, "not sqlite");
     const failed = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 1, {
@@ -744,13 +742,13 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     const failedMigration = migrationSummaryFrom(failed.stdout);
     assert.equal(failedMigration.status, "interrupted", `${JSON.stringify(failedMigration)}\n${failed.stderr}`);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 5 AND parser_version = 3"
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 7 AND parser_version = 4"
     ).get().n, 6);
     assert.equal(players.prepare(
-      "SELECT value FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_publication_pending'"
+      "SELECT value FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_publication_pending'"
     ).get().value, "1");
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete'"
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_complete'"
     ).get().n, 0);
 
     const recovered = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 1, {
@@ -764,10 +762,10 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
       "SELECT value FROM arena_profile_sync_meta WHERE key = 'dynamic_cache_version'"
     ).get().value, "2");
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_publication_pending'"
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_publication_pending'"
     ).get().n, 0);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete'"
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_complete'"
     ).get().n, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -795,9 +793,9 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(source, /requestsPerSecond: envNumber\("ARENA_PROFILE_SYNC_RPS", 2,/);
   assert.match(source, /concurrency: envInteger\("ARENA_PROFILE_SYNC_CONCURRENCY", 2, 1, 20\)/);
   assert.match(source, /ARENA_PROFILE_SYNC_MAX_RUN_MS", 25 \* 60_000, 60_000, 12 \* 60 \* 60_000/);
-  assert.match(source, /migrateEquivalentArenaV2Profiles/);
-  assert.match(source, /classifyArenaV2Rows/);
-  assert.ok(source.indexOf("migrateEquivalentArenaV2Profiles(startedAt)") < source.indexOf("refreshIndexIfDue(startedAt)"));
+  assert.match(source, /migrateOfflineArenaV3Profiles/);
+  assert.match(source, /classifyArenaV3Rows/);
+  assert.ok(source.indexOf("migrateOfflineArenaV3Profiles(startedAt)") < source.indexOf("refreshIndexIfDue(startedAt)"));
   assert.match(source, /ARENA_PROFILE_SYNC_PROGRESS_EVERY/);
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
   assert.match(source, /arena_player_index/);
@@ -812,6 +810,7 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(dockerfile, /lib\/arena\/storage\.ts/);
   assert.match(dockerfile, /types\/arena\.ts/);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
+  assert.match(service, /exec -T -e ARENA_PROFILE_SYNC_RPS=2 web/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);
@@ -836,7 +835,7 @@ test("Arena publication failures and deadline writes remain retryable", async ()
   assert.match(service, /if \(!\(await markAveragePublicationDirty\("arena"\)\)\)[\s\S]*throw new Error\("Arena average publication invalidation failed"\)/);
   assert.match(averageRoute, /dynamic_cache_version/);
   assert.match(averageRoute, /loadCachedArenaAverage\([\s\S]*cacheVersion/);
-  assert.match(source, /offline_v2_to_v3_publication_pending/);
+  assert.match(source, /offline_v3_to_v4_publication_pending/);
   assert.match(source, /runBudgetExpired\(startedAt\)/);
   assert.match(source, /signal: AbortSignal\.timeout\(Math\.max\(1, remainingMs\)\)/);
   assert.match(source, /loadUpdatedFeedWithRetry\(feedUrlForRun\(\), tracked, excluded, startedAt\)/);

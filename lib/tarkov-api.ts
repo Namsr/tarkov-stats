@@ -21,7 +21,7 @@ from "../types/arena.ts";
 // @ts-expect-error Node's strip-types runner needs the extension; Next can bundle it.
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
 
-export const TARKOV_JSON_USER_AGENT = "TarkovStats/0.1 (+https://tarkovstats.ru)";
+export const TARKOV_JSON_USER_AGENT = "tarkovstats.ru";
 export const PVP_STATS_PARSER_VERSION = 1;
 
 export function needsPvpStatsParserRefresh(
@@ -942,6 +942,23 @@ function arenaCounterValue(group: ArenaCounterGroup | undefined, key: string): n
   return valid((counters as Record<string, unknown>)[key]);
 }
 
+function arenaCounterExists(group: ArenaCounterGroup | undefined, key: string): boolean {
+  const counters = group?.Counters;
+  if (Array.isArray(counters)) {
+    return counters.some(({ Key }) => Key === key || (Array.isArray(Key) && Key.length === 1 && Key[0] === key));
+  }
+  if (typeof counters !== "object" || counters === null) return false;
+  const items = (counters as { Items?: unknown }).Items;
+  if (Array.isArray(items)) {
+    return items.some((item) => {
+      const counter = item as ArenaCounterItem;
+      const { Key } = counter;
+      return Key === key || (Array.isArray(Key) && Key.length === 1 && Key[0] === key);
+    });
+  }
+  return Object.hasOwn(counters, key);
+}
+
 function arenaCounter(group: ArenaCounterGroup | undefined, key: string): number {
   return arenaCounterValue(group, key) ?? 0;
 }
@@ -1015,6 +1032,15 @@ function arenaCounters(group: ArenaCounterGroup | undefined): ArenaCounters {
 
 function arenaModeCounters(group: ArenaCounterGroup | undefined): ArenaCounters {
   const counters = arenaCounters(group);
+  if (counters.matches !== null) {
+    if (counters.wins !== null && counters.losses === null &&
+      !arenaCounterExists(group, "ArenaLoses") && counters.wins <= counters.matches) {
+      counters.losses = counters.matches - counters.wins;
+    } else if (counters.losses !== null && counters.wins === null &&
+      !arenaCounterExists(group, "ArenaWins") && counters.losses <= counters.matches) {
+      counters.wins = counters.matches - counters.losses;
+    }
+  }
   if (counters.matches === null && ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null)) {
     counters.matches = 0;
   }
@@ -1156,7 +1182,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     fetchedAt: null,
-    parserVersion: 3,
+    parserVersion: 4,
     overall: publicOverall,
     modes: publicModes,
   };

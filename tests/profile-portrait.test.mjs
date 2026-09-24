@@ -49,7 +49,7 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   t.mock.method(globalThis, "fetch", async (url, init) => {
     const aid = Number(new URL(url).pathname.match(/(\d+)\.json$/)[1]);
     calls.push(String(url));
-    assert.match(new Headers(init.headers).get("User-Agent"), /TarkovStats/);
+    assert.equal(new Headers(init.headers).get("User-Agent"), "tarkovstats.ru");
     if (aid === 91) return new Response(null, { status: 404 });
     if (aid === 92) throw new Error("offline");
     if (aid === 93) return Response.json({ ...profile(aid), aid: 999 });

@@ -91,7 +91,8 @@ test("shared client always sends the project JSON headers", async () => {
     globalThis.fetch = originalFetch;
   }
   assert.equal(headers?.get("Accept"), "application/json");
-  assert.equal(headers?.get("User-Agent"), TARKOV_JSON_USER_AGENT);
+  assert.equal(headers?.get("User-Agent"), "tarkovstats.ru");
+  assert.equal(TARKOV_JSON_USER_AGENT, "tarkovstats.ru");
 });
 
 test("server sources contain no GraphQL calls and use the shared project identity", async () => {
@@ -105,7 +106,7 @@ test("server sources contain no GraphQL calls and use the shared project identit
   assert.doesNotMatch(api + seasonal + seasonalProfiles + seasonalIndex, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
   assert.equal((api.match(/\bfetch\s*\(/g) ?? []).length, 1);
   assert.doesNotMatch(seasonal, /\bfetch\s*\(/);
-  assert.match(api, /TarkovStats\/0\.1 \(\+https:\/\/tarkovstats\.ru\)/);
+  assert.match(api, /TARKOV_JSON_USER_AGENT = "tarkovstats\.ru"/);
   assert.match(index, /fetchTarkovJson/);
   assert.match(seasonalProfiles, /fetchTarkovJson/);
   assert.match(seasonalIndex, /fetchTarkovJson/);

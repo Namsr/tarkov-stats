@@ -60,9 +60,11 @@ test("PVE cutoff includes the boundary and uses the latest progressed skill", ()
 test("public profile fetch uses the mode-specific static cache path", async () => {
   const originalFetch = globalThis.fetch;
   const urls: string[] = [];
-  globalThis.fetch = async (input) => {
+  const userAgents: Array<string | null> = [];
+  globalThis.fetch = async (input, init) => {
     const url = String(input);
     urls.push(url);
+    userAgents.push(new Headers(init?.headers).get("User-Agent"));
     const modeShape = url.includes("/arena/")
       ? { stat: { arenaOverAllCounters: {} } }
       : { pmcStats: { eft: { overAllCounters: { Items: [] }, totalInGameTime: 0 } }, skills: { Common: [] } };
@@ -76,6 +78,7 @@ test("public profile fetch uses the mode-specific static cache path", async () =
   }
   assert.equal(urls[0], "https://players.tarkov.dev/pve/5869253.json");
   assert.match(urls[1] ?? "", /^https:\/\/players\.tarkov\.dev\/arena\/5869253\.json\?v=\d+$/);
+  assert.deepEqual(userAgents, ["tarkovstats.ru", "tarkovstats.ru"]);
 });
 
 test("public profile cache is isolated by mode and aid while force stays fresh", async () => {
