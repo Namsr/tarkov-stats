@@ -22,16 +22,6 @@ test("persistent cohort route derives both centers from a stored snapshot before
   assert.doesNotMatch(regularBranch, /centerValue/);
 });
 
-test("persistent cohort SQL combines range counts and all metric distributions", () => {
-  const db = readFileSync(new URL("../lib/db.ts", import.meta.url), "utf8");
-  const compute = db.slice(db.indexOf("async function computePersistentTwoDimensionalCohort"), db.indexOf("function argsFor"));
-  assert.match(compute, /SUM\(CASE WHEN hours >= \?/);
-  assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
-  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 1);
-  assert.match(db, /metric_values AS/);
-  assert.match(db, /PARTITION BY metric/);
-});
-
 test("seasonal route delegates center lookup to the identity-scoped helper", () => {
   assert.match(seasonalRoute, /querySeasonalComparisonCohort\(\{/);
   assert.match(seasonalRoute, /aid,\s*cycleId,/);

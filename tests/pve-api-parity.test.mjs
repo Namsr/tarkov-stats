@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [profile, cohort, average, progressionAverage, db, riskVersion, radar] = await Promise.all([
+const [profile, cohort, average, progressionAverage, db, radar] = await Promise.all([
   readFile("app/api/player/profile/route.ts", "utf8"),
   readFile("app/api/average/cohort/route.ts", "utf8"),
   readFile("app/api/average/route.ts", "utf8"),
   readFile("app/api/progression/average/route.ts", "utf8"),
   readFile("lib/db.ts", "utf8"),
-  readFile("lib/admin/risk-version.ts", "utf8"),
   readFile("components/PlayerRadarComparison.tsx", "utf8"),
 ]);
 
@@ -42,22 +41,6 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);
-});
-
-test("PvE stored risk version changes schedule refresh while retaining the safe stale response", () => {
-  const pveBranch = profile.slice(profile.indexOf('if (mode === "pve") {'));
-  assert.match(riskVersion, /export const ADMIN_RISK_SCORE_VERSION = 2/);
-  assert.match(riskVersion, /return mode === "pve" \? ADMIN_RISK_SCORE_VERSION : 1/);
-  assert.match(
-    pveBranch,
-    /hasCurrentRiskVersion\(storedRisk, "pve"\)[\s\S]*?if \(!riskIsFresh\)/,
-  );
-  assert.match(
-    pveBranch,
-    /toPublicRiskView\(\s*hasCurrentRiskVersion\(storedRisk, "pve"\) \? storedRisk : null/,
-  );
-  assert.match(profile, /toPublicRiskView\(storedRisk, \{ aid, mode: "seasonal"/);
-  assert.match(profile, /toPublicRiskView\(storedRisk, \{ aid, mode: "regular"/);
 });
 
 test("shared radar accepts explicit population strategy and one-value population metrics", () => {

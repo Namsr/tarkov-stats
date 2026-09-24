@@ -13,7 +13,7 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
 import { getStore, type AchievementBaseline } from "@/lib/db";
-import { isGameMode, normalizeCycleId, type GameMode } from "@/types/seasonal";
+import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
@@ -29,10 +29,10 @@ import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
 import {
-  adminRiskScoreVersionForMode,
   evaluateAndStoreRisk,
   evaluateAndStoreSeasonalRisk,
 } from "@/lib/admin/risk-service";
+import { storedRiskRefreshPolicy } from "@/lib/admin/risk-version";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -64,13 +64,6 @@ const persistentAchievementBaselineInFlight = new Map<
 const regularBackgroundRefreshes = new Map<string, Promise<void>>();
 const arenaRiskRefreshes = new Map<number, Promise<void>>();
 const STORED_PROFILE_REFRESH_MS = 5 * 60_000;
-
-function hasCurrentRiskVersion(
-  risk: { scoreVersion: number } | null | undefined,
-  mode: GameMode,
-): boolean {
-  return risk?.scoreVersion === adminRiskScoreVersionForMode(mode);
-}
 
 async function refreshStoredArenaRisk(aid: number): Promise<void> {
   return singleFlight(arenaRiskRefreshes, aid, async () => {
@@ -601,10 +594,12 @@ export async function GET(request: NextRequest) {
         capture: { inserted: boolean; status: string };
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
-        const riskIsFresh = hasCurrentRiskVersion(storedRisk, "pve") && storedRisk &&
-          storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
-          Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-        if (!riskIsFresh) {
+        const riskPolicy = storedRiskRefreshPolicy(
+          storedRisk,
+          "pve",
+          Number(input.stats.profileUpdatedAt),
+        );
+        if (riskPolicy.refresh) {
           after(() => evaluateAndStoreRisk({
             aid,
             mode: "pve",
@@ -616,7 +611,7 @@ export async function GET(request: NextRequest) {
           }));
         }
         const publicRisk = toPublicRiskView(
-          hasCurrentRiskVersion(storedRisk, "pve") ? storedRisk : null,
+          riskPolicy.publicRisk,
           { aid, mode: "pve", cycleId },
         );
         const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({

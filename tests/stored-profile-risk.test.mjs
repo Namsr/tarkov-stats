@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { adminRiskScoreVersionForMode, storedRiskRefreshPolicy } from "../lib/admin/risk-version.ts";
 
 // Execute the stored-profile scheduling block with the route's side effects stubbed.
 const route = readFileSync(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
@@ -8,6 +9,36 @@ const start = route.indexOf("      const riskIsFresh = storedRisk &&", route.ind
 const end = route.indexOf("      const publicRisk = toPublicRiskView(storedRisk", start);
 assert.ok(start >= 0 && end > start);
 const schedule = new Function("stored", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", route.slice(start, end));
+
+test("PvE stored risk executes current, stale, missing, and wrong-version states", () => {
+  const now = Date.now();
+  const profileUpdatedAt = now - 60_000;
+  const current = {
+    score: 42,
+    tier: "medium",
+    confidence: 1,
+    sampleN: 30,
+    factors: [],
+    freshnessAt: now,
+    scoreVersion: adminRiskScoreVersionForMode("pve"),
+    profileUpdatedAt,
+    evaluatedAt: now,
+  };
+  const staleProfile = { ...current, profileUpdatedAt: profileUpdatedAt - 1 };
+  const staleEvaluation = { ...current, evaluatedAt: now - 6 * 60 * 60 * 1000 };
+  const cases = [
+    { name: "current", risk: current, refresh: false, publicRisk: current },
+    { name: "stale profile", risk: staleProfile, refresh: true, publicRisk: staleProfile },
+    { name: "stale evaluation", risk: staleEvaluation, refresh: true, publicRisk: staleEvaluation },
+    { name: "missing", risk: null, refresh: true, publicRisk: null },
+    { name: "wrong version", risk: { ...current, scoreVersion: 1 }, refresh: true, publicRisk: null },
+  ];
+  for (const fixture of cases) {
+    const result = storedRiskRefreshPolicy(fixture.risk, "pve", profileUpdatedAt, now);
+    assert.equal(result.refresh, fixture.refresh, fixture.name);
+    assert.deepEqual(result.publicRisk, fixture.publicRisk, fixture.name);
+  }
+});
 
 test("stored PvP profiles schedule only missing or stale risk after the response", async () => {
   const updatedAt = Date.now() - 60_000;
