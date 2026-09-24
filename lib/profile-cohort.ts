@@ -1,6 +1,7 @@
 import type { RadarMetric } from "@/lib/db";
 
 export const COMPARISON_COHORT_TARGET = 20;
+export const RISK_COHORT_TARGET = 30;
 export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
@@ -26,7 +27,6 @@ export interface ComparisonCohortAxes {
 export interface ComparisonActualRanges {
   hours: ComparisonAxisBounds | null;
   pmcRaids: ComparisonAxisBounds | null;
-  /** Legacy alias may be omitted; the canonical axis is pmcRaids. */
   raids?: ComparisonAxisBounds | null;
 }
 
@@ -51,9 +51,7 @@ export interface ComparisonCohortResult {
     mode: ComparisonCohortMode;
     cycleId: string;
   };
-  /** The trusted server-derived center, never a value accepted from the request. */
   center: number;
-  /** Legacy axis fields retained for existing regular consumers. */
   dimension: "hours" | "pmc_raids";
   bounds: ComparisonAxisBounds;
   axes: ComparisonCohortAxes;
@@ -69,7 +67,6 @@ export interface ComparisonCohortResult {
   reliability: "sufficient" | "insufficient";
   reason: ComparisonCohortReason | null;
   averages: ComparisonCohortAverages;
-  /** Compatibility aliases used by the existing radar renderer. */
   ranges: {
     hours: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
     pmcRaids: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
@@ -148,8 +145,8 @@ export function makeComparisonCohortResult(input: {
   n: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
-  reason?: ComparisonCohortReason | null;
   strategy?: ComparisonCohortStrategy;
+  reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
   const axes = comparisonAxes(input.center, input.percent);

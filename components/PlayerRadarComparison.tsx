@@ -80,6 +80,7 @@ interface NormalizedCohort {
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
+  required: number;
   reason: string;
   twoDimensional: boolean;
   hoursRange: CohortRange | null;
@@ -170,6 +171,11 @@ function rangeFromInput(input: { min?: number; max?: number; percent?: number } 
   };
 }
 
+function finiteCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 function normalizeResponse(
   input: CohortResponse,
   hoursCenter: number,
@@ -191,21 +197,24 @@ function normalizeResponse(
         : raw && typeof raw === "object"
           ? {
               value: finiteNonNegative(raw.value) ? raw.value : null,
-              count: finiteNonNegative(Number(raw.count ?? 0)) ? Number(raw.count) : 0,
+              count: finiteCount(raw.count),
+            }
             }
           : { value: null, count: 0 };
   }
 
   const rawTargetN = Number(input.required ?? input.targetN ?? input.target ?? 20);
+  const rawRequired = Number(input.required ?? input.targetN ?? input.target ?? 20);
   return {
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: "hours",
     center: hoursCenter,
     targetN: Math.max(20, finiteNonNegative(rawTargetN) ? rawTargetN : 20),
-    strategy: input.strategy === "population" ? "population" : "matched",
+    required: Math.max(20, finiteNonNegative(rawRequired) ? rawRequired : 20),
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
+    strategy: input.strategy === "population" ? "population" : "matched",
     reason: input.reason ?? "insufficient",
     twoDimensional: input.twoDimensional === true || Boolean(input.ranges?.hours && (input.ranges.pmcRaids ?? input.ranges.raids)),
     hoursRange: rangeFromInput(
@@ -234,10 +243,11 @@ function demoCohort(
     dimension: "hours",
     center: hoursCenter,
     targetN: 20,
-    strategy: "matched",
     percent,
     n: 184,
     quality: "sufficient",
+    required: 20,
+    strategy: "matched",
     reason: "",
     twoDimensional: true,
     hoursRange: {
@@ -460,9 +470,13 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null
-      && average.count >= (cohort.strategy === "population" ? 1 : MIN_AXIS_SAMPLE)
-      ? average.value : null;
+    const hasAverage = cohort?.strategy === "population"
+      ? average?.value != null && average.count >= 1
+      : average?.value != null && average.value >= 0
+        && average.count >= MIN_AXIS_SAMPLE;
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && hasAverage
+      ? average?.value ?? null
+      : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

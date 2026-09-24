@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
+  RISK_COHORT_TARGET,
   comparisonRangeFor,
   makeComparisonCohortResult,
   selectComparisonPercent,
@@ -27,6 +28,10 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
     selectComparisonPercent({ 10: 19, 15: 19, 20: 19, 30: 19 }),
     30,
   );
+  assert.equal(
+    selectComparisonPercent({ 10: 29, 15: 29, 20: 29, 30: 30 }, RISK_COHORT_TARGET),
+    30,
+  );
   const result = makeComparisonCohortResult({
     mode: "seasonal",
     cycleId: "cycle-a",
@@ -43,6 +48,7 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   });
   assert.equal(result.required, COMPARISON_COHORT_TARGET);
   assert.equal(result.quality, "unavailable");
+  assert.equal(result.strategy, "matched");
   assert.equal(result.reliability, "insufficient");
   assert.equal(result.reason, "insufficient_cohort");
   assert.deepEqual(result.identity, { aid: 42, mode: "seasonal", cycleId: "cycle-a" });

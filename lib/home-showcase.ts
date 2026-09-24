@@ -1,7 +1,6 @@
 import type { PlayerProfileViewModel } from "@/types/player-profile-view";
 import type { ProfileComparisonStats, PublicRiskView } from "@/types/profile-view";
-// The store runs both under Next.js (alias @/types) and plain node --experimental-strip-types.
-// Keep the mode contract here so the module stays self-contained in both loaders.
+
 const SHOWCASE_MODES = ["regular", "pve", "arena", "seasonal"] as const;
 export type GameMode = (typeof SHOWCASE_MODES)[number];
 export type ProgressionPoint = {
@@ -23,8 +22,6 @@ export function appRouteMode(mode: GameMode): string {
   return mode === "seasonal" ? "pvp-season" : mode;
 }
 
-// Fallback when no showcase group is configured or the showcase API is down.
-// Pick once when the homepage mounts, then keep every section on that account.
 export const HOME_EXAMPLE_AIDS = [8008486, 7325281] as const;
 export const HOME_COMPARISON_AID = 10493246;
 
@@ -47,19 +44,15 @@ export interface ShowcaseConfig {
 
 export const HOME_SHOWCASE_MODES = GAME_MODES;
 
-/** The homepage opens in this mode until a visitor picks another one. */
 export function showcaseMode(config: Pick<ShowcaseConfig, "mode"> | null | undefined): GameMode {
   return config && isGameMode(config.mode) ? config.mode : "regular";
 }
 
-/** Seasonal needs the current cycle id; other modes ignore it. */
 export function showcaseProfileHref(mode: GameMode, aid: number, seasonalCycleId: string | null): string {
   const base = `/player/${appRouteMode(mode)}/${aid}`;
   return mode === "seasonal" && seasonalCycleId ? `${base}?cycle=${encodeURIComponent(seasonalCycleId)}` : base;
 }
 
-/** Which sections have data for the mode. Arena has no timeline, and its cohort
- * is keyed by match metrics, so it cannot feed the six-axis raid radar. */
 export const SHOWCASE_SECTIONS = {
   timeline: { regular: true, pve: true, arena: false, seasonal: true },
   cohort: { regular: true, pve: true, arena: false, seasonal: true },
@@ -71,11 +64,6 @@ export function showcaseTimelineCycle(mode: GameMode, seasonalCycleId: string | 
   return "persistent";
 }
 
-/**
- * Comparison cohort URL for the displayed mode, or null when the mode has none.
- * Seasonal keeps its own route; arena cohorts carry match metrics, not the six
- * raid axes this radar draws, so the block degrades to its unavailable state.
- */
 export function showcaseCohortRequest(mode: GameMode, aid: number, seasonalCycleId: string | null): string | null {
   if (mode === "arena") return null;
   if (mode === "seasonal") {
@@ -90,11 +78,15 @@ function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
   }).toString();
 }
 
-/**
- * Reads a cohort payload into the radar view model. Payloads without the six
- * radar averages (arena match metrics, error bodies, fallbacks) return null so
- * the block shows its own unavailable state instead of rendering a stray shape.
- */
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function finiteCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 export function homeCohort(payload: unknown): HomeCohort | null {
   if (payload == null || typeof payload !== "object") return null;
   const { quality, strategy, averages } = payload as { quality?: unknown; strategy?: unknown; averages?: unknown };
@@ -106,15 +98,13 @@ export function homeCohort(payload: unknown): HomeCohort | null {
     if (entry == null || typeof entry !== "object") continue;
     const { value, count } = entry as { value?: unknown; count?: unknown };
     picked[metric.key] = {
-      value: typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null,
-      count: typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : 0,
+      value: finiteNonNegative(value) ? value : null,
+      count: finiteCount(count),
     };
   }
-  return Object.keys(picked).length ? {
-    quality,
-    strategy: strategy === "population" ? "population" : "matched",
-    averages: picked,
-  } : null;
+  return Object.keys(picked).length
+    ? { quality, strategy: strategy === "population" ? "population" : "matched", averages: picked }
+    : null;
 }
 
 export function pickShowcaseAid(config: ShowcaseConfig | null): number {
@@ -125,35 +115,19 @@ export function pickShowcaseAid(config: ShowcaseConfig | null): number {
 
 export interface HomeProfile {
   identity: { aid: number; mode: string; cycleId: string };
-  /** PVP and PvE return the parsed stats snapshot, which carries the faction. */
   stats?: { side?: string };
-  /**
-   * Raw upstream profile for PVP/PvE, Seasonal profile DTO for seasonal. The
-   * seasonal response has no parsed stats snapshot, so its faction lives here.
-   */
   profile?: { side?: string; info?: { side?: string } } | null;
   viewModel: PlayerProfileViewModel;
   comparisonStats: ProfileComparisonStats;
   risk: PublicRiskView | null;
 }
 
-/**
- * Faction of the showcase account, e.g. "Bear" or "Usec". Each mode ships the
- * same value under a different key, so every known shape is read in order.
- * An unknown faction stays empty instead of showing a placeholder.
- */
 export function homeProfileSide(profile: HomeProfile | null | undefined): string {
   const side = [profile?.stats?.side, profile?.profile?.side, profile?.profile?.info?.side]
     .find((value) => typeof value === "string" && /^(bear|usec)$/i.test(value.trim()));
   return side?.trim() ?? "";
 }
 
-/**
- * Prestige of the showcase account, e.g. 6. Mirrors the profile header:
- * Arena has no prestige, other modes read progression first and fall back
- * to the statistics copy. Non-positive or non-integer values stay null so
- * the badge stays hidden instead of showing a placeholder.
- */
 export function homeProfilePrestige(
   profile: HomeProfile | null | undefined,
   mode?: GameMode,
@@ -185,7 +159,6 @@ export type HomeProgressMetric = "level" | "pvp_kd" | "survival";
 
 export function homeProgressPoints(timeline: ProgressionTimelineResponse, metric: HomeProgressMetric) {
   const points = timeline.metrics[metric === "level" ? "xp" : metric]?.player ?? [];
-  // Wipes/prestiges reset counters. Never connect two separate progression series.
   const seriesId = points.at(-1)?.seriesId;
   return points.filter((point) => point.seriesId === seriesId).map((point) => ({
     raids: point.pmcRaids,
@@ -202,7 +175,6 @@ export function homePercentageDifference(value: number | null, baseline: number 
 }
 
 export function homeRadarRatio(value: number | null, baseline: number | null): number | null {
-  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || value < 0 || baseline <= 0) return null;
-  // Same cohort-relative scale as PlayerRadarComparison: the mean is at 50%.
+  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || value < 0 || baseline < 0 || baseline <= 0) return null;
   return value <= 0 ? 0 : 0.5 + Math.atan(Math.log(value / baseline)) / Math.PI;
 }

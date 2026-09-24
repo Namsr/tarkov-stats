@@ -22,6 +22,8 @@ test("homepage radar keeps cohort averages at half radius and missing metrics ab
   assert.equal(homeRadarRatio(4, 0), null);
   assert.equal(homeRadarRatio(null, 4), null);
   assert.equal(homeRadarRatio(4, null), null);
+  assert.equal(homeRadarRatio(-1, 4), null);
+  assert.equal(homeRadarRatio(4, -1), null);
   assert.ok(homeRadarRatio(8, 4)! > .5);
   assert.ok(homeRadarRatio(2, 4)! < .5);
   assert.ok(homeRadarRatio(1e10, 1)! < 1);
@@ -106,6 +108,7 @@ test("homeCohort keeps radar averages and rejects foreign payloads", () => {
   assert.equal(homeCohort({ quality: "sufficient", averages: {} }), null);
   const persistent = {
     quality: "sufficient",
+    strategy: "matched",
     averages: {
       kd_ratio: { value: 8.9, count: 60 },
       pmc_kd_ratio: { value: 1.37, count: 60 },
@@ -132,7 +135,9 @@ test("homeCohort keeps radar averages and rejects foreign payloads", () => {
   });
   assert.equal(population?.strategy, "population");
   assert.deepEqual(population?.averages.kd_ratio, { value: 0, count: 1 });
- });
+  const negative = homeCohort({ quality: "sufficient", averages: { kd_ratio: { value: -1, count: 20 } } });
+  assert.deepEqual(negative?.averages.kd_ratio, { value: null, count: 20 });
+});
 
 test("homeProfileSide reads the faction from every mode payload shape", () => {
   const payload = (value: unknown) => value as unknown as HomeProfile;

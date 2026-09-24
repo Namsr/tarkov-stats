@@ -8,6 +8,10 @@ import { useFavorites } from "@/lib/favorites/context";
 import type { GameMode } from "@/types/seasonal";
 import { useChartWidth } from "./useChartWidth";
 
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   profile: HomeProfile | null | undefined;
   cohort: HomeCohort | null | undefined;
@@ -71,9 +75,17 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const averages: HomeCohort["averages"] = cohort?.averages ?? {};
   const metrics = HOME_RADAR_METRICS.map((metric) => {
     const average = averages[metric.key];
-    const baseline = average && average.value != null && average.value >= 0
-      && average.count >= (cohort?.strategy === "population" ? 1 : 20) ? average.value : null;
-    return { ...metric, baseline, a: profile?.comparisonStats?.[metric.stat] ?? null, b: mode === "average" ? baseline : favProfile?.comparisonStats?.[metric.stat] ?? null };
+    const baseline = average && finiteNonNegative(average.value) && average.count >= (cohort?.strategy === "population" ? 1 : 20)
+      ? average.value
+      : null;
+    const playerValue = profile?.comparisonStats?.[metric.stat];
+    const favoriteValue = favProfile?.comparisonStats?.[metric.stat];
+    return {
+      ...metric,
+      baseline,
+      a: finiteNonNegative(playerValue) ? playerValue : null,
+      b: mode === "average" ? baseline : finiteNonNegative(favoriteValue) ? favoriteValue : null,
+    };
   });
   const point = (index: number, r: number) => { const angle = ([-150, -90, -30, 30, 90, 150][index] * Math.PI) / 180; return { x: width / 2 + Math.cos(angle) * r, y: height / 2 + Math.sin(angle) * r }; };
   const polygon = (points: { x: number; y: number }[]) => points.map((p) => `${p.x},${p.y}`).join(" ");

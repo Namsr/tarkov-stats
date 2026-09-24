@@ -40,13 +40,14 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
+  assert.match(db, /if \(strategy === null && \(input\.mode === "regular" \|\| input\.mode === "pve"\)\)/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);
 });
 
 test("shared radar accepts explicit population strategy and one-value population metrics", () => {
   assert.match(radar, /strategy\?: "matched" \| "population"/);
   assert.match(radar, /targetN: Math\.max\(20, finiteNonNegative\(rawTargetN\) \? rawTargetN : 20\)/);
-  assert.match(radar, /cohort\.strategy === "population" \? 1 : MIN_AXIS_SAMPLE/);
+  assert.match(radar, /cohort\?\.strategy === "population"[\s\S]*?average\.count >= 1/);
   assert.match(radar, /function finiteNonNegative\(value: unknown\): value is number/);
   assert.doesNotMatch(radar, /average\.value > 0/);
 });

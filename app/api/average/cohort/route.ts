@@ -266,6 +266,7 @@ export async function GET(request: NextRequest) {
       target: 20,
       required: 20,
       targetN: 20,
+      twoDimensional: true,
       percent: noActivity ? 10 : 30,
       bounds: noActivity ? { min: 0, max: 0 } : boundsAtThirtyPercent(dimension, center),
       n: 0,
