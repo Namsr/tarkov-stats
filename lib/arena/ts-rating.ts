@@ -7,7 +7,7 @@ export const ARENA_TSR_WEIGHTS = {
   damage_per_match: 0.20,
   win_rate: 0.20,
 } as const;
-export const ARENA_TSR_MIN_MATCHES = 10;
+export const ARENA_TSR_MIN_MATCHES = 1;
 export const ARENA_TSR_ESTABLISHED_MATCHES = 50;
 const PRIOR_MATCHES = 30;
 const MIN_REFERENCE_PLAYERS = 200;
