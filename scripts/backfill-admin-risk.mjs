@@ -3,6 +3,12 @@ import { DatabaseSync } from "node:sqlite";
 import { bracketFor } from "../lib/brackets.ts";
 import { scoreCheater } from "../lib/cheater-score.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
+import { adminRiskScoreVersionForMode, pveRiskNeedsZero } from "../lib/admin/risk-version.ts";
+import {
+  COMPARISON_COHORT_PERCENTAGES,
+  comparisonRangeFor,
+  selectComparisonPercent,
+} from "../lib/profile-cohort.ts";
 
 const playersPath = process.env.SQLITE_PATH || "/data/players.db";
 const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
@@ -11,43 +17,55 @@ function parsedJson(value, fallback) {
   try { return JSON.parse(String(value ?? "")); } catch { return fallback; }
 }
 
-function statsFromRow(row) {
+function statsFromRow(row, mode) {
   const stored = parsedJson(row.stats_json, {});
+  const pve = mode === "pve";
+  const numberValue = (storedKey, rowKey, fallback = 0) => {
+    const storedValue = stored[storedKey];
+    const rowValue = rowKey == null ? undefined : row[rowKey];
+    if (pve && (storedValue == null || !Object.prototype.hasOwnProperty.call(stored, storedKey))) return Number.NaN;
+    return Number(storedValue ?? rowValue ?? fallback);
+  };
   return {
     nickname: String(stored.nickname ?? row.nickname ?? ""),
-    level: Number(stored.level ?? row.level ?? 0),
-    prestige: Number(stored.prestige ?? row.prestige ?? 0),
-    experience: Number(stored.experience ?? row.experience ?? 0),
+    level: numberValue("level", "level"),
+    prestige: numberValue("prestige", "prestige"),
+    experience: numberValue("experience", "experience"),
     side: String(stored.side ?? row.side ?? ""),
-    totalRaids: Number(stored.totalRaids ?? row.total_raids ?? 0),
-    pmcRaids: Number(stored.pmcRaids ?? row.pmc_raids ?? 0),
-    scavRaids: Number(stored.scavRaids ?? row.scav_raids ?? 0),
-    survivedRaids: Number(stored.survivedRaids ?? row.survived ?? 0),
-    survivalRate: Number(stored.survivalRate ?? row.survival_rate ?? 0),
-    totalKills: Number(stored.totalKills ?? row.total_kills ?? 0),
-    killedPmc: Number(stored.killedPmc ?? row.killed_pmc ?? 0),
-    killsPerRaid: Number(stored.killsPerRaid ?? row.kills_per_raid ?? 0),
-    kdRatio: Number(stored.kdRatio ?? row.kd_ratio ?? 0),
-    pmcKdRatio: Number(stored.pmcKdRatio ?? row.pmc_kd_ratio ?? 0),
-    deaths: Number(stored.deaths ?? row.deaths ?? 0),
-    pmcDeaths: Number(stored.pmcDeaths ?? row.pmc_deaths ?? 0),
-    runThrough: Number(stored.runThrough ?? row.run_through ?? 0),
-    pmcSurvived: Number(stored.pmcSurvived ?? row.pmc_survived ?? 0),
-    pmcSurvivalRate: Number(stored.pmcSurvivalRate ?? row.pmc_survival_rate ?? 0),
-    pmcKills: Number(stored.pmcKills ?? row.pmc_kills ?? 0),
-    pmcKillsPerRaid: Number(stored.pmcKillsPerRaid ?? row.pmc_kills_per_raid ?? 0),
-    pmcExitKilled: Number(stored.pmcExitKilled ?? 0),
-    pmcExitLeft: Number(stored.pmcExitLeft ?? 0),
-    pmcExitTransit: Number(stored.pmcExitTransit ?? 0),
-    pmcExitMia: Number(stored.pmcExitMia ?? 0),
-    hoursPlayed: Number(stored.hoursPlayed ?? row.hours ?? row.lifetime_pvp_hours ?? 0),
-    longestWinStreak: Number(stored.longestWinStreak ?? row.longest_win_streak ?? 0),
-    achievementsCount: Number(stored.achievementsCount ?? row.achv_count ?? 0),
-    registrationDate: Number(stored.registrationDate ?? 0),
-    lastActiveDate: Number(stored.lastActiveDate ?? 0),
-    profileUpdatedAt: Number(stored.profileUpdatedAt ?? row.profile_updated_at ?? 0),
-    avgLifespan: Number(stored.avgLifespan ?? 0),
-    totalLootValue: Number(stored.totalLootValue ?? 0),
+    totalRaids: numberValue("totalRaids", "total_raids"),
+    pmcRaids: numberValue("pmcRaids", "pmc_raids"),
+    scavRaids: numberValue("scavRaids", "scav_raids"),
+    survivedRaids: numberValue("survivedRaids", "survived"),
+    survivalRate: numberValue("survivalRate", "survival_rate"),
+    totalKills: numberValue("totalKills", "total_kills"),
+    killedPmc: numberValue("killedPmc", "killed_pmc"),
+    killsPerRaid: numberValue("killsPerRaid", "kills_per_raid"),
+    kdRatio: numberValue("kdRatio", "kd_ratio"),
+    pmcKdRatio: numberValue("pmcKdRatio", "pmc_kd_ratio"),
+    deaths: numberValue("deaths", "deaths"),
+    pmcDeaths: numberValue("pmcDeaths", "pmc_deaths"),
+    runThrough: numberValue("runThrough", "run_through"),
+    pmcSurvived: numberValue("pmcSurvived", "pmc_survived"),
+    pmcSurvivalRate: numberValue("pmcSurvivalRate", "pmc_survival_rate"),
+    pmcKills: numberValue("pmcKills", "pmc_kills"),
+    pmcKillsPerRaid: numberValue("pmcKillsPerRaid", "pmc_kills_per_raid"),
+    pmcExitKilled: numberValue("pmcExitKilled", null),
+    pmcExitLeft: numberValue("pmcExitLeft", null),
+    pmcExitTransit: numberValue("pmcExitTransit", null),
+    pmcExitMia: numberValue("pmcExitMia", null),
+    hoursPlayed: numberValue("hoursPlayed", "hours", 0),
+    longestWinStreak: numberValue("longestWinStreak", "longest_win_streak"),
+    achievementsCount: numberValue("achievementsCount", "achv_count"),
+    registrationDate: numberValue("registrationDate", null),
+    lastActiveDate: numberValue("lastActiveDate", null),
+    profileUpdatedAt: numberValue("profileUpdatedAt", "profile_updated_at"),
+    avgLifespan: numberValue("avgLifespan", null),
+    totalLootValue: numberValue("totalLootValue", null),
+    pvpStatsKnown: pve
+      ? stored.pvpStatsKnown === true
+      : typeof stored.pvpStatsKnown === "boolean"
+        ? stored.pvpStatsKnown
+        : row.pvp_stats_known == null || Number(row.pvp_stats_known) !== 0,
   };
 }
 
@@ -61,28 +79,68 @@ function sourceFor(mode) {
     : { table: "mode_players", modeWhere: "p.mode = ? AND ", params: [mode] };
 }
 
-function baselineFor(mode, bracket) {
+const RISK_COLUMNS = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
+const RISK_MOMENTS = RISK_COLUMNS.flatMap((column) => [
+  `COUNT(CASE WHEN ${column} > 0 THEN 1 END) cnt_${column}`,
+  `AVG(CASE WHEN ${column} > 0 THEN ${column} END) mean_${column}`,
+  `AVG(CASE WHEN ${column} > 0 THEN ${column} * ${column} END) square_${column}`,
+]).join(", ");
+
+function toBaseline(row) {
+  return {
+    n: Number(row?.n ?? 0),
+    metrics: Object.fromEntries(RISK_COLUMNS.map((column) => {
+      const mean = Number(row?.[`mean_${column}`] ?? 0);
+      const square = Number(row?.[`square_${column}`] ?? 0);
+      return [column, { n: Number(row?.[`cnt_${column}`] ?? 0), mean, std: Math.sqrt(Math.max(0, square - mean * mean)) }];
+    })),
+  };
+}
+
+function pveBaselineFor(stats, aid) {
+  if (!Number.isSafeInteger(stats.pmcRaids) || stats.pmcRaids <= 0 || !(stats.hoursPlayed > 0)) return null;
+  const center = { hours: stats.hoursPlayed, pmcRaids: stats.pmcRaids };
+  const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(center, percent));
+  const populationWhere = `p.hours > 0 AND p.pmc_raids > 0 AND p.aid != ?`;
+  const rangeParams = (percent) => {
+    const range = comparisonRangeFor(center, percent);
+    return [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max];
+  };
+  const row = playersDb.prepare(`SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent) =>
+    `SUM(CASE WHEN p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ? THEN 1 ELSE 0 END) count_${percent}`
+  ).join(", ")} FROM mode_players p
+    WHERE p.mode = 'pve' AND ${populationWhere}
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`)
+    .get(...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]), aid);
+  const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
+    percent,
+    Number(row?.[`count_${percent}`] ?? 0),
+  ]));
+  const selectedPercent = selectComparisonPercent(counts, 30);
+  const matched = counts[selectedPercent] >= 30;
+  const load = (where, params) => playersDb.prepare(`SELECT COUNT(*) n, ${RISK_MOMENTS}
+    FROM mode_players p WHERE p.mode = 'pve' AND ${where}
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).get(...params);
+  let baseline = toBaseline(matched
+    ? load(`${populationWhere} AND p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ?`, [
+      ...rangeParams(selectedPercent), aid,
+    ])
+    : load(populationWhere, [aid]));
+  if (matched && baseline.n < 30) baseline = toBaseline(load(populationWhere, [aid]));
+  return baseline;
+}
+
+function baselineFor(mode, stats, aid) {
   if (!playersDb) return null;
+  if (mode === "pve") return pveBaselineFor(stats, aid);
+  const bracket = bracketFor(stats.hoursPlayed);
   const source = sourceFor(mode);
-  const columns = ["pmc_survival_rate", "pmc_kd_ratio", "pmc_kills_per_raid", "longest_win_streak"];
-  const moments = columns.flatMap((column) => [
-    `COUNT(CASE WHEN ${column} > 0 THEN 1 END) cnt_${column}`,
-    `AVG(CASE WHEN ${column} > 0 THEN ${column} END) mean_${column}`,
-    `AVG(CASE WHEN ${column} > 0 THEN ${column} * ${column} END) square_${column}`,
-  ]).join(", ");
   const upper = bracket.hi == null ? "" : "AND p.hours < ?";
-  const row = playersDb.prepare(`SELECT COUNT(*) n, ${moments} FROM ${source.table} p
+  const row = playersDb.prepare(`SELECT COUNT(*) n, ${RISK_MOMENTS} FROM ${source.table} p
     WHERE ${source.modeWhere}p.hours >= ? ${upper}
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`)
     .get(...source.params, bracket.lo, ...(bracket.hi == null ? [] : [bracket.hi]));
-  return {
-    n: Number(row.n),
-    metrics: Object.fromEntries(columns.map((column) => {
-      const mean = Number(row[`mean_${column}`] ?? 0);
-      const square = Number(row[`square_${column}`] ?? 0);
-      return [column, { n: Number(row[`cnt_${column}`]), mean, std: Math.sqrt(Math.max(0, square - mean * mean)) }];
-    })),
-  };
+  return toBaseline(row);
 }
 
 function achievementInputFor(mode) {
@@ -109,27 +167,44 @@ function achievementInputFor(mode) {
   })) };
 }
 
+function zeroRiskResult(stats) {
+  const result = scoreCheater(stats, null, null);
+  return {
+    score: 0,
+    tier: "low",
+    factors: result.factors.map((factor) => ({ ...factor, value: Number.isFinite(factor.value) ? factor.value : 0, points: 0, z: null, available: false })),
+    sampleN: 0,
+    basedOnSample: false,
+  };
+}
+
 async function scoreRow(row, mode, cycleId) {
   const baselineMode = mode === "seasonal" ? "regular" : mode;
-  const stats = statsFromRow(row);
+  const stats = statsFromRow(row, mode);
+  const aid = Number(row.aid);
+  const zeroRisk = mode === "pve" && pveRiskNeedsZero(stats);
   const bracket = bracketFor(stats.hoursPlayed);
-  const baselineKey = `${baselineMode}:${bracket.key}`;
-  if (!baselines.has(baselineKey)) {
-    baselines.set(baselineKey, baselineFor(baselineMode, bracket));
+  const baselineKey = baselineMode === "pve"
+    ? `${baselineMode}:${stats.hoursPlayed}:${stats.pmcRaids}:${aid}`
+    : `${baselineMode}:${bracket.key}`;
+  if (!zeroRisk && !baselines.has(baselineKey)) {
+    baselines.set(baselineKey, baselineFor(baselineMode, stats, aid));
   }
-  if (!achievementBaselines.has(baselineMode)) {
+  if (!zeroRisk && !achievementBaselines.has(baselineMode)) {
     achievementBaselines.set(baselineMode, achievementInputFor(baselineMode));
   }
   const achievementBaseline = achievementBaselines.get(baselineMode);
   const achievementIds = parsedJson(row.achievements, []).filter((id) => typeof id === "string");
-  const result = scoreCheater(stats, baselines.get(baselineKey), achievementBaseline ? {
+  const result = zeroRisk ? zeroRiskResult(stats) : scoreCheater(stats, baselines.get(baselineKey), achievementBaseline ? {
     ownedIds: achievementIds,
     stats: achievementBaseline.stats,
   } : null);
   await saveRiskEvaluation({
-    aid: Number(row.aid), mode, cycleId, score: result.score, tier: result.tier,
-    factors: result.factors, scoreVersion: 1,
+    aid, mode, cycleId, score: result.score, tier: result.tier,
+    factors: result.factors, scoreVersion: adminRiskScoreVersionForMode(mode),
     profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
+    sampleN: result.sampleN,
+    confidence: Math.min(1, result.sampleN / 30),
   });
 }
 

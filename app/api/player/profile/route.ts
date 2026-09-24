@@ -28,7 +28,11 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
-import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import {
+  evaluateAndStoreRisk,
+  evaluateAndStoreSeasonalRisk,
+} from "@/lib/admin/risk-service";
+import { storedRiskRefreshPolicy } from "@/lib/admin/risk-version";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -590,10 +594,12 @@ export async function GET(request: NextRequest) {
         capture: { inserted: boolean; status: string };
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
-        const riskIsFresh = storedRisk &&
-          storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
-          Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-        if (!riskIsFresh) {
+        const riskPolicy = storedRiskRefreshPolicy(
+          storedRisk,
+          "pve",
+          Number(input.stats.profileUpdatedAt),
+        );
+        if (riskPolicy.refresh) {
           after(() => evaluateAndStoreRisk({
             aid,
             mode: "pve",
@@ -604,7 +610,10 @@ export async function GET(request: NextRequest) {
             console.error("PvE admin risk evaluation failed", error);
           }));
         }
-        const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId });
+        const publicRisk = toPublicRiskView(
+          riskPolicy.publicRisk,
+          { aid, mode: "pve", cycleId },
+        );
         const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({
           aid,
           mode: "pve",

@@ -19,6 +19,7 @@ import {
   comparisonRangeFor,
   emptyComparisonAverages,
   makeComparisonCohortResult,
+  selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
   type ComparisonCohortResult,
@@ -553,6 +554,7 @@ function statRangeClause(range: StatRange): { where: string; params: number[] } 
 
 const COHORT_PERCENTAGES = [10, 15, 20, 25, 30] as const;
 const COHORT_TARGET = 20;
+const RISK_COHORT_TARGET = 30;
 const RADAR_COLS = [
   "kd_ratio",
   "pmc_kd_ratio",
@@ -641,9 +643,12 @@ function unavailableCohort(
     dimension,
     center,
     target: COHORT_TARGET,
+    required: COHORT_TARGET,
+    targetN: COHORT_TARGET,
     percent,
     bounds,
     n,
+    strategy: "matched",
     quality: "unavailable",
     reason,
     averages: emptyCohortMetrics(),
@@ -653,6 +658,26 @@ function unavailableCohort(
 type CohortFirstReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown> | null>;
 type CohortAllReader = (sql: string, params: unknown[]) => Promise<Record<string, unknown>[]>;
 
+function twoDimensionalPopulationWhere(
+  mode: Extract<CrossSectionMode, "regular" | "pve">,
+  excludeAid: number,
+  period: AveragePeriod,
+): { where: string; params: unknown[] } {
+  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
+  return {
+    where: cohortEligibilityWhere(
+      mode,
+      averagePeriodWhere(
+        mode,
+        cohortSelectionPeriod(mode, period),
+        "WHERE hours > 0 AND pmc_raids > 0 AND aid != ?",
+        cutoff,
+      ),
+    ),
+    params: [excludeAid],
+  };
+}
+
 function twoDimensionalRangeWhere(
   mode: Extract<CrossSectionMode, "regular" | "pve">,
   center: { hours: number; pmcRaids: number },
@@ -661,29 +686,13 @@ function twoDimensionalRangeWhere(
   period: AveragePeriod,
 ): { where: string; params: unknown[] } {
   const range = comparisonRangeFor(center, percent);
-  const baseWhere = [
-    "hours > 0",
-    "pmc_raids > 0",
-    "hours >= ?",
-    "hours <= ?",
-    "pmc_raids >= ?",
-    "pmc_raids <= ?",
-    "aid != ?",
-  ].join(" AND ");
-  const params: unknown[] = [
-    range.hours.min,
-    range.hours.max,
-    range.pmcRaids.min,
-    range.pmcRaids.max,
-    excludeAid,
-  ];
-  const cutoff = Math.floor(Date.now() - 90 * 86_400_000);
+  const population = twoDimensionalPopulationWhere(mode, excludeAid, period);
   return {
-    where: cohortEligibilityWhere(
-      mode,
-      averagePeriodWhere(mode, cohortSelectionPeriod(mode, period), `WHERE ${baseWhere}`, cutoff),
+    where: appendCondition(
+      population.where,
+      "hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?",
     ),
-    params,
+    params: [...population.params, range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max],
   };
 }
 
@@ -725,7 +734,10 @@ async function computePersistentTwoDimensionalCohort(input: {
   readAll: CohortAllReader;
 }): Promise<ComparisonCohortResult> {
   const { center } = input;
-  if (center.hours <= 0 || center.pmcRaids <= 0) {
+  if (
+    !Number.isFinite(center.hours) || !Number.isFinite(center.pmcRaids) ||
+    center.hours <= 0 || center.pmcRaids <= 0
+  ) {
     return makeComparisonCohortResult({
       mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
@@ -754,19 +766,33 @@ async function computePersistentTwoDimensionalCohort(input: {
     percent,
     Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
-  const selectedPercent = COMPARISON_COHORT_PERCENTAGES.find((percent) =>
-    counts[percent] >= COMPARISON_COHORT_TARGET
-  ) ?? 30;
-  const selected = twoDimensionalRangeWhere(
-    input.mode,
-    center,
-    selectedPercent,
-    input.excludeAid,
-    input.period,
+  const selectedPercent = selectComparisonPercent(counts);
+  let populationFallback = input.mode === "pve" && counts[30] < COMPARISON_COHORT_TARGET;
+  const selected = populationFallback
+    ? twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period)
+    : twoDimensionalRangeWhere(
+      input.mode,
+      center,
+      selectedPercent,
+      input.excludeAid,
+      input.period,
+    );
+  let selectedRows = await input.readAll(
+    persistentComparisonMetricsSql(selected.where, input.statistic),
+    selected.params,
   );
-  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
-  const group = selectedRows.find((row) => row.metric === "__group__");
-  const n = Number(group?.n ?? 0);
+  let group = selectedRows.find((row) => row.metric === "__group__");
+  let n = Number(group?.n ?? 0);
+  if (!populationFallback && input.mode === "pve" && n < COMPARISON_COHORT_TARGET) {
+    populationFallback = true;
+    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
+    selectedRows = await input.readAll(
+      persistentComparisonMetricsSql(population.where, input.statistic),
+      population.params,
+    );
+    group = selectedRows.find((row) => row.metric === "__group__");
+    n = Number(group?.n ?? 0);
+  }
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
       ? null
@@ -778,7 +804,13 @@ async function computePersistentTwoDimensionalCohort(input: {
       ? null
       : { min: Number(group.raids_min), max: Number(group.raids_max) },
   };
-  if (counts[selectedPercent] < COMPARISON_COHORT_TARGET || n < COMPARISON_COHORT_TARGET) {
+  if (
+    n === 0 ||
+    (!populationFallback && (
+      counts[selectedPercent] < COMPARISON_COHORT_TARGET ||
+      n < COMPARISON_COHORT_TARGET
+    ))
+  ) {
     return makeComparisonCohortResult({
       mode: input.mode,
       cycleId: LEGACY_IDENTITY.cycleId,
@@ -789,6 +821,7 @@ async function computePersistentTwoDimensionalCohort(input: {
       n,
       actualRanges,
       reason: "insufficient_cohort",
+      strategy: populationFallback ? "population" : "matched",
     });
   }
 
@@ -797,7 +830,9 @@ async function computePersistentTwoDimensionalCohort(input: {
   for (const metric of COMPARISON_RADAR_METRICS) {
     const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
-    const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
+    const minimumPopulatedCount = metric === "pmc_survival_rate" || populationFallback
+      ? 1
+      : COMPARISON_COHORT_TARGET;
     if (count < minimumPopulatedCount) {
       averages[metric] = { value: null, count };
       continue;
@@ -810,11 +845,48 @@ async function computePersistentTwoDimensionalCohort(input: {
     aid: input.excludeAid,
     center,
     dimension: input.dimension,
-    percent: selectedPercent,
+    percent: populationFallback ? 30 : selectedPercent,
     n,
     actualRanges,
     averages,
+    strategy: populationFallback ? "population" : "matched",
   });
+}
+
+async function computePersistentRiskBaseline(input: {
+  mode: Extract<CrossSectionMode, "regular" | "pve">;
+  center: { hours: number; pmcRaids: number };
+  excludeAid: number;
+  period: AveragePeriod;
+  readFirst: CohortFirstReader;
+}): Promise<BaselineResult> {
+  const widest = twoDimensionalRangeWhere(input.mode, input.center, 30, input.excludeAid, input.period);
+  const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(input.center, percent));
+  const countRow = await input.readFirst(
+    `SELECT ${COMPARISON_COHORT_PERCENTAGES.map((percent) =>
+      `SUM(CASE WHEN hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
+    ).join(", ")} FROM players ${widest.where}`,
+    [
+      ...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]),
+      ...widest.params,
+    ],
+  );
+  const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
+    percent,
+    Number(countRow?.[`count_${percent}`] ?? 0),
+  ])) as Record<ComparisonCohortPercent, number>;
+  const selectedPercent = selectComparisonPercent(counts, RISK_COHORT_TARGET);
+  const selected = counts[selectedPercent] >= RISK_COHORT_TARGET
+    ? twoDimensionalRangeWhere(input.mode, input.center, selectedPercent, input.excludeAid, input.period)
+    : twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
+  let row = await input.readFirst(baselineSql(selected.where), selected.params) as Record<string, number> | null;
+  let baseline = toBaseline(row);
+  if (counts[selectedPercent] >= RISK_COHORT_TARGET && baseline.n < RISK_COHORT_TARGET) {
+    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
+    row = await input.readFirst(baselineSql(population.where), population.params) as Record<string, number> | null;
+    baseline = toBaseline(row);
+  }
+  return baseline;
 }
 
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
@@ -888,9 +960,12 @@ export interface CohortResult {
   dimension: RangeDimension;
   center: number;
   target: number;
+  required: number;
+  targetN: number;
   percent: CohortPercent;
   bounds: CohortBounds;
   n: number;
+  strategy: "matched";
   quality: "sufficient" | "unavailable";
   reason: CohortUnavailableReason | null;
   averages: Record<RadarMetric, CohortMetric>;
@@ -1004,6 +1079,12 @@ export interface PlayerStore {
    * z-scores behind the cheating-risk score.
    */
   baseline(minHours: number | null, maxHours: number | null): Promise<BaselineResult>;
+  riskBaseline2d(
+    centerHours: number,
+    centerPmcRaids: number,
+    excludeAid: number,
+    period?: AveragePeriod,
+  ): Promise<BaselineResult>;
 }
 
 export interface PlayerIndexResult {
@@ -1287,9 +1368,12 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           dimension,
           center,
           target: COHORT_TARGET,
+          required: COHORT_TARGET,
+          targetN: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
           n: cohortN,
+          strategy: "matched",
           quality: "sufficient",
           reason: null,
           averages,
@@ -1351,6 +1435,16 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           | Record<string, number>
           | null;
         return toBaseline(row);
+      },
+      async riskBaseline2d(centerHours, centerPmcRaids, excludeAid, period = "all") {
+        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
+        return computePersistentRiskBaseline({
+          mode,
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          period,
+          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
+        });
       },
     };
   } catch {
@@ -1648,9 +1742,12 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           dimension,
           center,
           target: COHORT_TARGET,
+          required: COHORT_TARGET,
+          targetN: COHORT_TARGET,
           percent: selected.percent,
           bounds: selected.bounds,
           n: cohortN,
+          strategy: "matched",
           quality: "sufficient",
           reason: null,
           averages,
@@ -1697,6 +1794,16 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const { where, params } = legacyHoursRangeClause(min, max);
         const row = db.prepare(baselineSql(where)).get(...params) as Record<string, number> | undefined;
         return toBaseline(row);
+      },
+      async riskBaseline2d(centerHours, centerPmcRaids, excludeAid, period = "all") {
+        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
+        return computePersistentRiskBaseline({
+          mode,
+          center: { hours: centerHours, pmcRaids: centerPmcRaids },
+          excludeAid,
+          period,
+          readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+        });
       },
     };
   } catch (e) {

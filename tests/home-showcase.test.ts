@@ -13,6 +13,7 @@ test("homepage comparison reports signed percentages without inventing a zero ba
   assert.equal(homePercentageDifference(4, 0), null);
   assert.equal(homePercentageDifference(null, 4), null);
   assert.equal(homePercentageDifference(Infinity, 4), null);
+  assert.equal(homePercentageDifference(-1, 4), null);
 });
 
 test("homepage radar keeps cohort averages at half radius and missing metrics absent", () => {
@@ -24,6 +25,7 @@ test("homepage radar keeps cohort averages at half radius and missing metrics ab
   assert.ok(homeRadarRatio(8, 4)! > .5);
   assert.ok(homeRadarRatio(2, 4)! < .5);
   assert.ok(homeRadarRatio(1e10, 1)! < 1);
+  assert.equal(homeRadarRatio(-1, 4), null);
 });
 
 test("homepage progression uses current-series levels and excludes unknown values", () => {
@@ -116,13 +118,21 @@ test("homeCohort keeps radar averages and rejects foreign payloads", () => {
   };
   const parsed = homeCohort(persistent);
   assert.equal(parsed?.quality, "sufficient");
+  assert.equal(parsed?.strategy, "matched");
   assert.deepEqual(parsed?.averages.kd_ratio, { value: 8.9, count: 60 });
   assert.deepEqual(parsed?.averages.level, { value: null, count: 0 });
   assert.ok(!Object.keys(parsed?.averages ?? {}).includes("unknown_metric"));
   // Non-finite values and counts degrade instead of leaking into the radar.
   const dirty = homeCohort({ quality: "unavailable", averages: { kd_ratio: { value: Number.NaN, count: "x" } } });
   assert.deepEqual(dirty?.averages.kd_ratio, { value: null, count: 0 });
-});
+  const population = homeCohort({
+    quality: "sufficient",
+    strategy: "population",
+    averages: { kd_ratio: { value: 0, count: 1 } },
+  });
+  assert.equal(population?.strategy, "population");
+  assert.deepEqual(population?.averages.kd_ratio, { value: 0, count: 1 });
+ });
 
 test("homeProfileSide reads the faction from every mode payload shape", () => {
   const payload = (value: unknown) => value as unknown as HomeProfile;
