@@ -569,7 +569,11 @@ async function loadFeed(startedAt) {
     const aid = Number(row.aid);
     if (!Number.isSafeInteger(aid) || aid <= 0 || excluded.has(aid)) continue;
     const snapshot = tracked.get(aid);
-    if ((!snapshot || snapshot.updatedAt <= 0 || snapshot.schemaVersion < config.schemaVersion) && !pendingVersions.has(aid)) {
+    if (snapshot && snapshot.schemaVersion < config.schemaVersion) {
+      counters.deferredOldParser += 1;
+      continue;
+    }
+    if ((!snapshot || snapshot.updatedAt <= 0) && !pendingVersions.has(aid)) {
       pendingVersions.set(aid, {
         feedUpdatedAt: Math.max(1, snapshot?.updatedAt ?? 0),
         schemaVersion: config.schemaVersion,
@@ -678,6 +682,7 @@ function emptyFeedCounters(tracked, error) {
     newProfiles: 0,
     updatedProfiles: 0,
     indexProfiles: 0,
+    deferredOldParser: 0,
     queuedVersions: 0,
     queuedNewProfiles: 0,
     queuedUpdatedProfiles: 0,
@@ -696,6 +701,7 @@ async function processQueue(startedAt) {
   let inFlight = 0;
   const next = db.prepare(`SELECT q.aid, q.feed_updated_at, q.schema_version FROM arena_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
+      AND q.schema_version = ?
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
       AND NOT EXISTS (SELECT 1 FROM arena_mode_stats p
         WHERE p.aid = q.aid
@@ -734,7 +740,7 @@ async function processQueue(startedAt) {
           await delay(10);
         }
         if (stopping) return;
-        const row = next.get(runId);
+        const row = next.get(config.schemaVersion, runId);
         if (!row) {
           stopReason ??= "queue_exhausted";
           return;
@@ -931,6 +937,7 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
             newProfiles: 0,
             updatedProfiles: 0,
             indexProfiles: 0,
+            deferredOldParser: 0,
             queuedVersions: 0,
             queuedNewProfiles: 0,
             queuedUpdatedProfiles: 0,
@@ -958,6 +965,7 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
         newProfiles: 0,
         updatedProfiles: 0,
         indexProfiles: 0,
+        deferredOldParser: 0,
         queuedVersions: 0,
         queuedNewProfiles: 0,
         queuedUpdatedProfiles: 0,
@@ -981,8 +989,11 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
         const snapshot = tracked.get(aid);
         if (snapshot === undefined) counters.unknownInFeed += 1;
         else counters.trackedInFeed += 1;
-        if (snapshot !== undefined && snapshot.updatedAt >= feedUpdatedAt &&
-          snapshot.schemaVersion >= config.schemaVersion) return;
+        if (snapshot && snapshot.schemaVersion < config.schemaVersion) {
+          counters.deferredOldParser += 1;
+          return;
+        }
+        if (snapshot !== undefined && snapshot.updatedAt >= feedUpdatedAt) return;
         counters.eligible += 1;
         const kind = snapshot === undefined ? "new" : "updated";
         if (kind === "new") counters.newProfiles += 1;

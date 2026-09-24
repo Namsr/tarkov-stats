@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseArenaProfileStats } from "../lib/tarkov-api.ts";
-import { initializeArenaSchema, upsertArenaSqlite } from "../lib/arena/storage.ts";
+import { ARENA_PARSER_VERSION, initializeArenaSchema, upsertArenaSqlite } from "../lib/arena/storage.ts";
 import {
   beginAveragePublication,
   getAveragePublicationStates,
@@ -118,8 +118,8 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
   `).run(initial, Date.now());
   for (const mode of ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
     players.prepare(`INSERT INTO arena_mode_stats
-      (aid, arena_mode, upstream_version, parser_version) VALUES (2, ?, ?, 0)`)
-      .run(mode, initial);
+      (aid, arena_mode, upstream_version, parser_version) VALUES (2, ?, ?, ?)`)
+      .run(mode, initial, ARENA_PARSER_VERSION);
   }
   const insertIndex = players.prepare(`
     INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
@@ -193,8 +193,10 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     const callsAfterFirstRun = calls.length;
     players.prepare("UPDATE arena_mode_stats SET parser_version = 0 WHERE aid = 2").run();
     feed = { ...feed, 6: initial + 400 };
-    await launch(dbPath, baseUrl, feedUrl);
-    assert.deepEqual(calls.slice(callsAfterFirstRun), [2, 6]);
+    const secondRun = await launch(dbPath, baseUrl, feedUrl);
+    const secondSummary = summaryFrom(secondRun.stdout);
+    assert.deepEqual(calls.slice(callsAfterFirstRun), [6]);
+    assert.equal(secondSummary.deferredOldParser, 2);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = 3"
     ).get().status, "not_found");
@@ -561,6 +563,11 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
       PRIMARY KEY (mode, aid)
     );
+    CREATE TABLE arena_profile_sync_queue (
+      aid INTEGER PRIMARY KEY, feed_updated_at INTEGER NOT NULL, schema_version INTEGER NOT NULL,
+      status TEXT NOT NULL, attempts INTEGER NOT NULL, http_status INTEGER, error TEXT,
+      last_run_id TEXT, updated_at INTEGER NOT NULL
+    );
   `);
 
   const group = (matches, includeLosses = true) => ({ Counters: {
@@ -628,12 +635,15 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
   const malformed = parseArenaProfileStats(profile(4, timestamp, zeroGroups())).arenaProfile;
   const mixed = parseArenaProfileStats(profile(5, timestamp, zeroGroups())).arenaProfile;
   const excluded = parseArenaProfileStats(profile(6, timestamp, zeroGroups())).arenaProfile;
+  const oldParser = parseArenaProfileStats(profile(9, timestamp, zeroGroups())).arenaProfile;
+  oldParser.parserVersion = 2;
   storeV3(equivalent, timestamp - 1000);
   backportMissingLosses(changed, timestamp - 1000);
   storeV3(nullHours, timestamp - 1000);
   storeV3(malformed, timestamp - 1000);
   storeV3(mixed, timestamp - 1000);
   storeV3(excluded, timestamp - 1000);
+  upsertArenaSqlite(players, oldParser, timestamp - 1000);
   players.prepare("INSERT INTO excluded_players (aid) VALUES (6)").run();
   const malformedRaw = JSON.parse(players.prepare(
     "SELECT raw_json FROM arena_mode_stats WHERE aid = 4 AND arena_mode = 'overall'"
@@ -644,8 +654,13 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
   players.prepare("UPDATE arena_mode_stats SET parser_version = 2 WHERE aid = 5 AND arena_mode = 'teamFight'").run();
   players.prepare(`
     INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
-    VALUES ('arena', 1, 'Player1', 'player1', ?)
-  `).run(Date.now());
+    VALUES ('arena', 1, 'Player1', 'player1', ?), ('arena', 9, 'Player9', 'player9', ?)
+  `).run(Date.now(), Date.now());
+  players.prepare(`
+    INSERT INTO arena_profile_sync_queue
+      (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
+    VALUES (8, ?, 3, 'pending', 0, NULL, NULL, NULL, ?)
+  `).run(timestamp, Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -688,7 +703,14 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     assert.deepEqual(calls, [4, 5]);
     assert.equal(summary.attempted, 2);
     assert.equal(summary.completed, 2);
+    assert.equal(summary.deferredOldParser, 1);
     assert.equal(summary.indexCurrent, 1);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 9 AND parser_version = 2"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT status FROM arena_profile_sync_queue WHERE aid = 8"
+    ).get().status, "pending");
     for (const aid of [1, 2, 3, 4, 5]) {
       assert.equal(players.prepare(
         "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
@@ -800,6 +822,9 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
   assert.match(source, /arena_player_index/);
   assert.doesNotMatch(source, /DELETE FROM arena_player_index\b/);
+  assert.match(source, /snapshot\.schemaVersion < config\.schemaVersion/);
+  assert.match(source, /q\.schema_version = \?/);
+  assert.match(source, /next\.get\(config\.schemaVersion, runId\)/);
   assert.match(source, /processQueue\(startedAt\)/);
   assert.match(source, /payload\?\.state === "not_found"/);
   assert.match(source, /verified_not_found_v1/);
