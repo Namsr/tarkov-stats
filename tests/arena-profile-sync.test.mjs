@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,11 +9,18 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseArenaProfileStats } from "../lib/tarkov-api.ts";
 import { initializeArenaSchema, upsertArenaSqlite } from "../lib/arena/storage.ts";
+import {
+  beginAveragePublication,
+  getAveragePublicationStates,
+  markAveragePublicationDirty,
+  publishAverageScope,
+  resetAveragePublicationForTests,
+} from "../lib/average-publication.ts";
 
 const execFileAsync = promisify(execFile);
 const secret = "test-secret-that-is-at-least-32-characters";
 
-function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1) {
+function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1, environment = {}) {
   return execFileAsync(process.execPath, [
     "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-arena-profiles.mjs",
   ], {
@@ -30,6 +37,7 @@ function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1) 
       ARENA_PROFILE_SYNC_CONCURRENCY: String(concurrency),
       ARENA_PROFILE_SYNC_MAX_RETRIES: "0",
       ARENA_PROFILE_SYNC_MAX_COMPLETED: maxCompleted == null ? "" : String(maxCompleted),
+      ...environment,
     },
   });
 }
@@ -39,6 +47,45 @@ function summaryFrom(stdout) {
   assert.ok(line, "collector emits its summary");
   return JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
 }
+
+function migrationSummaryFrom(stdout) {
+  const line = stdout.split("\n").find((entry) => entry.includes(" MIGRATION_SUMMARY "));
+  assert.ok(line, "collector emits its migration summary");
+  return JSON.parse(line.slice(line.indexOf(" MIGRATION_SUMMARY ") + " MIGRATION_SUMMARY ".length));
+}
+
+test("average publication preserves invalidations newer than its compute watermark", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-average-publication-race-"));
+  const previous = {
+    SQLITE_PATH: process.env.SQLITE_PATH,
+    AVERAGE_PUBLICATION_SQLITE_PATH: process.env.AVERAGE_PUBLICATION_SQLITE_PATH,
+    AVERAGE_PUBLICATIONS_ENABLED: process.env.AVERAGE_PUBLICATIONS_ENABLED,
+  };
+  process.env.SQLITE_PATH = join(directory, "players.db");
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average.db");
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  resetAveragePublicationForTests();
+  try {
+    await markAveragePublicationDirty("arena", 200);
+    await beginAveragePublication("arena", 100);
+    await publishAverageScope("arena", new Map([["arena", { value: 1 }]]), 100, 300);
+    assert.equal((await getAveragePublicationStates()).find((state) => state.scope === "arena")?.dirtyAt, 200);
+
+    await markAveragePublicationDirty("pve", 50);
+    await beginAveragePublication("pve", 100);
+    await publishAverageScope("pve", new Map([["pve", { value: 1 }]]), 100, 300);
+    assert.equal((await getAveragePublicationStates()).find((state) => state.scope === "pve")?.dirtyAt, null);
+  } finally {
+    resetAveragePublicationForTests();
+    if (previous.SQLITE_PATH === undefined) delete process.env.SQLITE_PATH;
+    else process.env.SQLITE_PATH = previous.SQLITE_PATH;
+    if (previous.AVERAGE_PUBLICATION_SQLITE_PATH === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previous.AVERAGE_PUBLICATION_SQLITE_PATH;
+    if (previous.AVERAGE_PUBLICATIONS_ENABLED === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previous.AVERAGE_PUBLICATIONS_ENABLED;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Arena profile sync queues index gaps and updated-feed accounts without a total cap", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-"));
@@ -406,7 +453,7 @@ test("Arena collector runs bounded concurrent refreshes", async () => {
     const capped = summaryFrom((await launch(
       dbPath, baseUrl, `${baseUrl}/arena/updated.json`, 1, 2
     )).stdout);
-    assert.equal(capped.completed, 1);
+    assert.equal(capped.completed, 1, JSON.stringify(capped));
     assert.equal(capped.stopReason, "max_completed");
     assert.equal(calls, 1);
     const run = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 2);
@@ -672,6 +719,56 @@ test("Arena collector migrates equivalent v2 profiles and networks only differen
     assert.equal(second.migration.status, "already_complete");
     assert.equal(second.attempted, 0);
     assert.deepEqual(calls, [2]);
+
+    const lateEquivalent = parseArenaProfileStats(profile(5, timestamp, {
+      UnrankedOverall: group(0),
+      UnrankedTeamFight: group(0),
+      UnrankedLastHero: group(0),
+      UnrankedCheckPoint: group(0),
+      UnrankedBlastGang: group(0),
+      UnrankedShootOutDuo: group(0),
+    })).arenaProfile;
+    upsertArenaSqlite(players, lateEquivalent, timestamp - 1000);
+    players.exec(`
+      UPDATE arena_mode_stats SET parser_version = 2 WHERE aid = 5;
+      DELETE FROM arena_mode_stats_history WHERE aid = 5;
+      DELETE FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete';
+    `);
+    const invalidPublicationPath = join(directory, "not-sqlite.db");
+    await writeFile(invalidPublicationPath, "not sqlite");
+    const failed = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 1, {
+      NODE_ENV: "production",
+      AVERAGE_PUBLICATIONS_ENABLED: "true",
+      AVERAGE_PUBLICATION_SQLITE_PATH: invalidPublicationPath,
+    });
+    const failedMigration = migrationSummaryFrom(failed.stdout);
+    assert.equal(failedMigration.status, "interrupted", `${JSON.stringify(failedMigration)}\n${failed.stderr}`);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 5 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT value FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_publication_pending'"
+    ).get().value, "1");
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete'"
+    ).get().n, 0);
+
+    const recovered = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 1, {
+      NODE_ENV: "production",
+      AVERAGE_PUBLICATIONS_ENABLED: "true",
+      AVERAGE_PUBLICATION_SQLITE_PATH: join(directory, "average.db"),
+    })).stdout);
+    assert.equal(recovered.migration.status, "complete");
+    assert.equal(recovered.migration.candidates, 0);
+    assert.equal(players.prepare(
+      "SELECT value FROM arena_profile_sync_meta WHERE key = 'dynamic_cache_version'"
+    ).get().value, "2");
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_publication_pending'"
+    ).get().n, 0);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v3_complete'"
+    ).get().n, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     players.close();
@@ -700,7 +797,7 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(source, /ARENA_PROFILE_SYNC_MAX_RUN_MS", 25 \* 60_000, 60_000, 12 \* 60 \* 60_000/);
   assert.match(source, /migrateEquivalentArenaV2Profiles/);
   assert.match(source, /classifyArenaV2Rows/);
-  assert.ok(source.indexOf("migrateEquivalentArenaV2Profiles()") < source.indexOf("refreshIndexIfDue()"));
+  assert.ok(source.indexOf("migrateEquivalentArenaV2Profiles(startedAt)") < source.indexOf("refreshIndexIfDue(startedAt)"));
   assert.match(source, /ARENA_PROFILE_SYNC_PROGRESS_EVERY/);
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
   assert.match(source, /arena_player_index/);
@@ -727,6 +824,25 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(syncRoute, /revalidateTag\(ARENA_AVERAGE_CACHE_TAG, "max"\)/);
   assert.doesNotMatch(syncRoute, /warmAverageCaches|after\(/);
   assert.match(operatorProfile, /getPublicProfile\(aid, \{ force: true, mode, expectedUpdatedAt \}\)/);
+});
+
+test("Arena publication failures and deadline writes remain retryable", async () => {
+  const [service, averageRoute, source, database] = await Promise.all([
+    readFile("lib/arena/service.ts", "utf8"),
+    readFile("app/api/average/route.ts", "utf8"),
+    readFile("scripts/sync-arena-profiles.mjs", "utf8"),
+    readFile("lib/db.ts", "utf8"),
+  ]);
+  assert.match(service, /if \(!\(await markAveragePublicationDirty\("arena"\)\)\)[\s\S]*throw new Error\("Arena average publication invalidation failed"\)/);
+  assert.match(averageRoute, /dynamic_cache_version/);
+  assert.match(averageRoute, /loadCachedArenaAverage\([\s\S]*cacheVersion/);
+  assert.match(source, /offline_v2_to_v3_publication_pending/);
+  assert.match(source, /runBudgetExpired\(startedAt\)/);
+  assert.match(source, /signal: AbortSignal\.timeout\(Math\.max\(1, remainingMs\)\)/);
+  assert.match(source, /loadUpdatedFeedWithRetry\(feedUrlForRun\(\), tracked, excluded, startedAt\)/);
+  assert.match(source, /if \(waitMs >= remainingMs\)/);
+  assert.match(source, /await writeTransaction\(\(\) => \{[\s\S]*DELETE FROM arena_profile_sync_queue/);
+  assert.match(database, /const leaseNow = Date\.now\(\);[\s\S]*const age = leaseNow -/);
 });
 
 test("Arena conditional feed requests skip the body on 304 but keep index backfill", async () => {

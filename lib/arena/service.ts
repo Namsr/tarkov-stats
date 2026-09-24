@@ -69,7 +69,9 @@ export async function persistArenaProfile(
     profile.achievements ? Object.keys(profile.achievements) : [],
     options,
   );
-  await markAveragePublicationDirty("arena");
+  if (!(await markAveragePublicationDirty("arena"))) {
+    throw new Error("Arena average publication invalidation failed");
+  }
   return arena;
 }
 

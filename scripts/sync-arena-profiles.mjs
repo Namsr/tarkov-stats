@@ -25,6 +25,8 @@ const { markAveragePublicationDirty } = await import("../lib/average-publication
 const ARENA_PARSER_VERSION = 3;
 const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v3_complete";
+const ARENA_V2_PUBLICATION_KEY = "offline_v2_to_v3_publication_pending";
+const ARENA_DYNAMIC_CACHE_VERSION_KEY = "dynamic_cache_version";
 const ARENA_MIGRATION_BATCH_SIZE = 500;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -119,11 +121,17 @@ async function main() {
   leaseHeartbeatTimer.unref?.();
 
   const migration = await migrateEquivalentArenaV2Profiles(startedAt);
-  if (migration.status === "interrupted" || stopping) return;
-  const index = await refreshIndexIfDue();
-  if (stopping) return;
-  const feed = await loadFeed();
-  if (stopping) return;
+  if (migration.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
+  const index = await refreshIndexIfDue(startedAt);
+  if (stopping || runBudgetExpired(startedAt)) return;
+  let feed;
+  try {
+    feed = await loadFeed(startedAt);
+  } catch (error) {
+    if (error?.runBudgetExceeded) return;
+    throw error;
+  }
+  if (stopping || runBudgetExpired(startedAt)) return;
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM arena_profile_sync_queue GROUP BY status")
@@ -228,6 +236,10 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
       for (const item of networkBatch) {
         enqueue.run(item.aid, item.feedUpdatedAt, ARENA_PARSER_VERSION, Date.now());
       }
+      if (accepted > 0) {
+        setMeta(ARENA_V2_PUBLICATION_KEY, "1");
+        setMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY, String(Number(getMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY) || 0) + 1));
+      }
       return accepted;
     });
     counters.migrated += migrated;
@@ -282,8 +294,10 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
     }
     await heartbeat();
   }
-  await flush();
-  if (complete && counters.migrated > 0 && await markAveragePublicationDirty("arena") === false) {
+  if (!stopping && !runBudgetExpired(startedAt)) await flush();
+  else complete = false;
+  const publicationRequired = complete && (counters.migrated > 0 || getMeta(ARENA_V2_PUBLICATION_KEY) === "1");
+  if (publicationRequired && await markAveragePublicationDirty("arena") === false) {
     complete = false;
   }
   const summary = {
@@ -295,6 +309,7 @@ async function migrateEquivalentArenaV2Profiles(startedAt) {
     await writeTransaction(() => {
       assertLeaseHeld();
       setMeta(ARENA_V2_MIGRATION_KEY, "1");
+      deleteMeta(ARENA_V2_PUBLICATION_KEY);
     });
   }
   log("MIGRATION_SUMMARY", summary);
@@ -449,13 +464,18 @@ function lastIndexPollAt() {
   ).get()?.synced_at) || 0;
 }
 
-async function refreshIndexIfDue() {
+async function refreshIndexIfDue(startedAt) {
   const previousPollAt = lastIndexPollAt();
   if (previousPollAt > Date.now() - INDEX_POLL_INTERVAL_MS) {
     return { checked: false, previousPollAt };
   }
   try {
-    const result = await syncArenaIndex(db, { url: config.indexUrl, beforeWrite: assertLeaseHeld });
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    const result = await syncArenaIndex(db, {
+      url: config.indexUrl,
+      beforeWrite: assertLeaseHeld,
+      signal: AbortSignal.timeout(Math.max(1, remainingMs)),
+    });
     return { checked: true, previousPollAt, ...result };
   } catch (error) {
     log("INDEX_FAILED", { error: message(error), previousPollAt });
@@ -550,15 +570,16 @@ function trackedArenaProfiles() {
     }]));
 }
 
-async function loadFeed() {
+async function loadFeed(startedAt) {
   const tracked = trackedArenaProfiles();
   const excluded = new Set(db.prepare("SELECT aid FROM excluded_players").all().map((row) => Number(row.aid)));
   let counters;
   let pendingVersions;
   let feed;
   try {
-    ({ counters, pendingVersions, feed } = await loadUpdatedFeedWithRetry(feedUrlForRun(), tracked, excluded));
+    ({ counters, pendingVersions, feed } = await loadUpdatedFeedWithRetry(feedUrlForRun(), tracked, excluded, startedAt));
   } catch (error) {
+    if (error?.runBudgetExceeded) throw error;
     counters = emptyFeedCounters(tracked, error);
     pendingVersions = new Map();
     feed = { notModified: false, etag: null, lastModified: null, failed: true };
@@ -583,6 +604,7 @@ async function loadFeed() {
     }
   }
 
+  if (runBudgetExpired(startedAt)) throw runBudgetError();
   await writeTransaction(() => {
     const queuedAt = Date.now();
     if (getMeta("verified_not_found_v1") !== "1") {
@@ -650,19 +672,21 @@ async function loadFeed() {
     }
     setMeta("last_feed_http_status", String(counters.feedHttpStatus ?? ""));
   });
-  await withDatabaseBusyRetry(() => db.prepare(`DELETE FROM arena_profile_sync_queue
-    WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = arena_profile_sync_queue.aid)`).run());
-  await withDatabaseBusyRetry(() => db.prepare(`UPDATE arena_profile_sync_queue SET status = 'completed', error = NULL,
-      http_status = NULL, updated_at = ?
-    WHERE (arena_profile_sync_queue.status <> 'completed'
-      OR arena_profile_sync_queue.error IS NOT NULL)
-    AND EXISTS (SELECT 1 FROM arena_mode_stats p
-      WHERE p.aid = arena_profile_sync_queue.aid
-      GROUP BY p.aid
-      HAVING COUNT(DISTINCT p.arena_mode) = 6
-        AND SUM(CASE WHEN p.arena_mode = 'overall' THEN 1 ELSE 0 END) = 1
-        AND SUM(CASE WHEN p.upstream_version >= arena_profile_sync_queue.feed_updated_at THEN 1 ELSE 0 END) = 6
-        AND SUM(CASE WHEN p.parser_version >= arena_profile_sync_queue.schema_version THEN 1 ELSE 0 END) = 6)`).run(Date.now()));
+  await writeTransaction(() => {
+    db.prepare(`DELETE FROM arena_profile_sync_queue
+      WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = arena_profile_sync_queue.aid)`).run();
+    db.prepare(`UPDATE arena_profile_sync_queue SET status = 'completed', error = NULL,
+        http_status = NULL, updated_at = ?
+      WHERE (arena_profile_sync_queue.status <> 'completed'
+        OR arena_profile_sync_queue.error IS NOT NULL)
+      AND EXISTS (SELECT 1 FROM arena_mode_stats p
+        WHERE p.aid = arena_profile_sync_queue.aid
+        GROUP BY p.aid
+        HAVING COUNT(DISTINCT p.arena_mode) = 6
+          AND SUM(CASE WHEN p.arena_mode = 'overall' THEN 1 ELSE 0 END) = 1
+          AND SUM(CASE WHEN p.upstream_version >= arena_profile_sync_queue.feed_updated_at THEN 1 ELSE 0 END) = 6
+          AND SUM(CASE WHEN p.parser_version >= arena_profile_sync_queue.schema_version THEN 1 ELSE 0 END) = 6)`).run(Date.now());
+  });
   await heartbeat();
   return counters;
 }
@@ -720,7 +744,7 @@ async function processQueue(startedAt) {
   async function worker() {
     try {
       while (!stopping) {
-        if (Date.now() - startedAt >= config.maxRunMs) {
+        if (runBudgetExpired(startedAt)) {
           stopping = true;
           stopReason = "max_run_ms";
           return;
@@ -733,6 +757,7 @@ async function processQueue(startedAt) {
           }
           await delay(10);
         }
+        if (stopping) return;
         const row = next.get(runId);
         if (!row) {
           stopReason ??= "queue_exhausted";
@@ -742,6 +767,7 @@ async function processQueue(startedAt) {
         const expectedUpdatedAt = Number(row.feed_updated_at);
         const schemaVersion = Number(row.schema_version);
         admitted += 1;
+        inFlight += 1;
         const claimedAt = Date.now();
         const claimed = await withDatabaseBusyRetry(() => claim.run(
           runId, claimedAt, aid, expectedUpdatedAt, schemaVersion, runId,
@@ -749,17 +775,21 @@ async function processQueue(startedAt) {
         ));
         if (Number(claimed.changes) !== 1) {
           admitted -= 1;
+          inFlight -= 1;
           assertLeaseHeld();
           continue;
         }
-        inFlight += 1;
         counters.attempted += 1;
         let result;
         try {
-          result = await syncProfile(aid, expectedUpdatedAt, schemaVersion);
+          result = await syncProfile(aid, expectedUpdatedAt, schemaVersion, startedAt);
         } catch (error) {
           if (error?.fatal) throw error;
           result = { kind: "error", attempts: error?.attempts ?? 1, status: error?.status ?? null, error: message(error) };
+        }
+        if (result === null) {
+          inFlight -= 1;
+          return;
         }
         const updatedAt = Date.now();
         const updated = await withDatabaseBusyRetry(() => update.run(
@@ -800,12 +830,23 @@ async function processQueue(startedAt) {
   return counters;
 }
 
-async function syncProfile(aid, expectedUpdatedAt, schemaVersion) {
+async function syncProfile(aid, expectedUpdatedAt, schemaVersion, startedAt) {
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
-    await rateLimit();
+    const rateReady = await rateLimit(startedAt);
+    if (!rateReady) {
+      stopping = true;
+      stopReason = "max_run_ms";
+      return null;
+    }
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      stopping = true;
+      stopReason = "max_run_ms";
+      return null;
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const response = await fetch(config.endpoint, {
         method: "POST",
@@ -854,9 +895,21 @@ async function syncProfile(aid, expectedUpdatedAt, schemaVersion) {
       throw error;
     } catch (error) {
       if (error?.fatal) throw error;
+      if (runBudgetExpired(startedAt)) {
+        stopping = true;
+        stopReason = "max_run_ms";
+        return null;
+      }
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
-      await delay(backoff(attempt));
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) {
+        stopping = true;
+        stopReason = "max_run_ms";
+        return null;
+      }
+      await delay(waitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -867,14 +920,16 @@ async function syncProfile(aid, expectedUpdatedAt, schemaVersion) {
   throw error;
 }
 
-async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
+async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
   const useValidators = getMeta("feed_source_url") === config.updatedUrl;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw runBudgetError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const headers = {};
       if (savedEtag) headers["if-none-match"] = savedEtag;
@@ -983,9 +1038,13 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded) {
         },
       };
     } catch (error) {
+      if (runBudgetExpired(startedAt)) throw runBudgetError();
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
-      await delay(backoff(attempt));
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) throw runBudgetError();
+      await delay(waitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -1071,11 +1130,24 @@ async function writeTransaction(work) {
 }
 
 function isDatabaseBusy(error) { return /database is (?:locked|busy)|SQLITE_BUSY/i.test(message(error)); }
-async function rateLimit() {
+function runBudgetExpired(startedAt) { return Date.now() - startedAt >= config.maxRunMs; }
+function runBudgetError() {
+  const error = new Error("Arena profile sync run budget exceeded");
+  error.runBudgetExceeded = true;
+  return error;
+}
+async function rateLimit(startedAt) {
   const startAt = Math.max(nextRequestAt, Date.now());
   nextRequestAt = startAt + Math.ceil(1000 / config.requestsPerSecond);
   const waitMs = startAt - Date.now();
-  if (waitMs > 0) await delay(waitMs);
+  if (waitMs <= 0) return true;
+  const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+  if (waitMs >= remainingMs) {
+    await delay(Math.max(0, remainingMs));
+    return false;
+  }
+  await delay(waitMs);
+  return true;
 }
 function retryableError(text, status) { const error = new Error(text); error.status = status; error.retryable = true; return error; }
 function backoff(attempt) { return Math.min(30_000, 1000 * 2 ** (attempt - 1)); }

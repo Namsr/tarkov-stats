@@ -5,6 +5,7 @@ import {
   parseAverageStatistic,
   type AveragePeriod,
   type AverageStatistic,
+  getArenaBackend,
   type CrossSectionMode,
   type RangeDimension,
 } from "@/lib/db";
@@ -80,7 +81,11 @@ const loadCachedArenaAverage = unstable_cache(
     maxHours: number | null,
     minMatches: number | null,
     maxMatches: number | null,
-  ) => getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches }),
+    cacheVersion: number,
+  ) => {
+    void cacheVersion;
+    return getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches });
+  },
   ["arena-average-v2", String(ARENA_PARSER_VERSION)],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
 );
@@ -91,6 +96,24 @@ function isArenaMode(value: string | null): value is ArenaModeKey {
 
 function isArenaMetric(value: string | null): value is "players" | ArenaMetricKey {
   return value === "players" || (value !== null && (ARENA_METRIC_KEYS as readonly string[]).includes(value));
+}
+
+async function arenaDynamicCacheVersion(): Promise<number> {
+  try {
+    const backend = await getArenaBackend();
+    if (!backend || backend.kind !== "sqlite") return 0;
+    const table = backend.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_meta'"
+    ).get();
+    if (!table) return 0;
+    const row = backend.db.prepare(
+      "SELECT value FROM arena_profile_sync_meta WHERE key = 'dynamic_cache_version'"
+    ).get() as { value?: unknown } | undefined;
+    const version = Number(row?.value);
+    return Number.isSafeInteger(version) && version >= 0 ? version : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function arenaRange(params: URLSearchParams, key: "minHours" | "maxHours" | "minMatches" | "maxMatches") {
@@ -147,7 +170,8 @@ async function arenaAverageResponse(
       timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "publication" });
       return NextResponse.json({ error: "Arena average publication unavailable" }, { status: 503, headers: { "Retry-After": "5" } });
     }
-    const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value)]);
+    const cacheVersion = await arenaDynamicCacheVersion();
+    const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value), cacheVersion]);
     const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
       arenaMode,
@@ -158,6 +182,7 @@ async function arenaAverageResponse(
       ranges[1].value,
       ranges[2].value,
       ranges[3].value,
+      cacheVersion,
     )).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });

@@ -1591,7 +1591,8 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
                 const lease = rawDb.prepare(
                   "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
                 ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
-                const age = now - Number(lease?.heartbeat_at);
+                const leaseNow = Date.now();
+                const age = leaseNow - Number(lease?.heartbeat_at);
                 const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
                 if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
                   throw new Error("Arena profile sync lease was lost");
