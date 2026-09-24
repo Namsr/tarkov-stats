@@ -36,9 +36,16 @@ const COHORT_PERCENTS = [10, 15, 20, 30] as const;
 const RISK_METRICS = ["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const;
 // Peer scans below read only the selected numeric metrics.
 const ARENA_RISK_PROJECTION = "aid, arena_mode, hours, games_count, kd_ratio, win_rate, kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at";
-export const ARENA_RISK_CALCULATION_VERSION = 3;
+export const ARENA_RISK_CALCULATION_VERSION = 4;
 /** Stored Arena risk is reused for cache hits; background refresh keeps it fresh. */
 export const ARENA_RISK_TTL_MS = 5 * 60 * 60 * 1000;
+/**
+ * Личный минимум: сравнение и риск считаются уже с 1 матча, чтобы не было
+ * пустых строк. Пиры для сравнения/риска по-прежнему берутся из стабильной
+ * популяции (>=10 матчей), иначе средние и z-оценки поплывут от шума 1-матчевых.
+ */
+export const ARENA_MIN_TARGET_MATCHES = 1;
+export const ARENA_MIN_PEER_MATCHES = 10;
 
 export function parseArenaProfile(profile: PlayerProfile): ArenaProfile {
   const parsed = parseArenaProfileStats(profile).arenaProfile;
@@ -165,7 +172,7 @@ function arenaWhere(input: {
   if (input.aid !== undefined) { where.push("aid = ?"); params.push(input.aid); }
   if (input.exceptAid !== undefined) { where.push("aid != ?"); params.push(input.exceptAid); }
   if (input.eligible) {
-    where.push("games_count >= 10", "parser_version = ?");
+    where.push(`games_count >= ${ARENA_MIN_PEER_MATCHES}`, "parser_version = ?");
     params.push(ARENA_PARSER_VERSION);
   }
   if (input.minHours != null) { where.push("hours >= ?"); params.push(input.minHours); }
@@ -391,7 +398,7 @@ export async function getArenaCohort(
   const targetHours = numberOrNull(target?.hours);
   const targetMatches = numberOrNull(target?.games_count);
   if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
-      targetMatches === null || targetMatches < 10 || (arenaMode !== "overall" && targetHours === null)) {
+      targetMatches === null || targetMatches < ARENA_MIN_TARGET_MATCHES || (arenaMode !== "overall" && targetHours === null)) {
     return emptyCohort(aid, arenaMode, statisticKind);
   }
   if (arenaMode === "overall") {
@@ -680,7 +687,7 @@ async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<stri
     const hours = numberOrNull(target?.hours);
     const matches = numberOrNull(target?.games_count);
     if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
-        matches === null || matches < 10 || hours === null) continue;
+        matches === null || matches < ARENA_MIN_TARGET_MATCHES || hours === null) continue;
     countQueries.push(arenaRangeCountQuery(aid, mode, hours, matches));
   }
   const countRows: Row[] = [];
@@ -698,7 +705,7 @@ async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<stri
   for (const mode of ["overall", ...ARENA_MODE_KEYS] as const) {
     const target = targets.get(mode);
     if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
-        (numberOrNull(target.games_count) ?? 0) < 10) continue;
+        (numberOrNull(target.games_count) ?? 0) < ARENA_MIN_TARGET_MATCHES) continue;
     const range = mode === "overall" ? undefined : ranges.get(mode);
     const hours = numberOrNull(target.hours);
     const matches = numberOrNull(target.games_count);
@@ -737,7 +744,7 @@ function riskModeFromSummary(mode: ArenaModeKey, target: Row | undefined, summar
   if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION || targetMatches === null) {
     return riskModeUnavailable(mode, "target_unavailable");
   }
-  if (targetMatches < 10) return riskModeUnavailable(mode, "target_below_minimum_matches");
+  if (targetMatches < ARENA_MIN_TARGET_MATCHES) return riskModeUnavailable(mode, "target_below_minimum_matches");
   const peerCount = summary?.sampleN ?? 0;
   if (peerCount < 30) return riskModeUnavailable(mode, "insufficient_peers", peerCount, summary?.percent);
   const result = riskMetrics(target, summary);
@@ -753,7 +760,7 @@ function riskModeFromSummary(mode: ArenaModeKey, target: Row | undefined, summar
 
 function riskOverallFromSummary(target: Row, summary: RiskSamples | undefined): ArenaOverallRisk {
   const matches = numberOrNull(target.games_count);
-  if (matches === null || matches < 10) {
+  if (matches === null || matches < ARENA_MIN_TARGET_MATCHES) {
     return riskOverallUnavailable("target_below_minimum_matches");
   }
   return { mode: "overall", peerCount: summary?.sampleN ?? 0, ...riskMetrics(target, summary) };

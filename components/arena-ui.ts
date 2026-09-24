@@ -353,8 +353,10 @@ export function toArenaAverage(value: unknown): ArenaAverageResult | null {
  * non-null range in `filterIdentity` describes a narrower slice and must not be
  * presented as the Arena-wide comparison.
  *
- * `bounds.matches.min` mirrors the eligibility floor `games_count >= 10` from
- * `arenaWhere({ eligible: true })` in lib/arena/service.ts; keep the two in sync.
+ * `bounds.matches.min` mirrors the peer eligibility floor `games_count >= 10`
+ * (`ARENA_MIN_PEER_MATCHES`) from `arenaWhere({ eligible: true })` in
+ * lib/arena/service.ts; keep the two in sync. Personal targets are allowed
+ * from 1 match (`ARENA_MIN_TARGET_MATCHES`).
  */
 export function toArenaPopulationCohort(
   value: unknown,
