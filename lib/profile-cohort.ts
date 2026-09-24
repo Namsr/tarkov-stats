@@ -1,10 +1,12 @@
 import type { RadarMetric } from "@/lib/db";
 
 export const COMPARISON_COHORT_TARGET = 20;
+export const RISK_COHORT_TARGET = 30;
 export const COMPARISON_COHORT_PERCENTAGES = [10, 15, 20, 30] as const;
 
 export type ComparisonCohortPercent = (typeof COMPARISON_COHORT_PERCENTAGES)[number];
 export type ComparisonCohortMode = "regular" | "pve" | "seasonal";
+export type ComparisonCohortStrategy = "matched" | "population";
 
 export interface ComparisonAxisBounds {
   min: number;
@@ -25,7 +27,6 @@ export interface ComparisonCohortAxes {
 export interface ComparisonActualRanges {
   hours: ComparisonAxisBounds | null;
   pmcRaids: ComparisonAxisBounds | null;
-  /** Legacy alias may be omitted; the canonical axis is pmcRaids. */
   raids?: ComparisonAxisBounds | null;
 }
 
@@ -50,9 +51,7 @@ export interface ComparisonCohortResult {
     mode: ComparisonCohortMode;
     cycleId: string;
   };
-  /** The trusted server-derived center, never a value accepted from the request. */
   center: number;
-  /** Legacy axis fields retained for existing regular consumers. */
   dimension: "hours" | "pmc_raids";
   bounds: ComparisonAxisBounds;
   axes: ComparisonCohortAxes;
@@ -61,13 +60,13 @@ export interface ComparisonCohortResult {
   required: number;
   targetN: number;
   twoDimensional: true;
+  strategy: ComparisonCohortStrategy;
   percent: ComparisonCohortPercent;
   n: number;
   quality: "sufficient" | "unavailable";
   reliability: "sufficient" | "insufficient";
   reason: ComparisonCohortReason | null;
   averages: ComparisonCohortAverages;
-  /** Compatibility aliases used by the existing radar renderer. */
   ranges: {
     hours: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
     pmcRaids: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
@@ -94,9 +93,10 @@ export function comparisonAxisBounds(center: number, percent: ComparisonCohortPe
   const ratio = percent / 100;
   if (axis === "hours") {
     const epsilon = 1e-9 * Math.max(1, Math.abs(center));
+    const max = Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10;
     return {
       min: Math.max(0, Math.floor((center * (1 - ratio) + epsilon) * 10) / 10),
-      max: Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10,
+      max: max === 0 ? 0 : max,
     };
   }
   const epsilon = 1e-9 * Math.max(1, Math.abs(center));
@@ -129,10 +129,32 @@ export function comparisonRangeFor(
   };
 }
 
+export function finiteNonNegativeCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 export function selectComparisonPercent(
   counts: Readonly<Record<ComparisonCohortPercent, number>>,
+  target = COMPARISON_COHORT_TARGET,
 ): ComparisonCohortPercent {
-  return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= COMPARISON_COHORT_TARGET) ?? 30;
+  return COMPARISON_COHORT_PERCENTAGES.find((percent) =>
+    finiteNonNegativeCount(counts[percent]) >= target
+  ) ?? 30;
+}
+
+export function finiteNonNegativeMetricValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function comparisonCohortMetricValue(
+  strategy: ComparisonCohortStrategy,
+  metric: { value: unknown; count: unknown },
+): number | null {
+  const value = finiteNonNegativeMetricValue(metric.value);
+  const count = finiteNonNegativeMetricValue(metric.count);
+  const minimum = strategy === "population" ? 1 : COMPARISON_COHORT_TARGET;
+  return value !== null && count !== null && count >= minimum ? value : null;
 }
 
 export function makeComparisonCohortResult(input: {
@@ -145,11 +167,15 @@ export function makeComparisonCohortResult(input: {
   n: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
+  strategy?: ComparisonCohortStrategy;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
+  const strategy = input.strategy ?? "matched";
   const axes = comparisonAxes(input.center, input.percent);
-  const sufficient = input.reason == null && input.n >= COMPARISON_COHORT_TARGET;
+  const sufficient = input.reason == null && (
+    strategy === "population" ? input.n > 0 : input.n >= COMPARISON_COHORT_TARGET
+  );
   return {
     mode: input.mode,
     cycleId: input.cycleId,
@@ -164,6 +190,7 @@ export function makeComparisonCohortResult(input: {
     required: COMPARISON_COHORT_TARGET,
     targetN: COMPARISON_COHORT_TARGET,
     twoDimensional: true,
+    strategy,
     percent: input.percent,
     n: input.n,
     quality: sufficient ? "sufficient" : "unavailable",
@@ -176,4 +203,15 @@ export function makeComparisonCohortResult(input: {
       raids: { ...axes.pmcRaids.bounds, percent: input.percent },
     },
   };
+}
+
+export function makeEmptyPopulationCohortResult(
+  input: Omit<Parameters<typeof makeComparisonCohortResult>[0], "n" | "strategy" | "reason" | "averages">,
+): ComparisonCohortResult {
+  return makeComparisonCohortResult({
+    ...input,
+    n: 0,
+    strategy: "population",
+    reason: "insufficient_cohort",
+  });
 }

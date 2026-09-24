@@ -36,7 +36,7 @@ const COHORT_PERCENTS = [10, 15, 20, 30] as const;
 const RISK_METRICS = ["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const;
 // Peer scans below read only the selected numeric metrics.
 const ARENA_RISK_PROJECTION = "aid, arena_mode, hours, games_count, kd_ratio, win_rate, kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at";
-export const ARENA_RISK_CALCULATION_VERSION = 2;
+export const ARENA_RISK_CALCULATION_VERSION = 3;
 /** Stored Arena risk is reused for cache hits; background refresh keeps it fresh. */
 export const ARENA_RISK_TTL_MS = 5 * 60 * 60 * 1000;
 
@@ -504,9 +504,14 @@ function riskTier(score: number): NonNullable<ArenaProfileRisk["tier"]> {
   return "severe";
 }
 
-function riskModeUnavailable(mode: ArenaModeKey, reason: string, peerCount = 0): ArenaModeRisk {
+function riskModeUnavailable(
+  mode: ArenaModeKey,
+  reason: string,
+  peerCount = 0,
+  percent: 10 | 15 | 20 | 30 = 30,
+): ArenaModeRisk {
   return {
-    mode, score: null, peerCount, percent: 30, reasons: [reason],
+    mode, score: null, peerCount, percent, reasons: [reason],
     metrics: Object.fromEntries(RISK_METRICS.map((metric) => [metric, emptyRiskMetric(
       reason === "insufficient_peers" ? "insufficient_peers" : "missing_metric"
     )])) as ArenaModeRisk["metrics"],
@@ -522,26 +527,47 @@ function riskOverallUnavailable(reason: string, peerCount = 0): ArenaOverallRisk
   };
 }
 
-function riskMetrics(target: Row, summary: MetricSamples | undefined): Pick<ArenaModeRisk, "score" | "reasons" | "metrics"> {
+type RiskMetricStats = { count: number; mean: number | null; std: number | null };
+type RiskSamples = { sampleN: number; percent: 10 | 15 | 20 | 30; metrics: Map<ArenaMetricKey, RiskMetricStats> };
+
+function stableMean(values: number[]): number {
+  const anchor = values.reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
+  return anchor + values.reduce((sum, value) => sum + (value - anchor), 0) / values.length;
+}
+
+function riskStatsFromSamples(group: MetricSamples | undefined): Map<ArenaMetricKey, RiskMetricStats> {
+  const metrics = new Map<ArenaMetricKey, RiskMetricStats>();
+  for (const metric of RISK_METRICS) {
+    const values = group?.values.get(metric) ?? [];
+    if (values.length === 0) {
+      metrics.set(metric, { count: 0, mean: null, std: null });
+      continue;
+    }
+    const mean = stableMean(values);
+    const identical = values.every((entry) => entry === values[0]);
+    const variance = identical ? 0 : Math.max(0, values.reduce((sum, entry) => sum + (entry - mean) ** 2, 0) / values.length);
+    metrics.set(metric, { count: values.length, mean, std: Math.sqrt(variance) });
+  }
+  return metrics;
+}
+
+function riskMetrics(target: Row, summary: RiskSamples | undefined): Pick<ArenaModeRisk, "score" | "reasons" | "metrics"> {
   const metrics = {} as ArenaModeRisk["metrics"];
   const points: number[] = [];
   for (const metric of RISK_METRICS) {
     const value = numberOrNull(target[metric]);
-    const values = summary?.values.get(metric) ?? [];
-    const count = values.length;
+    const sample = summary?.metrics.get(metric);
+    const count = sample?.count ?? 0;
     if (value === null) {
       metrics[metric] = { ...emptyRiskMetric("missing_metric"), count };
       continue;
     }
-    if (count < 30) {
+    if (count < 30 || sample?.mean == null || sample.std == null) {
       metrics[metric] = { ...emptyRiskMetric("insufficient_peers"), value, count };
       continue;
     }
-    const mean = values.reduce((sum, entry) => sum + entry, 0) / values.length;
-    const identical = values.every((entry) => entry === values[0]);
-    const variance = identical ? 0 : values.reduce((sum, entry) => sum + (entry - mean) ** 2, 0) / values.length;
-    const std = Math.sqrt(variance);
-    if (identical || std === 0) {
+    const { mean, std } = sample;
+    if (std === 0) {
       metrics[metric] = { value, count, mean, std, z: null, points: null, available: false, reason: "zero_std" };
       continue;
     }
@@ -572,9 +598,59 @@ async function arenaRiskTargets(backend: Backend, aid: number): Promise<Map<stri
   return new Map(rows.map((row) => [String(row.arena_mode), row]));
 }
 
-type RiskSamples = MetricSamples & { percent: 10 | 15 | 20 | 30 };
+async function arenaRiskPopulation(
+  backend: Backend,
+  aid: number,
+  modes: ArenaStoredMode[],
+): Promise<Map<string, RiskSamples>> {
+  if (modes.length === 0) return new Map();
+  const placeholders = modes.map(() => "?").join(", ");
+  const anchorColumns = RISK_METRICS.map((metric) =>
+    `MIN(CASE WHEN typeof(${metric}) IN ('integer', 'real') THEN ${metric} END) AS ${metric}_anchor`
+  ).join(", ");
+  const meanColumns = RISK_METRICS.map((metric) =>
+    `anchors.${metric}_anchor + AVG(CASE WHEN typeof(eligible.${metric}) IN ('integer', 'real')
+      THEN eligible.${metric} - anchors.${metric}_anchor END) AS ${metric}_mean`
+  ).join(", ");
+  const aggregateColumns = RISK_METRICS.flatMap((metric) => [
+    `COUNT(CASE WHEN typeof(eligible.${metric}) IN ('integer', 'real') THEN 1 END) AS ${metric}_count`,
+    `means.${metric}_mean`,
+    `AVG(CASE WHEN typeof(eligible.${metric}) IN ('integer', 'real')
+      THEN (eligible.${metric} - means.${metric}_mean) * (eligible.${metric} - means.${metric}_mean) END) AS ${metric}_variance`,
+  ]).join(", ");
+  const rows = await all(backend,
+    `WITH eligible AS (
+       SELECT arena_mode, ${RISK_METRICS.join(", ")}
+       FROM arena_mode_stats
+       WHERE arena_mode IN (${placeholders})
+         AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = arena_mode_stats.aid)
+         AND aid != ? AND games_count >= 10 AND parser_version = ?
+     ), anchors AS (
+       SELECT arena_mode, ${anchorColumns} FROM eligible GROUP BY arena_mode
+     ), means AS (
+       SELECT eligible.arena_mode, ${meanColumns}
+       FROM eligible JOIN anchors ON anchors.arena_mode = eligible.arena_mode
+       GROUP BY eligible.arena_mode
+     )
+     SELECT eligible.arena_mode, COUNT(*) AS sample_n, ${aggregateColumns}
+     FROM eligible JOIN means ON means.arena_mode = eligible.arena_mode
+     GROUP BY eligible.arena_mode`, [...modes, aid, ARENA_PARSER_VERSION]);
+  return new Map(rows.map((row) => {
+    const metrics = new Map<ArenaMetricKey, RiskMetricStats>();
+    for (const metric of RISK_METRICS) {
+      const count = Number(row[`${metric}_count`]) || 0;
+      const mean = numberOrNull(row[`${metric}_mean`]);
+      const variance = numberOrNull(row[`${metric}_variance`]);
+      metrics.set(metric, {
+        count,
+        mean,
+        std: variance === null ? null : variance === 0 ? 0 : Math.sqrt(variance),
+      });
+    }
+    return [String(row.arena_mode), { sampleN: Number(row.sample_n) || 0, percent: 30 as const, metrics }];
+  }));
+}
 
-/** Count ranges through the existing indexes, then load only selected peers. */
 async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<string, Row>): Promise<Map<string, RiskSamples>> {
   const countQueries: ReturnType<typeof arenaRangeCountQuery>[] = [];
   for (const mode of ARENA_MODE_KEYS) {
@@ -585,7 +661,6 @@ async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<stri
         matches === null || matches < 10 || hours === null) continue;
     countQueries.push(arenaRangeCountQuery(aid, mode, hours, matches));
   }
-  // Keep each statement below D1's parameter limit as well as SQLite's.
   const countRows: Row[] = [];
   const batchSize = backend.kind === "d1" ? 4 : ARENA_MODE_KEYS.length;
   for (let start = 0; start < countQueries.length; start += batchSize) {
@@ -594,46 +669,55 @@ async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<stri
       batch.flatMap((query) => query.params)));
   }
   const ranges = new Map(countRows.map((row) => [String(row.arena_mode), arenaSelectedRange(row, 30)]));
-  const result = new Map<string, RiskSamples>();
+  const populationModes: ArenaStoredMode[] = [];
+  const matchedRanges = new Map<string, { percent: 10 | 15 | 20 | 30 }>();
   const selects: string[] = [];
   const params: unknown[] = [];
   for (const mode of ["overall", ...ARENA_MODE_KEYS] as const) {
     const target = targets.get(mode);
     if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
         (numberOrNull(target.games_count) ?? 0) < 10) continue;
-    const input: Parameters<typeof arenaWhere>[0] = { mode, exceptAid: aid, eligible: true };
-    if (mode !== "overall") {
-      const range = ranges.get(mode);
-      if (!range) continue;
-      result.set(mode, { sampleN: range.sampleN, percent: range.percent, values: new Map() });
-      if (range.sampleN < 30) continue;
-      const hours = proportionalBounds(Number(target.hours), range.percent);
-      const matches = proportionalBounds(Number(target.games_count), range.percent);
-      Object.assign(input, { minHours: hours.min, maxHours: hours.max, minMatches: matches.min, maxMatches: matches.max });
+    const range = mode === "overall" ? undefined : ranges.get(mode);
+    const hours = numberOrNull(target.hours);
+    const matches = numberOrNull(target.games_count);
+    if (mode === "overall" || !range || range.sampleN < 30 || hours === null || matches === null) {
+      populationModes.push(mode);
+      continue;
     }
-    const condition = arenaWhere(input);
+    const hourBounds = proportionalBounds(hours, range.percent);
+    const matchBounds = proportionalBounds(matches, range.percent);
+    const condition = arenaWhere({
+      mode, exceptAid: aid, eligible: true,
+      minHours: hourBounds.min, maxHours: hourBounds.max,
+      minMatches: matchBounds.min, maxMatches: matchBounds.max,
+    });
+    matchedRanges.set(mode, { percent: range.percent });
     selects.push(`SELECT arena_mode, ${RISK_METRICS.join(", ")} FROM arena_mode_stats ${condition.where}`);
     params.push(...condition.params);
   }
+  const result = await arenaRiskPopulation(backend, aid, populationModes);
   if (selects.length) {
     const groups = await arenaMetricSamples(backend, selects.join(" UNION ALL "), params, RISK_METRICS);
-    for (const [mode, group] of groups) result.set(mode, { ...group, percent: ranges.get(mode)?.percent ?? 30 });
-    // A concurrent writer can remove all selected peers after the count query.
-    for (const [mode, group] of result) {
-      if (group.sampleN >= 30 && !groups.has(mode)) group.sampleN = 0;
+    for (const [mode, range] of matchedRanges) {
+      const group = groups.get(mode);
+      result.set(mode, {
+        sampleN: group?.sampleN ?? 0,
+        percent: range.percent,
+        metrics: riskStatsFromSamples(group),
+      });
     }
   }
   return result;
 }
 
 function riskModeFromSummary(mode: ArenaModeKey, target: Row | undefined, summary: RiskSamples | undefined): ArenaModeRisk {
-  const targetHours = numberOrNull(target?.hours);
   const targetMatches = numberOrNull(target?.games_count);
-  if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION ||
-      targetHours === null || targetMatches === null) return riskModeUnavailable(mode, "target_unavailable");
+  if (!target || numberOrNull(target.parser_version) !== ARENA_PARSER_VERSION || targetMatches === null) {
+    return riskModeUnavailable(mode, "target_unavailable");
+  }
   if (targetMatches < 10) return riskModeUnavailable(mode, "target_below_minimum_matches");
   const peerCount = summary?.sampleN ?? 0;
-  if (peerCount < 30) return riskModeUnavailable(mode, "insufficient_peers", peerCount);
+  if (peerCount < 30) return riskModeUnavailable(mode, "insufficient_peers", peerCount, summary?.percent);
   const result = riskMetrics(target, summary);
   return {
     mode,
@@ -645,7 +729,7 @@ function riskModeFromSummary(mode: ArenaModeKey, target: Row | undefined, summar
   };
 }
 
-function riskOverallFromSummary(target: Row, summary: MetricSamples | undefined): ArenaOverallRisk {
+function riskOverallFromSummary(target: Row, summary: RiskSamples | undefined): ArenaOverallRisk {
   const matches = numberOrNull(target.games_count);
   if (matches === null || matches < 10) {
     return riskOverallUnavailable("target_below_minimum_matches");

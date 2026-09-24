@@ -17,6 +17,7 @@ import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { resolveSeasonalProfile } from "@/lib/seasonal/profile-service";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
+import { seasonalRiskMatchesIdentity } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { validateSeasonalProfile } from "@/lib/seasonal-upstream";
 import { fetchSeasonalPayload } from "@/lib/seasonal/fetch";
@@ -28,7 +29,11 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
-import { evaluateAndStoreRisk, evaluateAndStoreSeasonalRisk } from "@/lib/admin/risk-service";
+import {
+  evaluateAndStoreRisk,
+  evaluateAndStoreSeasonalRisk,
+  riskScoreVersion,
+} from "@/lib/admin/risk-service";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -349,6 +354,7 @@ async function arenaProfileResponse(input: {
         riskMs = timing.elapsedMs(riskStarted);
       }
       if (!isArenaProfileRiskFresh(risk, stored.profileUpdatedAt)) {
+        risk = null;
         scheduleArenaRiskRefresh();
       }
     } else {
@@ -508,9 +514,14 @@ export async function GET(request: NextRequest) {
     const storedRisk = result.ok
       ? await getRiskEvaluation({ aid, mode: "seasonal", cycleId }).catch(() => null)
       : null;
-    const seasonalRiskIsFresh = result.ok && storedRisk &&
-      storedRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
-      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    const currentStoredRisk = seasonalRiskMatchesIdentity(storedRisk, { aid, cycleId })
+      ? storedRisk
+      : null;
+    const seasonalRiskIsCurrent = result.ok && currentStoredRisk !== null;
+    const seasonalRiskIsFresh = seasonalRiskIsCurrent && currentStoredRisk !== null &&
+      currentStoredRisk.scoreVersion === riskScoreVersion("seasonal", cycleId) &&
+      currentStoredRisk.profileUpdatedAt >= result.profile.profileUpdatedAt &&
+      Date.now() - currentStoredRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
       after(async () => {
         // Keep a stale population-wide scan behind an immediate mode switch.
@@ -520,8 +531,9 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRisk = result.ok
-      ? toPublicRiskView(storedRisk, { aid, mode: "seasonal", cycleId })
+    const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&
+      currentStoredRisk.scoreVersion === riskScoreVersion("seasonal", cycleId)
+      ? toPublicRiskView(currentStoredRisk, { aid, mode: "seasonal", cycleId })
       : null;
     const enrichedSeasonalViewModel = result.ok
       ? await enrichSeasonalViewModel(
@@ -591,6 +603,7 @@ export async function GET(request: NextRequest) {
       }) => {
         const storedRisk = await getRiskEvaluation({ aid, mode: "pve", cycleId }).catch(() => null);
         const riskIsFresh = storedRisk &&
+          storedRisk.scoreVersion === riskScoreVersion("pve", cycleId) &&
           storedRisk.profileUpdatedAt >= Number(input.stats.profileUpdatedAt) &&
           Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
         if (!riskIsFresh) {
@@ -604,7 +617,9 @@ export async function GET(request: NextRequest) {
             console.error("PvE admin risk evaluation failed", error);
           }));
         }
-        const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId });
+        const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("pve", cycleId)
+          ? toPublicRiskView(storedRisk, { aid, mode: "pve", cycleId })
+          : null;
         const viewModel = await enrichPersistentViewModel("pve", buildPersistentProfileViewModel({
           aid,
           mode: "pve",
@@ -790,6 +805,7 @@ export async function GET(request: NextRequest) {
         ? null
         : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
       const riskIsFresh = storedRisk &&
+        storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
         storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
         Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
       if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
@@ -804,7 +820,9 @@ export async function GET(request: NextRequest) {
           });
         });
       }
-      const publicRisk = toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId });
+      const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+        ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
+        : null;
       const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
         aid,
         mode: "regular",
@@ -897,12 +915,13 @@ export async function GET(request: NextRequest) {
       console.error("regular profile capture after response failed", error);
     }));
 
-    const publicRisk = stats.pvpStatsKnown === false
+    const storedRisk = stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-    const riskIsFresh = publicRisk &&
-      publicRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
-      Date.now() - publicRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    const riskIsFresh = storedRisk &&
+      storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
+      storedRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
+      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (stats.pvpStatsKnown !== false && !riskIsFresh) {
       after(async () => {
         // Let the browser's personal-timeline request finish before the
@@ -913,7 +932,9 @@ export async function GET(request: NextRequest) {
         });
       });
     }
-    const publicRiskView = toPublicRiskView(publicRisk, { aid, mode: "regular", cycleId });
+    const publicRiskView = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId)
+      ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
+      : null;
     const regularViewModel = await enrichRegularViewModel(
       buildRegularProfileViewModel({
         aid,

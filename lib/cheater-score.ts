@@ -87,6 +87,11 @@ interface SignalDef {
 }
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const safeNumber = (value: number) => Number.isFinite(value) ? value : 0;
+
+function zeroRiskResult(): CheaterScoreResult {
+  return { score: 0, tier: "low", factors: [], sampleN: 0, basedOnSample: false };
+}
 
 // Prestige is only suspicious in context. One early prestige is weak evidence;
 // several prestiges at a pace far faster than roughly one per 650 account-hours
@@ -163,6 +168,13 @@ const MIN_SAMPLE = 30; // bracket players needed before z-scores are trusted
 const Z_LO = 2; // z at which a metric starts contributing
 const Z_HI = 6; // z at which it's maximally suspicious
 
+export function hasValidRiskInputs(stats: ParsedPlayerStats): boolean {
+  return stats.pvpStatsKnown !== false &&
+    Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0 &&
+    Number.isFinite(stats.pmcRaids) && stats.pmcRaids >= 0 &&
+    SIGNALS.every((signal) => Number.isFinite(signal.get(stats)));
+}
+
 function tierFor(score: number): RiskTier {
   if (score < 20) return "low";
   if (score < 45) return "medium";
@@ -237,11 +249,14 @@ export function scoreCheater(
   baseline: Baseline | null,
   achievements?: AchievementInput | null
 ): CheaterScoreResult {
+  if (!hasValidRiskInputs(stats) || stats.pmcRaids <= 0) {
+    return zeroRiskResult();
+  }
   const sampleN = baseline?.n ?? 0;
   const basedOnSample = sampleN >= MIN_SAMPLE;
 
   const factors: ScoreFactor[] = SIGNALS.map((sig) => {
-    const value = sig.get(stats);
+    const value = safeNumber(sig.get(stats));
     const abs = sig.absolute
       ? clamp01(sig.absolute(stats, value))
       : clamp01((value - sig.normal) / (sig.extreme - sig.normal));
@@ -298,4 +313,33 @@ export function scoreCheater(
   const score = Math.min(100, Math.round(factors.reduce((s, f) => s + f.points, 0)));
   factors.sort((a, b) => b.points - a.points);
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
+}
+
+export function scoreSeasonalCheater(
+  stats: ParsedPlayerStats,
+  baseline: Baseline | null,
+  achievements?: AchievementInput | null,
+): CheaterScoreResult {
+  const validInputs = [
+    stats.hoursPlayed,
+    stats.pmcRaids,
+    stats.pmcSurvivalRate,
+    stats.pmcKdRatio,
+    stats.pmcKillsPerRaid,
+    stats.longestWinStreak,
+    stats.prestige,
+  ].every((value) => Number.isFinite(value) && value >= 0);
+  if (!validInputs || stats.hoursPlayed <= 0 || stats.pmcRaids <= 0) {
+    return scoreCheater({
+      ...stats,
+      hoursPlayed: 0,
+      prestige: 0,
+      pmcRaids: 0,
+      pmcSurvivalRate: 0,
+      pmcKdRatio: 0,
+      pmcKillsPerRaid: 0,
+      longestWinStreak: 0,
+    }, null, null);
+  }
+  return scoreCheater(stats, baseline, achievements);
 }

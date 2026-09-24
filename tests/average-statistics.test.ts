@@ -31,18 +31,28 @@ registerHooks({
 
 const directory = mkdtempSync(join(tmpdir(), "tarkov-average-"));
 const databasePath = join(directory, "players.db");
+const adminDatabasePath = join(directory, "admin-analytics.db");
 process.env.SQLITE_PATH = databasePath;
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 
 const { getStore } = await import("../lib/db.ts");
+const {
+  ADMIN_RISK_SCORE_VERSIONS,
+  evaluateAndStoreRisk,
+  riskScoreVersion,
+} = await import("../lib/admin/risk-service.ts");
+const { scoreCheater } = await import("../lib/cheater-score.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
 const store = await getStore();
+const pveStore = await getStore("pve");
 assert.ok(store);
+assert.ok(pveStore);
 const db = new DatabaseSync(databasePath);
 for (const name of [
   "idx_players_average_kd_ratio",
@@ -57,9 +67,18 @@ const insert = db.prepare(`INSERT INTO players
   (aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
    kills_per_raid, pmc_survival_rate, longest_win_streak, level, fetched_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+const insertMode = db.prepare(`INSERT INTO mode_players
+  (mode, aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
+   kills_per_raid, pmc_survival_rate, longest_win_streak, level, prestige,
+   profile_updated_at, pvp_stats_known, fetched_at, stats_json)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '{}')`);
 
 function reset() {
   db.exec("DELETE FROM players");
+}
+
+function resetPve() {
+  db.exec("DELETE FROM players; DELETE FROM mode_players; DELETE FROM excluded_players");
 }
 
 function add(aid, options = {}) {
@@ -77,6 +96,69 @@ function add(aid, options = {}) {
     value,
     value,
   );
+}
+
+function addMode(mode, aid, options = {}) {
+  const value = options.value ?? aid;
+  insertMode.run(
+    mode,
+    aid,
+    `p${aid}`,
+    options.hours ?? 100,
+    options.raids ?? 100,
+    options.totalRaids ?? value,
+    value,
+    value,
+    options.kills ?? value,
+    options.survival ?? value,
+    options.streak ?? 10,
+    options.level ?? 20,
+    options.prestige ?? 0,
+    options.updatedAt ?? Date.now(),
+    options.pvpKnown ? 1 : 0,
+  );
+}
+
+function pveStats(overrides = {}) {
+  return {
+    nickname: "pve-target",
+    level: 20,
+    prestige: 0,
+    experience: 100_000,
+    side: "Usec",
+    totalRaids: 5,
+    pmcRaids: 5,
+    scavRaids: 0,
+    survivedRaids: 3,
+    survivalRate: 60,
+    totalKills: 10,
+    killedPmc: 10,
+    killsPerRaid: 2,
+    kdRatio: 2,
+    pmcKdRatio: 2,
+    deaths: 5,
+    pmcDeaths: 5,
+    runThrough: 0,
+    pmcSurvived: 3,
+    pmcSurvivalRate: 60,
+    pmcKills: 10,
+    pmcKillsPerRaid: 2,
+    pmcExitKilled: 0,
+    pmcExitLeft: 0,
+    pmcExitTransit: 0,
+    pmcExitMia: 0,
+    hoursPlayed: 5,
+    longestWinStreak: 10,
+    achievementsCount: 0,
+    registrationDate: 0,
+    lastActiveDate: 0,
+    avgLifespan: 0,
+    totalLootValue: 0,
+    pvpStatsKnown: true,
+    pvpStatsVersion: 1,
+    profileUpdatedAt: 1_800_000_000_000,
+    ...overrides,
+  };
 }
 
 const range = (min, max, excludeAid) => ({
@@ -220,6 +302,303 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
   } finally {
     DatabaseSync.prototype.prepare = prepare;
   }
+});
+
+test("PvE two-axis averages select the first 10/15/20/30 percent window with 20 peers", async () => {
+  const fixtures = [
+    { expected: 10, expectedN: 20, groups: [[100, 20], [500, 20]] },
+    { expected: 15, expectedN: 30, groups: [[95, 19], [114, 11], [500, 20]] },
+    { expected: 20, expectedN: 39, groups: [[95, 19], [81, 19], [119, 1], [500, 20]] },
+    { expected: 30, expectedN: 20, groups: [[75, 19], [125, 1], [500, 20]] },
+  ];
+  let aid = 1;
+  for (const fixture of fixtures) {
+    resetPve();
+    for (const [center, count] of fixture.groups) {
+      for (let index = 0; index < count; index += 1) {
+        addMode("pve", aid, { hours: center, raids: center, value: index + 1 });
+        aid += 1;
+      }
+    }
+    const eligible = db.prepare(`SELECT hours, pmc_raids FROM mode_players
+      WHERE mode = 'pve' AND hours > 0 AND pmc_raids > 0 AND aid != 999`).all();
+    const cohort = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all");
+    assert.deepEqual({
+      percent: cohort.percent,
+      strategy: cohort.strategy,
+      quality: cohort.quality,
+      n: cohort.n,
+      eligible: eligible.length,
+    }, {
+      percent: fixture.expected,
+      strategy: "matched",
+      quality: "sufficient",
+      n: fixture.expectedN,
+      eligible: fixture.groups.reduce((sum, [, count]) => sum + count, 0),
+    });
+  }
+});
+
+test("PvE sparse two-axis averages use the full live population without unavailable values", async () => {
+  resetPve();
+  for (let aid = 1; aid <= 5; aid += 1) {
+    addMode("pve", aid, { hours: 100, raids: 100, value: aid });
+  }
+  addMode("pve", 6, { hours: 500, raids: 500, value: 6 });
+  addMode("pve", 7, { hours: 500, raids: 500, value: 7 });
+
+  const cohort = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all");
+  assert.equal(cohort.quality, "sufficient");
+  assert.equal(cohort.strategy, "population");
+  assert.equal(cohort.percent, 30);
+  assert.equal(cohort.n, 7);
+  assert.deepEqual(cohort.actualRanges, {
+    hours: { min: 100, max: 500 },
+    pmcRaids: { min: 100, max: 500 },
+    raids: { min: 100, max: 500 },
+  });
+  assert.deepEqual(cohort.averages.kd_ratio, { value: 4, count: 7 });
+
+  const unavailable = await pveStore.cohort2d(0, 0, 999, "hours", "median", "all");
+  assert.equal(unavailable.quality, "unavailable");
+  assert.equal(unavailable.averages.kd_ratio.value, null);
+
+  resetPve();
+  const emptyPopulation = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all");
+  assert.equal(emptyPopulation.strategy, "population");
+  assert.equal(emptyPopulation.required, 20);
+  assert.equal(emptyPopulation.targetN, 20);
+  assert.equal(emptyPopulation.quality, "unavailable");
+  assert.equal(emptyPopulation.reason, "insufficient_cohort");
+  assert.equal(emptyPopulation.n, 0);
+});
+
+test("PvE risk selects the first 10/15/20/30 percent window with 30 peers", async () => {
+  const fixtures = [
+    { expectedN: 30, groups: [[100, 30], [500, 20]] },
+    { expectedN: 30, groups: [[95, 29], [114, 1], [500, 20]] },
+    { expectedN: 59, groups: [[95, 29], [81, 29], [119, 1], [500, 20]] },
+    { expectedN: 30, groups: [[75, 29], [125, 1], [500, 20]] },
+  ];
+  let aid = 1;
+  for (const fixture of fixtures) {
+    resetPve();
+    for (const [center, count] of fixture.groups) {
+      for (let index = 0; index < count; index += 1) {
+        addMode("pve", aid, {
+          hours: center,
+          raids: center,
+          value: 1 + index / 100,
+          survival: 50,
+          kills: 2,
+          streak: 10,
+        });
+        aid += 1;
+      }
+    }
+    const eligible = db.prepare(`SELECT hours, pmc_raids FROM mode_players
+      WHERE mode = 'pve' AND hours > 0 AND pmc_raids > 0 AND aid != 999`).all();
+    const baseline = await pveStore.riskBaseline2d(100, 100, 999, "all");
+    assert.deepEqual({ n: baseline.n, eligible: eligible.length }, {
+      n: fixture.expectedN,
+      eligible: fixture.groups.reduce((sum, [, count]) => sum + count, 0),
+    });
+  }
+});
+
+test("PvE risk excludes self, tombstones, and non-PvE rows from the population fallback", async () => {
+  resetPve();
+  addMode("pve", 1, { hours: 100, raids: 100, value: 20 });
+  for (let aid = 100; aid < 130; aid += 1) {
+    addMode("pve", aid, { hours: 100, raids: 100, value: 1 });
+  }
+  addMode("pve", 200, { hours: 100, raids: 100, value: 1 });
+  addMode("arena", 201, { hours: 100, raids: 100, value: 1 });
+  add(1, { hours: 100, raids: 100, value: 1 });
+  add(300, { hours: 100, raids: 100, value: 1 });
+  db.prepare("INSERT INTO excluded_players VALUES (200, 'test', 1)").run();
+
+  const baseline = await pveStore.riskBaseline2d(100, 100, 1, "all");
+  assert.equal(baseline.n, 30);
+  assert.equal(baseline.metrics.pmc_kd_ratio.n, 30);
+});
+
+test("PvE risk uses the population fallback for 5 raids and returns zero for 0 raids", async () => {
+  resetPve();
+  for (let aid = 10; aid < 20; aid += 1) {
+    addMode("pve", aid, { hours: 5, raids: 5, value: 1, survival: 50, kills: 2 });
+  }
+  for (let aid = 20; aid < 45; aid += 1) {
+    addMode("pve", aid, { hours: 100, raids: 100, value: 1, survival: 50, kills: 2 });
+  }
+  addMode("pve", 1, { hours: 5, raids: 5, value: 20, survival: 50, kills: 2 });
+
+  const target = pveStats({ pmcKdRatio: 20 });
+  const risk = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: target,
+    achievementIds: [],
+    playerStore: pveStore,
+    evaluatedAt: 1_800_000_000_001,
+  });
+  assert.ok(risk.score > 0);
+  assert.equal(risk.sampleN, 35);
+  assert.equal(Number.isFinite(risk.score), true);
+
+  const lowRaids = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ hoursPlayed: 1, pmcRaids: 1, totalRaids: 1, pmcKdRatio: 20 }),
+    achievementIds: [],
+    playerStore: pveStore,
+    evaluatedAt: 1_800_000_000_001,
+  });
+  assert.ok(lowRaids.score > 0);
+  assert.equal(lowRaids.sampleN, 35);
+
+  const zero = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ hoursPlayed: 0, pmcRaids: 0, totalRaids: 0, pmcKdRatio: 20 }),
+    achievementIds: [],
+    playerStore: pveStore,
+    evaluatedAt: 1_800_000_000_002,
+  });
+  assert.equal(zero.score, 0);
+  assert.equal(zero.sampleN, 0);
+
+  const invalid = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ pvpStatsKnown: false, pmcKdRatio: 20 }),
+    achievementIds: [],
+    playerStore: pveStore,
+    evaluatedAt: 1_800_000_000_003,
+  });
+  assert.equal(invalid.score, 0);
+  assert.ok(invalid.factors.every((factor) => factor.available === false));
+
+  const invalidAchievement = await evaluateAndStoreRisk({
+    aid: 1,
+    mode: "pve",
+    cycleId: "persistent",
+    stats: pveStats({ pmcKdRatio: Number.NaN }),
+    achievementIds: ["rare-achievement"],
+    playerStore: {
+      riskBaseline2d() { throw new Error("invalid combat metrics must not query risk peers"); },
+      achievementBaseline() { throw new Error("invalid combat metrics must not query achievements"); },
+    },
+    evaluatedAt: 1_800_000_000_004,
+  });
+  assert.equal(invalidAchievement.score, 0);
+
+  const adminDb = new DatabaseSync(adminDatabasePath);
+  const storedVersion = adminDb
+    .prepare("SELECT score_version FROM risk_evaluations WHERE aid = 1 AND mode = 'pve'")
+    .get().score_version;
+  adminDb.close();
+  assert.equal(storedVersion, ADMIN_RISK_SCORE_VERSIONS.pve);
+  assert.equal(riskScoreVersion("pve", "persistent"), 2);
+  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
+  assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
+});
+
+test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {
+  const cases = [
+    { percent: 10, n: 20, peers: Array.from({ length: 20 }, () => ({ hours: 100, raids: 100 })) },
+    { percent: 15, n: 20, peers: [...Array.from({ length: 19 }, () => ({ hours: 100, raids: 100 })), { hours: 85, raids: 85 }] },
+    { percent: 20, n: 20, peers: [...Array.from({ length: 19 }, () => ({ hours: 100, raids: 100 })), { hours: 80, raids: 80 }] },
+    { percent: 30, n: 30, peers: [...Array.from({ length: 19 }, () => ({ hours: 100, raids: 100 })), ...Array.from({ length: 11 }, () => ({ hours: 70, raids: 70 }))] },
+  ];
+  for (const { percent, n, peers } of cases) {
+    reset();
+    peers.forEach((peer, index) => add(index + 1, peer));
+    db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+    const cohort = await store.cohort2d(100, 100, 999, "hours", "median", "all");
+    assert.equal(cohort.quality, "sufficient");
+    assert.equal(cohort.strategy, "matched");
+    assert.equal(cohort.percent, percent);
+    assert.equal(cohort.n, n);
+  }
+});
+
+test("sparse persistent cohorts use the current eligible Regular population and exclude self, tombstones, and stale rows", async () => {
+  reset();
+  for (let aid = 1; aid <= 9; aid += 1) add(aid, { hours: 100, raids: 100, value: aid });
+  for (let aid = 20; aid <= 34; aid += 1) add(aid, { hours: 200, raids: 200, value: aid + 81 });
+  add(999, { hours: 100, raids: 5, value: 999 });
+  add(1000, { hours: 200, raids: 200, value: 1000 });
+  add(1001, { hours: 200, raids: 200, value: 1001 });
+  add(1002, { hours: 200, raids: 200, value: 1002 });
+  const now = Date.now();
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ? WHERE aid NOT IN (1001, 1002)").run(now);
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1001").run(now - 100 * 86_400_000);
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1002").run(now);
+  db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (1000, 'test', ?)").run(now);
+
+  const cohort = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  assert.equal(cohort.quality, "sufficient");
+  assert.equal(cohort.strategy, "population");
+  assert.equal(cohort.required, 20);
+  assert.equal(cohort.n, 24);
+  assert.equal(cohort.actualRanges.hours.min, 100);
+  assert.equal(cohort.actualRanges.hours.max, 200);
+  assert.equal(cohort.actualRanges.pmcRaids.min, 100);
+  assert.equal(cohort.actualRanges.pmcRaids.max, 200);
+  assert.equal(cohort.averages.kd_ratio.value, 103.5);
+  assert.notEqual(cohort.reason, "insufficient_cohort");
+
+  reset();
+  add(1, { hours: 100, raids: 100, value: 0 });
+  add(999, { hours: 100, raids: 5, value: 999 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const onePeer = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  assert.equal(onePeer.strategy, "population");
+  assert.equal(onePeer.required, 20);
+  assert.deepEqual(onePeer.averages.kd_ratio, { value: 0, count: 1 });
+
+  reset();
+  add(999, { hours: 100, raids: 5, value: 999 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const emptyPopulation = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  assert.equal(emptyPopulation.strategy, "population");
+  assert.equal(emptyPopulation.reason, "insufficient_cohort");
+  assert.equal(emptyPopulation.required, 20);
+});
+
+test("risk uses the two-dimensional population fallback for five raids, while zero raids score zero", async () => {
+  reset();
+  for (let aid = 1; aid <= 9; aid += 1) add(aid, { hours: 100, raids: 100, value: aid });
+  for (let aid = 20; aid <= 34; aid += 1) add(aid, { hours: 200, raids: 200, value: aid + 81 });
+  add(999, { hours: 100, raids: 5, value: 999 });
+  add(1000, { hours: 200, raids: 200, value: 1000 });
+  add(1001, { hours: 200, raids: 200, value: 1001 });
+  add(1002, { hours: 200, raids: 200, value: 1002 });
+  const now = Date.now();
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ? WHERE aid NOT IN (1001, 1002)").run(now);
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1001").run(now - 100 * 86_400_000);
+  db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1002").run(now);
+  db.prepare("INSERT OR IGNORE INTO excluded_players (aid, reason, created_at) VALUES (1000, 'test', ?)").run(now);
+
+  const baseline = await store.riskBaseline(100, 5, 999);
+  assert.equal(baseline.n, 24);
+  const target = {
+    hoursPlayed: 100,
+    pmcRaids: 5,
+    prestige: 0,
+    pmcKdRatio: 8,
+    pmcSurvivalRate: 50,
+    pmcKillsPerRaid: 1,
+    longestWinStreak: 0,
+  };
+  assert.ok(scoreCheater(target, baseline).score > 0);
+  assert.equal(scoreCheater({ ...target, pmcRaids: 0 }, baseline).score, 0);
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {

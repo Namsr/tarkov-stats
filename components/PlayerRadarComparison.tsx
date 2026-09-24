@@ -9,6 +9,7 @@ import ProfileRadar from "@/components/ProfileRadar";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
+import { comparisonCohortMetricValue, finiteNonNegativeMetricValue } from "@/lib/profile-cohort";
 import type { GameMode } from "@/types/seasonal";
 
 type Dimension = "hours" | "pmc_raids";
@@ -28,6 +29,7 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  strategy?: "matched" | "population";
   identity?: { aid?: number; mode?: GameMode; cycleId?: string };
   twoDimensional?: boolean;
   period?: AveragePeriod;
@@ -36,6 +38,7 @@ interface CohortResponse {
   center?: number;
   targetN?: number;
   target?: number;
+  required?: number;
   percent?: number;
   n?: number;
   quality?: "sufficient" | "unavailable";
@@ -71,12 +74,14 @@ interface CohortRange {
 
 interface NormalizedCohort {
   requestId: string;
+  strategy: "matched" | "population";
   dimension: Dimension;
   center: number;
   targetN: number;
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
+  required: number;
   reason: string;
   twoDimensional: boolean;
   hoursRange: CohortRange | null;
@@ -101,7 +106,6 @@ interface MetricDefinition {
   suffix?: string;
 }
 
-const MIN_AXIS_SAMPLE = 20;
 const METRICS: MetricDefinition[] = [
   { key: "kd_ratio", labelKey: "radar.metric.kd", get: (s) => s.kdRatio, decimals: 2 },
   { key: "pmc_kd_ratio", labelKey: "radar.metric.pmcKd", get: (s) => s.pmcKdRatio, decimals: 2 },
@@ -154,6 +158,10 @@ const DEMO_FAVORITE: Record<MetricKey, number> = {
   level: 29,
 };
 
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function rangeFromInput(input: { min?: number; max?: number; percent?: number } | undefined, fallbackPercent: number): CohortRange | null {
   if (!input || !Number.isFinite(Number(input.min)) || !Number.isFinite(Number(input.max))) return null;
   return {
@@ -161,6 +169,11 @@ function rangeFromInput(input: { min?: number; max?: number; percent?: number } 
     max: Number(input.max),
     percent: Number(input.percent ?? fallbackPercent),
   };
+}
+
+function finiteCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
 }
 
 function normalizeResponse(
@@ -173,32 +186,34 @@ function normalizeResponse(
   statistic: AverageStatistic,
   period: AveragePeriod
 ): NormalizedCohort {
-  const n = Number(input.n ?? 0);
+  const rawN = Number(input.n ?? 0);
+  const n = finiteNonNegative(rawN) ? rawN : 0;
   const averages = {} as NormalizedCohort["averages"];
   for (const metric of METRICS) {
     const raw = input.averages?.[metric.key];
     averages[metric.key] =
       typeof raw === "number"
-        ? { value: Number.isFinite(raw) ? raw : null, count: n }
+        ? { value: finiteNonNegative(raw) ? raw : null, count: n }
         : raw && typeof raw === "object"
           ? {
-              value:
-                typeof raw.value === "number" && Number.isFinite(raw.value)
-                  ? raw.value
-                  : null,
-              count: Number(raw.count ?? 0),
+              value: finiteNonNegative(raw.value) ? raw.value : null,
+              count: finiteCount(raw.count),
             }
           : { value: null, count: 0 };
   }
 
+  const rawTargetN = Number(input.required ?? input.targetN ?? input.target ?? 20);
+  const rawRequired = Number(input.required ?? input.targetN ?? input.target ?? 20);
   return {
     requestId: `${sourceAid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${input.statistic ?? statistic}:${input.period ?? period}`,
     dimension: "hours",
     center: hoursCenter,
-    targetN: Number(input.targetN ?? input.target ?? 20),
+    targetN: Math.max(20, finiteNonNegative(rawTargetN) ? rawTargetN : 20),
+    required: Math.max(20, finiteNonNegative(rawRequired) ? rawRequired : 20),
     percent: Number(input.percent ?? 30),
     n,
     quality: input.quality === "sufficient" ? "sufficient" : "unavailable",
+    strategy: input.strategy === "population" ? "population" : "matched",
     reason: input.reason ?? "insufficient",
     twoDimensional: input.twoDimensional === true || Boolean(input.ranges?.hours && (input.ranges.pmcRaids ?? input.ranges.raids)),
     hoursRange: rangeFromInput(
@@ -224,12 +239,14 @@ function demoCohort(
   const percent = 15;
   return {
     requestId: `demo:${hoursCenter}:${raidsCenter}:${statistic}:${period}`,
+    strategy: "matched",
     dimension: "hours",
     center: hoursCenter,
     targetN: 20,
     percent,
     n: 184,
     quality: "sufficient",
+    required: 20,
     reason: "",
     twoDimensional: true,
     hoursRange: {
@@ -250,7 +267,7 @@ function demoCohort(
 
 function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
   return Object.fromEntries(
-    METRICS.map((metric) => [metric.key, metric.get(stats)]),
+    METRICS.map((metric) => [metric.key, finiteNonNegativeMetricValue(metric.get(stats))]),
   ) as Record<MetricKey, number | null>;
 }
 
@@ -449,8 +466,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && average?.value != null && average.value > 0
-      && average.count >= (metric.key === "pmc_survival_rate" ? 1 : MIN_AXIS_SAMPLE) ? average.value : null;
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional
+      ? comparisonCohortMetricValue(cohort.strategy, average ?? { value: null, count: 0 })
+      : null;
     return {
       key: metric.key, label: t(metric.labelKey),
       shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),

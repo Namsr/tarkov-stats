@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 import {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
+  RISK_COHORT_TARGET,
+  comparisonCohortMetricValue,
   comparisonRangeFor,
+  finiteNonNegativeCount,
+  finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
+  makeEmptyPopulationCohortResult,
   selectComparisonPercent,
 // @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts extension.
 } from "../lib/profile-cohort.ts";
@@ -22,9 +27,50 @@ test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
   });
 });
 
+test("player radar metrics preserve zero and reject invalid values", () => {
+  assert.equal(finiteNonNegativeMetricValue(0), 0);
+  assert.equal(finiteNonNegativeMetricValue(4.5), 4.5);
+  assert.equal(finiteNonNegativeMetricValue(null), null);
+  assert.equal(finiteNonNegativeMetricValue(-1), null);
+  assert.equal(finiteNonNegativeMetricValue(Number.NaN), null);
+  assert.equal(finiteNonNegativeMetricValue(Number.POSITIVE_INFINITY), null);
+});
+
+test("cohort metric values use one finite non-negative strategy rule", () => {
+  assert.equal(finiteNonNegativeCount(Number.NaN), 0);
+  assert.equal(finiteNonNegativeCount(Number.POSITIVE_INFINITY), 0);
+  assert.equal(finiteNonNegativeCount(-1), 0);
+  assert.equal(finiteNonNegativeCount("20"), 20);
+  assert.equal(comparisonCohortMetricValue("population", { value: 0, count: 1 }), 0);
+  assert.equal(comparisonCohortMetricValue("population", { value: 2, count: 0 }), null);
+  assert.equal(comparisonCohortMetricValue("matched", { value: 0, count: 20 }), 0);
+  assert.equal(comparisonCohortMetricValue("matched", { value: 2, count: 19 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: -1, count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: null, count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: "2", count: 1 }), null);
+  assert.equal(comparisonCohortMetricValue("population", { value: Number.NaN, count: 1 }), null);
+});
+
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
   assert.equal(
     selectComparisonPercent({ 10: 19, 15: 19, 20: 19, 30: 19 }),
+    30,
+  );
+  assert.equal(
+    selectComparisonPercent({ 10: 29, 15: 29, 20: 29, 30: 30 }, RISK_COHORT_TARGET),
+    30,
+  );
+  assert.equal(
+    selectComparisonPercent({ 10: Number.NaN, 15: 20, 20: 20, 30: 20 }),
+    15,
+  );
+  assert.equal(
+    selectComparisonPercent({
+      10: Number.NaN,
+      15: Number.POSITIVE_INFINITY,
+      20: -1,
+      30: Number.NaN,
+    }),
     30,
   );
   const result = makeComparisonCohortResult({
@@ -43,9 +89,52 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   });
   assert.equal(result.required, COMPARISON_COHORT_TARGET);
   assert.equal(result.quality, "unavailable");
+  assert.equal(result.strategy, "matched");
   assert.equal(result.reliability, "insufficient");
   assert.equal(result.reason, "insufficient_cohort");
   assert.deepEqual(result.identity, { aid: 42, mode: "seasonal", cycleId: "cycle-a" });
   assert.deepEqual(result.actualRanges.hours, { min: 71, max: 129 });
   assert.equal(result.averages.kd_ratio.value, null);
+  const population = makeComparisonCohortResult({
+    mode: "seasonal",
+    cycleId: "cycle-a",
+    aid: 42,
+    center: { hours: 100, pmcRaids: 20 },
+    percent: 30,
+    n: 1,
+    strategy: "population",
+    actualRanges: {
+      hours: { min: 10, max: 900 },
+      pmcRaids: { min: 2, max: 80 },
+      raids: { min: 2, max: 80 },
+    },
+  });
+  assert.equal(population.strategy, "population");
+  assert.equal(population.required, COMPARISON_COHORT_TARGET);
+  assert.equal(population.quality, "sufficient");
+  assert.equal(population.reason, null);
+  const emptyPopulation = makeEmptyPopulationCohortResult({
+    mode: "seasonal",
+    cycleId: "cycle-a",
+    aid: 42,
+    center: { hours: 100, pmcRaids: 20 },
+    percent: 30,
+    actualRanges: { hours: null, pmcRaids: null, raids: null },
+  });
+  assert.equal(emptyPopulation.strategy, "population");
+  assert.equal(emptyPopulation.reason, "insufficient_cohort");
+  assert.equal(emptyPopulation.required, COMPARISON_COHORT_TARGET);
+  assert.equal(emptyPopulation.n, 0);
+  assert.equal(emptyPopulation.quality, "unavailable");
+});
+
+test("seasonal cohort selection covers every window at the average threshold", () => {
+  for (const [counts, expected] of [
+    [{ 10: 20, 15: 20, 20: 20, 30: 20 }, 10],
+    [{ 10: 19, 15: 20, 20: 20, 30: 20 }, 15],
+    [{ 10: 19, 15: 19, 20: 20, 30: 20 }, 20],
+    [{ 10: 19, 15: 19, 20: 19, 30: 20 }, 30],
+  ] as const) {
+    assert.equal(selectComparisonPercent(counts), expected);
+  }
 });

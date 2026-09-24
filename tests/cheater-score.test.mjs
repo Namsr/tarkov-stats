@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { scoreCheater } from "../lib/cheater-score.ts";
+import { hasValidRiskInputs, scoreCheater } from "../lib/cheater-score.ts";
+import { ADMIN_RISK_SCORE_VERSIONS, riskScoreVersion } from "../lib/admin/risk-version.ts";
 
 const account14280186 = {
   nickname: "7LL",
@@ -72,6 +73,15 @@ test("extreme combat and progression profile saturates at 100", () => {
   assert.ok((result.factors.find((factor) => factor.key === "ach_early")?.points ?? 0) > 16);
 });
 
+test("stored risk version invalidates the previous seasonal population", () => {
+  assert.deepEqual(ADMIN_RISK_SCORE_VERSIONS, { regular: 2, pve: 2, arena: 1, seasonal: 2 });
+  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.equal(riskScoreVersion("pve", "persistent"), 2);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
+  assert.equal(riskScoreVersion("seasonal", "cycle-b"), 2);
+  assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
+});
+
 test("one extreme stat cannot create a severe score by itself", () => {
   const result = scoreCheater(
     {
@@ -109,6 +119,34 @@ test("prestige six at veteran playtime is not suspicious by pace alone", () => {
 
   assert.equal(result.score, 0);
   assert.equal(result.factors.find((factor) => factor.key === "prestige")?.points, 0);
+});
+
+test("achievement evidence cannot overcome invalid combat inputs", () => {
+  const valid = {
+    ...account14280186,
+    hoursPlayed: 100,
+    prestige: 0,
+    pmcKdRatio: 1.2,
+    pmcSurvivalRate: 50,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 10,
+  };
+  const validResult = scoreCheater(valid, productionBracket, lateAchievement);
+  assert.equal(hasValidRiskInputs(valid), true);
+  assert.ok((validResult.factors.find((factor) => factor.key === "ach_early")?.points ?? 0) > 0);
+
+  for (const invalid of [
+    { ...valid, pmcKdRatio: Number.NaN },
+    { ...valid, pmcKdRatio: undefined },
+    { ...valid, hoursPlayed: 0 },
+    { ...valid, prestige: Number.NaN },
+    { ...valid, longestWinStreak: Number.NaN },
+  ]) {
+    assert.equal(hasValidRiskInputs(invalid), false);
+    const result = scoreCheater(invalid, productionBracket, lateAchievement);
+    assert.equal(result.score, 0);
+    assert.equal(result.factors.find((factor) => factor.key === "ach_early")?.points ?? 0, 0);
+  }
 });
 
 test("Seasonal rare achievement signal requires reliable current-cycle timing data", () => {

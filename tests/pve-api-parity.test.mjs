@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [profile, cohort, average, progressionAverage, db] = await Promise.all([
+const [profile, cohort, average, progressionAverage, db, radar] = await Promise.all([
   readFile("app/api/player/profile/route.ts", "utf8"),
   readFile("app/api/average/cohort/route.ts", "utf8"),
   readFile("app/api/average/route.ts", "utf8"),
   readFile("app/api/progression/average/route.ts", "utf8"),
   readFile("lib/db.ts", "utf8"),
+  readFile("components/PlayerRadarComparison.tsx", "utf8"),
 ]);
 
 test("PvE profile responses use the PvE portrait, risk, baseline, and snapshot stream", () => {
@@ -39,7 +40,16 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
+  assert.match(db, /if \(strategy === null && \(input\.mode === "regular" \|\| input\.mode === "pve"\)\)/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);
+});
+
+test("shared radar accepts explicit population strategy and one-value population metrics", () => {
+  assert.match(radar, /strategy\?: "matched" \| "population"/);
+  assert.match(radar, /targetN: Math\.max\(20, finiteNonNegative\(rawTargetN\) \? rawTargetN : 20\)/);
+  assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
+  assert.match(radar, /function finiteNonNegative\(value: unknown\): value is number/);
+  assert.doesNotMatch(radar, /average\.value > 0/);
 });
 
 test("PvE average progression has a separate mode cache", () => {
