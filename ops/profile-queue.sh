@@ -47,7 +47,7 @@ run_mode() {
   return 0
 }
 
-run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-arena-profiles.mjs
+run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-arena-profiles.mjs
 run_mode regular dc -e REGULAR_PROFILE_SYNC_RPS=1 -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-regular-profiles.mjs
 run_mode pve dc -e PVE_PROFILE_SYNC_RPS=1 -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 web $node scripts/sync-pve-profiles.mjs
 run_mode seasonal dc -e SEASONAL_FEED_RPS=1 -e SEASONAL_FEED_MAX_RUN_MS=480000 web $node scripts/sync-seasonal-profiles.mjs

@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS arena_risk_evaluations (
 );
 `;
 
-const COUNTER_COLUMNS: Record<keyof ArenaCounters, string> = {
+export const ARENA_COUNTER_COLUMNS: Record<keyof ArenaCounters, string> = {
   matches: "games_count",
   wins: "arena_wins",
   losses: "arena_losses",
@@ -123,7 +123,7 @@ const COUNTER_COLUMNS: Record<keyof ArenaCounters, string> = {
 };
 
 const ARENA_COLUMNS = [
-  "aid", "arena_mode", "hours", ...Object.values(COUNTER_COLUMNS),
+  "aid", "arena_mode", "hours", ...Object.values(ARENA_COUNTER_COLUMNS),
   "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
   "best_arp",
   "upstream_version", "parser_version", "raw_json", "fetched_at",
@@ -161,7 +161,7 @@ export const ARENA_RISK_UPSERT_SQL = `INSERT INTO arena_risk_evaluations
       AND excluded.parser_version = arena_risk_evaluations.parser_version
       AND excluded.evaluated_at >= arena_risk_evaluations.evaluated_at)`;
 
-type ArenaStoredSnapshot = {
+export type ArenaStoredSnapshot = {
   mode: ArenaStoredMode;
   hours: number | null;
   counters: ArenaCounters;
@@ -170,7 +170,7 @@ type ArenaStoredSnapshot = {
   source?: ArenaProfile["overall"]["source"];
 };
 
-function storedSnapshots(profile: ArenaProfile): ArenaStoredSnapshot[] {
+export function arenaStoredSnapshots(profile: ArenaProfile): ArenaStoredSnapshot[] {
   return [
     {
       mode: "overall",
@@ -198,7 +198,7 @@ function valuesFor(profile: ArenaProfile, snapshot: ArenaStoredSnapshot, now: nu
     profile.aid,
     snapshot.mode,
     snapshot.hours,
-    ...Object.keys(COUNTER_COLUMNS).map((key) => snapshot.counters[key as keyof ArenaCounters]),
+    ...Object.keys(ARENA_COUNTER_COLUMNS).map((key) => snapshot.counters[key as keyof ArenaCounters]),
     snapshot.metrics.kd_ratio,
     snapshot.metrics.win_rate,
     snapshot.metrics.headshot_rate,
@@ -244,7 +244,7 @@ export function arenaUpsertStatements(
   profile: ArenaProfile,
   now = Date.now(),
 ): unknown[] {
-  return storedSnapshots(profile).flatMap((snapshot) => {
+  return arenaStoredSnapshots(profile).flatMap((snapshot) => {
     const values = valuesFor(profile, snapshot, now);
     return [
       db.prepare(ARENA_UPSERT_SQL).bind(...values),
@@ -258,7 +258,7 @@ export function upsertArenaSqlite(
   profile: ArenaProfile,
   now = Date.now(),
 ): void {
-  for (const snapshot of storedSnapshots(profile)) {
+  for (const snapshot of arenaStoredSnapshots(profile)) {
     const values = valuesFor(profile, snapshot, now);
     db.prepare(ARENA_UPSERT_SQL).run(...values);
     db.prepare(ARENA_HISTORY_INSERT_SQL).run(...values);

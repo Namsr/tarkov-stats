@@ -9,7 +9,7 @@ const shell = process.platform === 'win32'
 
 test('deploy uses live revision and rolls back build, signal and startup failures', async () => {
   const source = await readFile('ops/deploy.sh', 'utf8');
-  for (const scenario of ['current', 'checkout-ahead', 'build-fail', 'signal', 'start-fail', 'health-fail']) {
+  for (const scenario of ['current', 'checkout-ahead', 'sync-busy', 'build-fail', 'signal', 'start-fail', 'health-fail']) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
       const mock = `
@@ -39,9 +39,11 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         esac
       }
       logger() { echo "logger $*" >> calls; }
+      flock() { if [ "$SCENARIO" = sync-busy ]; then return 1; fi; return 0; }
       sleep() { :; }
       `;
       const script = source.replace('APP=/opt/tarkovstats-auto', () => `APP='${dir.replaceAll('\\','/')}'\n${mock}`)
+        .replace('exec 9>/run/tarkovstats-data-sync.lock', 'exec 9>"$APP/data-sync.lock"')
         .replace('state=/var/lib/tarkovstats-deploy', 'state="$APP/state"');
       const file = join(dir,'deploy.sh');
       await writeFile(file, script.replaceAll('\r\n','\n'));
@@ -49,9 +51,13 @@ test('deploy uses live revision and rolls back build, signal and startup failure
       assert.ifError(result.error);
       const calls=await readFile(join(dir,'calls'),'utf8');
       assert.equal(result.status === 0, ['current','checkout-ahead'].includes(scenario), `${scenario}: ${result.stderr}\n${calls}`);
-      if(scenario==='current') assert.doesNotMatch(calls,/build --build-arg/);
+      if (scenario === 'sync-busy') {
+        assert.equal(result.status, 75);
+        assert.doesNotMatch(calls,/build --build-arg/);
+        assert.doesNotMatch(calls,/git reset --hard/);
+      } else if(scenario==='current') assert.doesNotMatch(calls,/build --build-arg/);
       else assert.match(calls,/build --build-arg SOURCE_REVISION=remote/);
-      if(!['current','checkout-ahead'].includes(scenario)) {
+      if(!['current','checkout-ahead','sync-busy'].includes(scenario)) {
         assert.match(calls,/git reset --hard remote/);
         assert.match(calls,/image tag old-image tarkovstats-web/);
       }

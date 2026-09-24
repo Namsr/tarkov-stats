@@ -74,6 +74,24 @@ GEMINI.md
 !/ops/profile-queue.sh
 !/ops/deploy.sh
 !/ops/systemd/tarkovstats-profile-queue-no-restart.conf
+!/ops/systemd/tarkovstats-profile-queue.service
+!/ops/systemd/tarkovstats-profile-queue.timer
+!/ops/systemd/tarkovstats-arena-index-sync.service
+!/ops/systemd/tarkovstats-arena-index-sync.timer
+!/ops/systemd/tarkovstats-arena-profile-sync.service
+!/ops/systemd/tarkovstats-arena-profile-sync.timer
+!/ops/systemd/tarkovstats-pve-index-sync.service
+!/ops/systemd/tarkovstats-pve-index-sync.timer
+!/ops/systemd/tarkovstats-pve-profile-sync.service
+!/ops/systemd/tarkovstats-pve-profile-sync.timer
+!/ops/systemd/tarkovstats-player-index-sync.service
+!/ops/systemd/tarkovstats-player-index-sync.timer
+!/ops/systemd/tarkovstats-regular-profile-sync.service
+!/ops/systemd/tarkovstats-regular-profile-sync.timer
+!/ops/systemd/tarkovstats-seasonal-index-sync.service
+!/ops/systemd/tarkovstats-seasonal-index-sync.timer
+!/ops/systemd/tarkovstats-seasonal-profile-sync.service
+!/ops/systemd/tarkovstats-seasonal-profile-sync.timer
 
 # local runtime data
 /data/*.db

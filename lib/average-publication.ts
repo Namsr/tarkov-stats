@@ -137,15 +137,17 @@ export async function readAveragePublication<T>(
 export async function markAveragePublicationDirty(
   scope: AveragePublicationScope,
   dirtyAt = Date.now(),
-): Promise<void> {
-  if (!averagePublicationsEnabled()) return;
+): Promise<boolean> {
+  if (!averagePublicationsEnabled()) return true;
   try {
     const db = await openDatabase();
     db.prepare(`INSERT INTO average_publication_state (scope, dirty_at) VALUES (?, ?)
       ON CONFLICT(scope) DO UPDATE SET dirty_at = MAX(COALESCE(average_publication_state.dirty_at, 0), excluded.dirty_at)`)
       .run(scope, dirtyAt);
+    return true;
   } catch (error) {
     console.warn("average publication dirty marker failed: " + safeError(error));
+    return false;
   }
 }
 

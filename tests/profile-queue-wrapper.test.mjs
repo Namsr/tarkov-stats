@@ -13,7 +13,7 @@ test('queue retries only failures, preserves error status and runs one warmup af
   assert.ok(source.indexOf('run_mode arena') < source.indexOf('run_mode regular'));
   assert.ok(source.indexOf('run_mode regular') < source.indexOf('run_mode pve'));
   assert.ok(source.indexOf('run_mode pve') < source.indexOf('run_mode seasonal'));
-  assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
+  assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
   for (const scenario of ['success', 'retry', 'persistent', 'stopped', 'invalid', 'budget']) {
     const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
     try {
@@ -47,6 +47,15 @@ test('queue retries only failures, preserves error status and runs one warmup af
       if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
-  const dropIn = await readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf','utf8');
+  const [dropIn, service, timer] = await Promise.all([
+    readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf', 'utf8'),
+    readFile('ops/systemd/tarkovstats-profile-queue.service', 'utf8'),
+    readFile('ops/systemd/tarkovstats-profile-queue.timer', 'utf8'),
+  ]);
   assert.match(dropIn, /^Restart=no$/m);
+  assert.match(service, /ExecCondition=.*tarkovstats-public-profile-importer/);
+  assert.match(service, /ConditionPathExists=\/usr\/local\/sbin\/tarkovstats-profile-queue/);
+  assert.match(service, /flock \/run\/tarkovstats-data-sync\.lock/);
+  assert.match(service, /\/usr\/local\/sbin\/tarkovstats-profile-queue/);
+  assert.match(timer, /OnCalendar=hourly/);
 });

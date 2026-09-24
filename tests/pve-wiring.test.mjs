@@ -38,9 +38,9 @@ test("PvE systemd units use offset Moscow schedules and the shared writer lock",
   assert.match(profileService, /TimeoutStartSec=14m/);
   assert.match(indexService, /TimeoutStartSec=14h/);
   for (const service of [profileService, indexService]) {
-    assert.match(service, /ConditionPathExists=\/opt\/tarkovstats\/docker-compose\.vps\.yml/);
-    assert.match(service, /WorkingDirectory=\/opt\/tarkovstats/);
-    assert.match(service, /docker compose -f docker-compose\.vps\.yml exec -T web node/);
+    assert.match(service, /ConditionPathExists=\/opt\/tarkovstats-auto\/docker-compose\.vps\.yml/);
+    assert.match(service, /WorkingDirectory=\/opt\/tarkovstats-auto/);
+    assert.match(service, /docker compose -p tarkovstats -f docker-compose\.vps\.yml exec -T web node/);
     assert.match(service, /ExecCondition=\/bin\/sh -c '! \/usr\/bin\/docker container inspect tarkovstats-public-profile-importer/);
     assert.match(service, /\/run\/tarkovstats-data-sync\.lock/);
   }

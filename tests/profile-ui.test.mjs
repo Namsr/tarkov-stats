@@ -801,6 +801,7 @@ test("average dashboard publishes standard variants outside the web process and 
   const warmer = await readFile("scripts/warm-average-cache.mjs", "utf8");
   const dockerfile = await readFile("Dockerfile", "utf8");
   const startup = await readFile("scripts/start-web.mjs", "utf8");
+  const supervisor = await readFile("scripts/supervise-worker.mjs", "utf8");
   const materializer = await readFile("scripts/materialize-average-publications.mjs", "utf8");
   const publication = await readFile("lib/average-publication.ts", "utf8");
   const client = await readFile("lib/client-average-request.ts", "utf8");
@@ -826,7 +827,8 @@ test("average dashboard publishes standard variants outside the web process and 
   assert.doesNotMatch(startup, /warm-average-cache\.mjs/);
   assert.doesNotMatch(startup, /AVERAGE_WARM_BASE_URL/);
   assert.match(startup, /materialize-average-publications\.mjs/);
-  assert.match(startup, /setPriority\(averageMaterializer\.pid, 19\)/);
+  assert.match(startup, /superviseWorker\("average"/);
+  assert.match(supervisor, /priority\(child\.pid, 19\)/);
   assert.doesNotMatch(materializer, /fetch\(|\/api\/average/);
   assert.match(materializer, /arenaProfileSyncActive/);
   assert.match(materializer, /arena_profile_sync_lease/);

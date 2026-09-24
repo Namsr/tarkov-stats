@@ -12,10 +12,20 @@ import {
 } from "./regular-profile-sync-core.mjs";
 import { syncArenaIndex } from "./sync-arena-index.mjs";
 
-const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+const { fetchTarkovJson, parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
+const {
+  ARENA_COUNTER_COLUMNS,
+  arenaStoredSnapshots,
+  upsertArenaSqlite,
+} = await import("../lib/arena/storage.ts");
+const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
+const { markAveragePublicationDirty } = await import("../lib/average-publication.ts");
 // Keep this queue target in lockstep with lib/arena/storage.ts. The collector
 // runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
 const ARENA_PARSER_VERSION = 3;
+const ARENA_V2_PARSER_VERSION = 2;
+const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v3_complete";
+const ARENA_MIGRATION_BATCH_SIZE = 500;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
 const runId = randomUUID();
@@ -29,6 +39,7 @@ const config = {
   ).href,
   secret: process.env.PROFILE_REFRESH_SECRET || "",
   requestsPerSecond: envNumber("ARENA_PROFILE_SYNC_RPS", 2, 0.1, 20),
+  concurrency: envInteger("ARENA_PROFILE_SYNC_CONCURRENCY", 2, 1, 20),
   maxRetries: envInteger("ARENA_PROFILE_SYNC_MAX_RETRIES", 3, 0, 10),
   requestTimeoutMs: envInteger("ARENA_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
   dbBusyTimeoutMs: envInteger("ARENA_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS", 30_000, 10, 300_000),
@@ -41,12 +52,34 @@ const config = {
 };
 config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
+const ARENA_UPSTREAM_MODE_KEYS = {
+  overall: "UnrankedOverall",
+  teamFight: "UnrankedTeamFight",
+  lastHero: "UnrankedLastHero",
+  checkpoint: "UnrankedCheckPoint",
+  blastGang: "UnrankedBlastGang",
+  shootOutDuo: "UnrankedShootOutDuo",
+};
+const ARENA_METRIC_COLUMNS = {
+  kd_ratio: "kd_ratio",
+  win_rate: "win_rate",
+  headshot_rate: "headshot_rate",
+  kills_per_match: "kills_per_match",
+  damage_per_match: "damage_per_match",
+};
+const ARENA_MIGRATION_COLUMNS = [
+  "aid", "arena_mode", "hours", ...Object.values(ARENA_COUNTER_COLUMNS),
+  ...Object.values(ARENA_METRIC_COLUMNS), "best_arp", "upstream_version",
+  "parser_version", "raw_json", "fetched_at",
+];
+
 const db = new DatabaseSync(config.dbPath);
 db.exec(`PRAGMA busy_timeout = ${config.dbBusyTimeoutMs}`);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA synchronous = NORMAL");
 
 let leaseHeld = false;
+let leaseHeartbeatTimer = null;
 let stopping = false;
 let stopReason = null;
 let nextRequestAt = 0;
@@ -57,6 +90,7 @@ main().catch((error) => {
   log("FATAL", { error: message(error) });
   process.exitCode = 1;
 }).finally(async () => {
+  if (leaseHeartbeatTimer) clearInterval(leaseHeartbeatTimer);
   if (leaseHeld) {
     try {
       await withDatabaseBusyRetry(() => db.prepare(
@@ -75,9 +109,21 @@ async function main() {
   initSchema();
   await acquireLease();
   leaseHeld = true;
+  leaseHeartbeatTimer = setInterval(() => {
+    void withDatabaseBusyRetry(() => heartbeat()).catch((error) => {
+      stopping = true;
+      stopReason ??= "lease_error";
+      log("HEARTBEAT_FAILED", { error: message(error) });
+    });
+  }, Math.max(1_000, Math.floor(config.leaseMs / 3)));
+  leaseHeartbeatTimer.unref?.();
 
+  const migration = await migrateEquivalentArenaV2Profiles(startedAt);
+  if (migration.status === "interrupted" || stopping) return;
   const index = await refreshIndexIfDue();
+  if (stopping) return;
   const feed = await loadFeed();
+  if (stopping) return;
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM arena_profile_sync_queue GROUP BY status")
@@ -100,6 +146,7 @@ async function main() {
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.current);
   const summary = {
+    migration,
     index,
     ...feed,
     ...processed,
@@ -114,6 +161,267 @@ async function main() {
   };
   await saveRunMeta(summary);
   log("SUMMARY", summary);
+}
+
+async function migrateEquivalentArenaV2Profiles(startedAt) {
+  if (getMeta(ARENA_V2_MIGRATION_KEY) === "1") {
+    return { status: "already_complete", candidates: 0, migrated: 0, network: 0 };
+  }
+  const currentColumns = new Set(db.prepare("PRAGMA table_info(arena_mode_stats)").all().map((row) => String(row.name)));
+  const history = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_mode_stats_history'"
+  ).get();
+  const historyInfo = history ? db.prepare("PRAGMA table_info(arena_mode_stats_history)").all() : [];
+  const historyColumns = new Set(historyInfo.map((row) => String(row.name)));
+  const historyPrimaryKey = historyInfo.filter((row) => Number(row.pk) > 0)
+    .sort((left, right) => Number(left.pk) - Number(right.pk))
+    .map((row) => String(row.name)).join(",");
+  if (!history || ARENA_MIGRATION_COLUMNS.some((column) => !currentColumns.has(column) || !historyColumns.has(column)) ||
+    historyPrimaryKey !== "aid,arena_mode,upstream_version,parser_version") {
+    return { status: "unsupported_schema", candidates: 0, migrated: 0, network: 0 };
+  }
+
+  const counters = { candidates: 0, migrated: 0, different: 0, invalid: 0, mixed: 0, stale: 0 };
+  const pendingNetwork = [];
+  const equivalent = [];
+  const processedAids = new Set();
+  const selectAids = db.prepare(`SELECT DISTINCT current.aid FROM arena_mode_stats current
+    WHERE current.parser_version = ? AND current.aid > ?
+      AND NOT EXISTS (SELECT 1 FROM excluded_players excluded WHERE excluded.aid = current.aid)
+    ORDER BY current.aid LIMIT ?`);
+  let afterAid = 0;
+  let complete = false;
+
+  const flush = async () => {
+    if (equivalent.length === 0 && pendingNetwork.length === 0) return;
+    const equivalentBatch = equivalent.splice(0);
+    const networkBatch = pendingNetwork.splice(0);
+    const migrated = await writeTransaction(() => {
+      assertLeaseHeld();
+      const verify = db.prepare(`SELECT COUNT(*) AS n FROM arena_mode_stats
+        WHERE aid = ? AND arena_mode = ? AND parser_version = ? AND upstream_version = ?
+          AND fetched_at = ? AND raw_json = ?`);
+      const enqueue = db.prepare(`INSERT INTO arena_profile_sync_queue
+        (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
+        VALUES (?, ?, ?, 'pending', 0, NULL, NULL, NULL, ?)
+        ON CONFLICT(aid) DO UPDATE SET
+          feed_updated_at = MAX(arena_profile_sync_queue.feed_updated_at, excluded.feed_updated_at),
+          schema_version = MAX(arena_profile_sync_queue.schema_version, excluded.schema_version),
+          status = 'pending', attempts = 0, http_status = NULL, error = NULL,
+          last_run_id = NULL, updated_at = excluded.updated_at`);
+      let accepted = 0;
+      for (const item of equivalentBatch) {
+        if (item.rows.some((row) => Number(verify.get(
+          row.aid, row.arena_mode, ARENA_V2_PARSER_VERSION, row.upstream_version, row.fetched_at, row.raw_json
+        ).n) !== 1)) {
+          enqueue.run(
+            Number(item.profile.aid),
+            Math.max(1, ...item.rows.map((row) => Number(row.upstream_version) || 0)),
+            ARENA_PARSER_VERSION,
+            Date.now()
+          );
+          continue;
+        }
+        upsertArenaSqlite(db, item.profile, item.fetchedAt);
+        accepted += 1;
+      }
+      for (const item of networkBatch) {
+        enqueue.run(item.aid, item.feedUpdatedAt, ARENA_PARSER_VERSION, Date.now());
+      }
+      return accepted;
+    });
+    counters.migrated += migrated;
+    counters.stale += equivalentBatch.length - migrated;
+  };
+
+  while (!stopping) {
+    if (Date.now() - startedAt >= config.maxRunMs) break;
+    const aids = selectAids.all(ARENA_V2_PARSER_VERSION, afterAid, ARENA_MIGRATION_BATCH_SIZE);
+    if (aids.length === 0) {
+      const remaining = db.prepare(`SELECT DISTINCT current.aid FROM arena_mode_stats current
+        WHERE current.parser_version = ?
+          AND NOT EXISTS (SELECT 1 FROM excluded_players excluded WHERE excluded.aid = current.aid)`)
+        .all(ARENA_V2_PARSER_VERSION);
+      if (remaining.some((row) => !processedAids.has(Number(row.aid)))) {
+        afterAid = 0;
+        continue;
+      }
+      complete = true;
+      break;
+    }
+    afterAid = Number(aids.at(-1).aid);
+    const placeholders = aids.map(() => "?").join(",");
+    const rows = db.prepare(`SELECT ${ARENA_MIGRATION_COLUMNS.join(", ")}
+      FROM arena_mode_stats WHERE aid IN (${placeholders}) ORDER BY aid, arena_mode`)
+      .all(...aids.map((row) => Number(row.aid)));
+    const grouped = new Map();
+    for (const row of rows) {
+      const aid = Number(row.aid);
+      const group = grouped.get(aid) ?? [];
+      group.push(row);
+      grouped.set(aid, group);
+    }
+    for (const candidate of aids) {
+      const aid = Number(candidate.aid);
+      processedAids.add(aid);
+      const profileRows = grouped.get(aid) ?? [];
+      counters.candidates += 1;
+      const result = classifyArenaV2Rows(profileRows);
+      if (result.kind === "equivalent") {
+        equivalent.push({ ...result, rows: profileRows });
+      } else {
+        if (result.kind === "different") counters.different += 1;
+        else if (result.kind === "mixed") counters.mixed += 1;
+        else counters.invalid += 1;
+        pendingNetwork.push({
+          aid,
+          feedUpdatedAt: Math.max(1, ...profileRows.map((row) => Number(row.upstream_version) || 0)),
+        });
+      }
+      if (equivalent.length + pendingNetwork.length >= ARENA_MIGRATION_BATCH_SIZE) await flush();
+    }
+    await heartbeat();
+  }
+  await flush();
+  if (complete && counters.migrated > 0 && await markAveragePublicationDirty("arena") === false) {
+    complete = false;
+  }
+  const summary = {
+    status: complete ? "complete" : "interrupted",
+    ...counters,
+    network: counters.different + counters.invalid + counters.mixed + counters.stale,
+  };
+  if (complete) {
+    await writeTransaction(() => {
+      assertLeaseHeld();
+      setMeta(ARENA_V2_MIGRATION_KEY, "1");
+    });
+  }
+  log("MIGRATION_SUMMARY", summary);
+  return summary;
+}
+
+function classifyArenaV2Rows(rows) {
+  const expectedModes = new Set(["overall", ...ARENA_MODE_KEYS]);
+  if (!Array.isArray(rows) || rows.length !== expectedModes.size) return { kind: "invalid" };
+  const byMode = new Map(rows.map((row) => [String(row.arena_mode), row]));
+  if (byMode.size !== expectedModes.size || [...expectedModes].some((mode) => !byMode.has(mode))) {
+    return { kind: "invalid" };
+  }
+  if (rows.some((row) => Number(row.parser_version) !== ARENA_V2_PARSER_VERSION)) return { kind: "mixed" };
+  const upstreamVersions = new Set(rows.map((row) => Number(row.upstream_version)));
+  const fetchedAtValues = new Set(rows.map((row) => Number(row.fetched_at)));
+  if (upstreamVersions.size !== 1 || fetchedAtValues.size !== 1) return { kind: "mixed" };
+  const upstreamVersion = Number(upstreamVersions.values().next().value);
+  const fetchedAt = Number(fetchedAtValues.values().next().value);
+  if (!Number.isSafeInteger(upstreamVersion) || upstreamVersion <= 0 ||
+    !Number.isSafeInteger(fetchedAt) || fetchedAt <= 0) {
+    return { kind: "invalid" };
+  }
+
+  const rawByMode = new Map();
+  for (const row of rows) {
+    let raw;
+    try {
+      raw = JSON.parse(String(row.raw_json));
+    } catch {
+      return { kind: "invalid" };
+    }
+    if (!isRecord(raw) || !Object.hasOwn(raw, "sourceCounters") || !isRecord(raw.normalized)) {
+      return { kind: "invalid" };
+    }
+    if (raw.sourceCounters !== null && !isRecord(raw.sourceCounters)) return { kind: "invalid" };
+    if (!storedRowMatchesSnapshot(row, raw.normalized)) return { kind: "invalid" };
+    rawByMode.set(String(row.arena_mode), raw);
+  }
+
+  const overall = byMode.get("overall");
+  const overallHours = overall.hours;
+  if (overallHours !== null && (typeof overallHours !== "number" || !Number.isFinite(overallHours) || overallHours < 0)) {
+    return { kind: "invalid" };
+  }
+  for (const mode of ARENA_MODE_KEYS) {
+    if (byMode.get(mode).hours !== overallHours) return { kind: "invalid" };
+  }
+
+  const aid = Number(overall.aid);
+  if (!Number.isSafeInteger(aid) || aid <= 0) return { kind: "invalid" };
+  const arenaOverAllCounters = Object.fromEntries(Object.entries(ARENA_UPSTREAM_MODE_KEYS).map(
+    ([mode, upstreamKey]) => [upstreamKey, rawByMode.get(mode).sourceCounters]
+  ));
+  const profile = {
+    aid,
+    updated: upstreamVersion,
+    info: { nickname: "Unknown", side: "Unknown", experience: 0, prestigeLevel: 0 },
+    stat: {
+      totalInGameTime: overallHours === null ? undefined : overallHours * 3600,
+      arenaOverAllCounters,
+    },
+  };
+
+  let reparsed;
+  try {
+    reparsed = parseArenaProfileStats(profile).arenaProfile;
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (!reparsed || reparsed.parserVersion !== ARENA_PARSER_VERSION ||
+    reparsed.profileUpdatedAt !== upstreamVersion) return { kind: "invalid" };
+  const upgraded = new Map(arenaStoredSnapshots(reparsed).map((snapshot) => [snapshot.mode, snapshot]));
+  for (const mode of expectedModes) {
+    if (!storedSnapshotsEqual(rawByMode.get(mode).normalized, upgraded.get(mode))) {
+      return { kind: "different" };
+    }
+  }
+  return { kind: "equivalent", profile: reparsed, fetchedAt };
+}
+
+function storedRowMatchesSnapshot(row, snapshot) {
+  if (!validStoredSnapshot(snapshot, row.arena_mode)) return false;
+  if (!sameNullable(row.hours, snapshot.hours) || !sameNullable(row.best_arp, snapshot.bestArp)) return false;
+  for (const [key, column] of Object.entries(ARENA_COUNTER_COLUMNS)) {
+    if (!sameNullable(row[column], snapshot.counters?.[key])) return false;
+  }
+  for (const [key, column] of Object.entries(ARENA_METRIC_COLUMNS)) {
+    if (!sameNullable(row[column], snapshot.metrics?.[key])) return false;
+  }
+  if (row.arena_mode === "overall" && !["upstream", "complete_mode_sum", "unavailable"].includes(snapshot.source)) {
+    return false;
+  }
+  return true;
+}
+
+function storedSnapshotsEqual(left, right) {
+  if (!validStoredSnapshot(left, left?.mode) || !validStoredSnapshot(right, left?.mode)) return false;
+  if (!sameNullable(left.hours, right.hours) || !sameNullable(left.bestArp, right.bestArp)) return false;
+  for (const key of Object.keys(ARENA_COUNTER_COLUMNS)) {
+    if (!sameNullable(left.counters?.[key], right.counters?.[key])) return false;
+  }
+  for (const key of Object.keys(ARENA_METRIC_COLUMNS)) {
+    if (!sameNullable(left.metrics?.[key], right.metrics?.[key])) return false;
+  }
+  return rowOverallSource(left) === rowOverallSource(right);
+}
+
+function rowOverallSource(snapshot) {
+  return snapshot.mode === "overall" ? snapshot.source : null;
+}
+
+function validStoredSnapshot(snapshot, mode) {
+  if (!isRecord(snapshot) || snapshot.mode !== mode ||
+    !Object.hasOwn(snapshot, "hours") || !Object.hasOwn(snapshot, "bestArp") ||
+    !isRecord(snapshot.counters) || !isRecord(snapshot.metrics)) return false;
+  if (Object.keys(ARENA_COUNTER_COLUMNS).some((key) => !Object.hasOwn(snapshot.counters, key))) return false;
+  if (Object.keys(ARENA_METRIC_COLUMNS).some((key) => !Object.hasOwn(snapshot.metrics, key))) return false;
+  return mode !== "overall" || Object.hasOwn(snapshot, "source");
+}
+
+function sameNullable(left, right) {
+  return left === right;
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateConfig() {
@@ -147,7 +455,7 @@ async function refreshIndexIfDue() {
     return { checked: false, previousPollAt };
   }
   try {
-    const result = await syncArenaIndex(db, { url: config.indexUrl });
+    const result = await syncArenaIndex(db, { url: config.indexUrl, beforeWrite: assertLeaseHeld });
     return { checked: true, previousPollAt, ...result };
   } catch (error) {
     log("INDEX_FAILED", { error: message(error), previousPollAt });
@@ -208,6 +516,14 @@ async function heartbeat() {
     "UPDATE arena_profile_sync_lease SET heartbeat_at = ? WHERE id = 1 AND owner = ?"
   ).run(Date.now(), runId));
   if (Number(result.changes) !== 1) throw new Error("Arena profile sync lease was lost");
+}
+
+function assertLeaseHeld() {
+  const lease = db.prepare("SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1").get();
+  const age = Date.now() - Number(lease?.heartbeat_at);
+  if (lease?.owner !== runId || !Number.isFinite(age) || age < 0 || age > config.leaseMs) {
+    throw new Error("Arena profile sync lease was lost");
+  }
 }
 
 function trackedArenaProfiles() {
@@ -376,6 +692,8 @@ function emptyFeedCounters(tracked, error) {
 
 async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, stale: 0, errors: 0 };
+  let admitted = 0;
+  let inFlight = 0;
   const next = db.prepare(`SELECT q.aid, q.feed_updated_at, q.schema_version FROM arena_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
@@ -388,46 +706,97 @@ async function processQueue(startedAt) {
           AND SUM(CASE WHEN p.parser_version >= q.schema_version THEN 1 ELSE 0 END) = 6)
       AND COALESCE(q.last_run_id, '') <> ?
     ORDER BY q.aid`);
+  const claim = db.prepare(`UPDATE arena_profile_sync_queue
+    SET last_run_id = ?, updated_at = ?
+    WHERE aid = ? AND feed_updated_at = ? AND schema_version = ? AND COALESCE(last_run_id, '') <> ?
+      AND EXISTS (SELECT 1 FROM arena_profile_sync_lease
+        WHERE id = 1 AND owner = ? AND heartbeat_at >= ?)`);
   const update = db.prepare(`UPDATE arena_profile_sync_queue
     SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, last_run_id = ?, updated_at = ?
-    WHERE aid = ? AND feed_updated_at = ? AND schema_version = ?`);
-  while (!stopping) {
-    if (Date.now() - startedAt >= config.maxRunMs) {
-      stopping = true;
-      stopReason = "max_run_ms";
-      break;
-    }
-    const row = next.get(runId);
-    if (!row) {
-      stopReason ??= "queue_exhausted";
-      break;
-    }
-    const aid = Number(row.aid);
-    const expectedUpdatedAt = Number(row.feed_updated_at);
-    const schemaVersion = Number(row.schema_version);
-    counters.attempted += 1;
-    let result;
+    WHERE aid = ? AND feed_updated_at = ? AND schema_version = ? AND last_run_id = ?
+      AND EXISTS (SELECT 1 FROM arena_profile_sync_lease
+        WHERE id = 1 AND owner = ? AND heartbeat_at >= ?)`);
+
+  async function worker() {
     try {
-      result = await syncProfile(aid, expectedUpdatedAt, schemaVersion);
+      while (!stopping) {
+        if (Date.now() - startedAt >= config.maxRunMs) {
+          stopping = true;
+          stopReason = "max_run_ms";
+          return;
+        }
+        while (config.maxCompleted !== null && admitted >= config.maxCompleted && !stopping) {
+          if (inFlight === 0) {
+            stopping = true;
+            stopReason = "max_completed";
+            return;
+          }
+          await delay(10);
+        }
+        const row = next.get(runId);
+        if (!row) {
+          stopReason ??= "queue_exhausted";
+          return;
+        }
+        const aid = Number(row.aid);
+        const expectedUpdatedAt = Number(row.feed_updated_at);
+        const schemaVersion = Number(row.schema_version);
+        admitted += 1;
+        const claimedAt = Date.now();
+        const claimed = await withDatabaseBusyRetry(() => claim.run(
+          runId, claimedAt, aid, expectedUpdatedAt, schemaVersion, runId,
+          runId, claimedAt - config.leaseMs
+        ));
+        if (Number(claimed.changes) !== 1) {
+          admitted -= 1;
+          assertLeaseHeld();
+          continue;
+        }
+        inFlight += 1;
+        counters.attempted += 1;
+        let result;
+        try {
+          result = await syncProfile(aid, expectedUpdatedAt, schemaVersion);
+        } catch (error) {
+          if (error?.fatal) throw error;
+          result = { kind: "error", attempts: error?.attempts ?? 1, status: error?.status ?? null, error: message(error) };
+        }
+        const updatedAt = Date.now();
+        const updated = await withDatabaseBusyRetry(() => update.run(
+          result.kind, result.attempts, result.status, result.error ?? null, runId, updatedAt,
+          aid, expectedUpdatedAt, schemaVersion, runId, runId, updatedAt - config.leaseMs
+        ));
+        inFlight -= 1;
+        if (Number(updated.changes) !== 1) {
+          admitted -= 1;
+          assertLeaseHeld();
+          log("CLAIM_LOST", { aid });
+          await heartbeat();
+          continue;
+        }
+        if (result.kind === "completed") counters.completed += 1;
+        else if (result.kind === "not_found") counters.notFound += 1;
+        else if (result.kind === "stale") counters.stale += 1;
+        else counters.errors += 1;
+        if (result.kind !== "completed") admitted -= 1;
+        await heartbeat();
+        if (config.maxCompleted !== null && counters.completed >= config.maxCompleted) {
+          stopping = true;
+          stopReason = "max_completed";
+          return;
+        }
+        if (counters.attempted % config.progressEvery === 0) log("PROGRESS", counters);
+      }
     } catch (error) {
-      if (error?.fatal) throw error;
-      result = { kind: "error", attempts: error?.attempts ?? 1, status: error?.status ?? null, error: message(error) };
-    }
-    if (result.kind === "completed") counters.completed += 1;
-    else if (result.kind === "not_found") counters.notFound += 1;
-    else if (result.kind === "stale") counters.stale += 1;
-    else counters.errors += 1;
-    await withDatabaseBusyRetry(() => update.run(
-      result.kind, result.attempts, result.status, result.error ?? null, runId, Date.now(), aid, expectedUpdatedAt, schemaVersion
-    ));
-    await heartbeat();
-    if (config.maxCompleted !== null && counters.completed >= config.maxCompleted) {
       stopping = true;
-      stopReason = "max_completed";
-      break;
+      stopReason ??= "worker_error";
+      throw error;
     }
-    if (counters.attempted % config.progressEvery === 0) log("PROGRESS", counters);
   }
+
+  const results = await Promise.allSettled(Array.from({ length: config.concurrency }, () => worker()));
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) throw failure.reason;
   return counters;
 }
 
@@ -690,6 +1059,7 @@ async function writeTransaction(work) {
   return withDatabaseBusyRetry(() => {
     db.exec("BEGIN IMMEDIATE");
     try {
+      if (leaseHeld) assertLeaseHeld();
       const result = work();
       db.exec("COMMIT");
       return result;
@@ -702,9 +1072,10 @@ async function writeTransaction(work) {
 
 function isDatabaseBusy(error) { return /database is (?:locked|busy)|SQLITE_BUSY/i.test(message(error)); }
 async function rateLimit() {
-  const now = Date.now();
-  if (nextRequestAt > now) await delay(nextRequestAt - now);
-  nextRequestAt = Math.max(nextRequestAt, Date.now()) + Math.ceil(1000 / config.requestsPerSecond);
+  const startAt = Math.max(nextRequestAt, Date.now());
+  nextRequestAt = startAt + Math.ceil(1000 / config.requestsPerSecond);
+  const waitMs = startAt - Date.now();
+  if (waitMs > 0) await delay(waitMs);
 }
 function retryableError(text, status) { const error = new Error(text); error.status = status; error.retryable = true; return error; }
 function backoff(attempt) { return Math.min(30_000, 1000 * 2 ** (attempt - 1)); }

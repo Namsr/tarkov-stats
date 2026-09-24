@@ -1003,8 +1003,18 @@ export interface BaselineResult {
   metrics: Record<string, MetricBaseline>;
 }
 
+export interface PlayerWriteOptions {
+  leaseOwner?: string;
+  leaseMaxAgeMs?: number;
+}
+
 export interface PlayerStore {
-  upsert(aid: number, stats: ParsedPlayerStats, achievementIds: string[]): Promise<void>;
+  upsert(
+    aid: number,
+    stats: ParsedPlayerStats,
+    achievementIds: string[],
+    options?: PlayerWriteOptions,
+  ): Promise<void>;
   stored(aid: number): Promise<{
     stats: ParsedPlayerStats;
     achievementIds: string[];
@@ -1166,7 +1176,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
       batch: (statements: unknown[]) => rawDb.batch(statements),
     };
     return {
-      async upsert(aid, stats, ids) {
+      async upsert(aid, stats, ids, options = {}) {
+        if (options.leaseOwner) throw new Error("D1 profile lease fencing is unavailable");
         if (await isAidBanned(aid)) return;
         const now = Date.now();
         if (MAX_PLAYERS > 0) {
@@ -1469,6 +1480,7 @@ async function getSqliteDb(): Promise<any | null> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
       sqliteDb = new sqlite.DatabaseSync(file);
+      sqliteDb.exec("PRAGMA busy_timeout = 5000");
       if (!currentSqlitePlayerSchema(sqliteDb)) {
         const hasFavorites = sqliteDb.prepare(
           "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
@@ -1541,7 +1553,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
     const q = (sql: string) => scopePlayerSql(sql, table);
     const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
-      async upsert(aid, stats, ids) {
+      async upsert(aid, stats, ids, options = {}) {
         const now = Date.now();
         if (MAX_PLAYERS > 0) {
           const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
@@ -1575,6 +1587,16 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           if (mode === "arena" && stats.arenaProfile) {
             rawDb.exec("BEGIN IMMEDIATE");
             try {
+              if (options.leaseOwner) {
+                const lease = rawDb.prepare(
+                  "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
+                ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
+                const age = now - Number(lease?.heartbeat_at);
+                const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
+                if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
+                  throw new Error("Arena profile sync lease was lost");
+                }
+              }
               rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
                 .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
               upsertArenaSqlite(rawDb, stats.arenaProfile, now);

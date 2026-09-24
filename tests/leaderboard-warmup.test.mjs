@@ -73,13 +73,13 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
   const candidates = selectWarmupCandidates(players, "s1", new Map([[3, 300]]));
   assert.deepEqual(candidates.map(({ mode, aid }) => [mode, aid]), [
-    ["regular", 1], ["regular", 10], ["pve", 3], ["arena", 5], ["arena", 9], ["pvp-season", 7],
+    ["regular", 1], ["regular", 10], ["pve", 3], ["arena", 5], ["arena", 6], ["arena", 9], ["pvp-season", 7],
   ]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["arena"])
-    .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 9]]);
+    .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 6], ["arena", 9]]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["regular", "arena"], {
     limitPerMode: 1, checkpoint: { modes: { regular: { lastAid: 1 }, arena: { lastAid: 5 } } },
-  }).map(({ mode, aid }) => [mode, aid]), [["regular", 10], ["arena", 9]]);
+  }).map(({ mode, aid }) => [mode, aid]), [["regular", 10], ["arena", 6]]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["regular"], {
     limitPerMode: 1, checkpoint: { modes: { regular: { lastAid: 10 } } },
   }).map(({ aid }) => aid), [1], "cursor wraps instead of dropping earlier failures forever");
@@ -96,7 +96,7 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     request: async (candidate) => { requested.push(candidate.mode); return { kind: "completed", outcome: "ok" }; },
   });
   assert.equal(second.bounded, false);
-  assert.deepEqual(requested, ["regular", "regular", "pve", "arena", "arena", "pvp-season"]);
+  assert.deepEqual(requested, ["regular", "regular", "pve", "arena", "arena", "arena", "pvp-season"]);
 
   let stop = false;
   const stoppedRequests = [];

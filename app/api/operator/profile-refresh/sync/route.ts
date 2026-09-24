@@ -5,8 +5,27 @@ import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { PublicProfileVersionConflictError, pveProfileDecision } from "@/lib/tarkov-api";
 import { ARENA_PARSER_VERSION, persistArenaProfile } from "@/lib/arena/service";
 import { ARENA_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
+import { getArenaBackend } from "@/lib/db";
 
 export const runtime = "nodejs";
+
+async function isCurrentArenaSyncRun(request: Request, body: unknown): Promise<boolean> {
+  const runId = request.headers.get("x-profile-refresh-run-id");
+  if (!runId || typeof body !== "object" || body === null || Array.isArray(body) ||
+    (body as { mode?: unknown }).mode !== "arena") return true;
+  const backend = await getArenaBackend();
+  if (!backend || backend.kind !== "sqlite") return false;
+  const table = backend.db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_lease'"
+  ).get();
+  if (!table) return false;
+  const lease = backend.db.prepare(
+    "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
+  ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
+  const leaseMs = Number(process.env.ARENA_PROFILE_SYNC_LEASE_MS ?? 30 * 60_000);
+  const age = Date.now() - Number(lease?.heartbeat_at);
+  return lease?.owner === runId && Number.isFinite(age) && age >= 0 && age <= leaseMs;
+}
 
 export async function POST(request: Request) {
   const headers = operatorNoStoreHeaders();
@@ -21,6 +40,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON" }, { status: 400, headers });
   }
 
+  if (!(await isCurrentArenaSyncRun(request, body))) {
+    return Response.json({ state: "stale" }, { status: 409, headers });
+  }
+
   try {
     const resolved = await resolveTrackedProfilePayload(body);
     if (resolved.state === "invalid") {
@@ -31,7 +54,14 @@ export async function POST(request: Request) {
     }
 
     if (resolved.payload.mode === "arena") {
-      const arena = await persistArenaProfile(resolved.payload.profile);
+      if (!(await isCurrentArenaSyncRun(request, body))) {
+        return Response.json({ state: "stale" }, { status: 409, headers });
+      }
+      const leaseOwner = request.headers.get("x-profile-refresh-run-id") ?? undefined;
+      const arena = await persistArenaProfile(resolved.payload.profile, {
+        leaseOwner,
+        leaseMaxAgeMs: Number(process.env.ARENA_PROFILE_SYNC_LEASE_MS ?? 30 * 60_000),
+      });
       revalidateTag(ARENA_AVERAGE_CACHE_TAG, "max");
       return Response.json({
         state: "updated",

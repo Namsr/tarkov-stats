@@ -54,13 +54,21 @@ export function parseArenaProfile(profile: PlayerProfile): ArenaProfile {
 }
 
 /** Parses and atomically writes both the legacy envelope and normalized Arena rows. */
-export async function persistArenaProfile(profile: PlayerProfile): Promise<ArenaProfile> {
+export async function persistArenaProfile(
+  profile: PlayerProfile,
+  options: { leaseOwner?: string; leaseMaxAgeMs?: number } = {},
+): Promise<ArenaProfile> {
   const stats = parseArenaProfileStats(profile);
   const arena = stats.arenaProfile;
   if (!arena) throw new Error("Arena profile parsing failed");
   const store = await getStore("arena");
   if (!store) throw new Error("Arena storage unavailable");
-  await store.upsert(profile.aid, stats, profile.achievements ? Object.keys(profile.achievements) : []);
+  await store.upsert(
+    profile.aid,
+    stats,
+    profile.achievements ? Object.keys(profile.achievements) : [],
+    options,
+  );
   await markAveragePublicationDirty("arena");
   return arena;
 }

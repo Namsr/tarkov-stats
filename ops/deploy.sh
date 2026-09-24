@@ -3,6 +3,11 @@
 set -eu
 APP=/opt/tarkovstats-auto
 cd "$APP"
+exec 9>/run/tarkovstats-data-sync.lock
+if ! flock -n 9; then
+  logger -t tarkovstats-deploy "deploy deferred: profile data sync active"
+  exit 75
+fi
 compose() { docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" "$@"; }
 container() { compose ps -q web; }
 healthy() {

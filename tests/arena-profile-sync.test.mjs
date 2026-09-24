@@ -7,11 +7,13 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { parseArenaProfileStats } from "../lib/tarkov-api.ts";
+import { initializeArenaSchema, upsertArenaSqlite } from "../lib/arena/storage.ts";
 
 const execFileAsync = promisify(execFile);
 const secret = "test-secret-that-is-at-least-32-characters";
 
-function launch(dbPath, baseUrl, feedUrl, maxCompleted = null) {
+function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1) {
   return execFileAsync(process.execPath, [
     "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-arena-profiles.mjs",
   ], {
@@ -25,6 +27,7 @@ function launch(dbPath, baseUrl, feedUrl, maxCompleted = null) {
       ARENA_PLAYER_INDEX_URL: new URL("/arena/index.json", feedUrl).href,
       ARENA_PROFILE_SYNC_BASE_URL: baseUrl,
       ARENA_PROFILE_SYNC_RPS: "20",
+      ARENA_PROFILE_SYNC_CONCURRENCY: String(concurrency),
       ARENA_PROFILE_SYNC_MAX_RETRIES: "0",
       ARENA_PROFILE_SYNC_MAX_COMPLETED: maxCompleted == null ? "" : String(maxCompleted),
     },
@@ -333,6 +336,349 @@ test("Arena profile sync caps successful completions, not errors, and resumes", 
   }
 });
 
+test("Arena collector runs bounded concurrent refreshes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-concurrency-"));
+  const dbPath = join(directory, "players.db");
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE arena_mode_stats (
+      aid INTEGER NOT NULL,
+      arena_mode TEXT NOT NULL,
+      upstream_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL,
+      PRIMARY KEY (aid, arena_mode)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+  `);
+  const insert = players.prepare(`
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+    VALUES ('arena', ?, ?, ?, ?)
+  `);
+  for (let aid = 1; aid <= 4; aid += 1) insert.run(aid, `Player${aid}`, `player${aid}`, Date.now());
+
+  let active = 0;
+  let maxActive = 0;
+  let calls = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/arena/updated.json")) {
+      response.end("{}");
+      return;
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    for (const mode of ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
+      players.prepare(`INSERT INTO arena_mode_stats (aid, arena_mode, upstream_version, parser_version)
+        VALUES (?, ?, ?, ?) ON CONFLICT (aid, arena_mode) DO UPDATE SET
+        upstream_version = excluded.upstream_version, parser_version = excluded.parser_version`)
+        .run(body.aid, mode, body.expectedUpdatedAt, body.schemaVersion);
+    }
+    calls += 1;
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    active -= 1;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      state: "updated",
+      profileUpdatedAt: body.expectedUpdatedAt,
+      schemaVersion: body.schemaVersion,
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const capped = summaryFrom((await launch(
+      dbPath, baseUrl, `${baseUrl}/arena/updated.json`, 1, 2
+    )).stdout);
+    assert.equal(capped.completed, 1);
+    assert.equal(capped.stopReason, "max_completed");
+    assert.equal(calls, 1);
+    const run = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 2);
+    const summary = summaryFrom(run.stdout);
+    assert.equal(summary.completed, 3);
+    assert.equal(calls, 4);
+    assert.equal(maxActive, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Arena collector waits for every worker after a fatal error", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-fatal-"));
+  const dbPath = join(directory, "players.db");
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE arena_mode_stats (
+      aid INTEGER NOT NULL,
+      arena_mode TEXT NOT NULL,
+      upstream_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL,
+      PRIMARY KEY (aid, arena_mode)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+    VALUES ('arena', 1, 'One', 'one', 1), ('arena', 2, 'Two', 'two', 1);
+  `);
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/arena/updated.json")) {
+      response.end("{}");
+      return;
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    if (Number(body.aid) === 1) {
+      response.writeHead(401).end("unauthorized");
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      state: "updated",
+      profileUpdatedAt: body.expectedUpdatedAt,
+      schemaVersion: body.schemaVersion,
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const startedAt = Date.now();
+    let failure;
+    try {
+      await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 2);
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure);
+    assert.ok(Date.now() - startedAt >= 140);
+    assert.doesNotMatch(String(failure.stderr ?? ""), /database.*closed|invalid state/i);
+    assert.equal(players.prepare(
+      "SELECT status FROM arena_profile_sync_queue WHERE aid = 2"
+    ).get().status, "completed");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Arena collector migrates equivalent v2 profiles and networks only different results", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v2-migration-"));
+  const dbPath = join(directory, "players.db");
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+  `);
+  initializeArenaSchema(players);
+  players.exec(`
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+  `);
+
+  const group = (matches) => ({ Counters: {
+    GamesCount: matches,
+    ArenaWins: matches ? Math.round(matches * 0.4) : 0,
+    ArenaLoses: matches ? matches - Math.round(matches * 0.4) : 0,
+    Kills: matches * 3,
+    Deaths: matches * 2,
+    Assists: matches,
+    Headshots: matches,
+    DamageDealt: matches * 100,
+    RoundMvpCount: 0,
+    MatchMvpCount: 0,
+    KillsWithoutDeaths: 0,
+    MaxKillsWithoutDeaths: 3,
+    WinStreak: 0,
+    LongestWinStreak: 2,
+    LoseStreak: 0,
+    LongestLoseStreak: 2,
+  } });
+  const profile = (aid, updated, groups, totalInGameTime = 3600) => ({
+    aid,
+    updated,
+    info: { nickname: `Player${aid}`, side: "PMC", experience: 1, prestigeLevel: 0 },
+    stat: { totalInGameTime, arenaOverAllCounters: groups },
+  });
+  const timestamp = 1_800_000_000_000;
+  const equivalent = parseArenaProfileStats(profile(1, timestamp, {
+    UnrankedOverall: group(0),
+    UnrankedTeamFight: group(0),
+    UnrankedLastHero: group(0),
+    UnrankedCheckPoint: group(0),
+    UnrankedBlastGang: group(0),
+    UnrankedShootOutDuo: group(0),
+  })).arenaProfile;
+  const different = parseArenaProfileStats(profile(2, timestamp, {
+    UnrankedTeamFight: group(10),
+    UnrankedLastHero: group(10),
+    UnrankedCheckPoint: group(10),
+    UnrankedBlastGang: group(10),
+  })).arenaProfile;
+  const nullHours = parseArenaProfileStats(profile(3, timestamp, {
+    UnrankedOverall: group(0),
+    UnrankedTeamFight: group(0),
+    UnrankedLastHero: group(0),
+    UnrankedCheckPoint: group(0),
+    UnrankedBlastGang: group(0),
+    UnrankedShootOutDuo: group(0),
+  }, null)).arenaProfile;
+  const excluded = parseArenaProfileStats(profile(4, timestamp, {
+    UnrankedOverall: group(0),
+    UnrankedTeamFight: group(0),
+    UnrankedLastHero: group(0),
+    UnrankedCheckPoint: group(0),
+    UnrankedBlastGang: group(0),
+    UnrankedShootOutDuo: group(0),
+  })).arenaProfile;
+  upsertArenaSqlite(players, equivalent, timestamp - 1000);
+  upsertArenaSqlite(players, different, timestamp - 1000);
+  upsertArenaSqlite(players, nullHours, timestamp - 1000);
+  upsertArenaSqlite(players, excluded, timestamp - 1000);
+  players.prepare("INSERT INTO excluded_players (aid) VALUES (4)").run();
+  players.exec(`
+    UPDATE arena_mode_stats SET parser_version = 2;
+    DELETE FROM arena_mode_stats_history;
+  `);
+  const differentOverall = players.prepare(
+    "SELECT games_count, raw_json FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'overall'"
+  ).get();
+  const differentOverallRaw = JSON.parse(differentOverall.raw_json);
+  differentOverallRaw.normalized.counters.matches = null;
+  players.prepare(
+    "UPDATE arena_mode_stats SET games_count = NULL, raw_json = ? WHERE aid = 2 AND arena_mode = 'overall'"
+  ).run(JSON.stringify(differentOverallRaw));
+  const differentMode = players.prepare(
+    "SELECT games_count, raw_json FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'shootOutDuo'"
+  ).get();
+  const differentModeRaw = JSON.parse(differentMode.raw_json);
+  differentModeRaw.normalized.counters.matches = null;
+  players.prepare(
+    "UPDATE arena_mode_stats SET games_count = NULL, raw_json = ? WHERE aid = 2 AND arena_mode = 'shootOutDuo'"
+  ).run(JSON.stringify(differentModeRaw));
+  const insertIndex = players.prepare(`
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+    VALUES ('arena', ?, ?, ?, ?)
+  `);
+  insertIndex.run(1, "Player1", "player1", Date.now());
+
+  const calls = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/arena/updated.json")) {
+      response.end("{}");
+      return;
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    calls.push(body.aid);
+    upsertArenaSqlite(players, different, timestamp);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      state: "updated",
+      profileUpdatedAt: body.expectedUpdatedAt,
+      schemaVersion: body.schemaVersion,
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    const run = await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`);
+    const summary = summaryFrom(run.stdout);
+    assert.deepEqual(summary.migration, {
+      status: "complete",
+      candidates: 3,
+      migrated: 2,
+      different: 1,
+      invalid: 0,
+      mixed: 0,
+      stale: 0,
+      network: 1,
+    });
+    assert.deepEqual(calls, [2]);
+    assert.equal(summary.attempted, 1);
+    assert.equal(summary.completed, 1);
+    assert.equal(summary.indexCurrent, 1);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 1 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 2 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 3 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 4 AND parser_version = 2"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 1 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 3 AND parser_version = 3"
+    ).get().n, 6);
+    assert.equal(players.prepare(
+      "SELECT fetched_at FROM arena_mode_stats WHERE aid = 1 AND arena_mode = 'overall'"
+    ).get().fetched_at, timestamp - 1000);
+    assert.equal(players.prepare(
+      "SELECT COUNT(*) AS n FROM arena_profile_sync_queue WHERE aid = 1"
+    ).get().n, 0);
+    const second = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
+    assert.equal(second.migration.status, "already_complete");
+    assert.equal(second.attempted, 0);
+    assert.deepEqual(calls, [2]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Arena collector uses the JSON helper, two-request default, and an isolated queue", async () => {
   const [source, packageSource, dockerfile, service, timer, syncRoute, operatorProfile] = await Promise.all([
     readFile("scripts/sync-arena-profiles.mjs", "utf8"),
@@ -350,7 +696,11 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(source, /syncArenaIndex/);
   assert.match(source, /arena_profile_sync_(queue|meta|lease)/);
   assert.match(source, /requestsPerSecond: envNumber\("ARENA_PROFILE_SYNC_RPS", 2,/);
+  assert.match(source, /concurrency: envInteger\("ARENA_PROFILE_SYNC_CONCURRENCY", 2, 1, 20\)/);
   assert.match(source, /ARENA_PROFILE_SYNC_MAX_RUN_MS", 25 \* 60_000, 60_000, 12 \* 60 \* 60_000/);
+  assert.match(source, /migrateEquivalentArenaV2Profiles/);
+  assert.match(source, /classifyArenaV2Rows/);
+  assert.ok(source.indexOf("migrateEquivalentArenaV2Profiles()") < source.indexOf("refreshIndexIfDue()"));
   assert.match(source, /ARENA_PROFILE_SYNC_PROGRESS_EVERY/);
   assert.match(source, /maxCompleted: envOptionalPositiveInteger\("ARENA_PROFILE_SYNC_MAX_COMPLETED"\)/);
   assert.match(source, /arena_player_index/);
@@ -369,6 +719,8 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);
   assert.match(syncRoute, /isOperatorRequest/);
+  assert.match(syncRoute, /isCurrentArenaSyncRun/);
+  assert.match(syncRoute, /x-profile-refresh-run-id/);
   assert.match(syncRoute, /resolved\.payload\.mode === "arena"/);
   assert.match(syncRoute, /persistArenaProfile/);
   assert.match(syncRoute, /schemaVersion: ARENA_PARSER_VERSION/);

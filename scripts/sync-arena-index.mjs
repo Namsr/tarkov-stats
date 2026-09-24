@@ -85,7 +85,7 @@ function currentRowCount(db) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM arena_player_index WHERE mode = 'arena'").get()?.n) || 0;
 }
 
-async function requestIndex(db, url, force) {
+async function requestIndex(db, url, force, signal) {
   const headers = {};
   if (!force) {
     const etag = getMeta(db, "etag");
@@ -93,7 +93,7 @@ async function requestIndex(db, url, force) {
     if (etag) headers["if-none-match"] = etag;
     if (lastModified) headers["if-modified-since"] = lastModified;
   }
-  const response = await fetchTarkovJson(url, { headers, cache: "no-store" });
+  const response = await fetchTarkovJson(url, { headers, cache: "no-store", signal });
   if (response.status === 304) return { unchanged: true };
   if (!response.ok) throw new Error(`Arena index download failed: HTTP ${response.status}`);
   return {
@@ -104,7 +104,8 @@ async function requestIndex(db, url, force) {
   };
 }
 
-async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
+async function consumeIndex(db, response, syncedAt, dryRun, previousRows, beforeWrite, signal) {
+  beforeWrite?.();
   let insert = null;
   if (!dryRun) {
     db.exec("BEGIN IMMEDIATE");
@@ -128,6 +129,7 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
       }
       if (insert) insert.run(aid, nickname, nickname.toLowerCase(), syncedAt);
       inserted += 1;
+      if (inserted % 1000 === 0) beforeWrite?.();
     });
     const reader = response.body?.getReader();
     if (!reader) throw new Error("Arena index response has no readable body");
@@ -135,6 +137,7 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (signal?.aborted) throw signal.reason ?? new Error("Arena index sync aborted");
       bytes += value.byteLength;
       parser.append(decoder.decode(value, { stream: true }));
     }
@@ -146,7 +149,10 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
     if (isClearlyTruncatedIndex(previousRows, rowCount)) {
       throw new Error(`Arena index appears truncated: ${rowCount} rows would replace ${previousRows}`);
     }
-    if (!dryRun) db.exec("COMMIT");
+    if (!dryRun) {
+      beforeWrite?.();
+      db.exec("COMMIT");
+    }
     return { sourceRows, inserted: rowCount, skipped, bytes };
   } catch (error) {
     if (!dryRun) db.exec("ROLLBACK");
@@ -154,7 +160,8 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
   }
 }
 
-function replaceIndex(db, metadata) {
+function replaceIndex(db, metadata, beforeWrite) {
+  beforeWrite?.();
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(`
@@ -178,6 +185,7 @@ function replaceIndex(db, metadata) {
     else deleteMeta(db, "etag");
     if (metadata.lastModified) setMeta(db, "last_modified", metadata.lastModified);
     else deleteMeta(db, "last_modified");
+    beforeWrite?.();
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -189,20 +197,35 @@ export async function syncArenaIndex(db, options = {}) {
   const url = options.url || process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL;
   const force = options.force === true;
   const dryRun = options.dryRun === true;
+  const beforeWrite = typeof options.beforeWrite === "function" ? options.beforeWrite : null;
+  const signal = options.signal ?? AbortSignal.timeout(30_000);
   const startedAt = Date.now();
+  beforeWrite?.();
   initSchema(db);
-  const downloaded = await requestIndex(db, url, force);
+  const downloaded = await requestIndex(db, url, force, signal);
   if (downloaded.unchanged) {
     if (!dryRun) {
-      setMeta(db, "last_poll_at", Date.now());
-      setMeta(db, "last_status", "unchanged");
-      setMeta(db, "duration_ms", Date.now() - startedAt);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        beforeWrite?.();
+        setMeta(db, "last_poll_at", Date.now());
+        setMeta(db, "last_status", "unchanged");
+        setMeta(db, "duration_ms", Date.now() - startedAt);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
     return { unchanged: true, dryRun, url, durationMs: Date.now() - startedAt };
   }
   const syncedAt = Date.now();
-  const result = await consumeIndex(db, downloaded.response, syncedAt, dryRun, currentRowCount(db));
-  if (!dryRun) replaceIndex(db, { ...result, syncedAt, durationMs: Date.now() - startedAt, url, ...downloaded });
+  const result = await consumeIndex(
+    db, downloaded.response, syncedAt, dryRun, currentRowCount(db), beforeWrite, signal
+  );
+  if (!dryRun) replaceIndex(db, {
+    ...result, syncedAt, durationMs: Date.now() - startedAt, url, ...downloaded,
+  }, beforeWrite);
   return { ...result, unchanged: false, dryRun, url, durationMs: Date.now() - startedAt };
 }
 
