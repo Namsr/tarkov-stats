@@ -9,8 +9,6 @@ type BarMetric = "matches" | "kd_ratio" | "win_rate";
 type Outcome = "wins" | "losses";
 
 function purposeFor(metric: BarMetric): ArenaModeBaselinesPurpose {
-  // Матчи: всегда population-среднее по режиму. Matched-когорта отобрана по похожим
-  // matches и дала бы ratio≈1 для всех строк — сравнение режимов стало бы плоским.
   return metric === "matches" ? "matches" : "comparison";
 }
 

@@ -364,7 +364,7 @@ test("Arena mode baselines batch all five modes in one request", async () => {
   assert.ok(lastHero.averageMatches.count >= 20);
 });
 
-test("Arena mode baselines serve the matches tab from population cohorts", async () => {
+test("Arena mode baselines use matched cohorts before population fallback for matches", async () => {
   const response = await getBaselinesBatch(new NextRequest(
     "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=median&purpose=matches",
   ));
@@ -375,7 +375,7 @@ test("Arena mode baselines serve the matches tab from population cohorts", async
   for (const mode of ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
     const cohort = body.cohorts[mode];
     assert.equal(cohort.mode, mode);
-    assert.equal(cohort.strategy, "population");
+    assert.equal(cohort.strategy, mode === "lastHero" ? "population" : "matched");
     assert.equal(cohort.quality, "sufficient");
     assert.ok(cohort.averageMatches.value > 0, `${mode} needs a matches baseline`);
     assert.ok(cohort.averageMatches.count >= 20, `${mode} needs a usable matches sample`);
@@ -412,32 +412,32 @@ test("Arena mode baselines ignore stale publications without averageMatches", as
   publications.resetAveragePublicationForTests();
   try {
     const payload = await getArenaAverage({
-      mode: "teamFight", statistic: "trimmed_mean", dimension: "matches", metric: "players",
+      mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
     });
     assert.ok(payload?.averageMatches.value);
     // Simulate a publication materialized before PR83: valid shape, no matches baseline.
     const legacyPayload: Record<string, unknown> = { ...payload };
     delete legacyPayload.averageMatches;
     await publications.publishAverageScope("arena", new Map([[
-      publications.standardArenaVariant("teamFight", "trimmed_mean"), legacyPayload,
+      publications.standardArenaVariant("lastHero", "trimmed_mean"), legacyPayload,
     ]]), Date.now() - 10, Date.now());
 
     // The matches tab must still get its baseline via live computation.
     const matches = await getBaselinesBatch(new NextRequest(
-      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=teamFight",
+      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=lastHero",
     ));
     assert.equal(matches.status, 200);
     const matchesBody = await matches.json();
     assert.deepEqual(matchesBody.unavailable, []);
-    assert.ok(matchesBody.cohorts.teamFight.averageMatches.value > 0);
+    assert.ok(matchesBody.cohorts.lastHero.averageMatches.value > 0);
 
     // The kd/winrate comparison does not need the matches baseline and may
     // keep serving the stale-but-valid publication payload.
     const comparison = await getBaselinesBatch(new NextRequest(
-      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison&arenaModes=teamFight",
+      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison&arenaModes=lastHero",
     ));
     assert.equal(comparison.status, 200);
-    assert.equal((await comparison.json()).cohorts.teamFight.strategy, "matched");
+    assert.equal((await comparison.json()).cohorts.lastHero.strategy, "population");
   } finally {
     publications.resetAveragePublicationForTests();
     if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
@@ -446,6 +446,45 @@ test("Arena mode baselines ignore stale publications without averageMatches", as
     else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
   }
 });
+
+test("Arena mode baselines ignore insufficient published populations for matches", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average-publications-insufficient.db");
+  publications.resetAveragePublicationForTests();
+  try {
+    const payload = await getArenaAverage({
+      mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
+    });
+    assert.ok(payload);
+    await publications.publishAverageScope("arena", new Map([[
+      publications.standardArenaVariant("lastHero", "trimmed_mean"), {
+        ...payload,
+        sampleN: 1,
+        averageMatches: { value: 1000, count: 1, reason: "insufficient_values" },
+      },
+    ]]), Date.now() - 10, Date.now());
+
+    const response = await getBaselinesBatch(new NextRequest(
+      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=lastHero",
+    ));
+    assert.equal(response.status, 200);
+    const cohort = (await response.json()).cohorts.lastHero;
+    assert.equal(cohort.strategy, "population");
+    assert.equal(cohort.quality, "sufficient");
+    assert.ok(cohort.sampleN >= 20);
+    assert.ok(cohort.averageMatches.count >= 20);
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
+  }
+});
+
 test("Arena mode baselines validate the batch contract", async () => {
   for (const query of [
     "mode=arena&statistic=trimmed_mean",
