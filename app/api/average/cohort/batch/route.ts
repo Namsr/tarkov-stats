@@ -61,9 +61,9 @@ async function populationCohort(
       statistic,
       ARENA_PARSER_VERSION,
     );
-    // Old publications pass validation but carry no matches baseline: only
-    // reuse them when the caller does not need one (kd/winrate comparison).
-    if (cohort && (!needsMatches || readAverageMatches(cohort)?.value != null)) return cohort;
+    const matches = readAverageMatches(cohort);
+    const hasRequiredMatches = matches != null && matches.value !== null && matches.count >= 20;
+    if (cohort && !shouldFallbackToPopulation(cohort) && (!needsMatches || hasRequiredMatches)) return cohort;
   }
   // Same LRU key shape as GET /api/average, so batch and single requests share entries.
   const dynamicKey = JSON.stringify(["arena", mode, statistic, "matches", "players", null, null, null, null]);
@@ -83,6 +83,7 @@ async function comparisonCohort(
   aid: number,
   mode: ArenaModeKey,
   statistic: ArenaStatistic,
+  needsMatches: boolean,
 ): Promise<ArenaCohortResult | null> {
   // Same LRU key as GET /api/average/cohort, so batch and single requests share entries.
   const loaded = await loadDynamicAverage(
@@ -92,7 +93,7 @@ async function comparisonCohort(
   const cohort = loaded.value;
   if (!cohort) return null;
   if (!shouldFallbackToPopulation(cohort)) return cohort;
-  return (await populationCohort(aid, mode, statistic, false)) ?? cohort;
+  return (await populationCohort(aid, mode, statistic, needsMatches)) ?? cohort;
 }
 
 async function batchResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
@@ -119,9 +120,12 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
     const batchStarted = timing.now();
     const entries = await Promise.all(modes.map(async (mode) => {
       try {
-        const cohort = selectedPurpose === "matches"
-          ? await populationCohort(aid, mode, statistic, true)
-          : await comparisonCohort(aid, mode, statistic);
+        const cohort = await comparisonCohort(
+          aid,
+          mode,
+          statistic,
+          selectedPurpose === "matches",
+        );
         return [mode, cohort] as const;
       } catch {
         return [mode, null] as const;
