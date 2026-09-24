@@ -102,7 +102,10 @@ function regularRiskBaselineFor(stats, excludeAid) {
   }
   const source = sourceFor("regular");
   const modeWhere = source.modeWhere.replace(/ AND $/, "");
-  const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(stats, percent));
+  const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor({
+    hours: stats.hoursPlayed,
+    pmcRaids: stats.pmcRaids,
+  }, percent));
   const cutoff = Date.now() - 90 * 86_400_000;
   const common = [
     ...(modeWhere ? [modeWhere] : []),
@@ -118,7 +121,7 @@ function regularRiskBaselineFor(stats, excludeAid) {
     `SUM(CASE WHEN p.hours >= ? AND p.hours <= ? AND p.pmc_raids >= ? AND p.pmc_raids <= ? THEN 1 ELSE 0 END) AS count_${percent}`
   ).join(", ");
   const countRow = playersDb.prepare(`SELECT ${countColumns} FROM ${source.table} p WHERE ${common}`)
-    .get(...commonParams, ...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]));
+    .get(...ranges.flatMap((range) => [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max]), ...commonParams);
   const counts = Object.fromEntries(COMPARISON_COHORT_PERCENTAGES.map((percent) => [
     percent,
     Number(countRow?.[`count_${percent}`] ?? 0),
