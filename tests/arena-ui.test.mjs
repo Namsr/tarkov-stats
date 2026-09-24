@@ -458,3 +458,157 @@ test("Arena radar keeps translated side labels inside the viewBox", () => {
   assert.match(radar, /<tspan key=\{line\} x=\{labelX\}/);
   assert.match(radar, /dominantBaseline=\{label\.y > CY \+ 4 \? "hanging" : undefined\}/);
 });
+
+test("Arena bars center the log scale on the average player", async () => {
+  const { arenaBarPosition, arenaBarPositionFromRatio } = await loadArenaUi();
+  assert.equal(arenaBarPositionFromRatio(1), 50);
+  const twice = arenaBarPositionFromRatio(2);
+  assert.ok(Math.abs(twice - 69) < 0.5, `2x should sit near 69%, got ${twice}`);
+  const tenfold = arenaBarPositionFromRatio(10);
+  assert.ok(tenfold > 85 && tenfold < 90, `10x should compress below the edge, got ${tenfold}`);
+  // Symmetry around the average: half and double mirror each other.
+  const half = arenaBarPositionFromRatio(0.5);
+  assert.ok(Math.abs(twice + half - 100) < 1e-9);
+  assert.ok(arenaBarPositionFromRatio(0.99) < 50 && arenaBarPositionFromRatio(1.01) > 50);
+  // Degenerate inputs never crash the bar: non-positive clamps to zero, missing to null.
+  assert.equal(arenaBarPositionFromRatio(0), 0);
+  assert.equal(arenaBarPositionFromRatio(-2), 0);
+  assert.equal(arenaBarPositionFromRatio(null), null);
+  assert.equal(arenaBarPositionFromRatio(undefined), null);
+  assert.equal(arenaBarPositionFromRatio(Number.NaN), null);
+  assert.equal(arenaBarPositionFromRatio(Number.POSITIVE_INFINITY), null);
+  assert.equal(arenaBarPosition(100, 50), twice);
+  assert.equal(arenaBarPosition(0, 50), 0);
+  assert.equal(arenaBarPosition(null, 50), null);
+  assert.equal(arenaBarPosition(100, null), null);
+  assert.equal(arenaBarPosition(100, 0), null);
+  assert.equal(arenaBarPosition(100, -5), null);
+  assert.equal(arenaBarPosition(Number.NaN, 50), null);
+});
+
+test("Arena mode bars read per-mode baselines conservatively", async () => {
+  const {
+    ARENA_MODE_KEYS,
+    arenaCohortMatchesBaseline,
+    arenaMetricBaseline,
+    readAverageMatches,
+    toArenaPopulationCohort,
+  } = await loadArenaUi();
+  assert.deepEqual([...ARENA_MODE_KEYS], ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]);
+  const metrics = Object.fromEntries([
+    "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
+  ].map((metric) => [metric, { value: 1.5, count: 34, reason: null }]));
+  const cohort = (overrides = {}) => ({
+    aid: 17,
+    mode: "teamFight",
+    strategy: "matched",
+    statistic: "trimmed_mean",
+    target: { hours: 100, matches: 100 },
+    percent: 30,
+    bounds: { hours: { min: 70, max: 130 }, matches: { min: 70, max: 130 } },
+    sampleN: 34,
+    required: 20,
+    quality: "sufficient",
+    reason: null,
+    metrics: structuredClone(metrics),
+    averageMatches: { value: 120, count: 34, reason: null },
+    ...overrides,
+  });
+
+  assert.equal(arenaMetricBaseline(cohort(), "kd_ratio"), 1.5);
+  assert.equal(arenaMetricBaseline(cohort(), "win_rate"), 1.5);
+  // Anything below the evidence bar means no marker, never a zero baseline.
+  assert.equal(arenaMetricBaseline({ ...cohort(), quality: "unavailable" }, "kd_ratio"), null);
+  assert.equal(arenaMetricBaseline({ ...cohort(), sampleN: 12 }, "kd_ratio"), null);
+  assert.equal(arenaMetricBaseline(cohort({ metrics: { ...structuredClone(metrics), kd_ratio: { value: 0, count: 34, reason: null } } }), "kd_ratio"), null);
+  assert.equal(arenaMetricBaseline(cohort({ metrics: { ...structuredClone(metrics), kd_ratio: { value: 1.5, count: 9, reason: "insufficient_values" } } }), "kd_ratio"), null);
+  assert.equal(arenaMetricBaseline(cohort({ metrics: { ...structuredClone(metrics), kd_ratio: { value: null, count: 0, reason: "no_valid_values" } } }), "kd_ratio"), null);
+  assert.equal(arenaMetricBaseline(null, "kd_ratio"), null);
+
+  assert.equal(arenaCohortMatchesBaseline(cohort()), 120);
+  assert.equal(arenaCohortMatchesBaseline({ ...cohort(), quality: "unavailable" }), null);
+  assert.equal(arenaCohortMatchesBaseline({ ...cohort(), sampleN: 12 }), null);
+  assert.equal(arenaCohortMatchesBaseline(cohort({ averageMatches: { value: 0, count: 34, reason: null } })), null);
+  assert.equal(arenaCohortMatchesBaseline(cohort({ averageMatches: { value: 120, count: 9, reason: "insufficient_values" } })), null);
+  assert.equal(arenaCohortMatchesBaseline(cohort({ averageMatches: null })), null);
+  assert.equal(arenaCohortMatchesBaseline(null), null);
+
+  // Old publications/caches without averageMatches parse as missing, not zero.
+  assert.equal(readAverageMatches(null), null);
+  assert.equal(readAverageMatches({}), null);
+  assert.equal(readAverageMatches({ averageMatches: { value: null, count: 0 } }), null);
+  assert.deepEqual(readAverageMatches({ averageMatches: { value: 120, count: 34, reason: null } }), {
+    value: 120, count: 34, reason: null,
+  });
+  assert.deepEqual(readAverageMatches({ averageMatches: { value: 120, count: 5 } }), {
+    value: 120, count: 5, reason: "insufficient_values",
+  });
+
+  // The population wrapper carries averageMatches through when present.
+  const average = {
+    mode: "arena",
+    schemaVersion: 2,
+    filterIdentity: {
+      mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
+      minHours: null, maxHours: null, minMatches: null, maxMatches: null,
+    },
+    sampleN: 34,
+    metrics,
+    buckets: [],
+  };
+  assert.equal(toArenaPopulationCohort(average, 17, "lastHero", "trimmed_mean", 2).averageMatches, null);
+  assert.deepEqual(toArenaPopulationCohort(
+    { ...average, averageMatches: { value: 140, count: 34, reason: null } },
+    17, "lastHero", "trimmed_mean", 2,
+  ).averageMatches, { value: 140, count: 34, reason: null });
+});
+
+test("Arena mode bars load all baselines in one batch request", async () => {
+  const { ARENA_MODE_KEYS, loadArenaModeBaselines, toArenaCohort } = await loadArenaUi();
+  const metrics = Object.fromEntries([
+    "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
+  ].map((metric) => [metric, { value: 1.5, count: 34, reason: null }]));
+  const cohorts = Object.fromEntries(ARENA_MODE_KEYS.map((mode) => [mode, {
+    aid: 17, mode, strategy: "matched", statistic: "trimmed_mean",
+    target: { hours: 100, matches: 100 }, percent: 30,
+    bounds: { hours: { min: 70, max: 130 }, matches: { min: 70, max: 130 } },
+    sampleN: 34, required: 20, quality: "sufficient", reason: null,
+    metrics: structuredClone(metrics),
+    averageMatches: { value: 120, count: 34, reason: null },
+  }]));
+  for (const cohort of Object.values(cohorts)) assert.ok(toArenaCohort(cohort));
+
+  const requests = [];
+  const full = await loadArenaModeBaselines(
+    17, "trimmed_mean", "comparison", new AbortController().signal,
+    async (input) => {
+      requests.push(String(input));
+      return Response.json({ cohorts });
+    },
+  );
+  assert.deepEqual(requests, [
+    "/api/average/cohort/batch?mode=arena&aid=17&statistic=trimmed_mean&purpose=comparison",
+  ]);
+  assert.deepEqual(full.unavailable, []);
+  assert.equal(full.cohorts.teamFight.metrics.kd_ratio.value, 1.5);
+
+  const partial = await loadArenaModeBaselines(
+    17, "trimmed_mean", "matches", new AbortController().signal,
+    async (input) => {
+      requests.push(String(input));
+      return Response.json({ cohorts: { ...cohorts, blastGang: null } });
+    },
+  );
+  assert.deepEqual(requests.at(-1), "/api/average/cohort/batch?mode=arena&aid=17&statistic=trimmed_mean&purpose=matches");
+  assert.deepEqual(partial.unavailable, ["blastGang"]);
+  assert.equal(partial.cohorts.blastGang, null);
+
+  await assert.rejects(loadArenaModeBaselines(
+    17, "trimmed_mean", "comparison", new AbortController().signal,
+    async () => new Response("{}", { status: 503 }),
+  ), /baselines/);
+  await assert.rejects(loadArenaModeBaselines(
+    17, "trimmed_mean", "comparison", new AbortController().signal,
+    async () => Response.json({}),
+  ), /baselines/);
+});

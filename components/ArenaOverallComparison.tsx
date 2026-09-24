@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { loadArenaPopulationCohort, shouldFallbackToPopulation, toArenaCohort } from "@/components/arena-ui";
+import { loadArenaPopulationCohort, shouldFallbackToPopulation, toArenaCohort, arenaBarPositionFromRatio } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
 import type {
   ArenaCohortResult,
@@ -111,15 +111,12 @@ export default function ArenaOverallComparison({
           </div>
         </div>
         <div className="arena-comparison-track" role="img" aria-label={`${row.label}: ${format(row.a, row.digits, row.percent)}; ${t("radar.series.average")}: ${format(row.baseline, row.digits, row.percent)}${compareFavorite ? `; ${favoriteName || t("radar.series.favorite")}: ${format(row.b, row.digits, row.percent)}` : ""}`}>
-          {ratio != null && <span className="arena-comparison-fill" style={{ width: `${Math.max(0, Math.min(100, ratio * 50))}%` }} />}
+          {(() => { const width = arenaBarPositionFromRatio(ratio); return width == null ? null : <span className="arena-comparison-fill" style={{ width: `${width}%` }} />; })()}
           {row.baseline != null && <span className="arena-comparison-average" aria-hidden="true" />}
-          {favoriteRatio != null && <span className="arena-comparison-favorite" style={{ left: `${Math.max(0, Math.min(100, favoriteRatio * 50))}%` }} aria-hidden="true" />}
+          {(() => { const left = arenaBarPositionFromRatio(favoriteRatio); return left == null ? null : <span className="arena-comparison-favorite" style={{ left: `${left}%` }} aria-hidden="true" />; })()}
         </div>
-        {(ratio != null && ratio > 2 || favoriteRatio != null && favoriteRatio > 2) && <p className="arena-comparison-overflow">{t("arena.combat.overRange", { name: ratio != null && ratio > 2 ? playerName || t("radar.series.player") : favoriteName || t("radar.series.favorite") })}</p>}
       </div>;
     })}
-    <div className="arena-comparison-axis" aria-hidden="true"><span>0×</span><span>1×</span><span>2×</span></div>
-    <p className="arena-combat-footnote">{t("arena.combat.fixedAverage")}</p>
     {!loading && !error && <p className="arena-combat-footnote">{cohortReady
       ? t(cohort?.strategy === "population" ? "arena.radar.populationReady" : "arena.radar.matchedReady", { n: cohort?.sampleN.toLocaleString(lang) ?? "0", percent: cohort?.percent ?? 30 })
       : t("arena.radar.insufficient", { n: cohort?.sampleN ?? 0, target: required })}</p>}

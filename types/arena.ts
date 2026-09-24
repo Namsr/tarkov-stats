@@ -119,6 +119,8 @@ export interface ArenaAverageResult {
   coverage: Record<ArenaMetricKey, number>;
   bounds: { hours: ArenaRangeBounds; matches: ArenaRangeBounds };
   metrics: Record<ArenaMetricKey, ArenaMetricValue>;
+  /** Среднее число матчей (games_count) среди пиров — для вкладки "Матчи" снизу. */
+  averageMatches: ArenaMetricValue;
   buckets: ArenaAverageBucket[];
   population: {
     scannedAccounts: number;
@@ -137,6 +139,8 @@ interface ArenaCohortBase {
   quality: "sufficient" | "unavailable";
   reason: "target_unavailable" | "insufficient_cohort" | null;
   metrics: Record<ArenaMetricKey, ArenaMetricValue>;
+  /** Среднее число матчей среди пиров когорты. Старые кэши могут не иметь поля — читать через хелпер. */
+  averageMatches?: ArenaMetricValue | null;
 }
 
 export interface ArenaMatchedCohortResult extends ArenaCohortBase {

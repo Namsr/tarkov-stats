@@ -927,3 +927,33 @@ test("Arena parser version gates analytics, equal-version parser upgrades win, a
     check.close();
   }
 });
+
+test("Arena averages expose averageMatches for mode bars", async () => {
+  resetArenaData();
+  for (let aid = 1; aid <= 25; aid += 1) await save(profile(aid, { games: 40 }));
+  const average = await getArenaAverage({ mode: "teamFight", statistic: "trimmed_mean" });
+  assert.equal(average?.sampleN, 25);
+  assert.equal(average?.averageMatches.count, 25);
+  assert.equal(average?.averageMatches.value, 40);
+  assert.equal(average?.averageMatches.reason, null);
+
+  const cohort = await getArenaCohort(1, "teamFight", "trimmed_mean");
+  assert.equal(cohort?.quality, "sufficient");
+  assert.equal(cohort?.strategy, "matched");
+  assert.equal(cohort?.averageMatches.count, 24);
+  assert.equal(cohort?.averageMatches.value, 40);
+  assert.equal(cohort?.averageMatches.reason, null);
+
+  // Below the evidence bar the value stays null: bars render without a
+  // marker instead of pinning a bogus zero baseline.
+  resetArenaData();
+  for (let aid = 1; aid <= 5; aid += 1) await save(profile(aid, { games: 40 }));
+  const sparse = await getArenaAverage({ mode: "teamFight", statistic: "trimmed_mean" });
+  assert.equal(sparse?.sampleN, 5);
+  assert.equal(sparse?.averageMatches.count, 5);
+  assert.equal(sparse?.averageMatches.value, 40);
+  const sparseCohort = await getArenaCohort(1, "teamFight", "trimmed_mean");
+  assert.equal(sparseCohort?.quality, "unavailable");
+  assert.equal(sparseCohort?.reason, "insufficient_cohort");
+  assert.equal(sparseCohort?.averageMatches.value, null);
+});

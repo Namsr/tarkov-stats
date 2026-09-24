@@ -301,6 +301,24 @@ export function arenaMetricValue(value: ArenaModeStats | ArenaOverallStats | nul
   return value?.metrics?.[metric] ?? null;
 }
 
+/**
+ * Логарифмическая позиция бара, как в шестиугольнике (regular + ArenaRadar):
+ * средний (ratio=1) ровно 50%, большие значения сжимаются и никогда не упираются в 100%.
+ * 2× ≈69%, 10× ≈87%. Совпадает с homeRadarRatio*100.
+ */
+export function arenaBarPositionFromRatio(ratio: number | null | undefined): number | null {
+  if (ratio == null || !Number.isFinite(ratio)) return null;
+  if (ratio <= 0) return 0;
+  const position = (0.5 + Math.atan(Math.log(ratio)) / Math.PI) * 100;
+  return Math.max(0, Math.min(100, position));
+}
+
+export function arenaBarPosition(value: number | null | undefined, baseline: number | null | undefined): number | null {
+  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || baseline <= 0) return null;
+  if (value <= 0) return 0;
+  return arenaBarPositionFromRatio(value / baseline);
+}
+
 export function arenaCounterValue(value: ArenaModeStats | ArenaOverallStats | null | undefined, key: keyof ArenaCounters): number | null {
   return value?.counters?.[key] ?? null;
 }
@@ -373,7 +391,31 @@ export function toArenaPopulationCohort(
     quality: average.sampleN >= 20 ? "sufficient" : "unavailable",
     reason: average.sampleN >= 20 ? null : "insufficient_cohort",
     metrics: average.metrics,
+    averageMatches: readAverageMatches(average),
   };
+}
+
+/** Старые кэши/публикации могут не иметь averageMatches — тогда null, без падения. */
+export function readAverageMatches(value: { averageMatches?: unknown } | null | undefined): ArenaCohortResult["averageMatches"] {
+  if (!value || typeof value !== "object") return null;
+  const item = (value as Record<string, unknown>).averageMatches;
+  if (!isRecord(item)) return null;
+  const rawValue = (item as Record<string, unknown>).value;
+  const rawCount = (item as Record<string, unknown>).count;
+  const parsedValue = typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue >= 0 ? rawValue : null;
+  const parsedCount = typeof rawCount === "number" && Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : 0;
+  if (parsedValue == null && parsedCount === 0) return null;
+  return { value: parsedValue, count: parsedCount, reason: parsedValue != null && parsedCount >= 20 ? null : parsedCount === 0 ? "no_valid_values" : "insufficient_values" };
+}
+
+/** Базовое число матчей для вкладки "Матчи": значение когорты, если достаточно данных. */
+export function arenaCohortMatchesBaseline(cohort: ArenaCohortResult | null): number | null {
+  if (!cohort || cohort.quality !== "sufficient") return null;
+  const required = Math.max(20, cohort.required ?? 20);
+  if (cohort.sampleN < required) return null;
+  const item = readAverageMatches(cohort);
+  if (!item || item.value == null || !(item.value > 0) || item.count < 20) return null;
+  return item.value;
 }
 
 export async function loadArenaPopulationCohort(
@@ -399,6 +441,56 @@ export async function loadArenaPopulationCohort(
 export function shouldFallbackToPopulation(cohort: ArenaCohortResult): boolean {
   if (cohort.quality === "sufficient" && cohort.sampleN >= Math.max(20, cohort.required)) return false;
   return cohort.reason === "insufficient_cohort";
+}
+
+/**
+ * Per-mode baseline for the kd_ratio/winrate mode bars: the matched (or
+ * population-fallback) cohort mean. Zero/negative means no marker on purpose:
+ * a bar position is a ratio against the baseline and is undefined there.
+ */
+export function arenaMetricBaseline(cohort: ArenaCohortResult | null, metric: "kd_ratio" | "win_rate"): number | null {
+  if (!cohort || cohort.quality !== "sufficient") return null;
+  const required = Math.max(20, cohort.required ?? 20);
+  if (cohort.sampleN < required) return null;
+  const item = cohort.metrics[metric];
+  if (!item || item.value == null || !(item.value > 0) || item.count < 20) return null;
+  return item.value;
+}
+
+export type ArenaModeBaselinesPurpose = "matches" | "comparison";
+
+export interface ArenaModeBaselines {
+  cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>>;
+  /** Modes the batch had no cohort for (publication warming, target missing). */
+  unavailable: ArenaModeKey[];
+}
+
+/**
+ * All five per-mode cohorts in ONE request. Replaces the 5×cohort (+5×fallback)
+ * fan-out in ArenaModeBars: the server resolves matched→population fallback
+ * inline, so the worst case drops from ~10 HTTP round-trips to 1.
+ */
+export async function loadArenaModeBaselines(
+  aid: number,
+  statistic: ArenaStatistic,
+  purpose: ArenaModeBaselinesPurpose,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ArenaModeBaselines> {
+  const query = new URLSearchParams({ mode: "arena", aid: String(aid), statistic, purpose });
+  const response = await fetchImpl(`/api/average/cohort/batch?${query}`, { signal });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error("baselines");
+  const raw = isRecord(body) && isRecord(body.cohorts) ? body.cohorts : null;
+  if (!raw) throw new Error("baselines");
+  const cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>> = {};
+  const unavailable: ArenaModeKey[] = [];
+  for (const mode of ARENA_MODE_KEYS) {
+    const cohort = toArenaCohort(raw[mode]);
+    cohorts[mode] = cohort;
+    if (!cohort) unavailable.push(mode);
+  }
+  return { cohorts, unavailable };
 }
 
 function looksLikeCohort(value: unknown): value is ArenaCohortResult {

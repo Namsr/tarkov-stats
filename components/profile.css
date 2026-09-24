@@ -218,10 +218,11 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-arena-bar[aria-pressed="true"], .profile-arena-bar:hover { color: var(--foreground); }
 .profile-arena-bar__name { font-size: 16px; font-weight: 500; }
 .profile-arena-bar strong { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; color: var(--foreground); }
-.profile-arena-bar__track { height: 13px; background: var(--input-bg); border-radius: 3px; overflow: hidden; }
+.profile-arena-bar__track { position: relative; height: 13px; background: var(--input-bg); border-radius: 3px; }
 .profile-arena-bar__fill { height: 100%; display: flex; border-radius: 3px; overflow: hidden; }
 .profile-arena-bar__fill i { display: block; flex-shrink: 0; height: 100%; background: var(--profile-positive); }
 .profile-arena-bar__fill i[data-outcome="losses"] { background: var(--profile-other); }
+.profile-arena-bar__average { position: absolute; left: 50%; top: 50%; width: 2px; height: 22px; background: var(--foreground); transform: translate(-50%, -50%); box-shadow: 0 0 0 3px var(--background); pointer-events: none; }
 .profile-arena-bar-legend { justify-content: flex-end; margin-top: 18px; font-size: 13px; }
 .profile-arena-bar-legend i.is-wins { border-color: var(--profile-positive); }
 .profile-arena-bar-legend i.is-losses { border-color: var(--profile-other); }

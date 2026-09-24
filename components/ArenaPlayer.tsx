@@ -453,7 +453,7 @@ export default function ArenaPlayer({ aid }: Props) {
           <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}:${profile.profileUpdatedAt}:${profile.fetchedAt}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
         </section>
       <ArenaDetailedStatistics profile={profile} scope={selectedMode} risk={risk} rating={tsRating} />
-      <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} />
+      <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} aid={numericAid} statistic={statistic} />
     </div>
     {error && <p className="profile-chart-notice" role="status">{error}</p>}
   </main>;
