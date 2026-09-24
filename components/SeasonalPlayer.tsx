@@ -245,7 +245,35 @@ export default function SeasonalPlayer({
           throw new Error(t("seasonal.profileUnavailable"));
         }
         if (cancelled || generation !== requestGeneration.current) return null;
-        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        const initialRisk = body.viewModel?.risk ?? body.risk ?? null;
+        setServerRisk(initialRisk);
+        if (initialRisk == null) {
+          setTimeout(() => {
+            if (cancelled || generation !== requestGeneration.current) return;
+            const retryParams = new URLSearchParams({
+              aid: String(aid),
+              mode: "seasonal",
+              cycle: cycleId,
+              refresh: "1",
+            });
+            void loadPlayerProfileResponse<SeasonalProfileResponse>(
+              `/api/player/profile?${retryParams}`,
+              { force: true },
+            ).then(({ ok: retryOk, body: retryBody }) => {
+              if (
+                !retryOk ||
+                !retryBody.profile ||
+                retryBody.identity?.aid !== aid ||
+                retryBody.identity?.mode !== "seasonal" ||
+                retryBody.identity?.cycleId !== cycleId ||
+                cancelled ||
+                generation !== requestGeneration.current
+              ) return;
+              const retryRisk = retryBody.viewModel?.risk ?? retryBody.risk ?? null;
+              if (retryRisk != null) setServerRisk(retryRisk);
+            }).catch(() => undefined);
+          }, 2_000);
+        }
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(body.profile));
         setSkillItems(skillsFromViewModel(body.viewModel));
         setMasteryItems(masteryFromViewModel(body.viewModel));

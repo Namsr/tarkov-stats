@@ -44,6 +44,14 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
 });
 
+test("seasonal profiles retry unavailable risk after background evaluation", async () => {
+  const source = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  assert.match(source, /const initialRisk = body\.viewModel\?\.risk \?\? body\.risk \?\? null/);
+  assert.match(source, /setTimeout\(\(\) => \{[\s\S]*?refresh: "1"/);
+  assert.match(source, /const retryRisk = retryBody\.viewModel\?\.risk \?\? retryBody\.risk \?\? null/);
+  assert.match(source, /if \(retryRisk != null\) setServerRisk\(retryRisk\)/);
+});
+
 test("missing mode keeps the profile shell without mounting data sections", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   const unavailableStart = source.indexOf("if (modeUnavailable)");
