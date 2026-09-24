@@ -53,6 +53,7 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
   assert.match(source, /pollSeasonalRisk\(/);
   assert.match(source, /\/api\/player\/risk\?\$\{params\}/);
   assert.match(source, /cache: "no-store"/);
+  assert.match(source, /if \(!body\.risk\) continue;/);
   assert.match(route, /getRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
   assert.match(route, /scoreVersion === riskScoreVersion\(mode, cycleId\)/);
 });

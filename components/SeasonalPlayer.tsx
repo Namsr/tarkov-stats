@@ -175,13 +175,13 @@ async function pollSeasonalRisk(input: {
       const response = await fetch(`/api/player/risk?${params}`, { cache: "no-store" });
       if (!response.ok) continue;
       const body = await response.json() as SeasonalRiskResponse;
+      if (!input.isCurrent()) return;
       if (
-        !body.risk ||
         body.identity?.aid !== input.aid ||
         body.identity?.mode !== "seasonal" ||
-        body.identity?.cycleId !== input.cycleId ||
-        !input.isCurrent()
+        body.identity?.cycleId !== input.cycleId
       ) return;
+      if (!body.risk) continue;
       input.onRisk(body.risk);
       return;
     } catch {
