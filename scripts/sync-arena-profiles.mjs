@@ -22,7 +22,10 @@ const { markAveragePublicationDirty } = await import("../lib/average-publication
 // Keep this queue target in lockstep with lib/arena/storage.ts. The collector
 // runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
 const ARENA_PARSER_VERSION = 4;
+const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V3_PARSER_VERSION = 3;
+const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v4_complete";
+const ARENA_V2_PUBLICATION_KEY = "offline_v2_to_v4_publication_pending";
 const ARENA_V3_MIGRATION_KEY = "offline_v3_to_v4_complete";
 const ARENA_V3_PUBLICATION_KEY = "offline_v3_to_v4_publication_pending";
 const ARENA_DYNAMIC_CACHE_VERSION_KEY = "dynamic_cache_version";
@@ -119,8 +122,10 @@ async function main() {
   }, Math.max(1_000, Math.floor(config.leaseMs / 3)));
   leaseHeartbeatTimer.unref?.();
 
-  const migration = await migrateOfflineArenaV3Profiles(startedAt);
-  if (migration.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
+  const migrationV2 = await migrateOfflineArenaV2Profiles(startedAt);
+  if (migrationV2.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
+  const migrationV3 = await migrateOfflineArenaV3Profiles(startedAt);
+  if (migrationV3.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const index = await refreshIndexIfDue(startedAt);
   if (stopping || runBudgetExpired(startedAt)) return;
   let feed;
@@ -153,7 +158,11 @@ async function main() {
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.current);
   const summary = {
-    migration,
+    migration: migrationV3,
+    migrations: {
+      v2: migrationV2,
+      v3: migrationV3,
+    },
     index,
     ...feed,
     ...processed,
@@ -170,8 +179,31 @@ async function main() {
   log("SUMMARY", summary);
 }
 
+async function migrateOfflineArenaV2Profiles(startedAt) {
+  return migrateOfflineArenaProfiles(startedAt, {
+    parserVersion: ARENA_V2_PARSER_VERSION,
+    migrationKey: ARENA_V2_MIGRATION_KEY,
+    publicationKey: ARENA_V2_PUBLICATION_KEY,
+    classify: classifyArenaV2Rows,
+  });
+}
+
 async function migrateOfflineArenaV3Profiles(startedAt) {
-  if (getMeta(ARENA_V3_MIGRATION_KEY) === "1") {
+  return migrateOfflineArenaProfiles(startedAt, {
+    parserVersion: ARENA_V3_PARSER_VERSION,
+    migrationKey: ARENA_V3_MIGRATION_KEY,
+    publicationKey: ARENA_V3_PUBLICATION_KEY,
+    classify: classifyArenaV3Rows,
+  });
+}
+
+async function migrateOfflineArenaProfiles(startedAt, {
+  parserVersion,
+  migrationKey,
+  publicationKey,
+  classify,
+}) {
+  if (getMeta(migrationKey) === "1") {
     return { status: "already_complete", candidates: 0, migrated: 0, network: 0 };
   }
   const currentColumns = new Set(db.prepare("PRAGMA table_info(arena_mode_stats)").all().map((row) => String(row.name)));
@@ -219,7 +251,7 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
       let accepted = 0;
       for (const item of recoverableBatch) {
         if (item.rows.some((row) => Number(verify.get(
-          row.aid, row.arena_mode, ARENA_V3_PARSER_VERSION, row.upstream_version, row.fetched_at, row.raw_json
+          row.aid, row.arena_mode, parserVersion, row.upstream_version, row.fetched_at, row.raw_json
         ).n) !== 1)) {
           enqueue.run(
             Number(item.profile.aid),
@@ -236,7 +268,7 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
         enqueue.run(item.aid, item.feedUpdatedAt, ARENA_PARSER_VERSION, Date.now());
       }
       if (accepted > 0) {
-        setMeta(ARENA_V3_PUBLICATION_KEY, "1");
+        setMeta(publicationKey, "1");
         setMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY, String(Number(getMeta(ARENA_DYNAMIC_CACHE_VERSION_KEY) || 0) + 1));
       }
       return accepted;
@@ -247,12 +279,12 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
 
   while (!stopping) {
     if (Date.now() - startedAt >= config.maxRunMs) break;
-    const aids = selectAids.all(ARENA_V3_PARSER_VERSION, afterAid, ARENA_MIGRATION_BATCH_SIZE);
+    const aids = selectAids.all(parserVersion, afterAid, ARENA_MIGRATION_BATCH_SIZE);
     if (aids.length === 0) {
       const remaining = db.prepare(`SELECT DISTINCT current.aid FROM arena_mode_stats current
         WHERE current.parser_version = ?
           AND NOT EXISTS (SELECT 1 FROM excluded_players excluded WHERE excluded.aid = current.aid)`)
-        .all(ARENA_V3_PARSER_VERSION);
+        .all(parserVersion);
       if (remaining.some((row) => !processedAids.has(Number(row.aid)))) {
         afterAid = 0;
         continue;
@@ -277,7 +309,7 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
       processedAids.add(aid);
       const profileRows = grouped.get(aid) ?? [];
       counters.candidates += 1;
-      const result = classifyArenaV3Rows(profileRows);
+      const result = classify(profileRows);
       if (result.kind === "recoverable") {
         recoverable.push({ ...result, rows: profileRows });
       } else {
@@ -294,7 +326,7 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
   }
   if (!stopping && !runBudgetExpired(startedAt)) await flush();
   else complete = false;
-  const publicationRequired = complete && (counters.migrated > 0 || getMeta(ARENA_V3_PUBLICATION_KEY) === "1");
+  const publicationRequired = complete && (counters.migrated > 0 || getMeta(publicationKey) === "1");
   if (publicationRequired && await markAveragePublicationDirty("arena") === false) {
     complete = false;
   }
@@ -306,22 +338,30 @@ async function migrateOfflineArenaV3Profiles(startedAt) {
   if (complete) {
     await writeTransaction(() => {
       assertLeaseHeld();
-      setMeta(ARENA_V3_MIGRATION_KEY, "1");
-      deleteMeta(ARENA_V3_PUBLICATION_KEY);
+      setMeta(migrationKey, "1");
+      deleteMeta(publicationKey);
     });
   }
   log("MIGRATION_SUMMARY", summary);
   return summary;
 }
 
+function classifyArenaV2Rows(rows) {
+  return classifyArenaRows(rows, ARENA_V2_PARSER_VERSION);
+}
+
 function classifyArenaV3Rows(rows) {
+  return classifyArenaRows(rows, ARENA_V3_PARSER_VERSION);
+}
+
+function classifyArenaRows(rows, parserVersion) {
   const expectedModes = new Set(["overall", ...ARENA_MODE_KEYS]);
   if (!Array.isArray(rows) || rows.length !== expectedModes.size) return { kind: "invalid" };
   const byMode = new Map(rows.map((row) => [String(row.arena_mode), row]));
   if (byMode.size !== expectedModes.size || [...expectedModes].some((mode) => !byMode.has(mode))) {
     return { kind: "invalid" };
   }
-  if (rows.some((row) => Number(row.parser_version) !== ARENA_V3_PARSER_VERSION)) return { kind: "mixed" };
+  if (rows.some((row) => Number(row.parser_version) !== parserVersion)) return { kind: "mixed" };
   const upstreamVersions = new Set(rows.map((row) => Number(row.upstream_version)));
   const fetchedAtValues = new Set(rows.map((row) => Number(row.fetched_at)));
   if (upstreamVersions.size !== 1 || fetchedAtValues.size !== 1) return { kind: "mixed" };
