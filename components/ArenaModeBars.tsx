@@ -1,22 +1,119 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaModeKey, type ArenaStoredMode } from "@/types/arena";
+import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaModeKey, type ArenaStoredMode, type ArenaStatistic, type ArenaCohortResult } from "@/types/arena";
+import { arenaBarPosition, arenaCohortMatchesBaseline, loadArenaPopulationCohort, shouldFallbackToPopulation, toArenaCohort, toArenaPopulationCohort } from "@/components/arena-ui";
 
 type BarMetric = "matches" | "kd_ratio" | "win_rate";
 type Outcome = "wins" | "losses";
 
-export default function ArenaModeBars({ profile, selected, onSelect }: {
+function metricBaseline(cohort: ArenaCohortResult | null, metric: "kd_ratio" | "win_rate"): number | null {
+  if (!cohort || cohort.quality !== "sufficient") return null;
+  const required = Math.max(20, cohort.required ?? 20);
+  if (cohort.sampleN < required) return null;
+  const item = cohort.metrics[metric];
+  if (!item || item.value == null || !(item.value > 0) || item.count < 20) return null;
+  return item.value;
+}
+
+async function fetchMatchedWithFallback(
+  aid: number, mode: ArenaModeKey, statistic: ArenaStatistic, signal: AbortSignal,
+): Promise<ArenaCohortResult | null> {
+  const query = new URLSearchParams({ mode: "arena", aid: String(aid), arenaMode: mode, statistic });
+  const response = await fetch(`/api/average/cohort?${query}`, { signal, cache: "no-store" });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error("cohort");
+  const result = toArenaCohort(body);
+  if (!result) throw new Error("cohort");
+  if (!shouldFallbackToPopulation(result)) return result;
+  return await loadArenaPopulationCohort(aid, mode, statistic, body.schemaVersion, signal) ?? result;
+}
+
+async function fetchPopulationBaseline(
+  aid: number, mode: ArenaModeKey, statistic: ArenaStatistic, signal: AbortSignal,
+): Promise<ArenaCohortResult | null> {
+  const query = new URLSearchParams({ mode: "arena", arenaMode: mode, statistic, publicationOnly: "1" });
+  const response = await fetch(`/api/average?${query}`, { signal });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) return null;
+  // Валидируем относительно собственной schemaVersion ответа — отдельного matched-запроса для матчей нет.
+  return toArenaPopulationCohort(body, aid, mode, statistic, body?.schemaVersion);
+}
+
+export default function ArenaModeBars({ profile, selected, onSelect, aid, statistic }: {
   profile: ArenaProfile; selected: ArenaStoredMode; onSelect: (mode: ArenaModeKey) => void;
+  aid: number; statistic: ArenaStatistic;
 }) {
   const { t, lang } = useI18n();
   const [metric, setMetric] = useState<BarMetric>("matches");
   const [active, setActive] = useState<{ mode: ArenaModeKey; outcome: Outcome; x: number; y: number } | null>(null);
+  const [cohorts, setCohorts] = useState<Partial<Record<ArenaModeKey, ArenaCohortResult | null>>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const cacheRef = useRef(new Map<string, ArenaCohortResult | null>());
   const rootRef = useRef<HTMLDivElement>(null), tipRef = useRef<HTMLDivElement>(null);
   const value = (mode: ArenaModeKey) => metric === "matches" ? profile.modes[mode].counters.matches : profile.modes[mode].metrics[metric];
   const max = metric === "win_rate" ? 100 : Math.max(1, ...ARENA_MODE_KEYS.map((mode) => value(mode) ?? 0));
   const number = (v: number | null, digits = 0) => v == null || !Number.isFinite(v) ? "—" : v.toLocaleString(lang, { maximumFractionDigits: digits });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let activeRequest = true;
+    // Кэш по aid+режиму+статистике+типу базы, чтобы переключение вкладок не дергало API повторно.
+    const cacheKey = (mode: ArenaModeKey, kind: "matched" | "population") => `${aid}:${mode}:${statistic}:${kind}`;
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const entries = await Promise.all(ARENA_MODE_KEYS.map(async (mode) => {
+          try {
+            if (metric === "matches") {
+              // Матчи: всегда population-среднее по режиму. Matched-когорта отобрана по похожим
+              // matches и дала бы ratio≈1 для всех строк — сравнение режимов стало бы плоским.
+              const key = cacheKey(mode, "population");
+              if (cacheRef.current.has(key)) return [mode, cacheRef.current.get(key) ?? null] as const;
+              const cohort = await fetchPopulationBaseline(aid, mode, statistic, controller.signal);
+              cacheRef.current.set(key, cohort);
+              return [mode, cohort] as const;
+            }
+            const key = cacheKey(mode, "matched");
+            if (cacheRef.current.has(key)) return [mode, cacheRef.current.get(key) ?? null] as const;
+            const cohort = await fetchMatchedWithFallback(aid, mode, statistic, controller.signal);
+            cacheRef.current.set(key, cohort);
+            return [mode, cohort] as const;
+          } catch {
+            return [mode, null] as const;
+          }
+        }));
+        if (!activeRequest) return;
+        setCohorts(Object.fromEntries(entries));
+        if (entries.every(([, cohort]) => cohort == null)) setError(t("arena.radar.error"));
+      } catch {
+        if (activeRequest) {
+          setCohorts({});
+          setError(t("arena.radar.error"));
+        }
+      } finally {
+        if (activeRequest) setLoading(false);
+      }
+    })();
+    return () => {
+      activeRequest = false;
+      controller.abort();
+    };
+  }, [aid, statistic, metric, t]);
+
+  const baselineFor = (mode: ArenaModeKey): number | null => {
+    const cohort = cohorts[mode] ?? null;
+    if (metric === "matches") return arenaCohortMatchesBaseline(cohort);
+    return metricBaseline(cohort, metric);
+  };
+  const baselineText = (mode: ArenaModeKey) => {
+    const b = baselineFor(mode);
+    return b == null ? t("common.notAvailable") : metric === "win_rate" ? `${number(b, 1)}%` : number(b, metric === "kd_ratio" ? 2 : 0);
+  };
+  const hasAnyBaseline = ARENA_MODE_KEYS.some((mode) => baselineFor(mode) != null);
 
   function show(mode: ArenaModeKey, outcome: Outcome, event: { currentTarget: HTMLElement; clientX?: number; clientY?: number }) {
     const root = event.currentTarget.closest<HTMLElement>(".profile-arena-bars");
@@ -38,19 +135,25 @@ export default function ArenaModeBars({ profile, selected, onSelect }: {
     <div className="profile-collection__heading"><h2 className="section-heading">{t("arena.byMode")}</h2>
       <div className="profile-segments" role="group" aria-label={t("home.chartMetric")}>{(["matches", "kd_ratio", "win_rate"] as const).map((key) => <button key={key} type="button" aria-pressed={metric === key} onClick={() => { setMetric(key); setActive(null); }}>{t(key === "matches" ? "arena.counter.matches" : "arena.metric." + key)}</button>)}</div>
     </div>
+    {(loading || error) && <p className="profile-chart-notice" role="status">{error || t("arena.radar.loading")}</p>}
+    {!loading && !error && hasAnyBaseline && <div className="arena-bars-legend" aria-hidden="true"><span><i className="arena-bars-average-key" />{t("arena.combat.averageMarker")}</span></div>}
     <div ref={rootRef} className="profile-arena-bars" onPointerLeave={() => setActive(null)}>
       {ARENA_MODE_KEYS.map((mode) => {
         const v = value(mode), counters = profile.modes[mode].counters;
-        const width = v != null && Number.isFinite(v) ? Math.max(0, Math.min(100, v / max * 100)) : 0;
+        const baseline = baselineFor(mode);
+        const pos = baseline != null ? arenaBarPosition(v, baseline) : null;
+        // Редкий кейс без базы (нет population): старый max-масштаб без черты, чтобы бар не пустовал.
+        const fallbackWidth = v != null && Number.isFinite(v) ? Math.max(0, Math.min(100, v / max * 100)) : 0;
+        const width = pos ?? fallbackWidth;
         return <button key={mode} type="button" className="profile-arena-bar" data-mode={mode} aria-pressed={selected === mode}
-          aria-label={`${t("arena.mode." + mode)}: ${number(v, metric === "kd_ratio" ? 2 : 1)}${metric === "win_rate" ? "%" : ""}${metric === "matches" ? `, ${t("arena.counter.wins")} ${number(counters.wins)}, ${t("arena.counter.losses")} ${number(counters.losses)}` : ""}`}
+          aria-label={`${t("arena.mode." + mode)}: ${number(v, metric === "kd_ratio" ? 2 : 1)}${metric === "win_rate" ? "%" : ""}${metric === "matches" ? `, ${t("arena.counter.wins")} ${number(counters.wins)}, ${t("arena.counter.losses")} ${number(counters.losses)}` : ""}; ${t("radar.series.average")}: ${baselineText(mode)}`}
           aria-keyshortcuts={metric === "matches" ? "ArrowLeft ArrowRight Escape" : undefined}
           onClick={() => onSelect(mode)} onFocus={(event) => { if (metric === "matches") show(mode, "wins", event); }} onBlur={() => setActive(null)}
           onKeyDown={(event) => { if (event.key === "Escape") setActive(null); if (metric === "matches" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) { event.preventDefault(); show(mode, event.key === "ArrowLeft" ? "wins" : "losses", event); } }}>
           <span className="profile-arena-bar__name">{t("arena.mode." + mode)}</span>
           <span className="profile-arena-bar__track" aria-hidden="true"><span className="profile-arena-bar__fill" style={{ width: `${width}%` }}>
             {metric === "matches" ? (["wins", "losses"] as const).map((outcome) => <i key={outcome} data-outcome={outcome} style={{ width: `${counters.matches && counters[outcome] != null ? Math.max(0, Math.min(100, counters[outcome] / counters.matches * 100)) : 0}%` }} onPointerEnter={(event) => show(mode, outcome, event)} onPointerMove={(event) => show(mode, outcome, event)} onClick={(event) => { event.stopPropagation(); show(mode, outcome, event); }} />) : <i style={{ width: "100%" }} />}
-          </span></span>
+          </span>{baseline != null && <span className="profile-arena-bar__average" />}</span>
           <strong>{number(v, metric === "kd_ratio" ? 2 : metric === "win_rate" ? 1 : 0)}{v != null && metric === "win_rate" ? "%" : ""}</strong>
         </button>;
       })}

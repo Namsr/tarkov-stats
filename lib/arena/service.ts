@@ -246,6 +246,7 @@ export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAv
     arenaPopulation(backend),
   ]);
   const metrics = metricSummary(rows, filterIdentity.statistic);
+  const matchValues = rows.map((row) => numberOrNull(row.games_count)).filter((value): value is number => value !== null && value >= 0);
   return {
     filterIdentity,
     sampleN: rows.length,
@@ -255,6 +256,7 @@ export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAv
     ])) as Record<ArenaMetricKey, number>,
     bounds: { hours: bounds(rows, "hours"), matches: bounds(rows, "games_count") },
     metrics,
+    averageMatches: matchesSummaryFromValues(matchValues, filterIdentity.statistic, 0),
     buckets: averageBuckets(rows, filterIdentity.dimension, filterIdentity.statistic),
     population,
   };
@@ -265,10 +267,23 @@ function proportionalBounds(center: number, percent: 10 | 15 | 20 | 30): ArenaRa
   return { min: Math.max(0, center * (1 - ratio)), max: center * (1 + ratio) };
 }
 
+function emptyMatches(): ArenaAverageResult["averageMatches"] {
+  return { value: null, count: 0, reason: "no_valid_values" };
+}
+
+function matchesSummaryFromValues(values: number[], kind: ArenaStatistic, minimum = 20): ArenaAverageResult["averageMatches"] {
+  return {
+    value: values.length >= minimum ? statistic(values, kind) : null,
+    count: values.length,
+    reason: values.length === 0 ? "no_valid_values" : values.length < minimum ? "insufficient_values" : null,
+  };
+}
+
 function emptyCohort(aid: number, mode: ArenaStoredMode, statistic: ArenaStatistic): ArenaCohortResult {
   const common = {
     aid, statistic, target: { hours: null, matches: null }, percent: 30 as const,
     sampleN: 0, required: 20, quality: "unavailable" as const, reason: "target_unavailable" as const, metrics: emptyMetrics(),
+    averageMatches: emptyMatches(),
   };
   if (mode === "overall") {
     return {
@@ -320,7 +335,7 @@ async function arenaCohortSummary(
   backend: Backend,
   input: Parameters<typeof arenaWhere>[0],
   kind: ArenaStatistic,
-): Promise<{ sampleN: number; metrics: Record<ArenaMetricKey, ArenaMetricValue> }> {
+): Promise<{ sampleN: number; metrics: Record<ArenaMetricKey, ArenaMetricValue>; averageMatches: ArenaAverageResult["averageMatches"] }> {
   const condition = arenaWhere(input);
   const groups = await arenaMetricSamples(backend,
     `SELECT arena_mode, ${ARENA_METRIC_KEYS.join(", ")} FROM arena_mode_stats ${condition.where}`,
@@ -334,7 +349,12 @@ async function arenaCohortSummary(
       reason: values.length === 0 ? "no_valid_values" : values.length >= 20 ? null : "insufficient_values",
     };
   }
-  return { sampleN: group?.sampleN ?? 0, metrics };
+  const matchCondition = arenaWhere(input);
+  const matchRows = await all(backend,
+    `SELECT games_count FROM arena_mode_stats ${matchCondition.where}`,
+    matchCondition.params);
+  const matchValues = matchRows.map((row) => numberOrNull(row.games_count)).filter((value): value is number => value !== null && value >= 0);
+  return { sampleN: group?.sampleN ?? matchRows.length, metrics, averageMatches: matchesSummaryFromValues(matchValues, kind) };
 }
 
 function arenaRangeCountQuery(aid: number, mode: ArenaStoredMode, hours: number, matches: number) {
@@ -389,6 +409,7 @@ export async function getArenaCohort(
       quality: summary.sampleN >= 20 ? "sufficient" : "unavailable",
       reason: summary.sampleN >= 20 ? null : "insufficient_cohort",
       metrics: summary.metrics,
+      averageMatches: summary.averageMatches,
     };
   }
   if (targetHours === null || targetMatches === null) return emptyCohort(aid, arenaMode, statisticKind);
@@ -428,6 +449,7 @@ export async function getArenaCohort(
     quality: "sufficient",
     reason: null,
     metrics: summary.metrics,
+    averageMatches: summary.averageMatches,
   };
 }
 

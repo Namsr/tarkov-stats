@@ -301,6 +301,24 @@ export function arenaMetricValue(value: ArenaModeStats | ArenaOverallStats | nul
   return value?.metrics?.[metric] ?? null;
 }
 
+/**
+ * Логарифмическая позиция бара, как в шестиугольнике (regular + ArenaRadar):
+ * средний (ratio=1) ровно 50%, большие значения сжимаются и никогда не упираются в 100%.
+ * 2× ≈69%, 10× ≈87%. Совпадает с homeRadarRatio*100.
+ */
+export function arenaBarPositionFromRatio(ratio: number | null | undefined): number | null {
+  if (ratio == null || !Number.isFinite(ratio)) return null;
+  if (ratio <= 0) return 0;
+  const position = (0.5 + Math.atan(Math.log(ratio)) / Math.PI) * 100;
+  return Math.max(0, Math.min(100, position));
+}
+
+export function arenaBarPosition(value: number | null | undefined, baseline: number | null | undefined): number | null {
+  if (value == null || baseline == null || !Number.isFinite(value) || !Number.isFinite(baseline) || baseline <= 0) return null;
+  if (value <= 0) return 0;
+  return arenaBarPositionFromRatio(value / baseline);
+}
+
 export function arenaCounterValue(value: ArenaModeStats | ArenaOverallStats | null | undefined, key: keyof ArenaCounters): number | null {
   return value?.counters?.[key] ?? null;
 }
@@ -373,7 +391,31 @@ export function toArenaPopulationCohort(
     quality: average.sampleN >= 20 ? "sufficient" : "unavailable",
     reason: average.sampleN >= 20 ? null : "insufficient_cohort",
     metrics: average.metrics,
+    averageMatches: readAverageMatches(average),
   };
+}
+
+/** Старые кэши/публикации могут не иметь averageMatches — тогда null, без падения. */
+export function readAverageMatches(value: { averageMatches?: unknown } | null | undefined): ArenaCohortResult["averageMatches"] {
+  if (!value || typeof value !== "object") return null;
+  const item = (value as Record<string, unknown>).averageMatches;
+  if (!isRecord(item)) return null;
+  const rawValue = (item as Record<string, unknown>).value;
+  const rawCount = (item as Record<string, unknown>).count;
+  const parsedValue = typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue >= 0 ? rawValue : null;
+  const parsedCount = typeof rawCount === "number" && Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : 0;
+  if (parsedValue == null && parsedCount === 0) return null;
+  return { value: parsedValue, count: parsedCount, reason: parsedValue != null && parsedCount >= 20 ? null : parsedCount === 0 ? "no_valid_values" : "insufficient_values" };
+}
+
+/** Базовое число матчей для вкладки "Матчи": значение когорты, если достаточно данных. */
+export function arenaCohortMatchesBaseline(cohort: ArenaCohortResult | null): number | null {
+  if (!cohort || cohort.quality !== "sufficient") return null;
+  const required = Math.max(20, cohort.required ?? 20);
+  if (cohort.sampleN < required) return null;
+  const item = readAverageMatches(cohort);
+  if (!item || item.value == null || !(item.value > 0) || item.count < 20) return null;
+  return item.value;
 }
 
 export async function loadArenaPopulationCohort(
