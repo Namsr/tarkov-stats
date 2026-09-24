@@ -443,6 +443,56 @@ export function shouldFallbackToPopulation(cohort: ArenaCohortResult): boolean {
   return cohort.reason === "insufficient_cohort";
 }
 
+/**
+ * Per-mode baseline for the kd_ratio/winrate mode bars: the matched (or
+ * population-fallback) cohort mean. Zero/negative means no marker on purpose:
+ * a bar position is a ratio against the baseline and is undefined there.
+ */
+export function arenaMetricBaseline(cohort: ArenaCohortResult | null, metric: "kd_ratio" | "win_rate"): number | null {
+  if (!cohort || cohort.quality !== "sufficient") return null;
+  const required = Math.max(20, cohort.required ?? 20);
+  if (cohort.sampleN < required) return null;
+  const item = cohort.metrics[metric];
+  if (!item || item.value == null || !(item.value > 0) || item.count < 20) return null;
+  return item.value;
+}
+
+export type ArenaModeBaselinesPurpose = "matches" | "comparison";
+
+export interface ArenaModeBaselines {
+  cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>>;
+  /** Modes the batch had no cohort for (publication warming, target missing). */
+  unavailable: ArenaModeKey[];
+}
+
+/**
+ * All five per-mode cohorts in ONE request. Replaces the 5×cohort (+5×fallback)
+ * fan-out in ArenaModeBars: the server resolves matched→population fallback
+ * inline, so the worst case drops from ~10 HTTP round-trips to 1.
+ */
+export async function loadArenaModeBaselines(
+  aid: number,
+  statistic: ArenaStatistic,
+  purpose: ArenaModeBaselinesPurpose,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ArenaModeBaselines> {
+  const query = new URLSearchParams({ mode: "arena", aid: String(aid), statistic, purpose });
+  const response = await fetchImpl(`/api/average/cohort/batch?${query}`, { signal });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error("baselines");
+  const raw = isRecord(body) && isRecord(body.cohorts) ? body.cohorts : null;
+  if (!raw) throw new Error("baselines");
+  const cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>> = {};
+  const unavailable: ArenaModeKey[] = [];
+  for (const mode of ARENA_MODE_KEYS) {
+    const cohort = toArenaCohort(raw[mode]);
+    cohorts[mode] = cohort;
+    if (!cohort) unavailable.push(mode);
+  }
+  return { cohorts, unavailable };
+}
+
 function looksLikeCohort(value: unknown): value is ArenaCohortResult {
   return isRecord(value) && isRecord(value.metrics) && isRecord(value.target) && "sampleN" in value;
 }

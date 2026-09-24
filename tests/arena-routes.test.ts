@@ -35,6 +35,7 @@ const { getArenaAverage } = await import("../lib/arena/service.ts");
 const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
+const { GET: getBaselinesBatch } = await import("../app/api/average/cohort/batch/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
 const { GET: getFavoriteStats } = await import("../app/api/favorites/stats/route.ts");
 const { ARENA_METRIC_KEYS, toArenaPopulationCohort } = await import("../components/arena-ui.ts");
@@ -331,6 +332,104 @@ test("Arena population fallback also trusts the published average payload", asyn
     if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
     else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
   }
+});
+
+test("Arena mode baselines batch all five modes in one request", async () => {
+  const response = await getBaselinesBatch(new NextRequest(
+    "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison",
+  ));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "private, max-age=60");
+  const body = await response.json();
+  assert.equal(body.gameMode, "arena");
+  assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);
+  assert.equal(body.aid, 1);
+  assert.equal(body.purpose, "comparison");
+  assert.deepEqual(Object.keys(body.cohorts).sort(), ["blastGang", "checkpoint", "lastHero", "shootOutDuo", "teamFight"]);
+  assert.deepEqual(body.unavailable, []);
+
+  const team = body.cohorts.teamFight;
+  assert.equal(team.strategy, "matched");
+  assert.equal(team.quality, "sufficient");
+  assert.ok(team.averageMatches.value > 0);
+  assert.ok(team.averageMatches.count >= 20);
+
+  // The sparse lastHero fixture (5 peers) resolves to the same-mode
+  // population inline: no second HTTP round-trip needed.
+  const lastHero = body.cohorts.lastHero;
+  assert.equal(lastHero.mode, "lastHero");
+  assert.equal(lastHero.strategy, "population");
+  assert.equal(lastHero.quality, "sufficient");
+  assert.ok(lastHero.averageMatches.value > 0);
+  assert.ok(lastHero.averageMatches.count >= 20);
+});
+
+test("Arena mode baselines serve the matches tab from population cohorts", async () => {
+  const response = await getBaselinesBatch(new NextRequest(
+    "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=median&purpose=matches",
+  ));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.purpose, "matches");
+  assert.deepEqual(body.unavailable, []);
+  for (const mode of ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"]) {
+    const cohort = body.cohorts[mode];
+    assert.equal(cohort.mode, mode);
+    assert.equal(cohort.strategy, "population");
+    assert.equal(cohort.quality, "sufficient");
+    assert.ok(cohort.averageMatches.value > 0, `${mode} needs a matches baseline`);
+    assert.ok(cohort.averageMatches.count >= 20, `${mode} needs a usable matches sample`);
+  }
+});
+
+test("Arena mode baselines compute matches without publications", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  publications.resetAveragePublicationForTests();
+  try {
+    // publicationOnly=1 answers 503 here; the batch falls back to live
+    // averages so markers keep working while publications are warming.
+    const response = await getBaselinesBatch(new NextRequest(
+      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches",
+    ));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.ok(body.cohorts.teamFight.averageMatches.value > 0);
+  } finally {
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+  }
+});
+
+test("Arena mode baselines validate the batch contract", async () => {
+  for (const query of [
+    "mode=arena&statistic=trimmed_mean",
+    "mode=arena&aid=0&statistic=trimmed_mean",
+    "mode=arena&aid=1&statistic=mean",
+    "mode=arena&aid=1&statistic=trimmed_mean&purpose=peak",
+    "mode=arena&aid=1&statistic=trimmed_mean&arenaModes=teamFight,unknown",
+    "mode=arena&aid=1&statistic=trimmed_mean&arenaModes=",
+    "mode=arena&aid=1&statistic=trimmed_mean&arenaModes=teamFight,teamFight",
+    "mode=regular&aid=1&statistic=trimmed_mean",
+  ]) {
+    assert.equal((await getBaselinesBatch(new NextRequest(
+      `http://local/api/average/cohort/batch?${query}`,
+    ))).status, 400, query);
+  }
+
+  const subset = await getBaselinesBatch(new NextRequest(
+    "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&arenaModes=teamFight,lastHero",
+  ));
+  assert.equal(subset.status, 200);
+  assert.deepEqual(Object.keys((await subset.json()).cohorts).sort(), ["lastHero", "teamFight"]);
+
+  const defaulted = await getBaselinesBatch(new NextRequest(
+    "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean",
+  ));
+  assert.equal(defaulted.status, 200);
+  assert.equal((await defaulted.json()).purpose, "comparison");
 });
 
 
