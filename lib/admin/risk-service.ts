@@ -1,5 +1,4 @@
-import { bracketFor } from "@/lib/brackets";
-import { hasValidRiskInputs, scoreCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
+import { hasValidRiskInputs, scoreCheater, scoreSeasonalCheater, type AchievementInput, type AchievementStat, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
 import { getStore, type CrossSectionMode, type PlayerStore } from "@/lib/db";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline, type SeasonalAchievementBaseline } from "@/lib/seasonal/average-db";
 import { saveRiskEvaluation } from "@/lib/admin/moderation-db";
@@ -39,17 +38,19 @@ export async function evaluateAndStoreRisk(input: {
     Number.isFinite(input.stats.pmcRaids) && input.stats.pmcRaids > 0 &&
     hasValidRiskInputs(input.stats) &&
     (input.mode !== "regular" || input.stats.pvpStatsKnown !== false);
-  const bracket = canScore ? bracketFor(input.stats.hoursPlayed) : null;
   let baseline: Baseline | null = null;
   let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;
   if (canScore && input.mode === "seasonal") {
     if (!input.cycleId) throw new TypeError("seasonal risk requires cycleId");
     [baseline, achievementBaseline] = await Promise.all([
-      getSeasonalRiskBaseline(input.cycleId, bracket!.lo, bracket!.hi),
-      getSeasonalAchievementBaseline(input.cycleId),
+      getSeasonalRiskBaseline(input.cycleId, {
+        hours: input.stats.hoursPlayed,
+        pmcRaids: input.stats.pmcRaids,
+      }, input.aid),
+      getSeasonalAchievementBaseline(input.cycleId, input.aid),
     ]);
   } else if (canScore) {
-    const baselineMode: CrossSectionMode = input.mode;
+    const baselineMode: CrossSectionMode = input.mode === "pve" ? "pve" : "regular";
     const store = input.playerStore === undefined ? await getStore(baselineMode) : input.playerStore;
     if (store) {
       if (input.mode === "regular") {
@@ -101,9 +102,11 @@ export async function evaluateAndStoreRisk(input: {
       stats,
     };
   }
-  const result = canScore && hasUsableRiskMetrics(baseline)
-    ? scoreCheater(input.stats, baseline, achievementInput)
-    : scoreCheater({ ...input.stats, pmcRaids: 0 }, null, null);
+  const result = input.mode === "seasonal"
+    ? scoreSeasonalCheater(input.stats, baseline, achievementInput)
+    : canScore && hasUsableRiskMetrics(baseline)
+      ? scoreCheater(input.stats, baseline, achievementInput)
+      : scoreCheater({ ...input.stats, pmcRaids: 0 }, null, null);
   const evaluationTime = input.evaluatedAt ?? Date.now();
   await saveRiskEvaluation({
     aid: input.aid,

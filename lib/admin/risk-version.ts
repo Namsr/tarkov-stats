@@ -4,7 +4,7 @@ export const ADMIN_RISK_SCORE_VERSIONS: Record<GameMode, number> = {
   regular: 2,
   pve: 2,
   arena: 1,
-  seasonal: 1,
+  seasonal: 2,
 };
 
 const ADMIN_RISK_TTL_MS = 5 * 60 * 60 * 1000;

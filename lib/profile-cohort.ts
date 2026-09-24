@@ -93,9 +93,10 @@ export function comparisonAxisBounds(center: number, percent: ComparisonCohortPe
   const ratio = percent / 100;
   if (axis === "hours") {
     const epsilon = 1e-9 * Math.max(1, Math.abs(center));
+    const max = Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10;
     return {
       min: Math.max(0, Math.floor((center * (1 - ratio) + epsilon) * 10) / 10),
-      max: Math.ceil((center * (1 + ratio) - epsilon) * 10) / 10,
+      max: max === 0 ? 0 : max,
     };
   }
   const epsilon = 1e-9 * Math.max(1, Math.abs(center));
@@ -128,11 +129,32 @@ export function comparisonRangeFor(
   };
 }
 
+export function finiteNonNegativeCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
 export function selectComparisonPercent(
   counts: Readonly<Record<ComparisonCohortPercent, number>>,
   target = COMPARISON_COHORT_TARGET,
 ): ComparisonCohortPercent {
-  return COMPARISON_COHORT_PERCENTAGES.find((percent) => counts[percent] >= target) ?? 30;
+  return COMPARISON_COHORT_PERCENTAGES.find((percent) =>
+    finiteNonNegativeCount(counts[percent]) >= target
+  ) ?? 30;
+}
+
+export function finiteNonNegativeMetricValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function comparisonCohortMetricValue(
+  strategy: ComparisonCohortStrategy,
+  metric: { value: unknown; count: unknown },
+): number | null {
+  const value = finiteNonNegativeMetricValue(metric.value);
+  const count = finiteNonNegativeMetricValue(metric.count);
+  const minimum = strategy === "population" ? 1 : COMPARISON_COHORT_TARGET;
+  return value !== null && count !== null && count >= minimum ? value : null;
 }
 
 export function makeComparisonCohortResult(input: {
@@ -149,10 +171,10 @@ export function makeComparisonCohortResult(input: {
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
   const dimension = input.dimension ?? "hours";
-  const axes = comparisonAxes(input.center, input.percent);
   const strategy = input.strategy ?? "matched";
+  const axes = comparisonAxes(input.center, input.percent);
   const sufficient = input.reason == null && (
-    input.n >= COMPARISON_COHORT_TARGET || (strategy === "population" && input.n > 0)
+    strategy === "population" ? input.n > 0 : input.n >= COMPARISON_COHORT_TARGET
   );
   return {
     mode: input.mode,
@@ -181,4 +203,15 @@ export function makeComparisonCohortResult(input: {
       raids: { ...axes.pmcRaids.bounds, percent: input.percent },
     },
   };
+}
+
+export function makeEmptyPopulationCohortResult(
+  input: Omit<Parameters<typeof makeComparisonCohortResult>[0], "n" | "strategy" | "reason" | "averages">,
+): ComparisonCohortResult {
+  return makeComparisonCohortResult({
+    ...input,
+    n: 0,
+    strategy: "population",
+    reason: "insufficient_cohort",
+  });
 }

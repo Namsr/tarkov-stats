@@ -97,7 +97,7 @@ test("generic risk evaluation rejects Arena before touching a store", async () =
 test("risk versions are isolated from untouched modes and cycles", () => {
   assert.equal(riskScoreVersion("regular", "persistent"), 2);
   assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 1);
+  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
 

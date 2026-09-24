@@ -260,6 +260,8 @@ test("profile mode switch stays below profile actions and is available before pr
 test("profile mode switching is available during loading and capture is post-response", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
+  const backfill = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   const route = await readFile("app/api/player/profile/route.ts", "utf8");
 
   assert.match(regular, /const forceRefresh = isReload\(\)/);
@@ -297,12 +299,17 @@ test("profile mode switching is available during loading and capture is post-res
   assert.doesNotMatch(pveBranch, /await persistRegularProfileSnapshot\(pveSnapshot/);
   assert.match(route, /const riskIsFresh = storedRisk &&[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
-  assert.match(route, /const seasonalRiskIsFresh = result\.ok && storedRisk &&[\s\S]*storedRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
-  assert.match(route, /const publicRisk = result\.ok && storedRisk\?\.scoreVersion === riskScoreVersion\("seasonal", result\.profile\.cycleId\)/);
+  assert.match(route, /const currentStoredRisk = seasonalRiskMatchesIdentity\(storedRisk, \{ aid, cycleId \}\)[\s\S]*seasonalRiskIsCurrent = result\.ok && currentStoredRisk !== null/);
+  assert.match(route, /const seasonalRiskIsFresh = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)[\s\S]*currentStoredRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - currentStoredRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
+  assert.match(route, /const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)/);
   assert.match(route, /const publicRisk = storedRisk\?\.scoreVersion === riskScoreVersion\("pve", cycleId\)/);
   assert.match(route, /const publicRisk = storedRisk\?\.scoreVersion === riskScoreVersion\("regular", cycleId\)/);
   assert.match(route, /const publicRiskView = storedRisk\?\.scoreVersion === riskScoreVersion\("regular", cycleId\)/);
   assert.match(route, /risk = null;\s*scheduleArenaRiskRefresh\(\)/);
+  assert.match(radar, /strategy: input\.strategy === "population" \? "population" : "matched"/);
+  assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
+  assert.match(backfill, /scoreVersion: riskScoreVersion\(mode, cycleId\)/);
+  assert.match(backfill, /scoreVersion: riskScoreVersion\("seasonal", cycleId\)/);
   assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreSeasonalRisk/);
   assert.ok(route.indexOf("const storedRisk = result.ok") < route.indexOf("if (result.ok && !seasonalRiskIsFresh)"));
   assert.match(route, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
@@ -475,12 +482,10 @@ test("regular radar period switch identifies requests by freshness", async () =>
 test("radar keeps raw player values independent from baseline availability", async () => {
   const source = await readFile("components/PlayerRadarComparison.tsx", "utf8");
   const radar = await readFile("components/ProfileRadar.tsx", "utf8");
+  assert.match(source, /finiteNonNegativeMetricValue\(metric\.get\(stats\)\)/);
   assert.match(source, /a: playerValues\?\.\[metric\.key\] \?\? null/);
   assert.match(source, /cohort\?\.quality === "sufficient" && cohort.twoDimensional/);
-  assert.match(source, /cohort\?\.strategy === "population"[\s\S]*?average\.count >= 1/);
-  assert.match(source, /function finiteNonNegative\(value: unknown\)/);
-  assert.match(source, /average\.value >= 0/);
-  assert.match(source, /average\.count >= MIN_AXIS_SAMPLE/);
+  assert.match(source, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
   assert.match(radar, /value\(metric.a, metric\)/);
   assert.match(radar, /points.every\(\(p\) => p != null\)/);
   assert.match(radar, /homePercentageDifference\(metric.a, metric.b\)/);

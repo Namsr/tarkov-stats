@@ -47,7 +47,7 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
 test("shared radar accepts explicit population strategy and one-value population metrics", () => {
   assert.match(radar, /strategy\?: "matched" \| "population"/);
   assert.match(radar, /targetN: Math\.max\(20, finiteNonNegative\(rawTargetN\) \? rawTargetN : 20\)/);
-  assert.match(radar, /cohort\?\.strategy === "population"[\s\S]*?average\.count >= 1/);
+  assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
   assert.match(radar, /function finiteNonNegative\(value: unknown\): value is number/);
   assert.doesNotMatch(radar, /average\.value > 0/);
 });

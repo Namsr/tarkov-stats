@@ -80,11 +80,11 @@ test("home comparison block follows the displayed game mode", async () => {
   // The loaded favorite must come back for the same identity before it renders.
   assert.match(comparison, /body\.identity\?\.mode === gameMode/);
   assert.match(comparison, /body\.identity\?\.cycleId === cycleId/);
-  assert.match(comparison, /cohort\?\.strategy === "population" \? 1 : 20/);
-  assert.match(comparison, /finiteNonNegative\(average\.value\)/);
   // The block used to be hardwired to the regular mode.
   assert.doesNotMatch(comparison, /favorite\.mode === "regular"/);
   assert.doesNotMatch(comparison, /mode=regular/);
+  assert.match(comparison, /comparisonCohortMetricValue\(cohortStrategy, average \?\? \{ value: null, count: 0 \}\)/);
+  assert.match(comparison, /finiteNonNegativeMetricValue\(profile\?\.comparisonStats\?\.\[metric\.stat\]\)/);
 });
 
 test("home showcase links and labels follow the displayed snapshot mode", async () => {

@@ -9,6 +9,7 @@ import ProfileRadar from "@/components/ProfileRadar";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
+import { comparisonCohortMetricValue, finiteNonNegativeMetricValue } from "@/lib/profile-cohort";
 import type { GameMode } from "@/types/seasonal";
 
 type Dimension = "hours" | "pmc_raids";
@@ -28,6 +29,7 @@ interface CohortMetricObject {
 type CohortMetric = number | null | CohortMetricObject;
 
 interface CohortResponse {
+  strategy?: "matched" | "population";
   identity?: { aid?: number; mode?: GameMode; cycleId?: string };
   twoDimensional?: boolean;
   period?: AveragePeriod;
@@ -37,7 +39,6 @@ interface CohortResponse {
   targetN?: number;
   target?: number;
   required?: number;
-  strategy?: "matched" | "population";
   percent?: number;
   n?: number;
   quality?: "sufficient" | "unavailable";
@@ -73,10 +74,10 @@ interface CohortRange {
 
 interface NormalizedCohort {
   requestId: string;
+  strategy: "matched" | "population";
   dimension: Dimension;
   center: number;
   targetN: number;
-  strategy: "matched" | "population";
   percent: number;
   n: number;
   quality: "sufficient" | "unavailable";
@@ -105,7 +106,6 @@ interface MetricDefinition {
   suffix?: string;
 }
 
-const MIN_AXIS_SAMPLE = 20;
 const METRICS: MetricDefinition[] = [
   { key: "kd_ratio", labelKey: "radar.metric.kd", get: (s) => s.kdRatio, decimals: 2 },
   { key: "pmc_kd_ratio", labelKey: "radar.metric.pmcKd", get: (s) => s.pmcKdRatio, decimals: 2 },
@@ -199,7 +199,6 @@ function normalizeResponse(
               value: finiteNonNegative(raw.value) ? raw.value : null,
               count: finiteCount(raw.count),
             }
-            }
           : { value: null, count: 0 };
   }
 
@@ -240,6 +239,7 @@ function demoCohort(
   const percent = 15;
   return {
     requestId: `demo:${hoursCenter}:${raidsCenter}:${statistic}:${period}`,
+    strategy: "matched",
     dimension: "hours",
     center: hoursCenter,
     targetN: 20,
@@ -247,7 +247,6 @@ function demoCohort(
     n: 184,
     quality: "sufficient",
     required: 20,
-    strategy: "matched",
     reason: "",
     twoDimensional: true,
     hoursRange: {
@@ -268,10 +267,7 @@ function demoCohort(
 
 function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | null> {
   return Object.fromEntries(
-    METRICS.map((metric) => {
-      const value = metric.get(stats);
-      return [metric.key, finiteNonNegative(value) ? value : null];
-    }),
+    METRICS.map((metric) => [metric.key, finiteNonNegativeMetricValue(metric.get(stats))]),
   ) as Record<MetricKey, number | null>;
 }
 
@@ -470,12 +466,8 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     : t("radar.series.average");
   const rows = METRICS.map((metric, index) => {
     const average = cohort?.averages[metric.key];
-    const hasAverage = cohort?.strategy === "population"
-      ? average?.value != null && average.count >= 1
-      : average?.value != null && average.value >= 0
-        && average.count >= MIN_AXIS_SAMPLE;
-    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional && hasAverage
-      ? average?.value ?? null
+    const baseline = cohort?.quality === "sufficient" && cohort.twoDimensional
+      ? comparisonCohortMetricValue(cohort.strategy, average ?? { value: null, count: 0 })
       : null;
     return {
       key: metric.key, label: t(metric.labelKey),

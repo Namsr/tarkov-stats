@@ -314,3 +314,32 @@ export function scoreCheater(
   factors.sort((a, b) => b.points - a.points);
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
 }
+
+export function scoreSeasonalCheater(
+  stats: ParsedPlayerStats,
+  baseline: Baseline | null,
+  achievements?: AchievementInput | null,
+): CheaterScoreResult {
+  const validInputs = [
+    stats.hoursPlayed,
+    stats.pmcRaids,
+    stats.pmcSurvivalRate,
+    stats.pmcKdRatio,
+    stats.pmcKillsPerRaid,
+    stats.longestWinStreak,
+    stats.prestige,
+  ].every((value) => Number.isFinite(value) && value >= 0);
+  if (!validInputs || stats.hoursPlayed <= 0 || stats.pmcRaids <= 0) {
+    return scoreCheater({
+      ...stats,
+      hoursPlayed: 0,
+      prestige: 0,
+      pmcRaids: 0,
+      pmcSurvivalRate: 0,
+      pmcKdRatio: 0,
+      pmcKillsPerRaid: 0,
+      longestWinStreak: 0,
+    }, null, null);
+  }
+  return scoreCheater(stats, baseline, achievements);
+}

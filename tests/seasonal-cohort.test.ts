@@ -63,10 +63,20 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     // Banned targets can compare themselves, but banned peers must not join the group.
     add("cycle-a", 42, 2_042, 100, 20);
     db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE cycle_id = 'cycle-a' AND aid IN (1, 42)");
+    add("cycle-a", 50, 2_050, 100, 5);
+    for (let aid = 60; aid <= 64; aid += 1) add("cycle-a", aid, 2_060 + aid, 1_000, 100);
+    add("cycle-a", 65, 2_065, 100, 20);
+    db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (65, 'admin_manual', 10_000)").run();
 
     // Same account and same-looking cohort in another cycle must not leak in.
     add("cycle-b", 1, 9_000, 900, 90);
     for (let aid = 22; aid <= 41; aid += 1) add("cycle-b", aid, 9_000 + aid, 100, 20);
+    add("cycle-a", 70, 500_000_000_000, 100, 5);
+    for (let aid = 80; aid <= 84; aid += 1) {
+      add("cycle-a", aid, 500_000_000_000 + aid, 1_000, 100);
+    }
+    add("cycle-a", 90, 500_000_000_090, 0, 5);
+    add("cycle-a", 91, 500_000_000_091, null, 5);
     db.close();
 
     const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
@@ -82,6 +92,7 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
     assert.equal(lookup.result.axes.hours.center, 100);
     assert.equal(lookup.result.axes.pmcRaids.center, 20);
     assert.equal(lookup.result.percent, 10);
+    assert.equal(lookup.result.strategy, "matched");
     assert.equal(lookup.result.n, 20);
     assert.deepEqual(lookup.result.actualRanges, {
       hours: { min: 100, max: 100 },
@@ -107,6 +118,55 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
       now: 10_000,
     });
     assert.equal(cachedMedian.cache, "hit");
+
+    const fallback = await querySeasonalComparisonCohort({
+      aid: 50,
+      cycleId: "cycle-a",
+      now: 10_000,
+    });
+    assert.ok(fallback.result);
+    assert.equal(fallback.result.percent, 30);
+    assert.equal(fallback.result.n, 31);
+    assert.equal(fallback.result.strategy, "population");
+    assert.equal(fallback.result.required, 20);
+    assert.equal(fallback.result.quality, "sufficient");
+    assert.equal(fallback.result.reason, null);
+    assert.deepEqual(fallback.result.actualRanges, {
+      hours: { min: 100, max: 1_000 },
+      pmcRaids: { min: 5, max: 100 },
+      raids: { min: 5, max: 100 },
+    });
+    assert.deepEqual(fallback.result.averages.kd_ratio, { value: 1, count: 31 });
+
+    const freshWindow = await querySeasonalComparisonCohort({
+      aid: 70,
+      cycleId: "cycle-a",
+      period: "90d",
+      now: 500_000_000_000,
+    });
+    assert.ok(freshWindow.result);
+    assert.equal(freshWindow.result.n, 5);
+    assert.equal(freshWindow.result.strategy, "population");
+    assert.equal(freshWindow.result.required, 20);
+    assert.equal(freshWindow.result.quality, "sufficient");
+    assert.equal(freshWindow.result.reason, null);
+
+    const zeroHours = await querySeasonalComparisonCohort({
+      aid: 90,
+      cycleId: "cycle-a",
+      now: 500_000_000_000,
+    });
+    assert.ok(zeroHours.result);
+    assert.equal(zeroHours.result.strategy, "matched");
+    assert.equal(zeroHours.result.reason, "no_activity");
+    assert.equal(zeroHours.result.n, 0);
+
+    const missingHours = await querySeasonalComparisonCohort({
+      aid: 91,
+      cycleId: "cycle-a",
+      now: 500_000_000_000,
+    });
+    assert.equal(missingHours.result, null);
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;
