@@ -152,6 +152,44 @@ function SeasonalProfileActions({
   );
 }
 
+interface SeasonalRiskResponse {
+  identity?: { aid?: number; mode?: string; cycleId?: string };
+  risk?: PublicRiskView | null;
+}
+
+async function pollSeasonalRisk(input: {
+  aid: number;
+  cycleId: string;
+  isCurrent: () => boolean;
+  onRisk: (risk: PublicRiskView) => void;
+}) {
+  for (const delay of [1_500, 3_000, 5_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!input.isCurrent()) return;
+    try {
+      const params = new URLSearchParams({
+        aid: String(input.aid),
+        mode: "seasonal",
+        cycle: input.cycleId,
+      });
+      const response = await fetch(`/api/player/risk?${params}`, { cache: "no-store" });
+      if (!response.ok) continue;
+      const body = await response.json() as SeasonalRiskResponse;
+      if (!input.isCurrent()) return;
+      if (
+        body.identity?.aid !== input.aid ||
+        body.identity?.mode !== "seasonal" ||
+        body.identity?.cycleId !== input.cycleId
+      ) return;
+      if (!body.risk) continue;
+      input.onRisk(body.risk);
+      return;
+    } catch {
+      continue;
+    }
+  }
+}
+
 export default function SeasonalPlayer({
   aid,
   cycleId,
@@ -245,7 +283,16 @@ export default function SeasonalPlayer({
           throw new Error(t("seasonal.profileUnavailable"));
         }
         if (cancelled || generation !== requestGeneration.current) return null;
-        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        const initialRisk = body.viewModel?.risk ?? body.risk ?? null;
+        setServerRisk(initialRisk);
+        if (initialRisk == null) {
+          void pollSeasonalRisk({
+            aid,
+            cycleId,
+            isCurrent: () => !cancelled && generation === requestGeneration.current,
+            onRisk: setServerRisk,
+          });
+        }
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(body.profile));
         setSkillItems(skillsFromViewModel(body.viewModel));
         setMasteryItems(masteryFromViewModel(body.viewModel));

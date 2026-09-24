@@ -44,6 +44,20 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
 });
 
+test("seasonal profiles poll the risk-only endpoint after background evaluation", async () => {
+  const [source, route] = await Promise.all([
+    readFile("components/SeasonalPlayer.tsx", "utf8"),
+    readFile("app/api/player/risk/route.ts", "utf8"),
+  ]);
+  assert.match(source, /const initialRisk = body\.viewModel\?\.risk \?\? body\.risk \?\? null/);
+  assert.match(source, /pollSeasonalRisk\(/);
+  assert.match(source, /\/api\/player\/risk\?\$\{params\}/);
+  assert.match(source, /cache: "no-store"/);
+  assert.match(source, /if \(!body\.risk\) continue;/);
+  assert.match(route, /getRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
+  assert.match(route, /scoreVersion === riskScoreVersion\(mode, cycleId\)/);
+});
+
 test("missing mode keeps the profile shell without mounting data sections", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   const unavailableStart = source.indexOf("if (modeUnavailable)");
@@ -271,8 +285,12 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(seasonal, /getCachedPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
   assert.match(seasonal, /loadPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
   assert.match(seasonal, /const \[loading, setLoading\] = useState\(!initialProfile\)/);
+  const initialSeasonalLoad = seasonal.slice(
+    seasonal.indexOf("loadPlayerProfileResponse<SeasonalProfileResponse>"),
+    seasonal.indexOf(".then((nextProfile)"),
+  );
   assert.doesNotMatch(regular, /(?:res|response)\.json\(\)/);
-  assert.doesNotMatch(seasonal, /(?:res|response)\.json\(\)/);
+  assert.doesNotMatch(initialSeasonalLoad, /(?:res|response)\.json\(\)/);
   assert.doesNotMatch(seasonal, /new AbortController\(\)/);
   assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
   const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
