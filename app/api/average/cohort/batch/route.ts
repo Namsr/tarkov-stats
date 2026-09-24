@@ -9,6 +9,7 @@ import {
   type ArenaStatistic,
 } from "@/types/arena";
 import {
+  readAverageMatches,
   shouldFallbackToPopulation,
   toArenaPopulationCohort,
 } from "@/components/arena-ui";
@@ -38,13 +39,15 @@ function parseModes(value: string | null): ArenaModeKey[] | null {
 /**
  * Population cohort for one mode. Prefers the pre-materialized publication
  * (the same payload `publicationOnly=1` serves) and computes the average
- * live when publications are disabled or still warming, so mode bars keep
- * their markers instead of silently falling back to the legacy max-scale.
+ * live when publications are disabled, still warming, or predate
+ * averageMatches, so mode bars keep their markers instead of silently
+ * falling back to the legacy max-scale.
  */
 async function populationCohort(
   aid: number,
   mode: ArenaModeKey,
   statistic: ArenaStatistic,
+  needsMatches: boolean,
 ): Promise<ArenaCohortResult | null> {
   const publication = await readAveragePublication<Record<string, unknown>>(
     "arena",
@@ -58,7 +61,9 @@ async function populationCohort(
       statistic,
       ARENA_PARSER_VERSION,
     );
-    if (cohort) return cohort;
+    // Old publications pass validation but carry no matches baseline: only
+    // reuse them when the caller does not need one (kd/winrate comparison).
+    if (cohort && (!needsMatches || readAverageMatches(cohort)?.value != null)) return cohort;
   }
   // Same LRU key shape as GET /api/average, so batch and single requests share entries.
   const dynamicKey = JSON.stringify(["arena", mode, statistic, "matches", "players", null, null, null, null]);
@@ -87,7 +92,7 @@ async function comparisonCohort(
   const cohort = loaded.value;
   if (!cohort) return null;
   if (!shouldFallbackToPopulation(cohort)) return cohort;
-  return (await populationCohort(aid, mode, statistic)) ?? cohort;
+  return (await populationCohort(aid, mode, statistic, false)) ?? cohort;
 }
 
 async function batchResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
@@ -115,7 +120,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
     const entries = await Promise.all(modes.map(async (mode) => {
       try {
         const cohort = selectedPurpose === "matches"
-          ? await populationCohort(aid, mode, statistic)
+          ? await populationCohort(aid, mode, statistic, true)
           : await comparisonCohort(aid, mode, statistic);
         return [mode, cohort] as const;
       } catch {
