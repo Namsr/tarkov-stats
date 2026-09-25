@@ -4,6 +4,7 @@ import { getPersistentProgressionAverage, getRegularProgressionAverage } from "@
 import { getSeasonalAverageQuery } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
+import { fakeProgressionAverage, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
 
 const loadCachedRegularAverageProgression = unstable_cache(
   () => getRegularProgressionAverage(),
@@ -30,6 +31,11 @@ export async function GET(request: Request) {
   try {
     const params = new URL(request.url).searchParams;
     const mode = params.get("mode") ?? "regular";
+    if (isLocalFakeAverageEnabled() && (mode === "regular" || mode === "pve")) {
+      return NextResponse.json(fakeProgressionAverage(mode), {
+        headers: { "Cache-Control": AVERAGE_CACHE_CONTROL },
+      });
+    }
     if (mode === "seasonal") {
       if (!isSeasonalRolloutReady()) return NextResponse.json({ error: "Seasonal progression unavailable" }, { status: 404 });
       const cycle = loadSeasonalCycleConfig();

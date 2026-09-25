@@ -293,8 +293,7 @@ test("Arena averages reuse the common portrait header without a profile-period s
   const header = read("components/AveragePageHeader.tsx");
   const average = read("components/ArenaAverage.tsx");
   assert.match(average, /<AveragePageHeader[\s\S]*current="arena"[\s\S]*onStatisticChange=\{changeStatistic\}/);
-  assert.match(header, /<p className="page-kicker mt-7">\{t\("average\.summary"\)\}<\/p>/);
-  assert.match(header, /<h1 className="page-title">\{t\("nav\.average"\)\}<\/h1>/);
+  assert.match(header, /<div className="average-hero">[\s\S]*<h1 className="page-title">\{t\("nav\.average"\)\}<\/h1>/);
   assert.match(header, /name="average-period"/);
   assert.match(header, /period !== undefined && onPeriodChange !== undefined/);
   assert.match(header, /current === "arena"[\s\S]*arena\.average\.statisticNote/);

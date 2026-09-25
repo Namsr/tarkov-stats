@@ -28,6 +28,7 @@ import {
   standardArenaVariant,
   standardAverageVariant,
 } from "@/lib/average-publication";
+import { fakeAverageDashboard, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
@@ -264,6 +265,17 @@ export async function GET(request: NextRequest) {
 
   const metric = resolveY(params.get("metric"));
   const maxBins = binCount(params.get("maxBins"));
+  if (isLocalFakeAverageEnabled() && (rawMode === "regular" || rawMode === "pve") && statistic && period && dimension) {
+    return NextResponse.json(fakeAverageDashboard({
+      mode: rawMode,
+      dimension,
+      metric: metric.key,
+      statistic,
+      period,
+      min: parsedMin.value,
+      max: parsedMax.value,
+    }));
+  }
   let averagesMs: number | undefined;
   try {
     const standard = dimension === "hours" && metric.key === "players" && maxBins === MAX_HISTOGRAM_BINS &&

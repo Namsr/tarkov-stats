@@ -397,8 +397,10 @@ test("average statistic switch keeps URL state and masks stale portrait values",
   assert.match(source, /\{terminalError \? null : !currentData \? \(/);
   assert.match(source, /\{!terminalError && \(\s*<div ref=\{chartRef\}/);
   assert.match(header, /name="average-statistic"/);
-  assert.match(header, /average-settings__top[\s\S]*average-settings__groups[\s\S]*average-settings__mode/);
-  assert.match(styles, /\.average-settings__top \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(340px, 520px\)/);
+  assert.match(header, /className="average-hero"/);
+  assert.match(header, /<ProfileModeSwitch[\s\S]*?page="average"/);
+  assert.match(header, /className="average-toolbar" aria-label=\{t\("average\.settings"\)\}/);
+  assert.match(styles, /\.average-hero \.mode-switch \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(segmented, /<fieldset className=\{`segmented-control/);
   assert.match(segmented, /type="radio"/);
   assert.match(segmented, /checked=\{value === option\.value\}/);
@@ -787,18 +789,21 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(canonical, /levelBands=\{levelBands\}/);
   assert.doesNotMatch(canonical, /await getPlayerLevels\(\)/);
   assert.match(average, /mode === "regular" && levelBands\.length > 0/);
-  assert.match(average, /<RegularAverageProgression levelBands=\{levelBands\} \/>/);
+  assert.match(average, /<RegularAverageProgression$/m);
+  assert.match(average, /levelBands=\{levelBands\}/);
   assert.ok(
-    average.indexOf("<RegularAverageProgression") < average.indexOf('t("average.fullMetrics")'),
-    "regular progression should render before the full metric set",
+    average.indexOf("<RegularAverageProgression") > average.indexOf("<AverageSelectionCompare"),
+    "regular progression should render after the selection comparison",
   );
+  assert.match(average, /<AverageSelectionCompare[\s\S]*?selection=\{averages\}/);
   assert.match(progression, /fetch\("\/api\/progression\/average"/);
+  assert.match(progression, /<AverageMetricOverlay mode=\{mode\} cycleId=\{cycleId\} \/>/);
   assert.match(progression, /data\?\.mode === mode/);
   assert.match(progression, /setData\(null\);\s*setError\(""\);/);
-  assert.equal((progression.match(/averageOnly/g) ?? []).length, 3);
+  assert.equal((progression.match(/averageOnly/g) ?? []).length, 1);
   assert.equal((progression.match(/mode="regular"/g) ?? []).length, 3);
   assert.match(chart, /levelAtExperience\(point\.value, levelBands\)/);
-  assert.match(chart, /spacedLevelLabels\(/);
+  assert.match(chart, /seasonal\.levelBand", \{ level: levelAtExperience\(value, levelBands\)/);
   assert.match(chart, /progression\.xpLevelValue/);
   assert.match(chart, /aria-label=\{label\}/);
   assert.match(chart, /function moscowTimestamp\(timestamp: number, lang: string\)/);
