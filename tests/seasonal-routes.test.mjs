@@ -11,6 +11,9 @@ test("one catch-all route serves both legacy and canonical player URLs", async (
 });
 
 test("every direct Seasonal page and API entry point uses the full rollout gate", async () => {
+  const populationAverage = await readFile("app/population/[mode]/page.tsx", "utf8");
+  assert.match(populationAverage, /@\/app\/average\/\[mode\]\/page/);
+
   const directEntries = [
     "app/player/[[...segments]]/page.tsx",
     "app/average/[mode]/page.tsx",

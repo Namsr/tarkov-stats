@@ -198,11 +198,19 @@ export async function GET(request: NextRequest) {
 
       const centerHours = Number(stats.hoursPlayed);
       const centerPmcRaids = Number(stats.pmcRaids);
+      const playerMetrics = {
+        kd_ratio: stats.kdRatio,
+        pmc_kd_ratio: stats.pmcKdRatio,
+        kills_per_raid: stats.killsPerRaid,
+        pmc_survival_rate: stats.pmcSurvivalRate,
+        longest_win_streak: stats.longestWinStreak,
+        level: stats.level,
+      };
       const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
       const cohortStarted = timing.now();
       const loaded = await loadDynamicAverage(
         ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period),
+        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics),
       );
       cohortMs = timing.elapsedMs(cohortStarted);
       cache = loaded.cache;

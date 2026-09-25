@@ -4,14 +4,14 @@ import { useI18n } from "@/lib/i18n/context";
 import PercentileBadge from "./PercentileBadge";
 
 export interface ComparisonRow {
+  key: string;
   label: string;
-  valueA: number;
-  valueB: number;
-  /** Decimals for displaying both values (counts use 0). */
+  valueA: number | null;
+  valueB: number | null;
+  benchmark: number | null;
+  percentile: number | null;
   decimals?: number;
   suffix?: string;
-  /** Direction for the Δ badge colour; defaults to "higher = above". */
-  higherIsBetter?: boolean;
 }
 
 interface ComparisonTableProps {
@@ -20,54 +20,58 @@ interface ComparisonTableProps {
   rows: ComparisonRow[];
 }
 
-// Fixed-layout comparison table shared by both modes: Metric | A | B | Δ%. Widths
-// are constant (table-fixed) so switching the opponent column never reflows the
-// table; only column B's header/values and the Δ numbers change.
 export default function ComparisonTable({ nameA, nameB, rows }: ComparisonTableProps) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   return (
-    <table className="w-full table-fixed border-collapse text-sm">
-      <thead>
-        <tr className="border-b border-[var(--card-border)] text-[10px] uppercase tracking-wider">
-          <th className="w-[30%] py-2.5 px-1.5 text-left text-[var(--muted)]">{t("cmp.metric")}</th>
-          <th className="w-[19%] py-2 px-1.5 text-right text-[var(--accent)]">
-            <span className="block truncate" title={nameA}>{nameA}</span>
-          </th>
-          <th className="w-[19%] py-2.5 px-1.5 text-right text-[var(--muted-strong)]">
-            <span className="block truncate" title={nameB}>{nameB}</span>
-          </th>
-          <th className="w-[32%] py-2.5 px-1.5 text-right text-[var(--muted)]" />
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.label} className="border-b border-[var(--card-border)]/50">
-            <td className="py-2.5 px-1.5 text-[var(--muted-strong)] break-words">{row.label}</td>
-            <td className="py-2.5 px-1.5 text-right font-medium text-[var(--accent)] tabular-nums">
-              {fmt(row.valueA, row.decimals)}
-              {row.suffix ?? ""}
-            </td>
-            <td className="py-2.5 px-1.5 text-right text-[var(--muted-strong)] tabular-nums">
-              {fmt(row.valueB, row.decimals)}
-              {row.suffix ?? ""}
-            </td>
-            <td className="py-2.5 px-1.5 text-right">
-              <PercentileBadge
-                playerValue={row.valueA}
-                medianValue={row.valueB}
-                higherIsBetter={row.higherIsBetter ?? true}
-              />
-            </td>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] table-fixed border-collapse text-sm">
+        <caption className="sr-only">{t("compare.tableCaption")}</caption>
+        <thead>
+          <tr className="border-b border-[var(--card-border)] text-[10px] uppercase tracking-wider">
+            <th scope="col" className="w-[24%] py-2.5 px-1.5 text-left text-[var(--muted)]">{t("cmp.metric")}</th>
+            <th scope="col" className="w-[22%] py-2 px-1.5 text-right text-[var(--accent)]">
+              <span className="block truncate" title={nameA}>{nameA}</span>
+            </th>
+            <th scope="col" className="w-[22%] py-2.5 px-1.5 text-right text-[var(--muted-strong)]">
+              <span className="block truncate" title={nameB}>{nameB}</span>
+            </th>
+            <th scope="col" className="w-[20%] py-2.5 px-1.5 text-right text-[var(--muted)]">{t("compare.cohortBenchmark")}</th>
+            <th scope="col" className="w-[12%] py-2.5 px-1.5 text-right text-[var(--muted)]">{t("compare.percentile")}</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} className="border-b border-[var(--card-border)]/50">
+              <th scope="row" className="py-2.5 px-1.5 text-left text-[var(--muted-strong)] break-words">{row.label}</th>
+              <td className="py-2.5 px-1.5 text-right font-medium text-[var(--accent)] tabular-nums">
+                {metricText(row.valueA, row.decimals, row.suffix, lang)}
+              </td>
+              <td className="py-2.5 px-1.5 text-right text-[var(--muted-strong)] tabular-nums">
+                {metricText(row.valueB, row.decimals, row.suffix, lang)}
+              </td>
+              <td className="py-2.5 px-1.5 text-right text-[var(--muted-strong)] tabular-nums">
+                {metricText(row.benchmark, row.decimals, row.suffix, lang)}
+              </td>
+              <td className="py-2.5 px-1.5 text-right">
+                <PercentileBadge percentile={row.percentile} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function fmt(v: number, decimals = 0): string {
-  if (decimals <= 0) return Math.round(v).toLocaleString();
-  return v.toLocaleString(undefined, {
+function metricText(value: number | null, decimals: number | undefined, suffix: string | undefined, lang: string): string {
+  const text = fmt(value, decimals, lang);
+  return value == null ? text : `${text}${suffix ?? ""}`;
+}
+
+function fmt(value: number | null, decimals: number | undefined, lang: string): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if ((decimals ?? 0) <= 0) return Math.round(value).toLocaleString(lang);
+  return value.toLocaleString(lang, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });

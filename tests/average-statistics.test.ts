@@ -38,6 +38,8 @@ process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 
 const { getStore } = await import("../lib/db.ts");
+const { getProgressionStore } = await import("../lib/progression-db.ts");
+const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
 const {
   ADMIN_RISK_SCORE_VERSIONS,
   evaluateAndStoreRisk,
@@ -288,6 +290,9 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
       assert.equal(cohort.n, 20);
       assert.equal(cohort.averages.kd_ratio.value, 10.5);
       assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+      assert.deepEqual(cohort.percentiles.kd_ratio, { percentile: null, count: 20, below: 0, equal: 0 });
+      assert.deepEqual(cohort.percentiles.pmc_survival_rate, { percentile: null, count: 2, below: 0, equal: 0 });
+      assert.ok(Object.values(cohort.percentiles).every((metric) => metric.percentile === null));
       assert.deepEqual(cohort.actualRanges, {
         hours: { min: 100, max: 100 },
         pmcRaids: { min: 100, max: 100 },
@@ -302,6 +307,73 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
   } finally {
     DatabaseSync.prototype.prepare = prepare;
   }
+});
+
+test("persistent two-axis cohort ranks verified metrics with midrank ties and the confidence floor", async () => {
+  reset();
+  const values = [...Array(9).fill(1), ...Array(10).fill(2), 3];
+  values.forEach((value, index) => add(index + 1, { hours: 100, raids: 100, value }));
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const playerMetrics = {
+    kd_ratio: 2,
+    pmc_kd_ratio: 2,
+    kills_per_raid: 2,
+    pmc_survival_rate: 2,
+    longest_win_streak: 2,
+    level: 2,
+  };
+  const cohort = await store.cohort2d(100, 100, 999, "hours", "median", "all", playerMetrics);
+  const expected = { percentile: (13.5 / 19) * 100, count: 20, below: 9, equal: 10 };
+  for (const percentile of Object.values(cohort.percentiles)) assert.deepEqual(percentile, expected);
+  assert.equal(cohort.averages.kd_ratio.value, 2);
+
+  const invalid = await store.cohort2d(100, 100, 999, "hours", "median", "all", {
+    ...playerMetrics,
+    kd_ratio: Number.NaN,
+  });
+  assert.deepEqual(invalid.percentiles.kd_ratio, { percentile: null, count: 20, below: 0, equal: 0 });
+  assert.equal(invalid.percentiles.level.percentile, expected.percentile);
+
+  db.prepare("UPDATE players SET level = NULL WHERE aid = 1").run();
+  const lowCount = await store.cohort2d(100, 100, 999, "hours", "median", "all", playerMetrics);
+  assert.deepEqual(lowCount.percentiles.level, { percentile: null, count: 19, below: 8, equal: 10 });
+  assert.deepEqual(lowCount.averages.level, { value: null, count: 19 });
+});
+
+test("persistent cohort route propagates stored profile metrics into percentiles", async () => {
+  reset();
+  for (let aid = 1; aid <= 20; aid += 1) {
+    add(aid, { hours: 100, raids: 100, value: aid <= 10 ? 1 : 2 });
+  }
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const progressionStore = await getProgressionStore("regular");
+  assert.ok(progressionStore);
+  const targetAid = 909;
+  await progressionStore.recordSnapshot({
+    aid: targetAid,
+    stats: pveStats({
+      hoursPlayed: 100,
+      pmcRaids: 100,
+      kdRatio: 2,
+      pmcKdRatio: 2,
+      killsPerRaid: 2,
+      pmcSurvivalRate: 2,
+      longestWinStreak: 2,
+      level: 2,
+    }),
+    achievementIds: [],
+    upstreamUpdatedAt: 1_800_000_000_100,
+    capturedAt: 1_800_000_000_101,
+  });
+  resetDynamicAverageCacheForTests();
+  const response = await getCohort(new NextRequest(
+    "http://local/api/average/cohort?aid=909&statistic=median&period=all",
+  ));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.identity, { aid: targetAid, mode: "regular", cycleId: "persistent" });
+  const expected = { percentile: (14.5 / 19) * 100, count: 20, below: 10, equal: 10 };
+  for (const percentile of Object.values(body.percentiles)) assert.deepEqual(percentile, expected);
 });
 
 test("PvE two-axis averages select the first 10/15/20/30 percent window with 20 peers", async () => {
@@ -358,6 +430,16 @@ test("PvE sparse two-axis averages use the full live population without unavaila
     raids: { min: 100, max: 500 },
   });
   assert.deepEqual(cohort.averages.kd_ratio, { value: 4, count: 7 });
+  const ranked = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all", {
+    kd_ratio: 4,
+    pmc_kd_ratio: 4,
+    kills_per_raid: 4,
+    pmc_survival_rate: 4,
+    longest_win_streak: 4,
+    level: 4,
+  });
+  assert.equal(ranked.strategy, "population");
+  assert.deepEqual(ranked.percentiles.kd_ratio, { percentile: null, count: 7, below: 3, equal: 1 });
 
   const unavailable = await pveStore.cohort2d(0, 0, 999, "hours", "median", "all");
   assert.equal(unavailable.quality, "unavailable");
@@ -542,7 +624,14 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   db.prepare("UPDATE players SET profile_updated_at = ? WHERE aid = 1002").run(now);
   db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (1000, 'test', ?)").run(now);
 
-  const cohort = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  const cohort = await store.cohort2d(100, 5, 999, "hours", "median", "all", {
+    kd_ratio: 105,
+    pmc_kd_ratio: 105,
+    kills_per_raid: 105,
+    pmc_survival_rate: 105,
+    longest_win_streak: 105,
+    level: 105,
+  });
   assert.equal(cohort.quality, "sufficient");
   assert.equal(cohort.strategy, "population");
   assert.equal(cohort.required, 20);
@@ -552,16 +641,30 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   assert.equal(cohort.actualRanges.pmcRaids.min, 100);
   assert.equal(cohort.actualRanges.pmcRaids.max, 200);
   assert.equal(cohort.averages.kd_ratio.value, 103.5);
+  assert.deepEqual(cohort.percentiles.kd_ratio, {
+    percentile: (13 / 23) * 100,
+    count: 24,
+    below: 13,
+    equal: 1,
+  });
   assert.notEqual(cohort.reason, "insufficient_cohort");
 
   reset();
   add(1, { hours: 100, raids: 100, value: 0 });
   add(999, { hours: 100, raids: 5, value: 999 });
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
-  const onePeer = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  const onePeer = await store.cohort2d(100, 5, 999, "hours", "median", "all", {
+    kd_ratio: 0,
+    pmc_kd_ratio: 0,
+    kills_per_raid: 0,
+    pmc_survival_rate: 0,
+    longest_win_streak: 0,
+    level: 0,
+  });
   assert.equal(onePeer.strategy, "population");
   assert.equal(onePeer.required, 20);
   assert.deepEqual(onePeer.averages.kd_ratio, { value: 0, count: 1 });
+  assert.deepEqual(onePeer.percentiles.kd_ratio, { percentile: null, count: 1, below: 0, equal: 1 });
 
   reset();
   add(999, { hours: 100, raids: 5, value: 999 });

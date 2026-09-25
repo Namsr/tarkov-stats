@@ -17,12 +17,16 @@ import {
   COMPARISON_COHORT_TARGET,
   COMPARISON_RADAR_METRICS,
   RISK_COHORT_TARGET,
+  comparisonCohortPercentile,
   comparisonRangeFor,
   emptyComparisonAverages,
+  emptyComparisonPercentiles,
+  finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
   selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
+  type ComparisonCohortPlayerMetrics,
   type ComparisonCohortResult,
 } from "@/lib/profile-cohort";
 import {
@@ -702,7 +706,7 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
     : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
        AND rn <= n - CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
   const values = COMPARISON_RADAR_METRICS.map((metric) =>
-    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL${
+    `SELECT '${metric}' AS metric, ${metric} AS v, ? AS player_v FROM cohort WHERE ${metric} IS NOT NULL${
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
     }`
   ).join(" UNION ALL ");
@@ -710,16 +714,19 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
     SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
   ), metric_values AS (${values}), ranked AS (
     SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
-      COUNT(*) OVER (PARTITION BY metric) AS n
+      COUNT(*) OVER (PARTITION BY metric) AS n,
+      COUNT(CASE WHEN v < player_v THEN 1 END) OVER (PARTITION BY metric) AS below,
+      COUNT(CASE WHEN v = player_v THEN 1 END) OVER (PARTITION BY metric) AS equal
     FROM metric_values
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
+    NULL AS below, NULL AS equal,
     MIN(hours) AS hours_min, MAX(hours) AS hours_max,
     MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
   FROM cohort
   UNION ALL
   SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
-    NULL, NULL, NULL, NULL
+    MAX(below), MAX(equal), NULL, NULL, NULL, NULL
   FROM ranked GROUP BY metric`;
 }
 
@@ -730,10 +737,18 @@ async function computePersistentTwoDimensionalCohort(input: {
   dimension: "hours" | "pmc_raids";
   statistic: AverageStatistic;
   period: AveragePeriod;
+  playerMetrics?: ComparisonCohortPlayerMetrics;
   readFirst: CohortFirstReader;
   readAll: CohortAllReader;
 }): Promise<ComparisonCohortResult> {
   const { center } = input;
+  const playerMetrics = Object.fromEntries(
+    COMPARISON_RADAR_METRICS.map((metric) => [
+      metric,
+      finiteNonNegativeMetricValue(input.playerMetrics?.[metric]),
+    ])
+  ) as ComparisonCohortPlayerMetrics;
+  const playerMetricParams = COMPARISON_RADAR_METRICS.map((metric) => playerMetrics[metric]);
   if (
     !Number.isFinite(center.hours) ||
     !Number.isFinite(center.pmcRaids) ||
@@ -776,14 +791,20 @@ async function computePersistentTwoDimensionalCohort(input: {
     input.excludeAid,
     input.period,
   );
-  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
+  const selectedRows = await input.readAll(
+    persistentComparisonMetricsSql(selected.where, input.statistic),
+    [...selected.params, ...playerMetricParams],
+  );
   let resultRows = selectedRows;
   let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
     ? "matched"
     : null;
   if (strategy === null && (input.mode === "regular" || input.mode === "pve")) {
     const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
-    resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
+    resultRows = await input.readAll(
+      persistentComparisonMetricsSql(population.where, input.statistic),
+      [...population.params, ...playerMetricParams],
+    );
     const populationGroup = resultRows.find((row) => row.metric === "__group__");
     if (Number(populationGroup?.n ?? 0) > 0) strategy = "population";
   }
@@ -817,9 +838,15 @@ async function computePersistentTwoDimensionalCohort(input: {
 
   const metricRows = new Map(resultRows.map((row) => [String(row.metric), row]));
   const averages = emptyComparisonAverages();
+  const percentiles = emptyComparisonPercentiles();
   for (const metric of COMPARISON_RADAR_METRICS) {
     const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
+    percentiles[metric] = comparisonCohortPercentile(playerMetrics[metric], {
+      count: row?.n ?? 0,
+      below: row?.below ?? 0,
+      equal: row?.equal ?? 0,
+    });
     const minimumPopulatedCount = strategy === "population" || metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
     if (count < minimumPopulatedCount) {
       averages[metric] = { value: null, count };
@@ -837,6 +864,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     n,
     actualRanges,
     averages,
+    percentiles,
     strategy: strategy ?? "matched",
   });
 }
@@ -1056,6 +1084,7 @@ export interface PlayerStore {
     dimension?: "hours" | "pmc_raids",
     statistic?: AverageStatistic,
     period?: AveragePeriod,
+    playerMetrics?: ComparisonCohortPlayerMetrics,
   ): Promise<ComparisonCohortResult>;
   /**
    * Trimmed mean of one metric for each final display range. The range count is
@@ -1386,6 +1415,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
         dimension = "hours",
         statistic = "trimmed_mean",
         period = "all",
+        playerMetrics,
       ) {
         if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
         return computePersistentTwoDimensionalCohort({
@@ -1395,6 +1425,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           dimension,
           statistic,
           period,
+          playerMetrics,
           readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
           readAll: async (sql, params) => {
             const result = await db.prepare(sql).bind(...params).all() as { results?: Record<string, unknown>[] };
@@ -1782,6 +1813,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         dimension = "hours",
         statistic = "trimmed_mean",
         period = "all",
+        playerMetrics,
       ) {
         if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
         return computePersistentTwoDimensionalCohort({
@@ -1791,6 +1823,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           dimension,
           statistic,
           period,
+          playerMetrics,
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
           readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });

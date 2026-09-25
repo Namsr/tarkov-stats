@@ -17,7 +17,10 @@ test("persistent cohort route derives both centers from a stored snapshot before
   assert.match(regularBranch, /getPublicProfile\(aid, \{ mode \}\)/);
   assert.match(regularBranch, /const centerHours = Number\(stats\.hoursPlayed\)/);
   assert.match(regularBranch, /const centerPmcRaids = Number\(stats\.pmcRaids\)/);
+  assert.match(regularBranch, /const playerMetrics = \{[\s\S]*?kd_ratio: stats\.kdRatio[\s\S]*?pmc_kd_ratio: stats\.pmcKdRatio[\s\S]*?kills_per_raid: stats\.killsPerRaid[\s\S]*?pmc_survival_rate: stats\.pmcSurvivalRate[\s\S]*?longest_win_streak: stats\.longestWinStreak[\s\S]*?level: stats\.level[\s\S]*?\};/);
+  assert.match(regularBranch, /store\.cohort2d\(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\)/);
   assert.match(regularBranch, /loadDynamicAverage\(/);
+  assert.match(regularBranch, /\["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period\]\.join\(":"\)/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);
   assert.doesNotMatch(regularBranch, /centerValue/);
 });
@@ -29,7 +32,12 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
   assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 2);
   assert.match(db, /metric_values AS/);
+  assert.match(db, /\? AS player_v FROM cohort/);
+  assert.match(db, /COUNT\(CASE WHEN v < player_v THEN 1 END\) OVER \(PARTITION BY metric\) AS below/);
+  assert.match(db, /COUNT\(CASE WHEN v = player_v THEN 1 END\) OVER \(PARTITION BY metric\) AS equal/);
   assert.match(db, /PARTITION BY metric/);
+  assert.match(db, /playerMetrics\?: ComparisonCohortPlayerMetrics/);
+  assert.equal((db.match(/playerMetrics,/g) ?? []).length, 4);
 });
 
 

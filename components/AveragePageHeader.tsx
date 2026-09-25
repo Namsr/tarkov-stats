@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import CompactDetails from "@/components/CompactDetails";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import SegmentedRadio from "@/components/SegmentedRadio";
@@ -28,6 +29,8 @@ export default function AveragePageHeader({
   seasonalCycleId?: string;
 }) {
   const { t } = useI18n();
+  const pathname = usePathname();
+  const isPopulation = pathname === "/population" || pathname.startsWith("/population/");
 
   useEffect(() => {
     const selectedPeriod = period ?? "all";
@@ -55,7 +58,11 @@ export default function AveragePageHeader({
         {t("common.back")}
       </Link>
       <div className="average-hero">
-        <h1 className="page-title">{t("nav.average")}</h1>
+        {isPopulation ? (
+          <h1 className="page-title">{t("nav.population")}</h1>
+        ) : (
+          <h1 className="page-title">{t("nav.average")}</h1>
+        )}
         <ProfileModeSwitch
           current={current}
           page="average"

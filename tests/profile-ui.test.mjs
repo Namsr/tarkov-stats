@@ -410,7 +410,7 @@ test("active navigation links go back only for an unmodified click at their dest
   const { activeLinkAction } = await import("../lib/active-link.ts");
   const helper = await readFile("lib/active-link.ts", "utf8");
   const header = await readFile("components/SiteHeader.tsx", "utf8");
-  const average = await readFile("components/AverageNavButton.tsx", "utf8");
+  const compare = await readFile("components/AverageNavButton.tsx", "utf8");
   const averagePage = await readFile("app/average/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
   const seasonalAverage = await readFile("components/SeasonalAverage.tsx", "utf8");
@@ -439,8 +439,10 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(helper, /router\.back\(\)/);
   assert.match(helper, /router\.replace\(fallback\)/);
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
-  assert.match(average, /const active = pathname\.startsWith\("\/average"\)/);
-  assert.match(average, /handleActiveLinkClick\(event, active, router\)/);
+  assert.match(compare, /const active = pathname === "\/compare" \|\| pathname === "\/compare\/"/);
+  assert.match(compare, /href="\/compare"/);
+  assert.match(compare, /t\("nav\.compare"\)/);
+  assert.match(compare, /handleActiveLinkClick\(event, active, router\)/);
   assert.match(modes, /onNavigate=\{\(\) => \{/);
   assert.match(modes, /prefetch/);
   assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);

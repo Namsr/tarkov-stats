@@ -19,7 +19,14 @@ import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 type SearchMode = GameMode | "all";
 
-export default function SearchBar({ autoFocus = false, landing = false }: { autoFocus?: boolean; landing?: boolean }) {
+type SearchBarProps = {
+  autoFocus?: boolean;
+  landing?: boolean;
+  onSelect?: (aid: number, profile: PlayerSearchProfileResult) => void;
+  fixedMode?: Extract<GameMode, "regular">;
+};
+
+export default function SearchBar({ autoFocus = false, landing = false, onSelect, fixedMode }: SearchBarProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -27,7 +34,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<PlayerSearchResult[]>([]);
   const [resultsOpen, setResultsOpen] = useState(false);
-  const [searchMode, setSearchMode] = useState<SearchMode>("all");
+  const [searchMode, setSearchMode] = useState<SearchMode>(fixedMode ?? "all");
   const [searchedNickname, setSearchedNickname] = useState("");
   const [recentPlayers, setRecentPlayers] = useState<RecentPlayerEntry[]>([]);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -47,6 +54,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const resultListId = useId();
   const modeMenuId = useId();
   const router = useRouter();
+  const effectiveSearchMode: SearchMode = fixedMode ?? searchMode;
 
   function modeLabel(mode: GameMode): string {
     if (mode === "regular") return t("fav.mode.regular");
@@ -71,6 +79,11 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   }
 
   function openProfile(aid: number, profile: PlayerSearchProfileResult) {
+    if (onSelect) {
+      closeSearchPanels();
+      onSelect(aid, profile);
+      return;
+    }
     const params = new URLSearchParams({ aid: String(aid), mode: profile.mode });
     if (profile.mode === "seasonal") params.set("cycle", profile.cycleId);
     warmPlayerProfileResponse(`/api/player/profile?${params}`);
@@ -126,9 +139,10 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   }
 
   function selectSearchMode(mode: SearchMode) {
+    if (fixedMode) return;
     setModeMenuOpen(false);
     modeTriggerRef.current?.focus();
-    if (mode === searchMode) return;
+    if (mode === effectiveSearchMode) return;
     setSearchMode(mode);
     if (searchedNickname) void searchNickname(searchedNickname, mode);
   }
@@ -287,7 +301,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
         return;
       }
 
-      await searchNickname(clean, searchMode);
+      await searchNickname(clean, effectiveSearchMode);
       return;
     }
 
@@ -295,9 +309,20 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
     setNotFound(false);
     setResults([]);
     setResultsOpen(false);
-    const selectedMode = /^\d{1,15}$/.test(clean) && searchMode !== "all"
-      ? searchMode
-      : player.mode;
+    const selectedMode = fixedMode ?? (
+      /^\d{1,15}$/.test(clean) && effectiveSearchMode !== "all"
+        ? effectiveSearchMode
+        : player.mode
+    );
+    if (onSelect) {
+      closeSearchPanels();
+      onSelect(player.aid, {
+        mode: selectedMode,
+        cycleId: "persistent",
+        name: clean,
+      });
+      return;
+    }
     const href = `/player/${appRouteMode(selectedMode)}/${player.aid}`;
     // Start the profile request before the route transition. Normal profile
     // responses are browser-cacheable, so the hydrated page can reuse this
@@ -313,6 +338,21 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
       });
     }
     router.push(href);
+  }
+
+  function openRecent(entry: RecentPlayerEntry) {
+    if (onSelect) {
+      const entryMode = entry.mode === "pvp-season" ? "seasonal" : entry.mode;
+      const mode = fixedMode ?? entryMode;
+      closeSearchPanels();
+      onSelect(Number(entry.aid), {
+        mode,
+        cycleId: mode === "seasonal" ? entry.cycle ?? "persistent" : "persistent",
+        name: entry.nickname,
+      });
+      return;
+    }
+    router.push(getRecentPlayerHref(entry));
   }
 
   return (
@@ -358,14 +398,15 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
               placeholder={t(landing ? "home.searchPlaceholder" : "search.placeholder")}
               aria-label={t("search.placeholder")}
               autoFocus={autoFocus}
-              className="search-unit__input"
+              className={`search-unit__input${fixedMode ? " !rounded-full" : ""}`}
               role="combobox"
               aria-autocomplete="none"
               aria-haspopup="dialog"
               aria-expanded={showRecent || showResults}
               aria-controls={showRecent ? recentListId : showResults ? resultListId : undefined}
             />
-            <div className="search-unit__mode-picker">
+            {!fixedMode && (
+              <div className="search-unit__mode-picker">
               <button
                 ref={modeTriggerRef}
                 type="button"
@@ -386,7 +427,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   focusModeOption(event.key === "ArrowDown" ? 0 : GAME_MODES.length);
                 }}
               >
-                <span>{searchModeLabel(searchMode)}</span>
+                <span>{searchModeLabel(effectiveSearchMode)}</span>
                 <svg viewBox="0 0 12 8" aria-hidden="true" className="search-unit__mode-chevron">
                   <path d="M1 1.25 6 6.25l5-5" fill="none" stroke="currentColor" strokeWidth="1.5" />
                 </svg>
@@ -406,7 +447,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                     ref={(node) => { modeOptionRefs.current[index] = node; }}
                     type="button"
                     role="option"
-                    aria-selected={searchMode === mode}
+                    aria-selected={effectiveSearchMode === mode}
                     className="search-unit__mode-option"
                     onClick={() => selectSearchMode(mode)}
                     onKeyDown={(event) => handleModeOptionKeyDown(event, index)}
@@ -415,7 +456,8 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   </button>
                 ))}
               </div>
-            </div>
+              </div>
+            )}
           </div>
 
           {recentMatches.length > 0 && (
@@ -442,10 +484,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   <div key={entry.aid} className="search-unit__recent-row">
                     <button
                       type="button"
-                      onClick={() => {
-                        setRecentOpen(false);
-                        router.push(getRecentPlayerHref(entry));
-                      }}
+                      onClick={() => openRecent(entry)}
                       className="search-unit__recent-link"
                     >
                       <span className="min-w-0 truncate">{entry.nickname}</span>
@@ -493,7 +532,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
           disabled={loading || !query.trim()}
           className="tactical-button shrink-0"
         >
-          {loading ? t("common.loading") : t(landing ? "home.search" : "search.view")}
+          {loading ? t("common.loading") : t(onSelect ? "search.select" : landing ? "home.search" : "search.view")}
           {landing && !loading && <span aria-hidden="true">→</span>}
         </button>
       </div>

@@ -127,3 +127,29 @@ test("search and recent profile lists stay bounded without truncating rows", asy
   assert.match(styles, /\.search-unit__recent-list\s*\{[\s\S]*max-height: min\(256px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
   assert.match(styles, /\.search-unit__results-list\s*\{[\s\S]*max-height: min\(276px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
 });
+
+test("search selection callback keeps regular mode and leaves legacy navigation intact", async () => {
+  const source = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.match(source, /onSelect\?: \(aid: number, profile: PlayerSearchProfileResult\) => void/);
+  assert.match(source, /fixedMode\?: Extract<GameMode, "regular">/);
+  assert.match(source, /const effectiveSearchMode: SearchMode = fixedMode \?\? searchMode/);
+  assert.match(source, /if \(onSelect\) \{[\s\S]*onSelect\(aid, profile\)/);
+  assert.match(source, /onSelect\(player\.aid, \{[\s\S]*mode: selectedMode/);
+  assert.match(source, /onSelect\(Number\(entry\.aid\), \{/);
+  assert.match(source, /searchNickname\(clean, effectiveSearchMode\)/);
+  assert.match(source, /router\.push\(profileHref\(aid, profile\)\)/);
+  assert.match(source, /router\.push\(getRecentPlayerHref\(entry\)\)/);
+  assert.match(source, /!fixedMode && \(/);
+});
+
+test("search selection action is localized separately from profile navigation", async () => {
+  const [component, dictionary] = await Promise.all([
+    readFile("components/SearchBar.tsx", "utf8"),
+    readFile("lib/i18n/dictionary.ts", "utf8"),
+  ]);
+
+  assert.match(component, /loading \? t\("common\.loading"\) : t\(onSelect \? "search\.select" : landing \? "home\.search" : "search\.view"\)/);
+  assert.match(dictionary, /"search\.select": "Select"/);
+  assert.match(dictionary, /"search\.select": "Выбрать"/);
+});
