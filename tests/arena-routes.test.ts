@@ -216,6 +216,8 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
   const body = await response.json();
   assert.equal(body.gameMode, "arena");
   assert.equal(body.mode, "teamFight");
+  assert.deepEqual(body.identity, { aid: 1, mode: "arena", cycleId: "persistent", arenaMode: "teamFight" });
+  assert.equal(body.percentiles, null);
   assert.equal(body.strategy, "matched");
   assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);
   assert.deepEqual(body.target, { hours: 100, matches: 100 });
@@ -242,6 +244,8 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
   assert.equal(overallResponse.status, 200);
   const overall = await overallResponse.json();
   assert.equal(overall.mode, "overall");
+  assert.deepEqual(overall.identity, { aid: 1, mode: "arena", cycleId: "persistent", arenaMode: "overall" });
+  assert.equal(overall.percentiles, null);
   assert.equal(overall.strategy, "population");
   assert.equal(overall.sampleN, 21);
 
@@ -250,6 +254,9 @@ test("Arena cohort derives both axes from stored Arena data", async () => {
   ))).status, 400);
   assert.equal((await getCohort(new NextRequest(
     "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=teamFight&period=90d",
+  ))).status, 400);
+  assert.equal((await getCohort(new NextRequest(
+    "http://local/api/average/cohort?mode=arena&cycle=season-1&aid=1&arenaMode=overall",
   ))).status, 400);
 });
 test("Arena population fallback validates the real average payload before trusting it", async () => {

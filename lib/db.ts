@@ -310,7 +310,7 @@ function eligibleMetricWhere(
     throw new Error(`invalid metric column: ${metric}`);
   }
   const populated = metric ? appendCondition(where, `${metric} IS NOT NULL`) : where;
-  return mode === "regular" && PVP_METRICS.has(metric)
+  return (mode === "regular" || mode === "pve") && PVP_METRICS.has(metric)
     ? appendCondition(populated, "pvp_stats_known = 1")
     : populated;
 }
@@ -700,7 +700,11 @@ function twoDimensionalRangeWhere(
   };
 }
 
-function persistentComparisonMetricsSql(where: string, statistic: AverageStatistic): string {
+function persistentComparisonMetricsSql(
+  mode: Extract<CrossSectionMode, "regular" | "pve">,
+  where: string,
+  statistic: AverageStatistic,
+): string {
   const selected = statistic === "median"
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
@@ -708,10 +712,10 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
   const values = COMPARISON_RADAR_METRICS.map((metric) =>
     `SELECT '${metric}' AS metric, ${metric} AS v, ? AS player_v FROM cohort WHERE ${metric} IS NOT NULL${
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
-    }`
+    }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""}`
   ).join(" UNION ALL ");
   return `WITH cohort AS (
-    SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
+    SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
   ), metric_values AS (${values}), ranked AS (
     SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
       COUNT(*) OVER (PARTITION BY metric) AS n,
@@ -792,7 +796,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     input.period,
   );
   const selectedRows = await input.readAll(
-    persistentComparisonMetricsSql(selected.where, input.statistic),
+    persistentComparisonMetricsSql(input.mode, selected.where, input.statistic),
     [...selected.params, ...playerMetricParams],
   );
   let resultRows = selectedRows;
@@ -802,7 +806,7 @@ async function computePersistentTwoDimensionalCohort(input: {
   if (strategy === null && (input.mode === "regular" || input.mode === "pve")) {
     const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
     resultRows = await input.readAll(
-      persistentComparisonMetricsSql(population.where, input.statistic),
+      persistentComparisonMetricsSql(input.mode, population.where, input.statistic),
       [...population.params, ...playerMetricParams],
     );
     const populationGroup = resultRows.find((row) => row.metric === "__group__");

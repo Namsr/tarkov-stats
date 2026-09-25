@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import { createRequire } from "node:module";
+import type * as ProfileCohort from "../lib/profile-cohort";
+
+const require = createRequire(import.meta.url);
+const {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
   RISK_COHORT_TARGET,
@@ -13,8 +17,7 @@ import {
   makeComparisonCohortResult,
   makeEmptyPopulationCohortResult,
   selectComparisonPercent,
-// @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts extension.
-} from "../lib/profile-cohort.ts";
+} = require("../lib/profile-cohort.ts") as typeof ProfileCohort;
 
 test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
   assert.deepEqual(COMPARISON_COHORT_PERCENTAGES, [10, 15, 20, 30]);

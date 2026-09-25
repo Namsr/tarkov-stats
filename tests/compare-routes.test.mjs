@@ -37,3 +37,13 @@ test("average URLs permanently redirect to population without dropping query par
   assert.match(redirects, /source: "\/average\/:mode", destination: "\/population\/:mode", permanent: true/);
   assert.doesNotMatch(redirects, /\?/);
 });
+
+test("compare route resolves the active Seasonal cycle on the server", async () => {
+  const page = await readFile("app/compare/page.tsx", "utf8");
+  assert.match(page, /import \{ connection \} from "next\/server"/);
+  assert.match(page, /await connection\(\)/);
+  assert.match(page, /loadSeasonalCycleConfig\(\)/);
+  assert.match(page, /isSeasonalRolloutReady\(\)/);
+  assert.match(page, /<ComparePage seasonalCycleId=\{seasonalCycleId\} \/>/);
+  assert.match(page, /<Suspense fallback=\{<main className="page-frame" aria-busy="true" \/>\}>/);
+});

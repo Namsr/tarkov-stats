@@ -376,6 +376,87 @@ test("persistent cohort route propagates stored profile metrics into percentiles
   for (const percentile of Object.values(body.percentiles)) assert.deepEqual(percentile, expected);
 });
 
+test("PvE PMC K/D distributions and route percentiles exclude unknown PvP stats", async () => {
+  resetPve();
+  for (let aid = 1; aid <= 20; aid += 1) {
+    addMode("pve", aid, { hours: 100, raids: 100, value: aid, pvpKnown: true });
+  }
+  addMode("pve", 21, { hours: 100, raids: 100, value: 100, pvpKnown: false });
+  const cohort = await pveStore.cohort2d(100, 100, 999, "hours", "median", "all", {
+    kd_ratio: 1,
+    pmc_kd_ratio: 1,
+    kills_per_raid: 1,
+    pmc_survival_rate: 1,
+    longest_win_streak: 1,
+    level: 1,
+  });
+  assert.equal(cohort.n, 21);
+  assert.deepEqual(cohort.averages.pmc_kd_ratio, { value: 10.5, count: 20 });
+  assert.deepEqual(cohort.percentiles.pmc_kd_ratio, {
+    percentile: 0,
+    count: 20,
+    below: 0,
+    equal: 1,
+  });
+  assert.deepEqual(cohort.averages.kd_ratio, { value: 11, count: 21 });
+
+  db.prepare("UPDATE mode_players SET killed_pmc = aid WHERE mode = 'pve' AND aid <= 20").run();
+  db.prepare("UPDATE mode_players SET killed_pmc = 1000 WHERE mode = 'pve' AND aid = 21").run();
+  const average = await pveStore.averages(range(0, 999), "median", "all");
+  assert.equal(average.metricCounts.pmc_kd_ratio, 20);
+  assert.equal(average.metricCounts.killed_pmc, 20);
+  assert.equal(average.pmc_kd_ratio, 10.5);
+  assert.equal(average.killed_pmc, 10.5);
+  assert.deepEqual(
+    await pveStore.histogramAverages("pmc_kd_ratio", [{ lo: 0, hi: null }]),
+    [10.5],
+  );
+  assert.deepEqual(
+    await pveStore.histogramAverages("killed_pmc", [{ lo: 0, hi: null }]),
+    [10.5],
+  );
+  assert.deepEqual(
+    (await pveStore.bucketAggregate("hours", "pmc_kd_ratio", "all", "median"))
+      .reduce((total, bucket) => total + bucket.n, 0),
+    20,
+  );
+  assert.deepEqual(
+    (await pveStore.bucketAggregate("hours", "killed_pmc", "all", "median"))
+      .reduce((total, bucket) => total + bucket.n, 0),
+    20,
+  );
+
+  const progressionStore = await getProgressionStore("pve");
+  assert.ok(progressionStore);
+  const targetAid = 910;
+  await progressionStore.recordSnapshot({
+    aid: targetAid,
+    stats: pveStats({
+      hoursPlayed: 100,
+      pmcRaids: 100,
+      pvpStatsKnown: false,
+      pmcKdRatio: 100,
+    }),
+    achievementIds: [],
+    upstreamUpdatedAt: 1_800_000_000_200,
+    capturedAt: 1_800_000_000_201,
+  });
+  resetDynamicAverageCacheForTests();
+  const response = await getCohort(new NextRequest(
+    "http://local/api/average/cohort?aid=910&mode=pve&cycle=persistent&statistic=median&period=all",
+  ));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.identity, { aid: targetAid, mode: "pve", cycleId: "persistent" });
+  assert.deepEqual(body.percentiles.pmc_kd_ratio, {
+    percentile: null,
+    count: 20,
+    below: 0,
+    equal: 0,
+  });
+  assert.notEqual(body.percentiles.kd_ratio.percentile, null);
+});
+
 test("PvE two-axis averages select the first 10/15/20/30 percent window with 20 peers", async () => {
   const fixtures = [
     { expected: 10, expectedN: 20, groups: [[100, 20], [500, 20]] },
@@ -710,11 +791,15 @@ test("regular PvP averages include explicit zeroes and exclude only unknown coun
   add(2, { value: 2 });
   add(3, { value: 100 });
   db.exec(`UPDATE players SET pvp_stats_known = 1 WHERE aid IN (1, 2)`);
+  db.exec(`UPDATE players SET killed_pmc = aid WHERE aid IN (1, 2)`);
+  db.exec(`UPDATE players SET killed_pmc = 100 WHERE aid = 3`);
 
   const average = await store.averages(range(0, 999), "median");
   assert.equal(average.n, 3);
   assert.equal(average.metricCounts.pmc_kd_ratio, 2);
+  assert.equal(average.metricCounts.killed_pmc, 2);
   assert.equal(average.pmc_kd_ratio, 1);
+  assert.equal(average.killed_pmc, 1.5);
 });
 
 test("regular 90d period filters every average distribution and cohort query", async () => {

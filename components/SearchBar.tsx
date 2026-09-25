@@ -23,10 +23,11 @@ type SearchBarProps = {
   autoFocus?: boolean;
   landing?: boolean;
   onSelect?: (aid: number, profile: PlayerSearchProfileResult) => void;
-  fixedMode?: Extract<GameMode, "regular">;
+  fixedMode?: GameMode;
+  cycleId?: string;
 };
 
-export default function SearchBar({ autoFocus = false, landing = false, onSelect, fixedMode }: SearchBarProps) {
+export default function SearchBar({ autoFocus = false, landing = false, onSelect, fixedMode, cycleId }: SearchBarProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -67,8 +68,16 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     return mode === "all" ? t(landing ? "home.allModes" : "search.modeAll") : modeLabel(mode);
   }
 
+  function recentGameMode(mode: RecentPlayerEntry["mode"]): GameMode {
+    return mode === "pvp-season" ? "seasonal" : mode;
+  }
+
+  function recentEntryMode(entry: RecentPlayerEntry): GameMode {
+    return recentGameMode(entry.mode);
+  }
+
   function recentModeLabel(mode: RecentPlayerEntry["mode"]): string {
-    return modeLabel(mode === "pvp-season" ? "seasonal" : mode);
+    return modeLabel(recentGameMode(mode));
   }
 
   function profileHref(aid: number, profile: PlayerSearchProfileResult): string {
@@ -78,24 +87,34 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
       : base;
   }
 
+  function scopedProfile(profile: PlayerSearchProfileResult): PlayerSearchProfileResult {
+    if (!fixedMode) return profile;
+    return {
+      ...profile,
+      mode: fixedMode,
+      cycleId: fixedMode === "seasonal" ? cycleId?.trim() || profile.cycleId : "persistent",
+    };
+  }
+
   function openProfile(aid: number, profile: PlayerSearchProfileResult) {
+    const selectedProfile = scopedProfile(profile);
     if (onSelect) {
       closeSearchPanels();
-      onSelect(aid, profile);
+      onSelect(aid, selectedProfile);
       return;
     }
-    const params = new URLSearchParams({ aid: String(aid), mode: profile.mode });
-    if (profile.mode === "seasonal") params.set("cycle", profile.cycleId);
+    const params = new URLSearchParams({ aid: String(aid), mode: selectedProfile.mode });
+    if (selectedProfile.mode === "seasonal") params.set("cycle", selectedProfile.cycleId);
     warmPlayerProfileResponse(`/api/player/profile?${params}`);
-    if (profile.mode === "regular" || profile.mode === "pve") {
+    if (selectedProfile.mode === "regular" || selectedProfile.mode === "pve") {
       const timeline = new URLSearchParams({
-        mode: profile.mode,
+        mode: selectedProfile.mode,
         cycle: "persistent",
         aid: String(aid),
       });
       void fetch(`/api/progression/timeline?${timeline}`, { cache: "default" }).catch(() => {});
     }
-    router.push(profileHref(aid, profile));
+    router.push(profileHref(aid, selectedProfile));
   }
 
   async function searchNickname(clean: string, mode: SearchMode) {
@@ -279,7 +298,11 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     };
   }, [modeMenuOpen, recentOpen, results.length, resultsOpen]);
 
-  const recentMatches = filterRecentPlayers(recentPlayers, query);
+  const recentMatches = filterRecentPlayers(recentPlayers, query).filter((entry) => {
+    if (!fixedMode) return true;
+    if (recentEntryMode(entry) !== fixedMode) return false;
+    return fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && entry.cycle === cycleId;
+  });
   const showResults = resultsOpen && results.length > 0 && searchedNickname === query.trim();
   const showRecent = !showResults && recentOpen && recentMatches.length > 0;
 
@@ -314,16 +337,22 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
         ? effectiveSearchMode
         : player.mode
     );
+    const selectedCycleId = selectedMode === "seasonal" && fixedMode
+      ? cycleId?.trim() || "persistent"
+      : "persistent";
     if (onSelect) {
       closeSearchPanels();
       onSelect(player.aid, {
         mode: selectedMode,
-        cycleId: "persistent",
+        cycleId: selectedCycleId,
         name: clean,
       });
       return;
     }
-    const href = `/player/${appRouteMode(selectedMode)}/${player.aid}`;
+    const profileBase = `/player/${appRouteMode(selectedMode)}/${player.aid}`;
+    const href = fixedMode && selectedMode === "seasonal"
+      ? `${profileBase}?cycle=${encodeURIComponent(selectedCycleId)}`
+      : profileBase;
     // Start the profile request before the route transition. Normal profile
     // responses are browser-cacheable, so the hydrated page can reuse this
     // request instead of opening a second waterfall after navigation.
@@ -342,12 +371,13 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
 
   function openRecent(entry: RecentPlayerEntry) {
     if (onSelect) {
-      const entryMode = entry.mode === "pvp-season" ? "seasonal" : entry.mode;
-      const mode = fixedMode ?? entryMode;
+      const mode = fixedMode ?? recentEntryMode(entry);
       closeSearchPanels();
       onSelect(Number(entry.aid), {
         mode,
-        cycleId: mode === "seasonal" ? entry.cycle ?? "persistent" : "persistent",
+        cycleId: mode === "seasonal"
+          ? fixedMode ? cycleId?.trim() || entry.cycle || "persistent" : entry.cycle ?? "persistent"
+          : "persistent",
         name: entry.nickname,
       });
       return;
@@ -571,9 +601,13 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
             </p>
             <div className="search-unit__results-list space-y-1">
               {results.map((player) => {
+                const profiles = fixedMode
+                  ? player.profiles.filter((profile) => profile.mode === fixedMode &&
+                    (fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && profile.cycleId === cycleId))
+                  : player.profiles;
                 const selectedProfile = selectPlayerSearchProfile(
                   player.aid,
-                  player.profiles,
+                  profiles,
                   searchedNickname,
                   recentPlayers,
                 );
@@ -596,7 +630,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
                     />
                     <span className="search-unit__result-name min-w-0 flex-1 truncate">{player.name}</span>
                     <span className="search-unit__result-meta">
-                      {player.profiles.map((profile) => {
+                      {profiles.map((profile) => {
                         const isSelected = selectedKey === `${profile.mode}:${profile.cycleId}`;
                         const label = t(isSelected ? "search.openModeDefault" : "search.openMode", {
                           mode: modeLabel(profile.mode),

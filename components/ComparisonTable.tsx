@@ -18,25 +18,28 @@ interface ComparisonTableProps {
   nameA: string;
   nameB: string;
   rows: ComparisonRow[];
+  showPercentile?: boolean;
 }
 
-export default function ComparisonTable({ nameA, nameB, rows }: ComparisonTableProps) {
+export default function ComparisonTable({ nameA, nameB, rows, showPercentile = true }: ComparisonTableProps) {
   const { t, lang } = useI18n();
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[720px] table-fixed border-collapse text-sm">
-        <caption className="sr-only">{t("compare.tableCaption")}</caption>
+      <table className={`w-full table-fixed border-collapse text-sm ${showPercentile ? "min-w-[720px]" : "min-w-[640px]"}`}>
+        <caption className="sr-only">{t(showPercentile ? "compare.tableCaption" : "compare.tableCaptionNoPercentile")}</caption>
         <thead>
           <tr className="border-b border-[var(--card-border)] text-[10px] uppercase tracking-wider">
-            <th scope="col" className="w-[24%] py-2.5 px-1.5 text-left text-[var(--muted)]">{t("cmp.metric")}</th>
-            <th scope="col" className="w-[22%] py-2 px-1.5 text-right text-[var(--accent)]">
+            <th scope="col" className={`${showPercentile ? "w-[24%]" : "w-[28%]"} py-2.5 px-1.5 text-left text-[var(--muted)]`}>{t("cmp.metric")}</th>
+            <th scope="col" className={`${showPercentile ? "w-[22%]" : "w-[26%]"} py-2 px-1.5 text-right text-[var(--accent)]`}>
               <span className="block truncate" title={nameA}>{nameA}</span>
             </th>
-            <th scope="col" className="w-[22%] py-2.5 px-1.5 text-right text-[var(--muted-strong)]">
+            <th scope="col" className={`${showPercentile ? "w-[22%]" : "w-[26%]"} py-2.5 px-1.5 text-right text-[var(--muted-strong)]`}>
               <span className="block truncate" title={nameB}>{nameB}</span>
             </th>
             <th scope="col" className="w-[20%] py-2.5 px-1.5 text-right text-[var(--muted)]">{t("compare.cohortBenchmark")}</th>
-            <th scope="col" className="w-[12%] py-2.5 px-1.5 text-right text-[var(--muted)]">{t("compare.percentile")}</th>
+            {showPercentile && (
+              <th scope="col" className="w-[12%] py-2.5 px-1.5 text-right text-[var(--muted)]">{t("compare.percentile")}</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -52,9 +55,11 @@ export default function ComparisonTable({ nameA, nameB, rows }: ComparisonTableP
               <td className="py-2.5 px-1.5 text-right text-[var(--muted-strong)] tabular-nums">
                 {metricText(row.benchmark, row.decimals, row.suffix, lang)}
               </td>
-              <td className="py-2.5 px-1.5 text-right">
-                <PercentileBadge percentile={row.percentile} />
-              </td>
+              {showPercentile && (
+                <td className="py-2.5 px-1.5 text-right">
+                  <PercentileBadge percentile={row.percentile} />
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

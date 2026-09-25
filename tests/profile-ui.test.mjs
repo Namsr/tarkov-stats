@@ -367,7 +367,7 @@ test("search keeps its mode picker inline and dismisses the animated history out
   assert.match(search, /document\.addEventListener\("pointerdown", closeOutside, true\)/);
   assert.match(search, /document\.addEventListener\("focusin", closeOutside, true\)/);
   assert.match(search, /className="search-unit__history"[\s\S]*data-open=\{showRecent\}[\s\S]*inert=\{!showRecent\}/);
-  assert.match(search, /player\.profiles\.map[\s\S]*search-unit__result-mode[\s\S]*search-unit__result-id/);
+  assert.match(search, /profiles\.map[\s\S]*search-unit__result-mode[\s\S]*search-unit__result-id/);
   assert.match(styles, /\.search-unit__history \{[^}]*position: absolute/s);
   assert.match(styles, /\.search-unit__mode-menu,[\s\S]*transform: translateY\(-8px\)/);
   assert.match(styles, /prefers-reduced-motion: reduce[\s\S]*\.search-unit__history/);

@@ -16,6 +16,7 @@ export default function PercentileBadge({ percentile }: PercentileBadgeProps) {
     <span
       className="inline-flex items-center rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-[var(--accent)]"
       title={t("pct.badge", { value })}
+      aria-label={t("pct.badge", { value })}
     >
       P{value}
     </span>

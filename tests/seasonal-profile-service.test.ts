@@ -39,6 +39,9 @@ test("legacy profile identity remains regular/persistent when mode and cycle are
   assert.equal(normalizeCycleId(null, "regular"), "persistent");
   assert.equal(normalizeCycleId("persistent", "pve"), "persistent");
   assert.equal(normalizeCycleId("season-1", "pve"), null);
+  assert.equal(normalizeCycleId(null, "arena"), "persistent");
+  assert.equal(normalizeCycleId("persistent", "arena"), "persistent");
+  assert.equal(normalizeCycleId("season-1", "arena"), null);
   assert.equal(normalizeCycleId(null, "seasonal"), null);
   assert.equal(normalizeCycleId("persistent", "seasonal"), null);
 });
