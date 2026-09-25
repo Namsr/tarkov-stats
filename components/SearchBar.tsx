@@ -504,11 +504,12 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
 
       {notFound && (
         <p className="search-unit__not-found" role="status">
-          {error} {!landing && <>{t("search.nickNotFoundBefore")}{" "}
+          {error}{" "}
+          {t("search.nickNotFoundBefore")}{" "}
           <a href="https://tarkov.dev/players" target="_blank" rel="noopener noreferrer">
             tarkov.dev/players
           </a>{" "}
-          {t("search.nickNotFoundAfter")}</>}
+          {t("search.nickNotFoundAfter")}
         </p>
       )}
 
@@ -587,7 +588,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
         </div>
       )}
 
-      {(!landing || notFound || results.length > 0) && <p className="search-unit__help">
+      {(!landing || results.length > 0) && <p className="search-unit__help">
         {t(landing ? "home.searchHelpBefore" : "search.helpBefore")}{" "}
         <a
           href="https://tarkov.dev/players"
