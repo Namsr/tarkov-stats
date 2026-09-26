@@ -127,7 +127,8 @@ async function loadPersistentAchievementBaseline(mode: PersistentMode): Promise<
     try {
       const store = await getStore(mode);
       return store ? await store.achievementBaseline() : null;
-    } catch {
+    } catch (error) {
+      console.error(`achievementBaseline failed for ${mode}`, error);
       return null;
     }
   })();

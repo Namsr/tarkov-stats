@@ -1426,7 +1426,7 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
             FROM achievement_baseline_publications WHERE mode = ?`).bind(mode).first() as Record<string, unknown> | null;
           return parsePublishedAchievementBaseline(row);
         } catch (error) {
-          console.error("achievementBaseline failed", error);
+          console.error(`achievementBaseline failed for ${mode}`, error);
           return null;
         }
       },
