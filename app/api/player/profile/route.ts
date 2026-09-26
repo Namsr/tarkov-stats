@@ -797,76 +797,10 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  if (!force) {
-    const storedStarted = timing.now();
-    const progressionStore = await getProgressionStore("regular");
-    const stored = progressionStore ? await progressionStore.latest(aid) : null;
-    const storeReadMs = timing.elapsedMs(storedStarted);
-    if (stored) {
-      const enrichmentPhases: ProfileEnrichmentPhases = {};
-      const storedRisk = stored.stats.pvpStatsKnown === false
-        ? null
-        : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
-      const riskIsFresh = storedRisk &&
-        storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
-        storedRisk.profileUpdatedAt >= Number(stored.stats.profileUpdatedAt) &&
-        Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-      if (stored.stats.pvpStatsKnown !== false && !riskIsFresh) {
-        after(async () => {
-          // Match the upstream path: let the personal timeline load first.
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          await evaluateAndStoreRisk({
-            aid, mode: "regular", cycleId,
-            stats: stored.stats, achievementIds: stored.achievementIds,
-          }).catch((error) => {
-            console.error("regular stored profile risk evaluation failed", error);
-          });
-        });
-      }
-      const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
-        ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
-        : null;
-      const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
-        aid,
-        mode: "regular",
-        cycleId,
-        stats: stored.stats,
-        achievementIds: stored.achievementIds,
-        capturedAt: stored.capturedAt,
-      }, publicRisk), enrichmentPhases);
-      if (needsPvpStatsParserRefresh(stored.stats) ||
-          Date.now() - stored.capturedAt >= STORED_PROFILE_REFRESH_MS) {
-        after(() => refreshStoredRegularProfile(aid));
-      }
-      timing.setRequestContext({ nickname: stored.stats.nickname });
-      timing.finish({
-        operation: "player_profile",
-        mode: "regular",
-        outcome: "success",
-        status: 200,
-        force: false,
-        source: "stored",
-        cache: "hit",
-        storage: "sqlite",
-        storeReadMs,
-        baselineMs: enrichmentPhases.baselineMs,
-        metadataMs: enrichmentPhases.metadataMs,
-        masteryMs: enrichmentPhases.masteryMs,
-      });
-      return NextResponse.json({
-        profile: null,
-        stats: stored.stats,
-        achievementIds: stored.achievementIds,
-        profileUpdatedAt: Number(stored.stats.profileUpdatedAt) || stored.upstreamUpdatedAt,
-        identity: { aid, mode: "regular", cycleId },
-        risk: publicRisk,
-        comparisonStats: buildPersistentComparisonStats(stored.stats),
-        capture: { inserted: false, status: "stored" },
-        freshness: viewModel.freshness,
-        viewModel,
-      }, { headers: profileHeaders });
-    }
-  }
+  const storedStarted = timing.now();
+  const progressionStore = await getProgressionStore("regular");
+  const stored = progressionStore ? await progressionStore.latest(aid) : null;
+  const storeReadMs = timing.elapsedMs(storedStarted);
 
   let profileMs: number | undefined;
   let levelsMs: number | undefined;
@@ -875,13 +809,107 @@ export async function GET(request: NextRequest) {
   let profileStarted: number | undefined;
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
+  let fromCache = false;
+  let fromEdgeCache = false;
+
+  // Built as a closure so the forced path can fall back to the stored snapshot
+  // when upstream is unreachable or reports the profile as missing. Arena and
+  // pve already degrade to their stored row instead of claiming absence.
+  const storedResponse = async (snapshot: NonNullable<typeof stored>) => {
+    const storedEnrichmentPhases: ProfileEnrichmentPhases = {};
+    const storedRisk = snapshot.stats.pvpStatsKnown === false
+      ? null
+      : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+    const riskIsFresh = storedRisk &&
+      storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
+      storedRisk.profileUpdatedAt >= Number(snapshot.stats.profileUpdatedAt) &&
+      Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
+    if (snapshot.stats.pvpStatsKnown !== false && !riskIsFresh) {
+      after(async () => {
+        // Match the upstream path: let the personal timeline load first.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await evaluateAndStoreRisk({
+          aid, mode: "regular", cycleId,
+          stats: snapshot.stats, achievementIds: snapshot.achievementIds,
+        }).catch((error) => {
+          console.error("regular stored profile risk evaluation failed", error);
+        });
+      });
+    }
+    const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
+      ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
+      : null;
+    const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
+      aid,
+      mode: "regular",
+      cycleId,
+      stats: snapshot.stats,
+      achievementIds: snapshot.achievementIds,
+      capturedAt: snapshot.capturedAt,
+    }, publicRisk), storedEnrichmentPhases);
+    if (needsPvpStatsParserRefresh(snapshot.stats) ||
+        Date.now() - snapshot.capturedAt >= STORED_PROFILE_REFRESH_MS) {
+      after(() => refreshStoredRegularProfile(aid));
+    }
+    timing.setRequestContext({ nickname: snapshot.stats.nickname });
+    timing.finish({
+      operation: "player_profile",
+      mode: "regular",
+      outcome: "success",
+      status: 200,
+      force,
+      source: "stored",
+      cache: force ? "bypass" : "hit",
+      storage: "sqlite",
+      storeReadMs,
+      profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
+      baselineMs: storedEnrichmentPhases.baselineMs,
+      metadataMs: storedEnrichmentPhases.metadataMs,
+      masteryMs: storedEnrichmentPhases.masteryMs,
+    });
+    return NextResponse.json({
+      profile: null,
+      stats: snapshot.stats,
+      achievementIds: snapshot.achievementIds,
+      profileUpdatedAt: Number(snapshot.stats.profileUpdatedAt) || snapshot.upstreamUpdatedAt,
+      identity: { aid, mode: "regular", cycleId },
+      risk: publicRisk,
+      comparisonStats: buildPersistentComparisonStats(snapshot.stats),
+      capture: { inserted: false, status: "stored" },
+      freshness: viewModel.freshness,
+      viewModel,
+    }, { headers: profileHeaders });
+  };
+
+  if (stored && !force) return await storedResponse(stored);
+
+  // Scoped to the upstream call, like the pve branch above. A throw from the
+  // enrichment below has to surface as a failure, not be reported to the request
+  // log as a 200 served from the store.
+  let profile: PlayerProfile | null;
   try {
     profileStarted = timing.now();
-    const { profile, fromCache, fromEdgeCache } = await getPublicProfile(aid, { force });
-    profileMs = timing.elapsedMs(profileStarted);
-    source = fromCache || fromEdgeCache ? "cache" : "upstream";
-    cache = force ? "bypass" : fromCache || fromEdgeCache ? "hit" : "miss";
+    const result = await getPublicProfile(aid, { force });
+    profile = result.profile;
+    fromCache = result.fromCache === true;
+    fromEdgeCache = result.fromEdgeCache === true;
+    source = result.fromCache || result.fromEdgeCache ? "cache" : "upstream";
+    cache = force ? "bypass" : result.fromCache || result.fromEdgeCache ? "hit" : "miss";
+  } catch (error) {
+    // getPublicProfile throws rather than returning null when upstream is
+    // unreachable, and its stale fallback is skipped precisely because force is
+    // set. Degrade to the stored snapshot instead of reporting a 502 for a
+    // profile we already have.
+    if (stored) return await storedResponse(stored);
+    profileMs = timing.elapsedMs(profileStarted!);
+    throw error;
+  }
+  profileMs = timing.elapsedMs(profileStarted!);
+  try {
     if (!profile) {
+      // A forced refresh can lose the upstream race while a perfectly good
+      // snapshot sits in progression_snapshots. Serve that instead of a 404.
+      if (stored) return await storedResponse(stored);
       const response = NextResponse.json(
         {
           error:
@@ -980,9 +1008,6 @@ export async function GET(request: NextRequest) {
     });
     return response;
   } catch {
-    if (profileMs === undefined && profileStarted !== undefined) {
-      profileMs = timing.elapsedMs(profileStarted);
-    }
     const response = NextResponse.json(
       { error: "Failed to fetch player profile", identity: { aid, mode, cycleId } },
       { status: 502, headers: noStore }

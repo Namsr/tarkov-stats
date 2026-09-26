@@ -4,11 +4,14 @@ import test from "node:test";
 import { riskScoreVersion, storedRiskRefreshPolicy } from "../lib/admin/risk-version.ts";
 
 // Execute the stored-profile scheduling block with the route's side effects stubbed.
+// Anchored on the regular branch's own store read, since the pve branch has a
+// block with the same shape.
 const route = readFileSync(new URL("../app/api/player/profile/route.ts", import.meta.url), "utf8");
-const start = route.indexOf("      const riskIsFresh = storedRisk &&", route.indexOf("  if (!force) {"));
-const end = route.indexOf("      const publicRisk = storedRisk?.scoreVersion", start);
-assert.ok(start >= 0 && end > start);
-const schedule = new Function("stored", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", "riskScoreVersion", route.slice(start, end));
+const regularRoot = route.indexOf("const storedStarted = timing.now();");
+const start = route.indexOf("const riskIsFresh = storedRisk &&", regularRoot);
+const end = route.indexOf("const publicRisk = storedRisk?.scoreVersion", start);
+assert.ok(regularRoot >= 0 && start > regularRoot && end > start);
+const schedule = new Function("snapshot", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", "riskScoreVersion", route.slice(start, end));
 
 test("PvE stored risk executes current, stale, missing, and wrong-version states", () => {
   const now = Date.now();
