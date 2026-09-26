@@ -1,5 +1,8 @@
 import type { NextRequest } from "next/server";
 import { helperContext, helperError, parseTaskId } from "@/lib/seasonal/helper-api";
+
+export const runtime = "nodejs";
+
 export async function POST(request: NextRequest) {
   const context = await helperContext(request, "seasonal-helper-skip", 20);
   if ("response" in context) return context.response;
