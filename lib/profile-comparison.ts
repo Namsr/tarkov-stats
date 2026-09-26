@@ -28,12 +28,19 @@ export function buildRegularComparisonStats(stats: ParsedPlayerStats): ProfileCo
 export function buildSeasonalComparisonStats(profile: SeasonalProfile): ProfileComparisonStats {
   const stats = profile.seasonalStats;
   const counters = profile.counters;
-  const totalKills = stats?.totalKills ?? counters.pmcKills;
-  const deaths = stats?.deaths ?? counters.pmcDeaths;
   return {
     hoursPlayed: finiteOrNull(profile.lifetimePvpHours),
     pmcRaids: finiteOrNull(counters.pmcRaids),
-    kdRatio: finiteOrNull(stats?.kdRatio ?? (deaths > 0 ? totalKills / deaths : null)),
+    // Derive only when there are no Seasonal stats at all. stats.kdRatio is
+    // totalKills / deaths with both spanning PMC+Scav, and it is null exactly
+    // when the Scav side is incomplete. Any fallback built from the counters
+    // would divide a total by a subset, or quietly relabel a PMC-only ratio as
+    // the total one. Matches the overview projection in lib/player-profile-view.ts.
+    kdRatio: finiteOrNull(
+      stats
+        ? stats.kdRatio
+        : (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null),
+    ),
     pmcKdRatio: finiteOrNull(
       stats?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.killedPmc / counters.pmcDeaths : null),
     ),
