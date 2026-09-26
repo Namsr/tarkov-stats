@@ -42,3 +42,19 @@ test("achievement-heavy SQL is absent from request paths", async () => {
   assert.match(averageAchievements, /getPublishedSeasonalAchievementBaseline/);
   assert.doesNotMatch(averageAchievements, /getSeasonalAchievementBaseline/);
 });
+
+test("no player profile error response is cacheable", async () => {
+  const source = await readFile("app/api/player/profile/route.ts", "utf8");
+  // The client requests this URL with cache: "default", so a cacheable 404 or
+  // 5xx would be pinned in the browser and CDN after one transient failure.
+  // The point is that every error response is noStore, and this test is what
+  // keeps it that way. 11 is the exact number of `{ status: <4xx|5xx>,
+  // headers: X }` sites in the route: a lower bound let an unrelated subset
+  // satisfy the loop while other sites regressed to profileHeaders, and it
+  // would not catch a new error response added with cacheable headers.
+  const responses = [...source.matchAll(/status:\s*(4\d\d|5\d\d)\s*,\s*headers:\s*([A-Za-z_$][\w$]*)/g)];
+  assert.equal(responses.length, 11, `expected all 11 error responses, found ${responses.length}`);
+  for (const [, status, headers] of responses) {
+    assert.equal(headers, "noStore", `status ${status} must not be cacheable`);
+  }
+});
