@@ -59,7 +59,7 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-metric { min-width: 0; }
 .profile-metric + .profile-metric { border-left: 1px solid var(--card-border); padding-left: 26px; }
 .profile-metric dt { margin-bottom: 10px; font-size: 15px; color: var(--muted); }
-.profile-metric dd { font-size: 58px; line-height: 1.05; font-weight: 500; letter-spacing: -.04em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.profile-metric dd { font-size: 58px; line-height: 1.05; font-weight: 500; letter-spacing: -.04em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .profile-metric:last-child dd { font-size: 49px; }
 .profile-metric dd > span { font-size: 25px; margin-left: 4px; }
 .profile-content { display: grid; gap: 64px; margin-top: 64px; }
