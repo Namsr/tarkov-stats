@@ -1,9 +1,49 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { registerHooks } from "node:module";
 import test from "node:test";
 import { groupPlayerSearchResults, selectPlayerSearchProfile } from "../lib/player-search.ts";
+
+test("the index store honours its limit when the exact nickname fills the page", async () => {
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier.startsWith("@/")) {
+        return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+  const directory = mkdtempSync(join(tmpdir(), "player-index-limit-"));
+  process.env.SQLITE_PATH = join(directory, "players.db");
+  process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
+  process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
+  process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin-analytics.db");
+  const { getStore, getPlayerIndexStore } = await import("../lib/db.ts");
+  const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+  const store = await getStore("regular");
+  const profile = (nickname) => ({
+    aid: 0, updated: 1_800_000_000_000, info: { nickname, side: "Usec", experience: 0 },
+    pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [
+      { Key: ["Sessions", "Pmc"], Value: 10 },
+      { Key: ["Deaths"], Value: 2 },
+      { Key: ["KilledPmc"], Value: 4 },
+    ] } } },
+  });
+  // A full page of identical nicknames, plus one prefix match behind them.
+  for (let aid = 1; aid <= 12; aid += 1) await store.upsert(aid, parseProfileStats(profile("Dup")), []);
+  await store.upsert(99, parseProfileStats(profile("Duplex")), []);
+
+  const index = await getPlayerIndexStore("regular");
+  const rows = await index.search("Dup", 12);
+  assert.equal(rows.length, 12);
+  assert.ok(rows.every((row) => row.name === "Dup"));
+});
 
 test("multi-mode search groups one AID and ranks exact matches before prefixes", () => {
   const results = groupPlayerSearchResults([
