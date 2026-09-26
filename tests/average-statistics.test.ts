@@ -2,6 +2,7 @@
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -47,6 +48,7 @@ const { scoreCheater } = await import("../lib/cheater-score.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
+const { GET: getBaseline } = await import("../app/api/baseline/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
 const store = await getStore();
@@ -922,4 +924,48 @@ test("standard average API reads its publication without recalculating player da
     if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
     else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
   }
+});
+
+test("baseline rejects a malformed playtime range instead of dropping the filter", async () => {
+  reset();
+  insert.run(1, "ShortHours", 10, 5, 5, 1, 1, 1, 50, 2, 5);
+  insert.run(2, "LongHours", 900, 90, 90, 4, 4, 2, 40, 9, 40);
+
+  const unfiltered = await getBaseline(new NextRequest("http://local/api/baseline?mode=regular"));
+  assert.equal(unfiltered.status, 200);
+  assert.equal((await unfiltered.json()).n, 2);
+
+  // A well-formed range still narrows the population.
+  const ranged = await getBaseline(new NextRequest("http://local/api/baseline?mode=regular&minHours=100&maxHours=1000"));
+  assert.equal(ranged.status, 200);
+  assert.equal((await ranged.json()).n, 1);
+
+  // An absent bound means "no bound" and stays valid.
+  assert.equal(
+    (await getBaseline(new NextRequest("http://local/api/baseline?mode=regular&minHours="))).status, 200);
+
+  // A malformed one is a client error. Before the fix each of these returned
+  // 200 with the whole-population payload, so a caller could believe it was
+  // reading a narrow bracket.
+  for (const query of [
+    "?mode=regular&minHours=abc",
+    "?mode=regular&maxHours=abc",
+    "?mode=regular&minHours=-5",
+    "?mode=regular&maxHours=-5",
+    "?mode=regular&minHours=NaN",
+    "?mode=regular&minHours=Infinity",
+  ]) {
+    const response = await getBaseline(new NextRequest(`http://local/api/baseline${query}`));
+    assert.equal(response.status, 400, `${query} must not answer with population statistics`);
+  }
+
+  // The guard has to run before the store is opened. Placed after it, a
+  // malformed range answered 200 {n: 0} whenever the database was unavailable,
+  // so the status code depended on storage rather than on the request.
+  const route = await readFile(
+    new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    route.indexOf('"Invalid playtime range"') < route.indexOf("const store = await getStore("),
+    "the range check must precede the store open",
+  );
 });
