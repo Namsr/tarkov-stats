@@ -58,40 +58,12 @@ GEMINI.md
 /Caddyfile
 /docker-compose.yml
 /docker-compose.vps.yml
-/docs/
-/ops/
-!/docs/
+# docs/ and ops/ stay local: only the product formula doc is public.
+# NOTE: git cannot re-include files inside an excluded directory,
+# so list the directory contents instead of the directory itself.
 /docs/*
-!/docs/leaderboard-operations.md
-!/docs/leaderboard-arena-season.md
 !/docs/leaderboard-score-hours.md
-!/ops/
 /ops/*
-!/ops/systemd/
-/ops/systemd/*
-!/ops/systemd/tarkovstats-leaderboard-materialize.service
-!/ops/systemd/tarkovstats-leaderboard-materialize.timer
-!/ops/profile-queue.sh
-!/ops/deploy.sh
-!/ops/systemd/tarkovstats-profile-queue-no-restart.conf
-!/ops/systemd/tarkovstats-profile-queue.service
-!/ops/systemd/tarkovstats-profile-queue.timer
-!/ops/systemd/tarkovstats-arena-index-sync.service
-!/ops/systemd/tarkovstats-arena-index-sync.timer
-!/ops/systemd/tarkovstats-arena-profile-sync.service
-!/ops/systemd/tarkovstats-arena-profile-sync.timer
-!/ops/systemd/tarkovstats-pve-index-sync.service
-!/ops/systemd/tarkovstats-pve-index-sync.timer
-!/ops/systemd/tarkovstats-pve-profile-sync.service
-!/ops/systemd/tarkovstats-pve-profile-sync.timer
-!/ops/systemd/tarkovstats-player-index-sync.service
-!/ops/systemd/tarkovstats-player-index-sync.timer
-!/ops/systemd/tarkovstats-regular-profile-sync.service
-!/ops/systemd/tarkovstats-regular-profile-sync.timer
-!/ops/systemd/tarkovstats-seasonal-index-sync.service
-!/ops/systemd/tarkovstats-seasonal-index-sync.timer
-!/ops/systemd/tarkovstats-seasonal-profile-sync.service
-!/ops/systemd/tarkovstats-seasonal-profile-sync.timer
 
 # local runtime data
 /data/*.db
