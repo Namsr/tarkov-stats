@@ -936,3 +936,13 @@ test("PvE averages include the persistent progression charts", async () => {
   assert.match(averageProgression, /if \(mode !== "regular"\)/);
   assert.match(chart, /const persistent = mode !== "seasonal"/);
 });
+
+test("the shell renders no section anchor for an empty slot and links only rendered ones", async () => {
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+
+  assert.match(shell, /function hasSectionContent\(children: ReactNode\): boolean \{\s*return children !== undefined && children !== null && children !== false;/);
+  assert.match(shell, /function ProfileShellSection\(\{ id, children \}[\s\S]*?if \(!hasSectionContent\(children\)\) return null;/);
+  assert.match(shell, /const sectionIds = baseSectionIds\.filter\(\(id\) =>\s*id === "overview" \|\| hasSectionContent\(sectionContent\[id\]\)/);
+  assert.doesNotMatch(shell, /achievements !== undefined && <ProfileShellSection/);
+  assert.match(shell, /\{\(hasSectionContent\(risk\) \|\| hasSectionContent\(comparison\)\) && \(\s*<div className="profile-analysis">/);
+});
