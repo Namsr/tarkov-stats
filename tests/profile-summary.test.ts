@@ -8,6 +8,8 @@ import {
   buildRegularComparisonStats,
   buildSeasonalComparisonStats,
 } from "../lib/profile-comparison.ts";
+import { seasonalKdRatio } from "../lib/seasonal/ui.ts";
+import type { SeasonalProfile } from "../types/seasonal.ts";
 
 const profileRouteSource = await readFile(
   new URL("../app/api/player/profile/route.ts", import.meta.url),
@@ -15,10 +17,6 @@ const profileRouteSource = await readFile(
 );
 const profileViewSource = await readFile(
   new URL("../lib/player-profile-view.ts", import.meta.url),
-  "utf8",
-);
-const seasonalPlayerSource = await readFile(
-  new URL("../components/SeasonalPlayer.tsx", import.meta.url),
   "utf8",
 );
 
@@ -114,7 +112,7 @@ test("radar comparison projection derives missing Seasonal metrics", () => {
 });
 
 test("seasonal comparison never divides a total kill count by PMC-only deaths", () => {
-  const profile = {
+  const profile: SeasonalProfile = {
     aid: 42,
     mode: "seasonal",
     cycleId: "season-a",
@@ -134,6 +132,7 @@ test("seasonal comparison never divides a total kill count by PMC-only deaths", 
     // Scav Kills is present but Scav Deaths is missing, which is exactly when
     // parseSeasonalStats reports totalKills but leaves deaths and kdRatio null.
     seasonalStats: {
+      totalRaids: 120,
       survivedRaids: null,
       totalKills: 560,
       deaths: null,
@@ -145,6 +144,8 @@ test("seasonal comparison never divides a total kill count by PMC-only deaths", 
       pmcSurvivalRate: 60,
       longestWinStreak: 9,
       level: null,
+      prestige: 1,
+      achievementsCount: null,
     },
     staticSignals: { prestige: 1, longestWinStreak: 9, achievementIds: [] },
   };
@@ -156,18 +157,14 @@ test("seasonal comparison never divides a total kill count by PMC-only deaths", 
   assert.equal(buildSeasonalComparisonStats(profile).pmcKdRatio, 2);
 
   // With no Seasonal stats at all the PMC-only derivation still applies.
-  const withoutStats = { ...profile };
-  delete withoutStats.seasonalStats;
+  const withoutStats: SeasonalProfile = { ...profile, seasonalStats: undefined };
   assert.equal(buildSeasonalComparisonStats(withoutStats).kdRatio, 12.5);
 
-  // The client's own projection has to agree. It feeds the current player's dot
-  // in the same radar chart, so leaving the counters fallback in place would show
-  // 12.5 next to the favourite's "—" for one and the same profile.
-  assert.match(
-    seasonalPlayerSource,
-    /kdRatio: existing \? existing\.kdRatio : \(counters\.pmcDeaths > 0 \? counters\.pmcKills \/ counters\.pmcDeaths : null\),/,
-  );
-  assert.doesNotMatch(seasonalPlayerSource, /kdRatio: existing\?\.kdRatio \?\?/);
+  // The client's own projection has to agree, so it calls the same helper. It
+  // feeds the current player's dot in the same radar chart, so a second copy of
+  // the rule would show 12.5 next to the favourite's "—" for one profile.
+  assert.equal(seasonalKdRatio(profile.seasonalStats, profile.counters), null);
+  assert.equal(seasonalKdRatio(withoutStats.seasonalStats, withoutStats.counters), 12.5);
 });
 
 test("mode-scoped profile responses carry identity and keep optional summaries additive", () => {

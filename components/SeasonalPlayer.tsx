@@ -15,7 +15,7 @@ import CheaterScore from "@/components/CheaterScore";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
-import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
+import { levelAtExperience, seasonalKdRatio, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
@@ -63,12 +63,8 @@ function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): Se
     deaths,
     runThrough: existing?.runThrough ?? null,
     survivalRate: existing?.survivalRate ?? (totalRaids && survivedRaids != null ? (survivedRaids / totalRaids) * 100 : null),
-    // Same rule as buildSeasonalComparisonStats: when Seasonal stats exist their
-    // kdRatio spans PMC+Scav, and the parser leaves it null when the Scav side is
-    // incomplete. Falling back to the counters here would relabel a PMC-only
-    // ratio as the total one, which is the number this PR removes from the
-    // favourite side of the radar.
-    kdRatio: existing ? existing.kdRatio : (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null),
+    // Same rule as buildSeasonalComparisonStats, and one implementation of it.
+    kdRatio: seasonalKdRatio(existing, counters),
     pmcKdRatio,
     killsPerRaid: existing?.killsPerRaid ?? (counters.pmcRaids > 0 ? counters.pmcKills / counters.pmcRaids : null),
     pmcSurvivalRate,

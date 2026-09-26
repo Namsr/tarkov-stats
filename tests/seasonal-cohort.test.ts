@@ -9,11 +9,19 @@ import { DatabaseSync } from "node:sqlite";
 
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 
+const directory = mkdtempSync(join(tmpdir(), "seasonal-cohort-"));
+const databasePath = join(directory, "progression.db");
+const previousPath = process.env.PROGRESSION_SQLITE_PATH;
+process.env.PROGRESSION_SQLITE_PATH = databasePath;
+
+test.after(() => {
+  if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
+  else process.env.PROGRESSION_SQLITE_PATH = previousPath;
+  // Both tests share one file: the cohort module keeps a single SQLite adapter.
+  try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite may retain the adapter briefly. */ }
+});
+
 test("Seasonal cohort reads the latest snapshot only from the requested cycle", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "seasonal-cohort-"));
-  const databasePath = join(directory, "progression.db");
-  const previousPath = process.env.PROGRESSION_SQLITE_PATH;
-  process.env.PROGRESSION_SQLITE_PATH = databasePath;
   try {
     const db = new DatabaseSync(databasePath);
     initializeSeasonalSchema(db);
@@ -170,6 +178,37 @@ test("Seasonal cohort reads the latest snapshot only from the requested cycle", 
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;
-    try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite may retain the adapter briefly. */ }
   }
+});
+
+test("Seasonal cohort K/D skips profiles whose deaths column is NULL", async () => {
+  const db = new DatabaseSync(databasePath);
+  const insert = db.prepare(`INSERT INTO player_profiles (
+    mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+    experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+    total_raids, survived, deaths, total_kills, longest_win_streak, level,
+    first_seen_at, last_seen_at
+  ) VALUES ('seasonal', 'cycle-null-deaths', ?, ?, ?, ?, ?, 100, ?, 0, 1, 1, ?, ?, ?, ?, ?, ?, 5, 10, ?, ?)`);
+  const add = (aid, updated, deaths, totalKills) => {
+    insert.run(aid, `p-${aid}`, updated, updated, 100, 20, 100, 20, 20, 20, deaths, totalKills, updated, updated);
+  };
+  // Target, plus a peer whose ratio is computable.
+  add(1, 3_000, 40, 560);
+  add(2, 3_001, 100, 100);
+  // Third peer sits in the state this fix repairs: total kills known, Scav
+  // deaths unknown. `deaths > 0` is NULL there, so the ratio has to stay unknown
+  // instead of falling back to total_kills and dragging 560 into the mean.
+  add(3, 3_002, null, 560);
+  db.close();
+
+  const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
+  const lookup = await querySeasonalComparisonCohort({
+    aid: 1,
+    cycleId: "cycle-null-deaths",
+    now: 4_000,
+  });
+  assert.ok(lookup.result);
+  // Both peers are in the cohort, so only the K/D metric can drop the third.
+  assert.equal(lookup.result.n, 2);
+  assert.deepEqual(lookup.result.averages.kd_ratio, { value: 1, count: 1 });
 });

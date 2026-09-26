@@ -1,6 +1,8 @@
 import type { ProfileComparisonStats } from "../types/profile-view.ts";
 import type { ParsedPlayerStats } from "../types/tarkov.ts";
 import type { SeasonalProfile } from "../types/seasonal.ts";
+// @ts-expect-error Node's strip-types test runner requires the explicit extension.
+import { seasonalKdRatio } from "./seasonal/ui.ts";
 
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -31,16 +33,9 @@ export function buildSeasonalComparisonStats(profile: SeasonalProfile): ProfileC
   return {
     hoursPlayed: finiteOrNull(profile.lifetimePvpHours),
     pmcRaids: finiteOrNull(counters.pmcRaids),
-    // Derive only when there are no Seasonal stats at all. stats.kdRatio is
-    // totalKills / deaths with both spanning PMC+Scav, and it is null exactly
-    // when the Scav side is incomplete. Any fallback built from the counters
-    // would divide a total by a subset, or quietly relabel a PMC-only ratio as
-    // the total one. Matches the overview projection in lib/player-profile-view.ts.
-    kdRatio: finiteOrNull(
-      stats
-        ? stats.kdRatio
-        : (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null),
-    ),
+    // One rule with the client view, in seasonalKdRatio. The overview
+    // projection in lib/player-profile-view.ts reads stats.kdRatio directly.
+    kdRatio: finiteOrNull(seasonalKdRatio(profile.seasonalStats, profile.counters)),
     pmcKdRatio: finiteOrNull(
       stats?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.killedPmc / counters.pmcDeaths : null),
     ),
