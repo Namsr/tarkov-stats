@@ -93,3 +93,35 @@ test("failed publication preserves the previous generation", () => {
   assert.equal(readPublishedAchievementBaseline(db, "regular")?.generation, 1_000);
   db.close();
 });
+
+test("a zero-hour achievement owner is not replaced by the mean", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE players (aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);`);
+    const insert = db.prepare("INSERT INTO players (aid, hours, achievements) VALUES (?, ?, ?)");
+    // Five owners: one with zero playtime, four with 100 hours. owners=5 makes
+    // the P5 rank (5+4)/5 = 1, which lands exactly on the 0-hour row.
+    insert.run(1, 0, '["mixed"]');
+    for (let aid = 2; aid <= 5; aid += 1) insert.run(aid, 100, '["mixed"]');
+
+    const baseline = materializeAchievementBaseline(db, "regular", 1_000);
+    const mixed = baseline.achievements.find((row) => row.ach_id === "mixed");
+    assert.equal(mixed?.meanHours, 80);
+    // `Number(x) || mean` published 80 here: a real 0 is not a missing value.
+    assert.equal(mixed?.earlyHours, 0);
+    assert.equal(mixed?.unlockHours, 0);
+  } finally { db.close(); }
+});
+
+test("an unresolved percentile rank still falls back to the mean", () => {
+  const db = fixture();
+  try {
+    // A single owner: the mean and the percentiles coincide, and the value must
+    // still come through rather than being dropped.
+    const baseline = materializeAchievementBaseline(db, "regular", 1_000);
+    const single = baseline.achievements.find((row) => row.ach_id === "b");
+    assert.equal(single?.owners, 2);
+    assert.ok((single?.earlyHours ?? 0) > 0);
+  } finally { db.close(); }
+});
