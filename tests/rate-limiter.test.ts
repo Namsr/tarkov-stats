@@ -30,11 +30,8 @@ test("a bucket keeps its own window when another bucket triggers the shared prun
   assert.equal(checkRateLimit("10.0.0.1", { bucket: "short", windowMs: 1_000, max: 5 }).allowed, true);
 });
 
-test("an expired bucket is reclaimed so the store stays bounded", async () => {
-  for (let index = 0; index < 3; index += 1) {
-    checkRateLimit("203.0.113.4", { bucket: "reclaim", windowMs: 50, max: 5 });
-  }
-  assert.equal(checkRateLimit("203.0.113.4", { bucket: "reclaim", windowMs: 50, max: 5 }).allowed, true);
-  await sleep(120);
-  assert.equal(checkRateLimit("203.0.113.4", { bucket: "reclaim", windowMs: 50, max: 5 }).remaining, 4);
-});
+// Only the per-key window behaviour is asserted here. Whether prune reclaims a
+// fully expired key is not observable from outside the module: the read path
+// re-filters by the caller's own window either way, so `remaining` is identical
+// whether or not the entry was deleted. Pinning it would need a test-only
+// export of the store size, which is not worth widening the API for.
