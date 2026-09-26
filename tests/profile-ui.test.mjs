@@ -129,6 +129,19 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.doesNotMatch(report, /signedOut && <span className="profile-action__status"/);
 });
 
+test("favorite limit message owns its dismiss timer", async () => {
+  const favorite = await readFile("components/FavoriteButton.tsx", "utf8");
+
+  // The status line used to schedule a bare setTimeout from the click handler:
+  // it survived unmount, and a second limit hit inside the window left two
+  // timers racing to clear the newer message.
+  assert.match(
+    favorite,
+    /useEffect\(\(\) => \{\s*if \(!msg\) return;[\s\S]*?window\.setTimeout\(\(\) => setMsg\(""\), 3000\);\s*return \(\) => window\.clearTimeout\(timeout\);/,
+  );
+  assert.doesNotMatch(favorite, /setMsg\("fav\.limit"[^\n]*\n[^\n]*setTimeout/);
+});
+
 test("profile omits empty skills anchors and keeps achievements full width", async () => {
   const skills = await readFile("components/ProfileSkills.tsx", "utf8");
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
