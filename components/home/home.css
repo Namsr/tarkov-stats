@@ -16,6 +16,7 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-hero-inner { padding-top: 78px; padding-bottom: 94px; }
 .home-page .search-unit { max-width: 880px; margin-top: 36px; }
 .home-page .search-unit__field { min-height: 64px; border-color: var(--muted); border-radius: 12px; background: var(--input-bg); }
+.home-page .search-unit__field:hover, .home-page .search-unit__field:focus-within { border-color: var(--accent); }
 .home-page .search-unit__input { min-height: 62px; font-size: 18px; padding-inline: 22px; border-radius: 12px 0 0 12px; }
 .home-page .search-unit__mode-trigger { min-height: 62px; font-size: 14px; padding-inline: 17px; border-radius: 0 12px 12px 0; text-transform: none; letter-spacing: normal; }
 .home-page .search-unit__form .tactical-button { min-height: 64px; padding-inline: 25px; font-size: 17px; border-radius: 12px; gap: 32px; font-weight: 650; text-transform: none; letter-spacing: normal; }
