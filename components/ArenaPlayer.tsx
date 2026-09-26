@@ -393,11 +393,15 @@ export default function ArenaPlayer({ aid }: Props) {
   if (loading && !profile && !legacyBody) return <ArenaProfileLoading />;
   if (legacyBody) return <ArenaLegacyIncomplete aid={numericAid} body={legacyBody} onCheck={refreshProfile} />;
   if (unavailable || !profile) {
+    // Only a mode_profile_unavailable response means "no Arena data". Any other
+    // failure (including an aborted request) must not be reported as missing
+    // data, so the real error wins over the generic notice.
+    const notice = unavailable ? t("arena.profile.unavailable") : error || t("arena.profile.error");
     return (
       <main className="page-frame profile-page">
         <Link href="/" className="mb-8 inline-block text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
         <section className="data-panel p-6 text-center" role="status">
-          <p className="text-[var(--danger)]">{t("arena.profile.unavailable")}</p>
+          <p className="text-[var(--danger)]">{notice}</p>
           <RefreshButton aid={numericAid} mode="arena" missing onCheck={refreshProfile} />
         </section>
       </main>

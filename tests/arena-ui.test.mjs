@@ -119,6 +119,21 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(overallComparison, /mode === "overall" \|\| !shouldFallbackToPopulation\(result\)/);
 });
 
+test("Arena profile only claims missing data when the server says the mode is unavailable", () => {
+  const profile = read("components/ArenaPlayer.tsx");
+  const guard = profile.slice(
+    profile.indexOf("if (unavailable || !profile)"),
+    profile.indexOf("const scopeStats"),
+  );
+  // A failed or aborted request sets `error`, not `unavailable`. Reporting
+  // "Arena profile unavailable" for those sends the user to tarkov.dev for a
+  // profile that is already stored.
+  assert.match(guard, /unavailable \? t\("arena\.profile\.unavailable"\) : error \|\| t\("arena\.profile\.error"\)/);
+  assert.doesNotMatch(guard, /t\("arena\.profile\.unavailable"\)\}\s*<\/p>/);
+  assert.match(profile, /setUnavailable\(true\)/);
+  assert.match(profile, /body\.code === "mode_profile_unavailable"/);
+});
+
 test("Arena population fallback replaces only insufficient matched cohorts", async () => {
   const { shouldFallbackToPopulation } = await loadArenaUi();
   assert.equal(shouldFallbackToPopulation({ quality: "sufficient", sampleN: 21, required: 20, reason: null }), false);
