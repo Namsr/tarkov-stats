@@ -88,6 +88,14 @@ for (const [name, makeStore] of storeFactories) {
     assert.deepEqual((await store.reviews(12))[0].modes, ["arena", "regular"]);
   });
 
+  test(`${name}: an omitted aid returns every account's review, so routes must require it`, async () => {
+    const store = makeStore();
+    await store.report({ userSub: "google-a", aid: 31, mode: "regular", cycleId: "persistent", createdAt: 1 });
+    await store.report({ userSub: "google-b", aid: 32, mode: "arena", cycleId: "persistent", createdAt: 2 });
+    assert.deepEqual((await store.reviews()).map(({ aid }) => aid), [32, 31]);
+    assert.deepEqual((await store.reviews(32)).map(({ aid }) => aid), [32]);
+  });
+
   test(`${name}: seasonal cycle survives when seasonal is not the latest report`, async () => {
     const store = makeStore();
     await store.report({ userSub: "google-a", aid: 21, mode: "seasonal", cycleId: "cycleX", createdAt: 10 });
@@ -112,6 +120,7 @@ test("community routes never reference the destructive ban operation", async () 
   assert.equal(operatorSource.includes("user_" + "sub"), false);
   assert.equal(operatorSource.includes("helper_" + "id"), false);
   assert.equal(operatorSource.includes("reportCount"), true);
+  assert.match(operatorSource, /aid === undefined[\s\S]*store\.reviews\(/);
   assert.match(reportSource, /input\.mode === "regular"[\s\S]*getProgressionStore\("regular"\)[\s\S]*store\.latest\(input\.aid\)/);
   for (const path of paths) {
     const source = readFileSync(path, "utf8");
