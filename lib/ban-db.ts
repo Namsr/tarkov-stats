@@ -252,11 +252,11 @@ export function createSqliteBanStore(db: any): BanStore {
             "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
           ).get();
           if (hasSnapshots) {
-            db.exec(
+            db.prepare(
               `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
               `SELECT ${SNAPSHOT_COLS.join(", ")} FROM progression_db.progression_snapshots ` +
-              `WHERE aid = ${Number(input.aid)}`
-            );
+              `WHERE aid = ?`
+            ).run(input.aid);
           }
         }
         const latest = db.prepare(
