@@ -380,6 +380,27 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
+test("the FAQ dialog takes and returns keyboard focus", async () => {
+  const faq = await readFile("components/FaqWidget.tsx", "utf8");
+
+  // Moving focus in and back out is what keeps the keyboard off the trigger
+  // behind the backdrop. Keyed on [open], so the cleanup covers the button,
+  // backdrop and Escape close paths. The trigger is captured into a local: reading
+  // triggerRef.current from the cleanup would read whatever it holds by then, which
+  // react-hooks/exhaustive-deps flags for a ref pointing at a rendered node.
+  assert.match(
+    faq,
+    /if \(!open\) return;[\s\S]*?const trigger = triggerRef\.current;[\s\S]*?dialogRef\.current\?\.focus\(\);[\s\S]*?return \(\) => \{ trigger\?\.focus\(\); \};[\s\S]*?\}, \[open\]\);/,
+  );
+  assert.doesNotMatch(faq, /return \(\) => \{ triggerRef\.current\?\.focus\(\); \};/);
+  assert.match(faq, /<div\s+ref=\{dialogRef\}\s+role="dialog"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+  // The page behind the overlay stays interactive, so aria-modal would be a lie.
+  // Inerting it would need a wrapper around the layout's page content.
+  assert.doesNotMatch(faq, /aria-modal\s*=/);
+  assert.match(faq, /role="dialog"\s+aria-label=\{t\("faq\.title"\)\}/);
+});
+
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");

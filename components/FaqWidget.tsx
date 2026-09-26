@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 
@@ -13,10 +13,25 @@ export default function FaqWidget() {
   const [dialogState, setDialogState] = useState<DialogState>("closed");
   const [openQ, setOpenQ] = useState<number | null>(null);
   const open = dialogState === "open";
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   function closeFaq() {
     setDialogState((state) => (state === "open" ? "closing" : state));
   }
+
+  // Focus the dialog on open and hand focus back to the trigger on close, so the
+  // keyboard never sits on the trigger behind the backdrop. The cleanup runs on
+  // the open -> closing transition, the step all three close paths share, and the
+  // trigger is mounted unconditionally, so the ref is valid there. The trigger is
+  // captured into a local because reading the ref from the cleanup reads whatever
+  // it holds by then, not what it held when the dialog opened.
+  useEffect(() => {
+    if (!open) return;
+    const trigger = triggerRef.current;
+    dialogRef.current?.focus();
+    return () => { trigger?.focus(); };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -110,10 +125,13 @@ export default function FaqWidget() {
             }
           }}
         >
+          {/* Not aria-modal: the page behind the backdrop stays interactive, and
+              making it inert needs a wrapper in app/layout.tsx. */}
           <div
+            ref={dialogRef}
             role="dialog"
-            aria-modal="true"
             aria-label={t("faq.title")}
+            tabIndex={-1}
             className="faq-dialog"
             onMouseDown={(event) => event.stopPropagation()}
           >
@@ -164,6 +182,7 @@ export default function FaqWidget() {
       )}
 
       <button
+        ref={triggerRef}
         onClick={() => setDialogState((state) => (state === "closed" ? "open" : "closing"))}
         aria-label={t("faq.ariaOpen")}
         aria-expanded={open}
