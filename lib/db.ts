@@ -1425,7 +1425,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           const row = await rawDb.prepare(`SELECT mode, generation, generated_at, total, achievements_json
             FROM achievement_baseline_publications WHERE mode = ?`).bind(mode).first() as Record<string, unknown> | null;
           return parsePublishedAchievementBaseline(row);
-        } catch {
+        } catch (error) {
+          console.error("achievementBaseline failed", error);
           return null;
         }
       },
