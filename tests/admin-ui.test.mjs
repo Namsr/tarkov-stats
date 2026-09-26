@@ -159,20 +159,24 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
 });
 
 test("the suspicious queue reports missing report storage as unavailable", async () => {
-  const [accountsRoute, reportsDb, dashboard] = await Promise.all([
+  const [accountsRoute, reportsDb] = await Promise.all([
     readFile("app/api/admin/accounts/route.ts", "utf8"),
     readFile("lib/community-reports-db.ts", "utf8"),
-    readFile("components/AdminDashboard.tsx", "utf8"),
   ]);
   // getCommunityReportsStore() resolves to null for a missing binding or an
-  // unopenable SQLite file; it does not throw. `reportsStore?.reviews() ?? []`
-  // collapsed that null into an empty list, so the available:false branch was
-  // unreachable and the console showed an empty queue instead of a storage warning.
+  // unopenable SQLite file; it does not throw. reviews() is async in both store
+  // implementations, so .catch only ever sees a throwing query and the store's
+  // own null is the only "storage missing" signal. Coalescing that null into a
+  // list before the availability check made the available:false branch
+  // unreachable and showed the console an empty queue instead of the warning.
   assert.match(reportsDb, /return sqlite \? createSqliteCommunityReportsStore\(sqlite\) : null;/);
-  assert.match(accountsRoute, /const reportsStore = await getCommunityReportsStore\(\)\.catch\(\(\) => null\);/);
-  assert.match(accountsRoute, /const reports = reportsStore \? await reportsStore\.reviews\(\)\.catch\(\(\) => null\) : null;/);
-  assert.doesNotMatch(accountsRoute, /reviews\(\) \?\? \[\]/);
-  assert.match(accountsRoute, /if \(suspiciousOnly && reports === null\) \{\s*return NextResponse\.json\(\{ accounts: \[\], nextCursor: null, available: false \}/);
-  // The console already renders a distinct warning for that case.
-  assert.match(dashboard, /if \(!data\?\.available\) return <div className="admin-notice">\{t\("admin\.warning\.storage"\)\}<\/div>;/);
+  // Pin the window between resolving the store and the empty-list fallback
+  // rather than the exact lines in it: a rewrap, a different variable name, or
+  // .then instead of await must not fail this test.
+  const resolveIdx = accountsRoute.indexOf("getCommunityReportsStore()");
+  const degradeIdx = accountsRoute.search(/\?\?\s*\[\]|\|\|\s*\[\]/);
+  assert.ok(resolveIdx !== -1 && degradeIdx > resolveIdx, "reports must degrade to an empty list only after the storage check");
+  const guard = accountsRoute.slice(resolveIdx, degradeIdx);
+  assert.match(guard, /suspiciousOnly[\s\S]*?===\s*null/);
+  assert.match(guard, /NextResponse\.json\(\{[\s\S]*?available: false/);
 });

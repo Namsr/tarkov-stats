@@ -81,6 +81,7 @@ export async function GET(request: NextRequest) {
   // missing, and reviews() can throw. Both mean "no data", not "no reports":
   // collapsing them into [] made the unavailable branch below unreachable and
   // showed the console an empty queue while reports were silently not collected.
+  // reviews() is async in both stores, so .catch only ever sees a throwing query.
   const reportsStore = await getCommunityReportsStore().catch(() => null);
   const reports = reportsStore ? await reportsStore.reviews().catch(() => null) : null;
   if (suspiciousOnly && reports === null) {
