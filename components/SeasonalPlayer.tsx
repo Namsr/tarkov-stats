@@ -236,11 +236,16 @@ export default function SeasonalPlayer({
   const [displayNickname, setDisplayNickname] = useState<string | undefined>(initialProfile?.nickname);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
+  // Risk polling outlives a single request, so it needs its own generation.
+  // Without it a poll started for an older profile can land after a manual
+  // refresh and overwrite the newer risk value.
+  const riskPollGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     requestGeneration.current += 1;
     const generation = requestGeneration.current;
+    const pollGeneration = ++riskPollGeneration.current;
     refreshPromise.current = null;
     const cached = getCachedPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)?.body;
     const cachedProfile = cached?.profile &&
@@ -289,7 +294,7 @@ export default function SeasonalPlayer({
           void pollSeasonalRisk({
             aid,
             cycleId,
-            isCurrent: () => !cancelled && generation === requestGeneration.current,
+            isCurrent: () => !cancelled && generation === requestGeneration.current && riskPollGeneration.current === pollGeneration,
             onRisk: setServerRisk,
           });
         }
@@ -317,12 +322,14 @@ export default function SeasonalPlayer({
       });
     return () => {
       cancelled = true;
+      riskPollGeneration.current += 1;
     };
   }, [aid, cycleId, lang, profileRequestUrl, t]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
     const generation = requestGeneration.current;
+    const pollGeneration = ++riskPollGeneration.current;
     const previousProfile = profile;
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId, refresh: "1" });
     const request = loadPlayerProfileResponse<SeasonalProfileResponse>(
@@ -355,7 +362,18 @@ export default function SeasonalPlayer({
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(nextProfile));
         setSkillItems(skillsFromViewModel(body.viewModel));
         setMasteryItems(masteryFromViewModel(body.viewModel));
-        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        const nextRisk = body.viewModel?.risk ?? body.risk ?? null;
+        setServerRisk(nextRisk);
+        // A manual refresh can return before the risk row is recomputed. Poll the
+        // risk-only endpoint so the section does not stay blank until reload.
+        if (nextRisk == null) {
+          void pollSeasonalRisk({
+            aid,
+            cycleId,
+            isCurrent: () => generation === requestGeneration.current && riskPollGeneration.current === pollGeneration,
+            onRisk: setServerRisk,
+          });
+        }
         setModeUnavailable(false);
         setError("");
         setProgressionRefreshRevision((current) => current + 1);
