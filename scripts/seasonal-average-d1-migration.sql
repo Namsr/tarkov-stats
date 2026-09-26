@@ -41,6 +41,22 @@ INSERT INTO progression_snapshots (
   pmc_survived, deaths, pmc_deaths, pmc_kills, total_kills, killed_pmc, run_through, longest_win_streak,
   achv_count, achievements, stats_json FROM progression_snapshots_legacy;
 DROP TABLE progression_snapshots_legacy;
+-- DROP TABLE removes the triggers attached to progression_snapshots, so re-issue
+-- them or progression_personal_revisions stops being written on the D1 path.
+CREATE TRIGGER IF NOT EXISTS progression_snapshot_revision_insert AFTER INSERT ON progression_snapshots BEGIN
+  INSERT INTO progression_personal_revisions (mode, cycle_id, aid, revision) VALUES (NEW.mode, NEW.cycle_id, NEW.aid, 1)
+  ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET revision = revision + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS progression_snapshot_revision_update AFTER UPDATE ON progression_snapshots
+WHEN OLD.profile_updated_at IS NOT NEW.profile_updated_at OR OLD.series_id IS NOT NEW.series_id
+  OR OLD.level IS NOT NEW.level OR OLD.experience IS NOT NEW.experience OR OLD.hours IS NOT NEW.hours
+  OR OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.pmc_survived IS NOT NEW.pmc_survived
+  OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR OLD.pmc_kills IS NOT NEW.pmc_kills
+  OR OLD.killed_pmc IS NOT NEW.killed_pmc OR OLD.achievements IS NOT NEW.achievements OR OLD.stats_json IS NOT NEW.stats_json
+BEGIN
+  INSERT INTO progression_personal_revisions (mode, cycle_id, aid, revision) VALUES (NEW.mode, NEW.cycle_id, NEW.aid, 1)
+  ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET revision = revision + 1;
+END;
 CREATE INDEX idx_progression_snapshots_identity_time
   ON progression_snapshots(mode, cycle_id, aid, profile_updated_at);
 CREATE INDEX idx_progression_snapshots_cycle_date

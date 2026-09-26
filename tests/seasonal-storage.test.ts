@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
+import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, SEASONAL_SCHEMA, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 import {
   FAVORITE_INSERT_SQL,
   FAVORITE_SET_MAIN_SQL,
@@ -326,4 +326,125 @@ test("uses Europe/Moscow dates and marks isolated negative counters as schema an
   assert.equal(result.interval?.status, "schema_anomaly");
   assert.equal(result.interval?.confidence, 0);
   assert.equal(result.snapshot?.localDate, "2026-07-12");
+});
+
+// The snapshot shape both rebuild paths have to migrate past: eleven portrait
+// columns are NOT NULL, so a legacy 0 cannot be told apart from "unknown".
+const LEGACY_NOT_NULL_SNAPSHOTS = `CREATE TABLE progression_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mode TEXT NOT NULL DEFAULT 'regular',
+      cycle_id TEXT NOT NULL DEFAULT 'persistent',
+      aid INTEGER NOT NULL,
+      profile_updated_at INTEGER NOT NULL,
+      upstream_updated_at INTEGER NOT NULL,
+      captured_at INTEGER NOT NULL,
+      local_date TEXT NOT NULL,
+      series_id INTEGER NOT NULL DEFAULT 1,
+      nickname TEXT,
+      side TEXT,
+      prestige INTEGER NOT NULL DEFAULT 0,
+      level INTEGER NOT NULL DEFAULT 0,
+      experience INTEGER NOT NULL DEFAULT 0,
+      hours REAL NOT NULL DEFAULT 0,
+      total_raids INTEGER NOT NULL DEFAULT 0,
+      pmc_raids INTEGER NOT NULL DEFAULT 0,
+      scav_raids INTEGER NOT NULL DEFAULT 0,
+      survived INTEGER NOT NULL DEFAULT 0,
+      pmc_survived INTEGER NOT NULL DEFAULT 0,
+      deaths INTEGER NOT NULL DEFAULT 0,
+      pmc_deaths INTEGER NOT NULL DEFAULT 0,
+      pmc_kills INTEGER NOT NULL DEFAULT 0,
+      total_kills INTEGER NOT NULL DEFAULT 0,
+      killed_pmc INTEGER NOT NULL DEFAULT 0,
+      run_through INTEGER NOT NULL DEFAULT 0,
+      longest_win_streak INTEGER NOT NULL DEFAULT 0,
+      achv_count INTEGER NOT NULL DEFAULT 0,
+      achievements TEXT,
+      stats_json TEXT NOT NULL DEFAULT '{}',
+      UNIQUE(mode, cycle_id, aid, profile_updated_at))`;
+
+test("the nullable-portrait upgrade keeps the snapshot revision triggers", () => {
+  // ensureNullablePortraitColumns renames and drops progression_snapshots, and
+  // SQLite drops the triggers attached to a dropped table. Without re-issuing
+  // them, progression_personal_revisions stops being written and every
+  // personal progression cache key freezes.
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(LEGACY_NOT_NULL_SNAPSHOTS);
+    db.exec(SEASONAL_SCHEMA);
+    const insert = db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, prestige)
+      VALUES ('seasonal', 's1', ?, ?, ?, ?, '2026-01-01', 0)`);
+    insert.run(42, 1, 1, 1);
+    insert.run(43, 2, 2, 2);
+
+    initializeSeasonalSchema(db);
+
+    assert.deepEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots' ORDER BY name")
+        .all().map((row) => row.name),
+      ["progression_snapshot_revision_insert", "progression_snapshot_revision_update"],
+    );
+    // Both rows survived the rebuild and the 0 -> NULL normalisation still holds.
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+    assert.equal(db.prepare("SELECT prestige FROM progression_snapshots WHERE aid = 42").get().prestige, null);
+
+    // A new snapshot now bumps a personal revision again.
+    const before = db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision;
+    db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date)
+      VALUES ('seasonal', 's1', 42, 3, 3, 3, '2026-01-02')`).run();
+    assert.equal(
+      db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, before + 1);
+
+    // Re-running the migration must stay idempotent.
+    initializeSeasonalSchema(db);
+    initializeSeasonalSchema(db);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots'").get().n, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 3);
+  } finally { db.close(); }
+});
+
+test("the D1 average migration re-issues the snapshot revision triggers", () => {
+  // seasonal-average-d1-migration.sql renames and drops progression_snapshots
+  // the same way the SQLite rebuild does, and SQLite drops the triggers attached
+  // to a dropped table, so the D1 path has to re-issue them too.
+  const db = new DatabaseSync(":memory:");
+  try {
+    // A D1 installation as it looked before the unified average portrait: the
+    // migration still has to add the linked_pvp_* columns and the freshness
+    // index, and the snapshot table still has the NOT NULL portrait shape.
+    db.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8")
+      .replace(/ {2}linked_pvp_achievements TEXT NOT NULL DEFAULT '\[\]', linked_pvp_achievement_count INTEGER,\r?\n {2}linked_pvp_profile_updated_at INTEGER,\r?\n/, "")
+      .replace(/CREATE INDEX IF NOT EXISTS idx_player_profiles_average_freshness\r?\n {2}ON player_profiles\(mode, cycle_id, confirmed_banned, profile_updated_at\);\r?\n/, "")
+      .replace(/CREATE TABLE IF NOT EXISTS progression_snapshots \([\s\S]*?\r?\n\);\r?\n/, `${LEGACY_NOT_NULL_SNAPSHOTS};\n`));
+    const insert = db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, prestige)
+      VALUES ('seasonal', 's1', ?, ?, ?, ?, '2026-01-01', 0)`);
+    insert.run(42, 1, 1, 1);
+    insert.run(43, 2, 2, 2);
+    // The installation's own triggers are live before the migration runs.
+    assert.equal(db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, 1);
+
+    db.exec(readFileSync("scripts/seasonal-average-d1-migration.sql", "utf8"));
+
+    assert.deepEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots' ORDER BY name")
+        .all().map((row) => row.name),
+      ["progression_snapshot_revision_insert", "progression_snapshot_revision_update"],
+    );
+    // Both rows survived the rebuild and the 0 -> NULL normalisation still holds.
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+    assert.equal(db.prepare("SELECT prestige FROM progression_snapshots WHERE aid = 42").get().prestige, null);
+    assert.equal(db.prepare("SELECT linked_pvp_achievement_count FROM player_profiles WHERE aid = 42").get(), undefined);
+    // The re-issued insert trigger already fired on the migration's own copy.
+    assert.equal(db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, 2);
+
+    // A snapshot written after the migration still advances the personal revision.
+    db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date)
+      VALUES ('seasonal', 's1', 42, 3, 3, 3, '2026-01-02')`).run();
+    assert.equal(db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, 3);
+  } finally { db.close(); }
 });
