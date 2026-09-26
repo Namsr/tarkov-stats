@@ -67,6 +67,7 @@ export default function AdminDashboard() {
   const [period, setPeriod] = useState<AdminPeriod>(() => periods.includes(searchParams.get("period") as AdminPeriod) ? searchParams.get("period") as AdminPeriod : "7d");
   const [domain, setDomain] = useState<AdminDomain>(() => domains.includes(searchParams.get("domain") as AdminDomain) ? searchParams.get("domain") as AdminDomain : "all");
   const [search, setSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [mode, setMode] = useState("");
   const [sort, setSort] = useState<"last" | "requests" | "snapshots">("last");
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -81,9 +82,11 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
-  // Every filter control re-creates `load`, and the search box does so on each
-  // keystroke, so several requests overlap. Only the newest one may write state.
+  // Every filter control re-creates `load`, so requests overlap. Only the newest
+  // one may write state: the counter gates the writes, the abort frees the loser.
+  // An aborted request always has a newer generation, so it never reaches setError.
   const loadGeneration = useRef(0);
+  const loadRequest = useRef<AbortController | null>(null);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
     const params = new URLSearchParams();
@@ -93,49 +96,55 @@ export default function AdminDashboard() {
     router.replace(`${pathname}${params.size ? `?${params}` : ""}`, { scroll: false });
   }, [domain, pathname, period, router]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { silent?: boolean }) => {
     const generation = ++loadGeneration.current;
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
     const stale = () => generation !== loadGeneration.current;
-    setLoading(true); setError("");
+    // A silent reload keeps the loading flag untouched so the panel holding its
+    // result message stays mounted; the guard above still drops it once stale.
+    const silent = options?.silent === true;
+    if (!silent) { setLoading(true); setError(""); }
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
-        const nextSummary = await getJson<Summary>(`/api/admin/summary?${params}`);
+        const nextSummary = await getJson<Summary>(`/api/admin/summary?${params}`, { signal: request.signal });
         if (stale()) return;
         setSummary(nextSummary);
         if (tab === "health") {
           setAuditError("");
           try {
-            const nextAudit = await getJson<DataAudit>("/api/admin/data-audit");
+            const nextAudit = await getJson<DataAudit>("/api/admin/data-audit", { signal: request.signal });
             if (stale()) return;
             setAudit(nextAudit);
           }
           catch { if (!stale()) setAuditError(t("admin.error.load")); }
         }
       } else if (tab === "showcase") {
-        const nextShowcase = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase");
+        const nextShowcase = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase", { signal: request.signal });
         if (stale()) return;
         setShowcase(nextShowcase);
       } else if (tab === "traffic") {
-        const nextTraffic = await getJson<Traffic>(`/api/admin/traffic?${params}`);
+        const nextTraffic = await getJson<Traffic>(`/api/admin/traffic?${params}`, { signal: request.signal });
         if (stale()) return;
         setTraffic(nextTraffic);
       } else if (tab === "monitoring") {
-        const nextMetrics = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`);
+        const nextMetrics = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`, { signal: request.signal });
         if (stale()) return;
         setSystemMetrics(nextMetrics);
       } else {
         if (mode) params.set("mode", mode);
-        if (search.trim()) params.set("search", search.trim());
+        if (searchQuery.trim()) params.set("search", searchQuery.trim());
         params.set("sort", sort);
         if (tab === "suspicious") params.set("source", "suspicious");
-        const nextAccounts = await getJson<Accounts>(`/api/admin/accounts?${params}`);
+        const nextAccounts = await getJson<Accounts>(`/api/admin/accounts?${params}`, { signal: request.signal });
         if (stale()) return;
         setAccounts(nextAccounts);
       }
     } catch { if (!stale()) setError(t("admin.error.load")); }
-    finally { if (!stale()) setLoading(false); }
-  }, [domain, mode, period, search, sort, tab, t]);
+    finally { if (!silent && !stale()) setLoading(false); }
+  }, [domain, mode, period, searchQuery, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
     setAuditBusy(true); setAuditError("");
@@ -153,6 +162,13 @@ export default function AdminDashboard() {
     } catch { setAuditError(t("admin.error.load")); }
     finally { setAuditBusy(false); }
   }, [t]);
+
+  // The search box writes on every keystroke; copy the term `load` depends on
+  // only after a pause, the way app/average/page.tsx debounces its selection.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
   useEffect(() => {
