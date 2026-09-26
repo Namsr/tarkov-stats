@@ -302,7 +302,6 @@ function LegacyPlayer({
         t("player.survivalRate"),
         mode === "pve" ? t("player.totalRaids") : t("player.pmcRaids"),
       ].map((label) => ({ label, value: unknownValue }));
-      const unavailableSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
       return (
         <ProfileShell
           aid={Number(aid)}
@@ -322,12 +321,10 @@ function LegacyPlayer({
             />
           }
           overviewCards={overviewCards}
-          progression={unavailableSlot}
-          risk={unavailableSlot}
-          comparison={unavailableSlot}
-          statistics={unavailableSlot}
-          achievements={unavailableSlot}
-          skills={unavailableSlot}
+          progression={undefined}
+          risk={undefined}
+          comparison={undefined}
+          statistics={undefined}
           statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{t("player.modeUnavailable")}</div>}
         />
       );
@@ -386,7 +383,6 @@ function LegacyPlayer({
 
   if (error || !stats) {
     if (mode === "regular" || mode === "pve") {
-      const errorSlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--danger)]">{error || t("player.unknownError")}</div>;
       return (
         <ProfileShell
           aid={Number(aid)}
@@ -402,12 +398,10 @@ function LegacyPlayer({
             t("player.survivalRate"),
             mode === "pve" ? t("player.totalRaids") : t("player.pmcRaids"),
           ].map((label) => ({ label, value: t("common.unknown") }))}
-          progression={errorSlot}
-          risk={errorSlot}
-          comparison={errorSlot}
-          statistics={errorSlot}
-          achievements={errorSlot}
-          skills={errorSlot}
+          progression={undefined}
+          risk={undefined}
+          comparison={undefined}
+          statistics={undefined}
           statusNotice={<div className="data-panel mt-5 p-5 text-center">{error || t("player.unknownError")}</div>}
         />
       );
