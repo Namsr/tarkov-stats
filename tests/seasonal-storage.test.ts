@@ -438,7 +438,8 @@ test("the D1 average migration re-issues the snapshot revision triggers", () => 
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
     assert.equal(db.prepare("SELECT prestige FROM progression_snapshots WHERE aid = 42").get().prestige, null);
     assert.equal(db.prepare("SELECT linked_pvp_achievement_count FROM player_profiles WHERE aid = 42").get(), undefined);
-    // The re-issued insert trigger already fired on the migration's own copy.
+    // The copy runs before trigger recreation. The trailing 0 -> NULL update
+    // fires the restored update trigger for this legacy row.
     assert.equal(db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, 2);
 
     // A snapshot written after the migration still advances the personal revision.
