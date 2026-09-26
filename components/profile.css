@@ -73,6 +73,8 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-risk__reading .home-risk-status--low { color: var(--profile-positive); }
 .profile-risk__reading .home-risk-status--medium { color: #b5ad6f; }
 .profile-risk__reading .home-risk-status--high { color: #bb9067; }
+html[data-theme="light"] .profile-risk__reading .home-risk-status--medium { color: #827326; }
+html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color: #9a591e; }
 .profile-risk__reading .home-risk-status--severe { color: var(--danger); }
 .profile-statistics { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; }
 .profile-statistics h2, .profile-statistics h3 { font-size: 18px !important; font-weight: 550; margin-bottom: 18px; }
