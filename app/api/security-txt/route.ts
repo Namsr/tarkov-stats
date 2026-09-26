@@ -6,7 +6,7 @@ import { NextResponse } from "next/server";
 // держать папку с точкой в начале). Expires ОБЯЗАТЕЛЕН по RFC, чтобы было видно
 // протухшие контакты — обновить дату до её наступления.
 const SECURITY_TXT = [
-  "Contact: mailto:namsrr@protonmail.com",
+  `Contact: mailto:${process.env.SECURITY_TXT_CONTACT ?? "namsrr@protonmail.com"}`,
   "Expires: 2027-06-25T00:00:00.000Z",
   "Preferred-Languages: en, ru",
   "Canonical: https://tarkovstats.ru/.well-known/security.txt",
