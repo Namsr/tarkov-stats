@@ -756,26 +756,29 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
        AND rn <= n - CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
-  const values = COMPARISON_RADAR_METRICS.map((metric) =>
-    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL${
+  // One ranked pass per metric over the shared cohort CTE. Ranking the six
+  // metrics together meant a UNION ALL that expanded the cohort six times first,
+  // so the statement wrote and then sorted six figures worth of rows. That is
+  // cheap for a matched window of a few hundred rows and ruinous for the
+  // population fallback, which has no window and aggregates every eligible row.
+  // Ranking each metric on its own keeps the cohort at one row per player.
+  const perMetric = COMPARISON_RADAR_METRICS.map((metric) =>
+    `SELECT '${metric}' AS metric, MAX(n) AS n,
+      AVG(CASE WHEN ${selected} THEN v END) AS a, NULL, NULL, NULL, NULL
+      FROM (SELECT ${metric} AS v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
+        COUNT(*) OVER () AS n FROM cohort WHERE ${metric} IS NOT NULL${
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
-    }`
-  ).join(" UNION ALL ");
+    })`
+  ).join("\n    UNION ALL\n    ");
   return `WITH cohort AS (
     SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
-  ), metric_values AS (${values}), ranked AS (
-    SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
-      COUNT(*) OVER (PARTITION BY metric) AS n
-    FROM metric_values
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
     MIN(hours) AS hours_min, MAX(hours) AS hours_max,
     MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
   FROM cohort
   UNION ALL
-  SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
-    NULL, NULL, NULL, NULL
-  FROM ranked GROUP BY metric`;
+  ${perMetric}`;
 }
 
 async function computePersistentTwoDimensionalCohort(input: {
@@ -824,26 +827,23 @@ async function computePersistentTwoDimensionalCohort(input: {
     Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = selectComparisonPercent(counts, COMPARISON_COHORT_TARGET);
-  const selected = twoDimensionalRangeWhere(
-    input.mode,
-    center,
-    selectedPercent,
-    input.excludeAid,
-    input.period,
+  const mode = input.mode;
+  const matched = counts[selectedPercent] >= COMPARISON_COHORT_TARGET;
+  // A matched window the counts already show is too small would be aggregated and
+  // then thrown away, so the population slice is read instead. The seasonal
+  // cohort picks its slice up front for the same reason.
+  const selected = !matched && (mode === "regular" || mode === "pve")
+    ? twoDimensionalPopulationWhere(mode, input.excludeAid, input.period)
+    : twoDimensionalRangeWhere(mode, center, selectedPercent, input.excludeAid, input.period);
+  const resultRows = await input.readAll(
+    persistentComparisonMetricsSql(selected.where, input.statistic),
+    selected.params,
   );
-  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
-  let resultRows = selectedRows;
-  let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
-    ? "matched"
-    : null;
-  if (strategy === null && (input.mode === "regular" || input.mode === "pve")) {
-    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
-    resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
-    const populationGroup = resultRows.find((row) => row.metric === "__group__");
-    if (Number(populationGroup?.n ?? 0) > 0) strategy = "population";
-  }
   const group = resultRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
+  const strategy: "matched" | "population" | null = matched
+    ? "matched"
+    : n > 0 && (mode === "regular" || mode === "pve") ? "population" : null;
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
       ? null
