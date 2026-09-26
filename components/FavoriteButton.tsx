@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
 import type { FavoriteIdentity } from "@/lib/db";
@@ -24,8 +24,19 @@ export default function FavoriteButton({
   const { t } = useI18n();
   const { enabled, has, toggle } = useFavorites();
   const [msg, setMsg] = useState("");
+  // The limit copy is identical on every hit, so an effect keyed on msg alone
+  // would keep the first hit's timer. This counter gives it something to restart on.
+  const [msgSeq, setMsgSeq] = useState(0);
   const authHintId = useId();
   const icon = <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9Z" /></svg>;
+
+  // Auto-dismiss the status line. Own the timer in an effect so it is cleared on
+  // unmount and restarted when a new message arrives, matching CopyButton.
+  useEffect(() => {
+    if (!msg) return;
+    const timeout = window.setTimeout(() => setMsg(""), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [msg, msgSeq]);
 
   if (!enabled) {
     return (
@@ -62,7 +73,7 @@ export default function FavoriteButton({
     const result = await toggle(aid, nickname, identity);
     if (result === "limit") {
       setMsg(t("fav.limit", { max: MAX_FAVORITES }));
-      setTimeout(() => setMsg(""), 3000);
+      setMsgSeq((n) => n + 1);
     }
   }
 
