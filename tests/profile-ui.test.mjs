@@ -133,13 +133,17 @@ test("favorite limit message owns its dismiss timer", async () => {
   const favorite = await readFile("components/FavoriteButton.tsx", "utf8");
 
   // The status line used to schedule a bare setTimeout from the click handler:
-  // it survived unmount, and a second limit hit inside the window left two
-  // timers racing to clear the newer message.
+  // the timer was retained after unmount (a post-unmount setState is a no-op on
+  // React 19), and a second limit hit inside the window raced the first timer
+  // and took the newer message away early.
   assert.match(
     favorite,
     /useEffect\(\(\) => \{\s*if \(!msg\) return;[\s\S]*?window\.setTimeout\(\(\) => setMsg\(""\), 3000\);\s*return \(\) => window\.clearTimeout\(timeout\);/,
   );
   assert.doesNotMatch(favorite, /setMsg\("fav\.limit"[^\n]*\n[^\n]*setTimeout/);
+  // Identical copy on every hit means msg alone cannot restart the timer, so the
+  // effect needs the per-hit counter as a dependency and the handler must bump it.
+  assert.match(favorite, /\[msg, msgSeq\]\);[\s\S]*?setMsgSeq\(\(n\) => n \+ 1\);/);
 });
 
 test("profile omits empty skills anchors and keeps achievements full width", async () => {
