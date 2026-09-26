@@ -7,6 +7,7 @@ html[data-theme="light"] .home-page { --home-veil: 246, 246, 242; }
 .home-page button { cursor: pointer; }
 .home-page button:disabled { cursor: wait; }
 .home-page a:focus-visible, .home-page button:focus-visible, .home-page svg:focus-visible { outline: 2px solid var(--foreground); outline-offset: 5px; }
+.home-page .search-unit__mode-option:focus-visible, .home-page .search-unit__result-mode:focus-visible, .home-page .search-unit__recent-link:focus-visible, .home-page .search-unit__recent-remove:focus-visible, .home-page .search-unit__result-hitarea:focus-visible { outline-offset: -2px; }
 .home-search-hero { position: relative; isolation: isolate; }
 .home-hero-art { position: absolute; z-index: -2; inset: 0 0 0 30%; opacity: .95; mask-image: linear-gradient(90deg, transparent, #000 25%); overflow: hidden; }
 .home-hero-art img { object-fit: cover; object-position: center 7%; }
