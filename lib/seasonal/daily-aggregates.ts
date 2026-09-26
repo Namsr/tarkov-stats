@@ -128,13 +128,17 @@ function aggregateGroup(mode: ProgressionMode, cycleId: string, kind: Progressio
   const values = points.map((point) => point.value);
   const mean = trimmedMean(values);
   if (mean == null) return null;
+  // The first buckets of a season hold every player who got that far, so
+  // `points` is unbounded. Fold rather than spread: Math.max(...values) throws
+  // RangeError past ~125k arguments on V8.
+  const freshnessAt = points.reduce((max, point) => Math.max(max, point.freshnessAt), -Infinity);
   return {
     mode, cycleId, localDate: points.reduce((latest, point) => point.date > latest ? point.date : latest, points[0].date),
     kind, dimension: "pmc_raids",
     bucketMin: bucket - 10, bucketMax: bucket, mean, p25: quantile(values, 0.25), p75: quantile(values, 0.75),
     n: points.length, confidence: points.reduce((sum, point) => sum + point.confidence, 0) / points.length
       * Math.min(1, points.length / 30),
-    freshnessAt: Math.max(...points.map((point) => point.freshnessAt)), scoreVersion: 1,
+    freshnessAt, scoreVersion: 1,
   };
 }
 
