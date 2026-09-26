@@ -30,23 +30,35 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
         .bind(cycleId, owner).first() as Record<string, unknown> | null;
       let resumed = true;
       if (!run) {
-        await db.prepare(`INSERT INTO seasonal_progression_refresh_runs
+        // The SELECT and the INSERT are separate D1 round trips, so two claims
+        // can both see "no running run" and both INSERT. idx_seasonal_refresh_
+        // active_owner allows one running row per (cycle_id, owner), so the loser
+        // used to fail on the unique index and surface as a 503. The SQLite twin
+        // is serialised by BEGIN IMMEDIATE, and restartProgressionRefreshRun
+        // below already uses INSERT OR IGNORE for the same reason.
+        const inserted = await db.prepare(`INSERT OR IGNORE INTO seasonal_progression_refresh_runs
           (cycle_id, owner, state, started_at, updated_at) VALUES (?, ?, 'running', ?, ?)`)
           .bind(cycleId, owner, now, now).run();
+        // Only the claim that actually created the run seeds candidates. The
+        // loser reuses the winner's run instead of inserting a second copy of
+        // every candidate.
+        const created = d1Changes(inserted) === 1;
         run = await db.prepare(`SELECT * FROM seasonal_progression_refresh_runs
           WHERE cycle_id = ? AND owner = ? AND state = 'running' ORDER BY id DESC LIMIT 1`)
           .bind(cycleId, owner).first() as Record<string, unknown> | null;
         if (!run) throw new Error("progression refresh run could not be created");
-        await db.prepare(`INSERT INTO seasonal_progression_refresh_candidates
-          (run_id, cycle_id, aid, latest_captured_at, state, updated_at)
-          SELECT ?, s.cycle_id, s.aid, MAX(s.captured_at), 'queued', ?
-          FROM progression_snapshots s
-          LEFT JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
-          WHERE s.mode = 'seasonal' AND s.cycle_id = ? AND COALESCE(p.confirmed_banned, 0) = 0
-            AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)
-          GROUP BY s.cycle_id, s.aid ORDER BY MAX(s.captured_at), s.aid`)
-          .bind(Number(run.id), now, cycleId).run();
-        resumed = false;
+        if (created) {
+          await db.prepare(`INSERT INTO seasonal_progression_refresh_candidates
+            (run_id, cycle_id, aid, latest_captured_at, state, updated_at)
+            SELECT ?, s.cycle_id, s.aid, MAX(s.captured_at), 'queued', ?
+            FROM progression_snapshots s
+            LEFT JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
+            WHERE s.mode = 'seasonal' AND s.cycle_id = ? AND COALESCE(p.confirmed_banned, 0) = 0
+              AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)
+            GROUP BY s.cycle_id, s.aid ORDER BY MAX(s.captured_at), s.aid`)
+            .bind(Number(run.id), now, cycleId).run();
+        }
+        resumed = !created;
       }
       return { run: mapRefreshRun(run), resumed };
     },
