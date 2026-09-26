@@ -37,6 +37,21 @@ import {
 } from "@/lib/achievement-baseline-publication";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
+// The cohort and population scans filter on these five columns and read the
+// radar metrics straight out of the index. Carrying them makes every cohort
+// query index-only: without them SQLite resolved every matched or eligible row
+// against the table B-tree one rowid lookup at a time, which is what pushed a
+// Regular population fallback into whole seconds.
+const COHORT_INDEX_COLS = "hours, pmc_raids, pvp_stats_known, profile_updated_at, aid";
+const COHORT_INDEX_METRICS = [
+  "kd_ratio",
+  "pmc_kd_ratio",
+  "kills_per_raid",
+  "pmc_survival_rate",
+  "longest_win_streak",
+  "level",
+];
+
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
 //   - Cloudflare D1 (when deployed to Workers)
@@ -58,7 +73,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
-CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(hours, pmc_raids, aid);
+CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(${COHORT_INDEX_COLS}, ${COHORT_INDEX_METRICS.join(", ")});
 CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
@@ -80,7 +95,7 @@ CREATE TABLE IF NOT EXISTS mode_players (
 CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
 CREATE INDEX IF NOT EXISTS idx_mode_players_hours ON mode_players(mode, hours);
 CREATE INDEX IF NOT EXISTS idx_mode_players_pmc_raids ON mode_players(mode, pmc_raids);
-CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, hours, pmc_raids, aid);
+CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, ${COHORT_INDEX_COLS}, ${COHORT_INDEX_METRICS.join(", ")});
 
 CREATE VIEW IF NOT EXISTS pve_players AS SELECT * FROM mode_players WHERE mode = 'pve';
 CREATE VIEW IF NOT EXISTS arena_players AS SELECT * FROM mode_players WHERE mode = 'arena';
@@ -478,6 +493,46 @@ function emptyAverageRow(): AverageRow {
     row.metricCounts[c] = 0;
   }
   return row;
+}
+
+// SQLite runs the cohort aggregates on the web process, synchronously, so every
+// row the plan cannot read from an index becomes a table B-tree lookup inside a
+// query that blocks all other responses. The cohort and population scans filter
+// on these five columns and average the radar metrics, so carrying all of them
+// keeps the scan inside the index.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureSqliteCohortIndexes(db: any): void {
+  const metrics = COHORT_INDEX_METRICS.join(", ");
+  ensureIndexDefinition(
+    db,
+    "idx_players_cohort",
+    `CREATE INDEX idx_players_cohort ON players(${COHORT_INDEX_COLS}, ${metrics})`,
+  );
+  ensureIndexDefinition(
+    db,
+    "idx_mode_players_cohort",
+    `CREATE INDEX idx_mode_players_cohort ON mode_players(mode, ${COHORT_INDEX_COLS}, ${metrics})`,
+  );
+}
+
+// `CREATE INDEX IF NOT EXISTS` keeps an existing index even when its definition
+// no longer matches, so widening one of these on a live database needs an
+// explicit rebuild. Comparing the stored DDL keeps that to a single
+// sqlite_master read per open instead of a schema-version bump, and the rebuild
+// is a no-op once the definition matches.
+function normalizedIndexDdl(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureIndexDefinition(db: any, name: string, ddl: string): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?"
+  ).get(name) as { sql?: string | null } | undefined;
+  const stored = typeof row?.sql === "string" ? row.sql : null;
+  if (stored !== null && normalizedIndexDdl(stored) === normalizedIndexDdl(ddl)) return;
+  db.exec(`DROP INDEX IF EXISTS ${name}`);
+  db.exec(ddl);
 }
 
 // SQLite executes the trimmed/median portrait on the web process. Covering the
@@ -1523,6 +1578,7 @@ async function getSqliteDb(): Promise<any | null> {
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
       initializeProfileChangeJournal(sqliteDb);
+      ensureSqliteCohortIndexes(sqliteDb);
       ensureSqliteAverageIndexes(sqliteDb);
       initializeArenaSchema(sqliteDb);
     }
