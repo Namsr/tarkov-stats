@@ -96,16 +96,13 @@ export default function AdminDashboard() {
     router.replace(`${pathname}${params.size ? `?${params}` : ""}`, { scroll: false });
   }, [domain, pathname, period, router]);
 
-  const load = useCallback(async (options?: { silent?: boolean }) => {
+  const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     loadRequest.current?.abort();
     const request = new AbortController();
     loadRequest.current = request;
     const stale = () => generation !== loadGeneration.current;
-    // A silent reload keeps the loading flag untouched so the panel holding its
-    // result message stays mounted; the guard above still drops it once stale.
-    const silent = options?.silent === true;
-    if (!silent) { setLoading(true); setError(""); }
+    setLoading(true); setError("");
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
@@ -143,7 +140,7 @@ export default function AdminDashboard() {
         setAccounts(nextAccounts);
       }
     } catch { if (!stale()) setError(t("admin.error.load")); }
-    finally { if (!silent && !stale()) setLoading(false); }
+    finally { if (!stale()) setLoading(false); }
   }, [domain, mode, period, searchQuery, sort, tab, t]);
 
   const runAudit = useCallback(async () => {

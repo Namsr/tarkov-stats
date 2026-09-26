@@ -42,14 +42,20 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   assert.ok(claim, "every load must claim a generation from the counter ref");
   const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => ${claim[1]} !== \\w+\\.current;`))?.[1];
   assert.ok(guard, "the claimed generation must be re-checked against the counter");
-  assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;`));
-  // The counter also gates the loading flag, including the silent-reload case.
-  assert.match(loadBody, /finally \{ if \(!\w+ && !\w+\(\)\) setLoading\(false\); \}/);
-  // Only the loading flag is conditional on the silent option: the fetched payloads
-  // are written unconditionally, which is what keeps a superseded silent reload
-  // harmless. Scoped to `load`; a bare `setX(await getJson(...))` would slip past.
-  assert.deepEqual([...loadBody.matchAll(/if \(!\w+\) \{([^}]*)\}/g)].map((match) => match[1].trim()), ['setLoading(true); setError("");']);
-  assert.doesNotMatch(loadBody, /await getJson[^\n]*\n\s*set[A-Z]\w*\(/);
+  // The guard is checked before each fetched payload write, one per tab, so no
+  // superseded load can leave a panel half-updated. Pinned per setter: a single
+  // guard somewhere in `load` would satisfy a count but not these sites. The
+  // source is read raw, so the line breaks are matched CRLF-tolerantly.
+  for (const setter of ["Summary", "Audit", "Showcase", "Traffic", "SystemMetrics", "Accounts"]) {
+    assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;\\r?\\n\\s+set${setter}\\(`), `set${setter} must be written only by the newest load`);
+  }
+  // The counter gates the loading flag too: a superseded load may neither start nor
+  // stop the spinner the newest load owns, so the flag is set up front and cleared
+  // only by the current generation.
+  assert.match(loadBody, /setLoading\(true\); setError\(""\);/);
+  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
+  // No payload is written straight from the fetch, which would skip the guard.
+  assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
   // A superseded request is cancelled too, not just ignored.
   assert.match(loadBody, /\{ signal: request\.signal \}/);
   // The search box writes on every keystroke, so `load` must read a debounced copy
