@@ -380,6 +380,26 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
+test("ban review request results are dropped after unmount", async () => {
+  const review = await readFile("components/CommunityBanReview.tsx", "utf8");
+
+  assert.match(review, /const mounted = useRef\(true\);/);
+  // The setup must re-arm the ref, not only clear it on cleanup: StrictMode runs
+  // mount -> cleanup -> mount, and a cleanup-only effect leaves mounted.current
+  // false for the rest of the session, so claim() would never paint a result.
+  assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  assert.doesNotMatch(review, /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/);
+  // Every await in claim/vote resolves after a possible navigation, so each
+  // setState it follows has to be guarded.
+  for (const setter of ["setCandidates", "setError", "setLoading", "setVoting"]) {
+    assert.equal(
+      (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length > 0,
+      true,
+      `${setter} after await must be guarded by mounted.current`,
+    );
+  }
+});
+
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");

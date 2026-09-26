@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { isGameMode, tarkovDevMode } from "@/types/seasonal";
 
@@ -12,6 +12,15 @@ export default function CommunityBanReview() {
   const [loading, setLoading] = useState(true);
   const [voting, setVoting] = useState<number | null>(null);
   const [error, setError] = useState("");
+  // Both requests are user-triggered and can outlive the page (a slow claim, or a
+  // vote followed by navigation). Drop their results once we are gone. The setup
+  // has to re-arm the ref: a cleanup-only effect leaves it false forever after
+  // StrictMode's mount -> unmount -> mount, and the queue would never load.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const claim = useCallback(async () => {
     setLoading(true);
@@ -21,11 +30,11 @@ export default function CommunityBanReview() {
       });
       if (!response.ok) throw new Error();
       const body = await response.json() as { candidates?: Candidate[] };
-      setCandidates(body.candidates ?? []);
+      if (mounted.current) setCandidates(body.candidates ?? []);
     } catch {
-      setError(t("review.loadFailed"));
+      if (mounted.current) setError(t("review.loadFailed"));
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }, [t]);
 
@@ -40,11 +49,11 @@ export default function CommunityBanReview() {
       });
       if (!response.ok) throw new Error();
       const body = await response.json() as { candidates?: Candidate[] };
-      setCandidates(body.candidates ?? []);
+      if (mounted.current) setCandidates(body.candidates ?? []);
     } catch {
-      setError(t("review.voteFailed"));
+      if (mounted.current) setError(t("review.voteFailed"));
     } finally {
-      setVoting(null);
+      if (mounted.current) setVoting(null);
     }
   }
 
