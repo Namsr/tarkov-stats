@@ -119,3 +119,17 @@ test("community routes never reference the destructive ban operation", async () 
     assert.equal(source.includes("ban-" + "db"), false, path);
   }
 });
+
+test("both halves of the community report endpoint are rate limited", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync("app/api/community-reports/route.ts", "utf8");
+  const get = source.slice(source.indexOf("export async function GET"), source.indexOf("export async function POST"));
+  const post = source.slice(source.indexOf("export async function POST"));
+
+  // The read half is unauthenticated and fires on every profile view.
+  assert.match(get, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "community-reports-read", max: \d+ \}\)/);
+  assert.match(get, /!allowed\) return response\(\{ error: "Rate limit exceeded" \}, 429/);
+  // A separate bucket so browsing cannot eat the report budget.
+  assert.equal(get.includes('bucket: "community-reports"'), false);
+  assert.match(post, /bucket: "community-reports"/);
+});
