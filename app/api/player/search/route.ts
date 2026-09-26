@@ -12,6 +12,8 @@ import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/
 import { getSeasonalPlayerIndexStore } from "@/lib/seasonal/search-index";
 import type { GameMode } from "@/types/seasonal";
 
+export const runtime = "nodejs";
+
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 const SEARCH_LIMIT = 12;
 const SEARCH_MODES = ["regular", "pve", "arena", "seasonal"] as const;

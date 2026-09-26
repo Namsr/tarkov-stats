@@ -5,6 +5,8 @@ import { parsePlayerId } from "@/lib/player-id";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { toPublicRiskView } from "@/lib/player-profile-view";
 
+export const runtime = "nodejs";
+
 const noStore = { "Cache-Control": "no-store" };
 
 export async function GET(request: NextRequest) {
