@@ -1871,10 +1871,12 @@ function pushUniqueIndexResults(
   limit: number
 ) {
   for (const row of rows) {
+    // Check before appending: the second call starts with `out` already full, and
+    // a trailing check would let it through one row past the limit.
+    if (out.length >= limit) break;
     if (seen.has(row.aid)) continue;
     seen.add(row.aid);
     out.push(row);
-    if (out.length >= limit) break;
   }
 }
 
