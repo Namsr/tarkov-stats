@@ -54,6 +54,15 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
   assert.match(source, /const pollGeneration = \+\+riskPollGeneration\.current/);
   assert.equal((source.match(/void pollSeasonalRisk\(\{/g) ?? []).length, 2);
   assert.match(source, /riskPollGeneration\.current === pollGeneration/);
+  // The bump has to happen inside the success path. Retiring the mount poll
+  // before the request went out killed a poll that could still fill the risk
+  // section, because a failed refresh never reaches the spawn site.
+  const refresh = source.slice(source.indexOf("const refreshProfile = useCallback("));
+  assert.ok(
+    refresh.indexOf("setServerRisk(nextRisk);") < refresh.indexOf("const pollGeneration = ++riskPollGeneration.current"),
+    "the mount poll must be retired after the refresh has written its risk",
+  );
+  assert.equal((refresh.match(/const pollGeneration = \+\+riskPollGeneration\.current/g) ?? []).length, 1);
   assert.match(source, /\/api\/player\/risk\?\$\{params\}/);
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /if \(!body\.risk\) continue;/);

@@ -329,7 +329,6 @@ export default function SeasonalPlayer({
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
     const generation = requestGeneration.current;
-    const pollGeneration = ++riskPollGeneration.current;
     const previousProfile = profile;
     const params = new URLSearchParams({ aid: String(aid), mode: "seasonal", cycle: cycleId, refresh: "1" });
     const request = loadPlayerProfileResponse<SeasonalProfileResponse>(
@@ -364,6 +363,10 @@ export default function SeasonalPlayer({
         setMasteryItems(masteryFromViewModel(body.viewModel));
         const nextRisk = body.viewModel?.risk ?? body.risk ?? null;
         setServerRisk(nextRisk);
+        // Retire the mount poll only now that the refresh actually answered.
+        // Bumping before the request would kill a poll that is still able to fill
+        // the risk section, because a failed refresh never reaches this block.
+        const pollGeneration = ++riskPollGeneration.current;
         // A manual refresh can return before the risk row is recomputed. Poll the
         // risk-only endpoint so the section does not stay blank until reload.
         if (nextRisk == null) {
