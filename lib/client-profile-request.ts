@@ -15,6 +15,7 @@ interface ProfileInFlight {
   promise: Promise<PlayerProfileJsonResponse<unknown>>;
   controller: AbortController;
   consumers: number;
+  requestKey: string;
 }
 
 const CACHE_TTL_MS = 5 * 60_000;
@@ -90,6 +91,11 @@ function attachProfile(
       settled = true;
       entry.consumers = Math.max(0, entry.consumers - 1);
       if (entry.consumers === 0) {
+        // Drop the entry before aborting. The rejection only reaches the
+        // inFlight cleanup in a later microtask, and a destination profile
+        // mounting in the same React commit would otherwise attach to this
+        // dead request and render "profile unavailable" for stored data.
+        if (inFlight.get(entry.requestKey) === entry) inFlight.delete(entry.requestKey);
         try {
           entry.controller.abort();
         } catch {
@@ -165,6 +171,7 @@ export function loadPlayerProfileResponse<T>(
     promise: null as unknown as Promise<PlayerProfileJsonResponse<unknown>>,
     controller,
     consumers: 0,
+    requestKey,
   };
   entry.promise = network.finally(() => {
     if (inFlight.get(requestKey) === entry) inFlight.delete(requestKey);

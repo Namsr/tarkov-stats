@@ -87,6 +87,54 @@ test("failed refreshes preserve the last-good response and non-2xx responses are
   assert.equal(getCachedPlayerProfileResponse(missingUrl), null);
 });
 
+test("a consumer attaching after the last warmer aborts starts a fresh request", async () => {
+  const url = "/api/player/profile?aid=9000009&mode=arena";
+  const controller = new AbortController();
+  let calls = 0;
+  // The first call stays pending until aborted, exactly like a real fetch.
+  const request = (_url: string, init: { signal: AbortSignal }) => {
+    calls += 1;
+    const call = calls;
+    if (call > 1) return Promise.resolve(Response.json({ arena: { nickname: `Arena ${call}` } }));
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+  };
+
+  // A mode switch warms the destination profile, then unmounts in the same
+  // React commit that mounts the destination page, which consumes without a
+  // signal. React runs every cleanup before every effect in one synchronous
+  // pass, so the consumer must attach in the same tick as the abort and must
+  // not join the aborted request.
+  const warm = loadPlayerProfileResponse(url, { request, signal: controller.signal });
+  controller.abort();
+  const mounted = loadPlayerProfileResponse(url, { request });
+
+  await assert.rejects(warm, (error: unknown) => error.name === "AbortError");
+  const response = await mounted;
+  assert.equal(calls, 2);
+  assert.equal(response.body.arena.nickname, "Arena 2");
+});
+
+test("an abort with a remaining consumer keeps the shared request alive", async () => {
+  const url = "/api/player/profile?aid=9000010&mode=seasonal&cycle=persistent";
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    return Response.json({ profile: { nickname: "Shared" } });
+  };
+
+  const controller = new AbortController();
+  const warm = loadPlayerProfileResponse(url, { request, signal: controller.signal });
+  const mounted = loadPlayerProfileResponse(url, { request });
+  controller.abort();
+  await assert.rejects(warm, (error: unknown) => error.name === "AbortError");
+
+  const response = await mounted;
+  assert.equal(calls, 1);
+  assert.equal(response.body.profile.nickname, "Shared");
+});
+
 test("profile request keys keep identities and modes separate", () => {
   const regular = playerProfileRequestKey("/api/player/profile?aid=9000005&mode=regular");
   const seasonal = playerProfileRequestKey("/api/player/profile?aid=9000005&mode=seasonal&cycle=s1");
