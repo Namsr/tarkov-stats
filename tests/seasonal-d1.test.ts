@@ -499,6 +499,25 @@ test("D1 snapshots keep stats_json in parity with the SQLite store", async () =>
   assert.equal(d1Db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 1);
   assert.equal(readStatsJson(d1Db), readStatsJson(sqlite));
 
+  // A replay that carries nothing but a leaderboard-parser upgrade still has to
+  // reach the UPDATE. pvpStatsParserVersion is the only field that changed, so
+  // without it in the replay guard the row keeps the old stats_json and the
+  // pvpStatsVersion comparison added above is dead code.
+  const leaderboardOnly = {
+    ...seed,
+    pvpStatsVersion: 3,
+    pvpStatsParserVersion: 2,
+    seasonalStats: undefined,
+    seasonalAchievements: undefined,
+    side: undefined,
+    staticSignals: { prestige: 2, longestWinStreak: 7, achievementIds: [] },
+  };
+  assert.equal((await d1Store.captureSnapshot(leaderboardOnly)).status, "duplicate");
+  assert.equal((await sqliteStore.captureSnapshot(leaderboardOnly)).status, "duplicate");
+  assert.equal(d1Db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 1);
+  assert.deepEqual({ ...derived(d1Db) }, { killed: 30, known: 1, version: 3 });
+  assert.equal(readStatsJson(d1Db), readStatsJson(sqlite));
+
   sqlite.close();
   d1Db.close();
 });

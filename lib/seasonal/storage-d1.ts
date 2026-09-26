@@ -104,6 +104,7 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
           profile.seasonalAchievements !== undefined ||
           commonSkillsSnapshot !== undefined ||
           weaponMasterySnapshot !== undefined ||
+          profile.pvpStatsParserVersion !== undefined ||
           profile.side !== undefined
         )) {
           const stats = profile.seasonalStats;
