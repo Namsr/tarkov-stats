@@ -17,6 +17,10 @@ const profileViewSource = await readFile(
   new URL("../lib/player-profile-view.ts", import.meta.url),
   "utf8",
 );
+const seasonalPlayerSource = await readFile(
+  new URL("../components/SeasonalPlayer.tsx", import.meta.url),
+  "utf8",
+);
 
 test("profile summary uses regular, PVE, Arena priority and excludes unavailable mode", async () => {
   const calls: ProfileSummaryMode[] = [];
@@ -155,6 +159,15 @@ test("seasonal comparison never divides a total kill count by PMC-only deaths", 
   const withoutStats = { ...profile };
   delete withoutStats.seasonalStats;
   assert.equal(buildSeasonalComparisonStats(withoutStats).kdRatio, 12.5);
+
+  // The client's own projection has to agree. It feeds the current player's dot
+  // in the same radar chart, so leaving the counters fallback in place would show
+  // 12.5 next to the favourite's "—" for one and the same profile.
+  assert.match(
+    seasonalPlayerSource,
+    /kdRatio: existing \? existing\.kdRatio : \(counters\.pmcDeaths > 0 \? counters\.pmcKills \/ counters\.pmcDeaths : null\),/,
+  );
+  assert.doesNotMatch(seasonalPlayerSource, /kdRatio: existing\?\.kdRatio \?\?/);
 });
 
 test("mode-scoped profile responses carry identity and keep optional summaries additive", () => {
