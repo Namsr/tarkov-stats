@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 
@@ -13,10 +13,24 @@ export default function FaqWidget() {
   const [dialogState, setDialogState] = useState<DialogState>("closed");
   const [openQ, setOpenQ] = useState<number | null>(null);
   const open = dialogState === "open";
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   function closeFaq() {
     setDialogState((state) => (state === "open" ? "closing" : state));
   }
+
+  // The dialog is aria-modal, so focus has to enter it and come back out.
+  // Without this, focus stays on the trigger behind the backdrop and Tab
+  // walks into the page content the backdrop is covering. The cleanup fires on
+  // the open -> closing transition, which is where the trigger is still mounted.
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    const trigger = triggerRef.current;
+    dialog?.focus();
+    return () => { trigger?.focus(); };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -111,9 +125,11 @@ export default function FaqWidget() {
           }}
         >
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={t("faq.title")}
+            tabIndex={-1}
             className="faq-dialog"
             onMouseDown={(event) => event.stopPropagation()}
           >
@@ -164,6 +180,7 @@ export default function FaqWidget() {
       )}
 
       <button
+        ref={triggerRef}
         onClick={() => setDialogState((state) => (state === "closed" ? "open" : "closing"))}
         aria-label={t("faq.ariaOpen")}
         aria-expanded={open}

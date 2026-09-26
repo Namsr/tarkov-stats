@@ -380,6 +380,20 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
+test("the modal FAQ dialog takes and returns keyboard focus", async () => {
+  const faq = await readFile("components/FaqWidget.tsx", "utf8");
+
+  assert.match(faq, /aria-modal="true"/);
+  // Declaring the dialog modal obliges it to move focus in and to give it back,
+  // otherwise Tab walks into the content hidden behind the fixed backdrop.
+  assert.match(
+    faq,
+    /if \(!open\) return;[\s\S]*?dialog\?\.focus\(\);[\s\S]*?return \(\) => \{ trigger\?\.focus\(\); \};[\s\S]*?\}, \[open\]\);/,
+  );
+  assert.match(faq, /<div\s+ref=\{dialogRef\}\s+role="dialog"[\s\S]*?tabIndex=\{-1\}/);
+  assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+});
+
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");
