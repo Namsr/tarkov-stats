@@ -157,3 +157,24 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
   assert.match(accountsRoute, /ban-wins/);
   assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
 });
+
+test("admin dashboard drops load and audit results after unmount", async () => {
+  const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
+
+  assert.match(dashboard, /const mounted = useRef\(true\);/);
+  // The setup must re-arm the ref, not only clear it on cleanup: StrictMode runs
+  // mount -> cleanup -> mount, and a cleanup-only effect leaves mounted.current
+  // false for the rest of the session, so no tab would ever paint a result.
+  assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  // load() and runAudit() resolve after a possible navigation away from /admin,
+  // so every write that follows an await is guarded. The writes that run before
+  // the first await stay bare, so the exact counts pin every post-await site.
+  for (const [setter, expected] of [["setSummary", 1], ["setShowcase", 1], ["setTraffic", 1], ["setSystemMetrics", 1], ["setAccounts", 1], ["setAudit", 2], ["setAuditError", 2], ["setAuditBusy", 1], ["setError", 1], ["setLoading", 1]]) {
+    assert.equal(
+      (dashboard.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded by mounted.current at all ${expected} post-await call sites`,
+    );
+  }
+  assert.match(dashboard, /if \(response\.status === 409 && mounted\.current\) setAuditError\(/);
+});

@@ -388,14 +388,31 @@ test("ban review request results are dropped after unmount", async () => {
   // mount -> cleanup -> mount, and a cleanup-only effect leaves mounted.current
   // false for the rest of the session, so claim() would never paint a result.
   assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
-  assert.doesNotMatch(review, /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/);
   // Every await in claim/vote resolves after a possible navigation, so each
-  // setState it follows has to be guarded.
-  for (const setter of ["setCandidates", "setError", "setLoading", "setVoting"]) {
+  // setState it follows has to be guarded. The writes that run before the first
+  // await stay bare, so the exact counts pin every post-await call site: drop
+  // one guard and its setter counts one short.
+  for (const [setter, expected] of [["setCandidates", 2], ["setError", 2], ["setLoading", 1], ["setVoting", 1]]) {
     assert.equal(
-      (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length > 0,
-      true,
-      `${setter} after await must be guarded by mounted.current`,
+      (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded by mounted.current at all ${expected} post-await call sites`,
+    );
+  }
+});
+
+test("community helper drops poll and request results after unmount", async () => {
+  const helper = await readFile("components/CommunityHelper.tsx", "utf8");
+
+  assert.match(helper, /const mounted = useRef\(true\);/);
+  assert.match(helper, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  // loadStatus(), start(), verifyAll() and skip() all resolve after a possible
+  // navigation away from /community, which also unmounts CommunityBanReview.
+  for (const [setter, expected] of [["setStatus", 2], ["setError", 2], ["setStarting", 1], ["setChecking", 1]]) {
+    assert.equal(
+      (helper.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded by mounted.current at all ${expected} post-await call sites`,
     );
   }
 });

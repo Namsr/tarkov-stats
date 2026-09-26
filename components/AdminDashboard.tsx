@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
@@ -81,6 +81,15 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  // load() and runAudit() are user- or refresh-triggered and can outlive the page.
+  // Drop their results once we are gone. The setup has to re-arm the ref: a
+  // cleanup-only effect leaves it false forever after StrictMode's
+  // mount -> unmount -> mount, and the dashboard would never paint a result.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
     const params = new URLSearchParams();
@@ -95,27 +104,32 @@ export default function AdminDashboard() {
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
-        setSummary(await getJson<Summary>(`/api/admin/summary?${params}`));
+        const next = await getJson<Summary>(`/api/admin/summary?${params}`);
+        if (mounted.current) setSummary(next);
         if (tab === "health") {
           setAuditError("");
-          try { setAudit(await getJson<DataAudit>("/api/admin/data-audit")); }
-          catch { setAuditError(t("admin.error.load")); }
+          try { const nextAudit = await getJson<DataAudit>("/api/admin/data-audit"); if (mounted.current) setAudit(nextAudit); }
+          catch { if (mounted.current) setAuditError(t("admin.error.load")); }
         }
       } else if (tab === "showcase") {
-        setShowcase(await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase"));
+        const next = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase");
+        if (mounted.current) setShowcase(next);
       } else if (tab === "traffic") {
-        setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
+        const next = await getJson<Traffic>(`/api/admin/traffic?${params}`);
+        if (mounted.current) setTraffic(next);
       } else if (tab === "monitoring") {
-        setSystemMetrics(await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`));
+        const next = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`);
+        if (mounted.current) setSystemMetrics(next);
       } else {
         if (mode) params.set("mode", mode);
         if (search.trim()) params.set("search", search.trim());
         params.set("sort", sort);
         if (tab === "suspicious") params.set("source", "suspicious");
-        setAccounts(await getJson<Accounts>(`/api/admin/accounts?${params}`));
+        const next = await getJson<Accounts>(`/api/admin/accounts?${params}`);
+        if (mounted.current) setAccounts(next);
       }
-    } catch { setError(t("admin.error.load")); }
-    finally { setLoading(false); }
+    } catch { if (mounted.current) setError(t("admin.error.load")); }
+    finally { if (mounted.current) setLoading(false); }
   }, [domain, mode, period, search, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
@@ -129,10 +143,10 @@ export default function AdminDashboard() {
       });
       const body = await response.json() as DataAudit;
       if (!response.ok && response.status !== 409) throw new Error(String(response.status));
-      setAudit(body);
-      if (response.status === 409) setAuditError(t("admin.audit.running"));
-    } catch { setAuditError(t("admin.error.load")); }
-    finally { setAuditBusy(false); }
+      if (mounted.current) setAudit(body);
+      if (response.status === 409 && mounted.current) setAuditError(t("admin.audit.running"));
+    } catch { if (mounted.current) setAuditError(t("admin.error.load")); }
+    finally { if (mounted.current) setAuditBusy(false); }
   }, [t]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
