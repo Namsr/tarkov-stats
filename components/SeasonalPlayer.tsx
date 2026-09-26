@@ -63,7 +63,12 @@ function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): Se
     deaths,
     runThrough: existing?.runThrough ?? null,
     survivalRate: existing?.survivalRate ?? (totalRaids && survivedRaids != null ? (survivedRaids / totalRaids) * 100 : null),
-    kdRatio: existing?.kdRatio ?? (deaths && deaths > 0 && counters.pmcKills != null ? counters.pmcKills / deaths : null),
+    // Same rule as buildSeasonalComparisonStats: when Seasonal stats exist their
+    // kdRatio spans PMC+Scav, and the parser leaves it null when the Scav side is
+    // incomplete. Falling back to the counters here would relabel a PMC-only
+    // ratio as the total one, which is the number this PR removes from the
+    // favourite side of the radar.
+    kdRatio: existing ? existing.kdRatio : (counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null),
     pmcKdRatio,
     killsPerRaid: existing?.killsPerRaid ?? (counters.pmcRaids > 0 ? counters.pmcKills / counters.pmcRaids : null),
     pmcSurvivalRate,
