@@ -313,6 +313,15 @@ function sampleConfidence(rows: DailyRow[]): number {
   return source * Math.min(1, rows.length / 30);
 }
 
+// A whole-cycle cross-section can exceed the ~125k arguments Math.max(...values)
+// accepts before V8 throws RangeError, so fold instead of spreading. The fold
+// keeps Math.max semantics, including a NaN poisoning the result.
+function maxFreshness(rows: readonly DailyRow[]): number | null {
+  let max = -Infinity;
+  for (const row of rows) max = Math.max(max, Number(row.freshness_at));
+  return rows.length ? max : null;
+}
+
 function pointConfidence(row: DailyRow): number {
   const sampleN = row.score_sample_n;
   return Number(row.confidence) * (sampleN == null ? 1 : Math.min(1, Math.max(0, Number(sampleN)) / 30));
@@ -451,7 +460,7 @@ export function buildSeasonalAverageSeries(
     overall,
     n: latest?.n ?? 0,
     confidence: latest?.confidence ?? 0,
-    freshnessAt: rows.length ? Math.max(...rows.map((row) => Number(row.freshness_at))) : null,
+    freshnessAt: maxFreshness(rows),
   };
 }
 
@@ -549,7 +558,7 @@ export function buildProgressionSeries(
   });
   const overall = overallPoints(rows.filter((row) => Number(row.confirmed_banned ?? 0) === 0),
     input.kind !== "cumulative", `${input.kind}:overall`);
-  const freshnessAt = rows.length ? Math.max(...rows.map((row) => row.freshness_at)) : null;
+  const freshnessAt = maxFreshness(rows);
   const confidences = nearby.map((entry) => entry.confidence);
   const firstObservedAt = playerRows.length ? Math.min(...playerRows.map((row) => Number(row.freshness_at))) : null;
   const lastObservedAt = playerRows.length ? Math.max(...playerRows.map((row) => Number(row.freshness_at))) : null;
