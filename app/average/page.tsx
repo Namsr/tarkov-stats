@@ -3,6 +3,8 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AchievementBreakdown from "@/components/AchievementBreakdown";
+import AverageHeroGauges from "@/components/AverageHeroGauges";
+import AverageSelectionCompare from "@/components/AverageSelectionCompare";
 import RangeSlider from "@/components/RangeSlider";
 import RegularAverageProgression from "@/components/RegularAverageProgression";
 import AveragePageHeader from "@/components/AveragePageHeader";
@@ -62,6 +64,19 @@ const METRICS: { key: string; suffix?: string; decimals?: number }[] = [
   { key: "hours", decimals: 0 },
   { key: "level", decimals: 0 },
   { key: "prestige", decimals: 2 },
+];
+
+const Y_GROUPS: { label: string; keys: string[] }[] = [
+  { label: "Players", keys: ["players"] },
+  {
+    label: "Combat",
+    keys: ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "killed_pmc", "deaths"],
+  },
+  { label: "Survival", keys: ["survival_rate", "longest_win_streak", "run_through"] },
+  {
+    label: "Progress",
+    keys: ["total_raids", "pmc_raids", "level", "prestige", "achv_count", "hours"],
+  },
 ];
 
 const FALLBACK_BOUNDS: Record<RangeDimension, RangeBounds> = {
@@ -148,6 +163,7 @@ function AveragePageContent({
   const [requestedRange, setRequestedRange] = useState<RangeBounds | null>(null);
   const [yMetric, setYMetric] = useState(DEFAULT_Y);
   const [data, setData] = useState<AverageResponse | null>(null);
+  const [baseline, setBaseline] = useState<AverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const chartRef = useRef<HTMLDivElement>(null);
@@ -220,6 +236,26 @@ function AveragePageContent({
     };
   }, [cycleId, dimension, mode, period, requestedRange, statistic, t, yMetric]);
 
+  useEffect(() => {
+    if (mode === "arena") return;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ dimension, metric: yMetric, statistic, period });
+    const endpoint = mode === "seasonal" ? "/api/seasonal/average" : "/api/average";
+    if (mode !== "seasonal") params.set("mode", mode);
+    if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
+    loadAverageJson<AverageResponse>(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal,
+      retryUnavailable: true,
+    })
+      .then((json) => {
+        if (!controller.signal.aborted) setBaseline(json);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBaseline(null);
+      });
+    return () => controller.abort();
+  }, [cycleId, dimension, mode, period, statistic, yMetric]);
+
   function cancelAverageRequests() {
     averageRequestRef.current?.abort();
     progressionRequestRef.current?.abort();
@@ -268,7 +304,18 @@ function AveragePageContent({
   const terminalError = Boolean(error) && !loading && currentData === null;
   const averages = currentData?.averages ?? null;
   const sampleN = averages?.n ?? 0;
-  const total = currentData?.total ?? 0;
+  const baselineData =
+    baseline?.mode === mode &&
+    (mode !== "seasonal" || baseline.cycleId === cycleId) &&
+    baseline?.statistic === statistic &&
+    baseline.period === period &&
+    baseline.dimension === dimension &&
+    baseline.metric === yMetric
+      ? baseline
+      : null;
+  const baselineAverages = baselineData?.averages ?? null;
+  const showCompare =
+    selection !== null && currentData !== null && baselineAverages !== null && sampleN > 0;
   const yDef = resolveY(currentData?.metric ?? yMetric);
   const isCount = yDef.agg === "count";
   const fitBins =
@@ -295,7 +342,6 @@ function AveragePageContent({
     statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
   );
   const showAverageProgression = mode === "regular" || mode === "pve" || mode === "seasonal";
-  const focusMetrics = METRICS.slice(0, 4);
   const detailMetrics = METRICS.slice(4).map((metric) =>
     dimension === "pmc_raids" && metric.key === "total_raids"
       ? { ...metric, key: "pmc_raids" }
@@ -373,94 +419,78 @@ function AveragePageContent({
         seasonalCycleId={seasonalCycleId}
       />
 
-      <section className="summary-strip surface">
-        <div className="summary-strip__copy">
-          <div className="section-kicker">{t("average.accountsScanned")}</div>
-          <div className="summary-strip__number">{total.toLocaleString()}</div>
-        </div>
-      </section>
+      <p className="average-sampleline" aria-live="polite">
+        {t("average.basedOn", { n: sampleN.toLocaleString() })} · {statisticLabel}
+        {period === "90d" ? ` · ${t("average.period.last90Days")}` : null}
+      </p>
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
 
       {terminalError ? null : !currentData ? (
-        <div className="detail-grid mt-5">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-28 rounded-xl skeleton" />
+        <div className="arena-combat-gauges mt-5" role="status" aria-label={t("common.loading")}>
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="h-64 rounded-xl skeleton" />
           ))}
         </div>
       ) : sampleN === 0 ? (
         <p className="mt-5 text-[var(--muted)]">{t("average.emptyRange")}</p>
       ) : (
-        <section className="mt-5">
-          <h2 className="section-heading mb-3">
-            {t("average.summaryMethod", { method: statisticLabel })}
-          </h2>
-          <div className="detail-grid">{focusMetrics.map(renderMetric)}</div>
-        </section>
+        <div className="mt-5">
+          <AverageHeroGauges averages={averages} sampleN={sampleN} statisticLabel={statisticLabel} />
+        </div>
       )}
 
       <section className="mt-10">
         <div className="mb-4">
-          <div>
-            <h2 className="section-heading">
-              {t(
-                dimension === "hours"
-                  ? mode === "seasonal" ? "average.seasonalDistributionHeading" : "average.distributionHeading"
-                  : "average.distributionHeadingPmcRaids",
-              )}
-            </h2>
-            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">
-              {t(
-                dimension === "hours"
-                  ? mode === "seasonal" ? "average.seasonalDistributionDesc" : "average.distributionDesc"
-                  : "average.distributionDescPmcRaids",
-              )}
-            </p>
-          </div>
           <div className="average-chart-toolbar">
-            <SegmentedRadio
-              name="average-dimension"
-              legend={t("average.dimensionLabel")}
-              value={dimension}
-              options={[
-                { value: "hours", label: t("average.dimensionHours") },
-                { value: "pmc_raids", label: t("average.dimensionPmcRaids") },
-              ]}
-              onChange={changeDimension}
-            />
-            <label className="native-select">
-              <span>{t("average.metricLabel")}</span>
-              <select value={yMetric} onChange={(event) => setYMetric(event.target.value)}>
-                {Y_METRICS.map((metric) => (
-                  <option key={metric.key} value={metric.key}>
-                    {metric.agg === "avg"
-                      ? `${t("common.avg")} ${t("metric." + metric.key)}`
-                      : t("metric." + metric.key)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="sample-status" aria-live="polite">
-              {currentData
-                ? t("average.basedOn", { n: sampleN.toLocaleString() })
-                : loading
-                  ? t("common.loading")
-                  : null}
-            </span>
+            <div className="w-full">
+              <SegmentedRadio
+                name="average-dimension"
+                legend={t("average.dimensionLabel")}
+                value={dimension}
+                options={[
+                  { value: "hours", label: t("average.dimensionHours") },
+                  { value: "pmc_raids", label: t("average.dimensionPmcRaids") },
+                ]}
+                onChange={changeDimension}
+              />
+            </div>
+            <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
+              <label className="native-select">
+                <span>{t("average.metricLabel")}</span>
+                <select value={yMetric} onChange={(event) => setYMetric(event.target.value)}>
+                  {Y_GROUPS.map((group) => {
+                    const options = group.keys
+                      .map((key) => Y_METRICS.find((metric) => metric.key === key))
+                      .filter((metric): metric is (typeof Y_METRICS)[number] => Boolean(metric));
+                    if (options.length === 0) return null;
+                    return (
+                      <optgroup key={group.label} label={group.label}>
+                        {options.map((metric) => (
+                          <option key={metric.key} value={metric.key}>
+                            {metric.agg === "avg"
+                              ? `${t("common.avg")} ${t("metric." + metric.key)}`
+                              : t("metric." + metric.key)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+              </label>
+              <span className="sample-status" aria-live="polite">
+                {currentData
+                  ? t("average.basedOn", { n: sampleN.toLocaleString() })
+                  : loading
+                    ? t("common.loading")
+                    : null}
+              </span>
+            </div>
           </div>
         </div>
 
         {!terminalError && (
           <div ref={chartRef} className="chart-panel data-panel">
-          <div className="mb-4 text-xs text-[var(--muted)]">
-            <span className="font-semibold text-[var(--accent)]">
-              {yDef.agg === "avg"
-                ? `${t("common.avg")} ${t("metric." + yDef.key)}`
-                : t("metric." + yDef.key)}
-            </span>{" "}
-            {t(dimension === "hours" ? "average.byPlaytime" : "average.byPmcRaids")}
-          </div>
-
           {!currentData ? (
             <div className="h-60 rounded skeleton" />
           ) : bins.length === 0 ? (
@@ -510,14 +540,19 @@ function AveragePageContent({
                 })}
               </div>
               <div className="mt-3 flex gap-1.5">
-                {bins.map((bin) => (
-                  <span
-                    key={`${bin.lo}-${bin.hi ?? "open"}`}
-                    className="min-w-[26px] flex-1 text-center text-[9px] leading-tight text-[var(--muted)]"
-                  >
-                    {bin.label}
-                  </span>
-                ))}
+                {bins.map((bin, index) => {
+                  const axisStep = Math.max(1, Math.ceil(bins.length / 12));
+                  const showLabel = index % axisStep === 0;
+                  return (
+                    <span
+                      key={`${bin.lo}-${bin.hi ?? "open"}`}
+                      aria-hidden={!showLabel}
+                      className="chart-axis-label min-w-[26px] flex-1 text-center text-[11px] leading-tight text-[var(--muted)]"
+                    >
+                      {showLabel ? bin.label : ""}
+                    </span>
+                  );
+                })}
               </div>
             <div className="mt-3 text-center text-[10px] text-[var(--muted)]">
                 {t(dimension === "hours"
@@ -551,58 +586,18 @@ function AveragePageContent({
               fromPosition={valueAtPosition}
               onChange={(min, max) => setSelection({ min, max })}
             />
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <label className="text-xs text-[var(--muted)]">
-                <span className="mb-1 block">{t("average.rangeFrom")}</span>
-                <input
-                  type="number"
-                  min={bounds.min}
-                  max={visibleSelection.max - minRangeSpan}
-                  step={1}
-                  value={visibleSelection.min}
-                  onChange={(event) => {
-                    const next = Number(event.target.value);
-                    if (Number.isFinite(next)) {
-                      setSelection({
-                        min: Math.max(
-                          bounds.min,
-                          Math.min(next, visibleSelection.max - minRangeSpan),
-                        ),
-                        max: visibleSelection.max,
-                      });
-                    }
-                  }}
-                  className="min-h-11 w-full rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
-                />
-              </label>
-              <label className="text-xs text-[var(--muted)]">
-                <span className="mb-1 block">{t("average.rangeTo")}</span>
-                <input
-                  type="number"
-                  min={visibleSelection.min + minRangeSpan}
-                  max={bounds.max}
-                  step={1}
-                  value={visibleSelection.max}
-                  onChange={(event) => {
-                    const next = Number(event.target.value);
-                    if (Number.isFinite(next)) {
-                      setSelection({
-                        min: visibleSelection.min,
-                        max: Math.min(
-                          bounds.max,
-                          Math.max(next, visibleSelection.min + minRangeSpan),
-                        ),
-                      });
-                    }
-                  }}
-                  className="min-h-11 w-full rounded-lg border border-[var(--card-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
-                />
-              </label>
-            </div>
           </div>
           </div>
         )}
       </section>
+
+      {showCompare && (
+        <AverageSelectionCompare
+          selection={averages}
+          baseline={baselineAverages}
+          baselineN={baselineAverages?.n ?? 0}
+        />
+      )}
 
       {/* Regular legacy guard: mode === "regular" && levelBands.length > 0 */}
       {/* Legacy JSX shape: <RegularAverageProgression levelBands={levelBands} /> */}
@@ -616,15 +611,7 @@ function AveragePageContent({
       )}
 
       {currentData && sampleN > 0 && (
-        <section className="mt-10">
-          <h2 className="section-heading mb-3">
-            {t("average.fullMetricsMethod", {
-              title: t("average.fullMetrics"),
-              method: statisticLabel,
-            })}
-          </h2>
-          <div className="detail-grid detail-grid--compact">{detailMetrics.map(renderMetric)}</div>
-        </section>
+        <div className="detail-grid detail-grid--compact mt-10">{detailMetrics.map(renderMetric)}</div>
       )}
 
       {mode !== "arena" && (

@@ -241,6 +241,7 @@ test("mode navigation wiring keeps only the last request alive", async () => {
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");
   const averagePage = await readFile("app/average/page.tsx", "utf8");
   const switcher = await readFile("components/ProfileModeSwitch.tsx", "utf8");
+  const populationModePage = await readFile("app/population/[mode]/page.tsx", "utf8");
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
 
   // Prefetch queue does not survive navigation, demand loads take over prefetches.
@@ -256,6 +257,8 @@ test("mode navigation wiring keeps only the last request alive", async () => {
   assert.doesNotMatch(switcher, /let warmProfileController/);
   assert.doesNotMatch(switcher, /let warmTimelineController/);
   assert.doesNotMatch(switcher, /cancelModeSwitchWarms/);
+  assert.match(switcher, /page === "average" \? `\/population\/\$\{routeMode\}`/);
+  assert.match(populationModePage, /@\/app\/average\/\[mode\]\/page/);
   assert.match(switcher, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{params\}`/);
 
   // Timelines are cancelled by navigation.

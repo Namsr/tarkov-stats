@@ -70,6 +70,12 @@ const nextConfig: NextConfig = {
   output: "standalone",
   // Убираем x-powered-by: Next.js — не светим стек.
   poweredByHeader: false,
+  async redirects() {
+    return [
+      { source: "/average", destination: "/population", permanent: true },
+      { source: "/average/:mode", destination: "/population/:mode", permanent: true },
+    ];
+  },
   // RFC 9116 security.txt по каноническому пути → отдаёт route handler
   // (/.well-known нельзя сделать папкой в app/, т.к. имя начинается с точки).
   async rewrites() {

@@ -5,12 +5,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n/context";
 import { handleActiveLinkClick } from "@/lib/active-link";
 
-/** Header link to the canonical Average Player Statistics page. */
-export default function AverageNavButton({ onNavigate }: { onNavigate?: () => void }) {
+export default function CompareNavButton({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
   const { t } = useI18n();
-  const active = pathname.startsWith("/average");
+  const active = pathname === "/compare" || pathname === "/compare/";
 
   const base = "tactical-nav-link";
   const className = active
@@ -19,7 +18,7 @@ export default function AverageNavButton({ onNavigate }: { onNavigate?: () => vo
 
   return (
     <Link
-      href="/average/regular"
+      href="/compare"
       className={className}
       aria-current={active ? "page" : undefined}
       onClick={(event) => {
@@ -27,7 +26,7 @@ export default function AverageNavButton({ onNavigate }: { onNavigate?: () => vo
         handleActiveLinkClick(event, active, router);
       }}
     >
-      {t("nav.average")}
+      {t("nav.compare")}
     </Link>
   );
 }

@@ -30,6 +30,11 @@ import {
 } from "../lib/seasonal/progression-timeline-ui.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension.
 import { initializeSeasonalSchema, createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
+import {
+  timelineHasPlayerHistory,
+  timelineHasPoints,
+  validTimelineResponse,
+} from "../lib/progression-timeline-response.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -378,4 +383,88 @@ test("focused raid bounds and independent metric domains keep close changes read
   assert.deepEqual(progressionValueDomain([point(1, 100), point(2, 102)]), { min: 99.84, max: 102.16 });
   assert.deepEqual(progressionValueDomain([point(1, 140), point(2, 180)], true), { min: 92, max: 100 });
   assert.deepEqual(progressionValueDomain([point(1, 4), point(2, 4)]), { min: 3, max: 5 });
+});
+
+test("timeline response validation preserves identity and distinguishes player history", () => {
+  const playerPoint = point(10, 1_000, 1);
+  const previousPoint = point(20, 900, 0);
+  const metric = {
+    player: [previousPoint, playerPoint],
+    nearby: [],
+    overall: [point(30, 950, null)],
+    n: 1,
+    confidence: 1,
+    freshnessAt: null,
+  };
+  const timeline = {
+    identity: { mode: "seasonal", cycleId: "s1", aid: 1 },
+    metrics: { xp: metric },
+    history: {},
+    n: 1,
+    confidence: 1,
+  };
+
+  assert.equal(validTimelineResponse(timeline, identity), true);
+  assert.equal(validTimelineResponse(timeline, { ...identity, aid: 2 }), false);
+  assert.equal(validTimelineResponse(timeline, { ...identity, mode: "regular" }), false);
+  assert.equal(validTimelineResponse({ ...timeline, confidence: Infinity }, identity), false);
+  assert.equal(timelineHasPoints(timeline), true);
+  assert.equal(timelineHasPlayerHistory(timeline), true);
+
+  const populationOnly = {
+    ...timeline,
+    metrics: { xp: { ...metric, player: [] } },
+  };
+  assert.equal(validTimelineResponse(populationOnly, identity), true);
+  assert.equal(timelineHasPoints(populationOnly), true);
+  assert.equal(timelineHasPlayerHistory(populationOnly), false);
+  assert.deepEqual(populationOnly.metrics.xp.player, []);
+});
+
+test("compare progression uses two isolated all-history player series without population controls", async () => {
+  const [chart, section, styles, panel] = await Promise.all([
+    readFile("components/ProgressionTimelineChart.tsx", "utf8"),
+    readFile("components/CompareProgressionSection.tsx", "utf8"),
+    readFile("components/profile.css", "utf8"),
+    readFile("components/ProgressionPanel.tsx", "utf8"),
+  ]);
+
+  assert.match(chart, /variant\?: "profile" \| "compare"/);
+  assert.match(chart, /primaryLabel\?: string/);
+  assert.match(chart, /comparisonLabel\?: string/);
+  assert.match(chart, /const allHistory = variant === "compare" \|\| historySelection/);
+  assert.match(chart, /const axis = variant === "compare" \? "raids" : selectedAxis/);
+  assert.match(chart, /if \(variant === "compare" \|\| !needsFallback\) return/);
+  assert.match(chart, /const averageSource = variant === "compare" \? \[\]/);
+  assert.match(chart, /profileProgressionSegments\(source, metric, allHistory\)/);
+  assert.match(chart, /profileProgressionSegments\(comparisonSource, metric, allHistory\)/);
+  assert.match(chart, /const playerLabel = variant === "compare" && primaryLabel\?\.trim\(\)/);
+  assert.match(chart, /const selectedLabel = variant === "compare" && comparisonLabel\?\.trim\(\)/);
+  assert.match(chart, /variant === "profile" && <label className="profile-select"/);
+  assert.match(chart, /variant === "profile" && <>\s*<div className="profile-progress-foot">/);
+  assert.equal((chart.match(/aria-label=\{t\("home\.chartMetric"\)\}/g) ?? []).length, 1);
+
+  assert.match(section, /type ProgressionMode = "regular" \| "pve" \| "seasonal"/);
+  assert.match(section, /const primaryState = useProgressionTimeline\(primary, mode, cycleId\)/);
+  assert.match(section, /const secondaryState = useProgressionTimeline\(secondary, mode, cycleId\)/);
+  assert.match(section, /new URLSearchParams\(\{\s*aid: String\(aid\),\s*mode,\s*cycle: cycleId,\s*\}\)/);
+  assert.match(section, /cache: "no-store"/);
+  assert.match(section, /new AbortController\(\)/);
+  assert.match(section, /controller\.abort\(\)/);
+  assert.match(section, /validTimelineResponse\(result, \{ aid, mode, cycleId \}\)/);
+  assert.match(section, /\[aid, cycleId, key, mode, updatedAt\]/);
+  assert.match(section, /<ProgressionTimelineChart[\s\S]*variant="compare"/);
+  assert.match(section, /primaryLabel=\{primaryName\}/);
+  assert.match(section, /comparisonLabel=\{secondaryName\}/);
+  assert.match(section, /aria-labelledby=\{headingId\}/);
+  assert.match(section, /aria-busy=\{state\.loading \|\| undefined\}/);
+  assert.match(section, /role="status"/);
+  assert.match(section, /role="alert"/);
+  assert.doesNotMatch(section, /value:\s*0\b|player:\s*\[\s*\{\s*value/);
+  assert.match(section, /import "@\/components\/profile\.css"/);
+
+  assert.match(panel, /from "@\/lib\/progression-timeline-response"/);
+  assert.match(styles, /\.compare-progression\.profile-page \{ width: 100%/);
+  assert.match(styles, /\.compare-progression \.compare-progression__slots \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.compare-progression \.compare-progression__slots \{ grid-template-columns: minmax\(0, 1fr\)/);
 });

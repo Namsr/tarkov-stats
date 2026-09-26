@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import AverageMetricOverlay from "@/components/AverageMetricOverlay";
 import SeasonalProgressionChart from "@/components/SeasonalProgressionChart";
 import { useI18n } from "@/lib/i18n/context";
 import type { LevelBand } from "@/lib/seasonal/ui";
@@ -75,22 +76,7 @@ export default function RegularAverageProgression({
         averageOnly
         mode={mode}
       />
-      {currentData.series.tempo.overall.length > 0 && (
-        <SeasonalProgressionChart
-          data={currentData.series.tempo}
-          title={t("progression.chart.tempo")}
-          averageOnly
-          mode={mode}
-        />
-      )}
-      {currentData.series.form.overall.length > 0 && (
-        <SeasonalProgressionChart
-          data={currentData.series.form}
-          title={t("progression.chart.form")}
-          averageOnly
-          mode={mode}
-        />
-      )}
+      <AverageMetricOverlay mode={mode} cycleId={cycleId} />
     </section>
   );
 }

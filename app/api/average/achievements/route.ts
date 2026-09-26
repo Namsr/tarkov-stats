@@ -5,6 +5,7 @@ import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progress
 import { getAchievements } from "@/lib/tarkov-api";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
+import { fakeAverageAchievements, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
 
 export const runtime = "nodejs";
 
@@ -94,6 +95,9 @@ export async function GET(request: NextRequest) {
     if (!isGameMode(rawMode)) {
       timing.finish({ operation: "average_achievements", outcome: "invalid", status: 400 });
       return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+    }
+    if (isLocalFakeAverageEnabled() && (rawMode === "regular" || rawMode === "pve")) {
+      return NextResponse.json(fakeAverageAchievements());
     }
     const cycleId = rawMode === "seasonal" ? request.nextUrl.searchParams.get("cycle") : null;
     if (rawMode === "seasonal") {

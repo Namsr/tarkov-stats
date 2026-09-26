@@ -67,8 +67,8 @@ test("search API reads all four indexes and tolerates unavailable modes", async 
   assert.match(db, /arena_player_index/);
   assert.match(seasonal, /seasonal_player_index_meta/);
   assert.match(component, /\["all", \.\.\.GAME_MODES\]/);
-  assert.match(component, /player\.profiles\.map/);
-  assert.match(component, /profileHref\(aid, profile\)/);
+  assert.match(component, /\{profiles\.map/);
+  assert.match(component, /profileHref\(aid, selectedProfile\)/);
   assert.match(component, /search-unit__result-hitarea/);
   assert.match(component, /aria-label=\{t\("search\.openProfile"/);
   assert.match(component, /aria-current=\{isSelected \? "page"/);
@@ -126,4 +126,41 @@ test("search and recent profile lists stay bounded without truncating rows", asy
   assert.match(component, /className="search-unit__results-list space-y-1"[\s\S]*results\.map/);
   assert.match(styles, /\.search-unit__recent-list\s*\{[\s\S]*max-height: min\(256px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
   assert.match(styles, /\.search-unit__results-list\s*\{[\s\S]*max-height: min\(276px, 50svh\)[\s\S]*overflow-y: auto[\s\S]*overscroll-behavior: contain/);
+});
+
+test("fixed search mode scopes numeric, nickname, and recent selections without changing defaults", async () => {
+  const source = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.match(source, /onSelect\?: \(aid: number, profile: PlayerSearchProfileResult\) => void/);
+  assert.match(source, /fixedMode\?: GameMode/);
+  assert.match(source, /cycleId\?: string/);
+  assert.match(source, /const effectiveSearchMode: SearchMode = fixedMode \?\? searchMode/);
+  assert.match(source, /const selectedMode = fixedMode \?\? \(/);
+  assert.match(source, /const selectedCycleId = selectedMode === "seasonal" && fixedMode[\s\S]*cycleId\?\.trim\(\)/);
+  assert.match(source, /onSelect\(player\.aid, \{[\s\S]*mode: selectedMode,[\s\S]*cycleId: selectedCycleId/);
+  assert.match(source, /onSelect\(Number\(entry\.aid\), \{[\s\S]*mode,[\s\S]*cycleId:/);
+  assert.match(source, /searchNickname\(clean, effectiveSearchMode\)/);
+  assert.match(source, /router\.push\(profileHref\(aid, selectedProfile\)\)/);
+  assert.match(source, /router\.push\(getRecentPlayerHref\(entry\)\)/);
+  assert.match(source, /!fixedMode && \(/);
+});
+
+test("fixed search filters recent and nickname profiles by the selected mode and cycle", async () => {
+  const source = await readFile("components/SearchBar.tsx", "utf8");
+
+  assert.match(source, /filterRecentPlayers\(recentPlayers, query\)\.filter\(\(entry\) => \{[\s\S]*recentEntryMode\(entry\) !== fixedMode[\s\S]*entry\.cycle === cycleId/);
+  assert.match(source, /player\.profiles\.filter\(\(profile\) => profile\.mode === fixedMode/);
+  assert.match(source, /profile\.cycleId === cycleId/);
+  assert.match(source, /function scopedProfile\([\s\S]*if \(!fixedMode\) return profile[\s\S]*mode: fixedMode[\s\S]*cycleId: fixedMode === "seasonal"/);
+});
+
+test("search selection action is localized separately from profile navigation", async () => {
+  const [component, dictionary] = await Promise.all([
+    readFile("components/SearchBar.tsx", "utf8"),
+    readFile("lib/i18n/dictionary.ts", "utf8"),
+  ]);
+
+  assert.match(component, /loading \? t\("common\.loading"\) : t\(onSelect \? "search\.select" : landing \? "home\.search" : "search\.view"\)/);
+  assert.match(dictionary, /"search\.select": "Select"/);
+  assert.match(dictionary, /"search\.select": "Выбрать"/);
 });

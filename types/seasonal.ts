@@ -439,10 +439,7 @@ export function normalizeCycleId(value: unknown, mode: GameMode): CycleId | null
   const normalized = value.trim();
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized)) return null;
   if (mode === "seasonal") return normalized === LEGACY_IDENTITY.cycleId ? null : normalized;
-  if (mode === "regular" || mode === "pve") {
-    return normalized === LEGACY_IDENTITY.cycleId ? LEGACY_IDENTITY.cycleId : null;
-  }
-  return normalized;
+  return normalized === LEGACY_IDENTITY.cycleId ? LEGACY_IDENTITY.cycleId : null;
 }
 
 function normalizeSeasonalNavigationCycle(value: unknown): CycleId | null {

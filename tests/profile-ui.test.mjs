@@ -367,7 +367,7 @@ test("search keeps its mode picker inline and dismisses the animated history out
   assert.match(search, /document\.addEventListener\("pointerdown", closeOutside, true\)/);
   assert.match(search, /document\.addEventListener\("focusin", closeOutside, true\)/);
   assert.match(search, /className="search-unit__history"[\s\S]*data-open=\{showRecent\}[\s\S]*inert=\{!showRecent\}/);
-  assert.match(search, /player\.profiles\.map[\s\S]*search-unit__result-mode[\s\S]*search-unit__result-id/);
+  assert.match(search, /profiles\.map[\s\S]*search-unit__result-mode[\s\S]*search-unit__result-id/);
   assert.match(styles, /\.search-unit__history \{[^}]*position: absolute/s);
   assert.match(styles, /\.search-unit__mode-menu,[\s\S]*transform: translateY\(-8px\)/);
   assert.match(styles, /prefers-reduced-motion: reduce[\s\S]*\.search-unit__history/);
@@ -397,8 +397,10 @@ test("average statistic switch keeps URL state and masks stale portrait values",
   assert.match(source, /\{terminalError \? null : !currentData \? \(/);
   assert.match(source, /\{!terminalError && \(\s*<div ref=\{chartRef\}/);
   assert.match(header, /name="average-statistic"/);
-  assert.match(header, /average-settings__top[\s\S]*average-settings__groups[\s\S]*average-settings__mode/);
-  assert.match(styles, /\.average-settings__top \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(340px, 520px\)/);
+  assert.match(header, /className="average-hero"/);
+  assert.match(header, /<ProfileModeSwitch[\s\S]*?page="average"/);
+  assert.match(header, /className="average-toolbar" aria-label=\{t\("average\.settings"\)\}/);
+  assert.match(styles, /\.average-hero \.mode-switch \{[^}]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(segmented, /<fieldset className=\{`segmented-control/);
   assert.match(segmented, /type="radio"/);
   assert.match(segmented, /checked=\{value === option\.value\}/);
@@ -408,7 +410,7 @@ test("active navigation links go back only for an unmodified click at their dest
   const { activeLinkAction } = await import("../lib/active-link.ts");
   const helper = await readFile("lib/active-link.ts", "utf8");
   const header = await readFile("components/SiteHeader.tsx", "utf8");
-  const average = await readFile("components/AverageNavButton.tsx", "utf8");
+  const compare = await readFile("components/AverageNavButton.tsx", "utf8");
   const averagePage = await readFile("app/average/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
   const seasonalAverage = await readFile("components/SeasonalAverage.tsx", "utf8");
@@ -437,8 +439,10 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(helper, /router\.back\(\)/);
   assert.match(helper, /router\.replace\(fallback\)/);
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
-  assert.match(average, /const active = pathname\.startsWith\("\/average"\)/);
-  assert.match(average, /handleActiveLinkClick\(event, active, router\)/);
+  assert.match(compare, /const active = pathname === "\/compare" \|\| pathname === "\/compare\/"/);
+  assert.match(compare, /href="\/compare"/);
+  assert.match(compare, /t\("nav\.compare"\)/);
+  assert.match(compare, /handleActiveLinkClick\(event, active, router\)/);
   assert.match(modes, /onNavigate=\{\(\) => \{/);
   assert.match(modes, /prefetch/);
   assert.match(modes, /onBeforeNavigate\?\.\(mode\)/);
@@ -787,18 +791,21 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(canonical, /levelBands=\{levelBands\}/);
   assert.doesNotMatch(canonical, /await getPlayerLevels\(\)/);
   assert.match(average, /mode === "regular" && levelBands\.length > 0/);
-  assert.match(average, /<RegularAverageProgression levelBands=\{levelBands\} \/>/);
+  assert.match(average, /<RegularAverageProgression$/m);
+  assert.match(average, /levelBands=\{levelBands\}/);
   assert.ok(
-    average.indexOf("<RegularAverageProgression") < average.indexOf('t("average.fullMetrics")'),
-    "regular progression should render before the full metric set",
+    average.indexOf("<RegularAverageProgression") > average.indexOf("<AverageSelectionCompare"),
+    "regular progression should render after the selection comparison",
   );
+  assert.match(average, /<AverageSelectionCompare[\s\S]*?selection=\{averages\}/);
   assert.match(progression, /fetch\("\/api\/progression\/average"/);
+  assert.match(progression, /<AverageMetricOverlay mode=\{mode\} cycleId=\{cycleId\} \/>/);
   assert.match(progression, /data\?\.mode === mode/);
   assert.match(progression, /setData\(null\);\s*setError\(""\);/);
-  assert.equal((progression.match(/averageOnly/g) ?? []).length, 3);
+  assert.equal((progression.match(/averageOnly/g) ?? []).length, 1);
   assert.equal((progression.match(/mode="regular"/g) ?? []).length, 3);
   assert.match(chart, /levelAtExperience\(point\.value, levelBands\)/);
-  assert.match(chart, /spacedLevelLabels\(/);
+  assert.match(chart, /seasonal\.levelBand", \{ level: levelAtExperience\(value, levelBands\)/);
   assert.match(chart, /progression\.xpLevelValue/);
   assert.match(chart, /aria-label=\{label\}/);
   assert.match(chart, /function moscowTimestamp\(timestamp: number, lang: string\)/);

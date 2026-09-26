@@ -6,7 +6,7 @@ import {
   type RadarMetric,
   type RangeDimension,
 } from "@/lib/db";
-import { isGameMode } from "@/types/seasonal";
+import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
@@ -59,18 +59,27 @@ async function arenaCohortResponse(
   const requestedAid = params.get("aid");
   const aid = Number(requestedAid);
   const arenaMode = params.get("arenaMode");
+  const cycleId = normalizeCycleId(params.get("cycle"), "arena");
   const statistic = parseAverageStatistic(params.get("statistic"));
   const period = params.get("period");
+  const validIdentity = requestedAid && Number.isSafeInteger(aid) && aid > 0 &&
+    isArenaMode(arenaMode) && cycleId !== null;
   if (
-    !requestedAid || !Number.isSafeInteger(aid) || aid <= 0 ||
-    !isArenaMode(arenaMode) ||
+    !validIdentity ||
     (statistic !== "trimmed_mean" && statistic !== "median") ||
     (period !== null && period !== "all") ||
     params.has("center") || params.has("excludeAid") || params.has("dimension")
   ) {
+    const identity = validIdentity
+      ? { aid, mode: "arena" as const, cycleId, arenaMode }
+      : null;
     timing.finish({ operation: "average_cohort", mode: "arena", outcome: "invalid", status: 400 });
-    return NextResponse.json({ error: "Invalid Arena cohort query" }, { status: 400 });
+    return NextResponse.json({
+      ...(identity ? { identity, percentiles: null } : {}),
+      error: "Invalid Arena cohort query",
+    }, { status: 400 });
   }
+  const identity = { aid, mode: "arena" as const, cycleId, arenaMode };
   timing.setRequestContext({ aid });
   let cohortMs: number | undefined;
   let cache: "hit" | "miss" | undefined;
@@ -90,21 +99,30 @@ async function arenaCohortResponse(
     if (!cohort) {
       timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs });
       return NextResponse.json({
-        identity: { aid, mode: "arena", cycleId: "persistent" },
+        identity,
+        percentiles: null,
         code: "comparison_unavailable",
         error: "Arena comparison storage is unavailable",
       }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
+    if (cohort.aid !== aid || cohort.mode !== arenaMode) throw new Error("Arena cohort identity mismatch");
     timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs });
     // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
-    return NextResponse.json({ gameMode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...cohort }, {
+    return NextResponse.json({
+      ...cohort,
+      gameMode: "arena",
+      schemaVersion: ARENA_PARSER_VERSION,
+      identity,
+      percentiles: null,
+    }, {
       headers: { "Cache-Control": "private, max-age=60" },
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
     timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, cache, storage: "sqlite", cohortMs });
     return NextResponse.json({
-      identity: { aid, mode: "arena", cycleId: "persistent" },
+      identity,
+      percentiles: null,
       code: "comparison_unavailable",
       error: "Failed to compute Arena comparison cohort",
     }, { status: 503, headers: { "Cache-Control": "no-store" } });
@@ -120,6 +138,10 @@ export async function GET(request: NextRequest) {
   if (!isGameMode(rawMode)) {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+  }
+  if (normalizeCycleId(params.get("cycle"), rawMode) === null) {
+    timing.finish({ operation: "average_cohort", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid cycle" }, { status: 400 });
   }
   const statistic = parseAverageStatistic(params.get("statistic"));
   if (!statistic) {
@@ -200,11 +222,19 @@ export async function GET(request: NextRequest) {
 
       const centerHours = Number(stats.hoursPlayed);
       const centerPmcRaids = Number(stats.pmcRaids);
+      const playerMetrics = {
+        kd_ratio: stats.kdRatio,
+        pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
+        kills_per_raid: stats.killsPerRaid,
+        pmc_survival_rate: stats.pmcSurvivalRate,
+        longest_win_streak: stats.longestWinStreak,
+        level: stats.level,
+      };
       const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
       const cohortStarted = timing.now();
       const loaded = await loadDynamicAverage(
         ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period),
+        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics),
       );
       cohortMs = timing.elapsedMs(cohortStarted);
       cache = loaded.cache;

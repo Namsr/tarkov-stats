@@ -17,7 +17,10 @@ test("persistent cohort route derives both centers from a stored snapshot before
   assert.match(regularBranch, /getPublicProfile\(aid, \{ mode \}\)/);
   assert.match(regularBranch, /const centerHours = Number\(stats\.hoursPlayed\)/);
   assert.match(regularBranch, /const centerPmcRaids = Number\(stats\.pmcRaids\)/);
+  assert.match(regularBranch, /const playerMetrics = \{[\s\S]*?kd_ratio: stats\.kdRatio[\s\S]*?pmc_kd_ratio: stats\.pvpStatsKnown === true \? stats\.pmcKdRatio : null[\s\S]*?kills_per_raid: stats\.killsPerRaid[\s\S]*?pmc_survival_rate: stats\.pmcSurvivalRate[\s\S]*?longest_win_streak: stats\.longestWinStreak[\s\S]*?level: stats\.level[\s\S]*?\};/);
+  assert.match(regularBranch, /store\.cohort2d\(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\)/);
   assert.match(regularBranch, /loadDynamicAverage\(/);
+  assert.match(regularBranch, /\["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period\]\.join\(":"\)/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);
   assert.doesNotMatch(regularBranch, /centerValue/);
 });
@@ -29,7 +32,12 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
   assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 2);
   assert.match(db, /metric_values AS/);
+  assert.match(db, /\? AS player_v FROM cohort/);
+  assert.match(db, /COUNT\(CASE WHEN v < player_v THEN 1 END\) OVER \(PARTITION BY metric\) AS below/);
+  assert.match(db, /COUNT\(CASE WHEN v = player_v THEN 1 END\) OVER \(PARTITION BY metric\) AS equal/);
   assert.match(db, /PARTITION BY metric/);
+  assert.match(db, /playerMetrics\?: ComparisonCohortPlayerMetrics/);
+  assert.equal((db.match(/playerMetrics,/g) ?? []).length, 4);
 });
 
 
@@ -91,7 +99,7 @@ test("arena cohort invalid query stays 400 without cache interaction", async () 
   assert.ok(invalidAt !== -1);
   assert.ok(loadAt !== -1);
   assert.ok(invalidAt < loadAt);
-  assert.match(arenaBranch, /\{\s*error:\s*"Invalid Arena cohort query"\s*\},\s*\{\s*status:\s*400\s*\}/);
+  assert.match(arenaBranch, /error:\s*"Invalid Arena cohort query",[\s\S]*?\},\s*\{\s*status:\s*400\s*\}/);
   assert.match(arenaBranch, /outcome:\s*"invalid",\s*status:\s*400/);
   assert.doesNotMatch(arenaBranch, /outcome:\s*"invalid"[^}]*cache/);
   assert.doesNotMatch(arenaBranch, /outcome:\s*"invalid"[^}]*cohortMs/);
@@ -128,4 +136,16 @@ test("regular and arena cohort successes carry private max-age while errors stay
   // 4xx/5xx paths keep no-store.
   assert.match(arenaBranch, /"Cache-Control":\s*"no-store"/);
   assert.match(persistentBranch, /"Cache-Control":\s*"no-store"/);
+});
+
+test("Arena and Seasonal cohort envelopes expose exact percentile capability", () => {
+  const arenaBranch = regularRoute.slice(
+    regularRoute.indexOf("async function arenaCohortResponse"),
+    regularRoute.indexOf("export async function GET"),
+  );
+  assert.match(arenaBranch, /const identity = \{ aid, mode: "arena" as const, cycleId, arenaMode \}/);
+  assert.match(arenaBranch, /if \(!cohort\)[\s\S]*?identity,\s*percentiles: null/);
+  assert.match(arenaBranch, /catch \(error\)[\s\S]*?identity,\s*percentiles: null/);
+  assert.match(arenaBranch, /schemaVersion: ARENA_PARSER_VERSION,\s*identity,\s*percentiles: null/);
+  assert.match(seasonalRoute, /\.\.\.lookup\.result, percentiles: null, statistic, period/);
 });

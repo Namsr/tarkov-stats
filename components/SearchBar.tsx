@@ -19,7 +19,15 @@ import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 type SearchMode = GameMode | "all";
 
-export default function SearchBar({ autoFocus = false, landing = false }: { autoFocus?: boolean; landing?: boolean }) {
+type SearchBarProps = {
+  autoFocus?: boolean;
+  landing?: boolean;
+  onSelect?: (aid: number, profile: PlayerSearchProfileResult) => void;
+  fixedMode?: GameMode;
+  cycleId?: string;
+};
+
+export default function SearchBar({ autoFocus = false, landing = false, onSelect, fixedMode, cycleId }: SearchBarProps) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -27,7 +35,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<PlayerSearchResult[]>([]);
   const [resultsOpen, setResultsOpen] = useState(false);
-  const [searchMode, setSearchMode] = useState<SearchMode>("all");
+  const [searchMode, setSearchMode] = useState<SearchMode>(fixedMode ?? "all");
   const [searchedNickname, setSearchedNickname] = useState("");
   const [recentPlayers, setRecentPlayers] = useState<RecentPlayerEntry[]>([]);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -47,6 +55,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const resultListId = useId();
   const modeMenuId = useId();
   const router = useRouter();
+  const effectiveSearchMode: SearchMode = fixedMode ?? searchMode;
 
   function modeLabel(mode: GameMode): string {
     if (mode === "regular") return t("fav.mode.regular");
@@ -59,8 +68,16 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
     return mode === "all" ? t(landing ? "home.allModes" : "search.modeAll") : modeLabel(mode);
   }
 
+  function recentGameMode(mode: RecentPlayerEntry["mode"]): GameMode {
+    return mode === "pvp-season" ? "seasonal" : mode;
+  }
+
+  function recentEntryMode(entry: RecentPlayerEntry): GameMode {
+    return recentGameMode(entry.mode);
+  }
+
   function recentModeLabel(mode: RecentPlayerEntry["mode"]): string {
-    return modeLabel(mode === "pvp-season" ? "seasonal" : mode);
+    return modeLabel(recentGameMode(mode));
   }
 
   function profileHref(aid: number, profile: PlayerSearchProfileResult): string {
@@ -70,19 +87,34 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
       : base;
   }
 
+  function scopedProfile(profile: PlayerSearchProfileResult): PlayerSearchProfileResult {
+    if (!fixedMode) return profile;
+    return {
+      ...profile,
+      mode: fixedMode,
+      cycleId: fixedMode === "seasonal" ? cycleId?.trim() || profile.cycleId : "persistent",
+    };
+  }
+
   function openProfile(aid: number, profile: PlayerSearchProfileResult) {
-    const params = new URLSearchParams({ aid: String(aid), mode: profile.mode });
-    if (profile.mode === "seasonal") params.set("cycle", profile.cycleId);
+    const selectedProfile = scopedProfile(profile);
+    if (onSelect) {
+      closeSearchPanels();
+      onSelect(aid, selectedProfile);
+      return;
+    }
+    const params = new URLSearchParams({ aid: String(aid), mode: selectedProfile.mode });
+    if (selectedProfile.mode === "seasonal") params.set("cycle", selectedProfile.cycleId);
     warmPlayerProfileResponse(`/api/player/profile?${params}`);
-    if (profile.mode === "regular" || profile.mode === "pve") {
+    if (selectedProfile.mode === "regular" || selectedProfile.mode === "pve") {
       const timeline = new URLSearchParams({
-        mode: profile.mode,
+        mode: selectedProfile.mode,
         cycle: "persistent",
         aid: String(aid),
       });
       void fetch(`/api/progression/timeline?${timeline}`, { cache: "default" }).catch(() => {});
     }
-    router.push(profileHref(aid, profile));
+    router.push(profileHref(aid, selectedProfile));
   }
 
   async function searchNickname(clean: string, mode: SearchMode) {
@@ -126,9 +158,10 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   }
 
   function selectSearchMode(mode: SearchMode) {
+    if (fixedMode) return;
     setModeMenuOpen(false);
     modeTriggerRef.current?.focus();
-    if (mode === searchMode) return;
+    if (mode === effectiveSearchMode) return;
     setSearchMode(mode);
     if (searchedNickname) void searchNickname(searchedNickname, mode);
   }
@@ -265,7 +298,11 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
     };
   }, [modeMenuOpen, recentOpen, results.length, resultsOpen]);
 
-  const recentMatches = filterRecentPlayers(recentPlayers, query);
+  const recentMatches = filterRecentPlayers(recentPlayers, query).filter((entry) => {
+    if (!fixedMode) return true;
+    if (recentEntryMode(entry) !== fixedMode) return false;
+    return fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && entry.cycle === cycleId;
+  });
   const showResults = resultsOpen && results.length > 0 && searchedNickname === query.trim();
   const showRecent = !showResults && recentOpen && recentMatches.length > 0;
 
@@ -287,7 +324,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
         return;
       }
 
-      await searchNickname(clean, searchMode);
+      await searchNickname(clean, effectiveSearchMode);
       return;
     }
 
@@ -295,10 +332,27 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
     setNotFound(false);
     setResults([]);
     setResultsOpen(false);
-    const selectedMode = /^\d{1,15}$/.test(clean) && searchMode !== "all"
-      ? searchMode
-      : player.mode;
-    const href = `/player/${appRouteMode(selectedMode)}/${player.aid}`;
+    const selectedMode = fixedMode ?? (
+      /^\d{1,15}$/.test(clean) && effectiveSearchMode !== "all"
+        ? effectiveSearchMode
+        : player.mode
+    );
+    const selectedCycleId = selectedMode === "seasonal" && fixedMode
+      ? cycleId?.trim() || "persistent"
+      : "persistent";
+    if (onSelect) {
+      closeSearchPanels();
+      onSelect(player.aid, {
+        mode: selectedMode,
+        cycleId: selectedCycleId,
+        name: clean,
+      });
+      return;
+    }
+    const profileBase = `/player/${appRouteMode(selectedMode)}/${player.aid}`;
+    const href = fixedMode && selectedMode === "seasonal"
+      ? `${profileBase}?cycle=${encodeURIComponent(selectedCycleId)}`
+      : profileBase;
     // Start the profile request before the route transition. Normal profile
     // responses are browser-cacheable, so the hydrated page can reuse this
     // request instead of opening a second waterfall after navigation.
@@ -313,6 +367,22 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
       });
     }
     router.push(href);
+  }
+
+  function openRecent(entry: RecentPlayerEntry) {
+    if (onSelect) {
+      const mode = fixedMode ?? recentEntryMode(entry);
+      closeSearchPanels();
+      onSelect(Number(entry.aid), {
+        mode,
+        cycleId: mode === "seasonal"
+          ? fixedMode ? cycleId?.trim() || entry.cycle || "persistent" : entry.cycle ?? "persistent"
+          : "persistent",
+        name: entry.nickname,
+      });
+      return;
+    }
+    router.push(getRecentPlayerHref(entry));
   }
 
   return (
@@ -358,14 +428,15 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
               placeholder={t(landing ? "home.searchPlaceholder" : "search.placeholder")}
               aria-label={t("search.placeholder")}
               autoFocus={autoFocus}
-              className="search-unit__input"
+              className={`search-unit__input${fixedMode ? " !rounded-full" : ""}`}
               role="combobox"
               aria-autocomplete="none"
               aria-haspopup="dialog"
               aria-expanded={showRecent || showResults}
               aria-controls={showRecent ? recentListId : showResults ? resultListId : undefined}
             />
-            <div className="search-unit__mode-picker">
+            {!fixedMode && (
+              <div className="search-unit__mode-picker">
               <button
                 ref={modeTriggerRef}
                 type="button"
@@ -386,7 +457,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   focusModeOption(event.key === "ArrowDown" ? 0 : GAME_MODES.length);
                 }}
               >
-                <span>{searchModeLabel(searchMode)}</span>
+                <span>{searchModeLabel(effectiveSearchMode)}</span>
                 <svg viewBox="0 0 12 8" aria-hidden="true" className="search-unit__mode-chevron">
                   <path d="M1 1.25 6 6.25l5-5" fill="none" stroke="currentColor" strokeWidth="1.5" />
                 </svg>
@@ -406,7 +477,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                     ref={(node) => { modeOptionRefs.current[index] = node; }}
                     type="button"
                     role="option"
-                    aria-selected={searchMode === mode}
+                    aria-selected={effectiveSearchMode === mode}
                     className="search-unit__mode-option"
                     onClick={() => selectSearchMode(mode)}
                     onKeyDown={(event) => handleModeOptionKeyDown(event, index)}
@@ -415,7 +486,8 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   </button>
                 ))}
               </div>
-            </div>
+              </div>
+            )}
           </div>
 
           {recentMatches.length > 0 && (
@@ -442,10 +514,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                   <div key={entry.aid} className="search-unit__recent-row">
                     <button
                       type="button"
-                      onClick={() => {
-                        setRecentOpen(false);
-                        router.push(getRecentPlayerHref(entry));
-                      }}
+                      onClick={() => openRecent(entry)}
                       className="search-unit__recent-link"
                     >
                       <span className="min-w-0 truncate">{entry.nickname}</span>
@@ -493,7 +562,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
           disabled={loading || !query.trim()}
           className="tactical-button shrink-0"
         >
-          {loading ? t("common.loading") : t(landing ? "home.search" : "search.view")}
+          {loading ? t("common.loading") : t(onSelect ? "search.select" : landing ? "home.search" : "search.view")}
           {landing && !loading && <span aria-hidden="true">→</span>}
         </button>
       </div>
@@ -532,9 +601,13 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
             </p>
             <div className="search-unit__results-list space-y-1">
               {results.map((player) => {
+                const profiles = fixedMode
+                  ? player.profiles.filter((profile) => profile.mode === fixedMode &&
+                    (fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && profile.cycleId === cycleId))
+                  : player.profiles;
                 const selectedProfile = selectPlayerSearchProfile(
                   player.aid,
-                  player.profiles,
+                  profiles,
                   searchedNickname,
                   recentPlayers,
                 );
@@ -557,7 +630,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
                     />
                     <span className="search-unit__result-name min-w-0 flex-1 truncate">{player.name}</span>
                     <span className="search-unit__result-meta">
-                      {player.profiles.map((profile) => {
+                      {profiles.map((profile) => {
                         const isSelected = selectedKey === `${profile.mode}:${profile.cycleId}`;
                         const label = t(isSelected ? "search.openModeDefault" : "search.openMode", {
                           mode: modeLabel(profile.mode),
