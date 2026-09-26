@@ -1,4 +1,4 @@
-import { ARENA_MODE_KEYS, type ArenaCounters, type ArenaModeKey, type ArenaProfile } from "@/types/arena";
+import { ARENA_ADDITIVE_COUNTER_KEYS, ARENA_MODE_KEYS, type ArenaCounters, type ArenaModeKey, type ArenaProfile } from "@/types/arena";
 
 export const ARENA_TSR_VERSION = "0.1";
 export const ARENA_TSR_WEIGHTS = {
@@ -51,11 +51,12 @@ export function rateArenaMode(counters: ArenaCounters, reference: ArenaTsReferen
   if (!count(matches) || !count(kills) || !count(deaths) || !count(wins) || !nonNegative(damage)) {
     return unavailable(count(matches) ? matches : null, "missing_counters");
   }
-  // Zero matches is only believable when every other counter is zero too. Any
-  // non-zero damage or kill alongside matches === 0 is contradictory upstream
-  // data, and reporting it as no_matches would hide a played mode.
+  // Zero matches is only believable when every additive counter is zero too. Any
+  // non-zero kill, assist or MVP count alongside matches === 0 is contradictory
+  // upstream data, and reporting it as no_matches would hide a played mode. The
+  // list is the parser's own additive set, so the two cannot drift apart.
   if (matches === 0) {
-    return unavailable(0, [kills, deaths, wins, losses, damage].some((value) => value != null && value !== 0)
+    return unavailable(0, ARENA_ADDITIVE_COUNTER_KEYS.some((key) => counters[key] != null && counters[key] !== 0)
       ? "inconsistent_results" : "no_matches");
   }
   if (wins > matches || (losses != null && (!count(losses) || wins + losses > matches))) {

@@ -83,15 +83,21 @@ test("overall TSR refuses incomplete coverage, unknown counts and inconsistent t
 });
 
 test("overall TSR rejects contradictory zero-match modes instead of silently omitting them", () => {
-  for (const changed of [{ wins: 1 }, { losses: 1 }, { kills: 1 }, { deaths: 1 }, { damage: 1 }]) {
+  // Every additive counter, not just the rated ones: a mode that reports assists
+  // or MVP awards but zero matches is equally contradictory.
+  for (const key of ["kills", "deaths", "assists", "headshots", "damage", "wins", "losses", "round_mvp", "match_mvp"]) {
+    // Only the counter under test is non-zero, so each key is checked in isolation.
+    const mode = rateArenaMode({ matches: 0, kills: 0, deaths: 0, wins: 0, losses: 0, damage: 0, [key]: 1 }, reference);
+    assert.equal(mode.reason, "inconsistent_results", key);
+    assert.equal(mode.rating, null, key);
     const profile = makeProfile({ blastGang: counters });
-    Object.assign(profile.modes.lastHero.counters, changed);
+    Object.assign(profile.modes.lastHero.counters, { [key]: 1 });
     const result = rateArena(profile, references);
-    assert.equal(result.modes.lastHero.reason, "inconsistent_results");
-    assert.equal(result.modes.lastHero.rating, null);
-    assert.equal(result.overall.rating, null);
-    assert.equal(result.overall.complete, false);
-    assert.equal(result.overall.reason, "incomplete_coverage");
+    assert.equal(result.modes.lastHero.reason, "inconsistent_results", key);
+    assert.equal(result.modes.lastHero.rating, null, key);
+    assert.equal(result.overall.rating, null, key);
+    assert.equal(result.overall.complete, false, key);
+    assert.equal(result.overall.reason, "incomplete_coverage", key);
   }
   // A genuinely unplayed mode stays benign and keeps the overall rating complete.
   const unplayed = rateArena(makeProfile({ blastGang: counters }), references);
