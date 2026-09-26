@@ -23,11 +23,14 @@ export default function FaqWidget() {
   // Focus the dialog on open and hand focus back to the trigger on close, so the
   // keyboard never sits on the trigger behind the backdrop. The cleanup runs on
   // the open -> closing transition, the step all three close paths share, and the
-  // trigger is mounted unconditionally, so the ref is valid there.
+  // trigger is mounted unconditionally, so the ref is valid there. The trigger is
+  // captured into a local because reading the ref from the cleanup reads whatever
+  // it holds by then, not what it held when the dialog opened.
   useEffect(() => {
     if (!open) return;
+    const trigger = triggerRef.current;
     dialogRef.current?.focus();
-    return () => { triggerRef.current?.focus(); };
+    return () => { trigger?.focus(); };
   }, [open]);
 
   useEffect(() => {
