@@ -13,6 +13,8 @@ import { refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreInte
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
+import { PROGRESSION_REFRESH_SCHEMA } from "../lib/seasonal/operator.ts";
+// @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1ScannerLifecycle } from "../lib/seasonal/scanner-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { queryProgressionSeries } from "../lib/seasonal/progression.ts";
@@ -446,4 +448,38 @@ test("D1 scanner lifecycle builds panel eligibility and completes linked-PvP fol
 
   await lifecycle.advanceDiscovery("s1", { orderKey: 42, aid: 9 }, 6_000);
   assert.deepEqual({ ...await lifecycle.discoveryState("s1") }, { cursor_key: 42, cursor_aid: 9, exhausted: 0 });
+});
+
+test("two concurrent D1 refresh claims share one run and seed candidates once", async () => {
+  // The SELECT and the INSERT are separate D1 round trips, so two claims can
+  // both observe "no running run". idx_seasonal_refresh_active_owner allows one
+  // running row per (cycle_id, owner), so the loser used to fail on the unique
+  // index and surface as a 503 instead of resuming the winner's run.
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(SEASONAL_SCHEMA);
+  // FakeD1 has no exec(), so the store cannot create the refresh schema itself.
+  sqlite.exec(PROGRESSION_REFRESH_SCHEMA);
+  const queue = createD1SeasonalStore(new FakeD1(sqlite));
+  for (const aid of [1, 2]) {
+    const seeded = profile(aid, aid * 10, 1_000, aid * 10);
+    await queue.upsertProfile(seeded);
+    await queue.captureSnapshot(seeded);
+  }
+  const operator = createD1SeasonalOperatorStore(new FakeD1(sqlite));
+
+  const [first, second] = await Promise.all([
+    operator.beginOrResumeProgressionRefreshRun("s1", "op-1", 100),
+    operator.beginOrResumeProgressionRefreshRun("s1", "op-1", 100),
+  ]);
+
+  // Exactly one claim created the run; the other resumed it.
+  assert.deepEqual([first.resumed, second.resumed].sort(), [false, true]);
+  assert.equal(first.run.id, second.run.id);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_runs").get().n, 1);
+  // Candidates were seeded once, not once per claim.
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates").get().n, 2);
+
+  // A later claim still resumes rather than failing.
+  assert.equal((await operator.beginOrResumeProgressionRefreshRun("s1", "op-1", 200)).resumed, true);
+  sqlite.close();
 });
