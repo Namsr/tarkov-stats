@@ -802,11 +802,21 @@ export async function GET(request: NextRequest) {
   const stored = progressionStore ? await progressionStore.latest(aid) : null;
   const storeReadMs = timing.elapsedMs(storedStarted);
 
+  let profileMs: number | undefined;
+  let levelsMs: number | undefined;
+  let parseMs: number | undefined;
+  const enrichmentPhases: ProfileEnrichmentPhases = {};
+  let profileStarted: number | undefined;
+  let source: "upstream" | "cache" = "upstream";
+  let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
+  let fromCache = false;
+  let fromEdgeCache = false;
+
   // Built as a closure so the forced path can fall back to the stored snapshot
   // when upstream is unreachable or reports the profile as missing. Arena and
   // pve already degrade to their stored row instead of claiming absence.
   const storedResponse = async (snapshot: NonNullable<typeof stored>) => {
-    const enrichmentPhases: ProfileEnrichmentPhases = {};
+    const storedEnrichmentPhases: ProfileEnrichmentPhases = {};
     const storedRisk = snapshot.stats.pvpStatsKnown === false
       ? null
       : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
@@ -836,7 +846,7 @@ export async function GET(request: NextRequest) {
       stats: snapshot.stats,
       achievementIds: snapshot.achievementIds,
       capturedAt: snapshot.capturedAt,
-    }, publicRisk), enrichmentPhases);
+    }, publicRisk), storedEnrichmentPhases);
     if (needsPvpStatsParserRefresh(snapshot.stats) ||
         Date.now() - snapshot.capturedAt >= STORED_PROFILE_REFRESH_MS) {
       after(() => refreshStoredRegularProfile(aid));
@@ -849,12 +859,13 @@ export async function GET(request: NextRequest) {
       status: 200,
       force,
       source: "stored",
-      cache: "hit",
+      cache: force ? "bypass" : "hit",
       storage: "sqlite",
       storeReadMs,
-      baselineMs: enrichmentPhases.baselineMs,
-      metadataMs: enrichmentPhases.metadataMs,
-      masteryMs: enrichmentPhases.masteryMs,
+      profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
+      baselineMs: storedEnrichmentPhases.baselineMs,
+      metadataMs: storedEnrichmentPhases.metadataMs,
+      masteryMs: storedEnrichmentPhases.masteryMs,
     });
     return NextResponse.json({
       profile: null,
@@ -870,25 +881,35 @@ export async function GET(request: NextRequest) {
     }, { headers: profileHeaders });
   };
 
-  if (stored && !force) return storedResponse(stored);
+  if (stored && !force) return await storedResponse(stored);
 
-  let profileMs: number | undefined;
-  let levelsMs: number | undefined;
-  let parseMs: number | undefined;
-  const enrichmentPhases: ProfileEnrichmentPhases = {};
-  let profileStarted: number | undefined;
-  let source: "upstream" | "cache" = "upstream";
-  let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
+  // Scoped to the upstream call, like the pve branch above. A throw from the
+  // enrichment below has to surface as a failure, not be reported to the request
+  // log as a 200 served from the store.
+  let profile: PlayerProfile | null;
   try {
     profileStarted = timing.now();
-    const { profile, fromCache, fromEdgeCache } = await getPublicProfile(aid, { force });
-    profileMs = timing.elapsedMs(profileStarted);
-    source = fromCache || fromEdgeCache ? "cache" : "upstream";
-    cache = force ? "bypass" : fromCache || fromEdgeCache ? "hit" : "miss";
+    const result = await getPublicProfile(aid, { force });
+    profile = result.profile;
+    fromCache = result.fromCache === true;
+    fromEdgeCache = result.fromEdgeCache === true;
+    source = result.fromCache || result.fromEdgeCache ? "cache" : "upstream";
+    cache = force ? "bypass" : result.fromCache || result.fromEdgeCache ? "hit" : "miss";
+  } catch (error) {
+    // getPublicProfile throws rather than returning null when upstream is
+    // unreachable, and its stale fallback is skipped precisely because force is
+    // set. Degrade to the stored snapshot instead of reporting a 502 for a
+    // profile we already have.
+    if (stored) return await storedResponse(stored);
+    profileMs = timing.elapsedMs(profileStarted!);
+    throw error;
+  }
+  profileMs = timing.elapsedMs(profileStarted!);
+  try {
     if (!profile) {
       // A forced refresh can lose the upstream race while a perfectly good
       // snapshot sits in progression_snapshots. Serve that instead of a 404.
-      if (stored) return storedResponse(stored);
+      if (stored) return await storedResponse(stored);
       const response = NextResponse.json(
         {
           error:
@@ -987,14 +1008,6 @@ export async function GET(request: NextRequest) {
     });
     return response;
   } catch {
-    if (profileMs === undefined && profileStarted !== undefined) {
-      profileMs = timing.elapsedMs(profileStarted);
-    }
-    // getPublicProfile throws rather than returning null when upstream is
-    // unreachable, and its stale fallback is skipped precisely because force is
-    // set. Degrade to the stored snapshot instead of reporting a 502 for a
-    // profile we already have.
-    if (stored) return storedResponse(stored);
     const response = NextResponse.json(
       { error: "Failed to fetch player profile", identity: { aid, mode, cycleId } },
       { status: 502, headers: noStore }
