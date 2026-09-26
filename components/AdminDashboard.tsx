@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
@@ -81,6 +81,9 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  // Every filter control re-creates `load`, and the search box does so on each
+  // keystroke, so several requests overlap. Only the newest one may write state.
+  const loadGeneration = useRef(0);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
     const params = new URLSearchParams();
@@ -91,31 +94,47 @@ export default function AdminDashboard() {
   }, [domain, pathname, period, router]);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    const stale = () => generation !== loadGeneration.current;
     setLoading(true); setError("");
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
-        setSummary(await getJson<Summary>(`/api/admin/summary?${params}`));
+        const nextSummary = await getJson<Summary>(`/api/admin/summary?${params}`);
+        if (stale()) return;
+        setSummary(nextSummary);
         if (tab === "health") {
           setAuditError("");
-          try { setAudit(await getJson<DataAudit>("/api/admin/data-audit")); }
-          catch { setAuditError(t("admin.error.load")); }
+          try {
+            const nextAudit = await getJson<DataAudit>("/api/admin/data-audit");
+            if (stale()) return;
+            setAudit(nextAudit);
+          }
+          catch { if (!stale()) setAuditError(t("admin.error.load")); }
         }
       } else if (tab === "showcase") {
-        setShowcase(await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase"));
+        const nextShowcase = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase");
+        if (stale()) return;
+        setShowcase(nextShowcase);
       } else if (tab === "traffic") {
-        setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
+        const nextTraffic = await getJson<Traffic>(`/api/admin/traffic?${params}`);
+        if (stale()) return;
+        setTraffic(nextTraffic);
       } else if (tab === "monitoring") {
-        setSystemMetrics(await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`));
+        const nextMetrics = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`);
+        if (stale()) return;
+        setSystemMetrics(nextMetrics);
       } else {
         if (mode) params.set("mode", mode);
         if (search.trim()) params.set("search", search.trim());
         params.set("sort", sort);
         if (tab === "suspicious") params.set("source", "suspicious");
-        setAccounts(await getJson<Accounts>(`/api/admin/accounts?${params}`));
+        const nextAccounts = await getJson<Accounts>(`/api/admin/accounts?${params}`);
+        if (stale()) return;
+        setAccounts(nextAccounts);
       }
-    } catch { setError(t("admin.error.load")); }
-    finally { setLoading(false); }
+    } catch { if (!stale()) setError(t("admin.error.load")); }
+    finally { if (!stale()) setLoading(false); }
   }, [domain, mode, period, search, sort, tab, t]);
 
   const runAudit = useCallback(async () => {

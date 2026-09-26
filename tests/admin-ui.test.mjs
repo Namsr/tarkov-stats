@@ -29,6 +29,12 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
   assert.match(dashboard, /setRefreshKey\(\(key\) => key \+ 1\)/);
+  // Overlapping loads must not race: the search box re-creates `load` per keystroke.
+  assert.match(dashboard, /const loadGeneration = useRef\(0\);/);
+  assert.match(dashboard, /const generation = \+\+loadGeneration\.current;/);
+  assert.match(dashboard, /const stale = \(\) => generation !== loadGeneration\.current;/);
+  assert.match(dashboard, /finally \{ if \(!stale\(\)\) setLoading\(false\); \}/);
+  assert.doesNotMatch(dashboard, /set[A-Z]\w*\(await getJson</);
   assert.match(dashboard, /role="tablist"/);
   assert.match(dashboard, /confirmAid: Number\(confirmAid\)/);
   assert.match(dashboard, /!reason\.trim\(\)/);
