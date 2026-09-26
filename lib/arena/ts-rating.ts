@@ -51,7 +51,13 @@ export function rateArenaMode(counters: ArenaCounters, reference: ArenaTsReferen
   if (!count(matches) || !count(kills) || !count(deaths) || !count(wins) || !nonNegative(damage)) {
     return unavailable(count(matches) ? matches : null, "missing_counters");
   }
-  if (matches === 0) return unavailable(0, "no_matches");
+  // Zero matches is only believable when every other counter is zero too. Any
+  // non-zero damage or kill alongside matches === 0 is contradictory upstream
+  // data, and reporting it as no_matches would hide a played mode.
+  if (matches === 0) {
+    return unavailable(0, [kills, deaths, wins, losses, damage].some((value) => value != null && value !== 0)
+      ? "inconsistent_results" : "no_matches");
+  }
   if (wins > matches || (losses != null && (!count(losses) || wins + losses > matches))) {
     return unavailable(matches, "inconsistent_results");
   }
@@ -96,7 +102,10 @@ export function rateArena(profile: ArenaProfile, reference: ArenaTsReference): A
   const observed = items.reduce((sum, item) => sum + (item.matches ?? 0), 0);
   const rated = items.filter((item) => item.rating != null);
   const ratedMatches = rated.reduce((sum, item) => sum + (item.matches ?? 0), 0);
-  const complete = items.every((item) => item.matches != null) && count(total) && total === observed && observed === ratedMatches;
+  // A mode counts as covered only when it produced a rating or is genuinely
+  // unplayed. A contradictory mode must not pass as covered just because its
+  // matches field is a number, otherwise the overall rating drops it silently.
+  const complete = items.every((item) => item.rating != null || item.reason === "no_matches") && count(total) && total === observed && observed === ratedMatches;
   let overall = unavailable(count(total) ? total : null, ratedMatches === 0 && total === 0 ? "no_matches" : "incomplete_coverage");
   if (complete && ratedMatches > 0) {
     const contributions = Object.fromEntries(METRICS.map((metric) => [metric,

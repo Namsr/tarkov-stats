@@ -82,6 +82,24 @@ test("overall TSR refuses incomplete coverage, unknown counts and inconsistent t
   assert.equal(empty.overall.reason, "no_matches");
 });
 
+test("overall TSR rejects contradictory zero-match modes instead of silently omitting them", () => {
+  for (const changed of [{ wins: 1 }, { losses: 1 }, { kills: 1 }, { deaths: 1 }, { damage: 1 }]) {
+    const profile = makeProfile({ blastGang: counters });
+    Object.assign(profile.modes.lastHero.counters, changed);
+    const result = rateArena(profile, references);
+    assert.equal(result.modes.lastHero.reason, "inconsistent_results");
+    assert.equal(result.modes.lastHero.rating, null);
+    assert.equal(result.overall.rating, null);
+    assert.equal(result.overall.complete, false);
+    assert.equal(result.overall.reason, "incomplete_coverage");
+  }
+  // A genuinely unplayed mode stays benign and keeps the overall rating complete.
+  const unplayed = rateArena(makeProfile({ blastGang: counters }), references);
+  assert.equal(unplayed.modes.lastHero.reason, "no_matches");
+  assert.equal(unplayed.overall.complete, true);
+  assert.equal(unplayed.overall.rating, unplayed.modes.blastGang.rating);
+});
+
 test("fixed reference reproduces the approved Arena prototype", () => {
   const c = (matches, kills, deaths, wins, losses, damage) => ({ matches, kills, deaths, wins, losses, damage });
   const result = rateArena(makeProfile({
