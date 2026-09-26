@@ -324,3 +324,87 @@ test("regular progression materializes personal history while preserving the exc
   assert.equal(db.prepare("SELECT 1 FROM progression_snapshots WHERE aid = 42").get() != null, true);
   db.close();
 });
+
+test("ban confirmation archives the full progression history before deleting it", async () => {
+  // progression_snapshots keeps prestige/level/hours/total_raids/... nullable
+  // while banned_snapshots declares them NOT NULL. With INSERT OR IGNORE the
+  // violation was swallowed, so the archive stayed empty and the source rows
+  // were deleted anyway.
+  const directory = mkdtempSync(join(tmpdir(), "ban-archive-"));
+  const bansPath = join(directory, "bans.db");
+  const playersPath = join(directory, "players.db");
+  const progressionPath = join(directory, "progression.db");
+  const previous = {
+    bans: process.env.BANS_SQLITE_PATH,
+    players: process.env.SQLITE_PATH,
+    progression: process.env.PROGRESSION_SQLITE_PATH,
+  };
+  process.env.BANS_SQLITE_PATH = bansPath;
+  process.env.SQLITE_PATH = playersPath;
+  process.env.PROGRESSION_SQLITE_PATH = progressionPath;
+
+  const progression = new DatabaseSync(progressionPath);
+  // Called for its schema side effect only: createSqliteSeasonalStore takes the
+  // database and nothing else, and the returned store is not used here.
+  createSqliteSeasonalStore(progression);
+  // Two historical rows with the nullable columns left NULL, exactly as the
+  // store writes them when the upstream payload has no seasonalStats.
+  const insertHistory = progression.prepare(`INSERT INTO progression_snapshots
+    (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id, nickname, side)
+    VALUES ('seasonal', 's1', 42, ?, ?, ?, '2026-01-01', 1, 'Old', 'Usec')`);
+  insertHistory.run(1_000, 1_000, 1_000);
+  insertHistory.run(1_500, 1_500, 1_500);
+  assert.equal(
+    progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 2);
+
+  try {
+    const db = new DatabaseSync(bansPath);
+    try {
+      const store = createSqliteBanStore(db);
+      await store.confirmBanned({ aid: 42, upstreamUpdatedAt: 2_000, capturedAt: 2_000,
+        stats: { nickname: "New", side: "Usec", prestige: null, level: null, experience: 100,
+          hoursPlayed: null, totalRaids: null, pmcRaids: 5, scavRaids: 0, survivedRaids: null,
+          deaths: null, pmcDeaths: 0, totalKills: null, killedPmc: 0, runThrough: null,
+          longestWinStreak: null, achievementsCount: null },
+        achievementIds: [] }, { source: "upstream", confirmedAt: 5_000 });
+
+      // Both historical rows plus the confirmation are preserved.
+      const archived = db.prepare(
+        "SELECT upstream_updated_at, nickname FROM banned_snapshots WHERE aid = 42 ORDER BY upstream_updated_at",
+      ).all().map((row) => ({ ...row }));
+      assert.deepEqual(archived, [
+        { upstream_updated_at: 1_000, nickname: "Old" },
+        { upstream_updated_at: 1_500, nickname: "Old" },
+        { upstream_updated_at: 2_000, nickname: "New" },
+      ]);
+      // The NULL source columns were normalised, not dropped.
+      assert.deepEqual({ ...db.prepare(
+        "SELECT total_raids, prestige, achievements FROM banned_snapshots WHERE aid = 42 AND upstream_updated_at = 1000",
+      ).get() }, { total_raids: 0, prestige: 0, achievements: "[]" });
+    } finally { db.close(); }
+
+    // The source history is only deleted because the archive now holds it.
+    assert.equal(
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 0);
+
+    // Normalising NULL must not extend to a missing field. `undefined` fails the
+    // bind, and the ban has to roll back rather than commit a snapshot padded
+    // with zeroes the upstream payload never reported.
+    const incomplete = new DatabaseSync(bansPath);
+    try {
+      const store = createSqliteBanStore(incomplete);
+      await assert.rejects(store.confirmBanned({ aid: 43, upstreamUpdatedAt: 3_000, capturedAt: 3_000,
+        stats: { nickname: "Partial", side: "Usec", experience: 1 },
+        achievementIds: [] }, { source: "upstream", confirmedAt: 6_000 }));
+      assert.equal(
+        incomplete.prepare("SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = 43").get().n, 0);
+    } finally { incomplete.close(); }
+  } finally {
+    progression.close();
+    rmSync(directory, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
