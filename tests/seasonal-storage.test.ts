@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
+import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, SEASONAL_SCHEMA, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 import {
   FAVORITE_INSERT_SQL,
   FAVORITE_SET_MAIN_SQL,
@@ -326,4 +326,78 @@ test("uses Europe/Moscow dates and marks isolated negative counters as schema an
   assert.equal(result.interval?.status, "schema_anomaly");
   assert.equal(result.interval?.confidence, 0);
   assert.equal(result.snapshot?.localDate, "2026-07-12");
+});
+
+test("the nullable-portrait upgrade keeps the snapshot revision triggers", () => {
+  // ensureNullablePortraitColumns renames and drops progression_snapshots, and
+  // SQLite drops the triggers attached to a dropped table. Without re-issuing
+  // them, progression_personal_revisions stops being written and every
+  // personal progression cache key freezes.
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE progression_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mode TEXT NOT NULL DEFAULT 'regular',
+      cycle_id TEXT NOT NULL DEFAULT 'persistent',
+      aid INTEGER NOT NULL,
+      profile_updated_at INTEGER NOT NULL,
+      upstream_updated_at INTEGER NOT NULL,
+      captured_at INTEGER NOT NULL,
+      local_date TEXT NOT NULL,
+      series_id INTEGER NOT NULL DEFAULT 1,
+      nickname TEXT,
+      side TEXT,
+      prestige INTEGER NOT NULL DEFAULT 0,
+      level INTEGER NOT NULL DEFAULT 0,
+      experience INTEGER NOT NULL DEFAULT 0,
+      hours REAL NOT NULL DEFAULT 0,
+      total_raids INTEGER NOT NULL DEFAULT 0,
+      pmc_raids INTEGER NOT NULL DEFAULT 0,
+      scav_raids INTEGER NOT NULL DEFAULT 0,
+      survived INTEGER NOT NULL DEFAULT 0,
+      pmc_survived INTEGER NOT NULL DEFAULT 0,
+      deaths INTEGER NOT NULL DEFAULT 0,
+      pmc_deaths INTEGER NOT NULL DEFAULT 0,
+      pmc_kills INTEGER NOT NULL DEFAULT 0,
+      total_kills INTEGER NOT NULL DEFAULT 0,
+      killed_pmc INTEGER NOT NULL DEFAULT 0,
+      run_through INTEGER NOT NULL DEFAULT 0,
+      longest_win_streak INTEGER NOT NULL DEFAULT 0,
+      achv_count INTEGER NOT NULL DEFAULT 0,
+      achievements TEXT,
+      stats_json TEXT NOT NULL DEFAULT '{}',
+      UNIQUE(mode, cycle_id, aid, profile_updated_at))`);
+    db.exec(SEASONAL_SCHEMA);
+    const insert = db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, prestige)
+      VALUES ('seasonal', 's1', ?, ?, ?, ?, '2026-01-01', 0)`);
+    insert.run(42, 1, 1, 1);
+    insert.run(43, 2, 2, 2);
+
+    initializeSeasonalSchema(db);
+
+    assert.deepEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots' ORDER BY name")
+        .all().map((row) => row.name),
+      ["progression_snapshot_revision_insert", "progression_snapshot_revision_update"],
+    );
+    // Both rows survived the rebuild and the 0 -> NULL normalisation still holds.
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+    assert.equal(db.prepare("SELECT prestige FROM progression_snapshots WHERE aid = 42").get().prestige, null);
+
+    // A new snapshot now bumps a personal revision again.
+    const before = db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision;
+    db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date)
+      VALUES ('seasonal', 's1', 42, 3, 3, 3, '2026-01-02')`).run();
+    assert.equal(
+      db.prepare("SELECT revision FROM progression_personal_revisions WHERE aid = 42").get().revision, before + 1);
+
+    // Re-running the migration must stay idempotent.
+    initializeSeasonalSchema(db);
+    initializeSeasonalSchema(db);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots'").get().n, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 3);
+  } finally { db.close(); }
 });
