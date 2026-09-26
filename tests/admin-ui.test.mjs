@@ -157,3 +157,22 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
   assert.match(accountsRoute, /ban-wins/);
   assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
 });
+
+test("the suspicious queue reports missing report storage as unavailable", async () => {
+  const [accountsRoute, reportsDb, dashboard] = await Promise.all([
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
+    readFile("lib/community-reports-db.ts", "utf8"),
+    readFile("components/AdminDashboard.tsx", "utf8"),
+  ]);
+  // getCommunityReportsStore() resolves to null for a missing binding or an
+  // unopenable SQLite file; it does not throw. `reportsStore?.reviews() ?? []`
+  // collapsed that null into an empty list, so the available:false branch was
+  // unreachable and the console showed an empty queue instead of a storage warning.
+  assert.match(reportsDb, /return sqlite \? createSqliteCommunityReportsStore\(sqlite\) : null;/);
+  assert.match(accountsRoute, /const reportsStore = await getCommunityReportsStore\(\)\.catch\(\(\) => null\);/);
+  assert.match(accountsRoute, /const reports = reportsStore \? await reportsStore\.reviews\(\)\.catch\(\(\) => null\) : null;/);
+  assert.doesNotMatch(accountsRoute, /reviews\(\) \?\? \[\]/);
+  assert.match(accountsRoute, /if \(suspiciousOnly && reports === null\) \{\s*return NextResponse\.json\(\{ accounts: \[\], nextCursor: null, available: false \}/);
+  // The console already renders a distinct warning for that case.
+  assert.match(dashboard, /if \(!data\?\.available\) return <div className="admin-notice">\{t\("admin\.warning\.storage"\)\}<\/div>;/);
+});
