@@ -29,6 +29,37 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
   assert.match(dashboard, /setRefreshKey\(\(key\) => key \+ 1\)/);
+  // Source-shape assertions, not behaviour: this suite reads the component as text
+  // because it has no DOM, so the race guard is pinned by shape. The checks below
+  // name the pattern each one pins and deliberately avoid identifier names.
+  const loadStart = dashboard.search(/\n {2}const \w+ = useRef\(0\);/);
+  const loadEnd = dashboard.indexOf("const runAudit = useCallback");
+  assert.ok(loadStart !== -1 && loadEnd > loadStart, "the load callback and its request counter must be findable");
+  const loadBody = dashboard.slice(loadStart, loadEnd);
+  // Each load claims a generation from the counter and compares it against the
+  // counter again before writing, so only the newest load may touch state.
+  const claim = loadBody.match(/const (\w+) = \+\+\w+\.current;/);
+  assert.ok(claim, "every load must claim a generation from the counter ref");
+  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => ${claim[1]} !== \\w+\\.current;`))?.[1];
+  assert.ok(guard, "the claimed generation must be re-checked against the counter");
+  assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;`));
+  // The counter also gates the loading flag, including the silent-reload case.
+  assert.match(loadBody, /finally \{ if \(!\w+ && !\w+\(\)\) setLoading\(false\); \}/);
+  // Only the loading flag is conditional on the silent option: the fetched payloads
+  // are written unconditionally, which is what keeps a superseded silent reload
+  // harmless. Scoped to `load`; a bare `setX(await getJson(...))` would slip past.
+  assert.deepEqual([...loadBody.matchAll(/if \(!\w+\) \{([^}]*)\}/g)].map((match) => match[1].trim()), ['setLoading(true); setError("");']);
+  assert.doesNotMatch(loadBody, /await getJson[^\n]*\n\s*set[A-Z]\w*\(/);
+  // A superseded request is cancelled too, not just ignored.
+  assert.match(loadBody, /\{ signal: request\.signal \}/);
+  // The search box writes on every keystroke, so `load` must read a debounced copy
+  // of the term; the immediate loads (filters, tabs, refresh, retry) stay immediate.
+  const setter = dashboard.match(/window\.setTimeout\(\(\) => set(\w+)\(search\), 250\)/)?.[1];
+  assert.ok(setter, "the search term feeding load must be debounced by 250 ms");
+  const debounced = setter[0].toLowerCase() + setter.slice(1);
+  assert.match(dashboard, /window\.clearTimeout\(timer\)/);
+  assert.match(loadBody, new RegExp(`\\[domain, mode, period, ${debounced}, sort, tab, t\\]`));
+  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
   assert.match(dashboard, /role="tablist"/);
   assert.match(dashboard, /confirmAid: Number\(confirmAid\)/);
   assert.match(dashboard, /!reason\.trim\(\)/);
