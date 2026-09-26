@@ -20,16 +20,14 @@ export default function FaqWidget() {
     setDialogState((state) => (state === "open" ? "closing" : state));
   }
 
-  // The dialog is aria-modal, so focus has to enter it and come back out.
-  // Without this, focus stays on the trigger behind the backdrop and Tab
-  // walks into the page content the backdrop is covering. The cleanup fires on
-  // the open -> closing transition, which is where the trigger is still mounted.
+  // Focus the dialog on open and hand focus back to the trigger on close, so the
+  // keyboard never sits on the trigger behind the backdrop. The cleanup runs on
+  // the open -> closing transition, the step all three close paths share, and the
+  // trigger is mounted unconditionally, so the ref is valid there.
   useEffect(() => {
     if (!open) return;
-    const dialog = dialogRef.current;
-    const trigger = triggerRef.current;
-    dialog?.focus();
-    return () => { trigger?.focus(); };
+    dialogRef.current?.focus();
+    return () => { triggerRef.current?.focus(); };
   }, [open]);
 
   useEffect(() => {
@@ -124,10 +122,11 @@ export default function FaqWidget() {
             }
           }}
         >
+          {/* Not aria-modal: the page behind the backdrop stays interactive, and
+              making it inert needs a wrapper in app/layout.tsx. */}
           <div
             ref={dialogRef}
             role="dialog"
-            aria-modal="true"
             aria-label={t("faq.title")}
             tabIndex={-1}
             className="faq-dialog"

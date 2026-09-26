@@ -380,18 +380,22 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
-test("the modal FAQ dialog takes and returns keyboard focus", async () => {
+test("the FAQ dialog takes and returns keyboard focus", async () => {
   const faq = await readFile("components/FaqWidget.tsx", "utf8");
 
-  assert.match(faq, /aria-modal="true"/);
-  // Declaring the dialog modal obliges it to move focus in and to give it back,
-  // otherwise Tab walks into the content hidden behind the fixed backdrop.
+  // Moving focus in and back out is what keeps the keyboard off the trigger
+  // behind the backdrop. Keyed on [open], so the cleanup covers the button,
+  // backdrop and Escape close paths.
   assert.match(
     faq,
-    /if \(!open\) return;[\s\S]*?dialog\?\.focus\(\);[\s\S]*?return \(\) => \{ trigger\?\.focus\(\); \};[\s\S]*?\}, \[open\]\);/,
+    /if \(!open\) return;[\s\S]*?dialogRef\.current\?\.focus\(\);[\s\S]*?return \(\) => \{ triggerRef\.current\?\.focus\(\); \};[\s\S]*?\}, \[open\]\);/,
   );
   assert.match(faq, /<div\s+ref=\{dialogRef\}\s+role="dialog"[\s\S]*?tabIndex=\{-1\}/);
   assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+  // The page behind the overlay stays interactive, so aria-modal would be a lie.
+  // Inerting it would need a wrapper around the layout's page content.
+  assert.doesNotMatch(faq, /aria-modal\s*=/);
+  assert.match(faq, /role="dialog"\s+aria-label=\{t\("faq\.title"\)\}/);
 });
 
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
