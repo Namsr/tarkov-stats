@@ -1,14 +1,33 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 const execFileAsync = promisify(execFile);
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/")) {
+      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const previousSqlitePath = process.env.SQLITE_PATH;
+const limitDirectory = mkdtempSync(join(tmpdir(), "player-index-limit-"));
+const limitDbPath = join(limitDirectory, "players.db");
+process.env.SQLITE_PATH = limitDbPath;
+
+const { getPlayerIndexStore } = await import("../lib/db.ts");
 
 function launch(dbPath, url, ...args) {
   return execFileAsync(process.execPath, [
@@ -94,5 +113,29 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("index search stops at the limit once the exact matches fill the page", async () => {
+  const index = await getPlayerIndexStore("regular");
+  assert.ok(index, "the sqlite index store is unavailable");
+  const db = new DatabaseSync(limitDbPath);
+  try {
+    // A full page of identical nicknames, plus one prefix match behind them.
+    const insert = db.prepare(
+      "INSERT INTO player_index (aid, nickname, nickname_lower, synced_at) VALUES (?, ?, ?, ?)"
+    );
+    for (let aid = 1; aid <= 12; aid += 1) insert.run(aid, "Dup", "dup", 1_800_000_000_000);
+    insert.run(99, "Duplex", "duplex", 1_800_000_000_000);
+
+    const rows = await index.search("Dup", 12);
+    assert.equal(rows.length, 12);
+    assert.ok(rows.every((row) => row.name === "Dup"));
+  } finally {
+    db.close();
+    if (previousSqlitePath === undefined) delete process.env.SQLITE_PATH;
+    else process.env.SQLITE_PATH = previousSqlitePath;
+    // limitDirectory is left behind: lib/db.ts caches its handle for the life of
+    // the process, and Windows refuses to delete an open database file.
   }
 });
