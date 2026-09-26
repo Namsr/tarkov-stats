@@ -730,7 +730,7 @@ function leaderboardProfileArgs(profile: SeasonalProfile): Array<number | null> 
     profile.pvpStatsParserVersion ?? 0, profile.leaderboardActivityAt ?? null];
 }
 
-function seasonalLeaderboardSnapshotValue(profile: SeasonalProfile): string {
+export function seasonalLeaderboardSnapshotValue(profile: SeasonalProfile): string {
   return JSON.stringify({
     pmcKilledPmc: profile.counters.pmcKilledPmc ?? null,
     pvpStatsKnown: profile.counters.pmcKilledPmc != null,
