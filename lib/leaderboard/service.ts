@@ -362,8 +362,8 @@ export function createLeaderboardReader(db: any, exclusionTable = "players_db.ex
         const selectedOrdinal = Number((oldSelected as { ordinal: unknown }).ordinal);
         const before = selectedRows(config, snap.generation, sort, "o.ordinal<?", [selectedOrdinal], 99, "DESC").reverse();
         const after = selectedRows(config, snap.generation, sort, "o.ordinal>?", [selectedOrdinal], 99, "ASC");
-        const merged = [...before, saved as any, ...after].map((entry: any) => "stats_json" in entry
-          ? rowFrom(entry, aid, selectedBans, primaryBans, null, null, counts.ranked + 1) : entry as LeaderboardRow);
+        const merged: LeaderboardRow[] = [...before, saved, ...after].map((entry) => "stats_json" in entry
+          ? rowFrom(entry, aid, selectedBans, primaryBans, null, null, counts.ranked + 1) : entry);
         const start = Math.max(0, Math.min(before.length - 50, merged.length - 100));
         around = merged.slice(start, start + 100);
       }
