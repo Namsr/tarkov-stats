@@ -51,6 +51,8 @@ import { getArenaProfile, getArenaProfileRisk, getStoredArenaProfileRisk, isAren
 import { rateArena } from "@/lib/arena/ts-rating";
 import { arenaTsReference } from "@/lib/arena/ts-rating-reference";
 
+export const runtime = "nodejs";
+
 const PERSISTENT_ACHIEVEMENT_BASELINE_TTL_MS = 60_000;
 type PersistentMode = "regular" | "pve";
 type ArenaLegacySnapshot = Awaited<ReturnType<NonNullable<Awaited<ReturnType<typeof getStore>>>["stored"]>>;

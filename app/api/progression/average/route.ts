@@ -5,6 +5,8 @@ import { getSeasonalAverageQuery } from "@/lib/seasonal/average-db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { AVERAGE_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS } from "@/lib/average-cache";
 
+export const runtime = "nodejs";
+
 const loadCachedRegularAverageProgression = unstable_cache(
   () => getRegularProgressionAverage(),
   ["average-progression-regular-v2"],

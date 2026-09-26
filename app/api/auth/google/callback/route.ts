@@ -12,6 +12,8 @@ import {
 } from "@/lib/auth/session";
 import { recordAuthSignIn } from "@/lib/admin/request-events";
 
+export const runtime = "nodejs";
+
 const STATE_COOKIE = "oauth_state";
 
 // Google redirects the user here with ?code & ?state after consent.

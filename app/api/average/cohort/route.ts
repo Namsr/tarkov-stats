@@ -14,6 +14,8 @@ import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
+export const runtime = "nodejs";
+
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
   "pmc_kd_ratio",
