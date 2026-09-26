@@ -30,6 +30,8 @@ import {
 } from "@/lib/average-publication";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
+export const runtime = "nodejs";
+
 function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
   if (value == null || value === "") return { value: null, valid: true };
   const number = Number(value);

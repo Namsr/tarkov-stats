@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import type { LeaderboardErrorResponse } from "@/types/leaderboard";
 import { leaderboardRuntime, parseLeaderboardRequest, prepareLeaderboardCandidate } from "@/lib/leaderboard/runtime";
 
+export const runtime = "nodejs";
+
 const noStore = { "Cache-Control": "private, no-store" };
 
 export async function GET(request: NextRequest) {

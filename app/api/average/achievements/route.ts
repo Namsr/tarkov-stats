@@ -6,6 +6,8 @@ import { getAchievements } from "@/lib/tarkov-api";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
+export const runtime = "nodejs";
+
 // One row per achievement: how it looks in OUR sample (owners, prevalence,
 // typical unlock hours ± std) merged with tarkov.dev metadata (name, rarity,
 // BSG's official completion %). meanHours/stdHours are the baseline the client
