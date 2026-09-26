@@ -1862,6 +1862,7 @@ a.help-card:hover { border-color: var(--foreground); }
   .site-header__controls { position: absolute; top: calc(100% + 1px); left: 0; right: 0; display: none; margin: 0; padding: 14px 16px 16px; border-bottom: 1px solid var(--card-border); background: var(--background); flex-direction: column; align-items: stretch; }
   .site-header__controls.is-open { display: flex; }
   .site-header__nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .site-header__nav > :last-child { grid-column: 1 / -1; }
   .site-header__utilities { justify-content: center; padding-top: 4px; }
   .site-header__nav .tactical-nav-link { width: 100%; }
 }
