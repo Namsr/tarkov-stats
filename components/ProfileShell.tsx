@@ -123,8 +123,17 @@ export default function ProfileShell({
   const baseSectionIds = achievements === undefined
     ? LEGACY_SECTION_IDS
     : SECTION_IDS;
+  const sectionContent: Record<string, ReactNode> = {
+    progression,
+    risk,
+    comparison,
+    statistics,
+    achievements,
+    mastering,
+    skills,
+  };
   const sectionIds = baseSectionIds.filter((id) =>
-    (id !== "mastering" || mastering !== undefined) && (id !== "skills" || skills !== undefined),
+    id === "overview" || hasSectionContent(sectionContent[id]),
   );
   const sectionLinks = sectionIds.map((id) => ({
     id,
@@ -167,20 +176,27 @@ export default function ProfileShell({
 
       <div className="profile-content">
         <ProfileShellSection id="progression">{progression}</ProfileShellSection>
-        <div className="profile-analysis">
-          <ProfileShellSection id="risk">{risk}</ProfileShellSection>
-          <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
-        </div>
+        {(hasSectionContent(risk) || hasSectionContent(comparison)) && (
+          <div className="profile-analysis">
+            <ProfileShellSection id="risk">{risk}</ProfileShellSection>
+            <ProfileShellSection id="comparison">{comparison}</ProfileShellSection>
+          </div>
+        )}
         <ProfileShellSection id="statistics">{statistics}</ProfileShellSection>
-        {achievements !== undefined && <ProfileShellSection id="achievements">{achievements}</ProfileShellSection>}
-        {mastering !== undefined && <ProfileShellSection id="mastering">{mastering}</ProfileShellSection>}
-        {skills !== undefined && <ProfileShellSection id="skills">{skills}</ProfileShellSection>}
+        <ProfileShellSection id="achievements">{achievements}</ProfileShellSection>
+        <ProfileShellSection id="mastering">{mastering}</ProfileShellSection>
+        <ProfileShellSection id="skills">{skills}</ProfileShellSection>
       </div>
     </main>
   );
 }
 
+function hasSectionContent(children: ReactNode): boolean {
+  return children !== undefined && children !== null && children !== false;
+}
+
 function ProfileShellSection({ id, children }: { id: string; children: ReactNode }) {
+  if (!hasSectionContent(children)) return null;
   return (
     <section id={id} tabIndex={-1} className="profile-anchor-section min-h-44">
       {children}
