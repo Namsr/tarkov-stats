@@ -157,3 +157,23 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
   assert.match(accountsRoute, /ban-wins/);
   assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
 });
+
+test("a moderation result message survives the refresh it triggers", async () => {
+  const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
+
+  // ModerationForm keeps its result in local state and reloads right after
+  // writing it. The `!loading` render gate unmounts AccountsPanel while that
+  // reload is in flight, which destroyed the message before it was ever
+  // painted — so a 409 or 503 looked like a silent no-op.
+  assert.match(dashboard, /setMessage\(t\("admin\.saved"\)\); await reload\(\{ silent: true \}\);/);
+  assert.match(dashboard, /catch \{ setMessage\(t\("admin\.error\.save"\)\); \}/);
+  assert.match(dashboard, /const load = useCallback\(async \(options\?: \{ silent\?: boolean \}\) => \{\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
+  assert.match(dashboard, /catch \{ if \(!options\?\.silent\) setError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /finally \{ if \(!options\?\.silent\) setLoading\(false\); \}/);
+  // Every reload consumer has to accept the option.
+  for (const line of dashboard.split("\n").filter((text) => text.includes("reload: ("))) {
+    assert.match(line, /reload: \(options\?: \{ silent\?: boolean \}\) => Promise<void>/);
+  }
+  // The initial/refresh/filter loads stay non-silent.
+  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
+});
