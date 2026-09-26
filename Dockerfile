@@ -47,6 +47,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs .
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-progression.mjs ./scripts/backfill-progression.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-regular-progression.mjs ./scripts/backfill-regular-progression.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/warm-average-cache.mjs ./scripts/warm-average-cache.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/start-web.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs

@@ -3,6 +3,8 @@ import { getStore } from "@/lib/db";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
+export const runtime = "nodejs";
+
 function num(v: string | null): number | null {
   if (v == null || v === "") return null;
   const n = Number(v);

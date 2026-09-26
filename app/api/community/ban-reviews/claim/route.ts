@@ -6,6 +6,8 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { isCommunityReviewEnabled } from "@/lib/seasonal/config";
 import { HELPER_COOKIE, helperCookieOptions, signHelperSession, verifyHelperSession } from "@/lib/seasonal/helper-core";
 
+export const runtime = "nodejs";
+
 const noStore = { "Cache-Control": "no-store" };
 
 function limit(body: unknown): number | null {

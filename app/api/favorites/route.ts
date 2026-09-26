@@ -6,6 +6,8 @@ import { getClientIp } from "@/lib/client-ip";
 import { parsePlayerId } from "@/lib/player-id";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 
+export const runtime = "nodejs";
+
 const NICK_MAX = 32;
 const NOTE_MAX = 120;
 
