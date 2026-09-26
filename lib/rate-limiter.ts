@@ -26,12 +26,12 @@ export interface RateLimitOptions {
 
 export function checkRateLimit(
   ip: string,
-  opts: RateLimitOptions = {}
+  opts: RateLimitOptions = {},
+  now: number = Date.now()
 ): { allowed: boolean; remaining: number; limit: number; windowMs: number } {
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
   const max = opts.max ?? DEFAULT_MAX;
   const key = `${opts.bucket ?? "default"}:${ip}`;
-  const now = Date.now();
 
   // Opportunistic cleanup так, чтобы Map не рос бесконечно.
   if (store.size > 5000) prune(now, windowMs);
