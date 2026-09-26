@@ -511,6 +511,23 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
 
+test("cohort indexes carry the filter and radar columns so those scans stay index-only", () => {
+  // The matched and population cohort aggregates run synchronously on the web
+  // process. If the plan has to leave the index for any column it filters or
+  // averages on, every eligible row costs a table lookup inside a query that
+  // blocks every other response.
+  const COHORT_FILTER = ["hours", "pmc_raids", "pvp_stats_known", "profile_updated_at", "aid"];
+  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level"];
+  for (const name of ["idx_players_cohort", "idx_mode_players_cohort"]) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
+    const ddl = String(row?.sql ?? "").replace(/\s+/g, " ").toLowerCase();
+    assert.ok(ddl, `${name} must exist`);
+    for (const column of [...COHORT_FILTER, ...RADAR]) {
+      assert.ok(ddl.includes(column), `${name} must carry ${column}: ${ddl}`);
+    }
+  }
+});
+
 test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {
   const cases = [
     { percent: 10, n: 20, peers: Array.from({ length: 20 }, () => ({ hours: 100, raids: 100 })) },
