@@ -5,13 +5,22 @@ const DEFAULT_MAX = 30;
 // (сбрасывается при рестарте); на Cloudflare Workers — в пределах изолята.
 // Ключ = "<bucket>:<ip>", так что разные эндпоинты лимитируются раздельно.
 // Cleanup ленивый — top-level setInterval в Workers-скоупе запрещён.
-const store = new Map<string, number[]>();
+//
+// Окно хранится вместе с метками: store общий для всех бакетов, поэтому prune
+// обязан фильтровать каждый ключ его собственным windowMs. Иначе запрос к
+// бакету с коротким окном стирал метки, которые ещё внутри окна длинного.
+interface Bucket {
+  windowMs: number;
+  timestamps: number[];
+}
 
-function prune(now: number, windowMs: number) {
-  for (const [key, timestamps] of store) {
-    const filtered = timestamps.filter((t) => now - t < windowMs);
+const store = new Map<string, Bucket>();
+
+function prune(now: number) {
+  for (const [key, bucket] of store) {
+    const filtered = bucket.timestamps.filter((t) => now - t < bucket.windowMs);
     if (filtered.length === 0) store.delete(key);
-    else store.set(key, filtered);
+    else if (filtered.length !== bucket.timestamps.length) store.set(key, { windowMs: bucket.windowMs, timestamps: filtered });
   }
 }
 
@@ -34,17 +43,17 @@ export function checkRateLimit(
   const now = Date.now();
 
   // Opportunistic cleanup так, чтобы Map не рос бесконечно.
-  if (store.size > 5000) prune(now, windowMs);
+  if (store.size > 5000) prune(now);
 
-  const timestamps = (store.get(key) ?? []).filter((t) => now - t < windowMs);
+  const timestamps = (store.get(key)?.timestamps ?? []).filter((t) => now - t < windowMs);
 
   if (timestamps.length >= max) {
-    store.set(key, timestamps);
+    store.set(key, { windowMs, timestamps });
     return { allowed: false, remaining: 0, limit: max, windowMs };
   }
 
   timestamps.push(now);
-  store.set(key, timestamps);
+  store.set(key, { windowMs, timestamps });
   return { allowed: true, remaining: max - timestamps.length, limit: max, windowMs };
 }
 
