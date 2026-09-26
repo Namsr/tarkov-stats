@@ -47,12 +47,14 @@ test("no player profile error response is cacheable", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
   // The client requests this URL with cache: "default", so a cacheable 404 or
   // 5xx would be pinned in the browser and CDN after one transient failure.
+  // The point is that every error response is noStore, and this test is what
+  // keeps it that way. 11 is the exact number of `{ status: <4xx|5xx>,
+  // headers: X }` sites in the route: a lower bound let an unrelated subset
+  // satisfy the loop while other sites regressed to profileHeaders, and it
+  // would not catch a new error response added with cacheable headers.
   const responses = [...source.matchAll(/status:\s*(4\d\d|5\d\d)\s*,\s*headers:\s*([A-Za-z_$][\w$]*)/g)];
-  assert.ok(responses.length >= 8, `expected every error response, found ${responses.length}`);
+  assert.equal(responses.length, 11, `expected all 11 error responses, found ${responses.length}`);
   for (const [, status, headers] of responses) {
     assert.equal(headers, "noStore", `status ${status} must not be cacheable`);
   }
-  // profileHeaders stays cacheable, but only for 200 responses.
-  assert.match(source, /const profileHeaders = force\s*\n\s*\?\s*noStore/);
-  assert.doesNotMatch(source, /status: 200[^}]*headers: profileHeaders\s*\n\s*\}\s*,\s*\{\s*status: 4/);
 });
