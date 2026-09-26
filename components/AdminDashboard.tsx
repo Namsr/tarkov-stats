@@ -80,6 +80,7 @@ export default function AdminDashboard() {
   const [auditError, setAuditError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
@@ -90,8 +91,16 @@ export default function AdminDashboard() {
     router.replace(`${pathname}${params.size ? `?${params}` : ""}`, { scroll: false });
   }, [domain, pathname, period, router]);
 
-  const load = useCallback(async () => {
-    setLoading(true); setError("");
+  // `silent` is used by the moderation forms: their result message lives in the
+  // AccountsPanel subtree, and the `!loading` render gate would unmount that
+  // subtree and destroy the message before it can ever be painted. `error` sits
+  // in that same gate, so a silent failure is recorded in `refreshError`
+  // instead: the operator keeps the result message and the stale rows, sees a
+  // retry notice above them, and Refresh/retry re-reads the list.
+  // Stale-response guarding for this load is added separately, not here.
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    setRefreshError("");
+    if (!options?.silent) { setLoading(true); setError(""); }
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
@@ -114,8 +123,8 @@ export default function AdminDashboard() {
         if (tab === "suspicious") params.set("source", "suspicious");
         setAccounts(await getJson<Accounts>(`/api/admin/accounts?${params}`));
       }
-    } catch { setError(t("admin.error.load")); }
-    finally { setLoading(false); }
+    } catch { if (options?.silent) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
+    finally { if (!options?.silent) setLoading(false); }
   }, [domain, mode, period, search, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
@@ -178,6 +187,7 @@ export default function AdminDashboard() {
       </section>}
 
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
+      {refreshError && <div className="admin-notice admin-notice--error" role="status">{refreshError} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
@@ -484,7 +494,7 @@ function RankList({ title, rows, t, visitsKey = "admin.rank.visits" }: { title: 
   return <section className="data-panel admin-panel"><h2 className="section-heading">{title}</h2>{rows.length ? <ol className="admin-rank-list">{rows.slice(0, 10).map((row) => <li key={row.key}><div><span title={row.key}>{row.key}</span><strong>{formatNumber(row.pageviews)}</strong></div><div className="admin-rank-bar" aria-hidden><i style={{ width: `${row.pageviews / max * 100}%` }} /></div><small>{t(visitsKey, { n: formatNumber(row.visits) })}</small></li>)}</ol> : <p className="admin-empty">{t("admin.empty")}</p>}</section>;
 }
 
-function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts | null; suspicious: boolean; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts | null; suspicious: boolean; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void> }) {
   if (!data?.available) return <div className="admin-notice">{t("admin.warning.storage")}</div>;
   if (!data.accounts?.length && !suspicious) return <Empty t={t} />;
   if (!suspicious) return <AccountList accounts={data.accounts} suspicious={false} lang={lang} t={t} reload={reload} />;
@@ -496,14 +506,14 @@ function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts |
   </div>;
 }
 
-function AccountList({ accounts, suspicious, title, description, empty, lang, t, reload }: { accounts: Account[]; suspicious: boolean; title?: string; description?: string; empty?: string; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountList({ accounts, suspicious, title, description, empty, lang, t, reload }: { accounts: Account[]; suspicious: boolean; title?: string; description?: string; empty?: string; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void> }) {
   return <section className="data-panel admin-accounts">
     {title && <div className="admin-accounts__heading"><h2 className="section-heading">{title}</h2>{description && <p>{description}</p>}</div>}
     {accounts.length ? <><div className="admin-account-head"><span>{t("admin.account.account")}</span><span>{t("admin.account.requests")}</span><span>{t("admin.account.snapshots")}</span><span>{t("admin.account.last")}</span><span>{t("admin.account.signals")}</span></div>{accounts.map((account) => <AccountRow key={account.aid} account={account} suspicious={suspicious} reportOnly={suspicious} lang={lang} t={t} reload={reload} />)}</> : <p className="admin-empty">{empty ?? t("admin.empty")}</p>}
   </section>;
 }
 
-function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload }: { account: Account; suspicious: boolean; reportOnly?: boolean; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload }: { account: Account; suspicious: boolean; reportOnly?: boolean; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const moderation = moderationFor(account);
   const accountModes = Array.from(new Set((account.modes ?? []).filter(isProfileMode)));
@@ -545,14 +555,14 @@ function Signals({ moderation, sources, reportedModes, t }: { moderation?: Accou
   return labels.length ? <>{labels.map((label) => <span className="admin-badge" key={label}>{label}</span>)}</> : <span>{t("common.notAvailable")}</span>;
 }
 
-function ModerationForm({ account, moderation, t, reload }: { account: Account; moderation?: AccountModeration; t: T; reload: () => Promise<void> }) {
+function ModerationForm({ account, moderation, t, reload }: { account: Account; moderation?: AccountModeration; t: T; reload: (options?: { silent?: boolean }) => Promise<void> }) {
   const [status, setStatus] = useState<"reviewed" | "false_positive">(moderation?.review.status === "false_positive" ? "false_positive" : "reviewed");
   const [note, setNote] = useState(moderation?.review.note ?? "");
   const [confirmAid, setConfirmAid] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  async function mutate(url: string, method: "PATCH" | "POST", body: object) { setBusy(true); setMessage(""); try { await getJson(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); setMessage(t("admin.saved")); await reload(); } catch { setMessage(t("admin.error.save")); } finally { setBusy(false); } }
+  async function mutate(url: string, method: "PATCH" | "POST", body: object) { setBusy(true); setMessage(""); try { await getJson(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); setMessage(t("admin.saved")); await reload({ silent: true }); } catch { setMessage(t("admin.error.save")); } finally { setBusy(false); } }
   const confirmedBan = moderation?.sources.confirmedBan === true;
   const lockedUpstreamBan = confirmedBan && !moderation?.canRestoreManualBan;
   return <div className="admin-moderation">
