@@ -41,6 +41,10 @@ async function profileExists(input: { aid: number; mode: GameMode; cycleId: stri
 }
 
 export async function GET(request: NextRequest) {
+  // The read half is unauthenticated and runs on every profile view, so it needs
+  // a bound of its own. A separate bucket keeps the report budget intact.
+  const { allowed } = getRateLimitHeaders(getClientIp(request), { bucket: "community-reports-read", max: 60 });
+  if (!allowed) return response({ error: "Rate limit exceeded" }, 429);
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
   if (aid === null) return response({ error: "Invalid account ID" }, 400);
   try {
