@@ -384,7 +384,11 @@ test("ban review request results are dropped after unmount", async () => {
   const review = await readFile("components/CommunityBanReview.tsx", "utf8");
 
   assert.match(review, /const mounted = useRef\(true\);/);
-  assert.match(review, /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/);
+  // The setup must re-arm the ref, not only clear it on cleanup: StrictMode runs
+  // mount -> cleanup -> mount, and a cleanup-only effect leaves mounted.current
+  // false for the rest of the session, so claim() would never paint a result.
+  assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  assert.doesNotMatch(review, /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/);
   // Every await in claim/vote resolves after a possible navigation, so each
   // setState it follows has to be guarded.
   for (const setter of ["setCandidates", "setError", "setLoading", "setVoting"]) {

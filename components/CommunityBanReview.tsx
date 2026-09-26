@@ -13,9 +13,14 @@ export default function CommunityBanReview() {
   const [voting, setVoting] = useState<number | null>(null);
   const [error, setError] = useState("");
   // Both requests are user-triggered and can outlive the page (a slow claim, or a
-  // vote followed by navigation). Drop their results once we are gone.
+  // vote followed by navigation). Drop their results once we are gone. The setup
+  // has to re-arm the ref: a cleanup-only effect leaves it false forever after
+  // StrictMode's mount -> unmount -> mount, and the queue would never load.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const claim = useCallback(async () => {
     setLoading(true);
