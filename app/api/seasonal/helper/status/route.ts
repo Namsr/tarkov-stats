@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { helperContext } from "@/lib/seasonal/helper-api";
+
+export const runtime = "nodejs";
+
 export async function GET(request: NextRequest) {
   const context = await helperContext(request, "seasonal-helper-status", 50);
   if ("response" in context) return context.response;

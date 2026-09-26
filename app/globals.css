@@ -1859,7 +1859,7 @@ a.help-card:hover { border-color: var(--foreground); }
 
 @media (max-width: 1279px) {
   .site-header__menu { display: inline-grid; place-items: center; width: 44px; height: 44px; margin-left: auto; border: 1px solid var(--card-border); border-radius: 50%; background: transparent; color: var(--foreground); font-size: 1.45rem; line-height: 1; }
-  .site-header__controls { position: absolute; top: calc(100% + 1px); left: 0; right: 0; display: none; margin: 0; padding: 14px 16px 16px; border-bottom: 1px solid var(--card-border); background: var(--background); flex-direction: column; align-items: stretch; }
+  .site-header__controls { position: absolute; top: calc(100% + 1px); left: 0; right: 0; display: none; margin: 0; padding: 14px 16px 16px; border-bottom: 1px solid var(--card-border); background: var(--background); flex-direction: column; align-items: stretch; max-height: calc(100vh - 74px); max-height: calc(100dvh - 74px); overflow-y: auto; }
   .site-header__controls.is-open { display: flex; }
   .site-header__nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .site-header__utilities { justify-content: center; padding-top: 4px; }
@@ -2056,3 +2056,5 @@ a.help-card:hover { border-color: var(--foreground); }
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+@media (max-width: 1400px) { .site-footer__inner { padding-bottom: 64px; } }

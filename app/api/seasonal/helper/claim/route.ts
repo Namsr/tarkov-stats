@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { helperContext } from "@/lib/seasonal/helper-api";
 import { prepareSeasonalScannerCycle } from "@/lib/seasonal/scanner";
+
+export const runtime = "nodejs";
+
 export async function POST(request: NextRequest) {
   const context = await helperContext(request, "seasonal-helper-claim", 10);
   if ("response" in context) return context.response;

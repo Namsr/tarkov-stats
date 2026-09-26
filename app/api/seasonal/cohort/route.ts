@@ -9,6 +9,8 @@ import { querySeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort"
 import { normalizeCycleId } from "@/types/seasonal";
 import { parsePlayerId } from "@/lib/player-id";
 
+export const runtime = "nodejs";
+
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   const params = request.nextUrl.searchParams;

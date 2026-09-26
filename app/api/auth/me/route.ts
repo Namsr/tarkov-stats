@@ -3,6 +3,8 @@ import { getSession } from "@/lib/auth/session";
 import { isAdminUser } from "@/lib/admin-auth";
 import { recordAuthActivity } from "@/lib/admin/request-events";
 
+export const runtime = "nodejs";
+
 // Returns the current user (or null) for client components.
 export async function GET() {
   const user = await getSession();

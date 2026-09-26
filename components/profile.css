@@ -73,6 +73,8 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-risk__reading .home-risk-status--low { color: var(--profile-positive); }
 .profile-risk__reading .home-risk-status--medium { color: #b5ad6f; }
 .profile-risk__reading .home-risk-status--high { color: #bb9067; }
+html[data-theme="light"] .profile-risk__reading .home-risk-status--medium { color: #827326; }
+html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color: #9a591e; }
 .profile-risk__reading .home-risk-status--severe { color: var(--danger); }
 .profile-statistics { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; }
 .profile-statistics h2, .profile-statistics h3 { font-size: 18px !important; font-weight: 550; margin-bottom: 18px; }
@@ -188,6 +190,7 @@ html[data-theme="light"] .profile-page { --profile-positive: #2a7444; --profile-
 .profile-legend-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; border: 0; background: none; padding: 8px 0; color: var(--muted); font-size: 13px; cursor: pointer; }
 .profile-legend-toggle[aria-pressed="false"] { opacity: .6; }
 .profile-legend-toggle:disabled { cursor: not-allowed; }
+.profile-page .profile-legend-toggle:disabled { opacity: .6; }
 .profile-chart-legend i.is-overall { border-top: 2px dashed var(--profile-positive); }
 .profile-line-chart { position: relative; width: 100%; min-width: 0; }
 .profile-line-chart svg { display: block; width: 100%; height: 100%; }

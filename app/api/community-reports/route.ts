@@ -9,6 +9,8 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { isGameMode, normalizeCycleId, type GameMode } from "@/types/seasonal";
 
+export const runtime = "nodejs";
+
 const noStore = { "Cache-Control": "no-store" };
 
 function response(body: unknown, status = 200, headers: Record<string, string> = {}) {

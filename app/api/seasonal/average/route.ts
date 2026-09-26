@@ -10,6 +10,8 @@ import { averagePublicationsEnabled, readAveragePublication, seasonalPublication
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
+export const runtime = "nodejs";
+
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
   const number = Number(value);
