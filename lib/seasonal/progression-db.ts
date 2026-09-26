@@ -18,6 +18,8 @@ import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
+import { firstFiniteHours } from "../achievement-baseline-publication.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,
@@ -797,8 +799,10 @@ export async function getPublishedSeasonalAchievementBaseline(
         samplePct: achievement.samplePct,
         meanHours: Number(achievement.meanHours) || 0,
         stdHours: Number(achievement.stdHours) || 0,
-        earlyHours: Number(achievement.earlyHours) || Number(achievement.meanHours) || 0,
-        unlockHours: Number(achievement.unlockHours) || Number(achievement.earlyHours) || Number(achievement.meanHours) || 0,
+        // Same collapse as the writer had: a genuine 0-hour owner must not be
+        // replaced by the mean, so fall through on null rather than on falsy.
+        earlyHours: firstFiniteHours(achievement.earlyHours, achievement.meanHours),
+        unlockHours: firstFiniteHours(achievement.unlockHours, achievement.earlyHours, achievement.meanHours),
       })),
     };
   } catch (error) {

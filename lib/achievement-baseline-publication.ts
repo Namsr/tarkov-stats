@@ -71,11 +71,15 @@ function totalSql(mode: PublishedAchievementMode): { sql: string; params: unknow
 
 // The SQL leaves the percentile column NULL when the rank does not resolve, and
 // 0 when a real owner has zero playtime. `||` cannot tell those apart and would
-// replace a genuine 0 with the mean, so check for null explicitly.
-function percentileOrMean(value: unknown, mean: number): number {
-  if (value == null) return mean;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : mean;
+// replace a genuine 0 with the mean, so take the first value that is actually a
+// finite number instead of the first truthy one.
+export function firstFiniteHours(...values: unknown[]): number {
+  for (const value of values) {
+    if (value == null) continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
 }
 
 function toAchievementStats(rows: readonly Record<string, unknown>[]): PublishedAchievementStat[] {
@@ -87,8 +91,8 @@ function toAchievementStats(rows: readonly Record<string, unknown>[]): Published
       owners: Number(row.owners) || 0,
       meanHours: mean,
       stdHours: Math.sqrt(variance),
-      earlyHours: percentileOrMean(row.early_hours, mean),
-      unlockHours: percentileOrMean(row.unlock_hours, mean),
+      earlyHours: firstFiniteHours(row.early_hours, mean),
+      unlockHours: firstFiniteHours(row.unlock_hours, mean),
     };
   });
 }
