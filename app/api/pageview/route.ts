@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAnalyticsStore } from "@/lib/admin/analytics-db";
+import { getClientIp } from "@/lib/client-ip";
 import { normalizeTrafficPath } from "@/lib/admin/cloudflare-analytics";
 import {
   isBotUserAgent,
@@ -14,14 +15,6 @@ export const runtime = "nodejs";
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_HITS = 60;
 const recentHits = new Map<string, number[]>();
-
-function clientIp(request: NextRequest): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  return request.headers.get("cf-connecting-ip")
-    ?? request.headers.get("x-real-ip")
-    ?? forwarded?.split(",", 1)[0].trim()
-    ?? "unknown";
-}
 
 function rateLimited(ip: string, now: number): boolean {
   const cutoff = now - RATE_LIMIT_WINDOW_MS;
@@ -49,7 +42,7 @@ function noContent(): NextResponse {
  */
 export async function POST(request: NextRequest) {
   const now = Date.now();
-  if (rateLimited(clientIp(request), now)) {
+  if (rateLimited(getClientIp(request), now)) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: ADMIN_NO_STORE_HEADERS });
   }
   // Respect Do Not Track at the protocol level too (the client also skips sending).
