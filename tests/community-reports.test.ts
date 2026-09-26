@@ -88,6 +88,25 @@ for (const [name, makeStore] of storeFactories) {
     assert.deepEqual((await store.reviews(12))[0].modes, ["arena", "regular"]);
   });
 
+  test(`${name}: tied candidates are ordered by AID, not by an unspecified tie`, async () => {
+    // Every account shares a report count and a created_at millisecond, so
+    // (report_count, last_reported_at) is not a unique key and ORDER BY feeds a
+    // temp B-tree sorter with an unspecified tie order. LIMIT would then cut from
+    // a row set that is not defined by the data.
+    const build = async (aids: readonly number[]) => {
+      const store = makeStore();
+      for (const aid of aids) {
+        await store.report({ userSub: `google-${aid}`, aid, mode: "regular", cycleId: "persistent", createdAt: 1_000 });
+      }
+      return store;
+    };
+    for (const order of [[1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1], [4, 1, 6, 2, 5, 3]]) {
+      const store = await build(order);
+      assert.deepEqual((await store.candidates("helper-a", 3)).map((candidate) => candidate.aid), [1, 2, 3]);
+      assert.deepEqual((await store.reviews()).map((review) => review.aid), [1, 2, 3, 4, 5, 6]);
+    }
+  });
+
   test(`${name}: seasonal cycle survives when seasonal is not the latest report`, async () => {
     const store = makeStore();
     await store.report({ userSub: "google-a", aid: 21, mode: "seasonal", cycleId: "cycleX", createdAt: 10 });
@@ -118,4 +137,17 @@ test("community routes never reference the destructive ban operation", async () 
     assert.equal(source.includes("confirm" + "Banned"), false, path);
     assert.equal(source.includes("ban-" + "db"), false, path);
   }
+});
+
+test("both review queries pin their tie order with the unique AID key", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync("lib/community-reports-db.ts", "utf8");
+  // The behavioural test above documents the contract but passes on SQLite even
+  // without the tiebreak, because this build happens to break ties in group-by
+  // (aid) order. These assertions are what actually guard the fix.
+  assert.equal(
+    (source.match(/ORDER BY report_count DESC, last_reported_at DESC, r\.aid ASC/g) ?? []).length, 2,
+    "both CANDIDATES_SQL and reviewsSql need the unique AID tiebreak",
+  );
+  assert.equal(source.includes("ORDER BY report_count DESC, last_reported_at DESC\n"), false);
 });
