@@ -166,10 +166,13 @@ test("a moderation result message survives the refresh it triggers", async () =>
   // reload is in flight, which destroyed the message before it was ever
   // painted — so a 409 or 503 looked like a silent no-op.
   assert.match(dashboard, /setMessage\(t\("admin\.saved"\)\); await reload\(\{ silent: true \}\);/);
-  assert.match(dashboard, /catch \{ setMessage\(t\("admin\.error\.save"\)\); \}/);
-  assert.match(dashboard, /const load = useCallback\(async \(options\?: \{ silent\?: boolean \}\) => \{\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
-  assert.match(dashboard, /catch \{ if \(!options\?\.silent\) setError\(t\("admin\.error\.load"\)\); \}/);
+  // A silent load must not touch the two pieces of state the render gate reads.
+  assert.match(dashboard, /const load = useCallback\(async \(options\?: \{ silent\?: boolean \}\) => \{\s*setRefreshError\(""\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
   assert.match(dashboard, /finally \{ if \(!options\?\.silent\) setLoading\(false\); \}/);
+  // A failed silent reload still has to be reported, and `error` would unmount
+  // the panel, so it lands in `refreshError` with its own retry notice.
+  assert.match(dashboard, /catch \{ if \(options\?\.silent\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /\{refreshError && <div className="admin-notice admin-notice--error" role="status">\{refreshError\} <button type="button" onClick=\{\(\) => setRefreshKey\(\(key\) => key \+ 1\)\}>\{t\("admin\.retry"\)\}/);
   // Every reload consumer has to accept the option.
   for (const line of dashboard.split("\n").filter((text) => text.includes("reload: ("))) {
     assert.match(line, /reload: \(options\?: \{ silent\?: boolean \}\) => Promise<void>/);

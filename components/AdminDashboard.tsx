@@ -80,6 +80,7 @@ export default function AdminDashboard() {
   const [auditError, setAuditError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
@@ -92,8 +93,13 @@ export default function AdminDashboard() {
 
   // `silent` is used by the moderation forms: their result message lives in the
   // AccountsPanel subtree, and the `!loading` render gate would unmount that
-  // subtree and destroy the message before it can ever be painted.
+  // subtree and destroy the message before it can ever be painted. `error` sits
+  // in that same gate, so a silent failure is recorded in `refreshError`
+  // instead: the operator keeps the result message and the stale rows, sees a
+  // retry notice above them, and Refresh/retry re-reads the list.
+  // Stale-response guarding for this load is added separately, not here.
   const load = useCallback(async (options?: { silent?: boolean }) => {
+    setRefreshError("");
     if (!options?.silent) { setLoading(true); setError(""); }
     const params = new URLSearchParams({ period, domain });
     try {
@@ -117,7 +123,7 @@ export default function AdminDashboard() {
         if (tab === "suspicious") params.set("source", "suspicious");
         setAccounts(await getJson<Accounts>(`/api/admin/accounts?${params}`));
       }
-    } catch { if (!options?.silent) setError(t("admin.error.load")); }
+    } catch { if (options?.silent) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
     finally { if (!options?.silent) setLoading(false); }
   }, [domain, mode, period, search, sort, tab, t]);
 
@@ -181,6 +187,7 @@ export default function AdminDashboard() {
       </section>}
 
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
+      {refreshError && <div className="admin-notice admin-notice--error" role="status">{refreshError} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
