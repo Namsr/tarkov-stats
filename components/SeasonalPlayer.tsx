@@ -376,7 +376,6 @@ export default function SeasonalPlayer({
 
   const unknownValue = t("common.unknown");
   const overviewLabels = [t("player.hoursPlayed"), t("player.pmcKd"), t("seasonal.pmcSurvival"), t("player.pmcRaids")];
-  const emptySlot = <div className="data-panel min-h-44 p-5 text-sm text-[var(--muted)]">{t("common.notAvailable")}</div>;
 
   if (modeUnavailable || error || !profile) {
     return (
@@ -389,13 +388,10 @@ export default function SeasonalPlayer({
         leaderboardRevision={`${cycleId}:${progressionRefreshRevision}`}
         actions={<SeasonalProfileActions aid={aid} cycleId={cycleId} nickname={displayNickname} missing={modeUnavailable} onCheck={refreshProfile} />}
         overviewCards={overviewLabels.map((label) => ({ label, value: unknownValue }))}
-        progression={emptySlot}
-        risk={emptySlot}
-        comparison={emptySlot}
-        statistics={emptySlot}
-        achievements={emptySlot}
-        mastering={emptySlot}
-        skills={emptySlot}
+        progression={undefined}
+        risk={undefined}
+        comparison={undefined}
+        statistics={undefined}
         statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</div>}
       />
     );
