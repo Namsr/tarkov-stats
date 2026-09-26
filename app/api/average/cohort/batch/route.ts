@@ -16,6 +16,8 @@ import {
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 import { readAveragePublication, standardArenaVariant } from "@/lib/average-publication";
 
+export const runtime = "nodejs";
+
 export type ArenaModeBaselinesPurpose = "matches" | "comparison";
 
 function isPurpose(value: string | null): value is ArenaModeBaselinesPurpose {
