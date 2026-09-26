@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createAnalyticsStore } from "../lib/admin/analytics-db.ts";
@@ -92,4 +93,17 @@ test("pageview helpers filter bots and validate intake", () => {
   assert.equal(normalizeReferrerHost("not a host"), null);
   assert.equal(normalizeReferrerHost("/relative/path"), null);
   assert.equal(normalizeReferrerHost(null), null);
+});
+
+test("pageview intake rate-limits on the trusted proxy IP, not a client-controlled header", () => {
+  const route = readFileSync(
+    new URL("../app/api/pageview/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /import \{ getClientIp \} from "@\/lib\/client-ip"/);
+  assert.match(route, /rateLimited\(getClientIp\(request\), now\)/);
+  // The pre-fix route read cf-connecting-ip then x-real-ip then XFF, all of which
+  // a client behind Caddy can choose, which let anyone mint a fresh rate-limit
+  // bucket per request.
+  assert.equal(/x-forwarded-for|cf-connecting-ip/.test(route), false);
 });
