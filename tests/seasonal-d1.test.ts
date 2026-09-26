@@ -447,3 +447,77 @@ test("D1 scanner lifecycle builds panel eligibility and completes linked-PvP fol
   await lifecycle.advanceDiscovery("s1", { orderKey: 42, aid: 9 }, 6_000);
   assert.deepEqual({ ...await lifecycle.discoveryState("s1") }, { cursor_key: 42, cursor_aid: 9, exhausted: 0 });
 });
+
+test("D1 snapshots keep stats_json in parity with the SQLite store", async () => {
+  // The D1 captureSnapshot listed columns up to weapon_mastery and never bound
+  // stats_json, so every Cloudflare row kept the column default '{}' while the
+  // SQLite twin stored the leaderboard snapshot. Every read that derives from
+  // json_extract(stats_json, ...) then saw NULL on D1 only.
+  const seed = {
+    mode: "seasonal" as const, cycleId: "s1", aid: 7, nickname: "p7",
+    profileUpdatedAt: 100, lastAccessAt: 100, lifetimePvpHours: 10,
+    pvpStatsVersion: 2, pvpStatsParserVersion: 1, leaderboardActivityAt: 95,
+    counters: {
+      experience: 1000, pmcRaids: 20, scavRaids: 5, pmcSurvived: 12, pmcDeaths: 8,
+      pmcKills: 40, killedPmc: 28, pmcKilledPmc: 30,
+    },
+    seasonalStats: {
+      survivedRaids: 17, totalRaids: 25, deaths: 13, totalKills: 60, runThrough: 4,
+      survivalRate: 68, kdRatio: 4.6, pmcKdRatio: 3.75, killsPerRaid: 2.4,
+      pmcSurvivalRate: 60, longestWinStreak: 7, level: 33, prestige: 2,
+    },
+    staticSignals: { prestige: 2, longestWinStreak: 7, achievementIds: ["a1"] },
+  };
+  const readStatsJson = (db: DatabaseSync) =>
+    db.prepare(`SELECT stats_json FROM progression_snapshots WHERE aid = 7`).get().stats_json;
+
+  const sqlite = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(sqlite);
+  const sqliteStore = createSqliteSeasonalStore(sqlite, { mode: "seasonal" });
+  await sqliteStore.upsertProfile(seed);
+  assert.equal((await sqliteStore.captureSnapshot(seed)).inserted, true);
+
+  const d1Db = new DatabaseSync(":memory:");
+  initializeSeasonalSchema(d1Db);
+  const d1Store = createD1SeasonalStore(new FakeD1(d1Db));
+  await d1Store.upsertProfile(seed);
+  assert.equal((await d1Store.captureSnapshot(seed)).inserted, true);
+
+  assert.equal(readStatsJson(d1Db), readStatsJson(sqlite));
+  const derived = (db: DatabaseSync) => db.prepare(`SELECT
+      json_extract(stats_json, '$.pmcKilledPmc') AS killed,
+      json_extract(stats_json, '$.pvpStatsKnown') AS known,
+      json_extract(stats_json, '$.pvpStatsVersion') AS version
+    FROM progression_snapshots WHERE aid = 7`).get();
+  assert.deepEqual({ ...derived(d1Db) }, { killed: 30, known: 1, version: 2 });
+  assert.deepEqual({ ...derived(d1Db) }, { ...derived(sqlite) });
+
+  // The idempotent-replay path maintains it too, so a later pvpStatsVersion can
+  // upgrade an already-stored snapshot on both backends.
+  assert.equal((await d1Store.captureSnapshot(seed)).status, "duplicate");
+  assert.equal((await sqliteStore.captureSnapshot(seed)).status, "duplicate");
+  assert.equal(d1Db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 1);
+  assert.equal(readStatsJson(d1Db), readStatsJson(sqlite));
+
+  // A replay that carries nothing but a leaderboard-parser upgrade still has to
+  // reach the UPDATE. pvpStatsParserVersion is the only field that changed, so
+  // without it in the replay guard the row keeps the old stats_json and the
+  // pvpStatsVersion comparison added above is dead code.
+  const leaderboardOnly = {
+    ...seed,
+    pvpStatsVersion: 3,
+    pvpStatsParserVersion: 2,
+    seasonalStats: undefined,
+    seasonalAchievements: undefined,
+    side: undefined,
+    staticSignals: { prestige: 2, longestWinStreak: 7, achievementIds: [] },
+  };
+  assert.equal((await d1Store.captureSnapshot(leaderboardOnly)).status, "duplicate");
+  assert.equal((await sqliteStore.captureSnapshot(leaderboardOnly)).status, "duplicate");
+  assert.equal(d1Db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 1);
+  assert.deepEqual({ ...derived(d1Db) }, { killed: 30, known: 1, version: 3 });
+  assert.equal(readStatsJson(d1Db), readStatsJson(sqlite));
+
+  sqlite.close();
+  d1Db.close();
+});

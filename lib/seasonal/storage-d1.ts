@@ -12,7 +12,7 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Changes, d1Rows } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
-import { counterArgs, identityObject, moscowDate, profilePortraitArgs, seasonalAchievementSnapshotValue, seasonalCommonSkillsSnapshotValue, seasonalWeaponMasterySnapshotValue, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
+import { counterArgs, identityObject, moscowDate, profilePortraitArgs, seasonalAchievementSnapshotValue, seasonalCommonSkillsSnapshotValue, seasonalLeaderboardSnapshotValue, seasonalWeaponMasterySnapshotValue, toProfile, toScanTask, toSnapshot, rowCounters, validateProfile, validateTaskIdentity, validateTaskKind, validateTaskPriority } from "./storage.ts";
 
 const IDENTITY = "mode = ? AND cycle_id = ? AND aid = ?";
 
@@ -104,17 +104,21 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
           profile.seasonalAchievements !== undefined ||
           commonSkillsSnapshot !== undefined ||
           weaponMasterySnapshot !== undefined ||
+          profile.pvpStatsParserVersion !== undefined ||
           profile.side !== undefined
         )) {
           const stats = profile.seasonalStats;
           const achievementSnapshot = seasonalAchievementSnapshotValue(profile);
+          const leaderboardSnapshot = seasonalLeaderboardSnapshotValue(profile);
           const portraitAssignments = stats === undefined ? "" : `
             total_raids = ?, survived = ?, deaths = ?, total_kills = ?, run_through = ?,
             level = ?, prestige = ?, longest_win_streak = ?,`;
           await db.prepare(`UPDATE progression_snapshots SET
             side = COALESCE(?, side),${portraitAssignments}
             achv_count = COALESCE(?, achv_count), achievements = COALESCE(?, achievements),
-            common_skills = COALESCE(?, common_skills), weapon_mastery = COALESCE(?, weapon_mastery)
+            common_skills = COALESCE(?, common_skills), weapon_mastery = COALESCE(?, weapon_mastery),
+            stats_json = CASE WHEN COALESCE(json_extract(?, '$.pvpStatsVersion'), 0) >=
+              COALESCE(json_extract(stats_json, '$.pvpStatsVersion'), 0) THEN ? ELSE stats_json END
             WHERE ${IDENTITY} AND profile_updated_at = ?`).bind(
             profile.side ?? null,
             ...(stats === undefined ? [] : [
@@ -124,6 +128,8 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
             achievementSnapshot.count, achievementSnapshot.value,
             commonSkillsSnapshot ?? null,
             weaponMasterySnapshot ?? null,
+            leaderboardSnapshot,
+            leaderboardSnapshot,
             ...identity, profile.profileUpdatedAt,
           ).run();
         }
@@ -157,19 +163,20 @@ export function createD1SeasonalStore(db: D1DatabaseLike): SeasonalStore {
         achievementSnapshot.value,
         commonSkillsSnapshot ?? null,
         weaponMasterySnapshot ?? null,
+        seasonalLeaderboardSnapshotValue(profile),
       ];
       const statements = [db.prepare(`INSERT INTO progression_snapshots (
         mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id,
         side, experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths, pmc_deaths,
         pmc_kills, total_kills, killed_pmc, run_through, level, prestige, longest_win_streak, achv_count, achievements,
-        common_skills, weapon_mastery
+        common_skills, weapon_mastery, stats_json
       ) SELECT ?, ?, ?, ?, ?, ?, ?, COALESCE((
           SELECT series_id + CASE WHEN
             ? < experience OR ? < pmc_raids OR ? < scav_raids OR ? < pmc_survived OR
             ? < pmc_deaths OR ? < pmc_kills OR ? < killed_pmc THEN 1 ELSE 0 END
           FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
             AND profile_updated_at < ? ORDER BY profile_updated_at DESC LIMIT 1
-        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ), 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ?
           AND profile_updated_at >= ?
