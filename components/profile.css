@@ -190,6 +190,7 @@ html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color:
 .profile-legend-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; border: 0; background: none; padding: 8px 0; color: var(--muted); font-size: 13px; cursor: pointer; }
 .profile-legend-toggle[aria-pressed="false"] { opacity: .6; }
 .profile-legend-toggle:disabled { cursor: not-allowed; }
+.profile-page .profile-legend-toggle:disabled { opacity: .6; }
 .profile-chart-legend i.is-overall { border-top: 2px dashed var(--profile-positive); }
 .profile-line-chart { position: relative; width: 100%; min-width: 0; }
 .profile-line-chart svg { display: block; width: 100%; height: 100%; }
