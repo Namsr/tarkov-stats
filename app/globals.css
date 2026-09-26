@@ -2056,3 +2056,5 @@ a.help-card:hover { border-color: var(--foreground); }
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+@media (max-width: 1400px) { .site-footer__inner { padding-bottom: 64px; } }
