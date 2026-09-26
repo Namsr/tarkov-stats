@@ -95,7 +95,9 @@ export async function POST(request: Request) {
       }
       case "reorder": {
         if (!Number.isSafeInteger(body.groupId) || !Array.isArray(body.aids)) return bad();
-        const group = store.reorder(Number(body.groupId), (body.aids as unknown[]).map(Number));
+        const aids = (body.aids as unknown[]).map(Number).filter(Number.isSafeInteger);
+        if (aids.length !== (body.aids as unknown[]).length) return bad();
+        const group = store.reorder(Number(body.groupId), aids);
         return ok({ group, groups: store.listGroups() });
       }
       default:
