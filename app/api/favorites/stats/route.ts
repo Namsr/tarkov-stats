@@ -10,6 +10,8 @@ import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getArenaProfile, persistArenaProfile } from "@/lib/arena/service";
 import type { ArenaProfile } from "@/types/arena";
 
+export const runtime = "nodejs";
+
 export interface FavoriteWithStats extends Favorite {
   /** Parsed stats, or null when the profile isn't cached upstream / failed. */
   stats: ParsedPlayerStats | null;
