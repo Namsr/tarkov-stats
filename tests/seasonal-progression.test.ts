@@ -361,3 +361,17 @@ test("player coordinates are unique inside a reset series", () => {
   assert.deepEqual(result.player.map((point) => `${point.seriesId}:${point.pmcRaids}`), ["1:10", "2:10"]);
   assert.equal(result.player[0].pointId, "form:player:2");
 });
+
+test("a cross-section larger than the argument limit does not overflow the stack", () => {
+  // Math.max(...values) throws RangeError past ~125k arguments on V8, and one
+  // season's cross-section is one row per AID per 10-raid bucket with no LIMIT.
+  const rows = Array.from({ length: 130_000 }, (_, index) => ({
+    aid: index + 1, point_id: index + 1, local_date: "2026-01-01", observed_at: index + 1,
+    value: 10, pmc_raids: 8, raid_bucket: 10, lifetime_hours: 10,
+    freshness_at: index + 1, confidence: 1, series_id: 1, score_sample_n: 30,
+  }));
+  const result = buildProgressionSeries(rows, {
+    mode: "seasonal", cycleId: "s1", aid: 1, kind: "cumulative",
+  });
+  assert.equal(result.freshnessAt, 130_000);
+});
