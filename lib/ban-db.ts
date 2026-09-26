@@ -136,8 +136,11 @@ const ARCHIVE_HISTORY_SQL =
 function snapshotArgs(input: PlayerSnapshotInput, seriesId = 1): unknown[] {
   const s = input.stats;
   // Same NOT NULL contract as ARCHIVE_COALESCE: the parsed upstream payload
-  // leaves these nullable, and a single NULL would drop the whole archive row.
-  const orZero = (value: number | null | undefined) => (value == null ? 0 : value);
+  // leaves these nullable even though the type says number, and a single NULL
+  // would drop the whole archive row. Only a real NULL is normalised here —
+  // `undefined` must still fail the bind so the transaction rolls back rather
+  // than committing a ban on top of fabricated zeroes.
+  const orZero = (value: number | null) => (value === null ? 0 : value);
   return [
     input.aid, input.upstreamUpdatedAt, input.capturedAt, seriesId, s.nickname, s.side,
     orZero(s.prestige), orZero(s.level), orZero(s.experience), orZero(s.hoursPlayed),

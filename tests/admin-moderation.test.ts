@@ -344,7 +344,9 @@ test("ban confirmation archives the full progression history before deleting it"
   process.env.PROGRESSION_SQLITE_PATH = progressionPath;
 
   const progression = new DatabaseSync(progressionPath);
-  createSqliteSeasonalStore(progression, { mode: "seasonal" });
+  // Called for its schema side effect only: createSqliteSeasonalStore takes the
+  // database and nothing else, and the returned store is not used here.
+  createSqliteSeasonalStore(progression);
   // Two historical rows with the nullable columns left NULL, exactly as the
   // store writes them when the upstream payload has no seasonalStats.
   const insertHistory = progression.prepare(`INSERT INTO progression_snapshots
@@ -384,6 +386,19 @@ test("ban confirmation archives the full progression history before deleting it"
     // The source history is only deleted because the archive now holds it.
     assert.equal(
       progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 0);
+
+    // Normalising NULL must not extend to a missing field. `undefined` fails the
+    // bind, and the ban has to roll back rather than commit a snapshot padded
+    // with zeroes the upstream payload never reported.
+    const incomplete = new DatabaseSync(bansPath);
+    try {
+      const store = createSqliteBanStore(incomplete);
+      await assert.rejects(store.confirmBanned({ aid: 43, upstreamUpdatedAt: 3_000, capturedAt: 3_000,
+        stats: { nickname: "Partial", side: "Usec", experience: 1 },
+        achievementIds: [] }, { source: "upstream", confirmedAt: 6_000 }));
+      assert.equal(
+        incomplete.prepare("SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = 43").get().n, 0);
+    } finally { incomplete.close(); }
   } finally {
     progression.close();
     rmSync(directory, { recursive: true, force: true });
