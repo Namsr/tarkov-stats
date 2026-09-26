@@ -195,9 +195,9 @@ function achievementSub(
   if (!ach || (!ach.seasonal && !(playerHours > 0))) return { value: 0, available: true };
   const owned = new Set(ach.ownedIds);
   let best = 0;
-  const seasonalOwned = ach.seasonal
-    ? ach.ownedIds.filter((id) => !EVENT_ACHIEVEMENT_IDS.has(id))
-    : [];
+  const hasNonEventAchievements = ach.seasonal
+    ? ach.ownedIds.some((id) => !EVENT_ACHIEVEMENT_IDS.has(id))
+    : false;
   let reliableSeasonalFactor = false;
   for (const a of ach.stats) {
     if (!owned.has(a.id)) continue;
@@ -240,7 +240,7 @@ function achievementSub(
   }
   return {
     value: best,
-    available: !ach.seasonal || seasonalOwned.length === 0 || reliableSeasonalFactor,
+    available: !ach.seasonal || !hasNonEventAchievements || reliableSeasonalFactor,
   };
 }
 
