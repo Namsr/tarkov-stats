@@ -535,16 +535,25 @@ function ensureIndexDefinition(db: any, name: string, ddl: string): void {
   db.exec(ddl);
 }
 
-// SQLite executes the trimmed/median portrait on the web process. Covering the
-// ORDER BY columns avoids a temporary sort for every metric and keeps a cold
-// average request from blocking unrelated HTTP responses.
+// SQLite executes the trimmed/median portrait and the population aggregate on
+// the web process. Covering the ORDER BY column avoids a temporary sort for
+// every metric, and carrying the cohort filter columns keeps the scan inside the
+// index instead of one table lookup per eligible row.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function ensureSqliteAverageIndexes(db: any): void {
   for (const column of AVG_COLS) {
     if (!/^[a-z_]+$/.test(column)) throw new Error(`invalid average index column: ${column}`);
     if (column === "hours" || column === "pmc_raids") continue;
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_${column} ON mode_players(mode, ${column})`);
+    ensureIndexDefinition(
+      db,
+      `idx_players_average_${column}`,
+      `CREATE INDEX idx_players_average_${column} ON players(${column}, ${COHORT_INDEX_COLS})`,
+    );
+    ensureIndexDefinition(
+      db,
+      `idx_mode_players_average_${column}`,
+      `CREATE INDEX idx_mode_players_average_${column} ON mode_players(mode, ${column}, ${COHORT_INDEX_COLS})`,
+    );
   }
 }
 
@@ -778,6 +787,83 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
   FROM ranked GROUP BY metric`;
 }
 
+// The matched window is a few hundred rows, so one statement that expands it
+// per metric and sorts the union is cheaper than the round trips below. The
+// population fallback has no window: it aggregates every eligible row, and that
+// expansion means writing and sorting six figures worth of rows on the web
+// process, synchronously, per request. So the population aggregate is built the
+// other way round — one index-ordered scan per metric, reading straight out of
+// idx_players_average_<metric>, with the populated counts taken from the same
+// pass that produces the group row. Both forms return the same numbers; only the
+// work differs.
+function populationMetricFilter(metric: string): string {
+  return metric === "pmc_survival_rate" ? "pmc_survival_rate > 0" : `${metric} IS NOT NULL`;
+}
+
+function populationMetricCount(metric: string): string {
+  return metric === "pmc_survival_rate"
+    ? "COUNT(CASE WHEN pmc_survival_rate > 0 THEN 1 END)"
+    : `COUNT(${metric})`;
+}
+
+function populationGroupSql(where: string): string {
+  return `SELECT COUNT(*) AS group_n,
+    MIN(hours) AS hours_min, MAX(hours) AS hours_max,
+    MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max,
+    ${COMPARISON_RADAR_METRICS.map((metric) => `${populationMetricCount(metric)} AS n_${metric}`).join(", ")}
+    FROM players ${where}`;
+}
+
+// Trimmed mean and median both reduce to "take the values between these two
+// ranks", so one ordered scan with LIMIT/OFFSET answers either. The median needs
+// the populated count first, which the group statement already produced. `scans`
+// counts how many times the caller has to repeat its bound parameters.
+function populationMetricValueSql(
+  metric: string,
+  where: string,
+  statistic: AverageStatistic,
+  populated: number,
+): { sql: string; scans: number } {
+  const filter = populationMetricFilter(metric);
+  const ordered = (tail: string) =>
+    `SELECT ${metric} FROM players ${where} AND ${filter} ORDER BY ${metric} ${tail}`;
+  if (statistic === "median") {
+    const low = Math.floor((populated + 1) / 2);
+    const high = Math.floor((populated + 2) / 2);
+    if (low === high) return { sql: `(${ordered(`LIMIT 1 OFFSET ${low - 1}`)})`, scans: 1 };
+    return {
+      sql: `((${ordered(`LIMIT 1 OFFSET ${low - 1}`)}) + (${ordered(`LIMIT 1 OFFSET ${high - 1}`)})) / 2.0`,
+      scans: 2,
+    };
+  }
+  const { off, lim } = trimWindow(populated);
+  return {
+    sql: `(SELECT AVG(v) FROM (SELECT ${metric} AS v FROM players ${where} AND ${filter}` +
+      ` ORDER BY ${metric} LIMIT ${lim} OFFSET ${off}))`,
+    scans: 1,
+  };
+}
+
+function populationMetricsSql(
+  where: string,
+  statistic: AverageStatistic,
+  populated: Readonly<Record<string, number>>,
+  params: readonly unknown[],
+): { sql: string; params: unknown[] } {
+  const values = COMPARISON_RADAR_METRICS.map((metric) =>
+    populationMetricValueSql(metric, where, statistic, populated[metric] ?? 0)
+  );
+  return {
+    sql: `SELECT ${values.map((value, index) =>
+      `${value.sql} AS a_${COMPARISON_RADAR_METRICS[index]}`
+    ).join(", ")}`,
+    // Every scan repeats the where clause, so the bound values repeat with it.
+    params: values.flatMap((value) => params.flatMap((param) =>
+      Array.from({ length: value.scans }, () => param)
+    )),
+  };
+}
+
 async function computePersistentTwoDimensionalCohort(input: {
   mode: Extract<CrossSectionMode, "regular" | "pve">;
   center: { hours: number; pmcRaids: number };
@@ -824,26 +910,56 @@ async function computePersistentTwoDimensionalCohort(input: {
     Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = selectComparisonPercent(counts, COMPARISON_COHORT_TARGET);
-  const selected = twoDimensionalRangeWhere(
-    input.mode,
-    center,
-    selectedPercent,
-    input.excludeAid,
-    input.period,
-  );
-  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
-  let resultRows = selectedRows;
-  let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
-    ? "matched"
+  const matched = counts[selectedPercent] >= COMPARISON_COHORT_TARGET;
+  const population = !matched && (input.mode === "regular" || input.mode === "pve")
+    ? twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period)
     : null;
-  if (strategy === null && (input.mode === "regular" || input.mode === "pve")) {
-    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
-    resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
-    const populationGroup = resultRows.find((row) => row.metric === "__group__");
-    if (Number(populationGroup?.n ?? 0) > 0) strategy = "population";
+  // A matched window that is already known to be too small would be aggregated
+  // and then thrown away, so the population slice is read instead. The seasonal
+  // cohort picks its slice up front for the same reason.
+  let resultRows: Record<string, unknown>[];
+  if (population) {
+    const groupRow = await input.readFirst(populationGroupSql(population.where), population.params);
+    const populated = Object.fromEntries(COMPARISON_RADAR_METRICS.map((metric) => [
+      metric,
+      Number(groupRow?.[`n_${metric}`] ?? 0),
+    ])) as Record<string, number>;
+    const values = populationMetricsSql(population.where, input.statistic, populated, population.params);
+    const valueRow = await input.readFirst(values.sql, values.params);
+    resultRows = [
+      {
+        metric: "__group__",
+        n: Number(groupRow?.group_n ?? 0),
+        a: null,
+        hours_min: groupRow?.hours_min,
+        hours_max: groupRow?.hours_max,
+        raids_min: groupRow?.raids_min,
+        raids_max: groupRow?.raids_max,
+      },
+      ...COMPARISON_RADAR_METRICS.map((metric) => ({
+        metric,
+        n: populated[metric],
+        a: valueRow?.[`a_${metric}`] ?? null,
+      })),
+    ];
+  } else {
+    const selected = twoDimensionalRangeWhere(
+      input.mode,
+      center,
+      selectedPercent,
+      input.excludeAid,
+      input.period,
+    );
+    resultRows = await input.readAll(
+      persistentComparisonMetricsSql(selected.where, input.statistic),
+      selected.params,
+    );
   }
   const group = resultRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
+  const strategy: "matched" | "population" | null = matched
+    ? "matched"
+    : population && n > 0 ? "population" : null;
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
       ? null

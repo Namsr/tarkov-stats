@@ -26,10 +26,18 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   const db = readFileSync(new URL("../lib/db.ts", import.meta.url), "utf8");
   const compute = db.slice(db.indexOf("async function computePersistentTwoDimensionalCohort"), db.indexOf("async function computePersistentRiskBaseline"));
   assert.match(compute, /SUM\(CASE WHEN hours >= \?/);
-  assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
-  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 2);
+  // One statement per outcome: the matched window is aggregated once, and the
+  // population takes a group pass plus a per-metric pass. Reading both windows
+  // on every request is what used to put the population fallback into seconds.
+  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 1);
+  assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 3);
+  assert.match(compute, /if \(population\) \{/);
+  // The matched window keeps the single expanding statement; only a matched
+  // cohort is small enough for it to be the cheaper option.
   assert.match(db, /metric_values AS/);
   assert.match(db, /PARTITION BY metric/);
+  assert.match(db, /populationGroupSql\(population\.where\)/);
+  assert.match(db, /populationMetricsSql\(population\.where, input\.statistic, populated, population\.params\)/);
 });
 
 

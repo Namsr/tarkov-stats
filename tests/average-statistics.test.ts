@@ -526,6 +526,41 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
   }
 });
 
+test("a population fallback trims each tail and still excludes the viewed player", async () => {
+  // The population aggregate is built from one index-ordered scan per metric
+  // instead of a single window over the expanded cohort, so the trim window and
+  // the median ranks are derived from the populated counts. Both statistics are
+  // pinned on a population where they disagree, and the excluded player would
+  // move both if it leaked in.
+  reset();
+  for (let aid = 1; aid <= 21; aid += 1) add(aid, { hours: 100, raids: 100, value: 10 });
+  for (let aid = 22; aid <= 24; aid += 1) add(aid, { hours: 100, raids: 100, value: 1000 });
+  add(999, { hours: 100, raids: 5, value: 5000 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+
+  // 24 populated values sorted: 10 x21 then 1000 x3. Trimming one from each tail
+  // (floor(24 * 0.05) = 1) leaves 20 tens and two thousands, so 2200 / 22 = 100.
+  const trimmed = await store.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all");
+  assert.equal(trimmed.strategy, "population");
+  assert.equal(trimmed.n, 24);
+  assert.deepEqual(trimmed.averages.kd_ratio, { value: 100, count: 24 });
+
+  // The median sits on ranks 12 and 13, which are both 10.
+  const median = await store.cohort2d(100, 5, 999, "hours", "median", "all");
+  assert.equal(median.strategy, "population");
+  assert.deepEqual(median.averages.kd_ratio, { value: 10, count: 24 });
+
+  // A small population trims nothing: the minimum is below the trim threshold.
+  reset();
+  for (let aid = 1; aid <= 5; aid += 1) add(aid, { hours: 100, raids: 100, value: aid * 10 });
+  add(999, { hours: 100, raids: 5, value: 5000 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  const small = await store.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all");
+  assert.equal(small.strategy, "population");
+  assert.equal(small.n, 5);
+  assert.deepEqual(small.averages.kd_ratio, { value: 30, count: 5 });
+});
+
 test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {
   const cases = [
     { percent: 10, n: 20, peers: Array.from({ length: 20 }, () => ({ hours: 100, raids: 100 })) },
