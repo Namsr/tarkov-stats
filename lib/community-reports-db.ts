@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS ban_review_votes (
 CREATE INDEX IF NOT EXISTS idx_ban_review_votes_aid_time ON ban_review_votes(aid, created_at);
 `;
 
+// The sort key is not unique: two accounts can share a report count and a
+// created_at millisecond. ORDER BY then feeds a temp B-tree sorter whose tie
+// order is unspecified, so LIMIT could cut from a different row set between two
+// identical polls, and the operator list would reshuffle tied rows on reload.
+// r.aid is unique per group, so it pins the order. Same reason modes is sorted in
+// JS below: GROUP_CONCAT(DISTINCT r.mode) has no ORDER BY either.
 const CANDIDATES_SQL = `
   SELECT r.aid,
     (SELECT mode FROM suspect_reports source WHERE source.aid = r.aid ORDER BY source.created_at DESC, source.user_sub DESC LIMIT 1) AS mode,
@@ -52,7 +58,7 @@ const CANDIDATES_SQL = `
   FROM suspect_reports r
   WHERE NOT EXISTS (SELECT 1 FROM ban_review_votes v WHERE v.helper_id = ? AND v.aid = r.aid)
   GROUP BY r.aid
-  ORDER BY report_count DESC, last_reported_at DESC
+  ORDER BY report_count DESC, last_reported_at DESC, r.aid ASC
   LIMIT ?`;
 
 function reviewsSql(aid?: number): string {
@@ -67,7 +73,7 @@ function reviewsSql(aid?: number): string {
       (SELECT COUNT(*) FROM ban_review_votes v WHERE v.aid = r.aid AND v.verdict = 'no') AS no_count
     FROM suspect_reports r${aid === undefined ? "" : " WHERE r.aid = ?"}
     GROUP BY r.aid
-    ORDER BY report_count DESC, last_reported_at DESC`;
+    ORDER BY report_count DESC, last_reported_at DESC, r.aid ASC`;
 }
 
 function candidate(row: Record<string, unknown>): CommunityCandidate {
