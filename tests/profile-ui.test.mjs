@@ -380,25 +380,32 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
-test("the FAQ dialog takes and returns keyboard focus", async () => {
+test("the FAQ dialog takes focus, traps Tab behind an inert page, and gives it back", async () => {
   const faq = await readFile("components/FaqWidget.tsx", "utf8");
 
-  // Moving focus in and back out is what keeps the keyboard off the trigger
-  // behind the backdrop. Keyed on [open], so the cleanup covers the button,
-  // backdrop and Escape close paths. The trigger is captured into a local: reading
-  // triggerRef.current from the cleanup would read whatever it holds by then, which
-  // react-hooks/exhaustive-deps flags for a ref pointing at a rendered node.
+  // Moving focus in is what keeps the keyboard off the trigger behind the backdrop,
+  // and inverting the body siblings is what keeps Tab off the page as well. The
+  // wrapper holds the overlay and the trigger as one body child, so the rest of the
+  // page is exactly what is left over. The gaps are \s* only, so the match cannot
+  // run out of this effect and into the Escape one; keyed on [open] so the cleanup
+  // covers the button, backdrop and Escape close paths, and runs on unmount too.
   assert.match(
     faq,
-    /if \(!open\) return;[\s\S]*?const trigger = triggerRef\.current;[\s\S]*?dialogRef\.current\?\.focus\(\);[\s\S]*?return \(\) => \{ trigger\?\.focus\(\); \};[\s\S]*?\}, \[open\]\);/,
+    /useEffect\(\(\) => \{\s*if \(!open\) return;\s*const siblings = Array\.from\(document\.body\.children\)\.filter\(\s*\(el\): el is HTMLElement => el instanceof HTMLElement && el !== rootRef\.current,\s*\);\s*for \(const el of siblings\) el\.inert = true;\s*dialogRef\.current\?\.focus\(\);\s*return \(\) => \{\s*for \(const el of siblings\) el\.inert = false;\s*\};\s*\}, \[open\]\);/,
   );
+  assert.match(faq, /<div ref=\{rootRef\}>/);
   assert.doesNotMatch(faq, /return \(\) => \{ triggerRef\.current\?\.focus\(\); \};/);
   assert.match(faq, /<div\s+ref=\{dialogRef\}\s+role="dialog"[\s\S]*?tabIndex=\{-1\}/);
   assert.match(faq, /<button\s+ref=\{triggerRef\}/);
-  // The page behind the overlay stays interactive, so aria-modal would be a lie.
-  // Inerting it would need a wrapper around the layout's page content.
-  assert.doesNotMatch(faq, /aria-modal\s*=/);
-  assert.match(faq, /role="dialog"\s+aria-label=\{t\("faq\.title"\)\}/);
+  // Inerting the page is what makes aria-modal honest: without it the dialog
+  // claims a background the user can still tab into.
+  assert.match(faq, /role="dialog"\s+aria-modal="true"\s+aria-label=\{t\("faq\.title"\)\}/);
+  // Focus returns from the backdrop's animation end, not from the open -> closing
+  // step, because the backdrop keeps covering the trigger until that fires.
+  assert.match(
+    faq,
+    /onAnimationEnd=\{\(event\) => \{\s*if \(event\.target === event\.currentTarget && dialogState === "closing"\) \{\s*setDialogState\("closed"\);\s*triggerRef\.current\?\.focus\(\);\s*\}\s*\}\}/,
+  );
 });
 
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {

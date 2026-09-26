@@ -13,6 +13,7 @@ export default function FaqWidget() {
   const [dialogState, setDialogState] = useState<DialogState>("closed");
   const [openQ, setOpenQ] = useState<number | null>(null);
   const open = dialogState === "open";
+  const rootRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -20,17 +21,23 @@ export default function FaqWidget() {
     setDialogState((state) => (state === "open" ? "closing" : state));
   }
 
-  // Focus the dialog on open and hand focus back to the trigger on close, so the
-  // keyboard never sits on the trigger behind the backdrop. The cleanup runs on
-  // the open -> closing transition, the step all three close paths share, and the
-  // trigger is mounted unconditionally, so the ref is valid there. The trigger is
-  // captured into a local because reading the ref from the cleanup reads whatever
-  // it holds by then, not what it held when the dialog opened.
+  // Focus the dialog on open and inert the rest of the page, so Tab stays in the
+  // dialog instead of walking the page behind the backdrop. The wrapper keeps the
+  // overlay and the trigger a single body child, so the rest of the page is exactly
+  // the body siblings. The cleanup runs on the open -> closing transition, the step
+  // all three close paths share, and again on unmount, so nothing is left inert.
+  // Focus goes back to the trigger when the backdrop's animation ends instead: until
+  // then the backdrop still covers the trigger and the focus ring would be hidden.
   useEffect(() => {
     if (!open) return;
-    const trigger = triggerRef.current;
+    const siblings = Array.from(document.body.children).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== rootRef.current,
+    );
+    for (const el of siblings) el.inert = true;
     dialogRef.current?.focus();
-    return () => { trigger?.focus(); };
+    return () => {
+      for (const el of siblings) el.inert = false;
+    };
   }, [open]);
 
   useEffect(() => {
@@ -114,7 +121,7 @@ export default function FaqWidget() {
   ];
 
   return (
-    <>
+    <div ref={rootRef}>
       {dialogState !== "closed" && (
         <div
           className={`faq-backdrop${dialogState === "closing" ? " is-closing" : ""}`}
@@ -122,14 +129,14 @@ export default function FaqWidget() {
           onAnimationEnd={(event) => {
             if (event.target === event.currentTarget && dialogState === "closing") {
               setDialogState("closed");
+              triggerRef.current?.focus();
             }
           }}
         >
-          {/* Not aria-modal: the page behind the backdrop stays interactive, and
-              making it inert needs a wrapper in app/layout.tsx. */}
           <div
             ref={dialogRef}
             role="dialog"
+            aria-modal="true"
             aria-label={t("faq.title")}
             tabIndex={-1}
             className="faq-dialog"
@@ -190,6 +197,6 @@ export default function FaqWidget() {
       >
         {t("faq.title")}
       </button>
-    </>
+    </div>
   );
 }
