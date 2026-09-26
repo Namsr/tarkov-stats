@@ -42,3 +42,17 @@ test("achievement-heavy SQL is absent from request paths", async () => {
   assert.match(averageAchievements, /getPublishedSeasonalAchievementBaseline/);
   assert.doesNotMatch(averageAchievements, /getSeasonalAchievementBaseline/);
 });
+
+test("no player profile error response is cacheable", async () => {
+  const source = await readFile("app/api/player/profile/route.ts", "utf8");
+  // The client requests this URL with cache: "default", so a cacheable 404 or
+  // 5xx would be pinned in the browser and CDN after one transient failure.
+  const responses = [...source.matchAll(/status:\s*(4\d\d|5\d\d)\s*,\s*headers:\s*([A-Za-z_$][\w$]*)/g)];
+  assert.ok(responses.length >= 8, `expected every error response, found ${responses.length}`);
+  for (const [, status, headers] of responses) {
+    assert.equal(headers, "noStore", `status ${status} must not be cacheable`);
+  }
+  // profileHeaders stays cacheable, but only for 200 responses.
+  assert.match(source, /const profileHeaders = force\s*\n\s*\?\s*noStore/);
+  assert.doesNotMatch(source, /status: 200[^}]*headers: profileHeaders\s*\n\s*\}\s*,\s*\{\s*status: 4/);
+});

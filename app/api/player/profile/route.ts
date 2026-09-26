@@ -888,7 +888,11 @@ export async function GET(request: NextRequest) {
             "Profile not found. It may be private, or hasn't been viewed on tarkov.dev yet — open it there once to cache it, then retry.",
           identity: { aid, mode, cycleId },
         },
-        { status: 404, headers: profileHeaders }
+        // Never cacheable. A single transient upstream miss would otherwise be
+        // pinned in the browser and CDN for max-age plus stale-while-revalidate,
+        // and the client fetches this URL with cache: "default". Every other
+        // non-2xx in this handler already uses noStore.
+        { status: 404, headers: noStore }
       );
       timing.finish({
         operation: "player_profile",
