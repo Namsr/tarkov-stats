@@ -107,7 +107,9 @@ export function rateArena(profile: ArenaProfile, reference: ArenaTsReference): A
   // unplayed. A contradictory mode must not pass as covered just because its
   // matches field is a number, otherwise the overall rating drops it silently.
   const complete = items.every((item) => item.rating != null || item.reason === "no_matches") && count(total) && total === observed && observed === ratedMatches;
-  let overall = unavailable(count(total) ? total : null, ratedMatches === 0 && total === 0 ? "no_matches" : "incomplete_coverage");
+  // No matches overall is only believable with complete coverage: contradictory
+  // modes that still sum to zero must not read as an unplayed profile.
+  let overall = unavailable(count(total) ? total : null, ratedMatches === 0 && total === 0 && complete ? "no_matches" : "incomplete_coverage");
   if (complete && ratedMatches > 0) {
     const contributions = Object.fromEntries(METRICS.map((metric) => [metric,
       rated.reduce((sum, item) => sum + item.matches! * item.contributions![metric], 0) / ratedMatches,

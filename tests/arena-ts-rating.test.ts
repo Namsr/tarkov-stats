@@ -80,6 +80,13 @@ test("overall TSR refuses incomplete coverage, unknown counts and inconsistent t
   const empty = rateArena(makeProfile({}), references);
   assert.equal(empty.overall.rating, null);
   assert.equal(empty.overall.reason, "no_matches");
+  // An unplayed mode with unknown counters is not covered, so a zero total must
+  // not read as no_matches either.
+  const unknown = makeProfile({ blastGang: { ...counters, matches: 0, kills: null } });
+  const unknownRating = rateArena(unknown, references);
+  assert.equal(unknownRating.modes.blastGang.reason, "missing_counters");
+  assert.equal(unknownRating.overall.complete, false);
+  assert.equal(unknownRating.overall.reason, "incomplete_coverage");
 });
 
 test("overall TSR rejects contradictory zero-match modes instead of silently omitting them", () => {
@@ -104,6 +111,13 @@ test("overall TSR rejects contradictory zero-match modes instead of silently omi
   assert.equal(unplayed.modes.lastHero.reason, "no_matches");
   assert.equal(unplayed.overall.complete, true);
   assert.equal(unplayed.overall.rating, unplayed.modes.blastGang.rating);
+  // An unplayed profile with one contradictory mode is unusable, not unplayed.
+  const allUnplayed = makeProfile({});
+  Object.assign(allUnplayed.modes.blastGang.counters, { assists: 1 });
+  const contradictory = rateArena(allUnplayed, references);
+  assert.equal(contradictory.overall.rating, null);
+  assert.equal(contradictory.overall.complete, false);
+  assert.equal(contradictory.overall.reason, "incomplete_coverage");
 });
 
 test("fixed reference reproduces the approved Arena prototype", () => {
