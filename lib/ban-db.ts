@@ -116,14 +116,35 @@ const INSERT_SNAPSHOT_SQL =
   `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
   `VALUES (${SNAPSHOT_COLS.map(() => "?").join(", ")})`;
 
+// progression_snapshots leaves these nullable (lib/seasonal/storage.ts:134-151)
+// while banned_snapshots declares them NOT NULL, so INSERT OR IGNORE would
+// swallow the violation and silently drop the whole row. Normalise on the way
+// across, otherwise the archive keeps nothing and the DELETE below still runs.
+const ARCHIVE_COALESCE: Record<string, string> = {
+  prestige: "0", level: "0", hours: "0", total_raids: "0", survived: "0",
+  deaths: "0", total_kills: "0", run_through: "0", longest_win_streak: "0",
+  achv_count: "0", achievements: "'[]'",
+};
+
+const ARCHIVE_HISTORY_SQL =
+  `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
+  `SELECT ${SNAPSHOT_COLS.map((column) => (column in ARCHIVE_COALESCE
+    ? `COALESCE(${column}, ${ARCHIVE_COALESCE[column]})`
+    : column)).join(", ")} ` +
+  `FROM progression_db.progression_snapshots WHERE aid = ?`;
+
 function snapshotArgs(input: PlayerSnapshotInput, seriesId = 1): unknown[] {
   const s = input.stats;
+  // Same NOT NULL contract as ARCHIVE_COALESCE: the parsed upstream payload
+  // leaves these nullable, and a single NULL would drop the whole archive row.
+  const orZero = (value: number | null | undefined) => (value == null ? 0 : value);
   return [
     input.aid, input.upstreamUpdatedAt, input.capturedAt, seriesId, s.nickname, s.side,
-    s.prestige, s.level, s.experience, s.hoursPlayed, s.totalRaids, s.pmcRaids,
-    s.scavRaids, s.survivedRaids, s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc,
-    s.runThrough, s.longestWinStreak, s.achievementsCount,
-    JSON.stringify(input.achievementIds), JSON.stringify(s),
+    orZero(s.prestige), orZero(s.level), orZero(s.experience), orZero(s.hoursPlayed),
+    orZero(s.totalRaids), orZero(s.pmcRaids), orZero(s.scavRaids), orZero(s.survivedRaids),
+    orZero(s.deaths), orZero(s.pmcDeaths), orZero(s.totalKills), orZero(s.killedPmc),
+    orZero(s.runThrough), orZero(s.longestWinStreak), orZero(s.achievementsCount),
+    JSON.stringify(input.achievementIds ?? []), JSON.stringify(s),
   ];
 }
 
@@ -252,11 +273,9 @@ export function createSqliteBanStore(db: any): BanStore {
             "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
           ).get();
           if (hasSnapshots) {
-            db.exec(
-              `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
-              `SELECT ${SNAPSHOT_COLS.join(", ")} FROM progression_db.progression_snapshots ` +
-              `WHERE aid = ${Number(input.aid)}`
-            );
+            // Bind the aid; the value is only ever a parsed positive integer, but
+            // a placeholder costs nothing and removes the interpolation.
+            db.prepare(ARCHIVE_HISTORY_SQL).run(Number(input.aid));
           }
         }
         const latest = db.prepare(
