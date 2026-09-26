@@ -26,6 +26,15 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "baseline", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
   }
+  // Validated before the store is opened, like app/api/average/route.ts: a
+  // malformed range is a client error, and it must stay a 400 when the database
+  // happens to be unavailable instead of degrading into an empty 200.
+  const min = parseNonNegative(request.nextUrl.searchParams.get("minHours"));
+  const max = parseNonNegative(request.nextUrl.searchParams.get("maxHours"));
+  if (!min.valid || !max.valid) {
+    timing.finish({ operation: "baseline", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json({ error: "Invalid playtime range" }, { status: 400 });
+  }
   const storeOpenStarted = timing.now();
   const store = await getStore(rawMode).catch((error) => {
     timing.finish({
@@ -44,12 +53,6 @@ export async function GET(request: NextRequest) {
     return response;
   }
 
-  const min = parseNonNegative(request.nextUrl.searchParams.get("minHours"));
-  const max = parseNonNegative(request.nextUrl.searchParams.get("maxHours"));
-  if (!min.valid || !max.valid) {
-    timing.finish({ operation: "baseline", mode: rawMode, outcome: "invalid", status: 400 });
-    return NextResponse.json({ error: "Invalid playtime range" }, { status: 400 });
-  }
   let baselineMs: number | undefined;
   try {
     const baselineStarted = timing.now();

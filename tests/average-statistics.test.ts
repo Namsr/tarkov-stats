@@ -2,6 +2,7 @@
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -957,4 +958,14 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
     const response = await getBaseline(new NextRequest(`http://local/api/baseline${query}`));
     assert.equal(response.status, 400, `${query} must not answer with population statistics`);
   }
+
+  // The guard has to run before the store is opened. Placed after it, a
+  // malformed range answered 200 {n: 0} whenever the database was unavailable,
+  // so the status code depended on storage rather than on the request.
+  const route = await readFile(
+    new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    route.indexOf('"Invalid playtime range"') < route.indexOf("const store = await getStore("),
+    "the range check must precede the store open",
+  );
 });
