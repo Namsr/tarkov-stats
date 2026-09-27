@@ -127,8 +127,11 @@ async function withFetch(fetchImpl, action) {
   }
 }
 
-function profileRequest(aid, refresh = false) {
-  return new NextRequest(`http://local/api/player/profile?aid=${aid}&mode=arena${refresh ? "&refresh=1" : ""}`, {
+function profileRequest(aid, refresh = false, wait = false) {
+  const params = new URLSearchParams({ aid: String(aid), mode: "arena" });
+  if (refresh) params.set("refresh", "1");
+  if (wait) params.set("wait", "1");
+  return new NextRequest(`http://local/api/player/profile?${params}`, {
     headers: { "x-forwarded-for": "198.51.100.90" },
   });
 }
@@ -566,7 +569,7 @@ test("Arena profile returns a legacy snapshot without waiting for upstream", asy
   assert.equal(fetches, 0);
 });
 
-test("forced Arena refresh preserves a stored snapshot when upstream fails", async () => {
+test("forced Arena refresh answers from the store instead of blocking on upstream", async () => {
   const aid = 40_003;
   await storeArenaProfile(upstreamArenaProfile(aid, 1_800_000_040_003, "Saved Arena"));
   let fetches = 0;
@@ -583,17 +586,42 @@ test("forced Arena refresh preserves a stored snapshot when upstream fails", asy
       const body = await response.json();
       assert.equal(body.profile, null);
       assert.equal(body.arena.nickname, "Saved Arena");
-      assert.equal(body.capture.status, "refresh_failed");
+      assert.equal(body.capture.status, "stored");
       assert.ok(body.tsRating.modes.teamFight.rating > 0);
       assert.equal(body.freshness.fetchedAt, body.arena.fetchedAt);
     });
   } finally {
     console.error = originalConsoleError;
   }
+  // A stored snapshot is already a complete payload, so the forced refresh must
+  // not put upstream on the critical path. It is re-fetched after the response.
+  assert.equal(fetches, 0);
+});
+
+test("an explicit wait=1 refresh still waits for upstream so «Обновить» can report a change", async () => {
+  const aid = 40_006;
+  const freshUpdatedAt = 1_800_000_040_006;
+  await storeArenaProfile(upstreamArenaProfile(aid, freshUpdatedAt - 100, "Old Arena"));
+  let fetches = 0;
+
+  await withFetch(async () => {
+    fetches += 1;
+    return Response.json(upstreamArenaProfile(aid, freshUpdatedAt, "Fresh Arena"));
+  }, async () => {
+    const response = await getProfile(profileRequest(aid, true, true));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    // The user clicked «Обновить» and is shown «Проверяем свежие данные…», so the
+    // answer must be the real post-refresh profile, not the stored snapshot.
+    assert.equal(body.arena.nickname, "Fresh Arena");
+    assert.equal(body.arena.profileUpdatedAt, freshUpdatedAt);
+    assert.equal(body.capture.status, "updated");
+    assert.equal(response.headers.get("server-timing")?.includes("total;dur="), true);
+  });
   assert.equal(fetches, 1);
 });
 
-test("a stale Arena refresh cannot replace the newer normalized snapshot", async () => {
+test("a forced Arena refresh cannot replace the newer normalized snapshot", async () => {
   const aid = 40_004;
   const currentUpdatedAt = 1_800_000_040_004;
   await storeArenaProfile(upstreamArenaProfile(aid, currentUpdatedAt, "Current Arena"));
@@ -609,7 +637,7 @@ test("a stale Arena refresh cannot replace the newer normalized snapshot", async
     assert.equal(body.arena.nickname, "Current Arena");
     assert.equal(body.arena.profileUpdatedAt, currentUpdatedAt);
   });
-  assert.equal(fetches, 1);
+  assert.equal(fetches, 0);
 });
 
 test("Arena favorite keeps its legacy snapshot offline until it is reparsed", async () => {

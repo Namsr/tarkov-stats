@@ -15,6 +15,15 @@ export default function CheaterReportButton({ aid, mode, cycle }: { aid: number;
   const authHintId = useId();
 
   useEffect(() => {
+    // Only a signed-in visitor can have reported this player, and the effect
+    // re-runs on every authStatus transition. Fetching before the status is
+    // known sent the request twice per mount and wasted it entirely for a
+    // signed-out visitor whose button is disabled anyway.
+    if (authStatus !== "authenticated") {
+      setCount(0);
+      setReported(false);
+      return;
+    }
     let cancelled = false;
     fetch(`/api/community-reports?aid=${aid}`, { cache: "no-store" })
       .then(async (response) => ({ response, body: await response.json() as { count?: number; reportedByMe?: boolean } }))

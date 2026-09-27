@@ -81,10 +81,14 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   assert.deepEqual(calls, ["profile", "pve", "arena", "pvp-season"].map((path) => `https://players.tarkov.dev/${path}/42.json`));
   await request("aid=42&mode=pve");
   assert.equal(calls.length, 4, "cached portraits must not refetch the profile");
-  for (const [aid, status] of [[91, 404], [92, 502], [93, 404]]) {
+  // A missing portrait is a stable answer, so the 404 is cacheable. An upstream
+  // failure must not be, or a Cloudflare blip would stick for the whole max-age.
+  for (const [aid, status, cacheable] of [[91, 404, true], [92, 502, false], [93, 404, true]]) {
     const response = await request(`aid=${aid}&mode=regular`);
     assert.equal(response.status, status);
-    assert.equal(response.headers.get("cache-control"), "no-store");
+    const cacheControl = response.headers.get("cache-control");
+    assert.equal(cacheControl.includes("no-store"), !cacheable, `aid=${aid}`);
+    if (cacheable) assert.match(cacheControl, /max-age=300/);
     assert.equal(response.headers.get("location"), null);
   }
 });

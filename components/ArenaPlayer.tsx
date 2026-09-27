@@ -300,7 +300,9 @@ export default function ArenaPlayer({ aid }: Props) {
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
     const previous = profile;
-    const params = new URLSearchParams({ aid, mode: "arena", refresh: "1" });
+    // wait=1: the user explicitly asked for fresh data and the button is already
+    // showing «Проверяем свежие данные…», so the answer has to be the real one.
+    const params = new URLSearchParams({ aid, mode: "arena", refresh: "1", wait: "1" });
     const request = loadPlayerProfileResponse<ArenaResponse>(`/api/player/profile?${params}`, { force: true })
       .then(({ ok, body }): RefreshCheckResult => {
         if (!ok) {
