@@ -10,7 +10,19 @@ if (!existsSync(path)) throw new Error(`progression database does not exist: ${p
 
 const backupPath = `${path}.before-progression-backfill-${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
 const checkpointDb = new DatabaseSync(path);
-checkpointDb.exec("PRAGMA wal_checkpoint(FULL)");
+// `exec` throws the pragma's result row away. With a live reader (the web
+// container serves profile requests from this database) FULL cannot complete and
+// reports busy=1, leaving the newest commits in the -wal file. Copying only the
+// main file then publishes a restore point that is silently missing them.
+const checkpoint = checkpointDb.prepare("PRAGMA wal_checkpoint(FULL)").get();
+const pending = Number(checkpoint?.busy ?? 0) === 1 ? Number(checkpoint.log ?? 0) : 0;
+if (pending > 0) {
+  checkpointDb.close();
+  throw new Error(
+    `progression database is busy: ${pending} WAL frame(s) could not be checkpointed, `
+    + "so the backup would be incomplete. Stop the writers and retry.",
+  );
+}
 checkpointDb.close();
 copyFileSync(path, backupPath);
 const db = new DatabaseSync(path);

@@ -2,7 +2,10 @@
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -375,4 +378,47 @@ test("regular average progression exposes the median PvP raid series without a t
   const pve = queryPersistentProgressionAverage(db, "pve");
   assert.equal(pve.mode, "pve");
   assert.deepEqual(pve.series.cumulative.overall, []);
+});
+
+test("the progression backfill refuses to publish a backup while the WAL cannot be checkpointed", () => {
+  // `PRAGMA wal_checkpoint(FULL)` reports busy=1 when a reader holds the database,
+  // and `exec()` throws that row away. Copying only the main file then publishes a
+  // restore point that is silently missing the frames still sitting in the -wal.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-busy-"));
+  const path = join(directory, "progression.db");
+  const seed = new DatabaseSync(path);
+  let reader;
+  try {
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("INSERT INTO t VALUES (1)");
+    seed.close();
+
+    reader = new DatabaseSync(path);
+    reader.exec("BEGIN");
+    reader.prepare("SELECT COUNT(*) AS n FROM t").get();
+
+    // Commit new rows into the WAL while the reader still holds its snapshot.
+    const writer = new DatabaseSync(path);
+    writer.exec("INSERT INTO t VALUES (2)");
+    writer.close();
+
+    const result = spawnSync(process.execPath, [
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      resolve("scripts/backfill-progression.mjs"),
+      path,
+    ], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, "a busy checkpoint must fail the run");
+    assert.match(result.stderr, /busy/);
+    assert.deepEqual(
+      readdirSync(directory).filter((name) => name.endsWith(".bak")), [],
+      "no incomplete backup may be published",
+    );
+  } finally {
+    try { reader?.exec("ROLLBACK"); } catch {}
+    try { reader?.close(); } catch {}
+    try { seed.close(); } catch {}
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
 });
