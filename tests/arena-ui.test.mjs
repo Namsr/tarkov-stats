@@ -168,7 +168,10 @@ test("Arena histogram keeps full context, matches PvP bar sizing, and defers ran
   assert.doesNotMatch(average, /CompactDetails|arena\.average\.coverageDetails|arena\.average\.coverage/);
   assert.match(average, /const visibleRange/);
   assert.match(average, /filter\.dimension === "matches" && low === domain\.min/);
-  assert.match(average, /value=\{draftRange\[field\] \|\|/);
+  // An empty draft is a real filter state ("no bound on this edge"), so the input
+  // must be able to show it; the domain bound is a placeholder, not the value.
+  assert.match(average, /value=\{draftRange\[field\]\}\s*\n\s*placeholder=\{domain \? String\(field === minField \? domain\.min : domain\.max\) : undefined\}/);
+  assert.doesNotMatch(average, /value=\{draftRange\[field\]\s*\|\|/);
   assert.doesNotMatch(average, /arena\.average\.metricSample/);
   assert.match(average, /const \[draftRange, setDraftRange\]/);
   assert.match(average, /onChange=\{setRange\}/);
