@@ -83,7 +83,8 @@ WITH latest AS (
 ), normalized AS (
   SELECT portrait.*,
     CASE WHEN total_raids > 0 THEN 100.0 * survived / total_raids END AS survival_rate,
-    CASE WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
+    CASE WHEN deaths IS NULL OR total_kills IS NULL THEN NULL
+      WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate

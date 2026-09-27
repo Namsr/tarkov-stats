@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
@@ -374,4 +377,48 @@ test("a cross-section larger than the argument limit does not overflow the stack
     mode: "seasonal", cycleId: "s1", aid: 1, kind: "cumulative",
   });
   assert.equal(result.freshnessAt, 130_000);
+});
+
+test("the published Seasonal achievement baseline keeps a zero anchor and a missing anchor apart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-baseline-"));
+  const databasePath = join(directory, "progression.db");
+  const previousPath = process.env.PROGRESSION_SQLITE_PATH;
+  process.env.PROGRESSION_SQLITE_PATH = databasePath;
+  let generation = 0;
+  const publish = (achievementBaseline) => {
+    const db = new DatabaseSync(databasePath);
+    initializeSeasonalSchema(db);
+    const payload = JSON.stringify({ metrics: {}, riskBaselines: [], achievementBaseline, progressionPercentiles: {} });
+    generation += 1;
+    db.prepare("INSERT INTO progression_population_generations (mode, cycle_id, generation, generated_at, payload) VALUES ('seasonal', 's1', ?, 100, ?)")
+      .run(generation, payload);
+    db.prepare("INSERT INTO progression_population_current (mode, cycle_id, generation, generated_at) VALUES ('seasonal', 's1', ?, 100) ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = excluded.generation")
+      .run(generation);
+    db.close();
+  };
+  const row = (earlyHours) => ({
+    id: "zero-anchor", owners: 10, eligibleN: 10, samplePct: 100, meanHours: 800, stdHours: 120,
+    earlyHours, unlockHours: earlyHours, unlockDayP20: null, timestampOwners: 0,
+  });
+  try {
+    publish({ eligibleN: 10, seasonStartsAt: null, achievements: [row(0)] });
+    const { getPublishedSeasonalAchievementBaseline } = await import("../lib/seasonal/progression-db.ts");
+    const zero = await getPublishedSeasonalAchievementBaseline("s1");
+    // `Number(0) || mean` published the 800h mean here, inventing an anchor.
+    assert.equal(zero?.eligibleN, 10);
+    assert.equal(zero?.achievements[0]?.earlyHours, 0);
+    assert.equal(zero?.achievements[0]?.unlockHours, 0);
+
+    publish({ eligibleN: 10, seasonStartsAt: null, achievements: [row(undefined)] });
+    const missing = await getPublishedSeasonalAchievementBaseline("s1");
+    assert.equal(missing?.achievements[0]?.earlyHours, 800);
+
+    publish(null);
+    assert.equal(await getPublishedSeasonalAchievementBaseline("s1"), null);
+    assert.equal(await getPublishedSeasonalAchievementBaseline("other-cycle"), null);
+  } finally {
+    if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
+    else process.env.PROGRESSION_SQLITE_PATH = previousPath;
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open for this process. */ }
+  }
 });

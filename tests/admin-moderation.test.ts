@@ -324,3 +324,156 @@ test("regular progression materializes personal history while preserving the exc
   assert.equal(db.prepare("SELECT 1 FROM progression_snapshots WHERE aid = 42").get() != null, true);
   db.close();
 });
+
+// confirmBanned spans three attached databases in one transaction, so these
+// tests need three real files rather than :memory:.
+function banArchiveFixture() {
+  const directory = mkdtempSync(join(tmpdir(), "ban-archive-"));
+  const bansPath = join(directory, "bans.db");
+  const previous = {
+    bans: process.env.BANS_SQLITE_PATH,
+    players: process.env.SQLITE_PATH,
+    progression: process.env.PROGRESSION_SQLITE_PATH,
+  };
+  process.env.BANS_SQLITE_PATH = bansPath;
+  process.env.SQLITE_PATH = join(directory, "players.db");
+  process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
+  const progression = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  // Called for its schema side effect only: createSqliteSeasonalStore takes the
+  // database and nothing else, and the returned store is not used here.
+  createSqliteSeasonalStore(progression);
+  return {
+    progression,
+    openBans: () => new DatabaseSync(bansPath),
+    cleanup() {
+      progression.close();
+      rmSync(directory, { recursive: true, force: true });
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    },
+  };
+}
+
+// Every column the upstream payload omits stays NULL, exactly as the store
+// writes the rows.
+function insertProgressionRow(db, { mode, cycleId, aid, at, nickname }) {
+  db.prepare(`INSERT INTO progression_snapshots
+    (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, series_id, nickname, side)
+    VALUES (?, ?, ?, ?, ?, ?, '2026-01-01', 1, ?, 'Usec')`)
+    .run(mode, cycleId, aid, at, at, at, nickname);
+}
+
+// A complete confirmation. Every value the archive binds is present, so a
+// rejected ban can only come from the archive step or from a field a test
+// deliberately drops.
+function confirmationInput(aid, at, nickname) {
+  return { aid, upstreamUpdatedAt: at, capturedAt: at,
+    stats: { nickname, side: "Usec", prestige: null, level: null, experience: 100,
+      hoursPlayed: null, totalRaids: null, pmcRaids: 5, scavRaids: 0, survivedRaids: null,
+      deaths: null, pmcDeaths: 0, totalKills: null, killedPmc: 0, runThrough: null,
+      longestWinStreak: null, achievementsCount: null },
+    achievementIds: [] };
+}
+
+test("ban confirmation archives the full progression history before deleting it", async () => {
+  // progression_snapshots keeps prestige/level/hours/total_raids/... nullable
+  // while banned_snapshots declares them NOT NULL. With INSERT OR IGNORE the
+  // violation was swallowed, so the archive stayed empty and the source rows
+  // were deleted anyway.
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 42, at: 1_000, nickname: "Old" });
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 42, at: 1_500, nickname: "Old" });
+  assert.equal(
+    progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 2);
+
+  try {
+    const db = openBans();
+    try {
+      const store = createSqliteBanStore(db);
+      await store.confirmBanned(confirmationInput(42, 2_000, "New"), { source: "upstream", confirmedAt: 5_000 });
+
+      // Both historical rows plus the confirmation are preserved.
+      const archived = db.prepare(
+        "SELECT upstream_updated_at, nickname FROM banned_snapshots WHERE aid = 42 ORDER BY upstream_updated_at",
+      ).all().map((row) => ({ ...row }));
+      assert.deepEqual(archived, [
+        { upstream_updated_at: 1_000, nickname: "Old" },
+        { upstream_updated_at: 1_500, nickname: "Old" },
+        { upstream_updated_at: 2_000, nickname: "New" },
+      ]);
+      // The NULL source columns were normalised, not dropped.
+      assert.deepEqual({ ...db.prepare(
+        "SELECT total_raids, prestige, achievements FROM banned_snapshots WHERE aid = 42 AND upstream_updated_at = 1000",
+      ).get() }, { total_raids: 0, prestige: 0, achievements: "[]" });
+    } finally { db.close(); }
+
+    // The source history is only deleted because the archive now holds it.
+    assert.equal(
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 0);
+  } finally { cleanup(); }
+});
+
+test("ban confirmation rolls back when a stat the payload never reported is missing", async () => {
+  // Normalising NULL must not extend to a missing field. `undefined` fails the
+  // bind, and the ban has to roll back rather than commit a snapshot padded
+  // with zeroes the upstream payload never reported. History is present here so
+  // the rollback has to undo the archive insert and leave the source alone.
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 43, at: 2_500, nickname: "Old" });
+  const db = openBans();
+  try {
+    const store = createSqliteBanStore(db);
+    await assert.rejects(store.confirmBanned({ aid: 43, upstreamUpdatedAt: 3_000, capturedAt: 3_000,
+      stats: { nickname: "Partial", side: "Usec", experience: 1 },
+      achievementIds: [] }, { source: "upstream", confirmedAt: 6_000 }));
+    // The archive insert ran before the failing bind, so the rollback has to
+    // undo it, and the source delete below it never survives either.
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = 43").get().n, 0);
+    assert.equal(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = 43").get(), undefined);
+    assert.equal(
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 43").get().n, 1);
+  } finally { db.close(); cleanup(); }
+});
+
+test("ban confirmation refuses to delete history the archive key cannot hold", async () => {
+  // The source is UNIQUE(mode, cycle_id, aid, profile_updated_at) and the
+  // archive is UNIQUE(aid, upstream_updated_at), so the regular and pve reads of
+  // one profile.updated collide on the copy and INSERT OR IGNORE keeps only the
+  // first. Deleting the source then loses the pve row for good.
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  insertProgressionRow(progression, { mode: "regular", cycleId: "persistent", aid: 44, at: 1_000, nickname: "Old" });
+  insertProgressionRow(progression, { mode: "pve", cycleId: "persistent", aid: 44, at: 1_000, nickname: "Old" });
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 44, at: 2_000, nickname: "Old" });
+  const db = openBans();
+  try {
+    const store = createSqliteBanStore(db);
+    await assert.rejects(
+      store.confirmBanned(confirmationInput(44, 3_000, "New"), { source: "upstream", confirmedAt: 7_000 }),
+      /archive incomplete for aid 44: 2 of 3 rows archived/);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = 44").get().n, 0);
+    assert.equal(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = 44").get(), undefined);
+    assert.equal(
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 44").get().n, 3);
+  } finally { db.close(); cleanup(); }
+});
+
+test("ban confirmation rolls back instead of archiving an empty achievement list", async () => {
+  // An archived "[]" is indistinguishable from a player with no achievements,
+  // so a missing list has to fail the bind like every other missing value.
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 45, at: 1_000, nickname: "Old" });
+  const input = confirmationInput(45, 2_000, "New");
+  delete input.achievementIds;
+  const db = openBans();
+  try {
+    const store = createSqliteBanStore(db);
+    await assert.rejects(
+      store.confirmBanned(input, { source: "upstream", confirmedAt: 8_000 }));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = 45").get().n, 0);
+    assert.equal(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = 45").get(), undefined);
+    assert.equal(
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 45").get().n, 1);
+  } finally { db.close(); cleanup(); }
+});
