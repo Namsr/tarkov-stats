@@ -302,7 +302,7 @@ export function arenaMetricValue(value: ArenaModeStats | ArenaOverallStats | nul
 }
 
 /**
- * Логарифмическая позиция бара, как в шестиугольнике (regular + ArenaRadar):
+ * Логарифмическая позиция бара, как в шестиугольнике на главной (regular):
  * средний (ratio=1) ровно 50%, большие значения сжимаются и никогда не упираются в 100%.
  * 2× ≈69%, 10× ≈87%. Совпадает с homeRadarRatio*100.
  */
