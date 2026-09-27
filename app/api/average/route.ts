@@ -247,16 +247,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
   }
 
-  // `dimension` is mandatory above, so this route always reads the inclusive min/max
-  // pair and `maxInclusive` is always true. minHours/maxHours used to select an
-  // exclusive upper bound for older consumers, but no such consumer can reach here:
-  // the legacy minHours/maxHours callers live on /api/baseline, which still reads
-  // them. Reject them rather than silently dropping the filter and answering with
-  // unfiltered whole-population statistics.
+  // `dimension` is optional and defaults to "hours", so the range keys read here are
+  // min and max, with an inclusive upper bound (`maxInclusive` is always true).
+  // minHours/maxHours are honoured nowhere on this route: the old key switch reached
+  // them only when no dimension and no min/max were present, and it gave them an
+  // exclusive upper bound. That request shape answered 200 and is rejected now,
+  // deliberately, rather than dropping the filter and answering with whole-population
+  // statistics. The legacy callers live on /api/baseline, which still reads them.
   if (params.has("minHours") || params.has("maxHours")) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json(
-      { error: "minHours and maxHours are no longer supported; use min and max" },
+      { error: "Invalid average range: use min and max" },
       { status: 400 },
     );
   }
