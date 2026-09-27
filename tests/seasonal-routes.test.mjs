@@ -20,6 +20,7 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     "app/api/operator/seasonal/profile/route.ts",
     "app/api/operator/seasonal/run/route.ts",
     "app/api/operator/seasonal/status/route.ts",
+    "app/api/community-reports/route.ts",
   ];
   for (const path of directEntries) {
     assert.match(await readFile(path, "utf8"), /isSeasonalRolloutReady\(\)/, path);
@@ -49,4 +50,30 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     playerProfile,
     /result\.status === 404[\s\S]*?identity: \{ aid, mode, cycleId \}[\s\S]*?code: "mode_profile_unavailable"/,
   );
+});
+
+test("community reports refuse a Seasonal profile from a cycle that is not the live one", async () => {
+  const reports = await readFile("app/api/community-reports/route.ts", "utf8");
+  const gated = reports.slice(
+    reports.indexOf('if (input.mode === "seasonal") {'),
+    reports.indexOf('if (input.mode === "regular") {'),
+  );
+
+  // Fail-closed in the same four-part shape app/api/seasonal/cohort/route.ts uses,
+  // and it must run before the store is opened, not after a snapshot is found.
+  assert.match(
+    gated,
+    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle \|\| cycle\.cycleId !== input\.cycleId \|\| !cycle\.enabled\) return false;/,
+  );
+  assert.ok(
+    gated.indexOf("isSeasonalRolloutReady()") < gated.indexOf("getSeasonalStore()"),
+    "the gate must precede the Seasonal store lookup",
+  );
+  // The caller only learns "Profile not found", so a gated cycle is
+  // indistinguishable from an absent one.
+  assert.match(gated, /return false;/);
+  assert.doesNotMatch(gated, /cycle_unavailable|unavailable/);
+  // The non-seasonal branches keep their existing lookups.
+  assert.match(reports, /getProgressionStore\("regular"\)/);
+  assert.match(reports, /getStore\(input\.mode as CrossSectionMode\)/);
 });
