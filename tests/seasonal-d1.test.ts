@@ -9,7 +9,7 @@ import { createD1SeasonalStore, upsertD1SeasonCycle } from "../lib/seasonal/stor
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { initializeSeasonalSchema, SEASONAL_SCHEMA, createSqliteSeasonalStore, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
-import { refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreIntervals } from "../lib/seasonal/daily-aggregates.ts";
+import { materializeRows, refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreIntervals } from "../lib/seasonal/daily-aggregates.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
@@ -446,4 +446,17 @@ test("D1 scanner lifecycle builds panel eligibility and completes linked-PvP fol
 
   await lifecycle.advanceDiscovery("s1", { orderKey: 42, aid: 9 }, 6_000);
   assert.deepEqual({ ...await lifecycle.discoveryState("s1") }, { cursor_key: 42, cursor_aid: 9, exhausted: 0 });
+});
+test("a raid bucket larger than the argument limit does not overflow the stack", () => {
+  // The first buckets of a season hold every player who got that far, so
+  // aggregateGroup's `points` is unbounded. Math.max(...values) throws RangeError
+  // past ~125k arguments on V8 and rolled the whole materialization back.
+  const points = Array.from({ length: 130_000 }, (_, index) => ({
+    aid: index + 1, date: "2026-01-01", value: 10, hours: 10, raids: 8,
+    confidence: 1, freshnessAt: index + 1,
+  }));
+  const rows = materializeRows("s1", { cumulative: points, tempo: [], form: [] });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].n, 130_000);
+  assert.equal(rows[0].freshnessAt, 130_000);
 });
