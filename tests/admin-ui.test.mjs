@@ -161,22 +161,65 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
 test("a moderation result message survives the refresh it triggers", async () => {
   const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
 
-  // ModerationForm keeps its result in local state and reloads right after
-  // writing it. The `!loading` render gate unmounts AccountsPanel while that
-  // reload is in flight, which destroyed the message before it was ever
-  // painted — so a 409 or 503 looked like a silent no-op.
-  assert.match(dashboard, /setMessage\(t\("admin\.saved"\)\); await reload\(\{ silent: true \}\);/);
+  // The result is not the row's own any more: it lives in AdminDashboard, above
+  // the render gate, so no reload can destroy it before it paints.
+  assert.match(dashboard, /const \[resultMessage, setResultMessage\] = useState\(""\);/);
+  assert.match(dashboard, /<AccountsPanel[^>]*onResult=\{setResultMessage\}/);
+  const notice = dashboard.indexOf('{resultMessage && <p className="admin-notice" role="status">{resultMessage}</p>}');
+  const gate = dashboard.indexOf('{!error && !loading && (tab === "accounts" || tab === "suspicious")');
+  assert.ok(notice !== -1 && gate !== -1 && notice < gate, "the result message must render above the !loading gate");
+  // The suspicious tab splits pending/confirmed by confirmedBan, so confirming
+  // or restoring a ban moves the row into the other <AccountList> and React
+  // remounts AccountRow/ModerationForm. Nothing message-shaped may be left in
+  // that subtree for the regroup to throw away.
+  const form = dashboard.slice(dashboard.indexOf("function ModerationForm("), dashboard.indexOf("function healthPercent("));
+  assert.doesNotMatch(form, /const \[message, setMessage\] = useState/);
+  assert.doesNotMatch(form, /\{message &&/);
+  assert.match(form, /onResult: \(message: string\) => void/);
+  // The success and the save-error paths stay distinguishable, the success path
+  // still triggers the silent reload, and each mutation clears the last result.
+  assert.match(form, /onResult\(""\);/);
+  assert.match(form, /onResult\(t\("admin\.saved"\)\); await reload\(\{ silent: true \}\);/);
+  assert.match(form, /catch \{ onResult\(t\("admin\.error\.save"\)\); \}/);
   // A silent load must not touch the two pieces of state the render gate reads.
-  assert.match(dashboard, /const load = useCallback\(async \(options\?: \{ silent\?: boolean \}\) => \{\s*setRefreshError\(""\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
-  assert.match(dashboard, /finally \{ if \(!options\?\.silent\) setLoading\(false\); \}/);
+  assert.match(dashboard, /const generation = loadGeneration\.current \+ 1;\s*loadGeneration\.current = generation;\s*const stale = \(\) => generation !== loadGeneration\.current;/);
+  assert.match(dashboard, /setReloading\(true\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
+  // The newest load clears `loading` whether or not it set it, so a silent
+  // reload cannot strand the panel behind a flag it never claimed.
+  assert.match(dashboard, /finally \{ if \(!stale\(\)\) \{ setReloading\(false\); setLoading\(false\); \} \}/);
   // A failed silent reload still has to be reported, and `error` would unmount
-  // the panel, so it lands in `refreshError` with its own retry notice.
-  assert.match(dashboard, /catch \{ if \(options\?\.silent\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
-  assert.match(dashboard, /\{refreshError && <div className="admin-notice admin-notice--error" role="status">\{refreshError\} <button type="button" onClick=\{\(\) => setRefreshKey\(\(key\) => key \+ 1\)\}>\{t\("admin\.retry"\)\}/);
+  // the panel, so it lands in `refreshError`, announced as the error it is.
+  assert.match(dashboard, /catch \{ if \(stale\(\)\) return; if \(options\?\.silent\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /\{refreshError && <div className="admin-notice admin-notice--error" role="alert">\{refreshError\} <button type="button" onClick=\{\(\) => setRefreshKey\(\(key\) => key \+ 1\)\}>\{t\("admin\.retry"\)\}/);
+  // Refresh cannot start a non-silent load while one is in flight, and the
+  // initial/refresh/filter loads stay non-silent.
+  assert.match(dashboard, /disabled=\{loading \|\| reloading\}/);
+  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
   // Every reload consumer has to accept the option.
   for (const line of dashboard.split("\n").filter((text) => text.includes("reload: ("))) {
     assert.match(line, /reload: \(options\?: \{ silent\?: boolean \}\) => Promise<void>/);
   }
-  // The initial/refresh/filter loads stay non-silent.
-  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
+});
+
+test("the suspicious queue reports missing report storage as unavailable", async () => {
+  const [accountsRoute, reportsDb] = await Promise.all([
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
+    readFile("lib/community-reports-db.ts", "utf8"),
+  ]);
+  // getCommunityReportsStore() resolves to null for a missing binding or an
+  // unopenable SQLite file; it does not throw. reviews() is async in both store
+  // implementations, so .catch only ever sees a throwing query and the store's
+  // own null is the only "storage missing" signal. Coalescing that null into a
+  // list before the availability check made the available:false branch
+  // unreachable and showed the console an empty queue instead of the warning.
+  assert.match(reportsDb, /return sqlite \? createSqliteCommunityReportsStore\(sqlite\) : null;/);
+  // Pin the window between resolving the store and the empty-list fallback
+  // rather than the exact lines in it: a rewrap, a different variable name, or
+  // .then instead of await must not fail this test.
+  const resolveIdx = accountsRoute.indexOf("getCommunityReportsStore()");
+  const degradeIdx = accountsRoute.search(/\?\?\s*\[\]|\|\|\s*\[\]/);
+  assert.ok(resolveIdx !== -1 && degradeIdx > resolveIdx, "reports must degrade to an empty list only after the storage check");
+  const guard = accountsRoute.slice(resolveIdx, degradeIdx);
+  assert.match(guard, /suspiciousOnly[\s\S]*?===\s*null/);
+  assert.match(guard, /NextResponse\.json\(\{[\s\S]*?available: false/);
 });
