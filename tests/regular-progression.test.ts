@@ -2,7 +2,7 @@
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -480,8 +480,10 @@ test("the progression backfill leaves a published restore point at a taken name 
 
     const result = runBackfill(path, writeFrozenClock(directory));
     assert.notEqual(result.status, 0, "a taken name must abort the run");
-    assert.match(result.stderr, /restore point already exists/);
 
+    // The survivor is checked before the abort message, so a run that deletes the file it
+    // collided with fails here and names the data loss rather than the wording of the abort.
+    assert.ok(existsSync(target), "the restore point published by the earlier run must survive the run");
     const survivor = new DatabaseSync(target, { readOnly: true });
     try {
       assert.deepEqual(
@@ -495,6 +497,7 @@ test("the progression backfill leaves a published restore point at a taken name 
       readdirSync(directory).filter((name) => name.endsWith(".bak")), [stampedBackupName],
       "the run must not publish a second restore point under the taken name",
     );
+    assert.match(result.stderr, /restore point already exists/);
   } finally {
     rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -535,10 +538,13 @@ test("the progression backfill keeps a sound backup when a writer moves the sour
       INSERT INTO t (x) SELECT x FROM series`);
     seed.close();
 
+    // The status is asserted before the worker's message is awaited: a run that aborts before
+    // the copy leaves the `.bak` the writer waits for unwritten, and `node --test` has no
+    // default per-test timeout, so awaiting first would hang the suite instead of failing it.
     const committed = new Promise((resolve) => writer.once("message", resolve));
     const result = runBackfill(path, writeFrozenClock(directory));
-    assert.deepEqual(await committed, "committed");
     assert.equal(result.status, 0, `the run must succeed while a writer commits: ${result.stderr}`);
+    assert.deepEqual(await committed, "committed");
 
     const summary = JSON.parse(result.stdout);
     assert.equal(summary.backupSourceUnchanged, false, "the writer must have moved the source");
