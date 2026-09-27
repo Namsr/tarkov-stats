@@ -139,7 +139,9 @@ function snapshotArgs(input: PlayerSnapshotInput, seriesId = 1): unknown[] {
   // leaves these nullable even though the type says number, and a single NULL
   // would drop the whole archive row. Only a real NULL is normalised here —
   // `undefined` must still fail the bind so the transaction rolls back rather
-  // than committing a ban on top of fabricated zeroes.
+  // than committing a ban on top of fabricated zeroes. The achievement ids
+  // follow the same rule: a missing list has to fail the bind, because an
+  // archived `"[]"` is indistinguishable from a player with no achievements.
   const orZero = (value: number | null) => (value === null ? 0 : value);
   return [
     input.aid, input.upstreamUpdatedAt, input.capturedAt, seriesId, s.nickname, s.side,
@@ -147,7 +149,7 @@ function snapshotArgs(input: PlayerSnapshotInput, seriesId = 1): unknown[] {
     orZero(s.totalRaids), orZero(s.pmcRaids), orZero(s.scavRaids), orZero(s.survivedRaids),
     orZero(s.deaths), orZero(s.pmcDeaths), orZero(s.totalKills), orZero(s.killedPmc),
     orZero(s.runThrough), orZero(s.longestWinStreak), orZero(s.achievementsCount),
-    JSON.stringify(input.achievementIds ?? []), JSON.stringify(s),
+    JSON.stringify(input.achievementIds), JSON.stringify(s),
   ];
 }
 
@@ -278,7 +280,30 @@ export function createSqliteBanStore(db: any): BanStore {
           if (hasSnapshots) {
             // Bind the aid; the value is only ever a parsed positive integer, but
             // a placeholder costs nothing and removes the interpolation.
+            // The two schemas also key the rows differently: the source is
+            // UNIQUE(mode, cycle_id, aid, profile_updated_at) while the archive
+            // is UNIQUE(aid, upstream_updated_at). Two captures of one aid that
+            // share upstream_updated_at — a regular and a pve read of the same
+            // profile.updated, or the same account in two Seasonal cycles —
+            // collide on the copy, and INSERT OR IGNORE drops all but the first
+            // in silence. Count the source before the copy and fail the ban when
+            // the archive ends up short, so the DELETE below can never drop
+            // history the archive does not hold.
+            const sourceCount = db.prepare(
+              "SELECT COUNT(*) AS n FROM progression_db.progression_snapshots WHERE aid = ?"
+            ).get(Number(input.aid)) as { n: number };
             db.prepare(ARCHIVE_HISTORY_SQL).run(Number(input.aid));
+            const archivedCount = db.prepare(
+              `SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = ?
+                 AND upstream_updated_at IN
+                   (SELECT upstream_updated_at FROM progression_db.progression_snapshots WHERE aid = ?)`
+            ).get(Number(input.aid), Number(input.aid)) as { n: number };
+            if (archivedCount.n < sourceCount.n) {
+              throw new Error(
+                `progression archive incomplete for aid ${input.aid}: `
+                + `${archivedCount.n} of ${sourceCount.n} rows archived`
+              );
+            }
           }
         }
         const latest = db.prepare(
