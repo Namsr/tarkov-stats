@@ -167,9 +167,10 @@ test("admin dashboard drops load and audit results after unmount", async () => {
   // false for the rest of the session, so no tab would ever paint a result.
   assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
   // load() and runAudit() resolve after a possible navigation away from /admin,
-  // so every write that follows an await is guarded. The writes that run before
-  // the first await stay bare, so the exact counts pin every post-await site.
-  for (const [setter, expected] of [["setSummary", 1], ["setShowcase", 1], ["setTraffic", 1], ["setSystemMetrics", 1], ["setAccounts", 1], ["setAudit", 2], ["setAuditError", 2], ["setAuditBusy", 1], ["setError", 1], ["setLoading", 1]]) {
+  // so every write either of them makes after an await is guarded. The writes
+  // before the first await stay bare, and the counts pin every guarded site in
+  // those two functions, so a dropped guard leaves its setter one short.
+  for (const [setter, expected] of [["setSummary", 1], ["setShowcase", 1], ["setTraffic", 1], ["setSystemMetrics", 1], ["setAccounts", 1], ["setAudit", 2], ["setAuditError", 3], ["setAuditBusy", 1], ["setError", 1], ["setLoading", 1]]) {
     assert.equal(
       (dashboard.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
       expected,
@@ -177,4 +178,27 @@ test("admin dashboard drops load and audit results after unmount", async () => {
     );
   }
   assert.match(dashboard, /if \(response\.status === 409 && mounted\.current\) setAuditError\(/);
+});
+
+test("the suspicious queue reports missing report storage as unavailable", async () => {
+  const [accountsRoute, reportsDb] = await Promise.all([
+    readFile("app/api/admin/accounts/route.ts", "utf8"),
+    readFile("lib/community-reports-db.ts", "utf8"),
+  ]);
+  // getCommunityReportsStore() resolves to null for a missing binding or an
+  // unopenable SQLite file; it does not throw. reviews() is async in both store
+  // implementations, so .catch only ever sees a throwing query and the store's
+  // own null is the only "storage missing" signal. Coalescing that null into a
+  // list before the availability check made the available:false branch
+  // unreachable and showed the console an empty queue instead of the warning.
+  assert.match(reportsDb, /return sqlite \? createSqliteCommunityReportsStore\(sqlite\) : null;/);
+  // Pin the window between resolving the store and the empty-list fallback
+  // rather than the exact lines in it: a rewrap, a different variable name, or
+  // .then instead of await must not fail this test.
+  const resolveIdx = accountsRoute.indexOf("getCommunityReportsStore()");
+  const degradeIdx = accountsRoute.search(/\?\?\s*\[\]|\|\|\s*\[\]/);
+  assert.ok(resolveIdx !== -1 && degradeIdx > resolveIdx, "reports must degrade to an empty list only after the storage check");
+  const guard = accountsRoute.slice(resolveIdx, degradeIdx);
+  assert.match(guard, /suspiciousOnly[\s\S]*?===\s*null/);
+  assert.match(guard, /NextResponse\.json\(\{[\s\S]*?available: false/);
 });

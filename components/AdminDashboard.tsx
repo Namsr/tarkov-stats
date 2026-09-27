@@ -107,7 +107,7 @@ export default function AdminDashboard() {
         const next = await getJson<Summary>(`/api/admin/summary?${params}`);
         if (mounted.current) setSummary(next);
         if (tab === "health") {
-          setAuditError("");
+          if (mounted.current) setAuditError("");
           try { const nextAudit = await getJson<DataAudit>("/api/admin/data-audit"); if (mounted.current) setAudit(nextAudit); }
           catch { if (mounted.current) setAuditError(t("admin.error.load")); }
         }
