@@ -22,6 +22,7 @@ import {
   showcaseCohortRequest,
   showcaseMode,
   showcaseProfileHref,
+  showcaseProfileRequest,
   showcaseTimelineCycle,
   type HomeCohort,
   type HomeProfile,
@@ -54,7 +55,7 @@ export default function HomePage() {
   const [seasonalCycleId, setSeasonalCycleId] = useState<string | null>(null);
   const [mode, setMode] = useState<GameMode>("regular");
   const [snapshot, setSnapshot] = useState<ShowcaseSnapshot | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const [retryUrl, setRetryUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,20 +77,24 @@ export default function HomePage() {
     return () => { cancelled = true; controller.abort(); };
   }, []);
 
+  // Named outside the effect so the retry button can ask for exactly this URL.
+  const profileUrl = aid == null ? null : showcaseProfileRequest(mode, aid, seasonalCycleId);
+
   useEffect(() => {
-    if (aid == null) return;
+    if (profileUrl == null || aid == null) return;
     let cancelled = false;
     const controller = new AbortController();
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
-    async function loadProfile(): Promise<HomeProfile | null> {
-      const params = new URLSearchParams({ aid: String(aid), mode, allowStaleRisk: "1" });
-      if (mode === "seasonal" && cycle) params.set("cycle", cycle);
+    const loadProfile = async (): Promise<HomeProfile | null> => {
       try {
-        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`);
+        // A 200 can carry a body this page cannot use, and that body stays in
+        // the response cache for its whole TTL. A retry has to bypass the cache
+        // or it re-reads the same unusable payload and never recovers.
+        const response = await loadPlayerProfileResponse<HomeProfile>(profileUrl, { force: retryUrl === profileUrl });
         return response.ok && response.body.identity?.aid === aid && response.body.viewModel ? response.body : null;
       } catch { return null; }
-    }
+    };
     async function load<T>(url: string): Promise<T | null> {
       try {
         const response = await fetch(url, { signal: controller.signal });
@@ -106,7 +111,7 @@ export default function HomePage() {
       if (!cancelled) setSnapshot({ mode, profile, timeline, cohort: cohortData });
     });
     return () => { cancelled = true; controller.abort(); };
-  }, [aid, mode, attempt, seasonalCycleId]);
+  }, [aid, mode, profileUrl, retryUrl, seasonalCycleId]);
 
   // Stale-while-revalidate: keep the previous mode's card on screen while the
   // next mode loads. Wiping to the loading panel collapses the section and
@@ -173,7 +178,7 @@ export default function HomePage() {
             <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>
-        </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && <button className="home-text-link" onClick={() => setAttempt((value) => value + 1)}>{t("leaderboard.retry")}</button>}</div>}
+        </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && profileUrl != null && <button className="home-text-link" onClick={() => setRetryUrl(profileUrl)}>{t("leaderboard.retry")}</button>}</div>}
       </section>
 
       <section id="progress" className="home-section home-wrap">

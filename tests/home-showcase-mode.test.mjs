@@ -48,8 +48,11 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   const component = await read("components/HomePage.tsx");
   const helpers = await read("lib/home-showcase.ts");
   // Profile always loads for the selected mode; seasonal carries the cycle.
-  assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
-  assert.match(component, /mode === "seasonal" && cycle\) params\.set\("cycle", cycle\)/);
+  // The query itself lives in the shared helper so the retry button can name the
+  // same URL the effect requests.
+  assert.match(helpers, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
+  assert.match(helpers, /mode === "seasonal" && cycle\) params\.set\("cycle", cycle\)/);
+  assert.match(component, /showcaseProfileRequest\(mode, aid, seasonalCycleId\)/);
   // Timeline and cohort capability come from the shared helpers: arena has no
   // timeline, and neither arena's match-metric cohort nor a cycle-less seasonal
   // config can feed the radar.
@@ -115,15 +118,36 @@ test("home showcase shows the faction beside the mode instead of the empty squar
 });
 
 test("home risk renders the stored showcase risk immediately", async () => {
-  const [component, route] = await Promise.all([
+  const [component, showcase, route] = await Promise.all([
     read("components/HomePage.tsx"),
+    read("lib/home-showcase.ts"),
     read("app/api/player/profile/route.ts"),
   ]);
-  assert.match(component, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
+  assert.match(showcase, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
   assert.match(component, /<CheaterScore compact risk=\{display\?\.profile\?\.risk \?\? null\}[\s\S]*?mode=\{displayMode\}/);
   assert.match(route, /allowStaleRisk = request\.nextUrl\.searchParams\.get\("allowStaleRisk"\) === "1"/);
   assert.match(route, /scoreVersion === riskScoreVersion\("pve", cycleId\) \|\| allowStaleRisk/);
   assert.match(route, /scoreVersion === riskScoreVersion\("regular", cycleId\) \|\| allowStaleRisk/);
+});
+
+test("the showcase retry bypasses the profile response cache", async () => {
+  const [component, comparison] = await Promise.all([
+    read("components/HomePage.tsx"),
+    read("components/home/HomeComparison.tsx"),
+  ]);
+  // A 200 can carry an identity that does not match the requested aid, and that
+  // body is cached for its whole TTL. The retry has to name the exact URL it is
+  // retrying, so the request is built outside the effect and compared by value:
+  // a mode or cycle switch then stops forcing on its own.
+  assert.match(component, /const profileUrl = aid == null \? null : showcaseProfileRequest\(mode, aid, seasonalCycleId\)/);
+  assert.match(component, /force: retryUrl === profileUrl/);
+  assert.match(component, /onClick=\{\(\) => setRetryUrl\(profileUrl\)\}/);
+  // A plain counter would keep forcing every later load after the first retry.
+  assert.doesNotMatch(component, /setAttempt\(/);
+  assert.doesNotMatch(component, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`\)/);
+  // The favorite panel has no retry button, so the user action that triggers the
+  // request is the only way past a cached mismatched body.
+  assert.match(comparison, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`, \{ force: true \}\)/);
 });
 
 test("home showcase achievement icons are the rarest unlocked ones", async () => {

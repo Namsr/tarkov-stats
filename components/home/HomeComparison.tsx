@@ -49,7 +49,11 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
     if (cycleId != null) params.set("cycle", cycleId);
     async function loadFavorite() {
       try {
-        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`);
+        // This effect only runs from an explicit user action (opening the
+        // favorite tab or picking another pin), so it bypasses the response
+        // cache. Otherwise a cached 200 carrying a mismatched identity keeps
+        // this panel empty until the TTL expires, with no way to recover.
+        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`, { force: true });
         const body = response.body;
         const identityMatches = body.identity?.aid === effectiveFavAid && body.identity?.mode === gameMode
           && (cycleId == null || body.identity?.cycleId === cycleId);
