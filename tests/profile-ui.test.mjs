@@ -108,6 +108,24 @@ test("ordinary profile failures retain the generic error UI", async () => {
   assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
 });
 
+test("a language switch does not re-request the profile or discard a refresh", async () => {
+  const regular = await readFile("components/RegularPlayer.tsx", "utf8");
+
+  // `t` is memoized on `lang`, so it changes identity on every EN/RU toggle. With it
+  // in the dependency array the load effect re-ran, which bumps requestGeneration —
+  // and an in-flight «Обновить» (wait=1, so it can run for seconds) then resolved to
+  // "unchanged" for a result that had been thrown away.
+  assert.doesNotMatch(regular, /\}, \[aid, mode, profileRequestUrl, t\]\);/);
+  assert.match(regular, /\}, \[aid, mode, profileRequestUrl\]\);/);
+  // The translator is read through a ref so the error strings stay current.
+  assert.match(regular, /const translate = useRef\(t\);/);
+  assert.match(regular, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
+  assert.equal((regular.match(/translate\.current\("player\.loadError"\)/g) ?? []).length, 4);
+  // Only the load effect changes. `refreshProfile` is a useCallback, so a new `t`
+  // just gives the button a new callback and re-runs nothing.
+  assert.equal((regular.match(/\bt\("player\.loadError"\)/g) ?? []).length, 3);
+});
+
 test("profile actions share a top edge and helper copy sits underneath", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");

@@ -144,6 +144,15 @@ function LegacyPlayer({
   const [forceProgressionRefresh, setForceProgressionRefresh] = useState(false);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
+  // `t` is memoized on `lang`, so it changes identity on every EN/RU switch. Keeping
+  // it out of the load effect's dependencies is what stops a language toggle from
+  // re-requesting the profile and discarding an in-flight «Обновить»; this ref keeps
+  // the error strings inside that effect in the current language. Declared before the
+  // load effect so it is already up to date when that one runs.
+  const translate = useRef(t);
+  useEffect(() => {
+    translate.current = t;
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,14 +193,14 @@ function LegacyPlayer({
             }
             return null;
           }
-          throw new Error(data.error ?? t("player.loadError"));
+          throw new Error(data.error ?? translate.current("player.loadError"));
         }
         if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
           data.identity?.mode !== mode ||
           data.identity?.cycleId !== "persistent"
         )) {
-          throw new Error(t("player.loadError"));
+          throw new Error(translate.current("player.loadError"));
         }
         return { ...data, stats: data.stats };
       })
@@ -213,8 +222,8 @@ function LegacyPlayer({
       .catch((err) => {
         if (!cancelled) {
           setError(err instanceof PlayerProfileResponseError
-            ? t("player.loadError")
-            : err instanceof Error ? err.message : t("player.loadError"));
+            ? translate.current("player.loadError")
+            : err instanceof Error ? err.message : translate.current("player.loadError"));
         }
       })
       .finally(() => {
@@ -224,7 +233,8 @@ function LegacyPlayer({
     return () => {
       cancelled = true;
     };
-  }, [aid, mode, profileRequestUrl, t]);
+    // `t` is read through `translate` so a language switch cannot re-run this effect.
+  }, [aid, mode, profileRequestUrl]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
