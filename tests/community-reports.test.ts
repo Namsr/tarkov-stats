@@ -112,6 +112,34 @@ test("community routes never reference the destructive ban operation", async () 
   }
 });
 
+test("both halves of the community report endpoint are rate limited", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync("app/api/community-reports/route.ts", "utf8");
+  const getAt = source.indexOf("export async function GET");
+  const postAt = source.indexOf("export async function POST");
+  // A missing marker yields -1, and slicing from it hands the assertions below an
+  // empty or misplaced chunk. Name the breakage instead of reporting a mismatch.
+  assert.ok(getAt >= 0, "community report route no longer declares an exported GET");
+  assert.ok(postAt > getAt, "community report route no longer declares an exported POST after GET");
+  const get = source.slice(getAt, postAt);
+  const post = source.slice(postAt);
+
+  // The read half is unauthenticated and fires on every profile view. The cap is
+  // pinned rather than matched as a number: 60/min is deliberately looser than the
+  // 10/min /api/player/profile already charges that same view on the same IP, so a
+  // wildcard here let the read half go back to effectively unmetered.
+  assert.match(get, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "community-reports-read", max: 60 \}\)/);
+  assert.match(get, /!allowed\) return response\(\{ error: "Rate limit exceeded" \}, 429/);
+  // A limiter below the store read still returns 429, but only after paying for
+  // the count, so the order is part of the bound.
+  const limiterAt = get.indexOf("getRateLimitHeaders(getClientIp(request)");
+  const storeReadAt = get.indexOf("getCommunityReportsStore()");
+  assert.ok(limiterAt >= 0 && storeReadAt > limiterAt, "the read limiter must run before the community reports store read");
+  // A separate bucket so browsing cannot eat the report budget.
+  assert.equal(get.includes('bucket: "community-reports"'), false);
+  assert.match(post, /bucket: "community-reports"/);
+});
+
 test("both review queries pin their tie order with the unique AID key", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync("lib/community-reports-db.ts", "utf8");
