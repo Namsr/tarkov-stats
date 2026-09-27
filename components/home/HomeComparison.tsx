@@ -49,10 +49,13 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
     if (cycleId != null) params.set("cycle", cycleId);
     async function loadFavorite() {
       try {
-        // This effect only runs from an explicit user action (opening the
-        // favorite tab or picking another pin), so it bypasses the response
-        // cache. Otherwise a cached 200 carrying a mismatched identity keeps
-        // this panel empty until the TTL expires, with no way to recover.
+        // The panel has no retry affordance, so a forced read is its only way
+        // past a cached 200 carrying a mismatched identity, which would
+        // otherwise keep the panel empty until the TTL expires. Not every run
+        // is a user action: the effect also re-runs on a gameMode or cycleId
+        // prop change and when canCompareFavorite flips as the favorites list
+        // resolves, and each of those spends a slot in the 10 req/min
+        // server-side "profile" rate-limit bucket.
         const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`, { force: true });
         const body = response.body;
         const identityMatches = body.identity?.aid === effectiveFavAid && body.identity?.mode === gameMode
