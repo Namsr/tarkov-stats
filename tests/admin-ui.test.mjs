@@ -36,29 +36,32 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   const loadEnd = dashboard.indexOf("const runAudit = useCallback");
   assert.ok(loadStart !== -1 && loadEnd > loadStart, "the load callback and its request counter must be findable");
   const loadBody = dashboard.slice(loadStart, loadEnd);
-  // Each load claims a generation from the counter and compares it against the
-  // counter again before writing, so only the newest load may touch state.
-  const claim = loadBody.match(/const (\w+) = \+\+\w+\.current;/);
+  // Each load claims a generation by incrementing the counter ref and compares it
+  // against that same ref before writing, so only the newest load may touch state.
+  // Both names come out of the claim, so a guard reading a second, never-incremented
+  // ref cannot satisfy this.
+  const claim = loadBody.match(/const (\w+) = \+\+(\w+)\.current;/);
   assert.ok(claim, "every load must claim a generation from the counter ref");
-  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => ${claim[1]} !== \\w+\\.current;`))?.[1];
-  assert.ok(guard, "the claimed generation must be re-checked against the counter");
+  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => ${claim[1]} !== ${claim[2]}\\.current;`))?.[1];
+  assert.ok(guard, "the claimed generation must be re-checked against the same counter ref");
   // The guard is checked before each fetched payload write, one per tab, so no
-  // superseded load can leave a panel half-updated. Pinned per setter: a single
-  // guard somewhere in `load` would satisfy a count but not these sites. The
-  // source is read raw, so the line breaks are matched CRLF-tolerantly.
-  for (const setter of ["Summary", "Audit", "Showcase", "Traffic", "SystemMetrics", "Accounts"]) {
+  // superseded load can leave a panel half-updated, and every one of those fetches
+  // carries the controller's signal, so the loser is cancelled on each route too.
+  // Pinned per setter and route: a single guard, or a single `signal:` somewhere in
+  // `load`, would satisfy a count but not these sites. The source is read raw, so
+  // the line breaks are matched CRLF-tolerantly.
+  for (const [setter, route] of [["Summary", "summary"], ["Audit", "data-audit"], ["Showcase", "showcase"], ["Traffic", "traffic"], ["SystemMetrics", "system-metrics"], ["Accounts", "accounts"]]) {
     assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;\\r?\\n\\s+set${setter}\\(`), `set${setter} must be written only by the newest load`);
+    assert.match(loadBody, new RegExp(`getJson<[^>]*>\\(["'\`]\\/api\\/admin\\/${route}[^)\r\n]*, \\{ signal: request\\.signal \\}\\)`), `the /api/admin/${route} request must carry the abort signal`);
   }
   // The counter gates the loading flag too: a superseded load may neither start nor
   // stop the spinner the newest load owns, so the flag is set up front and cleared
   // only by the current generation. Pinned right after the guard's own declaration,
   // where only indentation may intervene, so a conditional wrap cannot satisfy it.
-  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => ${claim[1]} !== \\w+\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
+  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => ${claim[1]} !== ${claim[2]}\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
   assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
   // No payload is written straight from the fetch, which would skip the guard.
   assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
-  // A superseded request is cancelled too, not just ignored.
-  assert.match(loadBody, /\{ signal: request\.signal \}/);
   // The search box writes on every keystroke, so `load` must read a debounced copy
   // of the term; the immediate loads (filters, tabs, refresh, retry) stay immediate.
   const setter = dashboard.match(/window\.setTimeout\(\(\) => set(\w+)\(search\), 250\)/)?.[1];
