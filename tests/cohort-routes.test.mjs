@@ -52,7 +52,9 @@ test("seasonal route delegates center lookup to the identity-scoped helper", () 
   assert.doesNotMatch(seasonalHelper, /WITH latest AS/);
   assert.match(seasonalHelper, /COHORT_CACHE_TTL_MS = 5 \* 60_000/);
   assert.match(seasonalHelper, /COHORT_CACHE_MAX = 512/);
-  assert.match(seasonalHelper, /metric_values AS/);
+  assert.doesNotMatch(seasonalHelper, /metric_values AS/);
+  assert.doesNotMatch(seasonalHelper, /PARTITION BY metric/);
+  assert.match(seasonalHelper, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*COUNT\(\*\) OVER \(\) AS n FROM cohort WHERE \$\{metric\} IS NOT NULL/);
   assert.match(seasonalHelper, /actualRanges/);
 });
 
