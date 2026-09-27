@@ -513,7 +513,6 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
   };
 }
 
-let sqliteDb: SqliteDatabase | null = null;
 let sqliteStoreInstance: ModerationStore | null = null;
 let sqliteRiskReadDb: SqliteDatabase | null = null;
 let sqliteRiskReadFile: string | null = null;
@@ -528,21 +527,35 @@ function closeRiskReadDb(): void {
   sqliteRiskReadIdentity = null;
 }
 
-async function getModerationDb(): Promise<SqliteDatabase> {
-  if (sqliteDb) return sqliteDb;
+async function openModerationDb(): Promise<SqliteDatabase> {
   const fs = await import("node:fs");
   const path = await import("node:path");
   const file = adminPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sqlite = (await import("node:sqlite" as string)) as any;
-  sqliteDb = new sqlite.DatabaseSync(file);
-  sqliteDb.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;");
-  return sqliteDb;
+  const opened = new sqlite.DatabaseSync(file);
+  try {
+    opened.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;");
+  } catch (error) {
+    try { opened.close(); } catch { /* already closed */ }
+    throw error;
+  }
+  return opened;
 }
 
 export async function getModerationStore(): Promise<ModerationStore> {
-  if (!sqliteStoreInstance) sqliteStoreInstance = createSqliteModerationStore(await getModerationDb());
+  if (sqliteStoreInstance) return sqliteStoreInstance;
+  const opened = await openModerationDb();
+  // Cache only once createSqliteModerationStore has put the schema in place: a
+  // failed init must not leave a half-initialized handle behind, or every later
+  // call would skip the schema and fail on a missing table.
+  try {
+    sqliteStoreInstance = createSqliteModerationStore(opened);
+  } catch (error) {
+    try { opened.close(); } catch { /* already closed */ }
+    throw error;
+  }
   return sqliteStoreInstance;
 }
 

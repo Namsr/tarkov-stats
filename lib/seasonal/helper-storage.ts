@@ -67,13 +67,22 @@ export function createSqliteHelperStore(db: SqliteDatabase) {
 let database: SqliteDatabase | null = null;
 
 export async function getHelperStore() {
-  if (!database) {
+  if (database) return createSqliteHelperStore(database);
+  try {
+    const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
+    // Initialize before caching: a failed schema init must not leave a
+    // half-initialized handle behind, or every later call would skip it and
+    // fail on a missing table.
+    const opened = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
     try {
-      const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
-      database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-    } catch {
-      return null;
+      const store = createSqliteHelperStore(opened);
+      database = opened;
+      return store;
+    } catch (error) {
+      try { opened.close(); } catch { /* already closed */ }
+      throw error;
     }
+  } catch {
+    return null;
   }
-  return createSqliteHelperStore(database);
 }
