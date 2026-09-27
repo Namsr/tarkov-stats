@@ -74,10 +74,18 @@ async function openDatabase(): Promise<any> {
   const path = averagePublicationPath();
   if (database && databasePath === path) return database;
   const sqlite = await import("node:sqlite" as string);
-  database = new sqlite.DatabaseSync(path);
+  // Initialize before caching, so a failed PRAGMA or SCHEMA cannot leave a
+  // half-initialized handle cached for the rest of the process.
+  const opened = new sqlite.DatabaseSync(path);
+  try {
+    opened.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+    opened.exec(SCHEMA);
+  } catch (error) {
+    try { opened.close(); } catch { /* already closed */ }
+    throw error;
+  }
+  database = opened;
   databasePath = path;
-  database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
-  database.exec(SCHEMA);
   return database;
 }
 

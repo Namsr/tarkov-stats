@@ -186,10 +186,18 @@ async function getSqliteBanDb(): Promise<any | null> {
     const files = paths();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
-    const db = new sqlite.DatabaseSync(files.bans);
-    db.exec("PRAGMA foreign_keys = ON");
-    sqliteDb = db;
-    return db;
+    // Initialize before caching, so a failed schema init cannot leave a
+    // half-initialized handle cached for the rest of the process.
+    const opened = new sqlite.DatabaseSync(files.bans);
+    try {
+      opened.exec("PRAGMA foreign_keys = ON");
+      opened.exec(BAN_SCHEMA);
+    } catch (error) {
+      try { opened.close(); } catch { /* already closed */ }
+      throw error;
+    }
+    sqliteDb = opened;
+    return opened;
   } catch (error) {
     if (!warned) {
       warned = true;
