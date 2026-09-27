@@ -65,3 +65,24 @@ test("failed requests are not retained", async () => {
   assert.deepEqual(await requests.loadAverageJson("/retry"), { total: 1 });
   assert.equal(fetches, 2);
 });
+
+test("the session response cache evicts instead of growing without bound", async () => {
+  let fetches = 0;
+  globalThis.fetch = async (url) => {
+    fetches += 1;
+    return new Response(JSON.stringify({ url: String(url) }), { status: 200 });
+  };
+
+  // Fill past the cap, then ask for the oldest key again. If it had survived, the
+  // second call would come from cache and `fetches` would not move.
+  const urls = Array.from({ length: 80 }, (_, index) => `/api/average?n=${index}`);
+  for (const url of urls) await requests.loadAverageJson(url);
+  assert.equal(fetches, 80);
+
+  await requests.loadAverageJson(urls[0]);
+  assert.equal(fetches, 81, "the oldest entry must have been evicted");
+
+  // A recently cached key is still served without a request.
+  await requests.loadAverageJson(urls[79]);
+  assert.equal(fetches, 81);
+});
