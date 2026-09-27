@@ -70,7 +70,11 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   for (const query of ["aid=-1&mode=regular", "aid=42&mode=invalid", "mode=regular"]) {
     assert.equal((await request(query)).status, 400);
   }
-  assert.equal((await request("aid=42&mode=seasonal&cycle=old")).status, 404);
+  // A rollout or cycle mismatch is not a stable answer, so it must not be
+  // cacheable: it flips when the cycle window opens or SEASONAL_ENABLED changes.
+  const rolloutMiss = await request("aid=42&mode=seasonal&cycle=old");
+  assert.equal(rolloutMiss.status, 404);
+  assert.match(rolloutMiss.headers.get("cache-control"), /no-store/);
   assert.equal(calls.length, 0);
   for (const mode of ["regular", "pve", "arena", "seasonal"]) {
     const response = await request(`aid=42&mode=${mode}&cycle=portrait-test`);
