@@ -80,8 +80,7 @@ function allocatePanel(populationByBand: readonly number[], redistributeMissingM
   return allocation;
 }
 
-// Scanner lifecycle uses concrete SQLite and D1 stores behind these narrow
-// orchestration hooks; no general backend/plugin abstraction is needed.
+// Scanner lifecycle uses the SQLite store behind these narrow orchestration hooks.
 import type { CaptureSnapshotResult, ScanTaskPriority, SeasonalProfile, SeasonCycle } from "@/types/seasonal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -397,14 +396,6 @@ function reportingDate(timestamp: number): string {
 }
 
 async function getLifecycle(cycle: SeasonCycle) {
-  const { getSeasonalD1 } = await import("./d1");
-  const d1 = await getSeasonalD1();
-  if (d1) {
-    const { upsertD1SeasonCycle } = await import("./storage-d1");
-    const { createD1ScannerLifecycle } = await import("./scanner-d1");
-    await upsertD1SeasonCycle(d1, cycle);
-    return createD1ScannerLifecycle(d1);
-  }
   if (!lifecycleDb) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;

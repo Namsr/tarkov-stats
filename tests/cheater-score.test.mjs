@@ -149,6 +149,32 @@ test("achievement evidence cannot overcome invalid combat inputs", () => {
   }
 });
 
+test("a zero-hour early anchor widens the ramp instead of collapsing to the mean", () => {
+  const zeroAnchor = {
+    ownedIds: ["zero-anchor"],
+    stats: [{ id: "zero-anchor", owners: 10, samplePct: 1, meanHours: 800, earlyHours: 0 }],
+  };
+  const player = {
+    ...account14280186,
+    prestige: 0,
+    pmcKdRatio: 1.2,
+    pmcSurvivalRate: 50,
+    pmcKillsPerRaid: 2,
+    longestWinStreak: 10,
+    hoursPlayed: 400,
+  };
+  // The P20 anchor really is 0, so the ramp spans 0..800 and 400h is halfway:
+  // `earlyHours > 0 ? earlyHours : meanHours` substituted 800, shrank the span to
+  // the 25% floor and scored this player at the cap instead.
+  const zero = scoreCheater(player, null, zeroAnchor);
+  assert.equal(zero.factors.find((factor) => factor.key === "ach_early")?.points, 9);
+  const meanAnchor = scoreCheater(player, null, {
+    ...zeroAnchor,
+    stats: [{ ...zeroAnchor.stats[0], earlyHours: 800 }],
+  });
+  assert.equal(meanAnchor.factors.find((factor) => factor.key === "ach_early")?.points, 18);
+});
+
 test("Seasonal rare achievement signal requires reliable current-cycle timing data", () => {
   const quietSeasonal = {
     ...account14280186,

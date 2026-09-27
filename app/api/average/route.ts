@@ -103,7 +103,7 @@ function isArenaMetric(value: string | null): value is "players" | ArenaMetricKe
 async function arenaDynamicCacheVersion(): Promise<number> {
   try {
     const backend = await getArenaBackend();
-    if (!backend || backend.kind !== "sqlite") return 0;
+    if (!backend) return 0;
     const table = backend.db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_meta'"
     ).get();

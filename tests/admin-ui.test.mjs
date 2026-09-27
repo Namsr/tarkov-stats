@@ -29,6 +29,47 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
   assert.match(dashboard, /setRefreshKey\(\(key\) => key \+ 1\)/);
+  // Source-shape assertions, not behaviour: this suite reads the component as text
+  // because it has no DOM, so the race guard is pinned by shape. The checks below
+  // name the pattern each one pins and deliberately avoid identifier names.
+  const loadStart = dashboard.search(/\n {2}const \w+ = useRef\(0\);/);
+  const loadEnd = dashboard.indexOf("const runAudit = useCallback");
+  assert.ok(loadStart !== -1 && loadEnd > loadStart, "the load callback and its request counter must be findable");
+  const loadBody = dashboard.slice(loadStart, loadEnd);
+  // Each load claims a generation by incrementing the counter ref and compares it
+  // against that same ref before writing, so only the newest load may touch state.
+  // Both names come out of the claim, so a guard reading a second, never-incremented
+  // ref cannot satisfy this.
+  const claim = loadBody.match(/const (\w+) = \+\+(\w+)\.current;/);
+  assert.ok(claim, "every load must claim a generation from the counter ref");
+  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => !mounted\\.current \\|\\| ${claim[1]} !== ${claim[2]}\\.current;`))?.[1];
+  assert.ok(guard, "the claimed generation must be re-checked against the same counter ref");
+  // The guard is checked before each fetched payload write, one per tab, so no
+  // superseded load can leave a panel half-updated, and every one of those fetches
+  // carries the controller's signal, so the loser is cancelled on each route too.
+  // Pinned per setter and route: a single guard, or a single `signal:` somewhere in
+  // `load`, would satisfy a count but not these sites. The source is read raw, so
+  // the line breaks are matched CRLF-tolerantly.
+  for (const [setter, route] of [["Summary", "summary"], ["Audit", "data-audit"], ["Showcase", "showcase"], ["Traffic", "traffic"], ["SystemMetrics", "system-metrics"], ["Accounts", "accounts"]]) {
+    assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;\\r?\\n\\s+set${setter}\\(`), `set${setter} must be written only by the newest load`);
+    assert.match(loadBody, new RegExp(`getJson<[^>]*>\\(["'\`]\\/api\\/admin\\/${route}[^)\r\n]*, \\{ signal: request\\.signal \\}\\)`), `the /api/admin/${route} request must carry the abort signal`);
+  }
+  // The counter gates the loading flag too: a superseded load may neither start nor
+  // stop the spinner the newest load owns, so the flag is set up front and cleared
+  // only by the current generation. Pinned right after the guard's own declaration,
+  // where only indentation may intervene, so a conditional wrap cannot satisfy it.
+  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => !mounted\\.current \\|\\| ${claim[1]} !== ${claim[2]}\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
+  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
+  // No payload is written straight from the fetch, which would skip the guard.
+  assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
+  // The search box writes on every keystroke, so `load` must read a debounced copy
+  // of the term; the immediate loads (filters, tabs, refresh, retry) stay immediate.
+  const setter = dashboard.match(/window\.setTimeout\(\(\) => set(\w+)\(search\), 250\)/)?.[1];
+  assert.ok(setter, "the search term feeding load must be debounced by 250 ms");
+  const debounced = setter[0].toLowerCase() + setter.slice(1);
+  assert.match(dashboard, /window\.clearTimeout\(timer\)/);
+  assert.match(loadBody, new RegExp(`\\[domain, mode, period, ${debounced}, sort, tab, t\\]`));
+  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
   assert.match(dashboard, /role="tablist"/);
   assert.match(dashboard, /confirmAid: Number\(confirmAid\)/);
   assert.match(dashboard, /!reason\.trim\(\)/);
@@ -162,22 +203,14 @@ test("admin dashboard drops load and audit results after unmount", async () => {
   const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
 
   assert.match(dashboard, /const mounted = useRef\(true\);/);
-  // The setup must re-arm the ref, not only clear it on cleanup: StrictMode runs
-  // mount -> cleanup -> mount, and a cleanup-only effect leaves mounted.current
-  // false for the rest of the session, so no tab would ever paint a result.
   assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
-  // load() and runAudit() resolve after a possible navigation away from /admin,
-  // so every write either of them makes after an await is guarded. The writes
-  // before the first await stay bare, and the counts pin every guarded site in
-  // those two functions, so a dropped guard leaves its setter one short.
-  for (const [setter, expected] of [["setSummary", 1], ["setShowcase", 1], ["setTraffic", 1], ["setSystemMetrics", 1], ["setAccounts", 1], ["setAudit", 2], ["setAuditError", 3], ["setAuditBusy", 1], ["setError", 1], ["setLoading", 1]]) {
-    assert.equal(
-      (dashboard.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
-      expected,
-      `${setter} must be guarded by mounted.current at all ${expected} post-await call sites`,
-    );
-  }
+  // The load generation guard covers both a newer request and unmount; the
+  // existing load test pins every response write to that guard.
+  assert.match(dashboard, /const stale = \(\) => !mounted\.current \|\| generation !== loadGeneration\.current;/);
+  assert.match(dashboard, /if \(mounted\.current\) setAudit\(body\);/);
   assert.match(dashboard, /if \(response\.status === 409 && mounted\.current\) setAuditError\(/);
+  assert.match(dashboard, /catch \{ if \(mounted\.current\) setAuditError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /finally \{ if \(mounted\.current\) setAuditBusy\(false\); \}/);
 });
 
 test("the suspicious queue reports missing report storage as unavailable", async () => {

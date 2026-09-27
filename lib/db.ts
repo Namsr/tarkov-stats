@@ -1,6 +1,5 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import { bracketFor } from "@/lib/brackets";
-import { isAidBanned } from "@/lib/ban-db";
 import { LEGACY_IDENTITY, type ProfileIdentity } from "@/types/seasonal";
 import {
   FAVORITE_INSERT_SQL,
@@ -26,13 +25,11 @@ import {
   type ComparisonCohortResult,
 } from "@/lib/profile-cohort";
 import {
-  arenaUpsertStatements,
   initializeArenaSchema,
   upsertArenaSqlite,
 } from "@/lib/arena/storage";
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
-  parsePublishedAchievementBaseline,
   readPublishedAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
@@ -53,9 +50,8 @@ const COHORT_INDEX_METRICS = [
 ];
 
 // One row per collected player, keyed by account id. Re-looking up the same
-// player UPDATES the row (counted once, always current). Works on two backends:
-//   - Cloudflare D1 (when deployed to Workers)
-//   - node:sqlite local file (self-hosted Node/Docker) — needs --experimental-sqlite
+// player UPDATES the row (counted once, always current). Uses a local SQLite
+// file in the self-hosted Node/Docker runtime with --experimental-sqlite.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS players (
   aid INTEGER PRIMARY KEY,
@@ -213,13 +209,6 @@ const COLS = [
   "pmc_survival_rate", "pmc_kills_per_raid",
   "achv_count", "achievements", "profile_updated_at", "last_played_at", "pvp_stats_known", "pvp_stats_version", "fetched_at",
 ];
-const UPSERT_SQL =
-  `INSERT INTO players (${COLS.join(", ")}) SELECT ${COLS.map(() => "?").join(", ")} ` +
-  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
-  `ON CONFLICT(aid) DO UPDATE SET ` +
-  COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at > players.profile_updated_at OR ` +
-  `(excluded.profile_updated_at = players.profile_updated_at AND excluded.pvp_stats_version >= players.pvp_stats_version)`;
 const SQLITE_UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) ` +
   `SELECT ${COLS.map(() => "?").join(", ")} ` +
@@ -228,15 +217,6 @@ const SQLITE_UPSERT_SQL =
   COLS.filter((c) => c !== "aid").map((c) => `${c} = excluded.${c}`).join(", ") +
   ` WHERE excluded.profile_updated_at > players.profile_updated_at OR ` +
   `(excluded.profile_updated_at = players.profile_updated_at AND excluded.pvp_stats_version >= players.pvp_stats_version)`;
-const MODE_UPSERT_SQL =
-  `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
-  `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
-  `WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?) ` +
-  `ON CONFLICT(mode, aid) DO UPDATE SET ` +
-  [...COLS.filter((c) => c !== "aid"), "stats_json"]
-    .map((c) => `${c} = excluded.${c}`).join(", ") +
-  ` WHERE excluded.profile_updated_at > mode_players.profile_updated_at OR ` +
-  `(excluded.profile_updated_at = mode_players.profile_updated_at AND excluded.pvp_stats_version >= mode_players.pvp_stats_version)`;
 const SQLITE_MODE_UPSERT_SQL =
   `INSERT INTO mode_players (mode, ${COLS.join(", ")}, stats_json) ` +
   `SELECT ?, ${COLS.map(() => "?").join(", ")}, ? ` +
@@ -1203,321 +1183,6 @@ function warn(msg: string) {
   }
 }
 
-// Cloudflare D1 binding (env.DB), or null off-Workers / when unbound. Shared by
-// the player store and the favorites store.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getD1(): Promise<any | null> {
-  try {
-    const mod = await import("@opennextjs/cloudflare");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (mod.getCloudflareContext().env as any).DB ?? null;
-  } catch {
-    return null;
-  }
-}
-
-// Cloudflare D1 backend.
-async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
-  const rawDb = await getD1();
-  if (!rawDb) return null;
-  try {
-    const table = tableFor(mode);
-    const hasPlayerIndex = mode === "regular" && Boolean(await rawDb.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
-    ).first());
-    const q = (sql: string) => scopePlayerSql(sql, table);
-    const db = {
-      prepare: (sql: string) => rawDb.prepare(q(sql)),
-      batch: (statements: unknown[]) => rawDb.batch(statements),
-    };
-    return {
-      async upsert(aid, stats, ids, options = {}) {
-        if (options.leaseOwner) throw new Error("D1 profile lease fencing is unavailable");
-        if (await isAidBanned(aid)) return;
-        const now = Date.now();
-        if (MAX_PLAYERS > 0) {
-          const existing = await db.prepare(q("SELECT 1 FROM players WHERE aid = ?")).bind(aid).first();
-          if (!existing) {
-            const row = (await db.prepare(q("SELECT COUNT(*) AS n FROM players")).first()) as { n: number } | null;
-            if (row && row.n >= MAX_PLAYERS) return;
-          }
-        }
-        if (mode === "regular") {
-          const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
-          const player = db.prepare(UPSERT_SQL).bind(...argsFor(aid, stats, ids, now), aid);
-          if (hasPlayerIndex) {
-            const index = rawDb.prepare(`INSERT INTO player_index
-              (aid, nickname, nickname_lower, synced_at)
-              SELECT ?, ?, ?, ? WHERE EXISTS (
-                SELECT 1 FROM players WHERE aid = ? AND profile_updated_at = ?
-              ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
-              ON CONFLICT(aid) DO UPDATE SET nickname = excluded.nickname,
-                nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
-              .bind(aid, stats.nickname, normalizeNickname(stats.nickname), now,
-                aid, profileUpdatedAt, aid);
-            await rawDb.batch([player, index]);
-          } else {
-            await player.run();
-          }
-        } else {
-          const legacy = rawDb.prepare(MODE_UPSERT_SQL)
-            .bind(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
-          if (mode === "arena" && stats.arenaProfile) {
-            await rawDb.batch([legacy, ...arenaUpsertStatements(rawDb, stats.arenaProfile, now)]);
-          } else {
-            await legacy.run();
-          }
-        }
-      },
-      async stored(aid) {
-        if (mode === "regular") return null;
-        const row = await db.prepare(q(
-          "SELECT stats_json, achievements, fetched_at FROM players WHERE aid = ?"
-        )).bind(aid).first() as { stats_json?: string; achievements?: string; fetched_at?: unknown } | null;
-        return parseStoredPlayer(row);
-      },
-      async profileSummary(aid) {
-        const row = await db.prepare(q(
-          "SELECT nickname, side, prestige FROM players WHERE aid = ?"
-        )).bind(aid).first() as { nickname?: unknown; side?: unknown; prestige?: unknown } | null;
-        return parseProfileSummary(row);
-      },
-      async averages(range, statistic = "trimmed_mean", period = "all") {
-        const { where: rangeWhere, params } = statRangeClause(range);
-        const where = averagePeriodWhere(mode, period, rangeWhere);
-        const cnt = (await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null;
-        const n = Number(cnt?.n ?? 0);
-        if (n === 0) return emptyAverageRow();
-        const pairs = await Promise.all(
-          AVG_COLS.map(async (c) => {
-            const metricWhere = eligibleMetricWhere(mode, c, where);
-            const count = metricWhere === where
-              ? n
-              : Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0);
-            const { trim, off, lim } = trimWindow(count);
-            const p = statistic === "trimmed_mean" && trim ? [...params, lim, off] : params;
-            const r = (await db.prepare(metricStatisticSql(c, metricWhere, statistic, trim)).bind(...p).first()) as
-              | { a: number | null }
-              | null;
-            return [c, r?.a ?? null, count] as const;
-          })
-        );
-        const row: AverageRow = { n, metricCounts: {} };
-        for (const [c, v, count] of pairs) {
-          row[c] = v == null ? null : Number(v);
-          row.metricCounts[c] = count;
-        }
-        return row;
-      },
-      async bracketAggregate(column, period = "all") {
-        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
-        const { results } = await db.prepare(aggSql(column, where)).all();
-        return toBracketAggs((results ?? []) as { bracket_key: string; n: number; s: number }[]);
-      },
-      async bucketAggregate(dimension, column, period = "all", statistic = "trimmed_mean") {
-        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
-        const { results } = await db.prepare(bucketAggSql(dimension, column, where, statistic)).all();
-        return toBucketAggs(
-          (results ?? []) as { lo: number; hi: number | null; n: number; s: number }[]
-        );
-      },
-      async rangeBounds(dimension, period = "all") {
-        const column = rangeColumn(dimension);
-        const where = averagePeriodWhere(mode, period, "");
-        const row = (await db.prepare(
-          `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
-        ).first()) as { lo: number | null; hi: number | null } | null;
-        if (row?.lo == null || row.hi == null) {
-          return { min: 0, max: dimension === "hours" ? 5000 : 1000 };
-        }
-        return { min: Math.max(0, Math.floor(Number(row.lo))), max: Math.ceil(Number(row.hi)) };
-      },
-      async cohort(dimension, center, excludeAid, statistic = "trimmed_mean", period = "all") {
-        if (center <= 0) {
-          return unavailableCohort(
-            dimension, center, 10, { min: 0, max: 0 }, 0, "no_activity"
-          );
-        }
-        const cutoff = mode === "regular"
-          ? Math.floor(Date.now() - 90 * 86_400_000)
-          : undefined;
-        const ranges = uniqueCohortRanges(dimension, center);
-        const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
-        const countWhere = cohortEligibilityWhere(mode, averagePeriodWhere(
-          mode,
-          cohortSelectionPeriod(mode, period),
-          `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
-          cutoff,
-        ));
-        const countRow = (await db.prepare(cohortCountSql(dimension, ranges, countWhere))
-          .bind(...countParams, excludeAid)
-          .first()) as Record<string, number | null> | null;
-        const countFor = (bounds: CohortBounds) => {
-          const match = ranges.find((entry) =>
-            entry.bounds.min === bounds.min && entry.bounds.max === bounds.max
-          );
-          return Number(match ? countRow?.[`n${match.percent}`] ?? 0 : 0);
-        };
-        const selected = COHORT_PERCENTAGES.map((percent) => ({
-          percent,
-          bounds: cohortBounds(dimension, center, percent),
-        })).find(({ bounds }) => countFor(bounds) >= COHORT_TARGET);
-        if (!selected) {
-          const percent = 30;
-          const bounds = cohortBounds(dimension, center, percent);
-          const n = countFor(bounds);
-          const maxValue = Number(countRow?.max_value ?? 0);
-          const reason: CohortUnavailableReason = maxValue < bounds.min
-            ? "above_coverage"
-            : dimension === "hours"
-              ? "insufficient_similar_hours"
-              : "insufficient_similar_raids";
-          return unavailableCohort(dimension, center, percent, bounds, n, reason);
-        }
-        const groupRange: StatRange = {
-          dimension,
-          min: selected.bounds.min,
-          max: selected.bounds.max,
-          maxInclusive: true,
-          excludeAid,
-          requirePositive: true,
-        };
-        const { where: groupWhere, params } = statRangeClause(groupRange);
-        const where = cohortEligibilityWhere(
-          mode,
-          averagePeriodWhere(mode, period, groupWhere, cutoff),
-        );
-        const cohortN = Number(
-          ((await db.prepare(countSql(where)).bind(...params).first()) as { n: number } | null)?.n ?? 0
-        );
-        if (cohortN < COHORT_TARGET) {
-          const reason: CohortUnavailableReason = dimension === "hours"
-            ? "insufficient_similar_hours"
-            : "insufficient_similar_raids";
-          return unavailableCohort(
-            dimension, center, selected.percent, selected.bounds, cohortN, reason
-          );
-        }
-        const averages = emptyCohortMetrics();
-        await Promise.all(RADAR_COLS.map(async (metric) => {
-          const metricWhere = populatedMetricClause(mode, metric, where);
-          const count = metricWhere !== where
-            ? Number(((await db.prepare(countSql(metricWhere)).bind(...params).first()) as { n: number } | null)?.n ?? 0)
-            : cohortN;
-          // The cohort itself is already guaranteed to contain at least 20 players.
-          // PMC survival is a backfilled field, so average the confirmed values that
-          // exist instead of hiding the axis until 20 profiles have been refreshed.
-          const minimumPopulatedCount = metric === "pmc_survival_rate" ? 1 : COHORT_TARGET;
-          if (count < minimumPopulatedCount) {
-            averages[metric] = { value: null, count };
-            return;
-          }
-          const { trim, off, lim } = trimWindow(count);
-          const queryParams = statistic === "trimmed_mean" && trim ? [...params, lim, off] : params;
-          const row = (await db.prepare(metricStatisticSql(metric, metricWhere, statistic, trim))
-            .bind(...queryParams)
-            .first()) as { a: number | null } | null;
-          averages[metric] = { value: row?.a == null ? null : Number(row.a), count };
-        }));
-        return {
-          dimension,
-          center,
-          target: COHORT_TARGET,
-          required: COHORT_TARGET,
-          targetN: COHORT_TARGET,
-          percent: selected.percent,
-          bounds: selected.bounds,
-          n: cohortN,
-          strategy: "matched",
-          quality: "sufficient",
-          reason: null,
-          averages,
-        };
-      },
-      async cohort2d(
-        centerHours,
-        centerPmcRaids,
-        excludeAid,
-        dimension = "hours",
-        statistic = "trimmed_mean",
-        period = "all",
-      ) {
-        if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
-        return computePersistentTwoDimensionalCohort({
-          mode,
-          center: { hours: centerHours, pmcRaids: centerPmcRaids },
-          excludeAid,
-          dimension,
-          statistic,
-          period,
-          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
-          readAll: async (sql, params) => {
-            const result = await db.prepare(sql).bind(...params).all() as { results?: Record<string, unknown>[] };
-            return result.results ?? [];
-          },
-        });
-      },
-      async histogramAverages(column, ranges, period = "all") {
-        if (ranges.length === 0) return [];
-        const statements = ranges.map((range) => {
-          const { where: rangeWhere, params } = legacyHoursRangeClause(range.lo, range.hi);
-          const where = eligibleMetricWhere(
-            mode,
-            column,
-            averagePeriodWhere(mode, period, rangeWhere),
-          );
-          return db.prepare(histogramAvgSql(column, where)).bind(...params);
-        });
-        const results = await db.batch(statements);
-        return results.map((result: { results?: { a: number | null }[] }) => {
-          const value = result.results?.[0]?.a;
-          return value == null ? null : Number(value);
-        });
-      },
-      async achievementBaseline() {
-        if (mode === "arena") return null;
-        try {
-          const row = await rawDb.prepare(`SELECT mode, generation, generated_at, total, achievements_json
-            FROM achievement_baseline_publications WHERE mode = ?`).bind(mode).first() as Record<string, unknown> | null;
-          return parsePublishedAchievementBaseline(row);
-        } catch (error) {
-          console.error(`achievementBaseline failed for ${mode}`, error);
-          return null;
-        }
-      },
-      async baseline(min, max) {
-        const { where, params } = legacyHoursRangeClause(min, max);
-        const row = (await db.prepare(baselineSql(where)).bind(...params).first()) as
-          | Record<string, number>
-          | null;
-        return toBaseline(row);
-      },
-      async riskBaseline2d(centerHours, centerPmcRaids, excludeAid, period = "all") {
-        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
-        return computePersistentRiskBaseline({
-          mode,
-          center: { hours: centerHours, pmcRaids: centerPmcRaids },
-          excludeAid,
-          period,
-          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
-        });
-      },
-      async riskBaseline(centerHours, centerPmcRaids, excludeAid) {
-        if (mode === "arena") throw new Error("arena risk baseline is unavailable");
-        return computePersistentRiskBaseline({
-          mode,
-          center: { hours: centerHours, pmcRaids: centerPmcRaids },
-          excludeAid,
-          period: "all",
-          readFirst: async (sql, params) => await db.prepare(sql).bind(...params).first() as Record<string, unknown> | null,
-        });
-      },
-    };
-  } catch {
-    return null;
-  }
-}
-
 // node:sqlite backend (self-hosted). DB handle is cached per process and shared
 // by the player store and the favorites store (one file, one connection, schema
 // applied once).
@@ -1590,13 +1255,11 @@ async function getSqliteDb(): Promise<any | null> {
   }
 }
 
-/** Arena analytics uses the same D1-or-SQLite selection as the profile store. */
+/** Arena analytics shares the local SQLite database with the profile store. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function getArenaBackend(): Promise<{ kind: "d1" | "sqlite"; db: any } | null> {
-  const d1 = await getD1();
-  if (d1) return { kind: "d1", db: d1 };
+export async function getArenaBackend(): Promise<{ db: any } | null> {
   const sqlite = await getSqliteDb();
-  return sqlite ? { kind: "sqlite", db: sqlite } : null;
+  return sqlite ? { db: sqlite } : null;
 }
 
 async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> {
@@ -1901,9 +1564,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
   }
 }
 
-/** Returns the active store (D1 on Cloudflare, else node:sqlite), or null. */
+/** Returns the local SQLite store, or null when unavailable. */
 export async function getStore(mode: CrossSectionMode = "regular"): Promise<PlayerStore | null> {
-  return (await d1Store(mode)) ?? (await sqliteStore(mode));
+  return sqliteStore(mode);
 }
 
 function normalizeNickname(s: string): string {
@@ -1971,18 +1634,6 @@ function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata:
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function d1ProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode): Promise<boolean> {
-  const table = mode === "regular" ? "players" : "mode_players";
-  const modeColumn = mode === "regular" ? "" : ", mode";
-  try {
-    await db.prepare(`SELECT profile_updated_at${modeColumn} FROM ${table} LIMIT 1`).first();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqliteProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode): boolean {
   const table = mode === "regular" ? "players" : "mode_players";
   const modeColumn = mode === "regular" ? "" : ", mode";
@@ -1992,36 +1643,6 @@ function sqliteProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode
   } catch {
     return false;
   }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1PlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean): PlayerIndexStore {
-  const sql = playerIndexSql(mode, includeProfileMetadata);
-  return {
-    async isReady() {
-      return Boolean(await db.prepare(sql.ready).first());
-    },
-    async search(nickname, limit) {
-      const q = normalizeNickname(nickname);
-      const exact = await db.prepare(sql.exact).bind(q, limit).all();
-      const prefix = await db.prepare(sql.prefix).bind(q, `${q}\uffff`, limit * 2).all();
-      const out: PlayerIndexResult[] = [];
-      const seen = new Set<number>();
-      pushUniqueIndexResults(
-        out,
-        seen,
-        toIndexResults((exact.results ?? []) as { aid: number; name: string; updated_at?: unknown }[]),
-        limit
-      );
-      pushUniqueIndexResults(
-        out,
-        seen,
-        toIndexResults((prefix.results ?? []) as { aid: number; name: string; updated_at?: unknown }[]),
-        limit
-      );
-      return out;
-    },
-  };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2056,8 +1677,6 @@ function sqlitePlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includ
 export async function getPlayerIndexStore(
   mode: PersistentPlayerIndexMode = "regular",
 ): Promise<PlayerIndexStore | null> {
-  const d1 = await getD1();
-  if (d1) return d1PlayerIndexStore(d1, mode, await d1ProfileMetadataAvailable(d1, mode));
   const sqlite = await getSqliteDb();
   if (sqlite) return sqlitePlayerIndexStore(sqlite, mode, sqliteProfileMetadataAvailable(sqlite, mode));
   return null;
@@ -2088,17 +1707,9 @@ export async function getDeterministicPlayerIndexPage(
   ) SELECT aid, name, order_key, trusted_hours FROM ordered
     WHERE order_key > ? OR (order_key = ? AND aid > ?)
     ORDER BY order_key, aid LIMIT ?`;
-  const d1 = await getD1();
-  let rows: Record<string, unknown>[];
-  if (d1) {
-    const result = await d1.prepare(sql)
-      .bind(multiplier, offset, cursorKey, cursorKey, cursorAid, limit).all();
-    rows = (result.results ?? []) as Record<string, unknown>[];
-  } else {
-    const sqlite = await getSqliteDb();
-    if (!sqlite) return null;
-    rows = sqlite.prepare(sql).all(multiplier, offset, cursorKey, cursorKey, cursorAid, limit) as Record<string, unknown>[];
-  }
+  const sqlite = await getSqliteDb();
+  if (!sqlite) return null;
+  const rows = sqlite.prepare(sql).all(multiplier, offset, cursorKey, cursorKey, cursorAid, limit) as Record<string, unknown>[];
   const players = rows.map((row) => ({
     aid: Number(row.aid),
     name: String(row.name),
@@ -2116,12 +1727,7 @@ export async function getDeterministicPlayerIndexPage(
 /** One trusted, already-parsed PvP playtime value; no upstream request. */
 export async function getTrustedPublicHours(aid: number): Promise<number | null> {
   if (!Number.isSafeInteger(aid) || aid <= 0) return null;
-  const d1 = await getD1();
-  const row = d1
-    ? await d1.prepare(`SELECT hours FROM players WHERE aid = ? AND hours >= 0
-        AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`)
-      .bind(aid).first()
-    : (await getSqliteDb())?.prepare(`SELECT hours FROM players WHERE aid = ? AND hours >= 0
+  const row = (await getSqliteDb())?.prepare(`SELECT hours FROM players WHERE aid = ? AND hours >= 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = players.aid)`).get(aid);
   if (!row || !Number.isFinite(Number((row as { hours?: unknown }).hours))) return null;
   return Number((row as { hours: unknown }).hours);
@@ -2225,52 +1831,6 @@ function toFavorites(rows: FavRow[]): Favorite[] {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1FavoritesStore(db: any): FavoritesStore {
-  return {
-    async list(userSub, identity) {
-      if (identity === null) {
-        const { results } = await db.prepare(FAV_LIST_ALL_SQL).bind(userSub).all();
-        return toFavorites((results ?? []) as FavRow[]);
-      }
-      const id = favoriteIdentity(identity);
-      const { results } = await db.prepare(FAV_LIST_SQL).bind(userSub, id.mode, id.cycleId).all();
-      return toFavorites((results ?? []) as FavRow[]);
-    },
-    async add(userSub, aid, nickname, note, identity) {
-      const id = favoriteIdentity(identity);
-      const inserted = await db.prepare(FAVORITE_INSERT_SQL)
-        .bind(userSub, id.mode, id.cycleId, aid, nickname, note, Date.now(), userSub, aid, userSub, MAX_FAVORITES)
-        .run();
-      const changes = Number(inserted?.meta?.changes ?? 0);
-      if (changes === 1) return "ok";
-      const existing = await db.prepare("SELECT 1 FROM favorites WHERE user_sub = ? AND aid = ?")
-        .bind(userSub, aid).first();
-      const row = (await db.prepare("SELECT COUNT(DISTINCT aid) AS n FROM favorites WHERE user_sub = ?")
-        .bind(userSub).first()) as { n: number } | null;
-      return favoriteInsertResult(changes, Boolean(existing), Number(row?.n ?? 0));
-    },
-    async remove(userSub, aid) {
-      await db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").bind(userSub, aid).run();
-    },
-    async setNote(userSub, aid, note) {
-      await db
-        .prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?")
-        .bind(note, userSub, aid)
-        .run();
-    },
-    async setMain(userSub, aid) {
-      await db.prepare(FAVORITE_SET_MAIN_SQL).bind(aid, userSub, userSub, aid).run();
-    },
-    async updateNickname(userSub, aid, nickname) {
-      await db
-        .prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?")
-        .bind(nickname, userSub, aid)
-        .run();
-    },
-  };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqliteFavoritesStore(db: any): FavoritesStore {
   return {
     async list(userSub, identity) {
@@ -2305,14 +1865,8 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
   };
 }
 
-/**
- * Returns the active favorites store (D1 on Cloudflare, else node:sqlite), or
- * null. On D1 the `favorites` table must be created via migration first
- * (scripts/favorites-d1.sql); node:sqlite auto-creates it from SCHEMA.
- */
+/** Returns the local favorites store, or null when SQLite is unavailable. */
 export async function getFavoritesStore(): Promise<FavoritesStore | null> {
-  const d1 = await getD1();
-  if (d1) return d1FavoritesStore(d1);
   const sq = await getSqliteDb();
   if (sq) return sqliteFavoritesStore(sq);
   return null;

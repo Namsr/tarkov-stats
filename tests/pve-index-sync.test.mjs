@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -151,22 +151,4 @@ test("malformed PvE index leaves the last committed table untouched", async () =
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-test("PvE index schema is separate and mode-aware", async () => {
-  const migration = await readFile("scripts/pve-player-index-d1.sql", "utf8");
-  const db = new DatabaseSync(":memory:");
-  db.exec(migration);
-  db.prepare(`INSERT INTO pve_player_index
-    (mode, aid, nickname, nickname_lower, synced_at)
-    VALUES (?, ?, ?, ?, ?)`)
-    .run("pve", 7, "PveOnly", "pveonly", 1);
-  assert.throws(() => db.prepare(`INSERT INTO pve_player_index
-    (mode, aid, nickname, nickname_lower, synced_at)
-    VALUES (?, ?, ?, ?, ?)`)
-    .run("regular", 8, "NotPve", "notpve", 1));
-  assert.equal(db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
-  ).get(), undefined);
-  db.close();
 });

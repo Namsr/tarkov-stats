@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types test runner requires the explicit extension.
-import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE } from "./achievement-unlock-hours.ts";
+import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE, firstFiniteHours } from "./achievement-unlock-hours.ts";
 
 export type PublishedAchievementMode = "regular" | "pve";
 
@@ -78,8 +78,8 @@ function toAchievementStats(rows: readonly Record<string, unknown>[]): Published
       owners: Number(row.owners) || 0,
       meanHours: mean,
       stdHours: Math.sqrt(variance),
-      earlyHours: Number(row.early_hours) || mean,
-      unlockHours: Number(row.unlock_hours) || mean,
+      earlyHours: firstFiniteHours(row.early_hours, mean),
+      unlockHours: firstFiniteHours(row.unlock_hours, mean),
     };
   });
 }

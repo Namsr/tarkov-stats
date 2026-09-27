@@ -39,6 +39,11 @@ const MIN_OWNERS = 10;
 const Z_THRESHOLD = -1.5;
 const MAX_RARE_SAMPLE_PCT = 30;
 const MAX_SHOWN = 6;
+// Early-owner anchors below this are not "unlocked unusually early", they mean the
+// owner pool has no real playtime data (owners sitting at 0 hours). Such a row can
+// never be flagged anyway — the panel only runs for players with hours > 0, so a 0
+// anchor always yields a positive z — and showing it would imply a clean sheet.
+const MIN_EARLY_HOURS = 200;
 
 function fmtHours(h: number): string {
   if (!Number.isFinite(h) || h <= 0) return "0";
@@ -90,7 +95,7 @@ export default function EarlyUnlocks({
               !EVENT_ACHIEVEMENT_IDS.has(a.id) && // event-only achievements aren't a cheating signal
               a.owners >= MIN_OWNERS &&
               a.samplePct < MAX_RARE_SAMPLE_PCT &&
-              a.earlyHours >= 200 &&
+              a.earlyHours >= MIN_EARLY_HOURS &&
               a.stdHours > 0
           )
           .map((a) => ({

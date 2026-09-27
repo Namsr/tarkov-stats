@@ -87,7 +87,7 @@ function review(row: Record<string, unknown>): CommunityReview {
   return {
     ...candidate(row),
     // GROUP_CONCAT(DISTINCT r.mode) has no ORDER BY, so its order is
-    // non-deterministic across SQLite/D1. Sort in JS for a stable contract.
+    // non-deterministic. Sort in JS for a stable contract.
     modes: String(row.modes ?? "").split(",").filter(Boolean).sort(),
     seasonalCycleId: row.seasonal_cycle_id == null ? null : String(row.seasonal_cycle_id),
     yesCount: Number(row.yes_count),
@@ -124,48 +124,8 @@ export function createSqliteCommunityReportsStore(db: any): CommunityReportsStor
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createD1CommunityReportsStore(db: any): CommunityReportsStore {
-  return {
-    async count(aid) {
-      return Number(await db.prepare("SELECT COUNT(*) AS n FROM suspect_reports WHERE aid = ?").bind(aid).first("n") ?? 0);
-    },
-    async reportedBy(userSub, aid) {
-      return Boolean(await db.prepare("SELECT 1 FROM suspect_reports WHERE user_sub = ? AND aid = ?").bind(userSub, aid).first());
-    },
-    async report({ userSub, aid, mode, cycleId, createdAt = Date.now() }) {
-      const result = await db.prepare("INSERT OR IGNORE INTO suspect_reports (user_sub, aid, mode, cycle_id, created_at) VALUES (?, ?, ?, ?, ?)").bind(userSub, aid, mode, cycleId, createdAt).run();
-      return { already: Number(result.meta.changes) === 0, count: Number(await db.prepare("SELECT COUNT(*) AS n FROM suspect_reports WHERE aid = ?").bind(aid).first("n") ?? 0) };
-    },
-    async candidates(helperId, limit) {
-      const result = await db.prepare(CANDIDATES_SQL).bind(helperId, limit).all();
-      return (result.results as Record<string, unknown>[]).map(candidate);
-    },
-    async vote({ helperId, aid, verdict, createdAt = Date.now() }) {
-      if (!await db.prepare("SELECT 1 FROM suspect_reports WHERE aid = ?").bind(aid).first()) return { already: false, missing: true };
-      const result = await db.prepare("INSERT OR IGNORE INTO ban_review_votes (helper_id, aid, verdict, created_at) VALUES (?, ?, ?, ?)").bind(helperId, aid, verdict, createdAt).run();
-      return { already: Number(result.meta.changes) === 0, missing: false };
-    },
-    async reviews(aid) {
-      const result = await db.prepare(reviewsSql(aid)).bind(...(aid === undefined ? [] : [aid])).all();
-      return (result.results as Record<string, unknown>[]).map(review);
-    },
-  };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any = null;
 let warned = false;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function cloudflareReportsDb(): Promise<any | null> {
-  try {
-    const mod = await import("@opennextjs/cloudflare");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (mod.getCloudflareContext().env as any).REPORTS_DB ?? null;
-  } catch {
-    return null;
-  }
-}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function sqliteReportsDb(): Promise<any | null> {
@@ -186,15 +146,6 @@ async function sqliteReportsDb(): Promise<any | null> {
 }
 
 export async function getCommunityReportsStore(): Promise<CommunityReportsStore | null> {
-  const d1 = await cloudflareReportsDb();
-  if (d1) {
-    try {
-      await d1.prepare("SELECT 1 FROM suspect_reports LIMIT 1").first();
-      return createD1CommunityReportsStore(d1);
-    } catch {
-      return null;
-    }
-  }
   const sqlite = await sqliteReportsDb();
   return sqlite ? createSqliteCommunityReportsStore(sqlite) : null;
 }
