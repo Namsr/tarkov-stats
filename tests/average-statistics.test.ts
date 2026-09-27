@@ -986,3 +986,24 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
     "the range check must precede the store open",
   );
 });
+
+test("the average route rejects the legacy minHours/maxHours pair instead of dropping it", async () => {
+  // `dimension` is mandatory here, so `usesNewRange` was true for every valid
+  // request and minHours/maxHours were never read. The filter was silently
+  // discarded and the route answered 200 with whole-population statistics.
+  // /api/baseline still honours these keys, so the pair is not simply gone.
+  for (const query of [
+    "?mode=regular&dimension=hours&minHours=100",
+    "?mode=regular&dimension=hours&maxHours=1000",
+    "?mode=regular&dimension=hours&minHours=100&maxHours=1000",
+  ]) {
+    const response = await getAverage(new NextRequest(`http://local/api/average${query}`));
+    assert.equal(response.status, 400, `${query} must not answer with population statistics`);
+  }
+
+  // The supported pair still narrows the population and stays a 200.
+  const ranged = await getAverage(new NextRequest(
+    "http://local/api/average?mode=regular&dimension=hours&min=100&max=1000",
+  ));
+  assert.equal(ranged.status, 200);
+});

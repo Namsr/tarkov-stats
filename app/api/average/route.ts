@@ -247,11 +247,21 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
   }
 
-  // New min/max ranges are inclusive. Legacy minHours/maxHours preserve their
-  // previous exclusive upper-bound behavior for existing consumers.
-  const usesNewRange = params.has("dimension") || params.has("min") || params.has("max");
-  const parsedMin = parseNonNegative(params.get(usesNewRange ? "min" : "minHours"));
-  const parsedMax = parseNonNegative(params.get(usesNewRange ? "max" : "maxHours"));
+  // `dimension` is mandatory above, so this route always reads the inclusive min/max
+  // pair and `maxInclusive` is always true. minHours/maxHours used to select an
+  // exclusive upper bound for older consumers, but no such consumer can reach here:
+  // the legacy minHours/maxHours callers live on /api/baseline, which still reads
+  // them. Reject them rather than silently dropping the filter and answering with
+  // unfiltered whole-population statistics.
+  if (params.has("minHours") || params.has("maxHours")) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json(
+      { error: "minHours and maxHours are no longer supported; use min and max" },
+      { status: 400 },
+    );
+  }
+  const parsedMin = parseNonNegative(params.get("min"));
+  const parsedMax = parseNonNegative(params.get("max"));
   if (!parsedMin.valid || !parsedMax.valid) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json(
@@ -282,7 +292,7 @@ export async function GET(request: NextRequest) {
       timing.finish({ operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
-    const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, usesNewRange]);
+    const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, true]);
     const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
       rawMode,
@@ -293,7 +303,7 @@ export async function GET(request: NextRequest) {
       period,
       parsedMin.value,
       parsedMax.value,
-      usesNewRange,
+      true,
     )).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
