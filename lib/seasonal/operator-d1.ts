@@ -4,7 +4,7 @@ import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
 import { d1Changes, d1Rows } from "./d1.ts";
 // @ts-ignore -- Node's strip-types test runner requires the extension; Next accepts it.
-import { mapRefreshCandidate, mapRefreshRun, mapRun, mapTask, normalizeProgressionRefreshCandidates, PROGRESSION_REFRESH_SCHEMA, SYSTEM_ERRORS, validateRefreshIdentifiers, validateScope, type OperatorTaskOutcome, type ProgressionRefreshFeedCandidate, type ProgressionRefreshOutcome } from "./operator.ts";
+import { mapRefreshCandidate, mapRefreshRun, mapRun, mapTask, normalizeProgressionRefreshCandidates, PROGRESSION_REFRESH_SCHEMA, SYSTEM_ERRORS, validateRefreshIdentifiers, validateScope, type OperatorTaskOutcome, type ProgressionRefreshClaimResult, type ProgressionRefreshFeedCandidate, type ProgressionRefreshOutcome } from "./operator.ts";
 
 export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
   const refreshSchemaReady = typeof db.exec === "function"
@@ -131,7 +131,7 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
       };
     },
 
-    async claimNextProgressionRefresh(runId: number, owner: string, now = Date.now()) {
+    async claimNextProgressionRefresh(runId: number, owner: string, now = Date.now()): Promise<ProgressionRefreshClaimResult> {
       await ensureRefreshSchema();
       validateRefreshIdentifiers(runId);
       if (!owner.trim()) throw new Error("refresh lease owner is required");
@@ -152,9 +152,20 @@ export function createD1SeasonalOperatorStore(db: D1DatabaseLike) {
           .bind(now, now, runId).run();
         return { run: mapRefreshRun({ ...run, state: "completed", updated_at: now, finished_at: now }), candidate: null, remaining: 0 };
       }
-      await db.prepare(`UPDATE seasonal_progression_refresh_candidates
-        SET state = 'leased', lease_owner = ?, leased_until = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?`)
-        .bind(owner, now + 10 * 60_000, now, Number(candidate.id)).run();
+      // The SELECT and the UPDATE are separate D1 round trips, so two workers
+      // can pick the same candidate and both lease it. recordProgressionRefresh-
+      // Outcome only guards on lease_owner, which is owner-scoped, so the second
+      // worker would then overwrite the first worker's outcome. Repeat the
+      // SELECT predicate in the UPDATE and treat a zero-row result as a lost
+      // race, exactly like claimNext above. A lost claim cannot loop: the
+      // candidate is now leased until later than `now`, so the recursive SELECT
+      // returns the next candidate or nothing, and nothing returns through the
+      // no-candidate branch above.
+      const update = await db.prepare(`UPDATE seasonal_progression_refresh_candidates
+        SET state = 'leased', lease_owner = ?, leased_until = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?
+        AND (state = 'queued' OR (state = 'leased' AND leased_until <= ?))`)
+        .bind(owner, now + 10 * 60_000, now, Number(candidate.id), now).run();
+      if (d1Changes(update) !== 1) return store.claimNextProgressionRefresh(runId, owner, now);
       candidate = await db.prepare("SELECT * FROM seasonal_progression_refresh_candidates WHERE id = ?")
         .bind(Number(candidate.id)).first() as Record<string, unknown>;
       await db.prepare("UPDATE seasonal_progression_refresh_runs SET updated_at = ? WHERE id = ?")

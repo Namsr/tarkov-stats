@@ -484,6 +484,51 @@ test("two concurrent D1 refresh claims share one run and seed candidates once", 
   sqlite.close();
 });
 
+test("two concurrent D1 refresh candidate claims lease different candidates", async () => {
+  // The candidate SELECT and the leasing UPDATE are separate D1 round trips, so
+  // a retried or double-clicked claim can pick the candidate the other claim is
+  // already leasing. Both workers then hold the same candidate, and the
+  // owner-scoped lease guard in recordProgressionRefreshOutcome lets the second
+  // outcome overwrite the first.
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(SEASONAL_SCHEMA);
+  // FakeD1 has no exec(), so the store cannot create the refresh schema itself.
+  sqlite.exec(PROGRESSION_REFRESH_SCHEMA);
+  const queue = createD1SeasonalStore(new FakeD1(sqlite));
+  for (const aid of [1, 2, 3]) {
+    const seeded = profile(aid, aid * 10, 1_000, aid * 10);
+    await queue.upsertProfile(seeded);
+    await queue.captureSnapshot(seeded);
+  }
+  const operator = createD1SeasonalOperatorStore(new FakeD1(sqlite));
+  const { run } = await operator.beginOrResumeProgressionRefreshRun("s1", "op-1", 100);
+
+  const [first, second] = await Promise.all([
+    operator.claimNextProgressionRefresh(run.id, "op-1", 200),
+    operator.claimNextProgressionRefresh(run.id, "op-1", 200),
+  ]);
+
+  // Each claim holds its own candidate, and the shared candidate was only
+  // leased once, so no candidate carries a second attempt.
+  assert.deepEqual([first.candidate?.aid, second.candidate?.aid].sort(), [1, 2]);
+  const leased = sqlite.prepare("SELECT attempts FROM seasonal_progression_refresh_candidates WHERE state = 'leased' ORDER BY aid").all() as { attempts: number }[];
+  assert.deepEqual(leased.map((row) => Number(row.attempts)), [1, 1]);
+
+  // One candidate is left. The loser's retry finds nothing to lease, so it must
+  // report the live lease instead of spinning on the empty queue or closing the
+  // run while a candidate is still leased.
+  const [third, fourth] = await Promise.all([
+    operator.claimNextProgressionRefresh(run.id, "op-1", 300),
+    operator.claimNextProgressionRefresh(run.id, "op-1", 300),
+  ]);
+  assert.equal([third.candidate, fourth.candidate].filter((candidate) => candidate !== null).length, 1);
+  const empty = [third, fourth].find((claim) => claim.candidate === null)!;
+  assert.equal(empty.retryAt, 200 + 10 * 60_000);
+  assert.equal(empty.run.state, "running");
+  assert.equal((await operator.claimNextProgressionRefresh(run.id, "op-1", 300)).remaining, 3);
+  sqlite.close();
+});
+
 test("a raid bucket larger than the argument limit does not overflow the stack", () => {
   // The first buckets of a season hold every player who got that far, so
   // aggregateGroup's `points` is unbounded. Math.max(...values) throws RangeError
