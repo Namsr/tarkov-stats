@@ -80,7 +80,10 @@ export default function AdminDashboard() {
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditError, setAuditError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [reloading, setReloading] = useState(false);
   const [error, setError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
+  const [resultMessage, setResultMessage] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   // Every filter control re-creates `load`, so requests overlap. Only the newest
   // one may write state: the counter gates the writes, the abort frees the loser.
@@ -101,13 +104,18 @@ export default function AdminDashboard() {
     router.replace(`${pathname}${params.size ? `?${params}` : ""}`, { scroll: false });
   }, [domain, pathname, period, router]);
 
-  const load = useCallback(async () => {
+  // Moderation reloads keep the form mounted while the parent holds its result.
+  // The newest load owns both flags, including when it started silently.
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    if (!mounted.current) return;
     const generation = ++loadGeneration.current;
     loadRequest.current?.abort();
     const request = new AbortController();
     loadRequest.current = request;
     const stale = () => !mounted.current || generation !== loadGeneration.current;
-    setLoading(true); setError("");
+    setRefreshError("");
+    setReloading(true);
+    if (!options?.silent) { setLoading(true); setError(""); }
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
@@ -144,8 +152,8 @@ export default function AdminDashboard() {
         if (stale()) return;
         setAccounts(nextAccounts);
       }
-    } catch { if (!stale()) setError(t("admin.error.load")); }
-    finally { if (!stale()) setLoading(false); }
+    } catch { if (stale()) return; if (options?.silent) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
+    finally { if (!stale()) { setReloading(false); setLoading(false); } }
   }, [domain, mode, period, searchQuery, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
@@ -195,7 +203,7 @@ export default function AdminDashboard() {
           <h1 className="page-title">{t("admin.title")}</h1>
           <p className="admin-description">{t("admin.description")}</p>
         </div>
-        <button type="button" className="tactical-button" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}>
+        <button type="button" className="tactical-button" disabled={loading || reloading} onClick={() => setRefreshKey((key) => key + 1)}>
           {loading ? t("common.loading") : t("admin.refresh")}
         </button>
       </div>
@@ -215,11 +223,13 @@ export default function AdminDashboard() {
       </section>}
 
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
+      {refreshError && <div className="admin-notice admin-notice--error" role="alert">{refreshError} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
+      {resultMessage && <p className="admin-notice" role="status">{resultMessage}</p>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
-      {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} />}
+      {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} onResult={setResultMessage} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
       {!error && !loading && tab === "monitoring" && <SystemMonitoringPanel data={systemMetrics} lang={lang} t={t} />}
     </main>
@@ -521,26 +531,26 @@ function RankList({ title, rows, t, visitsKey = "admin.rank.visits" }: { title: 
   return <section className="data-panel admin-panel"><h2 className="section-heading">{title}</h2>{rows.length ? <ol className="admin-rank-list">{rows.slice(0, 10).map((row) => <li key={row.key}><div><span title={row.key}>{row.key}</span><strong>{formatNumber(row.pageviews)}</strong></div><div className="admin-rank-bar" aria-hidden><i style={{ width: `${row.pageviews / max * 100}%` }} /></div><small>{t(visitsKey, { n: formatNumber(row.visits) })}</small></li>)}</ol> : <p className="admin-empty">{t("admin.empty")}</p>}</section>;
 }
 
-function AccountsPanel({ data, suspicious, lang, t, reload }: { data: Accounts | null; suspicious: boolean; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountsPanel({ data, suspicious, lang, t, reload, onResult }: { data: Accounts | null; suspicious: boolean; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void>; onResult: (message: string) => void }) {
   if (!data?.available) return <div className="admin-notice">{t("admin.warning.storage")}</div>;
   if (!data.accounts?.length && !suspicious) return <Empty t={t} />;
-  if (!suspicious) return <AccountList accounts={data.accounts} suspicious={false} lang={lang} t={t} reload={reload} />;
+  if (!suspicious) return <AccountList accounts={data.accounts} suspicious={false} lang={lang} t={t} reload={reload} onResult={onResult} />;
   const confirmed = data.accounts.filter((account) => moderationFor(account)?.sources.confirmedBan);
   const pending = data.accounts.filter((account) => !moderationFor(account)?.sources.confirmedBan);
   return <div className="admin-stack">
-    <AccountList accounts={pending} suspicious title={t("admin.suspicious.heading")} description={t("admin.suspicious.description")} empty={t("admin.suspicious.empty")} lang={lang} t={t} reload={reload} />
-    <AccountList accounts={confirmed} suspicious title={t("admin.suspicious.confirmedHeading")} description={t("admin.suspicious.confirmedDescription")} empty={t("admin.suspicious.confirmedEmpty")} lang={lang} t={t} reload={reload} />
+    <AccountList accounts={pending} suspicious title={t("admin.suspicious.heading")} description={t("admin.suspicious.description")} empty={t("admin.suspicious.empty")} lang={lang} t={t} reload={reload} onResult={onResult} />
+    <AccountList accounts={confirmed} suspicious title={t("admin.suspicious.confirmedHeading")} description={t("admin.suspicious.confirmedDescription")} empty={t("admin.suspicious.confirmedEmpty")} lang={lang} t={t} reload={reload} onResult={onResult} />
   </div>;
 }
 
-function AccountList({ accounts, suspicious, title, description, empty, lang, t, reload }: { accounts: Account[]; suspicious: boolean; title?: string; description?: string; empty?: string; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountList({ accounts, suspicious, title, description, empty, lang, t, reload, onResult }: { accounts: Account[]; suspicious: boolean; title?: string; description?: string; empty?: string; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void>; onResult: (message: string) => void }) {
   return <section className="data-panel admin-accounts">
     {title && <div className="admin-accounts__heading"><h2 className="section-heading">{title}</h2>{description && <p>{description}</p>}</div>}
-    {accounts.length ? <><div className="admin-account-head"><span>{t("admin.account.account")}</span><span>{t("admin.account.requests")}</span><span>{t("admin.account.snapshots")}</span><span>{t("admin.account.last")}</span><span>{t("admin.account.signals")}</span></div>{accounts.map((account) => <AccountRow key={account.aid} account={account} suspicious={suspicious} reportOnly={suspicious} lang={lang} t={t} reload={reload} />)}</> : <p className="admin-empty">{empty ?? t("admin.empty")}</p>}
+    {accounts.length ? <><div className="admin-account-head"><span>{t("admin.account.account")}</span><span>{t("admin.account.requests")}</span><span>{t("admin.account.snapshots")}</span><span>{t("admin.account.last")}</span><span>{t("admin.account.signals")}</span></div>{accounts.map((account) => <AccountRow key={account.aid} account={account} suspicious={suspicious} reportOnly={suspicious} lang={lang} t={t} reload={reload} onResult={onResult} />)}</> : <p className="admin-empty">{empty ?? t("admin.empty")}</p>}
   </section>;
 }
 
-function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload }: { account: Account; suspicious: boolean; reportOnly?: boolean; lang: string; t: T; reload: () => Promise<void> }) {
+function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload, onResult }: { account: Account; suspicious: boolean; reportOnly?: boolean; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void>; onResult: (message: string) => void }) {
   const [open, setOpen] = useState(false);
   const moderation = moderationFor(account);
   const accountModes = Array.from(new Set((account.modes ?? []).filter(isProfileMode)));
@@ -554,7 +564,7 @@ function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload }
   const profileLabel = (mode: GameMode) => t("admin.account.openProfile", { mode: t("admin.mode." + mode) });
   const lastLabel = reportOnly ? t("admin.account.lastReported") : t("admin.account.last");
   const lastAt = reportOnly ? account.reportedAt ?? account.lastRequestedAt : account.lastRequestedAt;
-  return <details className="admin-account" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong><Link className="admin-account__profile-link" href={profileHref(account.aid, defaultMode)} prefetch={false} aria-label={profileLabel(defaultMode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{account.nickname || `#${account.aid}`}</Link></strong><small><span>AID {account.aid}</span><span aria-hidden="true"> / </span><span className="admin-account__mode-links" aria-label={t("admin.account.profileModes")}>{availableProfileModes.map((mode) => <Link className="admin-account__mode-link" key={mode} href={profileHref(account.aid, mode)} prefetch={false} aria-label={profileLabel(mode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{t("admin.mode." + mode)}</Link>)}</span></small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.snapshots")}>{formatNumber(account.snapshotCount)}</span><span data-label={lastLabel}>{new Date(lastAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} reportedModes={reportedModeNames} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.snapshots")}</dt><dd>{formatNumber(account.snapshotCount)}</dd></div><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}{reportOnly && <div><dt>{t("admin.account.reportedAt")}</dt><dd>{formatDate(account.reportedAt ?? null, lang, t)}</dd></div>}{reportOnly && reportedModeNames && <div><dt>{t("admin.account.reportedModes")}</dt><dd>{reportedModeNames}</dd></div>}<div><dt>{t("admin.account.profileUpdated")}</dt><dd>{formatDate(moderation?.risk?.profileUpdatedAt ?? null, lang, t)}</dd></div>{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} / {t("admin.risk." + moderation.risk.tier)} / {t("admin.mode." + moderation.risk.mode)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} />}</div></details>;
+  return <details className="admin-account" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong><Link className="admin-account__profile-link" href={profileHref(account.aid, defaultMode)} prefetch={false} aria-label={profileLabel(defaultMode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{account.nickname || `#${account.aid}`}</Link></strong><small><span>AID {account.aid}</span><span aria-hidden="true"> / </span><span className="admin-account__mode-links" aria-label={t("admin.account.profileModes")}>{availableProfileModes.map((mode) => <Link className="admin-account__mode-link" key={mode} href={profileHref(account.aid, mode)} prefetch={false} aria-label={profileLabel(mode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{t("admin.mode." + mode)}</Link>)}</span></small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.snapshots")}>{formatNumber(account.snapshotCount)}</span><span data-label={lastLabel}>{new Date(lastAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} reportedModes={reportedModeNames} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.snapshots")}</dt><dd>{formatNumber(account.snapshotCount)}</dd></div><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}{reportOnly && <div><dt>{t("admin.account.reportedAt")}</dt><dd>{formatDate(account.reportedAt ?? null, lang, t)}</dd></div>}{reportOnly && reportedModeNames && <div><dt>{t("admin.account.reportedModes")}</dt><dd>{reportedModeNames}</dd></div>}<div><dt>{t("admin.account.profileUpdated")}</dt><dd>{formatDate(moderation?.risk?.profileUpdatedAt ?? null, lang, t)}</dd></div>{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} / {t("admin.risk." + moderation.risk.tier)} / {t("admin.mode." + moderation.risk.mode)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} onResult={onResult} />}</div></details>;
 }
 
 function moderationFor(account: Account): AccountModeration | undefined {
@@ -582,20 +592,18 @@ function Signals({ moderation, sources, reportedModes, t }: { moderation?: Accou
   return labels.length ? <>{labels.map((label) => <span className="admin-badge" key={label}>{label}</span>)}</> : <span>{t("common.notAvailable")}</span>;
 }
 
-function ModerationForm({ account, moderation, t, reload }: { account: Account; moderation?: AccountModeration; t: T; reload: () => Promise<void> }) {
+function ModerationForm({ account, moderation, t, reload, onResult }: { account: Account; moderation?: AccountModeration; t: T; reload: (options?: { silent?: boolean }) => Promise<void>; onResult: (message: string) => void }) {
   const [status, setStatus] = useState<"reviewed" | "false_positive">(moderation?.review.status === "false_positive" ? "false_positive" : "reviewed");
   const [note, setNote] = useState(moderation?.review.note ?? "");
   const [confirmAid, setConfirmAid] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  async function mutate(url: string, method: "PATCH" | "POST", body: object) { setBusy(true); setMessage(""); try { await getJson(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); setMessage(t("admin.saved")); await reload(); } catch { setMessage(t("admin.error.save")); } finally { setBusy(false); } }
+  async function mutate(url: string, method: "PATCH" | "POST", body: object) { setBusy(true); onResult(""); try { await getJson(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); onResult(t("admin.saved")); await reload({ silent: true }); } catch { onResult(t("admin.error.save")); } finally { setBusy(false); } }
   const confirmedBan = moderation?.sources.confirmedBan === true;
   const lockedUpstreamBan = confirmedBan && !moderation?.canRestoreManualBan;
   return <div className="admin-moderation">
     {!confirmedBan && <><label><span>{t("admin.review.status")}</span><select value={status} onChange={(event) => setStatus(event.target.value as "reviewed" | "false_positive")}>{["reviewed", "false_positive"].map((item) => <option key={item} value={item}>{t("admin.review." + item)}</option>)}</select></label><label className="admin-note"><span>{t("admin.review.note")}</span><textarea maxLength={2000} value={note} onChange={(event) => setNote(event.target.value)} placeholder={t("admin.review.notePlaceholder")} /></label><button className="ghost-button" disabled={busy} type="button" onClick={() => mutate("/api/admin/reviews", "PATCH", { aid: account.aid, status, note })}>{t("admin.review.save")}</button></>}
     {lockedUpstreamBan ? <p className="admin-form-message">{t("admin.ban.upstreamLocked")}</p> : <div className="admin-ban"><label><span>{t("admin.ban.confirmAid")}</span><input inputMode="numeric" value={confirmAid} onChange={(event) => setConfirmAid(event.target.value)} placeholder={String(account.aid)} /></label>{!moderation?.canRestoreManualBan && <label><span>{t("admin.ban.reason")}</span><input maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></label>}<button type="button" className="ghost-button admin-danger" disabled={busy || Number(confirmAid) !== account.aid || (!moderation?.canRestoreManualBan && !reason.trim())} onClick={() => moderation?.canRestoreManualBan ? mutate("/api/admin/bans/restore", "POST", { aid: account.aid, confirmAid: Number(confirmAid) }) : mutate("/api/admin/bans", "POST", { aid: account.aid, confirmAid: Number(confirmAid), reason })}>{t(moderation?.canRestoreManualBan ? "admin.ban.restore" : "admin.ban.confirm")}</button></div>}
-    {message && <p className="admin-form-message" role="status">{message}</p>}
   </div>;
 }
 

@@ -54,12 +54,10 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
     assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;\\r?\\n\\s+set${setter}\\(`), `set${setter} must be written only by the newest load`);
     assert.match(loadBody, new RegExp(`getJson<[^>]*>\\(["'\`]\\/api\\/admin\\/${route}[^)\r\n]*, \\{ signal: request\\.signal \\}\\)`), `the /api/admin/${route} request must carry the abort signal`);
   }
-  // The counter gates the loading flag too: a superseded load may neither start nor
-  // stop the spinner the newest load owns, so the flag is set up front and cleared
-  // only by the current generation. Pinned right after the guard's own declaration,
-  // where only indentation may intervene, so a conditional wrap cannot satisfy it.
-  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => !mounted\\.current \\|\\| ${claim[1]} !== ${claim[2]}\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
-  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
+  // A silent moderation reload keeps the panel mounted; only the current load
+  // may clear the flags, regardless of whether that load set `loading`.
+  assert.match(loadBody, /setRefreshError\(""\);\s*setReloading\(true\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
+  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) \\{ setReloading\\(false\\); setLoading\\(false\\); \\} \\}`));
   // No payload is written straight from the fetch, which would skip the guard.
   assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
   // The search box writes on every keystroke, so `load` must read a debounced copy
@@ -197,6 +195,50 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
   // Bug 4: ban-wins precedence is documented and enforced.
   assert.match(accountsRoute, /ban-wins/);
   assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
+});
+
+test("a moderation result message survives the refresh it triggers", async () => {
+  const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
+
+  // The result is not the row's own any more: it lives in AdminDashboard, above
+  // the render gate, so no reload can destroy it before it paints.
+  assert.match(dashboard, /const \[resultMessage, setResultMessage\] = useState\(""\);/);
+  assert.match(dashboard, /<AccountsPanel[^>]*onResult=\{setResultMessage\}/);
+  const notice = dashboard.indexOf('{resultMessage && <p className="admin-notice" role="status">{resultMessage}</p>}');
+  const gate = dashboard.indexOf('{!error && !loading && (tab === "accounts" || tab === "suspicious")');
+  assert.ok(notice !== -1 && gate !== -1 && notice < gate, "the result message must render above the !loading gate");
+  // The suspicious tab splits pending/confirmed by confirmedBan, so confirming
+  // or restoring a ban moves the row into the other <AccountList> and React
+  // remounts AccountRow/ModerationForm. Nothing message-shaped may be left in
+  // that subtree for the regroup to throw away.
+  const form = dashboard.slice(dashboard.indexOf("function ModerationForm("), dashboard.indexOf("function healthPercent("));
+  assert.doesNotMatch(form, /const \[message, setMessage\] = useState/);
+  assert.doesNotMatch(form, /\{message &&/);
+  assert.match(form, /onResult: \(message: string\) => void/);
+  // The success and the save-error paths stay distinguishable, the success path
+  // still triggers the silent reload, and each mutation clears the last result.
+  assert.match(form, /onResult\(""\);/);
+  assert.match(form, /onResult\(t\("admin\.saved"\)\); await reload\(\{ silent: true \}\);/);
+  assert.match(form, /catch \{ onResult\(t\("admin\.error\.save"\)\); \}/);
+  // A silent load must not touch the two pieces of state the render gate reads.
+  assert.match(dashboard, /const generation = \+\+loadGeneration\.current;/);
+  assert.match(dashboard, /const stale = \(\) => !mounted\.current \|\| generation !== loadGeneration\.current;/);
+  assert.match(dashboard, /setReloading\(true\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
+  // The newest load clears `loading` whether or not it set it, so a silent
+  // reload cannot strand the panel behind a flag it never claimed.
+  assert.match(dashboard, /finally \{ if \(!stale\(\)\) \{ setReloading\(false\); setLoading\(false\); \} \}/);
+  // A failed silent reload still has to be reported, and `error` would unmount
+  // the panel, so it lands in `refreshError`, announced as the error it is.
+  assert.match(dashboard, /catch \{ if \(stale\(\)\) return; if \(options\?\.silent\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /\{refreshError && <div className="admin-notice admin-notice--error" role="alert">\{refreshError\} <button type="button" onClick=\{\(\) => setRefreshKey\(\(key\) => key \+ 1\)\}>\{t\("admin\.retry"\)\}/);
+  // Refresh cannot start a non-silent load while one is in flight, and the
+  // initial/refresh/filter loads stay non-silent.
+  assert.match(dashboard, /disabled=\{loading \|\| reloading\}/);
+  assert.match(dashboard, /useEffect\(\(\) => \{ void load\(\); \}, \[load, refreshKey\]\);/);
+  // Every reload consumer has to accept the option.
+  for (const line of dashboard.split("\n").filter((text) => text.includes("reload: ("))) {
+    assert.match(line, /reload: \(options\?: \{ silent\?: boolean \}\) => Promise<void>/);
+  }
 });
 
 test("admin dashboard drops load and audit results after unmount", async () => {
