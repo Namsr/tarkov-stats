@@ -1070,7 +1070,13 @@ test("Arena publication failures and deadline writes remain retryable", async ()
     readFile("scripts/sync-arena-profiles.mjs", "utf8"),
     readFile("lib/db.ts", "utf8"),
   ]);
-  assert.match(service, /if \(!\(await markAveragePublicationDirty\("arena"\)\)\)[\s\S]*throw new Error\("Arena average publication invalidation failed"\)/);
+  // The profile rows are committed before the marker, so a marker failure must
+  // not throw: the display route would answer 503 for a stored profile.
+  assert.match(service, /if \(!\(await markAveragePublicationDirty\("arena"\)\)\) \{\s*\n\s*console\.warn\(/);
+  assert.doesNotMatch(service, /throw new Error\("Arena average publication invalidation failed"\)/);
+  // The batch collector keeps its stricter contract: an incomplete run must be
+  // visible so the operator retries it.
+  assert.match(source, /if \(publicationRequired && await markAveragePublicationDirty\("arena"\) === false\) \{\s*\n\s*complete = false;/);
   assert.match(averageRoute, /dynamic_cache_version/);
   assert.match(averageRoute, /loadCachedArenaAverage\([\s\S]*cacheVersion/);
   assert.match(source, /offline_v3_to_v4_publication_pending/);

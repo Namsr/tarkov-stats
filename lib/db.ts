@@ -37,6 +37,21 @@ import {
 } from "@/lib/achievement-baseline-publication";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
+// The cohort and population scans filter on these five columns and read the
+// radar metrics straight out of the index. Carrying them makes every cohort
+// query index-only: without them SQLite resolved every matched or eligible row
+// against the table B-tree one rowid lookup at a time, which is what pushed a
+// Regular population fallback into whole seconds.
+const COHORT_INDEX_COLS = "hours, pmc_raids, pvp_stats_known, profile_updated_at, aid";
+const COHORT_INDEX_METRICS = [
+  "kd_ratio",
+  "pmc_kd_ratio",
+  "kills_per_raid",
+  "pmc_survival_rate",
+  "longest_win_streak",
+  "level",
+];
+
 // One row per collected player, keyed by account id. Re-looking up the same
 // player UPDATES the row (counted once, always current). Works on two backends:
 //   - Cloudflare D1 (when deployed to Workers)
@@ -58,7 +73,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
 CREATE INDEX IF NOT EXISTS idx_players_hours ON players(hours);
 CREATE INDEX IF NOT EXISTS idx_players_pmc_raids ON players(pmc_raids);
-CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(hours, pmc_raids, aid);
+CREATE INDEX IF NOT EXISTS idx_players_cohort ON players(${COHORT_INDEX_COLS}, ${COHORT_INDEX_METRICS.join(", ")});
 CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids);
 CREATE INDEX IF NOT EXISTS idx_players_nickname_nocase ON players(nickname COLLATE NOCASE);
 
@@ -80,7 +95,7 @@ CREATE TABLE IF NOT EXISTS mode_players (
 CREATE INDEX IF NOT EXISTS idx_mode_players_bracket ON mode_players(mode, bracket_key);
 CREATE INDEX IF NOT EXISTS idx_mode_players_hours ON mode_players(mode, hours);
 CREATE INDEX IF NOT EXISTS idx_mode_players_pmc_raids ON mode_players(mode, pmc_raids);
-CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, hours, pmc_raids, aid);
+CREATE INDEX IF NOT EXISTS idx_mode_players_cohort ON mode_players(mode, ${COHORT_INDEX_COLS}, ${COHORT_INDEX_METRICS.join(", ")});
 
 CREATE VIEW IF NOT EXISTS pve_players AS SELECT * FROM mode_players WHERE mode = 'pve';
 CREATE VIEW IF NOT EXISTS arena_players AS SELECT * FROM mode_players WHERE mode = 'arena';
@@ -480,6 +495,46 @@ function emptyAverageRow(): AverageRow {
   return row;
 }
 
+// SQLite runs the cohort aggregates on the web process, synchronously, so every
+// row the plan cannot read from an index becomes a table B-tree lookup inside a
+// query that blocks all other responses. The cohort and population scans filter
+// on these five columns and average the radar metrics, so carrying all of them
+// keeps the scan inside the index.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureSqliteCohortIndexes(db: any): void {
+  const metrics = COHORT_INDEX_METRICS.join(", ");
+  ensureIndexDefinition(
+    db,
+    "idx_players_cohort",
+    `CREATE INDEX idx_players_cohort ON players(${COHORT_INDEX_COLS}, ${metrics})`,
+  );
+  ensureIndexDefinition(
+    db,
+    "idx_mode_players_cohort",
+    `CREATE INDEX idx_mode_players_cohort ON mode_players(mode, ${COHORT_INDEX_COLS}, ${metrics})`,
+  );
+}
+
+// `CREATE INDEX IF NOT EXISTS` keeps an existing index even when its definition
+// no longer matches, so widening one of these on a live database needs an
+// explicit rebuild. Comparing the stored DDL keeps that to a single
+// sqlite_master read per open instead of a schema-version bump, and the rebuild
+// is a no-op once the definition matches.
+function normalizedIndexDdl(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureIndexDefinition(db: any, name: string, ddl: string): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?"
+  ).get(name) as { sql?: string | null } | undefined;
+  const stored = typeof row?.sql === "string" ? row.sql : null;
+  if (stored !== null && normalizedIndexDdl(stored) === normalizedIndexDdl(ddl)) return;
+  db.exec(`DROP INDEX IF EXISTS ${name}`);
+  db.exec(ddl);
+}
+
 // SQLite executes the trimmed/median portrait on the web process. Covering the
 // ORDER BY columns avoids a temporary sort for every metric and keeps a cold
 // average request from blocking unrelated HTTP responses.
@@ -701,26 +756,29 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
        AND rn <= n - CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
-  const values = COMPARISON_RADAR_METRICS.map((metric) =>
-    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL${
+  // One ranked pass per metric over the shared cohort CTE. Ranking the six
+  // metrics together meant a UNION ALL that expanded the cohort six times first,
+  // so the statement wrote and then sorted six figures worth of rows. That is
+  // cheap for a matched window of a few hundred rows and ruinous for the
+  // population fallback, which has no window and aggregates every eligible row.
+  // Ranking each metric on its own keeps the cohort at one row per player.
+  const perMetric = COMPARISON_RADAR_METRICS.map((metric) =>
+    `SELECT '${metric}' AS metric, MAX(n) AS n,
+      AVG(CASE WHEN ${selected} THEN v END) AS a, NULL, NULL, NULL, NULL
+      FROM (SELECT ${metric} AS v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
+        COUNT(*) OVER () AS n FROM cohort WHERE ${metric} IS NOT NULL${
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
-    }`
-  ).join(" UNION ALL ");
+    })`
+  ).join("\n    UNION ALL\n    ");
   return `WITH cohort AS (
     SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
-  ), metric_values AS (${values}), ranked AS (
-    SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
-      COUNT(*) OVER (PARTITION BY metric) AS n
-    FROM metric_values
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
     MIN(hours) AS hours_min, MAX(hours) AS hours_max,
     MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
   FROM cohort
   UNION ALL
-  SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
-    NULL, NULL, NULL, NULL
-  FROM ranked GROUP BY metric`;
+  ${perMetric}`;
 }
 
 async function computePersistentTwoDimensionalCohort(input: {
@@ -769,26 +827,23 @@ async function computePersistentTwoDimensionalCohort(input: {
     Number(countRow?.[`count_${percent}`] ?? 0),
   ])) as Record<ComparisonCohortPercent, number>;
   const selectedPercent = selectComparisonPercent(counts, COMPARISON_COHORT_TARGET);
-  const selected = twoDimensionalRangeWhere(
-    input.mode,
-    center,
-    selectedPercent,
-    input.excludeAid,
-    input.period,
+  const mode = input.mode;
+  const matched = counts[selectedPercent] >= COMPARISON_COHORT_TARGET;
+  // A matched window the counts already show is too small would be aggregated and
+  // then thrown away, so the population slice is read instead. The seasonal
+  // cohort picks its slice up front for the same reason.
+  const selected = !matched && (mode === "regular" || mode === "pve")
+    ? twoDimensionalPopulationWhere(mode, input.excludeAid, input.period)
+    : twoDimensionalRangeWhere(mode, center, selectedPercent, input.excludeAid, input.period);
+  const resultRows = await input.readAll(
+    persistentComparisonMetricsSql(selected.where, input.statistic),
+    selected.params,
   );
-  const selectedRows = await input.readAll(persistentComparisonMetricsSql(selected.where, input.statistic), selected.params);
-  let resultRows = selectedRows;
-  let strategy: "matched" | "population" | null = counts[selectedPercent] >= COMPARISON_COHORT_TARGET
-    ? "matched"
-    : null;
-  if (strategy === null && (input.mode === "regular" || input.mode === "pve")) {
-    const population = twoDimensionalPopulationWhere(input.mode, input.excludeAid, input.period);
-    resultRows = await input.readAll(persistentComparisonMetricsSql(population.where, input.statistic), population.params);
-    const populationGroup = resultRows.find((row) => row.metric === "__group__");
-    if (Number(populationGroup?.n ?? 0) > 0) strategy = "population";
-  }
   const group = resultRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
+  const strategy: "matched" | "population" | null = matched
+    ? "matched"
+    : n > 0 && (mode === "regular" || mode === "pve") ? "population" : null;
   const actualRanges: ComparisonActualRanges = {
     hours: group?.hours_min == null || group?.hours_max == null
       ? null
@@ -1425,7 +1480,8 @@ async function d1Store(mode: CrossSectionMode): Promise<PlayerStore | null> {
           const row = await rawDb.prepare(`SELECT mode, generation, generated_at, total, achievements_json
             FROM achievement_baseline_publications WHERE mode = ?`).bind(mode).first() as Record<string, unknown> | null;
           return parsePublishedAchievementBaseline(row);
-        } catch {
+        } catch (error) {
+          console.error(`achievementBaseline failed for ${mode}`, error);
           return null;
         }
       },
@@ -1523,6 +1579,7 @@ async function getSqliteDb(): Promise<any | null> {
           WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
       }
       initializeProfileChangeJournal(sqliteDb);
+      ensureSqliteCohortIndexes(sqliteDb);
       ensureSqliteAverageIndexes(sqliteDb);
       initializeArenaSchema(sqliteDb);
     }
@@ -1871,10 +1928,12 @@ function pushUniqueIndexResults(
   limit: number
 ) {
   for (const row of rows) {
+    // Check before appending: the second call starts with `out` already full, and
+    // a trailing check would let it through one row past the limit.
+    if (out.length >= limit) break;
     if (seen.has(row.aid)) continue;
     seen.add(row.aid);
     out.push(row);
-    if (out.length >= limit) break;
   }
 }
 
