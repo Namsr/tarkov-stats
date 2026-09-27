@@ -59,16 +59,18 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/favorites?all=1");
       if (!res.ok) {
-        if (res.status === 401) {
-          setEnabled(false);
-          setFavorites([]);
-          setAuthStatus("unauthenticated");
-        } else {
-          setAuthStatus("error");
-        }
+        setAuthStatus(res.status === 401 ? "unauthenticated" : "error");
+        setEnabled(false);
+        setFavorites([]);
         return;
       }
-      const data = (await res.json()) as { favorites: Favorite[] };
+      const data = (await res.json()) as { favorites?: Favorite[]; authenticated?: boolean };
+      if (data.authenticated === false) {
+        setEnabled(false);
+        setFavorites([]);
+        setAuthStatus("unauthenticated");
+        return;
+      }
       setEnabled(true);
       setFavorites(data.favorites ?? []);
       setAuthStatus("authenticated");

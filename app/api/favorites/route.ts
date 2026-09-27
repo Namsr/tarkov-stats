@@ -46,11 +46,23 @@ async function guard(request: NextRequest): Promise<Guard> {
 
 // List the signed-in user's pinned accounts.
 export async function GET(request: NextRequest) {
-  const g = await guard(request);
-  if (!g.ok) return g.response;
+  // A signed-out visitor is a normal state, not an error. Answering 401 here
+  // put a red console error and a wasted request on every anonymous page view,
+  // and the client learned nothing it could not learn from this shape.
+  const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "favorites" });
+  if (!allowed) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers });
+  }
+  const user = await getSession();
+  if (!user) {
+    return NextResponse.json(
+      { favorites: [], authenticated: false },
+      { headers: { ...headers, "Cache-Control": "no-store" } },
+    );
+  }
 
   const store = await getFavoritesStore();
-  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
+  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers });
 
   const all = request.nextUrl.searchParams.get("all") === "1";
   const identity = all
@@ -60,10 +72,13 @@ export async function GET(request: NextRequest) {
         request.nextUrl.searchParams.get("cycle")
       );
   if (!all && !identity) {
-    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: g.headers });
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers });
   }
-  const favorites = await store.list(g.sub, identity);
-  return NextResponse.json({ favorites }, { headers: { ...g.headers, "Cache-Control": "no-store" } });
+  const favorites = await store.list(user.sub, identity);
+  return NextResponse.json(
+    { favorites, authenticated: true },
+    { headers: { ...headers, "Cache-Control": "no-store" } },
+  );
 }
 
 // Pin an account. Body: { aid, nickname?, note? }.

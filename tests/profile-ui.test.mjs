@@ -630,7 +630,10 @@ test("profile refresh checks automatically after returning without requiring F5"
   assert.match(button, /player\.refreshCheckAgain/);
   assert.match(button, /onCheck && status !== "idle"/);
   assert.match(button, /aria-live="polite"/);
-  assert.match(profile, /new URLSearchParams\(\{ aid, mode, refresh: "1" \}\)/);
+  // The button's own check carries wait=1: it must return the real post-refresh
+  // profile, because its result decides «Данные профиля обновлены» vs
+  // «Новых данных пока нет».
+  assert.match(profile, /new URLSearchParams\(\{ aid, mode, refresh: "1", wait: "1" \}\)/);
   assert.match(profile, /setStats\(data\.stats\)/);
   assert.match(profile, /JSON\.stringify\(data\.stats\) !== JSON\.stringify\(previousStats\)/);
   assert.match(profile, /requestGeneration\.current \+= 1/);

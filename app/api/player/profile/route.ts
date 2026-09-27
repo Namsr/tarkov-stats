@@ -114,6 +114,36 @@ async function refreshStoredPveProfile(aid: number): Promise<void> {
   });
 }
 
+async function refreshStoredArenaProfile(aid: number): Promise<void> {
+  const key = progressionFlightKey("arena", "persistent", aid);
+  return singleFlight(regularBackgroundRefreshes, key, async () => {
+    try {
+      const fetched = await getPublicProfile(aid, { force: true, mode: "arena" });
+      if (fetched.profile) await persistArenaProfile(fetched.profile);
+    } catch (error) {
+      console.error("Arena stored profile background refresh failed", error);
+    }
+  });
+}
+
+/**
+ * A forced refresh (F5 / «Обновить») must not block the response on upstream.
+ * We already hold a display snapshot, so answer from it and re-fetch after the
+ * response. The next open sees the fresh data; this one stays fast.
+ */
+function scheduleForcedProfileRefresh(mode: "regular" | "pve" | "arena", aid: number): void {
+  try {
+    after(() => (mode === "pve"
+      ? refreshStoredPveProfile(aid)
+      : mode === "arena"
+        ? refreshStoredArenaProfile(aid)
+        : refreshStoredRegularProfile(aid)));
+  } catch {
+    // `after()` is unavailable outside a request scope (unit tests). Skipping
+    // the refresh is correct: the stored snapshot was already served.
+  }
+}
+
 async function loadPersistentAchievementBaseline(mode: PersistentMode): Promise<AchievementBaseline | null> {
   const now = Date.now();
   const cached = persistentAchievementBaselineCache.get(mode);
@@ -258,11 +288,12 @@ async function arenaProfileResponse(input: {
   aid: number;
   cycleId: string;
   force: boolean;
+  waitForUpstream: boolean;
   profileHeaders: HeadersInit;
   noStore: HeadersInit;
   timing: ReturnType<typeof createRequestTiming>;
 }) {
-  const { aid, cycleId, force, profileHeaders, noStore, timing } = input;
+  const { aid, cycleId, force, waitForUpstream, profileHeaders, noStore, timing } = input;
   let source: "stored" | "upstream" | "cache" = "stored";
   let profile: PlayerProfile | null = null;
   let capture = { inserted: false, status: "stored" };
@@ -271,6 +302,7 @@ async function arenaProfileResponse(input: {
   let riskMs: number | undefined;
   let stored: Awaited<ReturnType<typeof getArenaProfile>> = null;
   let legacy: ArenaLegacySnapshot = null;
+  let fetchedUpstream = false;
   const scheduleArenaRiskRefresh = () => {
     try {
       // `after()` already runs outside the critical response path, so no
@@ -317,11 +349,16 @@ async function arenaProfileResponse(input: {
       // reparses it. Never make this non-forced read wait on upstream.
       if (legacy && !force) return legacyResponse(legacy);
     }
-    if (force || !stored) {
+    if (force && stored && !waitForUpstream) {
+      // A stored snapshot is already a complete display payload, so a forced
+      // refresh must not wait on upstream. Re-fetch after the response instead.
+      scheduleForcedProfileRefresh("arena", aid);
+    } else if (force || !stored) {
       const started = timing.now();
       const fetched = await getPublicProfile(aid, { force, mode: "arena" });
       profileMs = timing.elapsedMs(started);
       profile = fetched.profile;
+      fetchedUpstream = true;
       source = fetched.fromCache || fetched.fromEdgeCache ? "cache" : "upstream";
       if (profile) {
         await persistArenaProfile(profile);
@@ -345,7 +382,7 @@ async function arenaProfileResponse(input: {
     // runs only for fresh fetches or as a background refresh outside the
     // critical response path.
     let risk: Awaited<ReturnType<typeof getStoredArenaProfileRisk>> = null;
-    const isStoredHit = !force && source === "stored";
+    const isStoredHit = !fetchedUpstream && source === "stored";
     if (isStoredHit) {
       const riskStarted = timing.now();
       try {
@@ -374,7 +411,9 @@ async function arenaProfileResponse(input: {
     timing.setRequestContext({ nickname: stored.nickname });
     timing.finish({
       operation: "player_profile", mode: "arena", outcome: "success", status: 200, force, source,
-      cache: force ? "bypass" : source === "stored" ? "hit" : source === "cache" ? "hit" : "miss",
+      // A forced request that answered from the store scheduled the bypass for
+      // after the response, so the response itself was a store hit.
+      cache: isStoredHit ? "hit" : force ? "bypass" : source === "cache" ? "hit" : "miss",
       storage: "sqlite", profileMs, storeReadMs, riskMs,
     });
     return NextResponse.json({
@@ -426,6 +465,15 @@ async function arenaProfileResponse(input: {
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
+  const response = await handleGet(request, timing);
+  // The phase numbers are already in the admin analytics store; returning them
+  // here is what makes a slow profile attributable from the browser alone.
+  const serverTiming = timing.serverTiming();
+  if (serverTiming) response.headers.set("Server-Timing", serverTiming);
+  return response;
+}
+
+async function handleGet(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
   const ip = getClientIp(request);
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
   const rawMode = request.nextUrl.searchParams.get("mode");
@@ -473,6 +521,11 @@ export async function GET(request: NextRequest) {
 
   // ?refresh=1 (кнопка «Обновить» / перезагрузка) обходит наш 5-мин in-process кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
+  // A forced refresh normally answers from the stored snapshot and re-fetches
+  // after the response, so F5 never waits on tarkov.dev. The explicit
+  // «Обновить» button adds wait=1: the user asked for fresh data and is already
+  // showing «Проверяем свежие данные…», so it has to wait for the answer.
+  const waitForUpstream = request.nextUrl.searchParams.get("wait") === "1";
   const allowStaleRisk = request.nextUrl.searchParams.get("allowStaleRisk") === "1";
   const profileHeaders = force
     ? noStore
@@ -576,7 +629,7 @@ export async function GET(request: NextRequest) {
     return response;
   }
   if (mode === "arena") {
-    return arenaProfileResponse({ aid, cycleId, force, profileHeaders, noStore, timing });
+    return arenaProfileResponse({ aid, cycleId, force, waitForUpstream, profileHeaders, noStore, timing });
   }
   if (mode === "pve") {
     let storeOpenMs: number | undefined;
@@ -671,8 +724,10 @@ export async function GET(request: NextRequest) {
         });
         return response;
       };
-      if (stored && !force) {
-        if (needsPvpStatsParserRefresh(stored.stats)) {
+      if (stored && !(force && waitForUpstream)) {
+        if (force) {
+          scheduleForcedProfileRefresh("pve", aid);
+        } else if (needsPvpStatsParserRefresh(stored.stats)) {
           after(() => refreshStoredPveProfile(aid));
         }
         return await storedResponse(stored);
@@ -860,7 +915,9 @@ export async function GET(request: NextRequest) {
       status: 200,
       force,
       source: "stored",
-      cache: force ? "bypass" : "hit",
+      // Answered from the store either way; a forced refresh is scheduled for
+      // after the response, so the response itself was a hit.
+      cache: "hit",
       storage: "sqlite",
       storeReadMs,
       profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
@@ -882,7 +939,10 @@ export async function GET(request: NextRequest) {
     }, { headers: profileHeaders });
   };
 
-  if (stored && !force) return await storedResponse(stored);
+  if (stored && !(force && waitForUpstream)) {
+    if (force) scheduleForcedProfileRefresh("regular", aid);
+    return await storedResponse(stored);
+  }
 
   // Scoped to the upstream call, like the pve branch above. A throw from the
   // enrichment below has to surface as a failure, not be reported to the request

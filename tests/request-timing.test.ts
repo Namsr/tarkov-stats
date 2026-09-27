@@ -85,6 +85,41 @@ test("failure diagnostics keep only stable operation-scoped codes", () => {
   assert.equal(output[0].includes("example.com"), false);
 });
 
+test("Server-Timing reports the measured phases and nothing before finish", () => {
+  let now = 0;
+  const timing = createRequestTiming({ sampleRate: 1, now: () => now });
+  // Nothing is finished yet, so there is nothing honest to report.
+  assert.equal(timing.serverTiming(), null);
+
+  now = 40;
+  timing.finish({
+    operation: "player_profile",
+    mode: "regular",
+    outcome: "success",
+    status: 200,
+    totalMs: 40,
+    profileMs: 31.4,
+    storeReadMs: 2.6,
+    // A phase that was not measured must not appear, and neither must a
+    // descriptor the header cannot carry safely.
+    metadataMs: undefined,
+    riskMs: 0,
+    ...({ arbitrary: "dropped" } as object),
+  });
+
+  assert.equal(
+    timing.serverTiming(),
+    "profile;dur=31, storeread;dur=3, total;dur=40",
+  );
+  assert.equal(/[^\x20-\x7e]/.test(timing.serverTiming()), false, "header must stay ASCII");
+});
+
+test("Server-Timing always carries a total even with no measured phase", () => {
+  const timing = createRequestTiming({ sampleRate: 1, now: () => 0 });
+  timing.finish({ operation: "player_search", outcome: "success", status: 200, totalMs: 7 });
+  assert.equal(timing.serverTiming(), "total;dur=7");
+});
+
 test("unsampled requests emit no timing log", () => {
   const output: string[] = [];
   const timing = createRequestTiming({

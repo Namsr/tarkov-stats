@@ -232,7 +232,9 @@ function LegacyPlayer({
     const generation = requestGeneration.current;
     const previousStats = stats;
     const previousUpdatedAt = profileUpdatedAt;
-    const requestParams = new URLSearchParams({ aid, mode, refresh: "1" });
+    // wait=1: the user explicitly asked for fresh data and the button is already
+    // showing «Проверяем свежие данные…», so the answer has to be the real one.
+    const requestParams = new URLSearchParams({ aid, mode, refresh: "1", wait: "1" });
     const request = loadPlayerProfileResponse<RegularProfileResponse>(
       `/api/player/profile?${requestParams}`,
       { force: true },

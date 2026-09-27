@@ -209,7 +209,7 @@ test("arena route separates profile and risk timing phases and refreshes stale r
   assert.match(arenaFunction, /scheduleArenaRiskRefresh/);
   assert.match(arenaFunction, /after\(\(\) => refreshStoredArenaRisk\(aid\)\)/);
   assert.doesNotMatch(arenaFunction, /setTimeout/);
-  assert.match(arenaFunction, /const isStoredHit = !force && source === "stored"/);
+  assert.match(arenaFunction, /const isStoredHit = !fetchedUpstream && source === "stored"/);
 
   const storedBranch = arenaFunction.slice(arenaFunction.indexOf("const isStoredHit"));
   assert.match(storedBranch, /await getStoredArenaProfileRisk/);

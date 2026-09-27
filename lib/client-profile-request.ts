@@ -34,7 +34,11 @@ export function playerProfileRequestKey(url: string): string {
   const parsed = new URL(url, "http://local");
   if (parsed.pathname !== "/api/player/profile") return url;
   const mode = parsed.searchParams.get("mode") || "regular";
+  // `refresh` and `wait` change how the server answers, not which profile is
+  // being asked for, so a «Обновить» result still shares the entry every other
+  // consumer of this profile reads.
   parsed.searchParams.delete("refresh");
+  parsed.searchParams.delete("wait");
   if (mode !== "seasonal") parsed.searchParams.delete("cycle");
   parsed.searchParams.sort();
   const query = parsed.searchParams.toString();

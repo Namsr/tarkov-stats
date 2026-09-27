@@ -58,6 +58,27 @@ type RequestContext = {
   cycleId?: string | null;
 };
 
+/**
+ * Phase field → `Server-Timing` metric name. The same numbers already reach the
+ * admin analytics store; exposing them in the response is what makes a slow
+ * request attributable without a DevTools trace. Names stay short because the
+ * whole header has to fit in one line.
+ */
+const SERVER_TIMING_PHASES: [keyof TimingInput, string][] = [
+  ["profileMs", "profile"],
+  ["seasonalMs", "seasonal"],
+  ["parseMs", "parse"],
+  ["storeOpenMs", "storeopen"],
+  ["storeReadMs", "storeread"],
+  ["storeWriteMs", "storewrite"],
+  ["riskMs", "risk"],
+  ["baselineMs", "baseline"],
+  ["metadataMs", "metadata"],
+  ["masteryMs", "mastery"],
+  ["averagesMs", "averages"],
+  ["cohortMs", "cohort"],
+];
+
 const defaultNow = () => performance.now();
 
 export function getObservabilitySampleRate(
@@ -128,6 +149,7 @@ export function createRequestTiming(options: Options = {}) {
   const startedAt = now();
   let finished = false;
   let context: RequestContext = {};
+  let lastInput: RequestTimingInput | null = null;
 
   return {
     now,
@@ -137,9 +159,26 @@ export function createRequestTiming(options: Options = {}) {
     elapsedMs(started: number) {
       return roundedMs(now() - started);
     },
+    /**
+     * `Server-Timing` header value built from the phases of the last finished
+     * request, or null when no phase was measured. Call after `finish()`.
+     */
+    serverTiming(): string | null {
+      if (!lastInput) return null;
+      const parts: string[] = [];
+      for (const [field, name] of SERVER_TIMING_PHASES) {
+        const value = lastInput[field];
+        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+          parts.push(`${name};dur=${roundedMs(value)}`);
+        }
+      }
+      parts.push(`total;dur=${roundedMs(lastInput.totalMs ?? now() - startedAt)}`);
+      return parts.join(", ");
+    },
     finish(input: RequestTimingInput) {
       if (finished) return;
       finished = true;
+      lastInput = input;
       const totalMs = roundedMs(input.totalMs ?? now() - startedAt);
       const diagnostic = failureDiagnostic(input);
       void recordRequestEvent({
