@@ -130,20 +130,30 @@ test("home risk renders the stored showcase risk immediately", async () => {
   assert.match(route, /scoreVersion === riskScoreVersion\("regular", cycleId\) \|\| allowStaleRisk/);
 });
 
-test("the showcase retry bypasses the profile response cache", async () => {
+test("the showcase retry bypasses the profile response cache on every click", async () => {
   const [component, comparison] = await Promise.all([
     read("components/HomePage.tsx"),
     read("components/home/HomeComparison.tsx"),
   ]);
   // A 200 can carry an identity that does not match the requested aid, and that
   // body is cached for its whole TTL. The retry has to name the exact URL it is
-  // retrying, so the request is built outside the effect and compared by value:
-  // a mode or cycle switch then stops forcing on its own.
+  // retrying, so the request is built outside the effect.
   assert.match(component, /const profileUrl = aid == null \? null : showcaseProfileRequest\(mode, aid, seasonalCycleId\)/);
-  assert.match(component, /force: retryUrl === profileUrl/);
-  assert.match(component, /onClick=\{\(\) => setRetryUrl\(profileUrl\)\}/);
-  // A plain counter would keep forcing every later load after the first retry.
-  assert.doesNotMatch(component, /setAttempt\(/);
+  // Re-triggering rides on a counter, not on the retried URL: the second click
+  // would set an Object.is-identical URL, React would bail out of the update and
+  // no request would be issued at all.
+  assert.match(component, /onClick=\{\(\) => \{ forceUrl\.current = profileUrl; setAttempt\(\(value\) => value \+ 1\); \}\}/);
+  assert.match(component, /\}, \[aid, mode, attempt, profileUrl, seasonalCycleId\]\);/);
+  // The armed URL lives in a ref on purpose: as state it would be a dependency,
+  // and clearing it after a switch would re-run the effect, timeline and cohort
+  // fetches included, a second time.
+  assert.match(component, /const forceUrl = useRef<string \| null>\(null\);/);
+  // force is on for exactly the load the button asked for and is dropped for any
+  // other URL, so switching mode away and back reads the cache again instead of
+  // spending a rate-limit slot on a load nobody requested.
+  assert.match(component, /const force = forceUrl\.current === profileUrl;/);
+  assert.match(component, /if \(!force\) forceUrl\.current = null;/);
+  assert.match(component, /loadPlayerProfileResponse<HomeProfile>\(profileUrl, \{ force \}\)/);
   assert.doesNotMatch(component, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`\)/);
   // The favorite panel has no retry button, so the user action that triggers the
   // request is the only way past a cached mismatched body.

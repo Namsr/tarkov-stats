@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
 import CheaterScore from "@/components/CheaterScore";
 import ProfilePortrait from "@/components/ProfilePortrait";
@@ -55,7 +55,11 @@ export default function HomePage() {
   const [seasonalCycleId, setSeasonalCycleId] = useState<string | null>(null);
   const [mode, setMode] = useState<GameMode>("regular");
   const [snapshot, setSnapshot] = useState<ShowcaseSnapshot | null>(null);
-  const [retryUrl, setRetryUrl] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  // The button records the URL it is retrying in a ref, not in state: the load
+  // effect has to read it without depending on it, or clearing it after a mode
+  // or cycle switch would re-run that effect a second time.
+  const forceUrl = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,16 +86,20 @@ export default function HomePage() {
 
   useEffect(() => {
     if (profileUrl == null || aid == null) return;
+    // A 200 can carry a body this page cannot use, and that body stays in the
+    // response cache for its whole TTL, so the load the retry button asked for
+    // has to bypass the cache or it re-reads the same unusable payload and never
+    // recovers. Every other URL is an ordinary load: forcing one would spend a
+    // rate-limit slot on a switch that did not ask for it.
+    const force = forceUrl.current === profileUrl;
+    if (!force) forceUrl.current = null;
     let cancelled = false;
     const controller = new AbortController();
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
     const loadProfile = async (): Promise<HomeProfile | null> => {
       try {
-        // A 200 can carry a body this page cannot use, and that body stays in
-        // the response cache for its whole TTL. A retry has to bypass the cache
-        // or it re-reads the same unusable payload and never recovers.
-        const response = await loadPlayerProfileResponse<HomeProfile>(profileUrl, { force: retryUrl === profileUrl });
+        const response = await loadPlayerProfileResponse<HomeProfile>(profileUrl, { force });
         return response.ok && response.body.identity?.aid === aid && response.body.viewModel ? response.body : null;
       } catch { return null; }
     };
@@ -111,7 +119,7 @@ export default function HomePage() {
       if (!cancelled) setSnapshot({ mode, profile, timeline, cohort: cohortData });
     });
     return () => { cancelled = true; controller.abort(); };
-  }, [aid, mode, profileUrl, retryUrl, seasonalCycleId]);
+  }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
 
   // Stale-while-revalidate: keep the previous mode's card on screen while the
   // next mode loads. Wiping to the loading panel collapses the section and
@@ -178,7 +186,7 @@ export default function HomePage() {
             <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>
-        </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && profileUrl != null && <button className="home-text-link" onClick={() => setRetryUrl(profileUrl)}>{t("leaderboard.retry")}</button>}</div>}
+        </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && profileUrl != null && <button className="home-text-link" onClick={() => { forceUrl.current = profileUrl; setAttempt((value) => value + 1); }}>{t("leaderboard.retry")}</button>}</div>}
       </section>
 
       <section id="progress" className="home-section home-wrap">
