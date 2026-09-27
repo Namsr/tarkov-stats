@@ -51,10 +51,18 @@ async function backend(): Promise<SqliteDatabase | null> {
     if (!sqliteDatabase) {
       // @ts-ignore Node's strip-types runtime resolves this built-in in self-hosted mode.
       const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
-      sqliteDatabase = new sqlite.DatabaseSync(
+      // Initialize before caching, so a failed schema init cannot leave a
+      // half-initialized handle cached for the rest of the process.
+      const opened = new sqlite.DatabaseSync(
         process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
       );
-      initializeSeasonalSchema(sqliteDatabase);
+      try {
+        initializeSeasonalSchema(opened);
+      } catch (error) {
+        try { opened.close(); } catch { /* already closed */ }
+        throw error;
+      }
+      sqliteDatabase = opened;
     }
     return sqliteDatabase;
   } catch {

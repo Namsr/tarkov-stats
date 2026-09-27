@@ -2,6 +2,7 @@ node_modules
 .next
 .git
 .gitignore
+ops
 README.md
 .env*
 npm-debug.log*

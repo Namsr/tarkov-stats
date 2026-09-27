@@ -58,12 +58,26 @@ GEMINI.md
 /Caddyfile
 /docker-compose.yml
 /docker-compose.vps.yml
-# docs/ and ops/ stay local: only the product formula doc is public.
+# docs/ and most ops/ files stay local. The deploy source below is versioned.
 # NOTE: git cannot re-include files inside an excluded directory,
 # so list the directory contents instead of the directory itself.
 /docs/*
 !/docs/leaderboard-score-hours.md
 /ops/*
+!/ops/deploy.sh
+!/ops/docker-compose.vps.yml
+!/ops/profile-queue.sh
+!/ops/systemd/
+/ops/systemd/*
+!/ops/systemd/tarkovstats-deploy.service
+!/ops/systemd/tarkovstats-deploy.timer
+!/ops/systemd/tarkovstats-deploy-limited-builder.conf
+!/ops/systemd/journald-tarkovstats.conf
+!/ops/systemd/tarkovstats-profile-queue.service
+!/ops/systemd/tarkovstats-profile-queue.timer
+!/ops/systemd/tarkovstats-profile-queue-no-restart.conf
+!/ops/systemd/tarkovstats-*-sync.service
+!/ops/systemd/tarkovstats-*-sync.timer
 
 # local runtime data
 /data/*.db

@@ -80,7 +80,6 @@ test("Arena presentation preserves nullable values and namespaced filters", () =
   const utility = read("components/arena-ui.ts");
   const average = read("components/ArenaAverage.tsx");
   const profile = read("components/ArenaPlayer.tsx");
-  const risk = read("components/ArenaRiskPanel.tsx");
   assert.match(utility, /value === null \|\| value === undefined/);
   assert.match(utility, /return legacy \?\? null/);
   assert.match(average, /arena_\$\{mode\}_/);
@@ -90,11 +89,6 @@ test("Arena presentation preserves nullable values and namespaced filters", () =
   assert.match(average, /DEFAULT_MIN_MATCHES = "10"/);
   assert.match(profile, /body\.capture\?\.status === "refresh_failed"/);
   assert.match(profile, /throw new Error\(t\("player\.refreshStatus\.error"\)\)/);
-  assert.match(risk, /const RISK_METRICS = \["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"\]/);
-  assert.doesNotMatch(risk.slice(risk.indexOf("const RISK_METRICS"), risk.indexOf("const TIER_COLOR")), /headshot_rate/);
-  assert.match(risk, /scope === "overall"/);
-  assert.match(risk, /\.overall \?\? null/);
-  assert.match(risk, /viewBox="0 0 320 170"/);
 });
 
 test("Arena profile shares the profile header and selects an overall or mode scope", () => {
@@ -445,33 +439,27 @@ test("Arena helpers execute the nullable and legacy normalization rules", async 
   assert.equal(legacy?.overall.metrics.kd_ratio, 0);
 });
 
-test("Arena radar uses the PvP comparison scale and accessible interactions", () => {
+test("Arena comparison uses the PvP scale and accessible interactions", () => {
   const compare = read("components/FavoritesCompare.tsx");
-  const radar = read("components/ArenaRadar.tsx");
+  const bars = read("components/ArenaModeBars.tsx");
   const comparison = compare.slice(compare.indexOf("function ArenaComparisonTable"));
   assert.match(comparison, /ARENA_METRIC_KEYS\.map/);
   assert.doesNotMatch(comparison, /survivalRate|totalRaids|level|raids/);
   assert.match(compare, /isArenaProfile\(statsByFavorite\.get\(favoriteKey\(favorite\)\)\)/);
   assert.doesNotMatch(compare, /toArenaProfile\(statsByFavorite/);
-  assert.match(radar, /ArenaOverallStats/);
-  assert.match(radar, /Math\.atan\(Math\.log\(ratio\)\) \/ Math\.PI/);
-  assert.match(radar, /const meanRatios = centerValues\.map\(\(value\) => value === null \? null : 1\)/);
-  assert.match(radar, /onPointerEnter=/);
-  assert.match(radar, /onFocus=/);
-  assert.match(radar, /setPinnedAxis/);
-  assert.match(radar, /event\.key !== "Escape"/);
-  assert.match(radar, /className="sr-only"/);
-  assert.doesNotMatch(radar, /overflow-x-auto/);
-  assert.doesNotMatch(radar, /sampleShort/);
-  assert.doesNotMatch(radar, /cursor-help/);
-});
-
-test("Arena radar keeps translated side labels inside the viewBox", () => {
-  const radar = read("components/ArenaRadar.tsx");
-  assert.match(radar, /const side = index === 1 \? "right" : index === 4 \? "left" : null/);
-  assert.match(radar, /const labelX = side === "left" \? 8 : side === "right" \? 392 : label\.x/);
-  assert.match(radar, /<tspan key=\{line\} x=\{labelX\}/);
-  assert.match(radar, /dominantBaseline=\{label\.y > CY \+ 4 \? "hanging" : undefined\}/);
+  // The mode bars are the live surface for reading a mode against the average:
+  // the log scale comes from arenaBarPositionFromRatio, and the read-out has to
+  // work from the keyboard as well as the pointer.
+  assert.match(bars, /arenaBarPosition\(/);
+  assert.match(bars, /onPointerEnter=/);
+  assert.match(bars, /onFocus=/);
+  assert.match(bars, /onKeyDown=/);
+  assert.match(bars, /event\.key === "Escape"/);
+  assert.match(bars, /aria-keyshortcuts=\{metric === "matches" \? "ArrowLeft ArrowRight Escape"/);
+  assert.match(bars, /aria-label=\{`\$\{t\("arena\.mode\." \+ mode\)\}/);
+  assert.match(bars, /role="status"/);
+  assert.doesNotMatch(bars, /overflow-x-auto/);
+  assert.doesNotMatch(bars, /cursor-help/);
 });
 
 test("Arena bars center the log scale on the average player", async () => {

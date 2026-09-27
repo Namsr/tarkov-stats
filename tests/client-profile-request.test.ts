@@ -144,3 +144,65 @@ test("profile request keys keep identities and modes separate", () => {
   assert.notEqual(seasonal, anotherCycle);
   assert.notEqual(regular, anotherAid);
 });
+
+test("a cached 200 with a foreign identity is only recoverable by forcing", async () => {
+  const url = "/api/player/profile?aid=9000007&mode=regular&allowStaleRisk=1";
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    return Response.json({ identity: { aid: calls === 1 ? 9999999 : 9000007 }, viewModel: {} });
+  };
+
+  // The first response is a 200, so the response cache keeps it for its whole
+  // TTL. The showcase treats the mismatched identity as unusable and shows the
+  // retry button...
+  const first = await loadPlayerProfileResponse<{ identity: { aid: number }; viewModel: unknown }>(url, { request });
+  assert.equal(first.ok, true);
+  assert.equal(calls, 1);
+  const usable = (body: { identity: { aid: number } }) => body.identity.aid === 9000007;
+  assert.equal(usable(first.body), false);
+
+  // ...but re-reading it without force hands back the same unusable body, so the
+  // button would stay useless until the TTL expires.
+  const cached = await loadPlayerProfileResponse<{ identity: { aid: number } }>(url, { request });
+  assert.equal(calls, 1);
+  assert.equal(usable(cached.body), false);
+
+  // Forcing is what the retry does, and it reaches the network.
+  const retried = await loadPlayerProfileResponse<{ identity: { aid: number } }>(url, { request, force: true });
+  assert.equal(calls, 2);
+  assert.equal(usable(retried.body), true);
+  // The fresh body replaces the poisoned cache entry, so later readers are fine.
+  const afterRetry = await loadPlayerProfileResponse<{ identity: { aid: number } }>(url, {
+    request: async () => { throw new Error("must not fetch"); },
+  });
+  assert.equal(calls, 2);
+  assert.equal(usable(afterRetry.body), true);
+});
+
+test("a throttled forced request is not cached, so the next retry reaches the network", async () => {
+  const url = "/api/player/profile?aid=9000011&mode=regular&allowStaleRisk=1";
+  let calls = 0;
+  const throttled = async () => {
+    calls += 1;
+    return Response.json({ error: "rate_limited" }, { status: 429 });
+  };
+
+  // The showcase retry has to keep working after a throttled attempt, which is
+  // the common failure once the 10/min profile bucket is spent. Nothing about a
+  // 429 is cached, so every later click is a real request instead of a re-read
+  // of the failed body.
+  assert.equal((await loadPlayerProfileResponse(url, { request: throttled, force: true })).status, 429);
+  assert.equal(getCachedPlayerProfileResponse(url), null);
+  assert.equal((await loadPlayerProfileResponse(url, { request: throttled, force: true })).status, 429);
+  assert.equal(calls, 2);
+
+  // The retry that finally gets through becomes the cached body.
+  const recovered = await loadPlayerProfileResponse<{ identity: { aid: number } }>(url, {
+    force: true,
+    request: async () => Response.json({ identity: { aid: 9000011 }, viewModel: {} }),
+  });
+  assert.equal(calls, 2);
+  assert.equal(recovered.body.identity.aid, 9000011);
+  assert.equal(getCachedPlayerProfileResponse<{ identity: { aid: number } }>(url)?.body.identity.aid, 9000011);
+});

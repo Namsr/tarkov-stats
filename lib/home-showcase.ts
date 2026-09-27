@@ -72,6 +72,17 @@ export function showcaseCohortRequest(mode: GameMode, aid: number, seasonalCycle
   return `/api/average/cohort?${cohortQuery(aid, mode, "persistent")}`;
 }
 
+/**
+ * The showcase profile request. The retry button needs to name the exact URL it
+ * wants to bypass, so the URL is built here rather than inside the effect.
+ */
+export function showcaseProfileRequest(mode: GameMode, aid: number, seasonalCycleId: string | null): string {
+  const params = new URLSearchParams({ aid: String(aid), mode, allowStaleRisk: "1" });
+  const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
+  if (mode === "seasonal" && cycle) params.set("cycle", cycle);
+  return `/api/player/profile?${params}`;
+}
+
 function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
   return new URLSearchParams({
     aid: String(aid), mode, cycle, statistic: "trimmed_mean", period: "all",

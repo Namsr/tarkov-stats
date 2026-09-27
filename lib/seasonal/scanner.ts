@@ -399,11 +399,19 @@ async function getLifecycle(cycle: SeasonCycle) {
   if (!lifecycleDb) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
-    lifecycleDb = new sqlite.DatabaseSync(
+    // Initialize before caching, so a failed schema init cannot leave a
+    // half-initialized handle cached for the rest of the process.
+    const opened = new sqlite.DatabaseSync(
       process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
     );
     const { initializeSeasonalSchema } = await import("./storage");
-    initializeSeasonalSchema(lifecycleDb);
+    try {
+      initializeSeasonalSchema(opened);
+    } catch (error) {
+      try { opened.close(); } catch { /* already closed */ }
+      throw error;
+    }
+    lifecycleDb = opened;
   }
   const lifecycle = createSqliteScannerLifecycle(lifecycleDb);
   lifecycleDb.prepare(`INSERT INTO season_cycles (mode, cycle_id, starts_at, ends_at, enabled, upstream_contract)

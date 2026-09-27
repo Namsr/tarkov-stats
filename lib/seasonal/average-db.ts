@@ -153,10 +153,18 @@ async function openSeasonalAverageBackend(): Promise<AverageBackend | null> {
     if (!database) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
-      database = new sqlite.DatabaseSync(
+      // Initialize before caching, so a failed schema init cannot leave a
+      // half-initialized handle cached for the rest of the process.
+      const opened = new sqlite.DatabaseSync(
         process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
       );
-      initializeSeasonalSchema(database);
+      try {
+        initializeSeasonalSchema(opened);
+      } catch (error) {
+        try { opened.close(); } catch { /* already closed */ }
+        throw error;
+      }
+      database = opened;
     }
     return { db: database };
   } catch (error) {
@@ -695,10 +703,16 @@ export async function getSeasonalAverageQuery(): Promise<
     if (!database) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
-      database = new sqlite.DatabaseSync(
+      const opened = new sqlite.DatabaseSync(
         process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db"
       );
-      initializeSeasonalSchema(database);
+      try {
+        initializeSeasonalSchema(opened);
+      } catch (error) {
+        try { opened.close(); } catch { /* already closed */ }
+        throw error;
+      }
+      database = opened;
     }
     if (configuredCycle) upsertSqliteSeasonCycle(database, configuredCycle);
     return async (cycleId, now = Date.now()) => {

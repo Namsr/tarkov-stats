@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { HOME_EXAMPLE_AIDS, homeCohort, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortRequest, showcaseMode, showcaseProfileHref, showcaseTimelineCycle } from "../lib/home-showcase.ts";
+import { HOME_EXAMPLE_AIDS, homeCohort, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortRequest, showcaseMode, showcaseProfileHref, showcaseProfileRequest, showcaseTimelineCycle } from "../lib/home-showcase.ts";
 import type { HomeProfile } from "../lib/home-showcase";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
 
@@ -98,6 +98,37 @@ test("showcaseTimelineCycle and showcaseCohortRequest encode the section capabil
     "/api/seasonal/cohort?aid=42&mode=seasonal&cycle=cycle-1&statistic=trimmed_mean&period=all",
   );
   assert.equal(showcaseCohortRequest("seasonal", 42, null), null);
+});
+
+test("showcaseProfileRequest names one URL per aid and mode so a retry can target it", () => {
+  assert.equal(
+    showcaseProfileRequest("regular", 42, null),
+    "/api/player/profile?aid=42&mode=regular&allowStaleRisk=1",
+  );
+  assert.equal(
+    showcaseProfileRequest("pve", 42, null),
+    "/api/player/profile?aid=42&mode=pve&allowStaleRisk=1",
+  );
+  // The stale-risk hint is deliberate: the showcase card may render a cached
+  // risk verdict while the rest of the card is still loading.
+  assert.equal(
+    showcaseProfileRequest("arena", 42, null),
+    "/api/player/profile?aid=42&mode=arena&allowStaleRisk=1",
+  );
+  // A seasonal URL carries its cycle, and a different cycle is a different URL,
+  // so a retry for one cycle never forces the next one.
+  assert.equal(
+    showcaseProfileRequest("seasonal", 42, "cycle-1"),
+    "/api/player/profile?aid=42&mode=seasonal&allowStaleRisk=1&cycle=cycle-1",
+  );
+  assert.notEqual(
+    showcaseProfileRequest("seasonal", 42, "cycle-1"),
+    showcaseProfileRequest("seasonal", 42, "cycle-2"),
+  );
+  assert.notEqual(
+    showcaseProfileRequest("regular", 42, null),
+    showcaseProfileRequest("pve", 42, null),
+  );
 });
 
 test("homeCohort keeps radar averages and rejects foreign payloads", () => {

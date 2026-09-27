@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily TarkovStats Seasonal player index sync
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
+# Wait for a running Seasonal profile poll to finish; the feed poll uses -n.
+ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/bin/flock /run/tarkovstats-seasonal-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/sync-seasonal-index.mjs
+TimeoutStartSec=14h
