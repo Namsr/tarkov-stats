@@ -51,8 +51,9 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   }
   // The counter gates the loading flag too: a superseded load may neither start nor
   // stop the spinner the newest load owns, so the flag is set up front and cleared
-  // only by the current generation.
-  assert.match(loadBody, /setLoading\(true\); setError\(""\);/);
+  // only by the current generation. Pinned right after the guard's own declaration,
+  // where only indentation may intervene, so a conditional wrap cannot satisfy it.
+  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => ${claim[1]} !== \\w+\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
   assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
   // No payload is written straight from the fetch, which would skip the guard.
   assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
