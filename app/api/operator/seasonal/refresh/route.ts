@@ -62,7 +62,11 @@ export async function POST(request: Request) {
 
   let body: Record<string, unknown>;
   try {
-    body = await request.json() as Record<string, unknown>;
+    // `request.json()` resolves for a literal `null` body, so the parsed value has
+    // to be checked before the field reads below can throw a TypeError.
+    const parsed: unknown = await request.json();
+    if (typeof parsed !== "object" || parsed === null) throw new TypeError("body is not an object");
+    body = parsed as Record<string, unknown>;
   } catch {
     return Response.json({ error: "Invalid JSON" }, { status: 400, headers });
   }
