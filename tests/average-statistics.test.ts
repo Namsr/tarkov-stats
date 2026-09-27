@@ -38,7 +38,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 
-const { getArenaBackend, getStore } = await import("../lib/db.ts");
+const { getStore } = await import("../lib/db.ts");
 const {
   ADMIN_RISK_SCORE_VERSIONS,
   evaluateAndStoreRisk,
@@ -525,55 +525,6 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
     for (const column of [...COHORT_FILTER, ...RADAR]) {
       assert.ok(ddl.includes(column), `${name} must carry ${column}: ${ddl}`);
     }
-  }
-});
-
-test("the population fallback returns the same cohort on the D1 store", async () => {
-  // The aggregate statement is shared by both backends, so a change to its shape
-  // has to hold on D1 too: one ranked pass per metric over the cohort CTE, one
-  // statement, and the D1 bind limit respected.
-  reset();
-  for (let aid = 1; aid <= 21; aid += 1) add(aid, { hours: 100, raids: 100, value: 10 });
-  for (let aid = 22; aid <= 24; aid += 1) add(aid, { hours: 100, raids: 100, value: 1000 });
-  for (let aid = 30; aid <= 70; aid += 1) add(aid, { hours: 200, raids: 200, value: aid });
-  add(999, { hours: 100, raids: 5, value: 5000 });
-  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
-
-  const expected = await store.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all");
-  assert.equal(expected.strategy, "population");
-
-  const key = Symbol.for("__cloudflare-context__");
-  const previous = globalThis[key];
-  const parameterCounts = [];
-  globalThis[key] = { env: { DB: {
-    prepare(sql) {
-      const statement = db.prepare(sql);
-      return {
-        // The store probes sqlite_master before it binds anything.
-        first: async () => statement.get() ?? null,
-        bind(...params) {
-          parameterCounts.push(params.length);
-          assert.ok(params.length <= 100, "D1 parameter limit");
-          return {
-            first: async () => statement.get(...params) ?? null,
-            all: async () => ({ results: statement.all(...params) }),
-            run: async () => statement.run(...params),
-          };
-        },
-      };
-    },
-  } } };
-  try {
-    assert.equal((await getArenaBackend()).kind, "d1");
-    const d1Backed = await getStore("regular");
-    assert.ok(d1Backed);
-    assert.deepEqual(await d1Backed.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all"), expected);
-    // One count statement, then one aggregate statement.
-    assert.equal(parameterCounts.length, 2);
-    assert.ok(Math.max(...parameterCounts) <= 100);
-  } finally {
-    if (previous === undefined) delete globalThis[key];
-    else globalThis[key] = previous;
   }
 });
 

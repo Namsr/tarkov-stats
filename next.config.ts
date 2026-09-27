@@ -5,7 +5,6 @@ const isDev = process.env.NODE_ENV === "development";
 // CSP без nonce — чтобы не ломать статический кэш страниц (nonce заставил бы
 // рендерить всё динамически). 'unsafe-inline' нужен для inline-бутстрапа Next и
 // inline-стилей; внешние источники минимальны:
-//   challenges.cloudflare.com — Turnstile (скрипт + iframe + XHR)
 //   static.cloudflareinsights.com — Web Analytics beacon для DNS-only доменов
 //   cloudflareinsights.com — приём метрик ручного Web Analytics beacon
 //   lh3.googleusercontent.com — аватар залогиненного через Google пользователя
@@ -16,12 +15,11 @@ const isDev = process.env.NODE_ENV === "development";
 // (React refresh) и ws: (HMR).
 const csp = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com${isDev ? " 'unsafe-eval'" : ""}`,
+  `script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' blob: data: https://lh3.googleusercontent.com https://assets.tarkov.dev https://imagemagic.tarkov.dev",
   "font-src 'self'",
-  `connect-src 'self' https://challenges.cloudflare.com https://cloudflareinsights.com${isDev ? " ws:" : ""}`,
-  "frame-src https://challenges.cloudflare.com",
+  `connect-src 'self' https://cloudflareinsights.com${isDev ? " ws:" : ""}`,
   "worker-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",
