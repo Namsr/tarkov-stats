@@ -380,11 +380,13 @@ test("regular average progression exposes the median PvP raid series without a t
   assert.deepEqual(pve.series.cumulative.overall, []);
 });
 
-test("the progression backfill refuses to publish a backup while the WAL cannot be checkpointed", () => {
-  // `PRAGMA wal_checkpoint(FULL)` reports busy=1 when a reader holds the database,
-  // and `exec()` throws that row away. Copying only the main file then publishes a
-  // restore point that is silently missing the frames still sitting in the -wal.
-  const directory = mkdtempSync(join(tmpdir(), "backfill-busy-"));
+test("the progression backfill publishes a backup that holds the frames left in the WAL", () => {
+  // `copyFileSync` copied only the main database file, so a `.bak` published while the
+  // web container held this database was missing the frames still sitting in the -wal:
+  // it passed `quick_check` on restore and had silently lost the newest commits. The
+  // backup is taken from one read snapshot, so the reader and the WAL-only row must both
+  // survive into the published restore point.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-wal-"));
   const path = join(directory, "progression.db");
   const seed = new DatabaseSync(path);
   let reader;
@@ -398,7 +400,8 @@ test("the progression backfill refuses to publish a backup while the WAL cannot 
     reader.exec("BEGIN");
     reader.prepare("SELECT COUNT(*) AS n FROM t").get();
 
-    // Commit new rows into the WAL while the reader still holds its snapshot.
+    // Commit a row into the WAL while the reader still holds its snapshot, so the frame
+    // is in the -wal only and never reaches the main database file.
     const writer = new DatabaseSync(path);
     writer.exec("INSERT INTO t VALUES (2)");
     writer.close();
@@ -409,12 +412,20 @@ test("the progression backfill refuses to publish a backup while the WAL cannot 
       resolve("scripts/backfill-progression.mjs"),
       path,
     ], { encoding: "utf8" });
-    assert.notEqual(result.status, 0, "a busy checkpoint must fail the run");
-    assert.match(result.stderr, /busy/);
-    assert.deepEqual(
-      readdirSync(directory).filter((name) => name.endsWith(".bak")), [],
-      "no incomplete backup may be published",
-    );
+    assert.equal(result.status, 0, `the run must succeed while a reader is open: ${result.stderr}`);
+
+    const backups = readdirSync(directory).filter((name) => name.endsWith(".bak"));
+    assert.equal(backups.length, 1, "exactly one restore point must be published");
+    const backup = new DatabaseSync(join(directory, backups[0]), { readOnly: true });
+    try {
+      assert.equal(Object.values(backup.prepare("PRAGMA quick_check").get())[0], "ok");
+      assert.deepEqual(
+        backup.prepare("SELECT x FROM t ORDER BY x").all().map((row) => row.x), [1, 2],
+        "the published backup must contain the row committed to the -wal",
+      );
+    } finally {
+      backup.close();
+    }
   } finally {
     try { reader?.exec("ROLLBACK"); } catch {}
     try { reader?.close(); } catch {}
