@@ -43,6 +43,28 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
 });
 
+test("every favorites response is no-store, so the CDN cannot replay a 401 or 503 to the next visitor", async () => {
+  const route = await readFile("app/api/favorites/route.ts", "utf8");
+
+  // The limiter stopped emitting headers of its own, so spreading `headers`
+  // contributed nothing and every error branch shipped with no directive.
+  assert.match(route, /const noStore = \{ "Cache-Control": "no-store" \}/);
+  // Merged once in guard(), which is what the 14 mutation branches echo.
+  assert.match(route, /return \{ ok: true, sub: user\.sub, headers: \{ \.\.\.headers, \.\.\.noStore \} \}/);
+  // guard()'s own two rejections, plus GET's rate-limit/store/identity failures.
+  assert.match(route, /status: 429, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 401, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 503, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 400, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  // A new response must merge no-store or reuse g.headers, never the raw bag.
+  assert.doesNotMatch(route, /\{ status: \d+, headers \}/);
+  assert.doesNotMatch(route, /\{ headers \}\)/);
+  assert.doesNotMatch(route, /NextResponse\.json\([^)]*\{ headers: headers \}/);
+  // Keep the directive single-sourced rather than re-spelled at a return site.
+  assert.equal((route.match(/"Cache-Control"/g) ?? []).length, 1);
+  assert.doesNotMatch(route, /NextResponse\.json\([\s\S]{0,200}"Cache-Control"/);
+});
+
 test("seasonal profiles poll the risk-only endpoint after background evaluation", async () => {
   const [source, route] = await Promise.all([
     readFile("components/SeasonalPlayer.tsx", "utf8"),
