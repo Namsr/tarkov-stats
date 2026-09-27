@@ -61,6 +61,14 @@ for (const [name, makeStore] of storeFactories) {
     assert.deepEqual((await store.reviews(12))[0].modes, ["arena", "regular"]);
   });
 
+  test(`${name}: the admin accounts listing needs the unfiltered form`, async () => {
+    const store = makeStore();
+    await store.report({ userSub: "google-a", aid: 31, mode: "regular", cycleId: "persistent", createdAt: 1 });
+    await store.report({ userSub: "google-b", aid: 32, mode: "arena", cycleId: "persistent", createdAt: 2 });
+    assert.deepEqual((await store.reviews()).map(({ aid }) => aid), [32, 31]);
+    assert.deepEqual((await store.reviews(32)).map(({ aid }) => aid), [32]);
+  });
+
   test(`${name}: tied candidates are ordered by AID, not by an unspecified tie`, async () => {
     // Every account shares a report count and a created_at millisecond, so
     // (report_count, last_reported_at) is not a unique key and ORDER BY feeds a
@@ -104,6 +112,7 @@ test("community routes never reference the destructive ban operation", async () 
   assert.equal(operatorSource.includes("user_" + "sub"), false);
   assert.equal(operatorSource.includes("helper_" + "id"), false);
   assert.equal(operatorSource.includes("reportCount"), true);
+  assert.match(operatorSource, /aid === undefined[\s\S]*store\.reviews\(/);
   assert.match(reportSource, /input\.mode === "regular"[\s\S]*getProgressionStore\("regular"\)[\s\S]*store\.latest\(input\.aid\)/);
   for (const path of paths) {
     const source = readFileSync(path, "utf8");
