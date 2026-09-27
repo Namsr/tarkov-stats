@@ -69,8 +69,14 @@ export async function persistArenaProfile(
     profile.achievements ? Object.keys(profile.achievements) : [],
     options,
   );
+  // The rows above are already committed. The publication marker only tells the
+  // materializer that Arena averages need recomputing, so a failure there must
+  // not fail a profile we just stored: the caller would answer 503 for data that
+  // is present, and only a reload would recover. markAveragePublicationDirty
+  // already logs the cause, and AVERAGE_PUBLICATION_STALE_MS forces a rebuild
+  // even when the marker is lost. Matches lib/regular-profile-capture.ts:40.
   if (!(await markAveragePublicationDirty("arena"))) {
-    throw new Error("Arena average publication invalidation failed");
+    console.warn(`arena average publication marker failed after storing profile ${profile.aid}`);
   }
   return arena;
 }

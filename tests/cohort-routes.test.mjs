@@ -27,9 +27,19 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   const compute = db.slice(db.indexOf("async function computePersistentTwoDimensionalCohort"), db.indexOf("async function computePersistentRiskBaseline"));
   assert.match(compute, /SUM\(CASE WHEN hours >= \?/);
   assert.equal((compute.match(/input\.readFirst\(/g) ?? []).length, 1);
-  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 2);
-  assert.match(db, /metric_values AS/);
-  assert.match(db, /PARTITION BY metric/);
+  // One aggregate statement, read once. The window is chosen before it runs, so
+  // a too-small matched window is never aggregated and thrown away.
+  assert.equal((compute.match(/input\.readAll\(/g) ?? []).length, 1);
+  // The window is chosen before the aggregate runs, so a matched cohort the
+  // counts already rejected is never aggregated and thrown away.
+  assert.match(compute, /const selected = !matched && \(mode === "regular" \|\| mode === "pve"\)\s*\?\s*twoDimensionalPopulationWhere\(/);
+  assert.match(compute, /:\s*twoDimensionalRangeWhere\(/);
+  // The six metrics are ranked one at a time over the shared cohort CTE. A
+  // UNION ALL of per-metric rows would expand the cohort six times before the
+  // sort, which is what made the population fallback take seconds.
+  assert.match(db, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*COUNT\(\*\) OVER \(\) AS n FROM cohort WHERE \$\{metric\} IS NOT NULL/);
+  assert.doesNotMatch(db, /metric_values AS/);
+  assert.doesNotMatch(db, /PARTITION BY metric/);
 });
 
 
@@ -42,7 +52,9 @@ test("seasonal route delegates center lookup to the identity-scoped helper", () 
   assert.doesNotMatch(seasonalHelper, /WITH latest AS/);
   assert.match(seasonalHelper, /COHORT_CACHE_TTL_MS = 5 \* 60_000/);
   assert.match(seasonalHelper, /COHORT_CACHE_MAX = 512/);
-  assert.match(seasonalHelper, /metric_values AS/);
+  assert.doesNotMatch(seasonalHelper, /metric_values AS/);
+  assert.doesNotMatch(seasonalHelper, /PARTITION BY metric/);
+  assert.match(seasonalHelper, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*COUNT\(\*\) OVER \(\) AS n FROM cohort WHERE \$\{metric\} IS NOT NULL/);
   assert.match(seasonalHelper, /actualRanges/);
 });
 
