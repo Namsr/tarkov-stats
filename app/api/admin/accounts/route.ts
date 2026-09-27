@@ -77,9 +77,13 @@ export async function GET(request: NextRequest) {
   const store = await getAnalyticsStore();
   if (!store) return NextResponse.json({ accounts: [], nextCursor: null, available: false }, { headers: ADMIN_NO_STORE_HEADERS });
   const suspiciousOnly = source === "suspicious";
-  const reports = suspiciousOnly
-    ? await getCommunityReportsStore().then((reportsStore) => reportsStore?.reviews() ?? []).catch(() => null)
-    : await getCommunityReportsStore().then((reportsStore) => reportsStore?.reviews() ?? []).catch(() => []);
+  // getCommunityReportsStore() resolves to null when reporting storage is
+  // missing, and reviews() can throw. Both mean "no data", not "no reports":
+  // collapsing them into [] made the unavailable branch below unreachable and
+  // showed the console an empty queue while reports were silently not collected.
+  // reviews() is async in both stores, so .catch only ever sees a throwing query.
+  const reportsStore = await getCommunityReportsStore().catch(() => null);
+  const reports = reportsStore ? await reportsStore.reviews().catch(() => null) : null;
   if (suspiciousOnly && reports === null) {
     return NextResponse.json({ accounts: [], nextCursor: null, available: false }, { headers: ADMIN_NO_STORE_HEADERS });
   }

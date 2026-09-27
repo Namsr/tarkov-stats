@@ -9,13 +9,15 @@ import { createD1SeasonalStore, upsertD1SeasonCycle } from "../lib/seasonal/stor
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { initializeSeasonalSchema, SEASONAL_SCHEMA, createSqliteSeasonalStore, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
-import { refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreIntervals } from "../lib/seasonal/daily-aggregates.ts";
+import { materializeRows, refreshD1SeasonalAggregates, refreshSqliteSeasonalAggregates, scoreIntervals } from "../lib/seasonal/daily-aggregates.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1SeasonalOperatorStore } from "../lib/seasonal/operator-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { createD1ScannerLifecycle } from "../lib/seasonal/scanner-d1.ts";
 // @ts-ignore -- direct Node TypeScript tests require explicit extensions.
 import { queryProgressionSeries } from "../lib/seasonal/progression.ts";
+// @ts-ignore -- direct Node TypeScript tests require explicit extensions.
+import type { SeasonalProfile } from "../types/seasonal.ts";
 
 class FakeStatement {
   args: unknown[] = [];
@@ -453,8 +455,8 @@ test("D1 snapshots keep stats_json in parity with the SQLite store", async () =>
   // stats_json, so every Cloudflare row kept the column default '{}' while the
   // SQLite twin stored the leaderboard snapshot. Every read that derives from
   // json_extract(stats_json, ...) then saw NULL on D1 only.
-  const seed = {
-    mode: "seasonal" as const, cycleId: "s1", aid: 7, nickname: "p7",
+  const seed: SeasonalProfile = {
+    mode: "seasonal", cycleId: "s1", aid: 7, nickname: "p7",
     profileUpdatedAt: 100, lastAccessAt: 100, lifetimePvpHours: 10,
     pvpStatsVersion: 2, pvpStatsParserVersion: 1, leaderboardActivityAt: 95,
     counters: {
@@ -465,6 +467,7 @@ test("D1 snapshots keep stats_json in parity with the SQLite store", async () =>
       survivedRaids: 17, totalRaids: 25, deaths: 13, totalKills: 60, runThrough: 4,
       survivalRate: 68, kdRatio: 4.6, pmcKdRatio: 3.75, killsPerRaid: 2.4,
       pmcSurvivalRate: 60, longestWinStreak: 7, level: 33, prestige: 2,
+      achievementsCount: 1,
     },
     staticSignals: { prestige: 2, longestWinStreak: 7, achievementIds: ["a1"] },
   };
@@ -472,8 +475,7 @@ test("D1 snapshots keep stats_json in parity with the SQLite store", async () =>
     db.prepare(`SELECT stats_json FROM progression_snapshots WHERE aid = 7`).get().stats_json;
 
   const sqlite = new DatabaseSync(":memory:");
-  initializeSeasonalSchema(sqlite);
-  const sqliteStore = createSqliteSeasonalStore(sqlite, { mode: "seasonal" });
+  const sqliteStore = createSqliteSeasonalStore(sqlite);
   await sqliteStore.upsertProfile(seed);
   assert.equal((await sqliteStore.captureSnapshot(seed)).inserted, true);
 
@@ -520,4 +522,18 @@ test("D1 snapshots keep stats_json in parity with the SQLite store", async () =>
 
   sqlite.close();
   d1Db.close();
+});
+
+test("a raid bucket larger than the argument limit does not overflow the stack", () => {
+  // The first buckets of a season hold every player who got that far, so
+  // aggregateGroup's `points` is unbounded. Math.max(...values) throws RangeError
+  // past ~125k arguments on V8 and rolled the whole materialization back.
+  const points = Array.from({ length: 130_000 }, (_, index) => ({
+    aid: index + 1, date: "2026-01-01", value: 10, hours: 10, raids: 8,
+    confidence: 1, freshnessAt: index + 1,
+  }));
+  const rows = materializeRows("s1", { cumulative: points, tempo: [], form: [] });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].n, 130_000);
+  assert.equal(rows[0].freshnessAt, 130_000);
 });

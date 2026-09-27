@@ -40,7 +40,7 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
-  assert.match(db, /if \(strategy === null && \(input\.mode === "regular" \|\| input\.mode === "pve"\)\)/);
+  assert.match(db, /!matched && \(mode === "regular" \|\| mode === "pve"\)/);
   assert.doesNotMatch(db, /if \(mode !== "regular" \|\| period === "all"\) return active/);
 });
 
