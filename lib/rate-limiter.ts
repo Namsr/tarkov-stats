@@ -1,10 +1,9 @@
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX = 30;
 
-// Best-effort, in-process limiter. На одном Node-инстансе Map живёт в процессе
-// (сбрасывается при рестарте); на Cloudflare Workers — в пределах изолята.
+// Best-effort, in-process limiter. Map живёт в Node-процессе и сбрасывается при рестарте.
 // Ключ = "<bucket>:<ip>", так что разные эндпоинты лимитируются раздельно.
-// Cleanup ленивый — top-level setInterval в Workers-скоупе запрещён.
+// Cleanup ленивый.
 //
 // Окно хранится вместе с метками: store общий для всех бакетов, поэтому prune
 // обязан фильтровать каждый ключ его собственным windowMs. Иначе запрос к

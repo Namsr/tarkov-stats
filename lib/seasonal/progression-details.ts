@@ -22,7 +22,7 @@ export type ProgressionRiskReason =
   | "pmc_raids_per_day";
 
 /**
- * Database-neutral interval DTO. SQLite and D1 adapters should map their rows to
+ * Interval DTO. SQLite queries map their rows to
  * this shape after restricting the query to one cycle, `mode = 'seasonal'`, and
  * non-banned profiles. `localDate` is the Moscow date persisted with the interval.
  */
