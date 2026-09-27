@@ -101,24 +101,27 @@ function metricsSql(where: string, statistic: AverageStatistic): string {
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= 20 THEN CAST(n * 0.05 AS INTEGER) ELSE 0 END
        AND rn <= n - CASE WHEN n >= 20 THEN CAST(n * 0.05 AS INTEGER) ELSE 0 END`;
-  const values = COMPARISON_RADAR_METRICS.map((metric) =>
-    `SELECT '${metric}' AS metric, ${metric} AS v FROM cohort WHERE ${metric} IS NOT NULL`
-  ).join(" UNION ALL ");
+  // One ranked pass per metric over the shared cohort CTE. Ranking the six
+  // metrics together meant a UNION ALL that expanded the cohort six times first,
+  // so the statement wrote and then sorted six figures worth of rows. Cheap for a
+  // matched window of a few hundred rows, ruinous for the population fallback,
+  // which has no window and aggregates every eligible row. node:sqlite is
+  // synchronous, so that expansion blocked every other response on the process.
+  const perMetric = COMPARISON_RADAR_METRICS.map((metric) =>
+    `SELECT '${metric}' AS metric, MAX(n) AS n,
+      AVG(CASE WHEN ${selected} THEN v END) AS a, NULL, NULL, NULL, NULL
+      FROM (SELECT ${metric} AS v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
+        COUNT(*) OVER () AS n FROM cohort WHERE ${metric} IS NOT NULL)`
+  ).join("\n    UNION ALL\n    ");
   return `${NORMALIZED_CTE}, cohort AS (
     SELECT * FROM normalized ${where}
-  ), metric_values AS (${values}), ranked AS (
-    SELECT metric, v, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY v) AS rn,
-      COUNT(*) OVER (PARTITION BY metric) AS n
-    FROM metric_values
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
     MIN(hours) AS hours_min, MAX(hours) AS hours_max,
     MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
   FROM cohort
   UNION ALL
-  SELECT metric, MAX(n) AS n, AVG(CASE WHEN ${selected} THEN v END) AS a,
-    NULL, NULL, NULL, NULL
-  FROM ranked GROUP BY metric`;
+  ${perMetric}`;
 }
 
 export interface SeasonalComparisonCohortInput {
