@@ -2,11 +2,12 @@
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -380,6 +381,35 @@ test("regular average progression exposes the median PvP raid series without a t
   assert.deepEqual(pve.series.cumulative.overall, []);
 });
 
+// `VACUUM INTO` refuses an existing target and the stamped name is all that separates two
+// runs, so the tests below pin it. The preload replaces the no-argument `Date` the script
+// stamps the name with, which `--import` runs before the script itself.
+const frozenStamp = "2026-09-27T19-56-03-443Z";
+const stampedBackupName = `progression.db.before-progression-backfill-${frozenStamp}.bak`;
+
+function writeFrozenClock(directory: string): string {
+  const file = join(directory, "frozen-clock.mjs");
+  writeFileSync(file, [
+    "const Real = Date;",
+    'const fixed = new Real("2026-09-27T19:56:03.443Z").getTime();',
+    "globalThis.Date = class extends Real {",
+    "  constructor(...args) { super(...(args.length ? args : [fixed])); }",
+    "  static now() { return Real.now(); }",
+    "};",
+  ].join("\n"));
+  return file;
+}
+
+function runBackfill(path: string, clock?: string) {
+  return spawnSync(process.execPath, [
+    "--experimental-strip-types",
+    "--experimental-sqlite",
+    ...(clock ? [`--import=${pathToFileURL(clock).href}`] : []),
+    resolve("scripts/backfill-progression.mjs"),
+    path,
+  ], { encoding: "utf8" });
+}
+
 test("the progression backfill publishes a backup that holds the frames left in the WAL", () => {
   // `copyFileSync` copied only the main database file, so a `.bak` published while the
   // web container held this database was missing the frames still sitting in the -wal:
@@ -406,12 +436,7 @@ test("the progression backfill publishes a backup that holds the frames left in 
     writer.exec("INSERT INTO t VALUES (2)");
     writer.close();
 
-    const result = spawnSync(process.execPath, [
-      "--experimental-strip-types",
-      "--experimental-sqlite",
-      resolve("scripts/backfill-progression.mjs"),
-      path,
-    ], { encoding: "utf8" });
+    const result = runBackfill(path);
     assert.equal(result.status, 0, `the run must succeed while a reader is open: ${result.stderr}`);
 
     const backups = readdirSync(directory).filter((name) => name.endsWith(".bak"));
@@ -430,6 +455,114 @@ test("the progression backfill publishes a backup that holds the frames left in 
     try { reader?.exec("ROLLBACK"); } catch {}
     try { reader?.close(); } catch {}
     try { seed.close(); } catch {}
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test("the progression backfill leaves a published restore point at a taken name alone", () => {
+  // `VACUUM INTO` throws on an existing target, and the catch that deletes an unsound copy
+  // used to answer that by removing the file it collided with. A name that is already taken
+  // holds a restore point an earlier run published, so the run has to stop there instead.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-taken-"));
+  const path = join(directory, "progression.db");
+  const target = join(directory, stampedBackupName);
+  try {
+    const seed = new DatabaseSync(path);
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("INSERT INTO t VALUES (1)");
+    seed.close();
+
+    const published = new DatabaseSync(target);
+    published.exec("CREATE TABLE earlier_run (x INTEGER)");
+    published.exec("INSERT INTO earlier_run VALUES (7)");
+    published.close();
+
+    const result = runBackfill(path, writeFrozenClock(directory));
+    assert.notEqual(result.status, 0, "a taken name must abort the run");
+    assert.match(result.stderr, /restore point already exists/);
+
+    const survivor = new DatabaseSync(target, { readOnly: true });
+    try {
+      assert.deepEqual(
+        survivor.prepare("SELECT x FROM earlier_run").all().map((row) => row.x), [7],
+        "the restore point published by the earlier run must survive untouched",
+      );
+    } finally {
+      survivor.close();
+    }
+    assert.deepEqual(
+      readdirSync(directory).filter((name) => name.endsWith(".bak")), [stampedBackupName],
+      "the run must not publish a second restore point under the taken name",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test("the progression backfill keeps a sound backup when a writer moves the source", async () => {
+  // The counts are only decidable against a source `data_version` proves unchanged, because
+  // a commit landing after the copy can shrink the source below the copy -- `daily_aggregates`
+  // is rewritten on this same database by the population materializer -- and a sound restore
+  // point then holds more rows than the source. The writer below commits the moment the copy
+  // appears, which `VACUUM INTO` does only after it has fixed its snapshot, so the run really
+  // does read a source that moved and must publish the copy rather than delete it.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-writer-"));
+  const path = join(directory, "progression.db");
+  const target = join(directory, stampedBackupName);
+  const writer = new Worker(`
+    const { parentPort, workerData } = require("node:worker_threads");
+    const { existsSync } = require("node:fs");
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(workerData.path);
+    while (!existsSync(workerData.target)) {}
+    db.exec("BEGIN IMMEDIATE");
+    db.exec("DELETE FROM t WHERE x > 195");
+    db.exec("COMMIT");
+    db.close();
+    parentPort.postMessage("committed");
+  `, { eval: true, workerData: { path, target } });
+  try {
+    const seed = new DatabaseSync(path);
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("CREATE TABLE bulk (x INTEGER)");
+    // A large table keeps the run busy between the copy and the read of the source, so the
+    // writer's single commit lands inside that window on a loaded machine too.
+    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM series WHERE x < 49999)
+      INSERT INTO bulk (x) SELECT x FROM series`);
+    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM series WHERE x < 200)
+      INSERT INTO t (x) SELECT x FROM series`);
+    seed.close();
+
+    const committed = new Promise((resolve) => writer.once("message", resolve));
+    const result = runBackfill(path, writeFrozenClock(directory));
+    assert.deepEqual(await committed, "committed");
+    assert.equal(result.status, 0, `the run must succeed while a writer commits: ${result.stderr}`);
+
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.backupSourceUnchanged, false, "the writer must have moved the source");
+    assert.equal(summary.backupRows.t, 200);
+    assert.equal(summary.backupSourceRows.t, 195, "the summary must report the source it read");
+
+    const backup = new DatabaseSync(target, { readOnly: true });
+    try {
+      assert.equal(
+        Object.values(backup.prepare("PRAGMA quick_check").get())[0], "ok",
+        "the sound copy must stay published",
+      );
+      assert.equal(Number(backup.prepare("SELECT COUNT(*) AS n FROM t").get().n), 200);
+    } finally {
+      backup.close();
+    }
+    const source = new DatabaseSync(path, { readOnly: true });
+    try {
+      assert.equal(Number(source.prepare("SELECT COUNT(*) AS n FROM t").get().n), 195);
+    } finally {
+      source.close();
+    }
+  } finally {
+    await writer.terminate();
     rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
   }
 });
