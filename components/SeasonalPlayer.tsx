@@ -15,7 +15,7 @@ import CheaterScore from "@/components/CheaterScore";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
-import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
+import { levelAtExperience, seasonalKdRatio, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
@@ -63,7 +63,8 @@ function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): Se
     deaths,
     runThrough: existing?.runThrough ?? null,
     survivalRate: existing?.survivalRate ?? (totalRaids && survivedRaids != null ? (survivedRaids / totalRaids) * 100 : null),
-    kdRatio: existing?.kdRatio ?? (deaths && deaths > 0 && counters.pmcKills != null ? counters.pmcKills / deaths : null),
+    // Same rule as buildSeasonalComparisonStats, and one implementation of it.
+    kdRatio: seasonalKdRatio(existing, counters),
     pmcKdRatio,
     killsPerRaid: existing?.killsPerRaid ?? (counters.pmcRaids > 0 ? counters.pmcKills / counters.pmcRaids : null),
     pmcSurvivalRate,

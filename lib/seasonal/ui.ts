@@ -1,3 +1,5 @@
+import type { SeasonalCounters, SeasonalStats } from "../../types/seasonal";
+
 export interface ChartDatum {
   seasonDay: number;
   value: number;
@@ -91,6 +93,25 @@ export function levelAtExperience(experience: number, bands: readonly LevelBand[
     level = band.level;
   }
   return level;
+}
+
+/**
+ * One K/D basis for the Seasonal radar, shared by the server projection and the
+ * client view of the same profile.
+ *
+ * `stats.kdRatio` is totalKills / deaths with both spanning PMC+Scav, and the
+ * parser leaves it null when the Scav side is incomplete, so it is never rebuilt
+ * from the PMC-only counters. The counters answer only when the profile carries
+ * no Seasonal stats at all, and a missing kill count stays unknown rather than
+ * becoming a ratio.
+ */
+export function seasonalKdRatio(
+  stats: Pick<SeasonalStats, "kdRatio"> | undefined,
+  counters: Pick<SeasonalCounters, "pmcKills" | "pmcDeaths">,
+): number | null {
+  if (stats) return stats.kdRatio;
+  const ratio = counters.pmcDeaths > 0 ? counters.pmcKills / counters.pmcDeaths : null;
+  return Number.isFinite(ratio) ? ratio : null;
 }
 
 export function spacedLevelLabels(

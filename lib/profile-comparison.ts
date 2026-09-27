@@ -1,6 +1,8 @@
 import type { ProfileComparisonStats } from "../types/profile-view.ts";
 import type { ParsedPlayerStats } from "../types/tarkov.ts";
 import type { SeasonalProfile } from "../types/seasonal.ts";
+// @ts-expect-error Node's strip-types test runner requires the explicit extension.
+import { seasonalKdRatio } from "./seasonal/ui.ts";
 
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -28,12 +30,12 @@ export function buildRegularComparisonStats(stats: ParsedPlayerStats): ProfileCo
 export function buildSeasonalComparisonStats(profile: SeasonalProfile): ProfileComparisonStats {
   const stats = profile.seasonalStats;
   const counters = profile.counters;
-  const totalKills = stats?.totalKills ?? counters.pmcKills;
-  const deaths = stats?.deaths ?? counters.pmcDeaths;
   return {
     hoursPlayed: finiteOrNull(profile.lifetimePvpHours),
     pmcRaids: finiteOrNull(counters.pmcRaids),
-    kdRatio: finiteOrNull(stats?.kdRatio ?? (deaths > 0 ? totalKills / deaths : null)),
+    // One rule with the client view, in seasonalKdRatio. The overview
+    // projection in lib/player-profile-view.ts reads stats.kdRatio directly.
+    kdRatio: finiteOrNull(seasonalKdRatio(profile.seasonalStats, profile.counters)),
     pmcKdRatio: finiteOrNull(
       stats?.pmcKdRatio ?? (counters.pmcDeaths > 0 ? counters.killedPmc / counters.pmcDeaths : null),
     ),
