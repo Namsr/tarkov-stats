@@ -50,3 +50,15 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     /result\.status === 404[\s\S]*?identity: \{ aid, mode, cycleId \}[\s\S]*?code: "mode_profile_unavailable"/,
   );
 });
+
+test("the Seasonal refresh route reports a missing cycle and a missing owner differently", async () => {
+  const refresh = await readFile("app/api/operator/seasonal/refresh/route.ts", "utf8");
+  // `owner` is a required request field that is passed to every queue call, so
+  // omitting it is a client error. A missing cycle stays a 409 server conflict.
+  assert.match(refresh, /if \(!cycle\) return Response\.json\(\{ error: "Active Seasonal cycle is required" \}, \{ status: 409, headers \}\);/);
+  assert.match(refresh, /if \(!owner\) return Response\.json\(\{ error: "owner is required" \}, \{ status: 400, headers \}\);/);
+  assert.doesNotMatch(refresh, /!cycle \|\| !owner/);
+  // The sibling operator route already reports the same class of problem as a 400.
+  const run = await readFile("app/api/operator/seasonal/run/route.ts", "utf8");
+  assert.match(run, /\{ error: "cycleId and owner are required" \}, \{ status: 400, headers \}/);
+});
