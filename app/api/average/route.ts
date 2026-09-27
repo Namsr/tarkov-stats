@@ -249,11 +249,14 @@ export async function GET(request: NextRequest) {
 
   // `dimension` is optional and defaults to "hours", so the range keys read here are
   // min and max, with an inclusive upper bound (`maxInclusive` is always true).
-  // minHours/maxHours are honoured nowhere on this route: the old key switch reached
-  // them only when no dimension and no min/max were present, and it gave them an
-  // exclusive upper bound. That request shape answered 200 and is rejected now,
+  // On the regular/pve path minHours/maxHours are read by nothing: the old key switch
+  // reached them only when no dimension and no min/max were present, and it gave them
+  // an exclusive upper bound. That request shape answered 200 and is rejected now,
   // deliberately, rather than dropping the filter and answering with whole-population
-  // statistics. The legacy callers live on /api/baseline, which still reads them.
+  // statistics. The guard sits below the arena early return in GET because the arena
+  // branch does read them: arenaRange passes minHours/maxHours into getArenaAverage,
+  // and components/ArenaAverage.tsx sends them. /api/baseline still reads the pair for
+  // the non-arena callers, so the keys are not simply gone.
   if (params.has("minHours") || params.has("maxHours")) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json(

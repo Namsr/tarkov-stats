@@ -993,11 +993,12 @@ test("the average route rejects the legacy minHours/maxHours pair instead of dro
   add(2, { hours: 2000, totalRaids: 2 });
 
   // `dimension` is optional and defaults to "hours", so the route reads min/max with
-  // an inclusive upper bound. minHours/maxHours are read nowhere here: with a
-  // dimension present they were silently dropped, and with no dimension and no
-  // min/max they selected an exclusive upper bound. Both shapes answered 200 and
-  // both are rejected now, so the second one loses a range that used to work.
-  // /api/baseline still honours these keys, so the pair is not simply gone.
+  // an inclusive upper bound. On the regular path minHours/maxHours are read by
+  // nothing: with a dimension present they were silently dropped, and with no
+  // dimension and no min/max they selected an exclusive upper bound. Both shapes
+  // answered 200 and both are rejected now, so the second one loses a range that
+  // used to work. /api/baseline still honours these keys for the non-arena callers,
+  // and the arena branch of the same route reads them too, so the pair is not gone.
   for (const query of [
     "?mode=regular&dimension=hours&minHours=100",
     "?mode=regular&dimension=hours&maxHours=1000",
