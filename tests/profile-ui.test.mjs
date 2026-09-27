@@ -108,6 +108,15 @@ test("ordinary profile failures retain the generic error UI", async () => {
   assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
 });
 
+test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+
+  // React updater functions must be pure: a nested setState runs during the render
+  // phase, and React may invoke the updater for a render it throws away.
+  assert.doesNotMatch(seasonal, /setProfile\(\(current\) => \{[\s\S]*?setDisplayNickname/);
+  assert.match(seasonal, /if \(profile\?\.nickname\) setDisplayNickname\(profile\.nickname\);\s*\n\s*setProfile\(null\);/);
+});
+
 test("profile actions share a top edge and helper copy sits underneath", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
