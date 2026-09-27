@@ -174,18 +174,6 @@ async function getSqliteBanDb(): Promise<any | null> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function cloudflareBindings(): Promise<{ bans: any; players: any } | null> {
-  try {
-    const mod = await import("@opennextjs/cloudflare");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const env = mod.getCloudflareContext().env as any;
-    return env.BANS_DB ? { bans: env.BANS_DB, players: env.DB ?? null } : null;
-  } catch {
-    return null;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createSqliteBanStore(db: any): BanStore {
   db.exec(BAN_SCHEMA);
   return {
@@ -297,70 +285,12 @@ export function createSqliteBanStore(db: any): BanStore {
   };
 }
 
-// D1 cannot make a transaction atomic across separate bindings. We therefore
-// commit the ban registry first, then place the tombstone/delete in the primary
-// DB. Missing bindings or migrations result in a null store, not a broken build.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1Store(bans: any, players: any): BanStore {
-  return {
-    async isBanned(aid) {
-      return Boolean(await bans.prepare("SELECT 1 FROM banned_accounts WHERE aid = ?").bind(aid).first());
-    },
-    async get(aid) {
-      return toAccount(await bans.prepare("SELECT * FROM banned_accounts WHERE aid = ?").bind(aid).first());
-    },
-    async sources(aid) {
-      const result = await bans.prepare(`SELECT source FROM banned_accounts WHERE aid = ?
-        UNION SELECT source FROM ban_confirmations WHERE aid = ?`).bind(aid, aid).all();
-      return ((result.results ?? []) as { source: string | null }[])
-        .map((row) => row.source == null ? UNKNOWN_BAN_SOURCE : String(row.source));
-    },
-    async confirmBanned(input, meta = {}) {
-      const confirmedAt = meta.confirmedAt ?? Date.now();
-      const source = meta.source ?? UNKNOWN_BAN_SOURCE;
-      const rawStatus = meta.rawStatus ?? null;
-      const reason = meta.reason ?? null;
-      await bans.batch([
-        bans.prepare(
-          `INSERT INTO banned_accounts
-             (aid, first_banned_at, last_confirmed_at, source, raw_status, reason, profile_updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(aid) DO UPDATE SET last_confirmed_at = excluded.last_confirmed_at,
-             source = excluded.source, raw_status = excluded.raw_status, reason = excluded.reason,
-             profile_updated_at = MAX(profile_updated_at, excluded.profile_updated_at)`
-        ).bind(input.aid, confirmedAt, confirmedAt, source, rawStatus, reason, input.upstreamUpdatedAt),
-        bans.prepare(
-          "INSERT INTO ban_confirmations (aid, confirmed_at, source, raw_status, reason) VALUES (?, ?, ?, ?, ?)"
-        ).bind(input.aid, confirmedAt, source, rawStatus, reason),
-        bans.prepare(INSERT_SNAPSHOT_SQL).bind(...snapshotArgs(input)),
-      ]);
-      if (players) {
-        await players.batch([
-          players.prepare(
-            "INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'confirmed_ban', ?) ON CONFLICT(aid) DO NOTHING"
-          ).bind(input.aid, confirmedAt),
-          players.prepare("DELETE FROM players WHERE aid = ?").bind(input.aid),
-        ]);
-      }
-    },
-  };
-}
-
 export async function getBanStore(): Promise<BanStore | null> {
-  const bindings = await cloudflareBindings();
-  if (bindings) {
-    try {
-      await bindings.bans.prepare("SELECT 1 FROM banned_accounts LIMIT 1").first();
-      return d1Store(bindings.bans, bindings.players);
-    } catch {
-      return null;
-    }
-  }
   const db = await getSqliteBanDb();
   return db ? createSqliteBanStore(db) : null;
 }
 
-/** False when no ban backend is configured, allowing D1 deployments to degrade safely. */
+/** False when the local ban database is unavailable. */
 export async function isAidBanned(aid: number): Promise<boolean> {
   const store = await getBanStore();
   return store ? store.isBanned(aid) : false;

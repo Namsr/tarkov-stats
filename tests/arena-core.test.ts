@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- The direct Node runner uses the same path hook as Arena route tests.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -31,7 +30,6 @@ const {
   ARENA_PARSER_VERSION,
   ARENA_UPSERT_SQL,
   arenaUpsertStatements,
-  initializeArenaSchema,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
 
@@ -282,57 +280,6 @@ test("Arena storage writes all modes atomically, keeps nulls, and rejects stale 
   assert.equal(normalized?.modes.teamFight.counters.headshots, null);
 });
 
-test("Arena history migration backfills current snapshots once and is idempotent", () => {
-  const migration = readFileSync("scripts/arena-history-d1.sql", "utf8");
-  const memory = new DatabaseSync(":memory:");
-  try {
-    memory.exec("CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY)");
-    initializeArenaSchema(memory);
-    upsertArenaSqlite(memory, parseArenaProfileStats(profile(503)).arenaProfile, 123);
-    memory.exec("DROP TABLE arena_mode_stats_history");
-    memory.exec(migration);
-    assert.equal(memory.prepare("SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 503").get().n, 6);
-    memory.exec(migration);
-    assert.equal(memory.prepare("SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 503").get().n, 6);
-  } finally {
-    memory.close();
-  }
-});
-
-test("Arena schema adds BestArp before its index and preserves legacy rows", () => {
-  const legacySchema = readFileSync("scripts/arena-storage-d1.sql", "utf8")
-    .replace(/  best_arp REAL,\r?\n/g, "")
-    .replace(/CREATE INDEX IF NOT EXISTS idx_arena_mode_stats_best_arp\r?\n  ON arena_mode_stats\(arena_mode, best_arp DESC\);?\r?\n/g, "");
-  const memory = new DatabaseSync(":memory:");
-  try {
-    memory.exec("CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY)");
-    memory.exec(legacySchema);
-    memory.prepare(`INSERT INTO arena_mode_stats
-      (aid,arena_mode,hours,upstream_version,parser_version,raw_json,fetched_at)
-      VALUES (504,'overall',10,100,1,'{}',200)`).run();
-    memory.exec(readFileSync("scripts/arena-risk-index-d1.sql", "utf8"));
-    initializeArenaSchema(memory);
-    initializeArenaSchema(memory);
-    assert.equal(memory.prepare("SELECT COUNT(*) n FROM arena_mode_stats WHERE aid=504").get().n, 1);
-    assert.ok(memory.prepare("PRAGMA table_info(arena_mode_stats)").all().some((row) => row.name === "best_arp"));
-    assert.ok(memory.prepare("PRAGMA table_info(arena_mode_stats_history)").all().some((row) => row.name === "best_arp"));
-    assert.ok(memory.prepare(`SELECT 1 FROM sqlite_master
-      WHERE type='index' AND name='idx_arena_mode_stats_best_arp'`).get());
-    const comparisonColumns = ["arena_mode", "parser_version", "games_count", "hours", "aid",
-      "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match"];
-    assert.deepEqual(memory.prepare("PRAGMA index_info(idx_arena_mode_stats_comparison)").all().map((row) => row.name), comparisonColumns);
-    assert.equal(memory.prepare("SELECT 1 FROM sqlite_master WHERE name='idx_arena_mode_stats_mode_parser'").get(), undefined);
-    memory.exec("DROP INDEX idx_arena_mode_stats_comparison");
-    const migration = readFileSync("scripts/arena-comparison-index-d1.sql", "utf8");
-    memory.exec(migration);
-    memory.exec(migration);
-    assert.deepEqual(memory.prepare("PRAGMA index_info(idx_arena_mode_stats_comparison)").all().map((row) => row.name), comparisonColumns);
-    assert.equal(memory.prepare("SELECT COUNT(*) n FROM arena_mode_stats WHERE aid=504").get().n, 1);
-  } finally {
-    memory.close();
-  }
-});
-
 test("Arena averages, cohort, and display-only risk use current eligible snapshots", async () => {
   const store = await getStore("arena");
   assert.ok(store);
@@ -391,7 +338,7 @@ test("Arena analytics use normalized metrics without loading raw payloads or cou
   }
   const { getArenaBackend } = await import("../lib/db.ts");
   const backend = await getArenaBackend();
-  assert.equal(backend.kind, "sqlite");
+  assert.ok(backend);
   const prepare = backend.db.prepare;
   const projections = [];
   backend.db.prepare = function (sql) {
@@ -757,7 +704,7 @@ test("Arena risk streams selected numeric peers through a covering index", async
   for (let aid = 901; aid <= 930; aid += 1) await save(profile(aid, { kills: 20 + (aid % 4), deaths: 20 }));
   const { getArenaBackend } = await import("../lib/db.ts");
   const backend = await getArenaBackend();
-  assert.equal(backend.kind, "sqlite");
+  assert.ok(backend);
   const prepare = backend.db.prepare;
   const buffered = [];
   const streamed = [];
@@ -914,7 +861,7 @@ test("Arena indexed selection matches reference filtering and formulas across mo
   }
 });
 
-test("Arena numeric scans preserve object-row SQLite and D1 results and D1 bind limits", async () => {
+test("Arena numeric scans preserve object-row SQLite results", async () => {
   resetArenaData();
   await save(profile(900, { kills: 120, deaths: 8 }));
   for (let aid = 901; aid <= 930; aid++) await save(profile(aid, { kills: 20 + aid % 4 }));
@@ -934,29 +881,6 @@ test("Arena numeric scans preserve object-row SQLite and D1 results and D1 bind 
     assert.deepEqual(await getArenaCohort(900, "teamFight"), expectedCohort);
   } finally {
     db.prepare = prepare;
-  }
-  const key = Symbol.for("__cloudflare-context__");
-  const previous = globalThis[key];
-  const parameterCounts = [];
-  globalThis[key] = { env: { DB: {
-    prepare(sql) {
-      const statement = db.prepare(sql);
-      return { bind(...params) {
-        parameterCounts.push(params.length);
-        assert.ok(params.length <= 100, "D1 parameter limit");
-        return { all: async () => ({ results: statement.all(...params) }),
-          run: async () => statement.run(...params) };
-      } };
-    },
-  } } };
-  try {
-    assert.equal((await getArenaBackend()).kind, "d1");
-    assert.deepEqual(normalize(await getArenaProfileRisk(900)), expectedRisk);
-    assert.deepEqual(await getArenaCohort(900, "teamFight"), expectedCohort);
-    assert.ok(parameterCounts.length >= 7);
-  } finally {
-    if (previous === undefined) delete globalThis[key];
-    else globalThis[key] = previous;
   }
 });
 

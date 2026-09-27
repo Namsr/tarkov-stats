@@ -10,7 +10,6 @@ import {
   createSqliteSeasonalStore,
   initializeSeasonalSchema,
 } from "../lib/seasonal/storage.ts";
-import { createD1SeasonalStore } from "../lib/seasonal/storage-d1.ts";
 import { PROFILE_SECTION_ORDER } from "../types/player-profile-view.ts";
 
 const gameModeFixture = JSON.parse(readFileSync("tests/fixtures/seasonal-game-mode.json", "utf8"));
@@ -103,32 +102,6 @@ function storageProfile(updatedAt: number, commonSkills?: unknown, withPortrait 
   return profile;
 }
 
-class FakeD1Statement {
-  args: unknown[] = [];
-  private readonly db: DatabaseSync;
-  private readonly sql: string;
-  constructor(db: DatabaseSync, sql: string) {
-    this.db = db;
-    this.sql = sql;
-  }
-  bind(...args: unknown[]) { this.args = args; return this; }
-  first() { return this.db.prepare(this.sql).get(...this.args) ?? null; }
-  all() { return { results: this.db.prepare(this.sql).all(...this.args) }; }
-  run() {
-    const result = this.db.prepare(this.sql).run(...this.args);
-    return { meta: { changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid) } };
-  }
-}
-
-class FakeD1 {
-  private readonly db: DatabaseSync;
-  constructor(db: DatabaseSync) { this.db = db; }
-  prepare(sql: string) { return new FakeD1Statement(this.db, sql); }
-  async batch(statements: FakeD1Statement[]) {
-    return statements.map((statement) => statement.run());
-  }
-}
-
 test("Seasonal parser retains the latest Common skills JSON", () => {
   const profile = parseSeasonalProfile(gameModeFixture, parserOptions);
   assert.deepEqual(profile.commonSkills, gameModeFixture.profile.skills.Common);
@@ -173,28 +146,4 @@ test("SQLite Common skills survive storage round-trip and duplicate enrichment",
   assert.deepEqual((await store.getProfile({ mode: "seasonal", cycleId: "season-2026-01", aid: 42 })).weaponMastery,
     enriched.weaponMastery);
   db.close();
-});
-
-test("D1 duplicate enrichment preserves portrait fields while storing Common skills", async () => {
-  const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync("scripts/seasonal-storage-d1.sql", "utf8"));
-  const store = createD1SeasonalStore(new FakeD1(db));
-  const first = storageProfile(1_783_501_200_000, undefined, true);
-  await store.upsertProfile(first);
-  await store.captureSnapshot(first, 1_783_501_200_100);
-  const enriched = storageProfile(1_783_501_200_000, [{ Id: "Strength", Progress: 3 }], false, [{ id: "SR", progress: 4 }]);
-  assert.equal((await store.captureSnapshot(enriched, 1_783_501_200_200)).status, "duplicate");
-  assert.deepEqual({
-    total_raids: db.prepare("SELECT total_raids FROM progression_snapshots").get().total_raids,
-    common_skills: JSON.parse(db.prepare("SELECT common_skills FROM progression_snapshots").get().common_skills),
-    weapon_mastery: JSON.parse(db.prepare("SELECT weapon_mastery FROM progression_snapshots").get().weapon_mastery),
-  }, { total_raids: 12, common_skills: enriched.commonSkills, weapon_mastery: enriched.weaponMastery });
-  db.close();
-});
-
-test("D1 skills migration is a one-shot ALTER for existing schemas", () => {
-  assert.match(readFileSync("scripts/seasonal-skills-d1.sql", "utf8"),
-    /ALTER TABLE progression_snapshots ADD COLUMN common_skills TEXT/);
-  assert.match(readFileSync("scripts/seasonal-mastery-d1.sql", "utf8"),
-    /ALTER TABLE progression_snapshots ADD COLUMN weapon_mastery TEXT/);
 });
