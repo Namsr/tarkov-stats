@@ -1,0 +1,10 @@
+[Unit]
+Description=TarkovStats GitHub auto deploy
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/lock/tarkovstats-deploy.lock /usr/local/sbin/tarkovstats-deploy
+TimeoutStartSec=45min

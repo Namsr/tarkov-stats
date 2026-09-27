@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly TarkovStats Seasonal JSON profile sync
+
+[Timer]
+OnCalendar=*-*-* *:15:00 Europe/Moscow
+AccuracySec=1s
+Persistent=true
+Unit=tarkovstats-seasonal-profile-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly TarkovStats Arena profile sync
+
+[Timer]
+OnCalendar=*-*-* *:50:00 Europe/Moscow
+AccuracySec=1s
+Persistent=true
+Unit=tarkovstats-arena-profile-sync.service
+
+[Install]
+WantedBy=timers.target
