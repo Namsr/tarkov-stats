@@ -410,6 +410,44 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
+test("the FAQ dialog takes focus, traps Tab behind an inert page, and gives it back", async () => {
+  const faq = await readFile("components/FaqWidget.tsx", "utf8");
+
+  // Moving focus in is what keeps the keyboard off the trigger behind the backdrop,
+  // and inverting the body siblings is what keeps Tab off the page as well. The
+  // wrapper holds the overlay and the trigger as one body child, so the rest of the
+  // page is exactly what is left over. The gaps are \s* only, so the match cannot
+  // run out of this effect and into the Escape one; keyed on [open] so the cleanup
+  // covers the button, backdrop and Escape close paths, and runs on unmount too. The
+  // open also clears the flag the navigating closes leave behind.
+  assert.match(
+    faq,
+    /useEffect\(\(\) => \{\s*if \(!open\) return;\s*navigatingRef\.current = false;\s*const siblings = Array\.from\(document\.body\.children\)\.filter\(\s*\(el\): el is HTMLElement => el instanceof HTMLElement && el !== rootRef\.current,\s*\);\s*for \(const el of siblings\) el\.inert = true;\s*dialogRef\.current\?\.focus\(\);\s*return \(\) => \{\s*for \(const el of siblings\) el\.inert = false;\s*\};\s*\}, \[open\]\);/,
+  );
+  assert.match(faq, /<div ref=\{rootRef\}>/);
+  assert.doesNotMatch(faq, /return \(\) => \{ triggerRef\.current\?\.focus\(\); \};/);
+  // The gaps are the dialog's own attributes, so the match cannot slide onto the
+  // trigger: a dialog without `tabIndex={-1}` cannot take focus at all, and the focus
+  // call in the effect would no-op on it. Inerting the page is also what makes
+  // `aria-modal` honest, rather than a claim about a background still tabbable.
+  assert.match(
+    faq,
+    /<div\s+ref=\{dialogRef\}\s+role="dialog"\s+aria-modal="true"\s+aria-label=\{t\("faq\.title"\)\}\s+tabIndex=\{-1\}/,
+  );
+  assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+  // Focus returns from the backdrop's animation end, not from the open -> closing
+  // step, because the backdrop keeps covering the trigger until that fires. The three
+  // answer links close the dialog and soft-navigate, and the widget is in the root
+  // layout, so that end can land on the destination page: the flag keeps the router's
+  // own focus handling in charge there.
+  assert.match(
+    faq,
+    /onAnimationEnd=\{\(event\) => \{\s*if \(event\.target === event\.currentTarget && dialogState === "closing"\) \{\s*setDialogState\("closed"\);\s*if \(!navigatingRef\.current\) triggerRef\.current\?\.focus\(\);\s*\}\s*\}\}/,
+  );
+  assert.match(faq, /function closeFaqAndNavigate\(\) \{\s*navigatingRef\.current = true;\s*closeFaq\(\);\s*\}/);
+  assert.equal((faq.match(/onClick=\{closeFaqAndNavigate\}/g) ?? []).length, 3);
+});
+
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
   const source = await readFile("app/average/page.tsx", "utf8");
   const header = await readFile("components/AveragePageHeader.tsx", "utf8");
