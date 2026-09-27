@@ -147,8 +147,7 @@ function dbPaths() {
 let sqliteDb: any = null;
 let warned = false;
 
-// Operator progression is SQLite-only for now. Cloudflare builds degrade to a
-// null store unless the Node SQLite runtime is actually available.
+// Operator progression uses SQLite when the Node SQLite runtime is available.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getSqliteDb(): Promise<any | null> {
   if (sqliteDb) return sqliteDb;

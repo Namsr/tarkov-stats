@@ -1,5 +1,4 @@
 import type { PlayerIndexResult, PlayerIndexStore } from "@/lib/db";
-import { getSeasonalD1 } from "@/lib/seasonal/d1";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any | null = null;
@@ -49,16 +48,6 @@ function merge(exact: PlayerIndexResult[], prefix: PlayerIndexResult[], limit: n
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function d1ProfileMetadataAvailable(db: any): Promise<boolean> {
-  try {
-    await db.prepare("SELECT profile_updated_at, mode, cycle_id FROM player_profiles LIMIT 1").first();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqliteProfileMetadataAvailable(db: any): boolean {
   try {
     db.prepare("SELECT profile_updated_at, mode, cycle_id FROM player_profiles LIMIT 1").get();
@@ -66,28 +55,6 @@ function sqliteProfileMetadataAvailable(db: any): boolean {
   } catch {
     return false;
   }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1Store(db: any, cycleId: string, includeProfileMetadata: boolean): PlayerIndexStore {
-  const sql = queries(includeProfileMetadata);
-  return {
-    async isReady() {
-      return Boolean(await db.prepare(sql.ready).bind(cycleId).first());
-    },
-    async search(nickname, limit) {
-      const query = nickname.trim().toLowerCase();
-      const [exact, prefix] = await Promise.all([
-        db.prepare(sql.exact).bind(cycleId, query, limit).all(),
-        db.prepare(sql.prefix).bind(cycleId, query, `${query}\uffff`, limit * 2).all(),
-      ]);
-      return merge(
-        toResults((exact.results ?? []) as Record<string, unknown>[]),
-        toResults((prefix.results ?? []) as Record<string, unknown>[]),
-        limit,
-      );
-    },
-  };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,8 +84,6 @@ export async function getSeasonalPlayerIndexStore(
   cycleId: string,
 ): Promise<PlayerIndexStore | null> {
   if (!validCycleId(cycleId)) throw new Error("invalid Seasonal cycle id");
-  const d1 = await getSeasonalD1();
-  if (d1) return d1Store(d1, cycleId, await d1ProfileMetadataAvailable(d1));
   try {
     if (!sqliteDb) {
       const sqlite = await import("node:sqlite" as string) as {

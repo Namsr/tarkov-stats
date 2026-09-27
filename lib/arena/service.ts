@@ -91,19 +91,11 @@ function nonNegative(value: unknown): number | null {
 }
 
 async function all(backend: Backend, sql: string, params: unknown[] = []): Promise<Row[]> {
-  if (backend.kind === "d1") {
-    const result = await backend.db.prepare(sql).bind(...params).all();
-    return (result.results ?? []) as Row[];
-  }
   return backend.db.prepare(sql).all(...params) as Row[];
 }
 
 async function run(backend: Backend, sql: string, params: unknown[] = []): Promise<void> {
-  if (backend.kind === "d1") {
-    await backend.db.prepare(sql).bind(...params).run();
-  } else {
-    backend.db.prepare(sql).run(...params);
-  }
+  backend.db.prepare(sql).run(...params);
 }
 
 function emptyMetrics(): Record<ArenaMetricKey, ArenaMetricValue> {
@@ -340,16 +332,12 @@ async function arenaMetricSamples(
       if (value !== null) group.values.get(metric)!.push(value);
     }
   };
-  if (backend.kind === "sqlite") {
-    const statement = backend.db.prepare(sql);
-    // Available in Node 22.16+. Older SQLite runners retain the object-row path.
-    const arrays = typeof statement.setReturnArrays === "function";
-    if (arrays) statement.setReturnArrays(true);
-    for (const row of statement.iterate(...params)) {
-      append(String(arrays ? row[0] : row.arena_mode), (index, metric) => arrays ? row[index + 1] : row[metric]);
-    }
-  } else {
-    for (const row of await all(backend, sql, params)) append(String(row.arena_mode), (_index, metric) => row[metric]);
+  const statement = backend.db.prepare(sql);
+  // Available in Node 22.16+. Older SQLite runners retain the object-row path.
+  const arrays = typeof statement.setReturnArrays === "function";
+  if (arrays) statement.setReturnArrays(true);
+  for (const row of statement.iterate(...params)) {
+    append(String(arrays ? row[0] : row.arena_mode), (index, metric) => arrays ? row[index + 1] : row[metric]);
   }
   return result;
 }
@@ -707,7 +695,7 @@ async function arenaRiskSamples(backend: Backend, aid: number, targets: Map<stri
     countQueries.push(arenaRangeCountQuery(aid, mode, hours, matches));
   }
   const countRows: Row[] = [];
-  const batchSize = backend.kind === "d1" ? 4 : ARENA_MODE_KEYS.length;
+  const batchSize = ARENA_MODE_KEYS.length;
   for (let start = 0; start < countQueries.length; start += batchSize) {
     const batch = countQueries.slice(start, start + batchSize);
     countRows.push(...await all(backend, batch.map((query) => query.sql).join(" UNION ALL "),
