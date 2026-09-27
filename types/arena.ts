@@ -43,6 +43,11 @@ export interface ArenaCounters {
   max_loss_streak: number | null;
 }
 
+/** Counters that accumulate per match; the rest are streaks. Shared with the parser. */
+export const ARENA_ADDITIVE_COUNTER_KEYS = [
+  "matches", "wins", "losses", "kills", "deaths", "assists", "headshots", "damage", "round_mvp", "match_mvp",
+] as const satisfies readonly (keyof ArenaCounters)[];
+
 export type ArenaMetrics = Record<ArenaMetricKey, number | null>;
 
 export interface ArenaModeStats {
