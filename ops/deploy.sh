@@ -94,8 +94,12 @@ rollback() {
   fi
   # The timer also runs when no build is needed. Stop BuildKit only after a build
   # attempt so an idle check cannot interrupt another use of this builder.
-  if [ "$build_started" -eq 1 ] && [ -n "${BUILDX_BUILDER:-}" ]; then
-    docker buildx stop "$BUILDX_BUILDER" || true
+  if [ "$build_started" -eq 1 ]; then
+    if [ -n "${BUILDX_BUILDER:-}" ]; then
+      docker buildx stop "$BUILDX_BUILDER" || true
+    else
+      logger -t tarkovstats-deploy "limited builder not reclaimed: BUILDX_BUILDER unset; install the deploy service drop-in"
+    fi
   fi
   exit "$status"
 }

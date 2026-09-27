@@ -11,4 +11,4 @@ WorkingDirectory=/opt/tarkovstats-auto
 # Rollout must remove the legacy daily importer first; never run both writers.
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
 ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-sqlite scripts/sync-regular-profiles.mjs
-TimeoutStartSec=12h
+TimeoutStartSec=14m
