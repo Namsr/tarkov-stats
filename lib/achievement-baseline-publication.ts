@@ -1,5 +1,5 @@
 // @ts-expect-error Node's strip-types test runner requires the explicit extension.
-import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE } from "./achievement-unlock-hours.ts";
+import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE, firstFiniteHours } from "./achievement-unlock-hours.ts";
 
 export type PublishedAchievementMode = "regular" | "pve";
 
@@ -67,19 +67,6 @@ function totalSql(mode: PublishedAchievementMode): { sql: string; params: unknow
       AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = p.aid)`,
     params: mode === "regular" ? [] : [mode],
   };
-}
-
-// The SQL leaves the percentile column NULL when the rank does not resolve, and
-// 0 when a real owner has zero playtime. `||` cannot tell those apart and would
-// replace a genuine 0 with the mean, so take the first value that is actually a
-// finite number instead of the first truthy one.
-export function firstFiniteHours(...values: unknown[]): number {
-  for (const value of values) {
-    if (value == null) continue;
-    const number = Number(value);
-    if (Number.isFinite(number)) return number;
-  }
-  return 0;
 }
 
 function toAchievementStats(rows: readonly Record<string, unknown>[]): PublishedAchievementStat[] {

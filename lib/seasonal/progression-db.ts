@@ -17,9 +17,7 @@ import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
-import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
-import { firstFiniteHours } from "../achievement-baseline-publication.ts";
+import { achievementUnlockHours, firstFiniteHours } from "../achievement-unlock-hours.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,

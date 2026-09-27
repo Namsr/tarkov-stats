@@ -226,7 +226,7 @@ function achievementSub(
     const meanHours = Number.isFinite(a.meanHours) && a.meanHours > 0 ? a.meanHours : 0;
     if (a.owners < ACH_MIN_OWNERS || a.samplePct >= ACH_RARE_HI || meanHours < ACH_LATE_GAME_HOURS) continue;
     if (playerHours >= meanHours) continue;
-    const rawEarlyHours = Number.isFinite(a.earlyHours) && a.earlyHours > 0 ? a.earlyHours : meanHours;
+    const rawEarlyHours = Number.isFinite(a.earlyHours) ? a.earlyHours : meanHours;
     const earlyHours = Math.min(rawEarlyHours, meanHours);
     // Keep a useful ramp even when a small/tight sample puts the two anchors
     // nearly together; the value still cannot exceed the rarity-scaled cap.

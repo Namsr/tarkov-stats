@@ -160,6 +160,19 @@ test("profile omits empty skills anchors and keeps achievements full width", asy
   assert.doesNotMatch(achievements, /<aside>[\s\S]*<EarlyUnlocks/);
 });
 
+test("early unlocks keep a zero-hour anchor out of the panel", async () => {
+  const earlyUnlocks = await readFile("components/EarlyUnlocks.tsx", "utf8");
+
+  // A published 0 means the owner pool has no playtime data, not that owners
+  // unlocked unusually early. The floor stays and the reason is recorded next to
+  // it; the panel only runs for players with hours > 0, so a 0 anchor could never
+  // clear the z threshold anyway.
+  assert.match(earlyUnlocks, /const MIN_EARLY_HOURS = 200;/);
+  assert.match(earlyUnlocks, /a\.earlyHours >= MIN_EARLY_HOURS &&/);
+  assert.doesNotMatch(earlyUnlocks, /a\.earlyHours >= 200/);
+  assert.match(earlyUnlocks, /z: \(playerHours - a\.earlyHours\) \/ a\.stdHours/);
+});
+
 test("profile achievements use sortable desktop columns and readable mobile cards", async () => {
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
   const collapsible = await readFile("components/ProfileCollapsible.tsx", "utf8");

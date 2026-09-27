@@ -115,13 +115,22 @@ test("a zero-hour achievement owner is not replaced by the mean", () => {
 });
 
 test("an unresolved percentile rank still falls back to the mean", () => {
-  const db = fixture();
+  const db = new DatabaseSync(":memory:");
   try {
-    // A single owner: the mean and the percentiles coincide, and the value must
-    // still come through rather than being dropped.
+    db.exec(`CREATE TABLE players (aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);`);
+    const insert = db.prepare("INSERT INTO players (aid, hours, achievements) VALUES (?, ?, ?)");
+    // Two owners, no usable hours on the first: SQLite sorts NULL first, so it
+    // takes rank 1 and both percentile columns resolve to NULL.
+    insert.run(1, null, '["gapped"]');
+    insert.run(2, 100, '["gapped"]');
+
     const baseline = materializeAchievementBaseline(db, "regular", 1_000);
-    const single = baseline.achievements.find((row) => row.ach_id === "b");
-    assert.equal(single?.owners, 2);
-    assert.ok((single?.earlyHours ?? 0) > 0);
+    const gapped = baseline.achievements.find((row) => row.ach_id === "gapped");
+    assert.equal(gapped?.owners, 2);
+    assert.equal(gapped?.meanHours, 100);
+    // Without the mean fallback these publish 0, which reads as "unlocked at 0h".
+    assert.equal(gapped?.earlyHours, 100);
+    assert.equal(gapped?.unlockHours, 100);
   } finally { db.close(); }
 });
