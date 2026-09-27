@@ -2,7 +2,10 @@
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -375,4 +378,24 @@ test("regular average progression exposes the median PvP raid series without a t
   const pve = queryPersistentProgressionAverage(db, "pve");
   assert.equal(pve.mode, "pve");
   assert.deepEqual(pve.series.cumulative.overall, []);
+});
+
+test("the regular progression backfill refuses a missing database instead of creating one", () => {
+  // `DatabaseSync` creates the file it is given, so before the path guard a typo
+  // produced a green run: fresh file, schema created in it, quickCheck "ok" and
+  // every count 0, while the real progression database was never touched.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-regular-"));
+  const missing = join(directory, "progresion.db");
+  try {
+    const result = spawnSync(process.execPath, [
+      "--experimental-strip-types",
+      resolve("scripts/backfill-regular-progression.mjs"),
+      missing,
+    ], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, "a missing progression database must fail the run");
+    assert.match(result.stderr, /progression database does not exist/);
+    assert.equal(existsSync(missing), false, "the script must not create the database");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
