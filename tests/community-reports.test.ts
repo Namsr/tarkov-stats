@@ -152,8 +152,9 @@ test("both halves of the community report endpoint are rate limited", async () =
   const post = source.slice(postAt);
 
   // The read half is unauthenticated and fires on every profile view. The cap is
-  // pinned rather than matched as a number: pageview spends 60/min on the same
-  // GET, and a wildcard here let the read half go back to effectively unmetered.
+  // pinned rather than matched as a number: 60/min is deliberately looser than the
+  // 10/min /api/player/profile already charges that same view on the same IP, so a
+  // wildcard here let the read half go back to effectively unmetered.
   assert.match(get, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "community-reports-read", max: 60 \}\)/);
   assert.match(get, /!allowed\) return response\(\{ error: "Rate limit exceeded" \}, 429/);
   // A limiter below the store read still returns 429, but only after paying for
