@@ -2,6 +2,36 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+// The store-served closures are reached from three call sites with two different
+// labels. The short-circuit never calls upstream, so it is a hit. The two
+// `force && waitForUpstream` fallbacks run only after `getPublicProfile(aid, {
+// force: true })` has already bypassed the in-process cache, so they are a
+// bypass even though the payload came from the store — and they still report a
+// non-zero profile_ms. `origin/main` labelled them `bypass`; a flat `hit` made
+// the admin cacheHitRate card count upstream-contacted refreshes as hits.
+function assertStoreHitLabelFollowsUpstream(branch, label) {
+  const calls = [...branch.matchAll(/storedResponse\(stored\)/g)].map((match) => match.index);
+  assert.equal(calls.length, 3, `${label}: expected the short-circuit and both fallbacks`);
+  const declared = branch.indexOf("let fetchedUpstream = false;");
+  const upstream = branch.indexOf("fetchedUpstream = true;");
+  assert.ok(declared >= 0, `${label}: the label needs a flag that starts out unset`);
+  assert.ok(declared < calls[0], `${label}: the short-circuit must run before the flag is ever set, so it is a hit`);
+  assert.ok(upstream > calls[0], `${label}: the flag is set at the upstream call, after the short-circuit`);
+  assert.equal(
+    branch.indexOf("fetchedUpstream = true;", upstream + 1),
+    -1,
+    `${label}: the flag is set exactly once and never reset, so both fallbacks see it`,
+  );
+  for (const fallback of calls.slice(1)) {
+    assert.ok(upstream < fallback, `${label}: every fallback must be reached with the flag already set`);
+  }
+  const closure = branch.slice(
+    branch.indexOf("const storedResponse = async (snapshot:"),
+    branch.indexOf("if (stored && !(force && waitForUpstream)) {"),
+  );
+  assert.match(closure, /cache: fetchedUpstream \? "bypass" : "hit",/);
+}
+
 test("regular profile route answers a forced refresh from the store and re-fetches after the response", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
   const storedBranch = source.search(/const storedStarted = timing\.now\(\);/);
@@ -62,30 +92,24 @@ test("a forced regular refresh degrades to the stored snapshot instead of 404 or
   // Only the two genuine failure paths report absence.
   assert.equal(regular.split(fallback).length - 1, 2);
 
-  // A store-served response is a hit even when force is set: the forced refresh
-  // is scheduled for after the response, so the response itself never bypassed
-  // anything. The measured upstream latency is kept instead of dropped.
-  const storedSource = regular.indexOf('source: "stored"');
-  const storedTiming = regular.slice(
-    storedSource,
-    regular.indexOf("return NextResponse.json({", storedSource),
-  );
-  assert.match(storedTiming, /cache: "hit",/);
-  assert.doesNotMatch(storedTiming, /force \? "bypass"/);
+  // The measured upstream latency is kept instead of dropped, so the two
+  // labels have to be derived from the flag rather than hardcoded.
+  assertStoreHitLabelFollowsUpstream(regular, "regular");
   assert.match(regular, /profileMs: profileMs \?\? \(profileStarted === undefined \? undefined : timing\.elapsedMs\(profileStarted\)\)/);
 });
 
 test("cached PvE profiles refresh only when their parser generation is old", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
   assert.match(source, /if \(stored && !\(force && waitForUpstream\)\) \{\s*if \(force\) \{\s*scheduleForcedProfileRefresh\("pve", aid\);\s*\} else if \(needsPvpStatsParserRefresh\(stored\.stats\)\) \{\s*after\(\(\) => refreshStoredPveProfile\(aid\)\)/);
-  // Same store-served labelling as the regular and arena branches: a forced PvE
-  // response that returned the stored snapshot never touched the cache.
-  const pveStored = source.slice(
-    source.indexOf("const storedResponse = async (snapshot: NonNullable<typeof stored>) => {"),
-    source.indexOf("if (stored && !(force && waitForUpstream)) {"),
+  // Same store-served labelling as the regular branch: a hit when nothing went
+  // upstream, a bypass on the `force && waitForUpstream` fallbacks.
+  assertStoreHitLabelFollowsUpstream(
+    source.slice(
+      source.indexOf('if (mode === "pve") {'),
+      source.indexOf("const storedStarted = timing.now();"),
+    ),
+    "pve",
   );
-  assert.match(pveStored, /cache: "hit",/);
-  assert.doesNotMatch(pveStored, /force \? "bypass"/);
   assert.match(source, /getPublicProfile\(aid, \{ force: true, mode: "pve" \}\)/);
   assert.match(source, /pveProfileDecision\(profile\)\.state !== "store"/);
   assert.match(source, /\{ mode: "pve", strict: true \}/);

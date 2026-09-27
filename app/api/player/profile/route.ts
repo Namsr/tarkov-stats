@@ -643,6 +643,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
     let storage: "sqlite" | "unavailable" = "unavailable";
     let source: "upstream" | "cache" = "upstream";
     let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
+    let fetchedUpstream = false;
     try {
       const storeOpenStarted = timing.now();
       const store = await getStore(mode);
@@ -713,9 +714,8 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
           status: 200,
           force,
           source: "stored",
-          // Answered from the store either way; a forced refresh is scheduled for
-          // after the response, so the response itself was a hit.
-          cache: "hit",
+          // A stored payload is a hit only when this request never called upstream.
+          cache: fetchedUpstream ? "bypass" : "hit",
           storage,
           storeOpenMs,
           storeReadMs,
@@ -737,6 +737,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
 
       let profile: PlayerProfile | null;
       profileStarted = timing.now();
+      // Reached only under `force && waitForUpstream`, so this call always
+      // bypasses the in-process cache; the stored fallbacks below are bypasses.
+      fetchedUpstream = true;
       try {
         const result = await getPublicProfile(aid, { force, mode });
         profile = result.profile;
@@ -867,6 +870,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   let profileStarted: number | undefined;
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
+  let fetchedUpstream = false;
   let fromCache = false;
   let fromEdgeCache = false;
 
@@ -917,9 +921,8 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       status: 200,
       force,
       source: "stored",
-      // Answered from the store either way; a forced refresh is scheduled for
-      // after the response, so the response itself was a hit.
-      cache: "hit",
+      // A stored payload is a hit only when this request never called upstream.
+      cache: fetchedUpstream ? "bypass" : "hit",
       storage: "sqlite",
       storeReadMs,
       profileMs: profileMs ?? (profileStarted === undefined ? undefined : timing.elapsedMs(profileStarted)),
@@ -952,6 +955,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   let profile: PlayerProfile | null;
   try {
     profileStarted = timing.now();
+    // Reached only under `force && waitForUpstream`, so this call always bypasses
+    // the in-process cache; both stored fallbacks below are bypasses.
+    fetchedUpstream = true;
     const result = await getPublicProfile(aid, { force });
     profile = result.profile;
     fromCache = result.fromCache === true;
