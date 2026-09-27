@@ -22,167 +22,163 @@ test.after(() => {
 });
 
 test("Seasonal cohort reads the latest snapshot only from the requested cycle", async () => {
-  try {
-    const db = new DatabaseSync(databasePath);
-    initializeSeasonalSchema(db);
-    const profile = db.prepare(`INSERT INTO player_profiles (
-      mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
-      experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-      total_raids, survived, deaths, total_kills, longest_win_streak, level,
-      first_seen_at, last_seen_at
-    ) VALUES ('seasonal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
-        nickname = excluded.nickname,
-        profile_updated_at = excluded.profile_updated_at,
-        last_access_at = excluded.last_access_at,
-        lifetime_pvp_hours = excluded.lifetime_pvp_hours,
-        experience = excluded.experience,
-        pmc_raids = excluded.pmc_raids,
-        scav_raids = excluded.scav_raids,
-        pmc_survived = excluded.pmc_survived,
-        pmc_deaths = excluded.pmc_deaths,
-        pmc_kills = excluded.pmc_kills,
-        killed_pmc = excluded.killed_pmc,
-        total_raids = excluded.total_raids,
-        survived = excluded.survived,
-        deaths = excluded.deaths,
-        total_kills = excluded.total_kills,
-        longest_win_streak = excluded.longest_win_streak,
-        level = excluded.level,
-        last_seen_at = excluded.last_seen_at`);
-    const snapshot = db.prepare(`INSERT INTO progression_snapshots (
-      mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
-      experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths,
-      pmc_deaths, pmc_kills, total_kills, killed_pmc, run_through, level, prestige,
-      longest_win_streak, achv_count, achievements
-    ) VALUES ('seasonal', ?, ?, ?, ?, ?, '2026-01-01', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const db = new DatabaseSync(databasePath);
+  initializeSeasonalSchema(db);
+const profile = db.prepare(`INSERT INTO player_profiles (
+    mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+    experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+    total_raids, survived, deaths, total_kills, longest_win_streak, level,
+    first_seen_at, last_seen_at
+  ) VALUES ('seasonal', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
+      nickname = excluded.nickname,
+      profile_updated_at = excluded.profile_updated_at,
+      last_access_at = excluded.last_access_at,
+      lifetime_pvp_hours = excluded.lifetime_pvp_hours,
+      experience = excluded.experience,
+      pmc_raids = excluded.pmc_raids,
+      scav_raids = excluded.scav_raids,
+      pmc_survived = excluded.pmc_survived,
+      pmc_deaths = excluded.pmc_deaths,
+      pmc_kills = excluded.pmc_kills,
+      killed_pmc = excluded.killed_pmc,
+      total_raids = excluded.total_raids,
+      survived = excluded.survived,
+      deaths = excluded.deaths,
+      total_kills = excluded.total_kills,
+      longest_win_streak = excluded.longest_win_streak,
+      level = excluded.level,
+      last_seen_at = excluded.last_seen_at`);
+  const snapshot = db.prepare(`INSERT INTO progression_snapshots (
+    mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date,
+    experience, total_raids, pmc_raids, scav_raids, survived, pmc_survived, deaths,
+    pmc_deaths, pmc_kills, total_kills, killed_pmc, run_through, level, prestige,
+    longest_win_streak, achv_count, achievements
+  ) VALUES ('seasonal', ?, ?, ?, ?, ?, '2026-01-01', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
-    const add = (cycle: string, aid: number, updated: number, hours: number, raids: number) => {
-      profile.run(cycle, aid, `p-${cycle}-${aid}`, updated, updated, hours, 100,
-        raids, 0, 1, 1, 1, raids, raids, raids, raids, raids, 5, 10, updated, updated);
-      snapshot.run(cycle, aid, updated, updated, updated, 100, raids, raids, 0,
-        raids, 1, raids, 1, 1, raids, raids, 0, null, 10, 1, 5, "[]");
-    };
+  const add = (cycle: string, aid: number, updated: number, hours: number, raids: number) => {
+    profile.run(cycle, aid, `p-${cycle}-${aid}`, updated, updated, hours, 100,
+      raids, 0, 1, 1, 1, raids, raids, raids, raids, raids, 5, 10, updated, updated);
+    snapshot.run(cycle, aid, updated, updated, updated, 100, raids, raids, 0,
+      raids, 1, raids, 1, 1, raids, raids, 0, null, 10, 1, 5, "[]");
+  };
 
-    // The target has an older and a newer snapshot in cycle-a.
-    add("cycle-a", 1, 1_000, 100, 5);
-    add("cycle-a", 1, 2_000, 100, 20);
-    for (let aid = 2; aid <= 21; aid += 1) add("cycle-a", aid, 2_000 + aid, 100, 20);
-    // Banned targets can compare themselves, but banned peers must not join the group.
-    add("cycle-a", 42, 2_042, 100, 20);
-    db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE cycle_id = 'cycle-a' AND aid IN (1, 42)");
-    add("cycle-a", 50, 2_050, 100, 5);
-    for (let aid = 60; aid <= 64; aid += 1) add("cycle-a", aid, 2_060 + aid, 1_000, 100);
-    add("cycle-a", 65, 2_065, 100, 20);
-    db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (65, 'admin_manual', 10_000)").run();
+  // The target has an older and a newer snapshot in cycle-a.
+  add("cycle-a", 1, 1_000, 100, 5);
+  add("cycle-a", 1, 2_000, 100, 20);
+  for (let aid = 2; aid <= 21; aid += 1) add("cycle-a", aid, 2_000 + aid, 100, 20);
+  // Banned targets can compare themselves, but banned peers must not join the group.
+  add("cycle-a", 42, 2_042, 100, 20);
+  db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE cycle_id = 'cycle-a' AND aid IN (1, 42)");
+  add("cycle-a", 50, 2_050, 100, 5);
+  for (let aid = 60; aid <= 64; aid += 1) add("cycle-a", aid, 2_060 + aid, 1_000, 100);
+  add("cycle-a", 65, 2_065, 100, 20);
+  db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (65, 'admin_manual', 10_000)").run();
 
-    // Same account and same-looking cohort in another cycle must not leak in.
-    add("cycle-b", 1, 9_000, 900, 90);
-    for (let aid = 22; aid <= 41; aid += 1) add("cycle-b", aid, 9_000 + aid, 100, 20);
-    add("cycle-a", 70, 500_000_000_000, 100, 5);
-    for (let aid = 80; aid <= 84; aid += 1) {
-      add("cycle-a", aid, 500_000_000_000 + aid, 1_000, 100);
-    }
-    add("cycle-a", 90, 500_000_000_090, 0, 5);
-    add("cycle-a", 91, 500_000_000_091, null, 5);
-    db.close();
-
-    const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
-    const lookup = await querySeasonalComparisonCohort({
-      aid: 1,
-      cycleId: "cycle-a",
-      now: 10_000,
-    });
-    assert.equal(lookup.available, true);
-    assert.equal(lookup.cache, "miss");
-    assert.ok(lookup.result);
-    assert.deepEqual(lookup.result.identity, { aid: 1, mode: "seasonal", cycleId: "cycle-a" });
-    assert.equal(lookup.result.axes.hours.center, 100);
-    assert.equal(lookup.result.axes.pmcRaids.center, 20);
-    assert.equal(lookup.result.percent, 10);
-    assert.equal(lookup.result.strategy, "matched");
-    assert.equal(lookup.result.n, 20);
-    assert.deepEqual(lookup.result.actualRanges, {
-      hours: { min: 100, max: 100 },
-      pmcRaids: { min: 20, max: 20 },
-      raids: { min: 20, max: 20 },
-    });
-    assert.equal(lookup.result.ranges.hours.percent, 10);
-    assert.equal(lookup.result.ranges.pmcRaids.percent, 10);
-    assert.deepEqual(lookup.result.averages.kd_ratio, { value: 1, count: 20 });
-    assert.deepEqual(lookup.result.averages.pmc_survival_rate, { value: 5, count: 20 });
-
-    const median = await querySeasonalComparisonCohort({
-      aid: 1,
-      cycleId: "cycle-a",
-      statistic: "median",
-      now: 10_000,
-    });
-    assert.equal(median.result?.averages.kd_ratio.value, 1);
-    const cachedMedian = await querySeasonalComparisonCohort({
-      aid: 1,
-      cycleId: "cycle-a",
-      statistic: "median",
-      now: 10_000,
-    });
-    assert.equal(cachedMedian.cache, "hit");
-
-    const fallback = await querySeasonalComparisonCohort({
-      aid: 50,
-      cycleId: "cycle-a",
-      now: 10_000,
-    });
-    assert.ok(fallback.result);
-    assert.equal(fallback.result.percent, 30);
-    assert.equal(fallback.result.n, 31);
-    assert.equal(fallback.result.strategy, "population");
-    assert.equal(fallback.result.required, 20);
-    assert.equal(fallback.result.quality, "sufficient");
-    assert.equal(fallback.result.reason, null);
-    assert.deepEqual(fallback.result.actualRanges, {
-      hours: { min: 100, max: 1_000 },
-      pmcRaids: { min: 5, max: 100 },
-      raids: { min: 5, max: 100 },
-    });
-    assert.deepEqual(fallback.result.averages.kd_ratio, { value: 1, count: 31 });
-
-    const freshWindow = await querySeasonalComparisonCohort({
-      aid: 70,
-      cycleId: "cycle-a",
-      period: "90d",
-      now: 500_000_000_000,
-    });
-    assert.ok(freshWindow.result);
-    assert.equal(freshWindow.result.n, 5);
-    assert.equal(freshWindow.result.strategy, "population");
-    assert.equal(freshWindow.result.required, 20);
-    assert.equal(freshWindow.result.quality, "sufficient");
-    assert.equal(freshWindow.result.reason, null);
-
-    const zeroHours = await querySeasonalComparisonCohort({
-      aid: 90,
-      cycleId: "cycle-a",
-      now: 500_000_000_000,
-    });
-    assert.ok(zeroHours.result);
-    assert.equal(zeroHours.result.strategy, "matched");
-    assert.equal(zeroHours.result.reason, "no_activity");
-    assert.equal(zeroHours.result.n, 0);
-
-    const missingHours = await querySeasonalComparisonCohort({
-      aid: 91,
-      cycleId: "cycle-a",
-      now: 500_000_000_000,
-    });
-    assert.equal(missingHours.result, null);
-  } finally {
-    if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
-    else process.env.PROGRESSION_SQLITE_PATH = previousPath;
+  // Same account and same-looking cohort in another cycle must not leak in.
+  add("cycle-b", 1, 9_000, 900, 90);
+  for (let aid = 22; aid <= 41; aid += 1) add("cycle-b", aid, 9_000 + aid, 100, 20);
+  add("cycle-a", 70, 500_000_000_000, 100, 5);
+  for (let aid = 80; aid <= 84; aid += 1) {
+    add("cycle-a", aid, 500_000_000_000 + aid, 1_000, 100);
   }
+  add("cycle-a", 90, 500_000_000_090, 0, 5);
+  add("cycle-a", 91, 500_000_000_091, null, 5);
+  db.close();
+
+  const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
+  const lookup = await querySeasonalComparisonCohort({
+    aid: 1,
+    cycleId: "cycle-a",
+    now: 10_000,
+  });
+  assert.equal(lookup.available, true);
+  assert.equal(lookup.cache, "miss");
+  assert.ok(lookup.result);
+  assert.deepEqual(lookup.result.identity, { aid: 1, mode: "seasonal", cycleId: "cycle-a" });
+  assert.equal(lookup.result.axes.hours.center, 100);
+  assert.equal(lookup.result.axes.pmcRaids.center, 20);
+  assert.equal(lookup.result.percent, 10);
+  assert.equal(lookup.result.strategy, "matched");
+  assert.equal(lookup.result.n, 20);
+  assert.deepEqual(lookup.result.actualRanges, {
+    hours: { min: 100, max: 100 },
+    pmcRaids: { min: 20, max: 20 },
+    raids: { min: 20, max: 20 },
+  });
+  assert.equal(lookup.result.ranges.hours.percent, 10);
+  assert.equal(lookup.result.ranges.pmcRaids.percent, 10);
+  assert.deepEqual(lookup.result.averages.kd_ratio, { value: 1, count: 20 });
+  assert.deepEqual(lookup.result.averages.pmc_survival_rate, { value: 5, count: 20 });
+
+  const median = await querySeasonalComparisonCohort({
+    aid: 1,
+    cycleId: "cycle-a",
+    statistic: "median",
+    now: 10_000,
+  });
+  assert.equal(median.result?.averages.kd_ratio.value, 1);
+  const cachedMedian = await querySeasonalComparisonCohort({
+    aid: 1,
+    cycleId: "cycle-a",
+    statistic: "median",
+    now: 10_000,
+  });
+  assert.equal(cachedMedian.cache, "hit");
+
+  const fallback = await querySeasonalComparisonCohort({
+    aid: 50,
+    cycleId: "cycle-a",
+    now: 10_000,
+  });
+  assert.ok(fallback.result);
+  assert.equal(fallback.result.percent, 30);
+  assert.equal(fallback.result.n, 31);
+  assert.equal(fallback.result.strategy, "population");
+  assert.equal(fallback.result.required, 20);
+  assert.equal(fallback.result.quality, "sufficient");
+  assert.equal(fallback.result.reason, null);
+  assert.deepEqual(fallback.result.actualRanges, {
+    hours: { min: 100, max: 1_000 },
+    pmcRaids: { min: 5, max: 100 },
+    raids: { min: 5, max: 100 },
+  });
+  assert.deepEqual(fallback.result.averages.kd_ratio, { value: 1, count: 31 });
+
+  const freshWindow = await querySeasonalComparisonCohort({
+    aid: 70,
+    cycleId: "cycle-a",
+    period: "90d",
+    now: 500_000_000_000,
+  });
+  assert.ok(freshWindow.result);
+  assert.equal(freshWindow.result.n, 5);
+  assert.equal(freshWindow.result.strategy, "population");
+  assert.equal(freshWindow.result.required, 20);
+  assert.equal(freshWindow.result.quality, "sufficient");
+  assert.equal(freshWindow.result.reason, null);
+
+  const zeroHours = await querySeasonalComparisonCohort({
+    aid: 90,
+    cycleId: "cycle-a",
+    now: 500_000_000_000,
+  });
+  assert.ok(zeroHours.result);
+  assert.equal(zeroHours.result.strategy, "matched");
+  assert.equal(zeroHours.result.reason, "no_activity");
+  assert.equal(zeroHours.result.n, 0);
+
+  const missingHours = await querySeasonalComparisonCohort({
+    aid: 91,
+    cycleId: "cycle-a",
+    now: 500_000_000_000,
+  });
+  assert.equal(missingHours.result, null);
 });
 
 test("Seasonal cohort K/D skips profiles whose deaths column is NULL", async () => {
   const db = new DatabaseSync(databasePath);
+  initializeSeasonalSchema(db);
   const insert = db.prepare(`INSERT INTO player_profiles (
     mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
     experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
