@@ -90,10 +90,18 @@ export async function getSeasonalPlayerIndexStore(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         DatabaseSync: new (path: string) => any;
       };
-      sqliteDb = new sqlite.DatabaseSync(
+      // Apply the PRAGMA before caching, so a failed setup cannot leave a
+      // half-initialized handle cached for the rest of the process.
+      const opened = new sqlite.DatabaseSync(
         process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
       );
-      sqliteDb.exec("PRAGMA busy_timeout = 30000");
+      try {
+        opened.exec("PRAGMA busy_timeout = 30000");
+      } catch (error) {
+        try { opened.close(); } catch { /* already closed */ }
+        throw error;
+      }
+      sqliteDb = opened;
     }
     return sqliteStore(sqliteDb, cycleId, sqliteProfileMetadataAvailable(sqliteDb));
   } catch {

@@ -1200,53 +1200,18 @@ async function getSqliteDb(): Promise<any | null> {
       // Specifier cast keeps the build from type-resolving the (Node-only) module.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
-      sqliteDb = new sqlite.DatabaseSync(file);
-      sqliteDb.exec("PRAGMA busy_timeout = 5000");
-      if (!currentSqlitePlayerSchema(sqliteDb)) {
-        const hasFavorites = sqliteDb.prepare(
-          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
-        ).get();
-        if (hasFavorites) initializeFavoritesSchema(sqliteDb);
-        sqliteDb.exec(SCHEMA);
-        initializeFavoritesSchema(sqliteDb);
-        // Lightweight migration for DBs created before the PMC score columns existed.
-        // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
-        // them here; a duplicate-column error on already-migrated DBs is expected.
-        for (const [table, col, type] of [
-          ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
-          ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
-          ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
-          ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
-          ["players", "pvp_stats_version", "INTEGER DEFAULT 0"],
-          ["players", "pmc_killed_pmc", "INTEGER"],
-          ["players", "last_played_at", "INTEGER"],
-          ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
-          ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
-          ["mode_players", "pvp_stats_version", "INTEGER DEFAULT 0"],
-          ["mode_players", "pmc_killed_pmc", "INTEGER"],
-          ["mode_players", "last_played_at", "INTEGER"],
-        ]) {
-          try {
-            sqliteDb.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
-          } catch {
-            /* column already exists */
-          }
-        }
-        sqliteDb.exec(
-          "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
-        );
-        sqliteDb.exec(
-          "CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids)"
-        );
-        sqliteDb.exec(`UPDATE players SET pvp_stats_known = 1
-          WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
-        sqliteDb.exec(`UPDATE mode_players SET pvp_stats_known = 1
-          WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
+      // The handle is cached only after the schema is in place: a failed
+      // initialization must not leave a half-initialized connection behind for
+      // the rest of the process, or every later call would skip the schema work
+      // and fail on a missing table.
+      const opened = new sqlite.DatabaseSync(file);
+      try {
+        initializeSqliteSchema(opened);
+      } catch (error) {
+        try { opened.close(); } catch { /* already closed */ }
+        throw error;
       }
-      initializeProfileChangeJournal(sqliteDb);
-      ensureSqliteCohortIndexes(sqliteDb);
-      ensureSqliteAverageIndexes(sqliteDb);
-      initializeArenaSchema(sqliteDb);
+      sqliteDb = opened;
     }
     return sqliteDb;
   } catch (e) {
@@ -1254,6 +1219,57 @@ async function getSqliteDb(): Promise<any | null> {
     return null;
   }
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function initializeSqliteSchema(opened: any): void {
+  opened.exec("PRAGMA busy_timeout = 5000");
+  if (!currentSqlitePlayerSchema(opened)) {
+    const hasFavorites = opened.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
+    ).get();
+    if (hasFavorites) initializeFavoritesSchema(opened);
+    opened.exec(SCHEMA);
+    initializeFavoritesSchema(opened);
+    // Lightweight migration for DBs created before the PMC score columns existed.
+    // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
+    // them here; a duplicate-column error on already-migrated DBs is expected.
+    for (const [table, col, type] of [
+      ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
+      ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
+      ["players", "profile_updated_at", "INTEGER DEFAULT 0"],
+      ["players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+      ["players", "pvp_stats_version", "INTEGER DEFAULT 0"],
+      ["players", "pmc_killed_pmc", "INTEGER"],
+      ["players", "last_played_at", "INTEGER"],
+      ["mode_players", "profile_updated_at", "INTEGER DEFAULT 0"],
+      ["mode_players", "pvp_stats_known", "INTEGER DEFAULT 0"],
+      ["mode_players", "pvp_stats_version", "INTEGER DEFAULT 0"],
+      ["mode_players", "pmc_killed_pmc", "INTEGER"],
+      ["mode_players", "last_played_at", "INTEGER"],
+    ]) {
+      try {
+        opened.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+      } catch {
+        /* column already exists */
+      }
+    }
+    opened.exec(
+      "CREATE INDEX IF NOT EXISTS idx_players_profile_updated_at ON players(profile_updated_at)"
+    );
+    opened.exec(
+      "CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids)"
+    );
+    opened.exec(`UPDATE players SET pvp_stats_known = 1
+      WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
+    opened.exec(`UPDATE mode_players SET pvp_stats_known = 1
+      WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
+  }
+  initializeProfileChangeJournal(opened);
+  ensureSqliteCohortIndexes(opened);
+  ensureSqliteAverageIndexes(opened);
+  initializeArenaSchema(opened);
+}
+
 
 /** Arena analytics shares the local SQLite database with the profile store. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1370,10 +1370,19 @@ export async function getSeasonalStore(): Promise<SeasonalStore | null> {
   }
   try {
     const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
-    database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-    const store = createSqliteSeasonalStore(database);
-    if (configuredCycle) upsertSqliteSeasonCycle(database, configuredCycle);
-    return store;
+    // Initialize before caching: a failed schema init must not leave a
+    // half-initialized handle behind, or every later call would skip it and
+    // fail on a missing table.
+    const opened = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+    try {
+      const store = createSqliteSeasonalStore(opened);
+      if (configuredCycle) upsertSqliteSeasonCycle(opened, configuredCycle);
+      database = opened;
+      return store;
+    } catch (error) {
+      try { opened.close(); } catch { /* already closed */ }
+      throw error;
+    }
   } catch (error) {
     console.warn("seasonal store: sqlite unavailable: " + (error as Error).message);
     return null;
