@@ -93,3 +93,44 @@ test("failed publication preserves the previous generation", () => {
   assert.equal(readPublishedAchievementBaseline(db, "regular")?.generation, 1_000);
   db.close();
 });
+
+test("a zero-hour achievement owner is not replaced by the mean", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE players (aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);`);
+    const insert = db.prepare("INSERT INTO players (aid, hours, achievements) VALUES (?, ?, ?)");
+    // Five owners: one with zero playtime, four with 100 hours. owners=5 makes
+    // the P5 rank (5+4)/5 = 1, which lands exactly on the 0-hour row.
+    insert.run(1, 0, '["mixed"]');
+    for (let aid = 2; aid <= 5; aid += 1) insert.run(aid, 100, '["mixed"]');
+
+    const baseline = materializeAchievementBaseline(db, "regular", 1_000);
+    const mixed = baseline.achievements.find((row) => row.ach_id === "mixed");
+    assert.equal(mixed?.meanHours, 80);
+    // `Number(x) || mean` published 80 here: a real 0 is not a missing value.
+    assert.equal(mixed?.earlyHours, 0);
+    assert.equal(mixed?.unlockHours, 0);
+  } finally { db.close(); }
+});
+
+test("an unresolved percentile rank still falls back to the mean", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE players (aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);`);
+    const insert = db.prepare("INSERT INTO players (aid, hours, achievements) VALUES (?, ?, ?)");
+    // Two owners, no usable hours on the first: SQLite sorts NULL first, so it
+    // takes rank 1 and both percentile columns resolve to NULL.
+    insert.run(1, null, '["gapped"]');
+    insert.run(2, 100, '["gapped"]');
+
+    const baseline = materializeAchievementBaseline(db, "regular", 1_000);
+    const gapped = baseline.achievements.find((row) => row.ach_id === "gapped");
+    assert.equal(gapped?.owners, 2);
+    assert.equal(gapped?.meanHours, 100);
+    // Without the mean fallback these publish 0, which reads as "unlocked at 0h".
+    assert.equal(gapped?.earlyHours, 100);
+    assert.equal(gapped?.unlockHours, 100);
+  } finally { db.close(); }
+});

@@ -70,12 +70,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/storage.ts ./lib/sea
 COPY --from=builder --chown=nextjs:nodejs /app/lib/regular-progression.ts ./lib/regular-progression.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/playtime-brackets.ts ./lib/playtime-brackets.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/analytics.ts ./lib/seasonal/analytics.ts
-COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/d1.ts ./lib/seasonal/d1.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/daily-aggregates.ts ./lib/seasonal/daily-aggregates.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression.ts ./lib/seasonal/progression.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression-db.ts ./lib/seasonal/progression-db.ts
 COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/progression-details.ts ./lib/seasonal/progression-details.ts
-COPY --from=builder --chown=nextjs:nodejs /app/lib/seasonal/storage-d1.ts ./lib/seasonal/storage-d1.ts
 COPY --from=builder --chown=nextjs:nodejs /app/types/seasonal.ts ./types/seasonal.ts
 COPY --from=builder --chown=nextjs:nodejs /app/types/arena.ts ./types/arena.ts
 COPY --from=builder --chown=nextjs:nodejs /app/types/tarkov.ts ./types/tarkov.ts

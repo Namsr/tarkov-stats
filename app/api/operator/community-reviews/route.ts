@@ -10,6 +10,7 @@ export async function GET(request: Request) {
   const rawAid = new URL(request.url).searchParams.get("aid");
   const aid = rawAid === null ? undefined : parsePlayerId(rawAid);
   if (aid === null) return Response.json({ error: "Invalid account ID" }, { status: 400, headers });
+  if (aid === undefined) return Response.json({ error: "aid is required" }, { status: 400, headers });
   const store = await getCommunityReportsStore();
   if (!store) return Response.json({ error: "Storage unavailable" }, { status: 503, headers });
   const reviews = await store.reviews(aid);

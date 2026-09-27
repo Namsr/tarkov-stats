@@ -67,6 +67,7 @@ export default function AdminDashboard() {
   const [period, setPeriod] = useState<AdminPeriod>(() => periods.includes(searchParams.get("period") as AdminPeriod) ? searchParams.get("period") as AdminPeriod : "7d");
   const [domain, setDomain] = useState<AdminDomain>(() => domains.includes(searchParams.get("domain") as AdminDomain) ? searchParams.get("domain") as AdminDomain : "all");
   const [search, setSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [mode, setMode] = useState("");
   const [sort, setSort] = useState<"last" | "requests" | "snapshots">("last");
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -84,6 +85,16 @@ export default function AdminDashboard() {
   const [refreshError, setRefreshError] = useState("");
   const [resultMessage, setResultMessage] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  // Every filter control re-creates `load`, so requests overlap. Only the newest
+  // one may write state: the counter gates the writes, the abort frees the loser.
+  // An aborted request always has a newer generation, so it never reaches setError.
+  const loadGeneration = useRef(0);
+  const loadRequest = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
     const params = new URLSearchParams();
@@ -93,49 +104,57 @@ export default function AdminDashboard() {
     router.replace(`${pathname}${params.size ? `?${params}` : ""}`, { scroll: false });
   }, [domain, pathname, period, router]);
 
-  // The moderation forms reload right after a write, and the `!loading` render
-  // gate would unmount the panel they live in. `silent` keeps that reload from
-  // touching `loading` or `error`; their result message is owned here, above the
-  // gate, so it survives that reload and any concurrent one, and the suspicious
-  // tab is free to regroup its rows when a ban changes side. A silent failure
-  // cannot reuse `error` either — it would unmount the panel the same way — so
-  // it goes to `refreshError`, rendered as its own notice with the same retry.
-  // The generation is claimed before the flag pair, so the newest load owns
-  // `loading` whether or not it set it: a silent reload still clears a flag left
-  // behind, and a superseded load cannot clear the one its successor waits on.
-  const loadGeneration = useRef(0);
+  // Moderation reloads keep the form mounted while the parent holds its result.
+  // The newest load owns both flags, including when it started silently.
   const load = useCallback(async (options?: { silent?: boolean }) => {
-    const generation = loadGeneration.current + 1;
-    loadGeneration.current = generation;
-    const stale = () => generation !== loadGeneration.current;
+    if (!mounted.current) return;
+    const generation = ++loadGeneration.current;
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
+    const stale = () => !mounted.current || generation !== loadGeneration.current;
     setRefreshError("");
     setReloading(true);
     if (!options?.silent) { setLoading(true); setError(""); }
     const params = new URLSearchParams({ period, domain });
     try {
       if (tab === "overview" || tab === "health") {
-        setSummary(await getJson<Summary>(`/api/admin/summary?${params}`));
+        const nextSummary = await getJson<Summary>(`/api/admin/summary?${params}`, { signal: request.signal });
+        if (stale()) return;
+        setSummary(nextSummary);
         if (tab === "health") {
           setAuditError("");
-          try { setAudit(await getJson<DataAudit>("/api/admin/data-audit")); }
-          catch { setAuditError(t("admin.error.load")); }
+          try {
+            const nextAudit = await getJson<DataAudit>("/api/admin/data-audit", { signal: request.signal });
+            if (stale()) return;
+            setAudit(nextAudit);
+          }
+          catch { if (!stale()) setAuditError(t("admin.error.load")); }
         }
       } else if (tab === "showcase") {
-        setShowcase(await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase"));
+        const nextShowcase = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase", { signal: request.signal });
+        if (stale()) return;
+        setShowcase(nextShowcase);
       } else if (tab === "traffic") {
-        setTraffic(await getJson<Traffic>(`/api/admin/traffic?${params}`));
+        const nextTraffic = await getJson<Traffic>(`/api/admin/traffic?${params}`, { signal: request.signal });
+        if (stale()) return;
+        setTraffic(nextTraffic);
       } else if (tab === "monitoring") {
-        setSystemMetrics(await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`));
+        const nextMetrics = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`, { signal: request.signal });
+        if (stale()) return;
+        setSystemMetrics(nextMetrics);
       } else {
         if (mode) params.set("mode", mode);
-        if (search.trim()) params.set("search", search.trim());
+        if (searchQuery.trim()) params.set("search", searchQuery.trim());
         params.set("sort", sort);
         if (tab === "suspicious") params.set("source", "suspicious");
-        setAccounts(await getJson<Accounts>(`/api/admin/accounts?${params}`));
+        const nextAccounts = await getJson<Accounts>(`/api/admin/accounts?${params}`, { signal: request.signal });
+        if (stale()) return;
+        setAccounts(nextAccounts);
       }
     } catch { if (stale()) return; if (options?.silent) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
     finally { if (!stale()) { setReloading(false); setLoading(false); } }
-  }, [domain, mode, period, search, sort, tab, t]);
+  }, [domain, mode, period, searchQuery, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
     setAuditBusy(true); setAuditError("");
@@ -148,11 +167,18 @@ export default function AdminDashboard() {
       });
       const body = await response.json() as DataAudit;
       if (!response.ok && response.status !== 409) throw new Error(String(response.status));
-      setAudit(body);
-      if (response.status === 409) setAuditError(t("admin.audit.running"));
-    } catch { setAuditError(t("admin.error.load")); }
-    finally { setAuditBusy(false); }
+      if (mounted.current) setAudit(body);
+      if (response.status === 409 && mounted.current) setAuditError(t("admin.audit.running"));
+    } catch { if (mounted.current) setAuditError(t("admin.error.load")); }
+    finally { if (mounted.current) setAuditBusy(false); }
   }, [t]);
+
+  // The search box writes on every keystroke; copy the term `load` depends on
+  // only after a pause, the way app/average/page.tsx debounces its selection.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
   useEffect(() => {

@@ -1,8 +1,6 @@
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, createPercentileRank, pvpKillsFor, quantile, tempoScore, trimmedMean } from "./analytics.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { initializeSeasonalSchema } from "./storage.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { type DailyAggregateRecord, type ProgressionKind, type ProgressionMode } from "../../types/seasonal.ts";
@@ -280,116 +278,7 @@ export function refreshSqliteSeasonalAggregates(db: SqliteDatabase, cycleId: str
   return refreshSqliteProgressionAggregates(db, "seasonal", cycleId, targetBucket);
 }
 
-export async function refreshD1SeasonalAggregates(
-  db: D1DatabaseLike,
-  cycleId: string,
-  targetBucket?: number,
-): Promise<{ intervals: number; aggregates: number; generation: number }> {
-  let intervals: IntervalRow[] = [];
-  let cumulative: AggregatePoint[] = [];
-  if (targetBucket !== 0) {
-    const intervalStatement = db.prepare(intervalSql(targetBucket));
-    const cumulativeStatement = db.prepare(cumulativeSql(targetBucket));
-    const [intervalResult, cumulativeResult] = await db.batch([
-      targetBucket == null
-        ? intervalStatement.bind("seasonal", cycleId)
-        : intervalStatement.bind("seasonal", cycleId, targetBucket),
-      targetBucket == null
-        ? cumulativeStatement.bind("seasonal", cycleId, "seasonal", cycleId)
-        : cumulativeStatement.bind("seasonal", cycleId, "seasonal", cycleId, targetBucket),
-    ]);
-    intervals = d1Rows(intervalResult) as unknown as IntervalRow[];
-    cumulative = cumulativePoints(d1Rows(cumulativeResult));
-  }
-  const updates = scoreIntervals(intervals);
-  const aggregates = materializeRows(cycleId, {
-    cumulative, tempo: latestPoints(intervals, updates, "tempo"), form: latestPoints(intervals, updates, "form"),
-  });
-  // D1 batch() is the transaction boundary. Keep every derived-row write and
-  // the generation bump in one batch so a failed materialization cannot expose
-  // a new revision with only part of the scores/aggregates written.
-  const scoreSql = `WITH scores AS (
-      SELECT CAST(json_extract(value, '$.id') AS INTEGER) AS id,
-        json_extract(value, '$.tempo') AS tempo,
-        json_extract(value, '$.form') AS form,
-        json_extract(value, '$.sampleN') AS sample_n,
-        json_extract(value, '$.version') AS version
-      FROM json_each(?)
-    ) UPDATE progression_intervals SET
-      tempo_score = (SELECT tempo FROM scores WHERE scores.id = progression_intervals.id),
-      form_score = (SELECT form FROM scores WHERE scores.id = progression_intervals.id),
-      score_sample_n = (SELECT sample_n FROM scores WHERE scores.id = progression_intervals.id),
-      score_version = (SELECT version FROM scores WHERE scores.id = progression_intervals.id)
-    WHERE id IN (SELECT id FROM scores)`;
-  const aggregateSql = `INSERT INTO daily_aggregates (
-      mode, cycle_id, local_date, kind, dimension, bucket_min, bucket_max, mean, p25, p75, n,
-      confidence, freshness_at, score_version)
-    SELECT json_extract(value, '$.mode'), json_extract(value, '$.cycle_id'),
-      json_extract(value, '$.local_date'), json_extract(value, '$.kind'),
-      json_extract(value, '$.dimension'), json_extract(value, '$.bucket_min'),
-      json_extract(value, '$.bucket_max'), json_extract(value, '$.mean'),
-      json_extract(value, '$.p25'), json_extract(value, '$.p75'), json_extract(value, '$.n'),
-      json_extract(value, '$.confidence'), json_extract(value, '$.freshness_at'),
-      json_extract(value, '$.score_version')
-    FROM json_each(?)`;
-  const scoreRows = updates.map((item) => ({
-    id: item.id,
-    tempo: item.tempo,
-    form: item.form,
-    sampleN: item.sampleN,
-    version: ANALYTICS_SCORE_VERSION,
-  }));
-  const writes = [
-    db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL,
-      score_sample_n = NULL WHERE mode = 'seasonal' AND cycle_id = ?${targetBucket === 0 ? " AND 0" : targetBucket == null ? "" : ` AND to_snapshot_id IN (
-        SELECT s.id FROM progression_snapshots s WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-          AND ((s.pmc_raids - 1) / 10 + 1) * 10 = ?
-      )`}`).bind(...(targetBucket == null || targetBucket === 0 ? [cycleId] : [cycleId, cycleId, targetBucket])),
-    ...Array.from({ length: Math.ceil(scoreRows.length / 500) }, (_, index) =>
-      db.prepare(scoreSql).bind(JSON.stringify(scoreRows.slice(index * 500, (index + 1) * 500)))),
-  ];
-  if (targetBucket === 0) {
-    writes.push(db.prepare("DELETE FROM daily_aggregates WHERE 0"));
-  } else if (targetBucket == null) {
-    writes.push(db.prepare("DELETE FROM daily_aggregates WHERE mode = 'seasonal' AND cycle_id = ?").bind(cycleId));
-  } else {
-    writes.push(db.prepare("DELETE FROM daily_aggregates WHERE mode = 'seasonal' AND cycle_id = ? AND bucket_min = ?")
-      .bind(cycleId, targetBucket - 10));
-  }
-  if (aggregates.length) {
-    const aggregateRows = aggregates.map((row) => ({
-      mode: row.mode,
-      cycle_id: row.cycleId,
-      local_date: row.localDate,
-      kind: row.kind,
-      dimension: row.dimension,
-      bucket_min: row.bucketMin,
-      bucket_max: row.bucketMax,
-      mean: row.mean,
-      p25: row.p25,
-      p75: row.p75,
-      n: row.n,
-      confidence: row.confidence,
-      freshness_at: row.freshnessAt,
-      score_version: row.scoreVersion,
-    }));
-    writes.push(db.prepare(aggregateSql).bind(JSON.stringify(aggregateRows)));
-  }
-  writes.push(db.prepare(`INSERT INTO progression_materializations
-    (mode, cycle_id, generation, materialized_at, score_version)
-    VALUES ('seasonal', ?, COALESCE((SELECT generation + 1 FROM progression_materializations WHERE mode = 'seasonal' AND cycle_id = ?), 1), ?, ?)
-    ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = progression_materializations.generation + 1,
-      materialized_at = excluded.materialized_at, score_version = excluded.score_version`)
-    .bind(cycleId, cycleId, Date.now(), ANALYTICS_SCORE_VERSION));
-  await db.batch(writes);
-  const generationRow = await db.prepare(`SELECT generation FROM progression_materializations
-    WHERE mode = 'seasonal' AND cycle_id = ?`).bind(cycleId).first() as { generation: number } | null;
-  return { intervals: updates.length, aggregates: aggregates.length, generation: Number(generationRow?.generation ?? 0) };
-}
-
 export async function refreshSeasonalDailyAggregates(cycleId: string, targetBucket?: number) {
-  const d1 = await getSeasonalD1();
-  if (d1) return refreshD1SeasonalAggregates(d1, cycleId, targetBucket);
   const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
   const db = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
   try { return refreshSqliteSeasonalAggregates(db, cycleId, targetBucket); } finally { db.close(); }

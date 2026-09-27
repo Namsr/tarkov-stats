@@ -26,13 +26,12 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.match(schema, /INSERT OR IGNORE INTO favorites[\s\S]*COUNT\(DISTINCT aid\)/);
   assert.match(schema, /SET is_main = CASE WHEN aid = \? THEN 1 ELSE 0 END/);
   assert.match(schema, /throw new Error\("Favorite insert was ignored unexpectedly"\)/);
-  assert.ok((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length >= 2);
-  assert.ok((store.match(/prepare\(FAVORITE_SET_MAIN_SQL\)/g) ?? []).length >= 2);
-  assert.match(store, /inserted\?\.meta\?\.changes \?\? 0/);
+  assert.equal((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length, 1);
+  assert.equal((store.match(/prepare\(FAVORITE_SET_MAIN_SQL\)/g) ?? []).length, 1);
   assert.match(store, /favoriteInsertResult\(inserted\.changes/);
-  assert.ok((store.match(/DELETE FROM favorites WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
-  assert.ok((store.match(/UPDATE favorites SET note = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
-  assert.ok((store.match(/UPDATE favorites SET nickname = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
+  assert.equal((store.match(/DELETE FROM favorites WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
+  assert.equal((store.match(/UPDATE favorites SET note = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
+  assert.equal((store.match(/UPDATE favorites SET nickname = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
 
   for (const source of [panel, radar]) {
     assert.match(source, /favorites\.filter\(\(favorite\) => favorite\.aid !== aid\)/);
@@ -50,10 +49,24 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
     readFile("app/api/player/risk/route.ts", "utf8"),
   ]);
   assert.match(source, /const initialRisk = body\.viewModel\?\.risk \?\? body\.risk \?\? null/);
-  assert.match(source, /pollSeasonalRisk\(/);
+  assert.match(source, /const riskPollGeneration = useRef\(0\)/);
+  assert.match(source, /const pollGeneration = \+\+riskPollGeneration\.current/);
+  assert.equal((source.match(/void pollSeasonalRisk\(\{/g) ?? []).length, 2);
+  assert.match(source, /riskPollGeneration\.current === pollGeneration/);
+  // The bump has to happen inside the success path. Retiring the mount poll
+  // before the request went out killed a poll that could still fill the risk
+  // section, because a failed refresh never reaches the spawn site.
+  const refresh = source.slice(source.indexOf("const refreshProfile = useCallback("));
+  assert.ok(
+    refresh.indexOf("setServerRisk(nextRisk);") < refresh.indexOf("const pollGeneration = ++riskPollGeneration.current"),
+    "the mount poll must be retired after the refresh has written its risk",
+  );
+  assert.equal((refresh.match(/const pollGeneration = \+\+riskPollGeneration\.current/g) ?? []).length, 1);
   assert.match(source, /\/api\/player\/risk\?\$\{params\}/);
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /if \(!body\.risk\) continue;/);
+  assert.match(route, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "player-risk", max: 30 \}\)/);
+  assert.match(route, /status: 429/);
   assert.match(route, /getRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
   assert.match(route, /scoreVersion === riskScoreVersion\(mode, cycleId\)/);
 });
@@ -158,6 +171,19 @@ test("profile omits empty skills anchors and keeps achievements full width", asy
   assert.match(seasonal, /hasVisibleSkills\(skillItems\)\s*\?\s*<ProfileSkills/);
   assert.match(achievements, /className="achievement-table-wrap"/);
   assert.doesNotMatch(achievements, /<aside>[\s\S]*<EarlyUnlocks/);
+});
+
+test("early unlocks keep a zero-hour anchor out of the panel", async () => {
+  const earlyUnlocks = await readFile("components/EarlyUnlocks.tsx", "utf8");
+
+  // A published 0 means the owner pool has no playtime data, not that owners
+  // unlocked unusually early. The floor stays and the reason is recorded next to
+  // it; the panel only runs for players with hours > 0, so a 0 anchor could never
+  // clear the z threshold anyway.
+  assert.match(earlyUnlocks, /const MIN_EARLY_HOURS = 200;/);
+  assert.match(earlyUnlocks, /a\.earlyHours >= MIN_EARLY_HOURS &&/);
+  assert.doesNotMatch(earlyUnlocks, /a\.earlyHours >= 200/);
+  assert.match(earlyUnlocks, /z: \(playerHours - a\.earlyHours\) \/ a\.stdHours/);
 });
 
 test("profile achievements use sortable desktop columns and readable mobile cards", async () => {
@@ -395,6 +421,72 @@ test("visitor help is hidden from home without deleting its implementation", asy
   assert.doesNotMatch(home, /CommunityHelper/);
   await access("components/CommunityHelper.tsx");
   await access("app/api/community/ban-reviews/claim/route.ts");
+});
+
+test("ban review request results are dropped after unmount", async () => {
+  const review = await readFile("components/CommunityBanReview.tsx", "utf8");
+
+  assert.match(review, /const mounted = useRef\(true\);/);
+  assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  for (const [setter, expected] of [["setCandidates", 2], ["setError", 2], ["setLoading", 1], ["setVoting", 1]]) {
+    assert.equal(
+      (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded after each await`,
+    );
+  }
+});
+
+test("community helper drops poll and request results after unmount", async () => {
+  const helper = await readFile("components/CommunityHelper.tsx", "utf8");
+
+  assert.match(helper, /const mounted = useRef\(true\);/);
+  assert.match(helper, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  for (const [setter, expected] of [["setStatus", 2], ["setError", 2], ["setStarting", 1], ["setChecking", 1]]) {
+    assert.equal(
+      (helper.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded after each await`,
+    );
+  }
+});
+
+test("the FAQ dialog takes focus, traps Tab behind an inert page, and gives it back", async () => {
+  const faq = await readFile("components/FaqWidget.tsx", "utf8");
+
+  // Moving focus in is what keeps the keyboard off the trigger behind the backdrop,
+  // and inverting the body siblings is what keeps Tab off the page as well. The
+  // wrapper holds the overlay and the trigger as one body child, so the rest of the
+  // page is exactly what is left over. The gaps are \s* only, so the match cannot
+  // run out of this effect and into the Escape one; keyed on [open] so the cleanup
+  // covers the button, backdrop and Escape close paths, and runs on unmount too. The
+  // open also clears the flag the navigating closes leave behind.
+  assert.match(
+    faq,
+    /useEffect\(\(\) => \{\s*if \(!open\) return;\s*navigatingRef\.current = false;\s*const siblings = Array\.from\(document\.body\.children\)\.filter\(\s*\(el\): el is HTMLElement => el instanceof HTMLElement && el !== rootRef\.current,\s*\);\s*for \(const el of siblings\) el\.inert = true;\s*dialogRef\.current\?\.focus\(\);\s*return \(\) => \{\s*for \(const el of siblings\) el\.inert = false;\s*\};\s*\}, \[open\]\);/,
+  );
+  assert.match(faq, /<div ref=\{rootRef\}>/);
+  assert.doesNotMatch(faq, /return \(\) => \{ triggerRef\.current\?\.focus\(\); \};/);
+  // The gaps are the dialog's own attributes, so the match cannot slide onto the
+  // trigger: a dialog without `tabIndex={-1}` cannot take focus at all, and the focus
+  // call in the effect would no-op on it. Inerting the page is also what makes
+  // `aria-modal` honest, rather than a claim about a background still tabbable.
+  assert.match(
+    faq,
+    /<div\s+ref=\{dialogRef\}\s+role="dialog"\s+aria-modal="true"\s+aria-label=\{t\("faq\.title"\)\}\s+tabIndex=\{-1\}/,
+  );
+  assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+  // Focus returns from the backdrop's animation end, not from the open -> closing
+  // step, because the backdrop keeps covering the trigger until that fires. The three
+  // answer links close the dialog and soft-navigate, and the widget is in the root
+  // layout, so that end can land on the destination page: the flag keeps the router's
+  // own focus handling in charge there.
+  assert.match(
+    faq,
+    /onAnimationEnd=\{\(event\) => \{\s*if \(event\.target === event\.currentTarget && dialogState === "closing"\) \{\s*setDialogState\("closed"\);\s*if \(!navigatingRef\.current\) triggerRef\.current\?\.focus\(\);\s*\}\s*\}\}/,
+  );
+  assert.match(faq, /function closeFaqAndNavigate\(\) \{\s*navigatingRef\.current = true;\s*closeFaq\(\);\s*\}/);
+  assert.equal((faq.match(/onClick=\{closeFaqAndNavigate\}/g) ?? []).length, 3);
 });
 
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
@@ -777,8 +869,8 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   assert.match(database, /mergeProgressionBundle/);
   assert.equal(
     (database.match(/await details\(/g) ?? []).length,
-    3,
-    "shared details should run once per legacy storage implementation and once for the combined timeline",
+    2,
+    "shared details should run once for the bundle and once for the timeline",
   );
   for (const route of [general, legacy]) {
     assert.match(route, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);

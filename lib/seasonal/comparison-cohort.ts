@@ -1,7 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore Node's strip-types test runner requires explicit extensions.
-import { d1Rows, getSeasonalD1, type D1DatabaseLike } from "./d1.ts";
-// @ts-ignore Node's strip-types test runner requires explicit extensions.
 import { initializeSeasonalSchema } from "./storage.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 import {
@@ -19,7 +17,8 @@ import {
 // @ts-ignore Node's strip-types test runner resolves the explicit .ts extension.
 } from "../profile-cohort.ts";
 
-type Backend = { kind: "d1" | "sqlite"; db: D1DatabaseLike };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SqliteDatabase = any;
 type Row = Record<string, unknown>;
 
 const COHORT_CACHE_TTL_MS = 5 * 60_000;
@@ -27,7 +26,7 @@ const COHORT_CACHE_MAX = 512;
 type SeasonalComparisonCohortValue = Omit<SeasonalComparisonCohortLookup, "cache">;
 const cohortCache = new Map<string, { expiresAt: number; value: SeasonalComparisonCohortValue }>();
 const cohortLoads = new Map<string, Promise<SeasonalComparisonCohortValue>>();
-let sqliteDatabase: D1DatabaseLike | null = null;
+let sqliteDatabase: SqliteDatabase | null = null;
 
 const NORMALIZED_CTE = `
 WITH normalized AS (
@@ -35,7 +34,8 @@ WITH normalized AS (
     pmc_raids, scav_raids, survived, deaths, total_kills, killed_pmc,
     longest_win_streak, level, pmc_survived, pmc_deaths,
     CASE WHEN total_raids > 0 THEN 100.0 * survived / total_raids END AS survival_rate,
-    CASE WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
+    CASE WHEN deaths IS NULL OR total_kills IS NULL THEN NULL
+      WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate
@@ -46,32 +46,28 @@ WITH normalized AS (
 )
 `;
 
-async function backend(): Promise<Backend | null> {
-  const d1 = await getSeasonalD1();
-  if (d1) return { kind: "d1", db: d1 };
+async function backend(): Promise<SqliteDatabase | null> {
   try {
     if (!sqliteDatabase) {
       // @ts-ignore Node's strip-types runtime resolves this built-in in self-hosted mode.
-      const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => D1DatabaseLike };
+      const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => SqliteDatabase };
       sqliteDatabase = new sqlite.DatabaseSync(
         process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
       );
       initializeSeasonalSchema(sqliteDatabase);
     }
-    return { kind: "sqlite", db: sqliteDatabase };
+    return sqliteDatabase;
   } catch {
     return null;
   }
 }
 
-async function first(store: Backend, sql: string, params: unknown[]): Promise<Row | null> {
-  if (store.kind === "d1") return await store.db.prepare(sql).bind(...params).first() as Row | null;
-  return store.db.prepare(sql).get(...params) as Row | null;
+async function first(store: SqliteDatabase, sql: string, params: unknown[]): Promise<Row | null> {
+  return store.prepare(sql).get(...params) as Row | null;
 }
 
-async function all(store: Backend, sql: string, params: unknown[]): Promise<Row[]> {
-  if (store.kind === "d1") return d1Rows(await store.db.prepare(sql).bind(...params).all());
-  return store.db.prepare(sql).all(...params) as Row[];
+async function all(store: SqliteDatabase, sql: string, params: unknown[]): Promise<Row[]> {
+  return store.prepare(sql).all(...params) as Row[];
 }
 
 function rangeWhere(input: {

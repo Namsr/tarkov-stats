@@ -116,13 +116,39 @@ const INSERT_SNAPSHOT_SQL =
   `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
   `VALUES (${SNAPSHOT_COLS.map(() => "?").join(", ")})`;
 
+// progression_snapshots leaves these nullable (lib/seasonal/storage.ts:134-151)
+// while banned_snapshots declares them NOT NULL, so INSERT OR IGNORE would
+// swallow the violation and silently drop the whole row. Normalise on the way
+// across, otherwise the archive keeps nothing and the DELETE below still runs.
+const ARCHIVE_COALESCE: Record<string, string> = {
+  prestige: "0", level: "0", hours: "0", total_raids: "0", survived: "0",
+  deaths: "0", total_kills: "0", run_through: "0", longest_win_streak: "0",
+  achv_count: "0", achievements: "'[]'",
+};
+
+const ARCHIVE_HISTORY_SQL =
+  `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
+  `SELECT ${SNAPSHOT_COLS.map((column) => (column in ARCHIVE_COALESCE
+    ? `COALESCE(${column}, ${ARCHIVE_COALESCE[column]})`
+    : column)).join(", ")} ` +
+  `FROM progression_db.progression_snapshots WHERE aid = ?`;
+
 function snapshotArgs(input: PlayerSnapshotInput, seriesId = 1): unknown[] {
   const s = input.stats;
+  // Same NOT NULL contract as ARCHIVE_COALESCE: the parsed upstream payload
+  // leaves these nullable even though the type says number, and a single NULL
+  // would drop the whole archive row. Only a real NULL is normalised here —
+  // `undefined` must still fail the bind so the transaction rolls back rather
+  // than committing a ban on top of fabricated zeroes. The achievement ids
+  // follow the same rule: a missing list has to fail the bind, because an
+  // archived `"[]"` is indistinguishable from a player with no achievements.
+  const orZero = (value: number | null) => (value === null ? 0 : value);
   return [
     input.aid, input.upstreamUpdatedAt, input.capturedAt, seriesId, s.nickname, s.side,
-    s.prestige, s.level, s.experience, s.hoursPlayed, s.totalRaids, s.pmcRaids,
-    s.scavRaids, s.survivedRaids, s.deaths, s.pmcDeaths, s.totalKills, s.killedPmc,
-    s.runThrough, s.longestWinStreak, s.achievementsCount,
+    orZero(s.prestige), orZero(s.level), orZero(s.experience), orZero(s.hoursPlayed),
+    orZero(s.totalRaids), orZero(s.pmcRaids), orZero(s.scavRaids), orZero(s.survivedRaids),
+    orZero(s.deaths), orZero(s.pmcDeaths), orZero(s.totalKills), orZero(s.killedPmc),
+    orZero(s.runThrough), orZero(s.longestWinStreak), orZero(s.achievementsCount),
     JSON.stringify(input.achievementIds), JSON.stringify(s),
   ];
 }
@@ -169,18 +195,6 @@ async function getSqliteBanDb(): Promise<any | null> {
       warned = true;
       console.warn("ban store: sqlite unavailable: " + (error as Error).message);
     }
-    return null;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function cloudflareBindings(): Promise<{ bans: any; players: any } | null> {
-  try {
-    const mod = await import("@opennextjs/cloudflare");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const env = mod.getCloudflareContext().env as any;
-    return env.BANS_DB ? { bans: env.BANS_DB, players: env.DB ?? null } : null;
-  } catch {
     return null;
   }
 }
@@ -252,11 +266,32 @@ export function createSqliteBanStore(db: any): BanStore {
             "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
           ).get();
           if (hasSnapshots) {
-            db.exec(
-              `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
-              `SELECT ${SNAPSHOT_COLS.join(", ")} FROM progression_db.progression_snapshots ` +
-              `WHERE aid = ${Number(input.aid)}`
-            );
+            // Bind the aid; the value is only ever a parsed positive integer, but
+            // a placeholder costs nothing and removes the interpolation.
+            // The two schemas also key the rows differently: the source is
+            // UNIQUE(mode, cycle_id, aid, profile_updated_at) while the archive
+            // is UNIQUE(aid, upstream_updated_at). Two captures of one aid that
+            // share upstream_updated_at — a regular and a pve read of the same
+            // profile.updated, or the same account in two Seasonal cycles —
+            // collide on the copy, and INSERT OR IGNORE drops all but the first
+            // in silence. Count the source before the copy and fail the ban when
+            // the archive ends up short, so the DELETE below can never drop
+            // history the archive does not hold.
+            const sourceCount = db.prepare(
+              "SELECT COUNT(*) AS n FROM progression_db.progression_snapshots WHERE aid = ?"
+            ).get(Number(input.aid)) as { n: number };
+            db.prepare(ARCHIVE_HISTORY_SQL).run(Number(input.aid));
+            const archivedCount = db.prepare(
+              `SELECT COUNT(*) AS n FROM banned_snapshots WHERE aid = ?
+                 AND upstream_updated_at IN
+                   (SELECT upstream_updated_at FROM progression_db.progression_snapshots WHERE aid = ?)`
+            ).get(Number(input.aid), Number(input.aid)) as { n: number };
+            if (archivedCount.n < sourceCount.n) {
+              throw new Error(
+                `progression archive incomplete for aid ${input.aid}: `
+                + `${archivedCount.n} of ${sourceCount.n} rows archived`
+              );
+            }
           }
         }
         const latest = db.prepare(
@@ -297,70 +332,12 @@ export function createSqliteBanStore(db: any): BanStore {
   };
 }
 
-// D1 cannot make a transaction atomic across separate bindings. We therefore
-// commit the ban registry first, then place the tombstone/delete in the primary
-// DB. Missing bindings or migrations result in a null store, not a broken build.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function d1Store(bans: any, players: any): BanStore {
-  return {
-    async isBanned(aid) {
-      return Boolean(await bans.prepare("SELECT 1 FROM banned_accounts WHERE aid = ?").bind(aid).first());
-    },
-    async get(aid) {
-      return toAccount(await bans.prepare("SELECT * FROM banned_accounts WHERE aid = ?").bind(aid).first());
-    },
-    async sources(aid) {
-      const result = await bans.prepare(`SELECT source FROM banned_accounts WHERE aid = ?
-        UNION SELECT source FROM ban_confirmations WHERE aid = ?`).bind(aid, aid).all();
-      return ((result.results ?? []) as { source: string | null }[])
-        .map((row) => row.source == null ? UNKNOWN_BAN_SOURCE : String(row.source));
-    },
-    async confirmBanned(input, meta = {}) {
-      const confirmedAt = meta.confirmedAt ?? Date.now();
-      const source = meta.source ?? UNKNOWN_BAN_SOURCE;
-      const rawStatus = meta.rawStatus ?? null;
-      const reason = meta.reason ?? null;
-      await bans.batch([
-        bans.prepare(
-          `INSERT INTO banned_accounts
-             (aid, first_banned_at, last_confirmed_at, source, raw_status, reason, profile_updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(aid) DO UPDATE SET last_confirmed_at = excluded.last_confirmed_at,
-             source = excluded.source, raw_status = excluded.raw_status, reason = excluded.reason,
-             profile_updated_at = MAX(profile_updated_at, excluded.profile_updated_at)`
-        ).bind(input.aid, confirmedAt, confirmedAt, source, rawStatus, reason, input.upstreamUpdatedAt),
-        bans.prepare(
-          "INSERT INTO ban_confirmations (aid, confirmed_at, source, raw_status, reason) VALUES (?, ?, ?, ?, ?)"
-        ).bind(input.aid, confirmedAt, source, rawStatus, reason),
-        bans.prepare(INSERT_SNAPSHOT_SQL).bind(...snapshotArgs(input)),
-      ]);
-      if (players) {
-        await players.batch([
-          players.prepare(
-            "INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'confirmed_ban', ?) ON CONFLICT(aid) DO NOTHING"
-          ).bind(input.aid, confirmedAt),
-          players.prepare("DELETE FROM players WHERE aid = ?").bind(input.aid),
-        ]);
-      }
-    },
-  };
-}
-
 export async function getBanStore(): Promise<BanStore | null> {
-  const bindings = await cloudflareBindings();
-  if (bindings) {
-    try {
-      await bindings.bans.prepare("SELECT 1 FROM banned_accounts LIMIT 1").first();
-      return d1Store(bindings.bans, bindings.players);
-    } catch {
-      return null;
-    }
-  }
   const db = await getSqliteBanDb();
   return db ? createSqliteBanStore(db) : null;
 }
 
-/** False when no ban backend is configured, allowing D1 deployments to degrade safely. */
+/** False when the local ban database is unavailable. */
 export async function isAidBanned(aid: number): Promise<boolean> {
   const store = await getBanStore();
   return store ? store.isBanned(aid) : false;

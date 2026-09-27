@@ -1,10 +1,9 @@
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX = 30;
 
-// Best-effort, in-process limiter. На одном Node-инстансе Map живёт в процессе
-// (сбрасывается при рестарте); на Cloudflare Workers — в пределах изолята.
+// Best-effort, in-process limiter. Map живёт в Node-процессе и сбрасывается при рестарте.
 // Ключ = "<bucket>:<ip>", так что разные эндпоинты лимитируются раздельно.
-// Cleanup ленивый — top-level setInterval в Workers-скоупе запрещён.
+// Cleanup ленивый.
 //
 // Окно хранится вместе с метками: store общий для всех бакетов, поэтому prune
 // обязан фильтровать каждый ключ его собственным windowMs. Иначе запрос к
@@ -35,12 +34,12 @@ export interface RateLimitOptions {
 
 export function checkRateLimit(
   ip: string,
-  opts: RateLimitOptions = {}
+  opts: RateLimitOptions = {},
+  now: number = Date.now()
 ): { allowed: boolean; remaining: number; limit: number; windowMs: number } {
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
   const max = opts.max ?? DEFAULT_MAX;
   const key = `${opts.bucket ?? "default"}:${ip}`;
-  const now = Date.now();
 
   // Opportunistic cleanup так, чтобы Map не рос бесконечно.
   if (store.size > 5000) prune(now);

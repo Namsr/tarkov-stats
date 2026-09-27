@@ -1364,13 +1364,6 @@ let database: SqliteDatabase | null = null;
 export async function getSeasonalStore(): Promise<SeasonalStore | null> {
   const { loadSeasonalCycleConfig } = await import("./config");
   const configuredCycle = loadSeasonalCycleConfig();
-  const { getSeasonalD1 } = await import("./d1");
-  const d1 = await getSeasonalD1();
-  if (d1) {
-    const { createD1SeasonalStore, upsertD1SeasonCycle } = await import("./storage-d1");
-    if (configuredCycle) await upsertD1SeasonCycle(d1, configuredCycle);
-    return createD1SeasonalStore(d1);
-  }
   if (database) {
     if (configuredCycle) upsertSqliteSeasonCycle(database, configuredCycle);
     return createSqliteSeasonalStore(database);

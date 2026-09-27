@@ -2,20 +2,14 @@
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { loadSeasonalCycleConfig } from "./config.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { d1Rows, getSeasonalD1 } from "./d1.ts";
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { buildSeasonalAverageSeries, LIFETIME_BAND_DISTRIBUTION_SQL, lifetimeBandDistribution, progressionDailySql, SEASONAL_POPULATION_SQL, seasonalPopulationArgs, seasonalPopulationSummary, type DailyRow, type LifetimeBandCountRow, type SeasonalPopulationRow } from "./progression.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { initializeSeasonalSchema, parseSeasonalAchievementUnlocks, upsertSqliteSeasonCycle } from "./storage.ts";
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { upsertD1SeasonCycle } from "./storage-d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { ProgressionKind, SeasonalAverageResponse } from "../../types/seasonal.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { resolveY } from "../metrics.ts";
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import type { D1DatabaseLike } from "./d1.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
@@ -89,7 +83,8 @@ WITH latest AS (
 ), normalized AS (
   SELECT portrait.*,
     CASE WHEN total_raids > 0 THEN 100.0 * survived / total_raids END AS survival_rate,
-    CASE WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
+    CASE WHEN deaths IS NULL OR total_kills IS NULL THEN NULL
+      WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate
@@ -102,20 +97,14 @@ function trimWindow(n: number) {
   return { off, limit: n - off * 2 };
 }
 
-type AverageBackend = { kind: "d1" | "sqlite"; db: D1DatabaseLike };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AverageBackend = { db: any };
 
 async function backendRows(backend: AverageBackend, sql: string, params: unknown[]): Promise<Record<string, unknown>[]> {
-  if (backend.kind === "d1") {
-    const result = await backend.db.prepare(sql).bind(...params).all();
-    return d1Rows(result);
-  }
   return backend.db.prepare(sql).all(...params) as Record<string, unknown>[];
 }
 
 async function backendFirst(backend: AverageBackend, sql: string, params: unknown[]): Promise<Record<string, unknown> | null> {
-  if (backend.kind === "d1") {
-    return await backend.db.prepare(sql).bind(...params).first() as Record<string, unknown> | null;
-  }
   return backend.db.prepare(sql).get(...params) as Record<string, unknown> | null;
 }
 
@@ -161,8 +150,6 @@ function standardSeasonalVariant(statistic: AverageStatistic, period: AveragePer
 
 async function openSeasonalAverageBackend(): Promise<AverageBackend | null> {
   try {
-    const d1 = await getSeasonalD1();
-    if (d1) return { kind: "d1", db: d1 };
     if (!database) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
@@ -171,7 +158,7 @@ async function openSeasonalAverageBackend(): Promise<AverageBackend | null> {
       );
       initializeSeasonalSchema(database);
     }
-    return { kind: "sqlite", db: database };
+    return { db: database };
   } catch (error) {
     console.warn("seasonal average backend unavailable: " + (error as Error).message);
     return null;
@@ -377,21 +364,8 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
   }) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
 > {
   try {
-    const d1 = await getSeasonalD1();
-    let backend: AverageBackend;
-    if (d1) {
-      backend = { kind: "d1", db: d1 };
-    } else {
-      if (!database) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const sqlite = (await import("node:sqlite" as string)) as any;
-        database = new sqlite.DatabaseSync(
-          process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
-        );
-        initializeSeasonalSchema(database);
-      }
-      backend = { kind: "sqlite", db: database };
-    }
+    const backend = await openSeasonalAverageBackend();
+    if (!backend) return null;
 
     // One portrait scan per request, everything else in JS. The previous
     // per-request path re-evaluated PORTRAIT_CTE ~39 times (a population count, a
@@ -508,18 +482,8 @@ export async function getSeasonalAchievementBaseline(
   excludeAid?: number,
 ): Promise<SeasonalAchievementBaseline | null> {
   try {
-    const d1 = await getSeasonalD1();
-    let backend: AverageBackend;
-    if (d1) backend = { kind: "d1", db: d1 };
-    else {
-      if (!database) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const sqlite = (await import("node:sqlite" as string)) as any;
-        database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-        initializeSeasonalSchema(database);
-      }
-      backend = { kind: "sqlite", db: database };
-    }
+    const backend = await openSeasonalAverageBackend();
+    if (!backend) return null;
     const cycle = await backendFirst(
       backend,
       "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?",
@@ -622,17 +586,8 @@ export async function getSeasonalRiskBaseline(
   if (!Number.isFinite(center.hours) || center.hours <= 0 ||
       !Number.isFinite(center.pmcRaids) || center.pmcRaids < 0) return null;
   try {
-    const d1 = await getSeasonalD1();
-    let backend: AverageBackend;
-    if (d1) backend = { kind: "d1", db: d1 };
-    else {
-      if (!database) {
-        const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string) => D1DatabaseLike };
-        database = new sqlite.DatabaseSync(process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-        initializeSeasonalSchema(database);
-      }
-      backend = { kind: "sqlite", db: database };
-    }
+    const backend = await openSeasonalAverageBackend();
+    if (!backend) return null;
     const population = `WITH latest AS (
       SELECT s.* FROM progression_snapshots s
       JOIN (
@@ -736,42 +691,7 @@ export async function getSeasonalAverageQuery(): Promise<
   ((cycleId: string, now?: number) => Promise<SeasonalAverageResponse | null>) | null
 > {
   try {
-    const d1 = await getSeasonalD1();
     const configuredCycle = loadSeasonalCycleConfig();
-    if (d1) {
-      if (configuredCycle) await upsertD1SeasonCycle(d1, configuredCycle);
-      return async (cycleId, now = Date.now()) => {
-        const cycle = await d1.prepare(
-          "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?"
-        ).bind(cycleId).first() as { starts_at: number } | null;
-        if (!cycle) return null;
-        const [population, distributionResult, ...dailyResults] = await Promise.all([
-          d1.prepare(SEASONAL_POPULATION_SQL).bind(...seasonalPopulationArgs(cycleId, now)).first() as Promise<SeasonalPopulationRow | null>,
-          d1.prepare(LIFETIME_BAND_DISTRIBUTION_SQL).bind("seasonal", cycleId).all(),
-          ...KINDS.map((kind) => d1.prepare(progressionDailySql(kind))
-            .bind("seasonal", cycleId, "seasonal", cycleId, -1).all()),
-        ]);
-        const distribution = lifetimeBandDistribution(
-          d1Rows(distributionResult) as unknown as LifetimeBandCountRow[]
-        );
-        const series = Object.fromEntries(KINDS.map((kind, index) => [
-          kind,
-          buildSeasonalAverageSeries(
-            d1Rows(dailyResults[index]) as unknown as DailyRow[],
-            Number(cycle.starts_at),
-            kind,
-            distribution,
-          ),
-        ])) as SeasonalAverageResponse["series"];
-        return {
-          mode: "seasonal",
-          cycleId,
-          population: seasonalPopulationSummary(population, distribution),
-          series,
-        };
-      };
-    }
-
     if (!database) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;

@@ -14,7 +14,7 @@ async function isCurrentArenaSyncRun(request: Request, body: unknown): Promise<b
   if (!runId || typeof body !== "object" || body === null || Array.isArray(body) ||
     (body as { mode?: unknown }).mode !== "arena") return true;
   const backend = await getArenaBackend();
-  if (!backend || backend.kind !== "sqlite") return false;
+  if (!backend) return false;
   const table = backend.db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_lease'"
   ).get();
