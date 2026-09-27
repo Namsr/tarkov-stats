@@ -5,9 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 // @ts-expect-error Direct Node TypeScript tests require explicit extensions.
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 // @ts-expect-error Direct Node TypeScript tests require explicit extensions.
-import { assembleProgressionTimeline, D1_POPULATION_CHUNK_CHARS, d1PopulationSnapshot, materializeD1PopulationSnapshot, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
-// @ts-expect-error Direct Node TypeScript tests require explicit extensions.
-import { materializeScheduledD1Population } from "../lib/seasonal/population-scheduler.ts";
+import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
 
 function seed(db: DatabaseSync, mode = "regular", cycleId = "persistent") {
   const profile = db.prepare(`INSERT INTO player_profiles (
@@ -57,66 +55,6 @@ test("SQLite population publication is atomic and preserves the last good genera
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_population_generations").get()!.n, 1);
 });
 
-class FakeStatement {
-  args: unknown[] = [];
-  db: DatabaseSync;
-  sql: string;
-  constructor(db: DatabaseSync, sql: string) { this.db = db; this.sql = sql; }
-  bind(...args: unknown[]) { this.args = args; return this; }
-  async all() { return { results: this.db.prepare(this.sql).all(...this.args) }; }
-  async first() { return this.db.prepare(this.sql).get(...this.args) ?? null; }
-  async run() { const result = this.db.prepare(this.sql).run(...this.args); return { meta: { changes: Number(result.changes) } }; }
-}
-
-class FakeD1 {
-  db: DatabaseSync;
-  lastBatchSize = 0;
-  constructor(db: DatabaseSync) { this.db = db; }
-  prepare(sql: string) { return new FakeStatement(this.db, sql); }
-  async batch(statements: FakeStatement[]) {
-    this.lastBatchSize = statements.length;
-    this.db.exec("BEGIN");
-    try {
-      const results = [];
-      for (const statement of statements) results.push(await statement.run());
-      this.db.exec("COMMIT");
-      return results;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-}
-
-test("D1 population storage publishes the same versioned snapshot contract", async () => {
-  const db = new DatabaseSync(":memory:");
-  initializeSeasonalSchema(db);
-  seed(db, "seasonal", "s1");
-  const d1 = new FakeD1(db);
-  const result = await materializeD1PopulationSnapshot(d1, "seasonal", "s1", 200);
-  assert.deepEqual(result, { generation: 200, generatedAt: 200 });
-  assert.ok(d1.lastBatchSize <= 100, "atomic publication stays within D1's batch statement budget");
-  const current = db.prepare("SELECT generation, generated_at FROM progression_population_current").get();
-  assert.equal(current!.generation, 200);
-  assert.equal(current!.generated_at, 200);
-  assert.match(String(db.prepare("SELECT payload FROM progression_population_generations").get()!.payload), /^chunks:\d+$/);
-  const chunks = db.prepare("SELECT payload FROM progression_population_chunks ORDER BY chunk_index").all() as { payload: unknown }[];
-  assert.ok(chunks.length > 0);
-  assert.ok(chunks.every((row) => String(row.payload).length <= D1_POPULATION_CHUNK_CHARS));
-  assert.ok(chunks.every((row) => Buffer.byteLength(String(row.payload), "utf8") < 2_000_000));
-  const published = await d1PopulationSnapshot(d1, "seasonal", "s1");
-  assert.equal(published?.generation, 200);
-  const riskBand = published?.payload.riskBaselines.find((band) => band.min === 100);
-  assert.equal(riskBand?.baseline.n, 105);
-  assert.equal(riskBand?.baseline.metrics.pmc_kd_ratio.mean, 1);
-});
-
-test("D1 without the snapshot migration safely reports warming", async () => {
-  const db = new DatabaseSync(":memory:");
-  const published = await d1PopulationSnapshot(new FakeD1(db), "seasonal", "s1");
-  assert.equal(published, null);
-});
-
 test("personal revisions change only for timeline-relevant updates of that identity", () => {
   const db = new DatabaseSync(":memory:");
   initializeSeasonalSchema(db);
@@ -159,7 +97,6 @@ test("public timeline SQL is aid-scoped and never queries risk population live",
   assert.match(source, /TIMELINE_INTERVAL_SQL[\s\S]*WHERE i\.mode = \? AND i\.cycle_id = \? AND i\.aid = \?/);
   assert.match(source, /DETAIL_INTERVAL_SQL[\s\S]*WHERE i\.mode = \? AND i\.cycle_id = \? AND i\.aid = \?/);
   assert.doesNotMatch(source, /getSeasonalRiskBaseline|getSeasonalAchievementBaseline/);
-  assert.match(source, /d1PopulationSnapshot\(d1, input\.mode, input\.cycleId\)/);
   assert.match(source, /sqlitePopulationSnapshot\(sqliteDb, input\.mode, input\.cycleId\)/);
 });
 
@@ -175,17 +112,6 @@ test("VPS delays and deprioritizes the isolated population worker", async () => 
   assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("interval"\)[\s\S]*\}, intervalMs\)/);
   assert.match(worker, /setTimeout\(resolve, initialDelayMs\)/);
   assert.match(worker, /await materializeProgressionPopulation\("startup"\)/);
-});
-
-test("Cloudflare uses a non-public two-hour scheduled D1 lifecycle", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const wrangler = await readFile("wrangler.jsonc", "utf8");
-  const worker = await readFile("custom-worker.ts", "utf8");
-  assert.match(wrangler, /"main": "custom-worker\.ts"/);
-  assert.match(wrangler, /"crons": \["0 \*\/2 \* \* \*"\]/);
-  assert.match(worker, /fetch: handler\.fetch/);
-  assert.match(worker, /scheduled\(event(?:\s*:[^,]+)?, env(?:\s*:[^,]+)?, ctx(?:\s*:[^)]+)?\)/);
-  assert.deepEqual(await materializeScheduledD1Population({}, 1), { skipped: true });
 });
 
 test("missing population snapshot returns personal lines with an exact warming contract", async () => {

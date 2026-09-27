@@ -106,13 +106,6 @@ test("empty Arena downloads preserve the last committed index", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 
-  const migration = await readFile("scripts/arena-player-index-d1.sql", "utf8");
-  const memory = new DatabaseSync(":memory:");
-  memory.exec(migration);
-  assert.throws(() => memory.prepare(`INSERT INTO arena_player_index
-    (mode, aid, nickname, nickname_lower, synced_at) VALUES (?, ?, ?, ?, ?)`)
-    .run("pve", 1, "Wrong", "wrong", 1));
-  memory.close();
 });
 
 test("Arena index is wired into the runtime and daily Moscow schedule", async () => {

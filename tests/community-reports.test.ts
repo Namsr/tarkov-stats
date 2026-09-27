@@ -4,40 +4,13 @@ import test from "node:test";
 // @ts-ignore -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
 import {
-  COMMUNITY_REPORTS_SCHEMA,
-  createD1CommunityReportsStore,
   createSqliteCommunityReportsStore,
   type CommunityReportsStore,
 // @ts-ignore -- Node's strip-types runner resolves the explicit .ts module.
 } from "../lib/community-reports-db.ts";
 
-function d1Style(db: DatabaseSync) {
-  return {
-    prepare(sql: string) {
-      let args: unknown[] = [];
-      return {
-        bind(...next: unknown[]) { args = next; return this; },
-        async first(column?: string) {
-          const row = db.prepare(sql).get(...args) as Record<string, unknown> | undefined;
-          return column ? row?.[column] ?? null : row ?? null;
-        },
-        async all() { return { results: db.prepare(sql).all(...args) }; },
-        async run() {
-          const result = db.prepare(sql).run(...args);
-          return { meta: { changes: Number(result.changes) } };
-        },
-      };
-    },
-  };
-}
-
 const storeFactories: [string, () => CommunityReportsStore][] = [
   ["SQLite", () => createSqliteCommunityReportsStore(new DatabaseSync(":memory:"))],
-  ["D1-style", () => {
-    const db = new DatabaseSync(":memory:");
-    db.exec(COMMUNITY_REPORTS_SCHEMA);
-    return createD1CommunityReportsStore(d1Style(db));
-  }],
 ];
 
 for (const [name, makeStore] of storeFactories) {

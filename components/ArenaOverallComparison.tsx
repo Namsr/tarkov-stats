@@ -62,7 +62,7 @@ export default function ArenaOverallComparison({
           aid,
           mode,
           statistic,
-          body.schemaVersion,
+          typeof body === "object" && body !== null && "schemaVersion" in body ? body.schemaVersion : null,
           controller.signal,
         ) ?? result;
       })

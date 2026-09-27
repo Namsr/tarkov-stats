@@ -659,12 +659,6 @@ export function mapTask(row: Record<string, unknown>) {
 let database: SqliteDatabase | null = null;
 
 export async function getSeasonalOperatorStore() {
-  const { getSeasonalD1 } = await import("./d1");
-  const d1 = await getSeasonalD1();
-  if (d1) {
-    const { createD1SeasonalOperatorStore } = await import("./operator-d1");
-    return createD1SeasonalOperatorStore(d1);
-  }
   if (!database) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;

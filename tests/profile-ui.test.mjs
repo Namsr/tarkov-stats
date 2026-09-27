@@ -26,13 +26,12 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.match(schema, /INSERT OR IGNORE INTO favorites[\s\S]*COUNT\(DISTINCT aid\)/);
   assert.match(schema, /SET is_main = CASE WHEN aid = \? THEN 1 ELSE 0 END/);
   assert.match(schema, /throw new Error\("Favorite insert was ignored unexpectedly"\)/);
-  assert.ok((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length >= 2);
-  assert.ok((store.match(/prepare\(FAVORITE_SET_MAIN_SQL\)/g) ?? []).length >= 2);
-  assert.match(store, /inserted\?\.meta\?\.changes \?\? 0/);
+  assert.equal((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length, 1);
+  assert.equal((store.match(/prepare\(FAVORITE_SET_MAIN_SQL\)/g) ?? []).length, 1);
   assert.match(store, /favoriteInsertResult\(inserted\.changes/);
-  assert.ok((store.match(/DELETE FROM favorites WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
-  assert.ok((store.match(/UPDATE favorites SET note = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
-  assert.ok((store.match(/UPDATE favorites SET nickname = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length >= 2);
+  assert.equal((store.match(/DELETE FROM favorites WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
+  assert.equal((store.match(/UPDATE favorites SET note = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
+  assert.equal((store.match(/UPDATE favorites SET nickname = \? WHERE user_sub = \? AND aid = \?/g) ?? []).length, 1);
 
   for (const source of [panel, radar]) {
     assert.match(source, /favorites\.filter\(\(favorite\) => favorite\.aid !== aid\)/);
@@ -777,8 +776,8 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   assert.match(database, /mergeProgressionBundle/);
   assert.equal(
     (database.match(/await details\(/g) ?? []).length,
-    3,
-    "shared details should run once per legacy storage implementation and once for the combined timeline",
+    2,
+    "shared details should run once for the bundle and once for the timeline",
   );
   for (const route of [general, legacy]) {
     assert.match(route, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);
