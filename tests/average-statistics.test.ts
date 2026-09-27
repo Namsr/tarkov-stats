@@ -2,6 +2,7 @@
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,7 +38,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 
-const { getStore } = await import("../lib/db.ts");
+const { getArenaBackend, getStore } = await import("../lib/db.ts");
 const {
   ADMIN_RISK_SCORE_VERSIONS,
   evaluateAndStoreRisk,
@@ -47,6 +48,7 @@ const { scoreCheater } = await import("../lib/cheater-score.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
+const { GET: getBaseline } = await import("../app/api/baseline/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { NextRequest } = await import("next/server");
 const store = await getStore();
@@ -509,6 +511,72 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
 
+test("cohort indexes carry the filter and radar columns so those scans stay index-only", () => {
+  // The matched and population cohort aggregates run synchronously on the web
+  // process. If the plan has to leave the index for any column it filters or
+  // averages on, every eligible row costs a table lookup inside a query that
+  // blocks every other response.
+  const COHORT_FILTER = ["hours", "pmc_raids", "pvp_stats_known", "profile_updated_at", "aid"];
+  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level"];
+  for (const name of ["idx_players_cohort", "idx_mode_players_cohort"]) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
+    const ddl = String(row?.sql ?? "").replace(/\s+/g, " ").toLowerCase();
+    assert.ok(ddl, `${name} must exist`);
+    for (const column of [...COHORT_FILTER, ...RADAR]) {
+      assert.ok(ddl.includes(column), `${name} must carry ${column}: ${ddl}`);
+    }
+  }
+});
+
+test("the population fallback returns the same cohort on the D1 store", async () => {
+  // The aggregate statement is shared by both backends, so a change to its shape
+  // has to hold on D1 too: one ranked pass per metric over the cohort CTE, one
+  // statement, and the D1 bind limit respected.
+  reset();
+  for (let aid = 1; aid <= 21; aid += 1) add(aid, { hours: 100, raids: 100, value: 10 });
+  for (let aid = 22; aid <= 24; aid += 1) add(aid, { hours: 100, raids: 100, value: 1000 });
+  for (let aid = 30; aid <= 70; aid += 1) add(aid, { hours: 200, raids: 200, value: aid });
+  add(999, { hours: 100, raids: 5, value: 5000 });
+  db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+
+  const expected = await store.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all");
+  assert.equal(expected.strategy, "population");
+
+  const key = Symbol.for("__cloudflare-context__");
+  const previous = globalThis[key];
+  const parameterCounts = [];
+  globalThis[key] = { env: { DB: {
+    prepare(sql) {
+      const statement = db.prepare(sql);
+      return {
+        // The store probes sqlite_master before it binds anything.
+        first: async () => statement.get() ?? null,
+        bind(...params) {
+          parameterCounts.push(params.length);
+          assert.ok(params.length <= 100, "D1 parameter limit");
+          return {
+            first: async () => statement.get(...params) ?? null,
+            all: async () => ({ results: statement.all(...params) }),
+            run: async () => statement.run(...params),
+          };
+        },
+      };
+    },
+  } } };
+  try {
+    assert.equal((await getArenaBackend()).kind, "d1");
+    const d1Backed = await getStore("regular");
+    assert.ok(d1Backed);
+    assert.deepEqual(await d1Backed.cohort2d(100, 5, 999, "hours", "trimmed_mean", "all"), expected);
+    // One count statement, then one aggregate statement.
+    assert.equal(parameterCounts.length, 2);
+    assert.ok(Math.max(...parameterCounts) <= 100);
+  } finally {
+    if (previous === undefined) delete globalThis[key];
+    else globalThis[key] = previous;
+  }
+});
+
 test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {
   const cases = [
     { percent: 10, n: 20, peers: Array.from({ length: 20 }, () => ({ hours: 100, raids: 100 })) },
@@ -922,4 +990,48 @@ test("standard average API reads its publication without recalculating player da
     if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
     else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
   }
+});
+
+test("baseline rejects a malformed playtime range instead of dropping the filter", async () => {
+  reset();
+  insert.run(1, "ShortHours", 10, 5, 5, 1, 1, 1, 50, 2, 5);
+  insert.run(2, "LongHours", 900, 90, 90, 4, 4, 2, 40, 9, 40);
+
+  const unfiltered = await getBaseline(new NextRequest("http://local/api/baseline?mode=regular"));
+  assert.equal(unfiltered.status, 200);
+  assert.equal((await unfiltered.json()).n, 2);
+
+  // A well-formed range still narrows the population.
+  const ranged = await getBaseline(new NextRequest("http://local/api/baseline?mode=regular&minHours=100&maxHours=1000"));
+  assert.equal(ranged.status, 200);
+  assert.equal((await ranged.json()).n, 1);
+
+  // An absent bound means "no bound" and stays valid.
+  assert.equal(
+    (await getBaseline(new NextRequest("http://local/api/baseline?mode=regular&minHours="))).status, 200);
+
+  // A malformed one is a client error. Before the fix each of these returned
+  // 200 with the whole-population payload, so a caller could believe it was
+  // reading a narrow bracket.
+  for (const query of [
+    "?mode=regular&minHours=abc",
+    "?mode=regular&maxHours=abc",
+    "?mode=regular&minHours=-5",
+    "?mode=regular&maxHours=-5",
+    "?mode=regular&minHours=NaN",
+    "?mode=regular&minHours=Infinity",
+  ]) {
+    const response = await getBaseline(new NextRequest(`http://local/api/baseline${query}`));
+    assert.equal(response.status, 400, `${query} must not answer with population statistics`);
+  }
+
+  // The guard has to run before the store is opened. Placed after it, a
+  // malformed range answered 200 {n: 0} whenever the database was unavailable,
+  // so the status code depended on storage rather than on the request.
+  const route = await readFile(
+    new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    route.indexOf('"Invalid playtime range"') < route.indexOf("const store = await getStore("),
+    "the range check must precede the store open",
+  );
 });
