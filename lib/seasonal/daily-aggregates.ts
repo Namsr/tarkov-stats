@@ -35,8 +35,11 @@ function intervalMetrics(row: IntervalRow) {
   const days = Number(row.elapsed_days);
   const raids = Number(row.pmc_raids);
   const deaths = Number(row.pmc_deaths);
-  const pvpKills = Number.isFinite(Number(row.pmc_killed_pmc))
-    ? Number(row.pmc_killed_pmc)
+  // A SQL NULL is `Number(null) === 0`, which would look like a measured zero
+  // instead of an unknown exact delta.
+  const exactPmcKills = row.pmc_killed_pmc == null ? null : Number(row.pmc_killed_pmc);
+  const pvpKills = exactPmcKills != null && Number.isFinite(exactPmcKills)
+    ? exactPmcKills
     : pvpKillsFor({
       experience: 0, pmcRaids: 0, scavRaids: 0, pmcSurvived: 0, pmcDeaths: deaths,
       pmcKills: Number(row.pmc_kills), killedPmc: Number(row.killed_pmc),
