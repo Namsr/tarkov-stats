@@ -66,13 +66,17 @@ export default function RefreshButton({
   }, [onCheck]);
 
   useEffect(() => {
-    const handleFocus = () => {
-      if (!awaitingReturn.current) return;
+    // Keyed on page visibility rather than a bare window focus: a ctrl/cmd or
+    // middle click opens tarkov.dev in a background tab, so this tab never
+    // regains focus and the flag would otherwise survive until the next
+    // unrelated focus, firing a blocking refresh the user never asked for.
+    const handleVisible = () => {
+      if (document.visibilityState !== "visible" || !awaitingReturn.current) return;
       awaitingReturn.current = false;
       void check();
     };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
   }, [check]);
 
   const statusKey = status === "idle" ? null : `player.refreshStatus.${status}`;
@@ -84,8 +88,11 @@ export default function RefreshButton({
         target="_blank"
         rel="noopener noreferrer"
         title={t(missing ? "player.refreshMissingHint" : isStale ? "player.refreshStaleHint" : "player.refreshHint")}
-        onClick={() => {
+        onClick={(event) => {
           if (!onCheck) return;
+          // A modified or middle click keeps this tab focused, so there is no
+          // return to detect and nothing should be marked as waiting.
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           awaitingReturn.current = true;
           setStatus("waiting");
         }}
