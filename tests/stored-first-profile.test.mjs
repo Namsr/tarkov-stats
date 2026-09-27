@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("regular profile route is stored-first and keeps forced refresh synchronous", async () => {
+test("regular profile route answers a forced refresh from the store and re-fetches after the response", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
   const storedBranch = source.search(/const storedStarted = timing\.now\(\);/);
   const upstreamBranch = source.indexOf("const result = await getPublicProfile(aid, { force });");
@@ -16,9 +16,12 @@ test("regular profile route is stored-first and keeps forced refresh synchronous
   assert.match(storedPath, /needsPvpStatsParserRefresh\(snapshot\.stats\)/);
   assert.doesNotMatch(storedPath, /await getPublicProfile/);
   // The snapshot is read unconditionally so the forced path can fall back to it,
-  // but it only short-circuits the request when the read is not forced.
+  // but it only short-circuits the request when the caller did not ask to wait
+  // for upstream.
   assert.doesNotMatch(storedPath, /if \(!force\) \{/);
-  assert.match(storedPath, /if \(stored && !force\) return await storedResponse\(stored\);/);
+  assert.match(storedPath, /if \(stored && !\(force && waitForUpstream\)\) \{\s*if \(force\) scheduleForcedProfileRefresh\("regular", aid\);\s*return await storedResponse\(stored\);/);
+  // The re-fetch is deferred with after(), so the response never blocks on it.
+  assert.match(source, /function scheduleForcedProfileRefresh\([^)]*\): void \{[\s\S]{0,200}after\(\(\) => \(mode === "pve"/);
   assert.match(source, /progressionFlightKey\("regular", "persistent", aid\)/);
   assert.match(source, /singleFlight\(regularBackgroundRefreshes, key/);
   assert.match(source, /getPublicProfile\(aid, \{ force: true \}\)/);
@@ -59,15 +62,30 @@ test("a forced regular refresh degrades to the stored snapshot instead of 404 or
   // Only the two genuine failure paths report absence.
   assert.equal(regular.split(fallback).length - 1, 2);
 
-  // A forced fallback is a bypass, not a cache hit, and it keeps the measured
-  // upstream latency instead of dropping it.
-  assert.match(regular, /source: "stored",\s*cache: force \? "bypass" : "hit",/);
+  // A store-served response is a hit even when force is set: the forced refresh
+  // is scheduled for after the response, so the response itself never bypassed
+  // anything. The measured upstream latency is kept instead of dropped.
+  const storedSource = regular.indexOf('source: "stored"');
+  const storedTiming = regular.slice(
+    storedSource,
+    regular.indexOf("return NextResponse.json({", storedSource),
+  );
+  assert.match(storedTiming, /cache: "hit",/);
+  assert.doesNotMatch(storedTiming, /force \? "bypass"/);
   assert.match(regular, /profileMs: profileMs \?\? \(profileStarted === undefined \? undefined : timing\.elapsedMs\(profileStarted\)\)/);
 });
 
 test("cached PvE profiles refresh only when their parser generation is old", async () => {
   const source = await readFile("app/api/player/profile/route.ts", "utf8");
-  assert.match(source, /if \(stored && !force\) \{\s*if \(needsPvpStatsParserRefresh\(stored\.stats\)\) \{\s*after\(\(\) => refreshStoredPveProfile\(aid\)\)/);
+  assert.match(source, /if \(stored && !\(force && waitForUpstream\)\) \{\s*if \(force\) \{\s*scheduleForcedProfileRefresh\("pve", aid\);\s*\} else if \(needsPvpStatsParserRefresh\(stored\.stats\)\) \{\s*after\(\(\) => refreshStoredPveProfile\(aid\)\)/);
+  // Same store-served labelling as the regular and arena branches: a forced PvE
+  // response that returned the stored snapshot never touched the cache.
+  const pveStored = source.slice(
+    source.indexOf("const storedResponse = async (snapshot: NonNullable<typeof stored>) => {"),
+    source.indexOf("if (stored && !(force && waitForUpstream)) {"),
+  );
+  assert.match(pveStored, /cache: "hit",/);
+  assert.doesNotMatch(pveStored, /force \? "bypass"/);
   assert.match(source, /getPublicProfile\(aid, \{ force: true, mode: "pve" \}\)/);
   assert.match(source, /pveProfileDecision\(profile\)\.state !== "store"/);
   assert.match(source, /\{ mode: "pve", strict: true \}/);

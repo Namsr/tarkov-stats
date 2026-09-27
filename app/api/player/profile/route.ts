@@ -713,7 +713,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
           status: 200,
           force,
           source: "stored",
-          cache: force ? "bypass" : "hit",
+          // Answered from the store either way; a forced refresh is scheduled for
+          // after the response, so the response itself was a hit.
+          cache: "hit",
           storage,
           storeOpenMs,
           storeReadMs,
