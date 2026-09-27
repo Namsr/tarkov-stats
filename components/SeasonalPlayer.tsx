@@ -15,7 +15,7 @@ import CheaterScore from "@/components/CheaterScore";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
-import { levelAtExperience, type LevelBand } from "@/lib/seasonal/ui";
+import { levelAtExperience, seasonalKdRatio, type LevelBand } from "@/lib/seasonal/ui";
 import type { SeasonalProfile, SeasonalStats } from "@/types/seasonal";
 import type { PublicRiskView, SeasonalAchievementView } from "@/types/profile-view";
 import { upsertRecentPlayer } from "@/lib/recent-players";
@@ -63,7 +63,8 @@ function seasonalStatsFor(profile: SeasonalProfile, levelBands: LevelBand[]): Se
     deaths,
     runThrough: existing?.runThrough ?? null,
     survivalRate: existing?.survivalRate ?? (totalRaids && survivedRaids != null ? (survivedRaids / totalRaids) * 100 : null),
-    kdRatio: existing?.kdRatio ?? (deaths && deaths > 0 && counters.pmcKills != null ? counters.pmcKills / deaths : null),
+    // Same rule as buildSeasonalComparisonStats, and one implementation of it.
+    kdRatio: seasonalKdRatio(existing, counters),
     pmcKdRatio,
     killsPerRaid: existing?.killsPerRaid ?? (counters.pmcRaids > 0 ? counters.pmcKills / counters.pmcRaids : null),
     pmcSurvivalRate,
@@ -236,11 +237,16 @@ export default function SeasonalPlayer({
   const [displayNickname, setDisplayNickname] = useState<string | undefined>(initialProfile?.nickname);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const requestGeneration = useRef(0);
+  // Risk polling outlives a single request, so it needs its own generation.
+  // Without it a poll started for an older profile can land after a manual
+  // refresh and overwrite the newer risk value.
+  const riskPollGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     requestGeneration.current += 1;
     const generation = requestGeneration.current;
+    const pollGeneration = ++riskPollGeneration.current;
     refreshPromise.current = null;
     const cached = getCachedPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)?.body;
     const cachedProfile = cached?.profile &&
@@ -289,7 +295,7 @@ export default function SeasonalPlayer({
           void pollSeasonalRisk({
             aid,
             cycleId,
-            isCurrent: () => !cancelled && generation === requestGeneration.current,
+            isCurrent: () => !cancelled && generation === requestGeneration.current && riskPollGeneration.current === pollGeneration,
             onRisk: setServerRisk,
           });
         }
@@ -317,6 +323,7 @@ export default function SeasonalPlayer({
       });
     return () => {
       cancelled = true;
+      riskPollGeneration.current += 1;
     };
   }, [aid, cycleId, lang, profileRequestUrl, t]);
 
@@ -355,7 +362,22 @@ export default function SeasonalPlayer({
         setAchievements(achievementsFromViewModel(body.viewModel) ?? achievementsFor(nextProfile));
         setSkillItems(skillsFromViewModel(body.viewModel));
         setMasteryItems(masteryFromViewModel(body.viewModel));
-        setServerRisk(body.viewModel?.risk ?? body.risk ?? null);
+        const nextRisk = body.viewModel?.risk ?? body.risk ?? null;
+        setServerRisk(nextRisk);
+        // Retire the mount poll only now that the refresh actually answered.
+        // Bumping before the request would kill a poll that is still able to fill
+        // the risk section, because a failed refresh never reaches this block.
+        const pollGeneration = ++riskPollGeneration.current;
+        // A manual refresh can return before the risk row is recomputed. Poll the
+        // risk-only endpoint so the section does not stay blank until reload.
+        if (nextRisk == null) {
+          void pollSeasonalRisk({
+            aid,
+            cycleId,
+            isCurrent: () => generation === requestGeneration.current && riskPollGeneration.current === pollGeneration,
+            onRisk: setServerRisk,
+          });
+        }
         setModeUnavailable(false);
         setError("");
         setProgressionRefreshRevision((current) => current + 1);

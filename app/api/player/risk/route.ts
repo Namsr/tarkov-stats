@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { riskScoreVersion } from "@/lib/admin/risk-version";
+import { getClientIp } from "@/lib/client-ip";
+import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { parsePlayerId } from "@/lib/player-id";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { toPublicRiskView } from "@/lib/player-profile-view";
@@ -10,6 +12,10 @@ export const runtime = "nodejs";
 const noStore = { "Cache-Control": "no-store" };
 
 export async function GET(request: NextRequest) {
+  const { allowed } = getRateLimitHeaders(getClientIp(request), { bucket: "player-risk", max: 30 });
+  if (!allowed) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: noStore });
+  }
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
   const rawMode = request.nextUrl.searchParams.get("mode");
   const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;

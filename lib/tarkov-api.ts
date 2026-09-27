@@ -7,6 +7,7 @@ import type {
   ArenaModeStats,
 } from "@/types/tarkov";
 import {
+  ARENA_ADDITIVE_COUNTER_KEYS,
   ARENA_MODE_KEYS,
   ARENA_RAW_COUNTERS,
   type ArenaCounters,
@@ -988,10 +989,6 @@ const ARENA_COUNTER_KEYS = [
   "max_win_streak",
   "current_loss_streak",
   "max_loss_streak",
-] as const satisfies readonly (keyof ArenaCounters)[];
-
-const ARENA_ADDITIVE_COUNTER_KEYS = [
-  "matches", "wins", "losses", "kills", "deaths", "assists", "headshots", "damage", "round_mvp", "match_mvp",
 ] as const satisfies readonly (keyof ArenaCounters)[];
 
 const ARENA_MAX_COUNTER_KEYS = [

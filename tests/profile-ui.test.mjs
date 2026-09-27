@@ -49,10 +49,24 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
     readFile("app/api/player/risk/route.ts", "utf8"),
   ]);
   assert.match(source, /const initialRisk = body\.viewModel\?\.risk \?\? body\.risk \?\? null/);
-  assert.match(source, /pollSeasonalRisk\(/);
+  assert.match(source, /const riskPollGeneration = useRef\(0\)/);
+  assert.match(source, /const pollGeneration = \+\+riskPollGeneration\.current/);
+  assert.equal((source.match(/void pollSeasonalRisk\(\{/g) ?? []).length, 2);
+  assert.match(source, /riskPollGeneration\.current === pollGeneration/);
+  // The bump has to happen inside the success path. Retiring the mount poll
+  // before the request went out killed a poll that could still fill the risk
+  // section, because a failed refresh never reaches the spawn site.
+  const refresh = source.slice(source.indexOf("const refreshProfile = useCallback("));
+  assert.ok(
+    refresh.indexOf("setServerRisk(nextRisk);") < refresh.indexOf("const pollGeneration = ++riskPollGeneration.current"),
+    "the mount poll must be retired after the refresh has written its risk",
+  );
+  assert.equal((refresh.match(/const pollGeneration = \+\+riskPollGeneration\.current/g) ?? []).length, 1);
   assert.match(source, /\/api\/player\/risk\?\$\{params\}/);
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /if \(!body\.risk\) continue;/);
+  assert.match(route, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "player-risk", max: 30 \}\)/);
+  assert.match(route, /status: 429/);
   assert.match(route, /getRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
   assert.match(route, /scoreVersion === riskScoreVersion\(mode, cycleId\)/);
 });
@@ -407,6 +421,44 @@ test("visitor help is hidden from home without deleting its implementation", asy
   assert.doesNotMatch(home, /CommunityHelper/);
   await access("components/CommunityHelper.tsx");
   await access("app/api/community/ban-reviews/claim/route.ts");
+});
+
+test("the FAQ dialog takes focus, traps Tab behind an inert page, and gives it back", async () => {
+  const faq = await readFile("components/FaqWidget.tsx", "utf8");
+
+  // Moving focus in is what keeps the keyboard off the trigger behind the backdrop,
+  // and inverting the body siblings is what keeps Tab off the page as well. The
+  // wrapper holds the overlay and the trigger as one body child, so the rest of the
+  // page is exactly what is left over. The gaps are \s* only, so the match cannot
+  // run out of this effect and into the Escape one; keyed on [open] so the cleanup
+  // covers the button, backdrop and Escape close paths, and runs on unmount too. The
+  // open also clears the flag the navigating closes leave behind.
+  assert.match(
+    faq,
+    /useEffect\(\(\) => \{\s*if \(!open\) return;\s*navigatingRef\.current = false;\s*const siblings = Array\.from\(document\.body\.children\)\.filter\(\s*\(el\): el is HTMLElement => el instanceof HTMLElement && el !== rootRef\.current,\s*\);\s*for \(const el of siblings\) el\.inert = true;\s*dialogRef\.current\?\.focus\(\);\s*return \(\) => \{\s*for \(const el of siblings\) el\.inert = false;\s*\};\s*\}, \[open\]\);/,
+  );
+  assert.match(faq, /<div ref=\{rootRef\}>/);
+  assert.doesNotMatch(faq, /return \(\) => \{ triggerRef\.current\?\.focus\(\); \};/);
+  // The gaps are the dialog's own attributes, so the match cannot slide onto the
+  // trigger: a dialog without `tabIndex={-1}` cannot take focus at all, and the focus
+  // call in the effect would no-op on it. Inerting the page is also what makes
+  // `aria-modal` honest, rather than a claim about a background still tabbable.
+  assert.match(
+    faq,
+    /<div\s+ref=\{dialogRef\}\s+role="dialog"\s+aria-modal="true"\s+aria-label=\{t\("faq\.title"\)\}\s+tabIndex=\{-1\}/,
+  );
+  assert.match(faq, /<button\s+ref=\{triggerRef\}/);
+  // Focus returns from the backdrop's animation end, not from the open -> closing
+  // step, because the backdrop keeps covering the trigger until that fires. The three
+  // answer links close the dialog and soft-navigate, and the widget is in the root
+  // layout, so that end can land on the destination page: the flag keeps the router's
+  // own focus handling in charge there.
+  assert.match(
+    faq,
+    /onAnimationEnd=\{\(event\) => \{\s*if \(event\.target === event\.currentTarget && dialogState === "closing"\) \{\s*setDialogState\("closed"\);\s*if \(!navigatingRef\.current\) triggerRef\.current\?\.focus\(\);\s*\}\s*\}\}/,
+  );
+  assert.match(faq, /function closeFaqAndNavigate\(\) \{\s*navigatingRef\.current = true;\s*closeFaq\(\);\s*\}/);
+  assert.equal((faq.match(/onClick=\{closeFaqAndNavigate\}/g) ?? []).length, 3);
 });
 
 test("average statistic switch keeps URL state and masks stale portrait values", async () => {
