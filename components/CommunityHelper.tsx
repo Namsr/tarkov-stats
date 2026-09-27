@@ -31,12 +31,21 @@ export default function CommunityHelper({
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
   const pollingRef = useRef(false);
+  // The status poll and the user-triggered requests can outlive /community. Drop
+  // their results once we are gone. The setup has to re-arm the ref: a
+  // cleanup-only effect leaves it false forever after StrictMode's
+  // mount -> unmount -> mount, and the panel would never paint a result.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const loadStatus = useCallback(async () => {
     const response = await fetch("/api/seasonal/helper/status", { cache: "no-store" });
     if (!response.ok) return null;
     const next = (await response.json()) as HelperStatus;
-    setStatus(next);
+    if (mounted.current) setStatus(next);
     return next;
   }, []);
 
@@ -49,11 +58,11 @@ export default function CommunityHelper({
       const claim = await fetch(`/api/seasonal/helper/claim?limit=${limit}`, { method: "POST" });
       if (!claim.ok) throw new Error();
       const body = (await claim.json()) as { tasks: ScanTaskRecord[]; pollingUntil: number };
-      setStatus({ polling: true, pollingUntil: body.pollingUntil, tasks: body.tasks });
+      if (mounted.current) setStatus({ polling: true, pollingUntil: body.pollingUntil, tasks: body.tasks });
     } catch {
-      setError(t("helper.startFailed"));
+      if (mounted.current) setError(t("helper.startFailed"));
     } finally {
-      setStarting(false);
+      if (mounted.current) setStarting(false);
     }
   }
 
@@ -71,7 +80,7 @@ export default function CommunityHelper({
       await loadStatus();
     } finally {
       pollingRef.current = false;
-      setChecking(false);
+      if (mounted.current) setChecking(false);
     }
   }, [loadStatus, status?.tasks]);
 
@@ -96,7 +105,9 @@ export default function CommunityHelper({
       headers: JSON_HEADERS,
       body: JSON.stringify({ taskId }),
     });
-    if (!response.ok) setError(t("helper.skipFailed"));
+    if (!response.ok) {
+      if (mounted.current) setError(t("helper.skipFailed"));
+    }
     await loadStatus();
   }
 

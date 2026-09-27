@@ -87,6 +87,11 @@ export default function AdminDashboard() {
   // An aborted request always has a newer generation, so it never reaches setError.
   const loadGeneration = useRef(0);
   const loadRequest = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
     const params = new URLSearchParams();
@@ -101,7 +106,7 @@ export default function AdminDashboard() {
     loadRequest.current?.abort();
     const request = new AbortController();
     loadRequest.current = request;
-    const stale = () => generation !== loadGeneration.current;
+    const stale = () => !mounted.current || generation !== loadGeneration.current;
     setLoading(true); setError("");
     const params = new URLSearchParams({ period, domain });
     try {
@@ -154,10 +159,10 @@ export default function AdminDashboard() {
       });
       const body = await response.json() as DataAudit;
       if (!response.ok && response.status !== 409) throw new Error(String(response.status));
-      setAudit(body);
-      if (response.status === 409) setAuditError(t("admin.audit.running"));
-    } catch { setAuditError(t("admin.error.load")); }
-    finally { setAuditBusy(false); }
+      if (mounted.current) setAudit(body);
+      if (response.status === 409 && mounted.current) setAuditError(t("admin.audit.running"));
+    } catch { if (mounted.current) setAuditError(t("admin.error.load")); }
+    finally { if (mounted.current) setAuditBusy(false); }
   }, [t]);
 
   // The search box writes on every keystroke; copy the term `load` depends on

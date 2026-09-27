@@ -42,7 +42,7 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   // ref cannot satisfy this.
   const claim = loadBody.match(/const (\w+) = \+\+(\w+)\.current;/);
   assert.ok(claim, "every load must claim a generation from the counter ref");
-  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => ${claim[1]} !== ${claim[2]}\\.current;`))?.[1];
+  const guard = loadBody.match(new RegExp(`const (\\w+) = \\(\\) => !mounted\\.current \\|\\| ${claim[1]} !== ${claim[2]}\\.current;`))?.[1];
   assert.ok(guard, "the claimed generation must be re-checked against the same counter ref");
   // The guard is checked before each fetched payload write, one per tab, so no
   // superseded load can leave a panel half-updated, and every one of those fetches
@@ -58,7 +58,7 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   // stop the spinner the newest load owns, so the flag is set up front and cleared
   // only by the current generation. Pinned right after the guard's own declaration,
   // where only indentation may intervene, so a conditional wrap cannot satisfy it.
-  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => ${claim[1]} !== ${claim[2]}\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
+  assert.match(loadBody, new RegExp(`const ${guard} = \\(\\) => !mounted\\.current \\|\\| ${claim[1]} !== ${claim[2]}\\.current;\\r?\\n\\s+setLoading\\(true\\); setError\\(""\\);`));
   assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) setLoading\\(false\\); \\}`));
   // No payload is written straight from the fetch, which would skip the guard.
   assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
@@ -197,6 +197,20 @@ test("suspicious queue resolves seasonal nicknames per-mode and documents ban-wi
   // Bug 4: ban-wins precedence is documented and enforced.
   assert.match(accountsRoute, /ban-wins/);
   assert.match(accountsRoute, /account\.confirmedBan \|\| account\.review\.status !== "false_positive"/);
+});
+
+test("admin dashboard drops load and audit results after unmount", async () => {
+  const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
+
+  assert.match(dashboard, /const mounted = useRef\(true\);/);
+  assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  // The load generation guard covers both a newer request and unmount; the
+  // existing load test pins every response write to that guard.
+  assert.match(dashboard, /const stale = \(\) => !mounted\.current \|\| generation !== loadGeneration\.current;/);
+  assert.match(dashboard, /if \(mounted\.current\) setAudit\(body\);/);
+  assert.match(dashboard, /if \(response\.status === 409 && mounted\.current\) setAuditError\(/);
+  assert.match(dashboard, /catch \{ if \(mounted\.current\) setAuditError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /finally \{ if \(mounted\.current\) setAuditBusy\(false\); \}/);
 });
 
 test("the suspicious queue reports missing report storage as unavailable", async () => {

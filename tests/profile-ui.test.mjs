@@ -423,6 +423,34 @@ test("visitor help is hidden from home without deleting its implementation", asy
   await access("app/api/community/ban-reviews/claim/route.ts");
 });
 
+test("ban review request results are dropped after unmount", async () => {
+  const review = await readFile("components/CommunityBanReview.tsx", "utf8");
+
+  assert.match(review, /const mounted = useRef\(true\);/);
+  assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  for (const [setter, expected] of [["setCandidates", 2], ["setError", 2], ["setLoading", 1], ["setVoting", 1]]) {
+    assert.equal(
+      (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded after each await`,
+    );
+  }
+});
+
+test("community helper drops poll and request results after unmount", async () => {
+  const helper = await readFile("components/CommunityHelper.tsx", "utf8");
+
+  assert.match(helper, /const mounted = useRef\(true\);/);
+  assert.match(helper, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  for (const [setter, expected] of [["setStatus", 2], ["setError", 2], ["setStarting", 1], ["setChecking", 1]]) {
+    assert.equal(
+      (helper.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
+      expected,
+      `${setter} must be guarded after each await`,
+    );
+  }
+});
+
 test("the FAQ dialog takes focus, traps Tab behind an inert page, and gives it back", async () => {
   const faq = await readFile("components/FaqWidget.tsx", "utf8");
 
