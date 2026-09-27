@@ -1,0 +1,13 @@
+[Unit]
+Description=Tarkov sequential profile queue
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
+ConditionPathExists=/usr/local/sbin/tarkovstats-profile-queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
+ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-profile-queue
+TimeoutStartSec=infinity

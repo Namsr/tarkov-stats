@@ -1,0 +1,11 @@
+[Unit]
+Description=Check GitHub for TarkovStats updates
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=tarkovstats-deploy.service
+
+[Install]
+WantedBy=timers.target
