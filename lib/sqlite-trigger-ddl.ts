@@ -29,19 +29,36 @@ export function sqliteTrigger(name: string, body: string): TriggerDdl {
 // SQLite stores the statement it parsed, so the stored text carries neither
 // `IF NOT EXISTS` nor the trailing semicolon. Compare a normalized form of both.
 //
-// Case is preserved on purpose. SQLite folds keywords and identifiers, and stores
-// the source text verbatim, so source and stored text already agree on case
-// everywhere except inside string literals — where comparison IS case-sensitive. A
-// `'Seasonal'` -> `'seasonal'` edit is a real change to what the trigger watches, and
-// folding case here would call the two definitions equal and skip the reinstall.
+// Case is preserved on purpose, and the two texts are not stored the same way.
+// SQLite rewrites the head to exactly `CREATE TRIGGER <name>`, uppercasing the
+// keywords and collapsing the whitespace before the name: `create   TrIgGeR w1`
+// comes back as `CREATE TRIGGER w1`. From the name onward the text is verbatim. So
+// the head agrees only because sqliteTrigger() emits exactly `CREATE TRIGGER` and
+// that is what SQLite normalises it to, and the body agrees because nothing in it
+// is rewritten. A TriggerDdl assembled by hand with a differently-cased head never
+// converges: it reinstalls on every open, forever.
 //
-// Limitation: this comparison collapses runs of whitespace, including whitespace
-// inside a string literal, so a body edit that changes only the spacing within a
-// literal is not detected. No trigger in this repo carries such a literal. Making
-// this exact would mean tokenizing SQL to find literal boundaries, whose failure mode
-// is worse: a mis-detected difference reinstalls the trigger on every process open
-// forever, which costs a write lock each time and gives up the read-only-under-a-
-// concurrent-writer property the stored comparison exists to protect.
+// Case inside a string literal is likewise compared exactly, because SQLite
+// compares string literals case-sensitively. A `'Seasonal'` -> `'seasonal'` edit is
+// a real change to what the trigger watches, and folding case here would call the
+// two definitions equal and skip the reinstall.
+//
+// Limitation: collapsing whitespace reaches inside string literals, so it is blind
+// to an edit that changes the character or the length of a run that is already
+// there — a tab for a space, a newline for a space, one space for two. Adding or
+// removing a run is still detected, because that changes the run count. No trigger
+// compared here carries a run inside a literal; the three seasonal bodies hold only
+// 'seasonal' and 'subsec'.
+//
+// Making this exact would mean tokenizing SQL to find the literal boundaries. The
+// two ways that goes wrong are not symmetric. A tokenizer that reports a difference
+// where there is none reinstalls the trigger on every process open, and that cannot
+// ship quietly: `current progression schema initialization performs no migration
+// writes` asserts a current database issues only PRAGMA busy_timeout, so a false
+// verdict fails the suite on the first run. A tokenizer that misses a difference
+// that is there is silent and unguarded, and that is exactly the stale body this
+// module exists to prevent — nothing in the suite can catch it. Prefer the
+// normalizer, because the failure that cannot be detected is the one that matters.
 function normalizedTriggerDdl(ddl: string): string {
   return ddl.replace(/^(\s*CREATE\s+TRIGGER)\s+IF\s+NOT\s+EXISTS\b/i, "$1")
     .replace(/\s+/g, " ").replace(/;\s*$/, "").trim();
