@@ -3,6 +3,21 @@ import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
 
+// Cut one declaration out of a source file so an assertion about it cannot be
+// satisfied by unrelated code further down. An unbounded gap between an anchor
+// and the claim only proves the two tokens co-occur somewhere in the file in
+// that order, which is how a matches() comparing the wrong field passed its own
+// test. Same slice-then-assert shape tests/stored-first-profile.test.mjs uses;
+// the two indexOf asserts are what stop a missing anchor from silently slicing
+// the last character of the file.
+function sliceDeclaration(source, start, end) {
+  const from = source.indexOf(start);
+  assert.ok(from >= 0, `no declaration starts with ${JSON.stringify(start)}`);
+  const to = source.indexOf(end, from);
+  assert.ok(to > from, `${JSON.stringify(end)} is missing after ${JSON.stringify(start)}`);
+  return source.slice(from, to);
+}
+
 test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
   const context = await readFile("lib/favorites/context.tsx", "utf8");
   const route = await readFile("app/api/favorites/route.ts", "utf8");
@@ -11,20 +26,39 @@ test("favorites are global by AID while mode widgets project the preferred link 
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
   const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
 
-  assert.match(context, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
+  // matches() is the only thing that decides which favourite a mutation touched,
+  // so the AID comparison is asserted inside matches() and nowhere else.
+  const matches = sliceDeclaration(
+    context,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  assert.match(matches, /return favorite\.aid === aid;/);
   assert.doesNotMatch(context, /favorite\.mode === id\.mode|favorite\.cycleId === id\.cycleId/);
   assert.match(context, /body: JSON\.stringify\(\{ aid, nickname, mode: id\.mode, cycle: id\.cycleId \}\)/);
   assert.ok((context.match(/if \(!res\.ok\) throw new Error\(\)/g) ?? []).length >= 4);
   assert.ok((context.match(/await refresh\(\)/g) ?? []).length >= 4);
 
-  assert.match(route, /store\.add\([\s\S]*identity/);
+  // The identity parsed from the request body has to be the one that reaches the
+  // store, and both live in POST. The old gap was satisfied by a route that
+  // pinned every account as regular/persistent.
+  const post = sliceDeclaration(route, "export async function POST(", "export async function DELETE(");
+  assert.match(post, /const identity = parseIdentity\(body\.mode, body\.cycle\);/);
+  assert.match(post, /store\.add\(\s*g\.sub,\s*aid,[\s\S]{0,200}identity\s*\)/);
   assert.match(route, /store\.remove\(g\.sub, aid\)/);
   assert.ok((route.match(/Storage unavailable/g) ?? []).length >= 3);
   assert.match(route, /store\.setMain\(g\.sub, aid\)/);
   assert.match(route, /store\.setNote\(g\.sub, aid, clean\(body\.note, NOTE_MAX\)\)/);
   assert.doesNotMatch(route, /store\.(?:remove|setMain|setNote)\(g\.sub, aid,[^)]*identity/);
 
-  assert.match(schema, /INSERT OR IGNORE INTO favorites[\s\S]*COUNT\(DISTINCT aid\)/);
+  // The per-user cap is a condition on the INSERT itself, not a count that lives
+  // somewhere below it. The gap is capped at 400; the real distance is 231.
+  const insertSql = sliceDeclaration(
+    schema,
+    "export const FAVORITE_INSERT_SQL",
+    "export const FAVORITE_SET_MAIN_SQL",
+  );
+  assert.match(insertSql, /INSERT OR IGNORE INTO favorites[\s\S]{0,400}COUNT\(DISTINCT aid\)/);
   assert.match(schema, /SET is_main = CASE WHEN aid = \? THEN 1 ELSE 0 END/);
   assert.match(schema, /throw new Error\("Favorite insert was ignored unexpectedly"\)/);
   assert.equal((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length, 1);
@@ -42,6 +76,64 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.match(radar, /aid: String\(effectiveFavoriteAid\),\s*mode,\s*cycle: cycleId/);
   assert.match(radar, /const nextStats = payload\.comparisonStats \?\? payload\.stats/);
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
+});
+
+test("the favourites identity assertion rejects a matches() that compares the wrong field", async () => {
+  const source = await readFile("lib/favorites/context.tsx", "utf8");
+  const matches = sliceDeclaration(
+    source,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  // The real source satisfies the check, so a throw below is the mutation's doing.
+  assert.match(matches, /return favorite\.aid === aid;/);
+
+  // In-memory mutation only; nothing under lib/ or app/ is written. matches() now
+  // identifies a favourite by nickname, and the decoy `favorite.aid === aid` sits
+  // in an unrelated helper inside the same slice.
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const original = [
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "  return favorite.aid === aid;",
+    "}",
+  ].join(eol);
+  const mutated = [
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "  return favorite.nickname === String(aid);",
+    "}",
+    "",
+    "const sameAid = (favorite: Favorite, aid: number) => favorite.aid === aid;",
+  ].join(eol);
+  const buggy = source.replace(original, mutated);
+  assert.notEqual(buggy, source, "the mutation must apply to the real source");
+
+  const buggyMatches = sliceDeclaration(
+    buggy,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  assert.throws(() => {
+    assert.match(buggyMatches, /return favorite\.aid === aid;/);
+  });
+  // The unbounded form the file used to carry still accepts that same mutant,
+  // which is why it was replaced rather than tightened in place.
+  assert.match(buggy, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
+});
+
+test("no unbounded source gap is added to this file", async () => {
+  // Scoped to this file on purpose: the other suites still carry unbounded source
+  // gaps and are scheduled separately, so a whole-tests/ count would freeze the
+  // backlog into this assertion and block every follow-up.
+  const file = await readFile("tests/profile-ui.test.mjs", "utf8");
+  const unbounded = file.match(/\[\\s\\S\]\*\??/g) ?? [];
+  // 108 is what is left: the three favourites identity assertions above no longer
+  // carry one, and the single new occurrence is the reproduction of the old
+  // pattern in the test above, which asserts nothing about lib/. A slice-then-
+  // assert or an explicitly bounded gap keeps the number flat.
+  assert.ok(
+    unbounded.length <= 108,
+    `expected at most 108 unbounded source gaps in tests/profile-ui.test.mjs, found ${unbounded.length}`,
+  );
 });
 
 test("every favorites response is no-store, so the CDN cannot replay a 401 or 503 to the next visitor", async () => {
