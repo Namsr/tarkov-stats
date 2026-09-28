@@ -130,13 +130,21 @@ let warned = false;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function sqliteReportsDb(): Promise<any | null> {
   if (sqliteDb) return sqliteDb;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let db: any = null;
   try {
     const sqlite = await import("node:sqlite" as string);
-    const db = new sqlite.DatabaseSync(process.env.REPORTS_SQLITE_PATH || "/data/community-reports.db");
+    db = new sqlite.DatabaseSync(process.env.REPORTS_SQLITE_PATH || "/data/community-reports.db");
+    // SQLite defaults this to 0, so the CREATE statements below lose the write
+    // race against any other connection on the same file instead of waiting.
+    db.exec("PRAGMA busy_timeout = 5000;");
     db.exec(COMMUNITY_REPORTS_SCHEMA);
     sqliteDb = db;
     return db;
   } catch (error) {
+    // Nothing caches a handle on this path, so an unclosed one is orphaned and
+    // the next request opens another.
+    try { db?.close(); } catch { /* Preserve the initialization error. */ }
     if (!warned) {
       warned = true;
       console.warn("community reports: sqlite unavailable: " + (error as Error).message);

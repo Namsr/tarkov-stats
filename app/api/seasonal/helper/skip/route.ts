@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
   if ("response" in context) return context.response;
   const taskId = await parseTaskId(request);
   if (!taskId) return helperError("Invalid request", 400);
-  return await context.store.finish(taskId, context.helperId, "skipped")
+  return await context.store.finish(taskId, context.helperId, context.cycle.cycleId, "skipped")
     ? Response.json({ skipped: true }, { headers: { "Cache-Control": "no-store" } })
     : helperError("Invalid lease", 409);
 }
