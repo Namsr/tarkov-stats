@@ -18,7 +18,39 @@ registerHooks({
     }
     return nextResolve(specifier, context);
   },
+  // Handing back a subclass of the real handle lets a case count the opens and
+  // the closes, which is the only way to see a leaked file descriptor: a poisoned
+  // database still reports unavailable either way.
+  load(url, context, nextLoad) {
+    if (url === "node:sqlite") {
+      return {
+        format: "module",
+        shortCircuit: true,
+        // getBuiltinModule reads the builtin without going back through the hooks.
+        source: `
+          const real = process.getBuiltinModule("node:sqlite");
+          export const openedHandles = [];
+          export let closedHandles = 0;
+          export class DatabaseSync extends real.DatabaseSync {
+            constructor(...args) {
+              super(...args);
+              openedHandles.push(this);
+            }
+            close() {
+              closedHandles += 1;
+              return super.close();
+            }
+          }
+          export const Backup = real.Backup;
+          export const StatementSync = real.StatementSync;
+        `,
+      };
+    }
+    return nextLoad(url, context);
+  },
 });
+
+const sqliteTrace = await import("node:sqlite");
 
 const directory = mkdtempSync(join(tmpdir(), "sqlite-handle-recovery-"));
 const playersPath = join(directory, "players.db");
@@ -50,6 +82,7 @@ const { getHelperStore } = await import("../lib/seasonal/helper-storage.ts");
 const { openLeaderboardDatabase } = await import("../lib/leaderboard/publication.ts");
 const { getBanStore } = await import("../lib/ban-db.ts");
 const { getModerationStore } = await import("../lib/admin/moderation-db.ts");
+const { getProgressionStore } = await import("../lib/progression-db.ts");
 
 test.after(() => {
   for (const [key, value] of Object.entries(previousEnvironment)) {
@@ -176,6 +209,35 @@ test("the moderation store opener retries initialization instead of serving a po
     });
     assert.equal(store.riskFor({ aid: 12345, mode: "regular", cycleId: "" })?.aid, 12345,
       "the moderation schema was applied on the retry");
+  } finally {
+    restore();
+  }
+});
+
+test("the progression store opener closes a handle whose initialization failed", async () => {
+  // This store is asked for on every player profile request, so a handle left
+  // open here is a leaked descriptor per request until the process hits EMFILE.
+  const storeProgressionPath = join(directory, "progression-store.db");
+  const restore = useEnvironment({
+    PROGRESSION_SQLITE_PATH: storeProgressionPath,
+    SQLITE_PATH: join(directory, "progression-store-players.db"),
+  });
+  try {
+    poison(storeProgressionPath);
+    const openedBefore = sqliteTrace.openedHandles.length;
+    const closedBefore = sqliteTrace.closedHandles;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      assert.equal(await getProgressionStore("regular"), null, "a failed schema init reports unavailable");
+    }
+    const opened = sqliteTrace.openedHandles.length - openedBefore;
+    const closed = sqliteTrace.closedHandles - closedBefore;
+    assert.equal(opened, 3, "each attempt opens a handle, the failed one being left uncached");
+    assert.equal(closed, opened, "every handle a failed initialization opened is closed again");
+
+    replace(storeProgressionPath);
+    const store = await getProgressionStore("regular");
+    assert.ok(store, "the next call reopens and initializes the database");
+    assert.equal(await store.latest(1), null, "the progression schema is queryable on the retry");
   } finally {
     restore();
   }
