@@ -444,7 +444,8 @@ function ArenaHistogram({
                 max={domain?.max}
                 step="any"
                 inputMode="decimal"
-                value={draftRange[field] || (domain ? String(field === minField ? domain.min : domain.max) : "")}
+                value={draftRange[field]}
+                placeholder={domain ? String(field === minField ? domain.min : domain.max) : undefined}
                 onChange={(event) => updateDraftRange({ [field]: event.target.value })}
                 onBlur={() => commitRange()}
                 onKeyDown={(event) => { if (event.key === "Enter") commitRange(); }}
