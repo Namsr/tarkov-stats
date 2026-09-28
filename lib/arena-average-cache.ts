@@ -34,7 +34,11 @@ export async function arenaAverageCacheVersion(): Promise<number> {
 
 // The wrapped function below is byte-for-byte the one that used to sit in
 // app/api/average/route.ts. `unstable_cache` derives its storage key from
-// `cb.toString()`, so editing the body would cold every tagged entry.
+// `cb.toString()`, which makes that key build-layout dependent rather than
+// guaranteed: a minified deploy reshuffles the body and retires the tagged
+// entries on most releases anyway, while an unminified one keeps them only
+// while the body stays byte-identical. Moving the function into this file left
+// the body, and so the key, unchanged.
 export const loadCachedArenaAverage = unstable_cache(
   async (
     arenaMode: ArenaModeKey,

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const regularRoute = readFileSync(new URL("../app/api/average/cohort/route.ts", import.meta.url), "utf8");
@@ -8,6 +12,32 @@ const batchRoute = readFileSync(new URL("../app/api/average/cohort/batch/route.t
 const seasonalRoute = readFileSync(new URL("../app/api/seasonal/cohort/route.ts", import.meta.url), "utf8");
 const seasonalAverageRoute = readFileSync(new URL("../app/api/seasonal/average/route.ts", import.meta.url), "utf8");
 const seasonalHelper = readFileSync(new URL("../lib/seasonal/comparison-cohort.ts", import.meta.url), "utf8");
+
+// The Arena route handlers are driven for real below, so the App Router aliases
+// and the two `next/*` entry points Node cannot resolve on its own are mapped
+// here, the same way tests/arena-routes.test.ts maps them.
+// `@/lib/average-dynamic-cache` resolves to the recording wrapper instead: the
+// routes keep the real LRU, and the test can see which key each one asked for.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "next/server") return nextResolve("next/server.js", context);
+    if (specifier === "next/cache") {
+      return { shortCircuit: true, url: pathToFileURL(resolve("tests/fixtures/next-cache-shim.mjs")).href };
+    }
+    if (specifier === "@/lib/average-dynamic-cache") {
+      return { shortCircuit: true, url: pathToFileURL(resolve("tests/fixtures/average-lru-recorder.mjs")).href };
+    }
+    if (specifier.startsWith("@/")) {
+      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+// lib/db reads this at call time, so a private file keeps the driven routes off
+// any real database.
+const sqliteDirectory = mkdtempSync(join(tmpdir(), "tarkov-cohort-routes-"));
+process.env.SQLITE_PATH = join(sqliteDirectory, "players.db");
 
 test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
   const regularBranch = regularRoute.slice(
@@ -94,40 +124,101 @@ test("arena cohort caches repeated identical requests with a hit on the second",
   dynamic.resetDynamicAverageCacheForTests();
 });
 
-test("the Arena batch population cohort reuses the versioned average key and the tagged loader", async () => {
+test("the Arena average and batch cohort routes share one LRU key, and a version bump retires it", async () => {
+  // Both routes are driven for real. What is asserted is the key each handler
+  // hands to the shared LRU, not a key this test built for itself: the batch
+  // copy used to inline a key without the trailing population version, so the
+  // two never shared an entry and a pre-sync cohort stayed readable for the
+  // whole 15-minute TTL.
+  const recorder = await import("./fixtures/average-lru-recorder.mjs");
   const dynamic = await import("../lib/average-dynamic-cache.ts");
-  const { arenaAverageCacheKey } = await import("../lib/average-cache.ts");
-  dynamic.resetDynamicAverageCacheForTests();
-  // Both routes describe the same payload: the batch asks for the unbounded
-  // matches/players slice of one mode, and that is what the average page
-  // serves for the same query.
-  const range = [null, null, null, null];
-  const batchKey = (cacheVersion) => arenaAverageCacheKey("teamFight", "trimmed_mean", "matches", "players", range, cacheVersion);
-  const averageKey = (cacheVersion) => arenaAverageCacheKey("teamFight", "trimmed_mean", "matches", "players", range, cacheVersion);
-  assert.equal(batchKey(3), averageKey(3));
-  // The version is the trailing element, so a sync bump retires the entry
-  // instead of leaving a pre-sync cohort readable for the LRU TTL.
-  assert.notEqual(batchKey(3), batchKey(4));
-  assert.deepEqual(
-    JSON.parse(averageKey(3)),
-    ["arena", "teamFight", "trimmed_mean", "matches", "players", null, null, null, null, 3],
-  );
-
-  let calls = 0;
-  const load = async () => {
-    calls += 1;
-    return { sampleN: calls };
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
+  const { GET: getAverage } = await import("../app/api/average/route.ts");
+  const { GET: getBaselinesBatch } = await import("../app/api/average/cohort/batch/route.ts");
+  const { NextRequest } = await import("next/server");
+  const backend = await getArenaBackend();
+  assert.ok(backend, "the driven routes need the local SQLite store");
+  const db = backend.db;
+  // Six peers is under the 20-player cohort floor, so the batch route falls
+  // back to the population average and takes the LRU branch under test.
+  const peers = 6;
+  for (let aid = 1; aid <= peers; aid += 1) {
+    db.prepare(`INSERT INTO arena_mode_stats (
+      aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate,
+      kills_per_match, damage_per_match, upstream_version, parser_version, raw_json, fetched_at
+    ) VALUES (?, 'lastHero', 100, 100, 1.5, 50, 25, 20, 500, 1, ?, '{}', 1)`).run(aid, ARENA_PARSER_VERSION);
+  }
+  db.exec("CREATE TABLE IF NOT EXISTS arena_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const setVersion = (value) => db.prepare(
+    "INSERT INTO arena_profile_sync_meta (key, value) VALUES ('dynamic_cache_version', ?) "
+    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(value));
+  const averageUrl = "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean&dimension=matches&metric=players";
+  const batchUrl = "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=lastHero";
+  const drive = async (handler, url) => {
+    const start = recorder.requestedKeys.length;
+    const response = await handler(new NextRequest(url));
+    return { response, keys: recorder.requestedKeys.slice(start) };
   };
-  assert.equal((await dynamic.loadDynamicAverage(averageKey(3), load)).cache, "miss");
-  // One shared entry: the batch request below reuses what the average page
-  // already warmed.
-  assert.equal((await dynamic.loadDynamicAverage(batchKey(3), load)).cache, "hit");
-  assert.equal(calls, 1);
-  // A bumped version is a different key, so it recomputes against the
-  // post-sync population.
-  assert.equal((await dynamic.loadDynamicAverage(batchKey(4), load)).cache, "miss");
-  assert.equal(calls, 2);
-  dynamic.resetDynamicAverageCacheForTests();
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  // The publication is the default production path and never reaches the LRU;
+  // disabling it forces both routes through the fallback under test.
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  // How often the LRU actually ran its loader for one key, i.e. how often the
+  // population was recomputed instead of served from the entry.
+  const computesFor = (key) => recorder.computedKeys.filter((computed) => computed === key).length;
+  try {
+    setVersion(1);
+    dynamic.resetDynamicAverageCacheForTests();
+    recorder.resetAverageLruRecorder();
+
+    const average = await drive(getAverage, averageUrl);
+    assert.equal(average.response.status, 200);
+    const batch = await drive(getBaselinesBatch, batchUrl);
+    assert.equal(batch.response.status, 200);
+    const body = await batch.response.json();
+    assert.deepEqual(body.unavailable, []);
+    assert.equal(body.cohorts.lastHero.strategy, "population");
+    assert.equal(body.cohorts.lastHero.sampleN, peers);
+
+    // The average route asked for one entry; the batch route asked for its
+    // per-aid cohort and then for that same population entry.
+    assert.equal(average.keys.length, 1);
+    assert.equal(batch.keys.length, 2);
+    const populationKey = average.keys[0];
+    assert.equal(batch.keys[1], populationKey);
+    assert.deepEqual(
+      JSON.parse(populationKey),
+      ["arena", "lastHero", "trimmed_mean", "matches", "players", null, null, null, null, 1],
+    );
+    // One compute across both requests: the batch served the population cohort
+    // out of the entry the average route had already warmed.
+    assert.equal(computesFor(populationKey), 1);
+
+    // The sync bumps the version it writes. Both routes have to move off the
+    // retired entry, so the batch recomputes against the post-sync population
+    // instead of reading a pre-sync one.
+    setVersion(2);
+    const averageAfterBump = await drive(getAverage, averageUrl);
+    assert.equal(averageAfterBump.response.status, 200);
+    const batchAfterBump = await drive(getBaselinesBatch, batchUrl);
+    assert.equal(batchAfterBump.response.status, 200);
+    assert.notEqual(averageAfterBump.keys[0], populationKey);
+    assert.equal(batchAfterBump.keys[1], averageAfterBump.keys[0]);
+    assert.notEqual(batchAfterBump.keys[1], populationKey);
+    // The retired entry is not recomputed: both routes recomputed once, into
+    // the new version, and nothing read the old key a second time.
+    assert.equal(computesFor(populationKey), 1);
+    assert.equal(computesFor(averageAfterBump.keys[0]), 1);
+  } finally {
+    db.exec("DROP TABLE IF EXISTS arena_profile_sync_meta");
+    db.prepare("DELETE FROM arena_mode_stats WHERE arena_mode = 'lastHero'").run();
+    dynamic.resetDynamicAverageCacheForTests();
+    recorder.resetAverageLruRecorder();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+  }
 });
 
 test("both Arena average routes build the population key through the shared builder", () => {
