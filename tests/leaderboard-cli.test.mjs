@@ -112,6 +112,6 @@ test("materializer CLI performs an initial build, a persisted delta, and a no-op
       beforeUnavailable);
     unchanged.close();
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 });

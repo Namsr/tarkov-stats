@@ -82,7 +82,7 @@ test("Arena index downloads the full object and replaces its table atomically", 
     replaced.close();
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 });
 
@@ -103,7 +103,7 @@ test("empty Arena downloads preserve the last committed index", async () => {
     db.close();
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 
 });

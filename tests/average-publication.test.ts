@@ -19,7 +19,7 @@ const dynamicCache = await import("../lib/average-dynamic-cache.ts");
 
 test.after(() => {
   publication.resetAveragePublicationForTests();
-  rmSync(directory, { recursive: true, force: true });
+  try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
 });
 
 test("standard publication matrix contains the 22 promised variants", () => {
