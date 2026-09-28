@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -248,20 +248,26 @@ test("concurrent cold-start callers share one player database open", async () =>
   const racePath = join(directory, "cold-start-race.db");
   const restore = useEnvironment({ SQLITE_PATH: racePath });
   try {
-    // Migrate the file first. On an already-migrated database
-    // initializeSqliteSchema is almost entirely IF NOT EXISTS no-ops, so every
-    // racing opener succeeds and the extra handles are lost silently instead of
-    // failing loudly — which is exactly the cold-start shape to guard.
-    assert.ok(await getArenaBackend(), "the database is created and migrated first");
+    // Migrate the file first, through a throwaway module instance: the one this
+    // file imported at the top already memoized a handle on the player database,
+    // and its opener never re-reads SQLITE_PATH, so calling it here would report
+    // success while leaving the race database unmigrated. The instance below has
+    // its own memo, so this call really does create and migrate the file. On an
+    // already-migrated database initializeSqliteSchema is almost entirely
+    // IF NOT EXISTS no-ops, so every racing opener succeeds and the extra handles
+    // are lost silently instead of failing loudly — which is exactly the
+    // cold-start shape to guard.
+    const base = pathToFileURL(resolve("lib/db.ts")).href;
+    const warm = await import(`${base}?migrate=1`);
+    assert.ok(await warm.getArenaBackend(), "the database is created and migrated first");
+    assert.ok(existsSync(racePath), "the warm call migrated the file, not the player database");
 
     // The opener memoizes its in-flight promise, and that memo is per module
     // instance. A second instance of lib/db.ts is what a process that has not
     // warmed the module yet looks like, and it lets this case race without a
     // child process. The query is part of the cache key, so the sibling imports
     // the instance already loaded are still shared and only this module is new.
-    const coldStart = await import(
-      `${pathToFileURL(resolve("lib/db.ts")).href}?cold-start=1`
-    );
+    const coldStart = await import(`${base}?cold-start=1`);
 
     // Counting the handles the openers touch is the only way to see the leak: the
     // losing racers are indistinguishable from the winner at the call site. The
