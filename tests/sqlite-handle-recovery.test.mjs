@@ -287,7 +287,7 @@ test("the leaderboard runtime source opener closes a handle whose player attach 
       () => prepareLeaderboardCandidate(reader, config, 1),
       "the retry reports the failure again",
     );
-    assert.equal(closed, 2, "the retry does not leak a second handle");
+    assert.equal(closed, 2, "the retry closes its own handle instead of reusing the failed one");
 
     replace(runtimePlayersPath);
     new DatabaseSync(runtimePlayersPath).close();
