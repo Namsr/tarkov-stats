@@ -39,12 +39,32 @@ function request(query, env) {
   return GET(new NextRequest(`http://localhost/api/average/achievements?${query}`));
 }
 
-test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still answers 400", async () => {
-  // Gate off (SEASONAL_ENABLED is unset): nothing is exposed, so a client that
+// `request` wipes the whole SEASONAL_* namespace, so the snapshot has to cover
+// every key that was present, not only the ones a case assigns.
+function restoreSeasonalEnv(t) {
+  const previous = Object.fromEntries(
+    Object.keys(process.env)
+      .filter((key) => key.startsWith("SEASONAL_"))
+      .map((key) => [key, process.env[key]]),
+  );
+  t.after(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("SEASONAL_")) delete process.env[key];
+    }
+    Object.assign(process.env, previous);
+  });
+}
+
+test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still answers 400", async (t) => {
+  restoreSeasonalEnv(t);
+
+  // Gate off (SEASONAL_ENABLED is "false"): nothing is exposed, so a client that
   // asks for the cycle must not be told it made a mistake. 400 here would make
-  // a pre-rollout season indistinguishable from a client bug, which is exactly
-  // what every sibling route (seasonal/average, seasonal/cohort, progression,
-  // progression/timeline, progression/average, player/profile) already avoids.
+  // a pre-rollout season indistinguishable from a client bug, which is what the
+  // sibling routes on this gate already avoid (seasonal/cohort, progression,
+  // progression/timeline, seasonal/progression, progression/average,
+  // player/profile). player/risk still folds the two into one 400 — see the
+  // follow-up issue; it is deliberately out of scope here.
   const gated = await request("mode=seasonal&cycle=test-cycle", { ...ROLLED_OUT, SEASONAL_ENABLED: "false" });
   assert.equal(gated.status, 404);
   assert.deepEqual(await gated.json(), { error: "Seasonal average unavailable" });
