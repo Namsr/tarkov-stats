@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,6 +34,29 @@ test("the persistent process lock rejects overlap and is released by its owner",
   assert.throws(() => acquireWarmupLock(path), /verify the recorded process/);
   release();
   acquireWarmupLock(path)();
+});
+
+test("a zero-length checkpoint is named and replaced instead of failing every later run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-corrupt-"));
+  const checkpointPath = join(dir, "state.json");
+  writeFileSync(checkpointPath, "");
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (message) => { warnings.push(String(message)); };
+  let result;
+  try {
+    result = await runWarmup({
+      candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+      checkpointPath, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }),
+    });
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(result.processed, 1);
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].includes(checkpointPath), warnings[0]);
+  assert.equal(JSON.parse(readFileSync(checkpointPath, "utf8")).version, 1);
 });
 
 test("warmup selection uses parser generations and keeps modes sequential", async () => {

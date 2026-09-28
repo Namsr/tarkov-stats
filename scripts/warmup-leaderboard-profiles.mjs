@@ -53,7 +53,13 @@ export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (
 
 function loadCheckpoint(path) {
   if (!existsSync(path)) return { version: 1, skipped: {}, modes: {} };
-  const value = JSON.parse(readFileSync(path, "utf8"));
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    return { version: 1, skipped: {}, modes: {} };
+  }
   if (value?.version !== 1 || typeof value.skipped !== "object" || typeof value.modes !== "object") {
     throw new Error("unsupported leaderboard warmup checkpoint");
   }
