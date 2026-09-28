@@ -54,11 +54,14 @@ export function createSqliteHelperStore(db: SqliteDatabase) {
         AND lease_owner = ? AND state = 'leased' AND leased_until > ? ORDER BY id`)
         .all(cycleId, helperId, now) as Record<string, unknown>[]).map(task);
     },
-    finish(taskId: number, helperId: string, state: "completed" | "skipped", now = Date.now()): boolean {
+    // cycleId is required and mirrors getActiveLease: a lease that is still
+    // inside its 5-minute window across a cycle rollover must not be
+    // finishable against the cycle that superseded it.
+    finish(taskId: number, helperId: string, cycleId: string, state: "completed" | "skipped", now = Date.now()): boolean {
       const result = db.prepare(`UPDATE scan_tasks SET state = ?, lease_owner = NULL, leased_until = NULL,
-        updated_at = ? WHERE id = ? AND mode = 'seasonal' AND state = 'leased'
+        updated_at = ? WHERE id = ? AND mode = 'seasonal' AND cycle_id = ? AND state = 'leased'
         AND lease_owner = ? AND leased_until > ? AND kind IN ('profile', 'linked_pvp')`)
-        .run(state, now, taskId, helperId, now);
+        .run(state, now, taskId, cycleId, helperId, now);
       return Number(result.changes) === 1;
     },
   };

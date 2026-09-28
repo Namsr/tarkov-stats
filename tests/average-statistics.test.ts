@@ -943,6 +943,54 @@ test("standard average API reads its publication without recalculating player da
   }
 });
 
+test("the scanned sample is the period population and does not follow the metric", async () => {
+  reset();
+  for (let aid = 1; aid <= 6; aid += 1) add(aid, { hours: 100, value: aid });
+  db.prepare("UPDATE players SET profile_updated_at = ?").run(Date.now());
+  // `add` leaves pvp_stats_known at its default 0. The exact PMC counters are
+  // known for only half the sample, so the two PMC metrics cover 3 of the 6
+  // accounts. That is the metric's own population, not the sample the summary
+  // strip reports.
+  db.prepare("UPDATE players SET pvp_stats_known = 1 WHERE aid <= 3").run();
+
+  // `period=90d` keys the route's in-process average cache per case, so no
+  // earlier payload can be read back under the same key.
+  const read = async (query) => {
+    const response = await getAverage(new NextRequest(
+      `http://local/api/average?period=90d${query}`,
+    ));
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+
+  const players = await read("");
+  const pmcKills = await read("&metric=killed_pmc");
+  const pmcKd = await read("&metric=pmc_kd_ratio");
+
+  // The PMC metrics really are filtered, so the fix is not simply ignoring them.
+  assert.equal(players.total, 6);
+  assert.equal(pmcKills.total, 6);
+  assert.equal(pmcKd.total, 6);
+  assert.equal(pmcKills.buckets.reduce((sum, bucket) => sum + bucket.n, 0), 3);
+  assert.equal(pmcKd.buckets.reduce((sum, bucket) => sum + bucket.n, 0), 3);
+  assert.equal(pmcKills.metricCounts.killed_pmc, 3);
+
+  // `averages.n` is the range-scoped sample and is deliberately untouched here.
+  for (const body of [players, pmcKills, pmcKd]) assert.equal(body.averages.n, 6);
+
+  // The playtime slider narrows the averages but not the scanned sample, which
+  // is the seasonal contract pinned in seasonal-average-buckets.test.ts: a
+  // narrowed range reports the whole period and a metric with a sparser
+  // population reports that same whole period. Both tabs must agree on `total`.
+  const ranged = await read("&metric=killed_pmc&min=100&max=100");
+  assert.equal(ranged.averages.n, 6);
+  assert.equal(ranged.total, 6);
+
+  const seasonal = await readFile("lib/seasonal/average-db.ts", "utf8");
+  assert.match(seasonal, /const total = periodRows\.length;/);
+  assert.doesNotMatch(seasonal, /const total = .*buckets/);
+});
+
 test("baseline rejects a malformed playtime range instead of dropping the filter", async () => {
   reset();
   insert.run(1, "ShortHours", 10, 5, 5, 1, 1, 1, 50, 2, 5);

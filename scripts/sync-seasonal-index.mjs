@@ -23,6 +23,9 @@ const sourceUrl = argValue("--url", configuredSourceUrl);
 if (!sourceUrl) throw new Error("SEASONAL_PROFILE_INDEX_URL is required");
 const dbPath = argValue("--db", process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
 const force = hasArg("--force");
+// A stalled upstream must not hold the shared data-sync lock: the deploy path
+// probes the same flock. The arena and PvE index siblings use the same bound.
+const DOWNLOAD_TIMEOUT_MS = 30_000;
 const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA busy_timeout = 30000");
 db.exec("PRAGMA journal_mode = WAL");
@@ -37,7 +40,8 @@ main().catch((error) => {
 
 async function main() {
   const startedAt = Date.now();
-  const downloaded = await requestIndex();
+  const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+  const downloaded = await requestIndex(signal);
   if (downloaded.unchanged) {
     saveMeta("last_poll_at", Date.now());
     saveMeta("last_status", "unchanged");
@@ -46,7 +50,7 @@ async function main() {
     return;
   }
   const syncedAt = Date.now();
-  const result = await consumeIndex(downloaded.response, syncedAt, currentRowCount());
+  const result = await consumeIndex(downloaded.response, syncedAt, currentRowCount(), signal);
   const durationMs = Date.now() - startedAt;
   replaceIndex({ ...result, syncedAt, durationMs, ...downloaded });
   console.log(JSON.stringify({
@@ -88,7 +92,7 @@ function initSchema() {
   `);
 }
 
-async function requestIndex() {
+async function requestIndex(signal) {
   const headers = {};
   if (!force) {
     const etag = getMeta("etag");
@@ -96,7 +100,7 @@ async function requestIndex() {
     if (etag) headers["if-none-match"] = etag;
     if (lastModified) headers["if-modified-since"] = lastModified;
   }
-  const response = await fetchTarkovJson(seasonalIndexCacheUrl(sourceUrl), { headers, cache: "no-store" });
+  const response = await fetchTarkovJson(seasonalIndexCacheUrl(sourceUrl), { headers, cache: "no-store", signal });
   if (response.status === 304) return { unchanged: true };
   if (!response.ok) throw new Error(`Seasonal index download failed: HTTP ${response.status}`);
   return {
@@ -107,7 +111,7 @@ async function requestIndex() {
   };
 }
 
-async function consumeIndex(response, syncedAt, previousRows) {
+async function consumeIndex(response, syncedAt, previousRows, signal) {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM seasonal_player_index_next WHERE cycle_id = ?").run(cycle.cycleId);
@@ -132,6 +136,7 @@ async function consumeIndex(response, syncedAt, previousRows) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (signal?.aborted) throw signal.reason ?? new Error("Seasonal index sync aborted");
       bytes += value.byteLength;
       parser.append(decoder.decode(value, { stream: true }));
     }

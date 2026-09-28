@@ -12,10 +12,6 @@ const { createLeaderboardReader } = await import("../lib/leaderboard/service.ts"
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 const { materializeCandidate } = await import("../lib/leaderboard/materialize.ts");
 
-const db = new DatabaseSync(":memory:");
-db.exec("CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
-publication.initializeLeaderboardSchema(db);
-
 const config = { scope: "regular", mode: "regular" as const, arenaMode: null, cycleId: null,
   primaryMetric: "performance" as const, minimumSample: 6, activityCutoffMs: 100,
   arpSeasonId: null, arpSourceConfirmed: false };
@@ -32,6 +28,26 @@ function generation(rows = [...Array.from({ length: 119 }, (_, index) => source(
   const candidates = rows.map((row) => materializeCandidate(row, { config, formula }));
   return { members: candidates.map((item) => item.member), orders: candidates.flatMap((item) => item.orders) };
 }
+
+// The shared baseline every test below starts from: a fresh schema, the seasonal
+// exclusion tables the seasonal publication reads, and one published regular
+// generation. Declared here rather than left as a side effect of the first test,
+// so any single test runs on its own.
+function createPublicationDatabase() {
+  const database = new DatabaseSync(":memory:");
+  database.exec("CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+  database.exec(`CREATE TABLE seasonal_excluded(aid INTEGER PRIMARY KEY);
+    CREATE TABLE seasonal_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,confirmed_banned INTEGER,
+      PRIMARY KEY(mode,cycle_id,aid))`);
+  publication.initializeLeaderboardSchema(database);
+  const base = generation();
+  publication.publishLeaderboardScope(database, config.scope,
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, base.members, base.orders, 90, 100);
+  return database;
+}
+
+let db = createPublicationDatabase();
+test.beforeEach(() => { db.close(); db = createPublicationDatabase(); });
 
 test("ascending pages read the global tail and preserve ranks with bans and fresh overlays", () => {
   const local = new DatabaseSync(":memory:");
@@ -194,10 +210,7 @@ test("an excluded focused subject is never restored from its saved member", () =
 });
 
 test("a current-cycle confirmed ban is excluded immediately from a Seasonal publication", () => {
-  db.exec(`CREATE TABLE seasonal_excluded(aid INTEGER PRIMARY KEY);
-    CREATE TABLE seasonal_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,confirmed_banned INTEGER,
-      PRIMARY KEY(mode,cycle_id,aid));
-    INSERT INTO seasonal_profiles VALUES ('seasonal','s1',201,0),('seasonal','s1',202,0)`);
+  db.exec("INSERT INTO seasonal_profiles VALUES ('seasonal','s1',201,0),('seasonal','s1',202,0)");
   const seasonalConfig = { ...config, scope: "seasonal:s1", mode: "pvp-season" as const, cycleId: "s1" };
   const candidates = [source(201, 50), source(202, 40)].map((row) =>
     materializeCandidate(row, { config: seasonalConfig, formula }));

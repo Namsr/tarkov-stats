@@ -2,12 +2,88 @@
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createAnalyticsStore } from "../lib/admin/analytics-db.ts";
 
 const DAY = 86_400_000;
+
+// A failed initialization caches its `null` for the life of the process unless the
+// promise is cleared, so the probe runs in a child process with a controlled clock.
+function runInitializationProbe(source: string) {
+  const directory = mkdtempSync(join(tmpdir(), "analytics-init-"));
+  try {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { mkdirSync, rmSync } from "node:fs";
+      import { dirname } from "node:path";
+      import { DatabaseSync } from "node:sqlite";
+      import { getAnalyticsStore } from ${JSON.stringify(new URL("../lib/admin/analytics-db.ts", import.meta.url).href)};
+      const errors = [];
+      console.warn = (message) => errors.push(message);
+      let now = Date.now();
+      Date.now = () => now;
+      ${source}
+    `], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, ADMIN_ANALYTICS_SQLITE_PATH: join(directory, "nested", "admin-analytics.db") },
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("a failed analytics open is retried after the cooldown instead of staying unavailable", () => {
+  runInitializationProbe(`
+    const file = process.env.ADMIN_ANALYTICS_SQLITE_PATH;
+    // The parent directory does not exist yet, so the first open cannot succeed.
+    assert.equal(await getAnalyticsStore(), null);
+    assert.match(errors[0], /admin analytics unavailable/);
+    mkdirSync(dirname(file), { recursive: true });
+    assert.equal(await getAnalyticsStore(), null, "requests during the cooldown must not retry");
+    assert.equal(errors.length, 1, "the failure is reported once per process");
+    now += 30_000;
+    const [first, second] = await Promise.all([getAnalyticsStore(), getAnalyticsStore()]);
+    assert.ok(first, "analytics must recover without restarting the process");
+    assert.equal(first, second, "the recovered store is shared");
+    first.record({ occurredAt: now - 1_000, operation: "player_profile", aid: 42, outcome: "success", status: 200, latencyMs: 3 });
+    assert.equal((await getAnalyticsStore()).summary("24h", "all", now).health.requests, 1);
+  `);
+});
+
+test("a failed analytics open closes its handle and recovers the schema on retry", () => {
+  runInitializationProbe(`
+    const file = process.env.ADMIN_ANALYTICS_SQLITE_PATH;
+    mkdirSync(dirname(file), { recursive: true });
+    const exec = DatabaseSync.prototype.exec;
+    let failedDb;
+    DatabaseSync.prototype.exec = function(sql) {
+      if (!failedDb) {
+        failedDb = this;
+        exec.call(this, "PRAGMA max_page_count = 1");
+      }
+      return exec.call(this, sql);
+    };
+    assert.equal(await getAnalyticsStore(), null);
+    DatabaseSync.prototype.exec = exec;
+    assert.match(errors[0], /database or disk is full/);
+    assert.throws(() => failedDb.prepare("SELECT 1"), /not open|closed/i, "the failed handle must be closed");
+    rmSync(file);
+    now += 30_000;
+    const store = await getAnalyticsStore();
+    assert.ok(store, "schema initialization must recover after the failure");
+    store.record({ occurredAt: now - 1_000, operation: "player_search", aid: 7, outcome: "success", status: 200, latencyMs: 2 });
+    assert.equal(store.summary("24h", "all", now).health.requests, 1);
+    assert.equal(errors.length, 1);
+  `);
+});
 
 test("analytics store retains only anonymous request/account facts and aggregates periods", () => {
   const db = new DatabaseSync(":memory:");
