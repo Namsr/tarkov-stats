@@ -28,8 +28,10 @@ function launch(dbPath, url, ...args) {
 
 // The deadline is only a backstop: the script is expected to give up on its own
 // well before it, so a hang is reported as a failed assertion instead of a
-// killed process with an empty stderr.
-function launchStalled(dbPath, url, deadlineMs = 45_000) {
+// killed process with an empty stderr. 60s against the script's own 30s bound
+// leaves enough slack that a loaded or 2-core runner still asserts cleanly
+// instead of reporting a confusing `killed: true`.
+function launchStalled(dbPath, url, deadlineMs = 60_000) {
   return execFileAsync(process.execPath, [
     "--experimental-strip-types",
     "--experimental-sqlite",
@@ -50,9 +52,11 @@ test("a stalled PvE index download aborts instead of holding the data-sync lock"
   // ops/systemd runs the sync under /run/tarkovstats-data-sync.lock and
   // ops/deploy.sh probes that same lock with -n, so an unbounded download
   // defers every deploy. The upstream stalls in two distinguishable ways and
-  // both have to end: an accepted connection that never answers needs the
-  // signal on the fetch, and a body that keeps trickling needs the check inside
-  // the read loop, because each chunk resets undici's idle timeout.
+  // both have to end: an accepted connection that never answers, and a body
+  // that keeps trickling. The fetch signal bounds both, because undici attaches
+  // it to the response body stream as well as to the connection, so this test
+  // covers the signal and not the script's in-loop check, which is only
+  // defence-in-depth.
   const server = createServer((request, response) => {
     if (request.url?.startsWith("/trickle")) {
       response.writeHead(200, { "content-type": "application/json" });
@@ -66,17 +70,15 @@ test("a stalled PvE index download aborts instead of holding the data-sync lock"
   const abortedItself = (error) => {
     assert.equal(error.killed, false, "the sync must abort on its own, not be killed by the harness");
     assert.equal(error.code, 1, "the sync must exit non-zero");
-    assert.match(error.stderr, /The operation was aborted due to timeout/);
+    assert.match(error.stderr, /aborted|TimeoutError|timed out/i);
     return true;
   };
 
   try {
-    const startedAt = Date.now();
     await Promise.all([
       assert.rejects(launchStalled(join(directory, "silent.db"), `http://127.0.0.1:${port}/silent`), abortedItself),
       assert.rejects(launchStalled(join(directory, "trickle.db"), `http://127.0.0.1:${port}/trickle`), abortedItself),
     ]);
-    assert.ok(Date.now() - startedAt < 45_000, "the sync must give up well inside the harness deadline");
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

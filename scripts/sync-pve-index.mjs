@@ -13,7 +13,9 @@ const { normalizeAid, normalizeNickname, createStringObjectParser, isClearlyTrun
 const DEFAULT_URL = "https://players.tarkov.dev/pve/index.json";
 const DEFAULT_DB = "/data/players.db";
 // A stalled upstream must not hold the shared data-sync lock: the deploy path
-// probes the same flock. The arena index sibling uses the same bound.
+// probes the same flock. The arena index sibling uses the same bound. The clock
+// starts in main() ahead of the SQLite setup, so it bounds the whole run rather
+// than the network alone.
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 function hasArg(name) {
@@ -150,6 +152,10 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows, signal
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      // Defence-in-depth, not the mechanism: fetchTarkovJson hands the signal to
+      // fetch, and undici attaches it to the response body stream as well as the
+      // connection, so the bound already rejects reader.read() on a trickling
+      // body. Kept to match sync-arena-index.mjs.
       if (signal?.aborted) throw signal.reason ?? new Error("PvE index sync aborted");
       bytes += value.byteLength;
       parser.append(decoder.decode(value, { stream: true }));
