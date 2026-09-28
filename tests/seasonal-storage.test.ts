@@ -475,9 +475,22 @@ test("a current database whose journal trigger body drifted gets the definition 
 
     // The database is current by every check currentSeasonalSchema() makes: all
     // objects present and the trigger name unchanged. Only the body differs.
-    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    const reissued: string[] = [];
+    assert.deepEqual(initializeSeasonalSchema({
+      prepare: db.prepare.bind(db),
+      exec(sql: string) {
+        reissued.push(sql);
+        db.exec(sql);
+      },
+    }), { created: false });
     assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update")
       .includes("leaderboard_activity_at"), true);
+
+    // The reinstall opens a savepoint and has to close it. An unreleased savepoint
+    // holds the write lock for the life of the connection: the connection that took
+    // it keeps writing, while every other connection reads "database is locked".
+    assert.deepEqual(reissued.filter((sql) => /^\s*(SAVEPOINT|RELEASE)\b/i.test(sql)),
+      ["SAVEPOINT reissue_trigger", "RELEASE reissue_trigger;"]);
 
     // The write path works again, and the journal cursor survived the reinstall: the
     // trigger is a write path, the revision lives in the table.
@@ -556,12 +569,23 @@ test("a failed recreate leaves the previous trigger installed", () => {
     // failure has to be a parse error to be a real CREATE-time failure. This is what a
     // bad merge to the body leaves behind.
     const broken = sqliteTrigger("probe_watch", "AFTER UPDATE ON probe BEGIN SELECT FROM WHERE; END;");
-    const reissuing = { prepare: db.prepare.bind(db), exec: (sql: string) => db.exec(sql) };
+    const issued: string[] = [];
+    const reissuing = {
+      prepare: db.prepare.bind(db),
+      exec: (sql: string) => {
+        issued.push(sql);
+        db.exec(sql);
+      },
+    };
     assert.throws(() => reissueEditedTriggers(reissuing, [broken]), /syntax error/);
 
     // The drop and the recreate are one unit, so the old body is still the live one:
     // a write path left with no trigger at all is a permanent, silent data loss.
     assert.equal(storedTriggerDdl(db, "probe_watch"), installed);
+
+    // Rolling back does not end the savepoint, so this path has to release it too.
+    // An unreleased savepoint keeps the write lock until the connection closes.
+    assert.equal(issued.at(-1), "ROLLBACK TO reissue_trigger; RELEASE reissue_trigger;");
   } finally { db.close(); }
 });
 
