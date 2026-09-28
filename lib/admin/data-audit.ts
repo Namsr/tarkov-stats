@@ -420,21 +420,32 @@ export function createDataAuditStore(db: SqliteDatabase): DataAuditStore {
 }
 
 let auditStorePromise: Promise<DataAuditStore | null> | null = null;
+let warned = false;
+let retryAfter = 0;
 
 export async function getDataAuditStore(): Promise<DataAuditStore | null> {
   if (auditStorePromise) return auditStorePromise;
+  // A failed open must not disable the audit until the process is restarted.
+  if (Date.now() < retryAfter) return null;
   auditStorePromise = (async () => {
+    let db: SqliteDatabase | null = null;
     try {
       const fs = await import("node:fs");
       const path = await import("node:path");
       const file = process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db";
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const sqlite = await import("node:sqlite" as string) as { DatabaseSync: new (path: string) => SqliteDatabase };
-      const db = new sqlite.DatabaseSync(file);
+      db = new sqlite.DatabaseSync(file);
       db.exec("PRAGMA busy_timeout = 30000");
       return createDataAuditStore(db);
     } catch (error) {
-      console.warn("admin data audit unavailable: " + (error instanceof Error ? error.message : String(error)));
+      try { db?.close?.(); } catch { /* Preserve the initialization error. */ }
+      if (!warned) {
+        warned = true;
+        console.warn("admin data audit unavailable: " + (error instanceof Error ? error.message : String(error)));
+      }
+      retryAfter = Date.now() + 5_000;
+      auditStorePromise = null;
       return null;
     }
   })();

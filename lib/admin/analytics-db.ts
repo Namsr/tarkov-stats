@@ -928,14 +928,19 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
 
 let storePromise: Promise<AnalyticsStore | null> | null = null;
 let warned = false;
+let retryAfter = 0;
 
 export function getAnalyticsStore(): Promise<AnalyticsStore | null> {
   if (storePromise) return storePromise;
+  // A failed open must not disable analytics until the process is restarted.
+  if (Date.now() < retryAfter) return Promise.resolve(null);
   storePromise = (async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let db: any = null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = await import("node:sqlite" as string) as any;
-      const db = new sqlite.DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db");
+      db = new sqlite.DatabaseSync(process.env.ADMIN_ANALYTICS_SQLITE_PATH || "/data/admin-analytics.db");
       db.exec("PRAGMA busy_timeout = 5000;");
       const fs = await import("node:fs");
       const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
@@ -943,10 +948,13 @@ export function getAnalyticsStore(): Promise<AnalyticsStore | null> {
         progressionDbPath: fs.existsSync(progressionPath) ? progressionPath : null,
       });
     } catch (error) {
+      try { db?.close(); } catch { /* Preserve the initialization error. */ }
       if (!warned) {
         warned = true;
         console.warn("admin analytics unavailable: " + (error as Error).message);
       }
+      retryAfter = Date.now() + 5_000;
+      storePromise = null;
       return null;
     }
   })();

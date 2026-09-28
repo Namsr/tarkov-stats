@@ -26,6 +26,66 @@ function launch(dbPath, url, ...args) {
   });
 }
 
+// The deadline is only a backstop: the script is expected to give up on its own
+// well before it, so a hang is reported as a failed assertion instead of a
+// killed process with an empty stderr. 60s against the script's own 30s bound
+// leaves enough slack that a loaded or 2-core runner still asserts cleanly
+// instead of reporting a confusing `killed: true`.
+function launchStalled(dbPath, url, deadlineMs = 60_000) {
+  return execFileAsync(process.execPath, [
+    "--experimental-strip-types",
+    "--experimental-sqlite",
+    "scripts/sync-pve-index.mjs",
+    "--db",
+    dbPath,
+    "--url",
+    url,
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    timeout: deadlineMs,
+  });
+}
+
+test("a stalled PvE index download aborts instead of holding the data-sync lock", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-index-timeout-"));
+  // ops/systemd runs the sync under /run/tarkovstats-data-sync.lock and
+  // ops/deploy.sh probes that same lock with -n, so an unbounded download
+  // defers every deploy. The upstream stalls in two distinguishable ways and
+  // both have to end: an accepted connection that never answers, and a body
+  // that keeps trickling. The fetch signal bounds both, because undici attaches
+  // it to the response body stream as well as to the connection, so this test
+  // covers the signal and not the script's in-loop check, which is only
+  // defence-in-depth.
+  const server = createServer((request, response) => {
+    if (request.url?.startsWith("/trickle")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      const trickle = setInterval(() => response.write(" "), 200);
+      response.on("close", () => clearInterval(trickle));
+      return;
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const abortedItself = (error) => {
+    assert.equal(error.killed, false, "the sync must abort on its own, not be killed by the harness");
+    assert.equal(error.code, 1, "the sync must exit non-zero");
+    assert.match(error.stderr, /aborted|TimeoutError|timed out/i);
+    return true;
+  };
+
+  try {
+    await Promise.all([
+      assert.rejects(launchStalled(join(directory, "silent.db"), `http://127.0.0.1:${port}/silent`), abortedItself),
+      assert.rejects(launchStalled(join(directory, "trickle.db"), `http://127.0.0.1:${port}/trickle`), abortedItself),
+    ]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("PvE index validates a streamed payload and swaps it atomically", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pve-index-sync-"));
   const dbPath = join(directory, "players.db");
