@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
-import { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION, materializeCandidate, referenceFormula } from "../lib/leaderboard/materialize.ts";
+import { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION, materializeCandidate, median, referenceFormula } from "../lib/leaderboard/materialize.ts";
 // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardFullReason } from "../lib/leaderboard/config.ts";
 
@@ -121,4 +121,14 @@ test("reference cohorts reject degenerate medians without division by zero", () 
   assert.equal(referenceFormula([{ ...row, aid: 203, matches: 20, kills: 30, deaths: 0 }], baseConfig.activityCutoffMs), null);
   assert.equal(referenceFormula([{ ...row, aid: 204, activityAt: 99, matches: 20, kills: 10_000, deaths: 10 }],
     baseConfig.activityCutoffMs), null);
+});
+
+test("median leaves the caller's array untouched", () => {
+  for (const values of [[3, 1, 2], [2, 1], [1, 2, 3]]) {
+    const input = [...values];
+    median(input);
+    assert.deepEqual(input, values);
+  }
+  assert.equal(median([]), null);
+  assert.equal(median([2, 1]), 1.5);
 });
