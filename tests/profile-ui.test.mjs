@@ -170,7 +170,24 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.doesNotMatch(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);
   assert.match(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]\);/);
   assert.match(panel, /const translate = useRef\(t\);/);
-  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 2);
+
+  // The favorite comparison in the same panel had the identical defect and was
+  // missed: this effect aborts the in-flight request on entry, so `t` in its array
+  // cancelled a running comparison and re-requested it with identical parameters.
+  // Sliced on the effect's own markers so the render body's legitimate `t` calls
+  // cannot satisfy or break the bare-`t` check in either direction.
+  assert.doesNotMatch(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid, t\]\);/);
+  assert.match(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid\]\);/);
+  const compare = panel.slice(
+    panel.indexOf("const favorite = eligibleFavorites.find((item) =>"),
+    panel.indexOf("void loadSecondary();"),
+  );
+  assert.ok(compare.length > 0, "the favorite comparison effect must be present");
+  assert.doesNotMatch(compare, /\bt\(/);
+  assert.match(compare, /translate\.current\("progression\.compare\.playerId", \{ aid: favorite\.aid \}\)/);
+  assert.match(compare, /throw new Error\(translate\.current\("progression\.compare\.error"\)\);/);
+  // Both load effects now read the translator through the ref: two sites each.
+  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 4);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
