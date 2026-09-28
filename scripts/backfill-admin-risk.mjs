@@ -181,7 +181,6 @@ function regularRiskBaselineFor(stats, excludeAid) {
 }
 
 function legacyBaselineFor(mode, bracket) {
-  if (!playersDb) return null;
   const source = sourceFor(mode);
   const upper = bracket.hi == null ? "" : "AND p.hours < ?";
   const row = playersDb.prepare(`SELECT COUNT(*) n, ${RISK_MOMENTS} FROM ${source.table} p
@@ -192,14 +191,12 @@ function legacyBaselineFor(mode, bracket) {
 }
 
 function baselineFor(mode, stats, aid) {
-  if (!playersDb) return null;
   if (mode === "pve") return pveRiskBaselineFor(stats, aid);
   if (mode === "regular") return regularRiskBaselineFor(stats, aid);
   return bracketFor(stats.hoursPlayed) ? legacyBaselineFor("regular", bracketFor(stats.hoursPlayed)) : null;
 }
 
 function achievementInputFor(mode) {
-  if (!playersDb) return null;
   const source = sourceFor(mode);
   const where = `${source.modeWhere}p.achievements IS NOT NULL AND p.achievements != ''
     AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`;
@@ -311,19 +308,17 @@ async function scoreSeasonalRow(row, cycleId) {
 }
 
 let scored = 0;
-try {
-  for (const row of playersDb.prepare(`SELECT p.* FROM players p
-    WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
-    await scoreRow(row, "regular", "persistent");
-    scored += 1;
-  }
-  for (const row of playersDb.prepare(`SELECT p.* FROM mode_players p
-    WHERE p.mode = 'pve'
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
-    await scoreRow(row, String(row.mode), "persistent");
-    scored += 1;
-  }
-} finally { }
+for (const row of playersDb.prepare(`SELECT p.* FROM players p
+  WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
+  await scoreRow(row, "regular", "persistent");
+  scored += 1;
+}
+for (const row of playersDb.prepare(`SELECT p.* FROM mode_players p
+  WHERE p.mode = 'pve'
+    AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
+  await scoreRow(row, String(row.mode), "persistent");
+  scored += 1;
+}
 
 const db = new DatabaseSync(progressionPath, { readOnly: true });
 try {
