@@ -23,7 +23,8 @@ function unavailable(status: number) {
   return new NextResponse(null, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-/** No portrait for this aid/mode. Stable, so the 404 itself is cacheable. */
+/** No portrait for this aid/mode. Stable, so the 404 itself is cacheable. The
+ *  rollout/cycle mismatch is deliberately not routed here. */
 function notAvailable() {
   return new NextResponse(null, { status: 404, headers: notAvailableHeaders });
 }
@@ -37,7 +38,10 @@ export async function GET(request: NextRequest) {
   let upstream: string | null;
   if (mode === "seasonal") {
     const cycle = loadSeasonalCycleConfig();
-    if (!isSeasonalRolloutReady() || !cycle || params.get("cycle") !== cycle.cycleId) return notAvailable();
+    // Not `notAvailable()`: a rollout miss is not a stable answer. It flips when
+    // the cycle window opens or `SEASONAL_ENABLED` changes, and a cached 404 would
+    // keep hiding the portrait for up to max-age after that.
+    if (!isSeasonalRolloutReady() || !cycle || params.get("cycle") !== cycle.cycleId) return unavailable(404);
     upstream = seasonalProfileUrl(aid);
   } else {
     const path = mode === "regular" ? "profile" : mode;
