@@ -801,6 +801,39 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   assert.match(score, /cheater\.incompletePvp/);
 });
 
+test("an unknown seasonal PMC survival rate is never rendered as a percentage", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const card = await readFile("components/StatCard.tsx", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  // The seasonal placeholder is `?` in both languages, so the defect reads `?%`
+  // either way. The sibling regular fix guards a different key, `common.notAvailable`.
+  assert.match(dictionary, /"common\.unknown": "\?"/);
+  assert.equal((dictionary.match(/"common\.unknown": "\?"/g) ?? []).length, 2);
+
+  // The general rule: a value built from `displayNumber(..., unknownValue)` may be the
+  // placeholder, so it must not also carry a literal suffix. Asserted over every such
+  // card in the file rather than on one line, so a new one cannot reintroduce it.
+  const placeholderCards = seasonal.split("\n").filter((line) => line.includes("displayNumber(") && line.includes("unknownValue)"));
+  assert.ok(placeholderCards.length >= 2, `expected the seasonal placeholder cards, found ${placeholderCards.length}`);
+  for (const line of placeholderCards) {
+    assert.doesNotMatch(line, /suffix(:|=)"/, `a placeholder value must not carry a literal suffix: ${line.trim()}`);
+  }
+
+  // Two cards, two label keys, one shared value; both gate the suffix on the same
+  // expression `displayNumber` receives, so the guard cannot drift from the fallback.
+  assert.match(seasonal, /label: t\("seasonal\.pmcSurvival"\), value: displayNumber\(stats\.pmcSurvivalRate, 1, unknownValue\), suffix: stats\.pmcSurvivalRate == null \? undefined : "%"/);
+  assert.match(seasonal, /label=\{t\("seasonal\.metric\.survival"\)\} value=\{displayNumber\(stats\.pmcSurvivalRate, 1, unknownValue\)\} suffix=\{stats\.pmcSurvivalRate == null \? undefined : "%"\}/);
+  assert.equal(placeholderCards.filter((line) => /suffix[:=]/.test(line)).length, 2, "the two survival cards are the only suffixed placeholder cards");
+
+  // Both renderers stay generic: each prints what the caller supplies, and neither
+  // learns what one dictionary value means.
+  assert.match(shell, /\{item\.value\}\{item\.suffix && <span>\{item\.suffix\}<\/span>\}/);
+  assert.match(card, /\{suffix && <span className="metric-card__suffix ml-1">\{suffix\}<\/span>\}/);
+  assert.doesNotMatch(`${shell}\n${card}`, /common\.unknown|unknownValue/);
+});
+
 test("regular PvP progression precedes the single risk card and radar", async () => {
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
