@@ -51,9 +51,10 @@ test("a stalled Seasonal index download aborts instead of holding the data-sync 
   // ops/systemd runs the sync under /run/tarkovstats-data-sync.lock and
   // ops/deploy.sh probes that same lock with -n, so an unbounded download
   // defers every deploy. The upstream stalls in two distinguishable ways and
-  // both have to end: an accepted connection that never answers needs the
-  // signal on the fetch, and a body that keeps trickling needs the check inside
-  // the read loop, because each chunk resets undici's idle timeout.
+  // one signal bounds both, because a signal handed to fetch is attached to
+  // the response body stream too: a read loop with no check of its own still
+  // rejects with TimeoutError. The per-chunk `signal?.aborted` throw is
+  // defence-in-depth, matching the arena and PvE siblings.
   const server = createServer((request, response) => {
     if (request.url?.startsWith("/trickle")) {
       response.writeHead(200, { "content-type": "application/json" });
