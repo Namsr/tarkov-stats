@@ -56,9 +56,12 @@ export function sqliteTrigger(name: string, body: string): TriggerDdl {
 // ship quietly: `current progression schema initialization performs no migration
 // writes` asserts a current database issues only PRAGMA busy_timeout, so a false
 // verdict fails the suite on the first run. A tokenizer that misses a difference
-// that is there is silent and unguarded, and that is exactly the stale body this
-// module exists to prevent — nothing in the suite can catch it. Prefer the
-// normalizer, because the failure that cannot be detected is the one that matters.
+// that is there ships untested: the suite pins exactly one such class — case inside
+// a string literal, which `a case-only edit to a string literal in a trigger body
+// is still a change` covers — and a tokenizer's own blind spots (a doubled
+// apostrophe, a `--` comment, a double-quoted identifier) would reach a deployed
+// database with nothing to catch them. Prefer the normalizer, because the direction
+// the guard does not cover is the one that matters.
 function normalizedTriggerDdl(ddl: string): string {
   return ddl.replace(/^(\s*CREATE\s+TRIGGER)\s+IF\s+NOT\s+EXISTS\b/i, "$1")
     .replace(/\s+/g, " ").replace(/;\s*$/, "").trim();
