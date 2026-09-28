@@ -1,7 +1,18 @@
 type CachedJson = { body: unknown; status: number; retryAfter: number };
 type NetworkInformation = { saveData?: boolean; effectiveType?: string };
 
+/** Bounds the session cache so a long slider/metric session cannot grow it
+ *  without limit. Mirrors `client-profile-request.ts`. Entries are insert-only,
+ *  so evicting the oldest key is enough. */
+const RESPONSE_MAX = 64;
 const responses = new Map<string, Promise<CachedJson>>();
+
+function cacheResponse(url: string, value: Promise<CachedJson>): void {
+  if (responses.size >= RESPONSE_MAX && !responses.has(url)) {
+    responses.delete(responses.keys().next().value as string);
+  }
+  responses.set(url, value);
+}
 
 interface AverageInFlight {
   promise: Promise<CachedJson>;
@@ -112,11 +123,17 @@ function aborted(signal?: AbortSignal): void {
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       window.clearTimeout(timer);
       reject(new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    };
+    // `{ once: true }` only detaches the listener if it fires, so the timer
+    // winning the race has to remove it explicitly.
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -164,7 +181,7 @@ export async function loadAverageJson<T>(
       };
       const network = fetchJson(url, controller.signal).then((result) => {
         if (result.status >= 200 && result.status < 300) {
-          responses.set(url, Promise.resolve(result));
+          cacheResponse(url, Promise.resolve(result));
         }
         return result;
       });
@@ -220,7 +237,7 @@ function drainPrefetchQueue(): void {
     };
     const network = fetchJson(url, controller.signal).then((result) => {
       if (!controller.signal.aborted && result.status >= 200 && result.status < 300) {
-        responses.set(url, Promise.resolve(result));
+        cacheResponse(url, Promise.resolve(result));
       }
       return result;
     });

@@ -25,21 +25,25 @@ export interface FavoriteWithStats extends Favorite {
 // Powers the /profile page, the multi-compare table, and "refresh all".
 export async function GET(request: NextRequest) {
   const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "favstats", max: 6 });
+  // This endpoint is scoped to the signed-in account, so every branch has to say
+  // so. `getRateLimitHeaders` no longer emits anything, which used to leave the
+  // 401/429/empty paths with no Cache-Control at all and a shared cache free to
+  // store and replay a 401 for another request.
+  const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {
-    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers });
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: noStore });
   }
 
   const user = await getSession();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers });
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: noStore });
 
   const favStore = await getFavoritesStore();
-  if (!favStore) return NextResponse.json({ favorites: [] }, { headers });
+  if (!favStore) return NextResponse.json({ favorites: [] }, { headers: noStore });
 
   // ?refresh=1 (per-account «Обновить» / перезагрузка страницы) обходит 5-мин кэш.
   const force = request.nextUrl.searchParams.get("refresh") === "1";
 
   const favorites = await favStore.list(user.sub, null);
-  const noStore = { ...headers, "Cache-Control": "no-store" };
   if (favorites.length === 0) return NextResponse.json({ favorites: [] }, { headers: noStore });
 
   const hasRegularFavorite = favorites.some((favorite) => favorite.mode === "regular");

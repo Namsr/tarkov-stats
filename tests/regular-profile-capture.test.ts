@@ -162,6 +162,18 @@ test("embedded Regular profiles without an upstream version fail closed every ti
   }
 });
 
+test("every branch of the per-account favorites stats route stays no-store", () => {
+  const source = readFileSync(resolve("app/api/favorites/stats/route.ts"), "utf8");
+
+  // The payload is scoped to `user.sub`, so a shared cache must never be free to
+  // keep a response. `getRateLimitHeaders` returns an empty header bag, so the
+  // 401/429/empty paths have to opt in explicitly like the 200 path does.
+  assert.equal((source.match(/"Cache-Control": "no-store"/g) ?? []).length, 1);
+  assert.equal((source.match(/headers: noStore/g) ?? []).length, 5);
+  assert.doesNotMatch(source, /status: (?:401|429), headers \}/);
+  assert.doesNotMatch(source, /\{ favorites: \[\] \}, \{ headers \}/);
+});
+
 test("favorites keep parsed stats when snapshot construction fails synchronously", () => {
   const source = readFileSync(resolve("app/api/favorites/stats/route.ts"), "utf8");
   const start = source.indexOf("const stats = parseProfileStats");

@@ -136,9 +136,9 @@ export function materializeCandidate(row: LeaderboardSourceRow, context: Materia
 
 export function median(values: number[]): number | null {
   if (values.length === 0) return null;
-  values.sort((left, right) => left - right);
-  const middle = Math.floor(values.length / 2);
-  return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 export function referenceFormula(rows: Iterable<LeaderboardSourceRow>, activityCutoffMs: number): PerformanceFormula | null {
