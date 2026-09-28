@@ -17,8 +17,12 @@ Object.defineProperty(globalThis, "navigator", {
 
 const requests = await import("../lib/client-average-request.ts");
 const profileRequests = await import("../lib/client-profile-request.ts");
+const originalFetch = globalThis.fetch;
 
-test.afterEach(() => requests.resetAverageResponseCacheForTests());
+test.afterEach(() => {
+  globalThis.fetch = originalFetch;
+  requests.resetAverageResponseCacheForTests();
+});
 
 test("mode switch aborts the underlying average fetch instead of only the consumer wait", async () => {
   let observedSignal = null;
@@ -261,4 +265,13 @@ test("mode navigation wiring keeps only the last request alive", async () => {
   // Timelines are cancelled by navigation.
   assert.match(panel, /profile-mode-navigate/);
   assert.match(panel, /secondaryController\.current\?\.abort/);
+});
+
+test("regression: this suite installs a fetch stub", () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ total: 99 }), { status: 200 });
+  assert.notEqual(globalThis.fetch, originalFetch);
+});
+
+test("regression: the stub does not survive into the next case", () => {
+  assert.equal(globalThis.fetch, originalFetch);
 });

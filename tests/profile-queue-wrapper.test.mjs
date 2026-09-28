@@ -14,7 +14,7 @@ test('queue retries only failures, preserves error status and runs one warmup af
   assert.ok(source.indexOf('run_mode regular') < source.indexOf('run_mode pve'));
   assert.ok(source.indexOf('run_mode pve') < source.indexOf('run_mode seasonal'));
   assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
-  for (const scenario of ['success', 'retry', 'persistent', 'stopped', 'invalid', 'budget']) {
+  for (const scenario of ['success', 'retry', 'persistent', 'starved', 'stopped', 'invalid', 'budget']) {
     const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
     try {
       const path = dir.replaceAll('\\', '/');
@@ -25,13 +25,20 @@ test('queue retries only failures, preserves error status and runs one warmup af
             if [ "$SCENARIO" = persistent ]; then return 7; fi
             if [ "$SCENARIO" = retry ] && [ ! -f retried ]; then touch retried; return 7; fi;;
           *sync-pve-profiles*) echo pve >> calls;;
-          *sync-arena-profiles*) echo arena >> calls;;
+          *sync-arena-profiles*) echo arena >> calls
+            if [ "$SCENARIO" = starved ] && [ ! -f retried ]; then touch retried; return 5; fi;;
           *sync-seasonal-profiles*) echo seasonal >> calls;;
           *) return 88;;
         esac
       }
       sleep() { :; }
-      date() { if [ "$SCENARIO" = budget ] && [ "$*" = +%s ] && [ -f calls ]; then echo 4102444800; else command date "$@"; fi; }
+      date() {
+        if [ "$SCENARIO" = starved ] && [ "$*" = +%s ]; then
+          if [ -f started ]; then echo $(( \$(command date +%s) + 3255 )); else touch started; command date +%s; fi
+          return 0
+        fi
+        if [ "$SCENARIO" = budget ] && [ "$*" = +%s ] && [ -f calls ]; then echo 4102444800; else command date "$@"; fi
+      }
       python3() { cat >/dev/null; case "$SCENARIO" in stopped) echo stopped;; invalid) return 1;; *) echo done;; esac; }
       `;
       const script = source.replace('cd /opt/tarkovstats-auto || exit 1', `cd ${quote(path)} || exit 1`)
@@ -41,10 +48,18 @@ test('queue retries only failures, preserves error status and runs one warmup af
       await writeFile(file, script.replaceAll('\r\n','\n'));
       const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
       assert.ifError(result.error);
-      assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' ? 1 : scenario === 'stopped' ? 143 : 0, result.stderr);
+      assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' || scenario === 'starved' ? 1 : scenario === 'stopped' ? 143 : 0, `${scenario}: ${result.stderr}\n${result.stdout}`);
       assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
         scenario === 'budget' ? ['arena'] : ['arena', ...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','seasonal','warmup']);
       if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
+      if (scenario === 'starved') {
+        // A retry that cannot get a real run window must not turn the failure into
+        // a success: the bounded run aborts on its first checkpoint and exits 0.
+        assert.match(result.stdout, /MODE_RETRY mode=arena attempt=skipped .*reason=insufficient-budget/);
+        assert.match(result.stdout, /MODE_RESULT mode=arena status=5/);
+        assert.match(result.stdout, /QUEUE_SUMMARY ok=false failures="arena:5"/);
+        assert.doesNotMatch(result.stdout, /ok=true/);
+      }
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
   const [dropIn, service, timer] = await Promise.all([

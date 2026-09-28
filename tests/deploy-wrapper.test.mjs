@@ -7,6 +7,25 @@ import test from 'node:test';
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
 
+// Rewrites the production APP, data-sync lock and state paths in ops/deploy.sh
+// to a temp dir so the spawned script exercises deploy logic, not the VPS. The
+// rewrites are literal string replacements, so a reworded or requoted line
+// silently no-ops and spawns deploy logic against the real production paths.
+function sandboxDeployScript(source, dir, mock) {
+  const target = dir.replaceAll('\\', '/');
+  const script = source.replace('APP=/opt/tarkovstats-auto', () => `APP='${target}'\n${mock}`)
+    .replace('exec 9>/run/tarkovstats-data-sync.lock', 'exec 9>"$APP/data-sync.lock"')
+    .replace('state=/var/lib/tarkovstats-deploy', 'state="$APP/state"');
+  for (const [applied, rewritten] of [
+    [`APP='${target}'`, 'sets APP=/opt/tarkovstats-auto'],
+    ['exec 9>"$APP/data-sync.lock"', 'opens exec 9>/run/tarkovstats-data-sync.lock'],
+    ['state="$APP/state"', 'sets state=/var/lib/tarkovstats-deploy'],
+  ]) assert.ok(script.includes(applied), `sandbox rewrite did not apply: ops/deploy.sh no longer ${rewritten}`);
+  for (const production of ['/opt/tarkovstats-auto', '/run/tarkovstats-data-sync.lock', '/var/lib/tarkovstats-deploy'])
+    assert.ok(!script.includes(production), `sandbox rewrite left the production path ${production} in the spawned script`);
+  return script;
+}
+
 test('deploy uses live revision and rolls back build, signal and startup failures', async () => {
   const source = await readFile('ops/deploy.sh', 'utf8');
   const compose = await readFile('ops/docker-compose.vps.yml', 'utf8');
@@ -49,9 +68,7 @@ test('deploy uses live revision and rolls back build, signal and startup failure
       flock() { echo "flock $*" >> calls; if [ "$SCENARIO" = sync-busy ]; then return 1; fi; return 0; }
       sleep() { :; }
       `;
-      const script = source.replace('APP=/opt/tarkovstats-auto', () => `APP='${dir.replaceAll('\\','/')}'\n${mock}`)
-        .replace('exec 9>/run/tarkovstats-data-sync.lock', 'exec 9>"$APP/data-sync.lock"')
-        .replace('state=/var/lib/tarkovstats-deploy', 'state="$APP/state"');
+      const script = sandboxDeployScript(source, dir, mock);
       const file = join(dir,'deploy.sh');
       await writeFile(file, script.replaceAll('\r\n','\n'));
       const result = spawnSync(shell,[file],{env:{...process.env, SCENARIO:scenario, BUILDX_BUILDER:scenario==='no-builder'?'':'tarkovstats-limited'},encoding:'utf8',timeout:10_000});
@@ -94,4 +111,18 @@ test('deploy uses live revision and rolls back build, signal and startup failure
       }
     } finally { await rm(dir,{recursive:true,force:true}); }
   }
+});
+
+test('deploy sandbox rewrite refuses to spawn the production paths', async () => {
+  const source = await readFile('ops/deploy.sh', 'utf8');
+  const dir = join(tmpdir(), 'deploy-behavior-abc123').replaceAll('\\', '/');
+  // Quoting the value is a no-op for the shell and a no-op for the rewrite: a
+  // plausible refactor that would otherwise leave APP on the production checkout.
+  const refactored = source.replace('APP=/opt/tarkovstats-auto', 'APP="/opt/tarkovstats-auto"');
+  assert.notEqual(refactored, source, 'fixture drift: quoting APP must still change the source text');
+  assert.throws(() => sandboxDeployScript(refactored, dir, 'git() { :; }'), /sandbox rewrite/);
+  const script = sandboxDeployScript(source, dir, 'git() { :; }');
+  assert.ok(script.includes(`APP='${dir}'`));
+  for (const production of ['/opt/tarkovstats-auto', '/run/tarkovstats-data-sync.lock', '/var/lib/tarkovstats-deploy'])
+    assert.ok(!script.includes(production), `sandbox rewrite left the production path ${production} in the spawned script`);
 });

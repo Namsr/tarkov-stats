@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+
+// Cut one declaration out of a source file so an assertion about it cannot be
+// satisfied by unrelated code further down. An unbounded gap between an anchor
+// and the claim only proves the two tokens co-occur somewhere in the file in
+// that order, which is how a matches() comparing the wrong field passed its own
+// test. Same slice-then-assert shape tests/stored-first-profile.test.mjs uses;
+// the two indexOf asserts are what stop a missing anchor from silently slicing
+// the last character of the file.
+function sliceDeclaration(source, start, end) {
+  const from = source.indexOf(start);
+  assert.ok(from >= 0, `no declaration starts with ${JSON.stringify(start)}`);
+  const to = source.indexOf(end, from);
+  assert.ok(to > from, `${JSON.stringify(end)} is missing after ${JSON.stringify(start)}`);
+  return source.slice(from, to);
+}
 
 test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
   const context = await readFile("lib/favorites/context.tsx", "utf8");
@@ -10,20 +26,39 @@ test("favorites are global by AID while mode widgets project the preferred link 
   const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
   const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
 
-  assert.match(context, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
+  // matches() is the only thing that decides which favourite a mutation touched,
+  // so the AID comparison is asserted inside matches() and nowhere else.
+  const matches = sliceDeclaration(
+    context,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  assert.match(matches, /return favorite\.aid === aid;/);
   assert.doesNotMatch(context, /favorite\.mode === id\.mode|favorite\.cycleId === id\.cycleId/);
   assert.match(context, /body: JSON\.stringify\(\{ aid, nickname, mode: id\.mode, cycle: id\.cycleId \}\)/);
   assert.ok((context.match(/if \(!res\.ok\) throw new Error\(\)/g) ?? []).length >= 4);
   assert.ok((context.match(/await refresh\(\)/g) ?? []).length >= 4);
 
-  assert.match(route, /store\.add\([\s\S]*identity/);
+  // The identity parsed from the request body has to be the one that reaches the
+  // store, and both live in POST. The old gap was satisfied by a route that
+  // pinned every account as regular/persistent.
+  const post = sliceDeclaration(route, "export async function POST(", "export async function DELETE(");
+  assert.match(post, /const identity = parseIdentity\(body\.mode, body\.cycle\);/);
+  assert.match(post, /store\.add\(\s*g\.sub,\s*aid,[\s\S]{0,200}identity\s*\)/);
   assert.match(route, /store\.remove\(g\.sub, aid\)/);
   assert.ok((route.match(/Storage unavailable/g) ?? []).length >= 3);
   assert.match(route, /store\.setMain\(g\.sub, aid\)/);
   assert.match(route, /store\.setNote\(g\.sub, aid, clean\(body\.note, NOTE_MAX\)\)/);
   assert.doesNotMatch(route, /store\.(?:remove|setMain|setNote)\(g\.sub, aid,[^)]*identity/);
 
-  assert.match(schema, /INSERT OR IGNORE INTO favorites[\s\S]*COUNT\(DISTINCT aid\)/);
+  // The per-user cap is a condition on the INSERT itself, not a count that lives
+  // somewhere below it. The gap is capped at 400; the real distance is 231.
+  const insertSql = sliceDeclaration(
+    schema,
+    "export const FAVORITE_INSERT_SQL",
+    "export const FAVORITE_SET_MAIN_SQL",
+  );
+  assert.match(insertSql, /INSERT OR IGNORE INTO favorites[\s\S]{0,400}COUNT\(DISTINCT aid\)/);
   assert.match(schema, /SET is_main = CASE WHEN aid = \? THEN 1 ELSE 0 END/);
   assert.match(schema, /throw new Error\("Favorite insert was ignored unexpectedly"\)/);
   assert.equal((store.match(/prepare\(FAVORITE_INSERT_SQL\)/g) ?? []).length, 1);
@@ -41,6 +76,64 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.match(radar, /aid: String\(effectiveFavoriteAid\),\s*mode,\s*cycle: cycleId/);
   assert.match(radar, /const nextStats = payload\.comparisonStats \?\? payload\.stats/);
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
+});
+
+test("the favourites identity assertion rejects a matches() that compares the wrong field", async () => {
+  const source = await readFile("lib/favorites/context.tsx", "utf8");
+  const matches = sliceDeclaration(
+    source,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  // The real source satisfies the check, so a throw below is the mutation's doing.
+  assert.match(matches, /return favorite\.aid === aid;/);
+
+  // In-memory mutation only; nothing under lib/ or app/ is written. matches() now
+  // identifies a favourite by nickname, and the decoy `favorite.aid === aid` sits
+  // in an unrelated helper inside the same slice.
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
+  const original = [
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "  return favorite.aid === aid;",
+    "}",
+  ].join(eol);
+  const mutated = [
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "  return favorite.nickname === String(aid);",
+    "}",
+    "",
+    "const sameAid = (favorite: Favorite, aid: number) => favorite.aid === aid;",
+  ].join(eol);
+  const buggy = source.replace(original, mutated);
+  assert.notEqual(buggy, source, "the mutation must apply to the real source");
+
+  const buggyMatches = sliceDeclaration(
+    buggy,
+    "function matches(favorite: Favorite, aid: number): boolean {",
+    "export function FavoritesProvider",
+  );
+  assert.throws(() => {
+    assert.match(buggyMatches, /return favorite\.aid === aid;/);
+  });
+  // The unbounded form the file used to carry still accepts that same mutant,
+  // which is why it was replaced rather than tightened in place.
+  assert.match(buggy, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
+});
+
+test("no unbounded source gap is added to this file", async () => {
+  // Scoped to this file on purpose: the other suites still carry unbounded source
+  // gaps and are scheduled separately, so a whole-tests/ count would freeze the
+  // backlog into this assertion and block every follow-up.
+  const file = await readFile("tests/profile-ui.test.mjs", "utf8");
+  const unbounded = file.match(/\[\\s\\S\]\*\??/g) ?? [];
+  // 108 is what is left: the three favourites identity assertions above no longer
+  // carry one, and the single new occurrence is the reproduction of the old
+  // pattern in the test above, which asserts nothing about lib/. A slice-then-
+  // assert or an explicitly bounded gap keeps the number flat.
+  assert.ok(
+    unbounded.length <= 108,
+    `expected at most 108 unbounded source gaps in tests/profile-ui.test.mjs, found ${unbounded.length}`,
+  );
 });
 
 test("every favorites response is no-store, so the CDN cannot replay a 401 or 503 to the next visitor", async () => {
@@ -170,7 +263,24 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.doesNotMatch(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);
   assert.match(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]\);/);
   assert.match(panel, /const translate = useRef\(t\);/);
-  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 2);
+
+  // The favorite comparison in the same panel had the identical defect and was
+  // missed: this effect aborts the in-flight request on entry, so `t` in its array
+  // cancelled a running comparison and re-requested it with identical parameters.
+  // Sliced on the effect's own markers so the render body's legitimate `t` calls
+  // cannot satisfy or break the bare-`t` check in either direction.
+  assert.doesNotMatch(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid, t\]\);/);
+  assert.match(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid\]\);/);
+  const compare = panel.slice(
+    panel.indexOf("const favorite = eligibleFavorites.find((item) =>"),
+    panel.indexOf("void loadSecondary();"),
+  );
+  assert.ok(compare.length > 0, "the favorite comparison effect must be present");
+  assert.doesNotMatch(compare, /\bt\(/);
+  assert.match(compare, /translate\.current\("progression\.compare\.playerId", \{ aid: favorite\.aid \}\)/);
+  assert.match(compare, /throw new Error\(translate\.current\("progression\.compare\.error"\)\);/);
+  // Both load effects now read the translator through the ref: two sites each.
+  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 4);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
@@ -353,6 +463,31 @@ test("achievement icon host is allowed by the production CSP", async () => {
   assert.match(config, /remotePatterns:[\s\S]*?protocol: "https"[\s\S]*?hostname: "assets\.tarkov\.dev"[\s\S]*?pathname: "\/\*\*"/);
 });
 
+test("image remote pattern accepts a query string so upstream cache-busters do not 400", async () => {
+  // Проверяем семантику через сам матчер Next, а не текст конфига: `search` в
+  // RemotePattern сравнивается с `url.search` на ТОЧНОЕ равенство, поэтому
+  // `search: ""` оставлял бы оптимизатору только ссылки без query. Ассет с
+  // cache-buster — это 400 на /_next/image, а иконка в UI просто исчезает.
+  const require = createRequire(import.meta.url);
+  const { matchRemotePattern } = require("next/dist/shared/lib/match-remote-pattern.js");
+  const { default: nextConfig } = await import("../next.config.ts");
+  const [pattern] = nextConfig.images.remotePatterns;
+
+  for (const asset of [
+    "https://assets.tarkov.dev/achievement-6512ea46f7a078264a4376e4-icon.webp",
+    "https://assets.tarkov.dev/achievement-6512ea46f7a078264a4376e4-icon.webp?v=2",
+  ]) {
+    assert.equal(
+      matchRemotePattern(pattern, new URL(asset)),
+      true,
+      `remote pattern must accept ${asset}`,
+    );
+  }
+  // Нестандартный порт и чужой хост по-прежнему отвергаются.
+  assert.equal(matchRemotePattern(pattern, new URL("https://assets.tarkov.dev:8443/a.webp")), false);
+  assert.equal(matchRemotePattern(pattern, new URL("https://example.invalid/a.webp")), false);
+});
+
 test("profile mode switch stays below profile actions and is available before profile data", async () => {
   const route = await readFile("app/player/[[...segments]]/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
@@ -502,13 +637,31 @@ test("ban review request results are dropped after unmount", async () => {
 
   assert.match(review, /const mounted = useRef\(true\);/);
   assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
-  for (const [setter, expected] of [["setCandidates", 2], ["setError", 2], ["setLoading", 1], ["setVoting", 1]]) {
+  for (const [setter, expected] of [["setCandidates", 2], ["setError", 3], ["setLoading", 1], ["setVoting", 1]]) {
     assert.equal(
       (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
       expected,
       `${setter} must be guarded after each await`,
     );
   }
+});
+
+test("a successful ban-review claim clears the stale load error", async () => {
+  const review = await readFile("components/CommunityBanReview.tsx", "utf8");
+
+  // `claim` is keyed on `t`, so the header EN/RU toggle re-claims the queue.
+  // A claim that failed once must clear its own banner once a later one
+  // succeeds, otherwise the alert stacks on the list it just loaded -- and
+  // with an empty queue there is no vote left to clear it.
+  const claim = review.slice(
+    review.indexOf("const claim = useCallback"),
+    review.indexOf("useEffect(() => { void claim(); }, [claim]);"),
+  );
+  assert.match(claim, /setCandidates\(body\.candidates \?\? \[\]\);[\s\S]{0,200}if \(mounted\.current\) setError\(""\);/);
+  // The clear waits for the response, guarded like every other post-await
+  // setter. Hoisting it into the preamble (where `vote` can put its clear,
+  // because it runs before its await) would blank a claim still in flight.
+  assert.doesNotMatch(claim.slice(0, claim.indexOf("await fetch(")), /setError\(""\)/);
 });
 
 test("community helper drops poll and request results after unmount", async () => {
@@ -793,12 +946,61 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   assert.match(profile, /const pvpStatsKnown = stats\.pvpStatsKnown !== false/);
   assert.match(profile, /pvpStatsKnown \? stats\.pmcKdRatio : t\("common\.notAvailable"\)/);
   assert.match(profile, /pvpStatsKnown \? stats\.killedPmc\.toLocaleString\(\) : t\("common\.notAvailable"\)/);
+  // The overview card is the one place a placeholder is shown next to a unit, so
+  // the "%" has to be part of the same guard: an unconditional suffix rendered
+  // "Н/Д%" / "N/A%", i.e. a percentage on a value that does not exist.
+  assert.match(
+    profile,
+    /\{ label: t\("player\.survivalRate"\), value: pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: pvpStatsKnown \? "%" : undefined \}/,
+  );
+  assert.doesNotMatch(
+    profile,
+    /pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: "%"/,
+  );
+  // The fix belongs to the card, not to the shared shell: it renders whatever
+  // suffix the caller passes, so the caller has to withhold it.
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  assert.match(shell, /\{item\.value\}\{item\.suffix && <span>\{item\.suffix\}<\/span>\}/);
+  assert.doesNotMatch(shell, /common\.notAvailable/);
   assert.match(radar, /playerValues = demo[\s\S]*?playerStatsKnown \? valuesFromStats\(stats\) : null/);
   assert.match(radar, /favoriteStats && favoriteStatsKnown/);
   assert.match(radar, /radar\.incompletePvp\.player/);
   assert.match(radar, /radar\.incompletePvp\.favorite/);
   assert.match(score, /statsKnown === false/);
   assert.match(score, /cheater\.incompletePvp/);
+});
+
+test("an unknown seasonal PMC survival rate is never rendered as a percentage", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  const card = await readFile("components/StatCard.tsx", "utf8");
+  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
+
+  // The seasonal placeholder is `?` in both languages, so the defect reads `?%`
+  // either way. The sibling regular fix guards a different key, `common.notAvailable`.
+  assert.match(dictionary, /"common\.unknown": "\?"/);
+  assert.equal((dictionary.match(/"common\.unknown": "\?"/g) ?? []).length, 2);
+
+  // The general rule: a value built from `displayNumber(..., unknownValue)` may be the
+  // placeholder, so it must not also carry a literal suffix. Asserted over every such
+  // card in the file rather than on one line, so a new one cannot reintroduce it.
+  const placeholderCards = seasonal.split("\n").filter((line) => line.includes("displayNumber(") && line.includes("unknownValue)"));
+  assert.ok(placeholderCards.length >= 2, `expected the seasonal placeholder cards, found ${placeholderCards.length}`);
+  for (const line of placeholderCards) {
+    assert.doesNotMatch(line, /suffix(:|=)"/, `a placeholder value must not carry a literal suffix: ${line.trim()}`);
+  }
+
+  // Two cards, two label keys, one shared value; both gate the suffix on the same
+  // expression `displayNumber` receives, so the guard cannot drift from the fallback.
+  assert.match(seasonal, /label: t\("seasonal\.pmcSurvival"\), value: displayNumber\(stats\.pmcSurvivalRate, 1, unknownValue\), suffix: stats\.pmcSurvivalRate == null \? undefined : "%"/);
+  assert.match(seasonal, /label=\{t\("seasonal\.metric\.survival"\)\} value=\{displayNumber\(stats\.pmcSurvivalRate, 1, unknownValue\)\} suffix=\{stats\.pmcSurvivalRate == null \? undefined : "%"\}/);
+  assert.equal(placeholderCards.filter((line) => /suffix[:=]/.test(line)).length, 2, "the two survival cards are the only suffixed placeholder cards");
+
+  // Both renderers stay generic: each prints what the caller supplies, and neither
+  // learns what one dictionary value means.
+  assert.match(shell, /\{item\.value\}\{item\.suffix && <span>\{item\.suffix\}<\/span>\}/);
+  assert.match(card, /\{suffix && <span className="metric-card__suffix ml-1">\{suffix\}<\/span>\}/);
+  assert.doesNotMatch(`${shell}\n${card}`, /common\.unknown|unknownValue/);
 });
 
 test("regular PvP progression precedes the single risk card and radar", async () => {

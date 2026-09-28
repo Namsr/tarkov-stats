@@ -1,69 +1,17 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import test, { after } from "node:test";
+import { join } from "node:path";
+import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSystemMetricsStore, parseSystemMetricSample } from "../lib/admin/system-metrics.ts";
 
-// The ingest route imports `next/server` and `server-only`, neither of which the
-// bare runner resolves, and `next/headers` (through lib/admin-auth), which only
-// answers inside a Next request scope. `next/server` is redirected to its real
-// entry point; `server-only` is an empty stub; `next/headers` is a stub that serves
-// one global cookie jar, which is what lets a GET pass the admin gate here.
-// Registered at module top level so the hook is live before the dynamic imports
-// below, the same shape tests/pageview-analytics.test.ts uses.
-const COOKIE_JAR = encodeURIComponent(
-  "export const cookies = async () => { const jar = globalThis.__sessionJar ?? {}; return { get: (name) => (name in jar ? { value: jar[name] } : undefined) }; };",
-);
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === "next/server") return nextResolve(`${specifier}.js`, context);
-    if (specifier === "next/headers") return { shortCircuit: true, url: `data:text/javascript,${COOKIE_JAR}` };
-    if (specifier === "server-only") return { shortCircuit: true, url: "data:text/javascript," };
-    if (specifier.startsWith("@/")) {
-      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
-    }
-    return nextResolve(specifier, context);
-  },
-});
-
 const MINUTE = 60_000;
 const DAY = 86_400_000;
-// lib/operator-auth.ts refuses a shorter PROFILE_REFRESH_SECRET, so a collector
-// secret under that floor must be refused too.
-const INGEST_TOKEN = "c".repeat(32);
-
-// getSystemMetricsStore() memoises its first successful open, so point it at a
-// temp database before any POST reaches the store.
-const directory = mkdtempSync(join(tmpdir(), "tarkov-system-metrics-"));
-const sqlitePath = join(directory, "system-metrics.db");
-process.env.SYSTEM_METRICS_SQLITE_PATH = sqlitePath;
-after(() => {
-  // getSystemMetricsStore() keeps its SQLite handle for the life of the process, so
-  // Windows still locks the file when the suite ends. Everywhere else the unlink
-  // succeeds and must not be swallowed.
-  try { rmSync(directory, { recursive: true, force: true, maxRetries: 3 }); }
-  catch (error) { if (process.platform !== "win32") throw error; }
-});
-
-// GET runs behind requireAdmin(), so sign a real admin session and park it in the
-// cookie jar the `next/headers` stub serves. Node's runner gives this file its own
-// process, so the two test-only secrets cannot leak into another suite.
-process.env.AUTH_SECRET = "s".repeat(32);
-process.env.ADMIN_GOOGLE_SUB = "admin";
-const { encryptSession } = await import("../lib/auth/session.ts");
-globalThis.__sessionJar = {
-  session: await encryptSession({ sub: "admin", email: "admin@example.test", name: "Admin", picture: "" }),
-};
-
-const { GET: getMetrics, POST: postSample } = await import("../app/api/admin/system-metrics/route.ts");
-const { NextRequest } = await import("next/server");
 
 function sample(overrides = {}) {
   return {
@@ -92,22 +40,6 @@ function sample(overrides = {}) {
     networkTxBytes: 20_000,
     ...overrides,
   };
-}
-
-/** One collector POST carrying a valid host sample; only the bearer token varies. */
-function ingest(token) {
-  return new NextRequest("http://web:3000/api/admin/system-metrics", {
-    method: "POST",
-    headers: { authorization: token, "content-type": "application/json" },
-    body: JSON.stringify(sample()),
-  });
-}
-
-/** The admin dashboard read: it renders its "not configured" notice off `configured`. */
-async function readRange() {
-  const response = await getMetrics(new NextRequest("http://web:3000/api/admin/system-metrics"));
-  assert.equal(response.status, 200);
-  return response.json();
 }
 
 test("system metrics validate numeric host samples", () => {
@@ -178,31 +110,109 @@ test("system metrics retain 90 days and API keeps reads admin-only", async () =>
   assert.match(route, /status: 204/);
 });
 
-test("a short ingest token disables the collector write and reads as unconfigured", async () => {
+// The POST already refused a token under 32 characters, but the GET answered
+// `configured: true` for that same value, so the dashboard's "collector is not
+// configured" notice stayed hidden exactly when the collector started failing.
+// One helper now owns the floor. Each claim below is bounded to the declaration
+// it is about, the way tests/profile-ui.test.mjs slices a source file, because an
+// unbounded gap only proves two tokens co-occur somewhere in the file.
+test("a short ingest token reads as unconfigured and the POST refusal shares that verdict", async () => {
+  const route = await readFile("app/api/admin/system-metrics/route.ts", "utf8");
+  const helper = route.indexOf("function collectorConfigured(): boolean {");
+  const get = route.indexOf("export async function GET(");
+  const post = route.indexOf("export async function POST(");
+  assert.ok(helper >= 0, "the 32-character floor must live in one shared collectorConfigured() helper");
+  assert.ok(get > helper && post > get, "GET and POST must both read the helper");
+
+  // The helper only reads the env var, so its own return expression runs here
+  // against a driven env rather than being pattern-matched. Same slice-then-run
+  // shape tests/stored-profile-risk.test.mjs uses on a route block.
+  const expression = route.slice(helper, get).match(/return ([^;]+);/);
+  assert.ok(expression, "collectorConfigured() must return a single expression");
+  const collectorConfigured = new Function("process", `return ${expression[1]}`);
+
   const previous = process.env.SYSTEM_METRICS_INGEST_TOKEN;
   try {
-    process.env.SYSTEM_METRICS_INGEST_TOKEN = "1";
-    const short = await postSample(ingest("Bearer 1"));
-    assert.equal(short.status, 503);
-    assert.deepEqual(await short.json(), { error: "collector_not_configured" });
-
-    // The read has to agree with the write gate. A GET that still reported
-    // `configured: true` would hide the dashboard notice that names the cause.
-    assert.equal((await readRange()).configured, false);
-
-    process.env.SYSTEM_METRICS_INGEST_TOKEN = INGEST_TOKEN;
-    assert.equal((await postSample(ingest(`Bearer ${INGEST_TOKEN}`))).status, 204);
-    assert.equal((await postSample(ingest("Bearer 1"))).status, 401);
-    assert.equal((await readRange()).configured, true);
-
-    // Only the strong token's sample reached the admin analytics store.
-    const db = new DatabaseSync(sqlitePath);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM system_metric_samples").get().n, 1);
-    db.close();
+    // Same 32-character floor as lib/operator-auth.ts, measured after the trim
+    // the POST compares the bearer token against.
+    for (const token of [undefined, "", "1", "c".repeat(31), `  ${"c".repeat(31)}  `]) {
+      if (token === undefined) delete process.env.SYSTEM_METRICS_INGEST_TOKEN;
+      else process.env.SYSTEM_METRICS_INGEST_TOKEN = token;
+      assert.equal(collectorConfigured(process), false, `${token === undefined ? "an unset" : `a ${token.trim().length}-character`} token must read as unconfigured`);
+    }
+    process.env.SYSTEM_METRICS_INGEST_TOKEN = "c".repeat(32);
+    assert.equal(collectorConfigured(process), true, "a 32-character token must read as configured");
   } finally {
     if (previous === undefined) delete process.env.SYSTEM_METRICS_INGEST_TOKEN;
     else process.env.SYSTEM_METRICS_INGEST_TOKEN = previous;
   }
+
+  // Both GET response shapes and the POST guard take that verdict rather than
+  // re-deriving one from the env var, which is the divergence this test exists for.
+  const getBody = route.slice(get, post);
+  assert.equal((getBody.match(/configured: collectorConfigured\(\)/g) ?? []).length, 2, "both GET response shapes must report the verdict the POST gates on");
+  assert.match(route.slice(post), /if \(!collectorConfigured\(\)\) return NextResponse\.json\(\{ error: "collector_not_configured" \}, \{ status: 503/, "the POST refusal must come from the same helper");
+  assert.doesNotMatch(route, /Boolean\(process\.env\.SYSTEM_METRICS_INGEST_TOKEN\)|expected\.length < 32/, "neither handler may re-derive the floor from the env var");
+});
+
+// A failed initialization caches its `null` for the life of the process unless the
+// promise is cleared, so the probe runs in a child process with a controlled clock.
+function runInitializationProbe(source: string) {
+  const directory = mkdtempSync(join(tmpdir(), "system-metrics-init-"));
+  try {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { DatabaseSync } from "node:sqlite";
+      import { getSystemMetricsStore } from ${JSON.stringify(new URL("../lib/admin/system-metrics.ts", import.meta.url).href)};
+      const errors = [];
+      console.warn = (message) => errors.push(message);
+      let now = Date.now();
+      Date.now = () => now;
+      ${source}
+    `], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, SYSTEM_METRICS_SQLITE_PATH: join(directory, "system-metrics.db") },
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("a failed system metrics open is retried after the cooldown instead of staying unavailable", () => {
+  runInitializationProbe(`
+    const exec = DatabaseSync.prototype.exec;
+    let attempts = 0;
+    let failedDb;
+    DatabaseSync.prototype.exec = function(sql) {
+      attempts += 1;
+      if (attempts === 1) {
+        failedDb = this;
+        throw new Error("probe: schema initialization failed");
+      }
+      return exec.call(this, sql);
+    };
+    assert.equal(await getSystemMetricsStore(), null);
+    DatabaseSync.prototype.exec = exec;
+    assert.match(errors[0], /system metrics unavailable/);
+    assert.equal(await getSystemMetricsStore(), null, "requests during the cooldown must not retry");
+    assert.equal(attempts, 1, "the cooldown must not reopen the database");
+    assert.equal(errors.length, 1, "the failure is reported once per process");
+    now += 30_000;
+    const [first, second] = await Promise.all([getSystemMetricsStore(), getSystemMetricsStore()]);
+    assert.ok(first, "system metrics must recover without restarting the process");
+    assert.equal(first, second, "the recovered store is shared");
+    first.record({
+      uptimeSeconds: 100, load1: 0.5, load5: 0.4, load15: 0.3,
+      cpuUser: 25, cpuNice: 0, cpuSystem: 25, cpuIdle: 50, cpuIowait: 0, cpuIrq: 0, cpuSoftirq: 0, cpuSteal: 0,
+      memoryTotalBytes: 1_000, memoryAvailableBytes: 400, swapTotalBytes: 200, swapFreeBytes: 150,
+      diskTotalBytes: 10_000, diskUsedBytes: 6_000, diskAvailableBytes: 3_500,
+      diskReadSectors: 1_000, diskWriteSectors: 2_000, networkRxBytes: 10_000, networkTxBytes: 20_000,
+    }, now);
+    assert.equal(first.range("24h", now).sampleCount, 1);
+    assert.throws(() => failedDb.prepare("SELECT 1"), /not open|closed/i, "the failed handle must be closed");
+  `);
 });
 
 test("Linux collector reads aggregate counters and posts only with its bearer token", async () => {
