@@ -569,9 +569,9 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
   initializeSeasonalSchema(progression);
   // The feed ladder is charged against the same budget as the capture ladder.
   // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
-  // ladder must stop after the first attempt instead of sleeping 1s+2s+4s past
-  // the deadline. The budget is a real one, so the regression costs real
-  // seconds only when the clamp is missing.
+  // catch block has to refuse the wait and let the loop-top guard end the run
+  // on the first attempt. The budget is a real one, so the regression costs
+  // real seconds only when the clamp is missing.
   let feedRequests = 0;
   const server = createServer((request, response) => {
     if (!request.url?.startsWith("/pve/updated.json")) return response.writeHead(404).end();
@@ -581,13 +581,26 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
 
+  const startedAt = Date.now();
   try {
     const { stdout, code } = await runCollectorReportingExit(dbPath, progressionDbPath, port, 3, {
-      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 700),
+      PROFILE_QUEUE_DEADLINE_MS: String(startedAt + 700),
     });
+    const elapsedMs = Date.now() - startedAt;
     assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
+    // The request count alone cannot see the regression: `await delay(backoff(1))`
+    // is the sleep that outlives the deadline, and the loop-top guard only runs
+    // once that sleep returns, so an unclamped collector still opens exactly one
+    // request and still logs the same RUN_CUT. Only the wall clock separates the
+    // two shapes. 900 ms is ~2.7x the worst clean run measured here (336ms under
+    // 12 CPU burners) and under the 1000 ms the first backoff must cost, so it
+    // cannot flake on a loaded worker and cannot miss the overshoot either.
+    assert.ok(
+      elapsedMs < 900,
+      `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
+    );
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
     const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
@@ -616,10 +629,17 @@ test("PvE feed ladder opens no request once the run budget is already spent", as
   const progression = new DatabaseSync(progressionDbPath);
   initializeSeasonalSchema(progression);
   // The guard at the top of the feed loop stops the ladder before it opens a
-  // request it has no budget to finish. A queue deadline already in the past
-  // spends the whole budget on schema, lease and baseline work, so the first
-  // feed attempt finds nothing left; the stub counts requests so the test fails
-  // if the guard is removed and a doomed request is issued anyway.
+  // request it has no budget to finish. It is reachable only through the
+  // profile-queue path: ops/profile-queue.sh sets one shared deadline (line 7)
+  // and hands it to every mode it runs (line 8), so an earlier mode - or the
+  // container start before it - can spend it and a later mode boots with none.
+  // The systemd units do the opposite: they exec the collectors directly and
+  // set no PROFILE_QUEUE_DEADLINE_MS in any ExecStart or compose file, so
+  // remainingRunBudget returns maxRunMs unchanged and config.maxRunMs stays at
+  // its full 12/50/13/25 minutes, which the guard never trips on. A queue
+  // deadline already in the past is how that zero-budget boot is modelled; the
+  // stub counts requests so the test fails if the guard is removed and a doomed
+  // request is issued anyway.
   const preload = join(directory, "stub-feed.mjs");
   await writeFile(preload, `import { appendFileSync } from "node:fs";
     globalThis.fetch = async () => {
