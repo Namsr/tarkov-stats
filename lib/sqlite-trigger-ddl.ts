@@ -44,7 +44,26 @@ export function reissueEditedTriggers(db: TriggerDatabase, triggers: readonly Tr
       .get(name) as { sql?: string | null } | undefined;
     if (typeof row?.sql !== "string") continue;
     if (normalizedTriggerDdl(row.sql) === normalizedTriggerDdl(ddl)) continue;
-    db.exec(`DROP TRIGGER IF EXISTS ${name};`);
-    db.exec(ddl);
+    // The drop and the recreate are one unit. Autocommitting them separately opens a
+    // window in which the write path has no journal trigger at all: a writer that
+    // commits inside it is never journaled, never gets a revision, and is therefore
+    // never re-scanned by the materializer. A concurrent writer can also fail the
+    // recreate with "database is locked" while a savepoint already committed the
+    // drop, leaving the write path with no trigger permanently.
+    //
+    // SAVEPOINT rather than BEGIN/COMMIT: BEGIN throws "cannot start a transaction
+    // within a transaction" when a caller already holds one, and the initializers
+    // that reach here do run inside other transactions. The rollback restores the
+    // previous body, which is the correct fallback, and the error is rethrown so the
+    // caller does not walk on believing the schema is current.
+    db.exec("SAVEPOINT reissue_trigger");
+    try {
+      db.exec(`DROP TRIGGER IF EXISTS ${name};`);
+      db.exec(ddl);
+      db.exec("RELEASE reissue_trigger;");
+    } catch (error) {
+      db.exec("ROLLBACK TO reissue_trigger; RELEASE reissue_trigger;");
+      throw error;
+    }
   }
 }

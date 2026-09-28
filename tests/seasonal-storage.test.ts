@@ -8,6 +8,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, SEASONAL_SCHEMA, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
+import { reissueEditedTriggers, sqliteTrigger } from "../lib/sqlite-trigger-ddl.ts";
 import {
   FAVORITE_INSERT_SQL,
   FAVORITE_SET_MAIN_SQL,
@@ -460,3 +461,73 @@ test("a current database whose journal trigger body drifted gets the definition 
     assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update"), settled);
   } finally { db.close(); }
 });
+
+// A concurrent writer on a second connection, run in the instant between the drop and
+// the recreate. This is the window the review reproduced: with the two statements
+// autocommitted, the trigger is already gone from sqlite_master when the writer runs.
+test("a concurrent write during the reinstall is serialized or journaled, never lost", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-reissue-"));
+  const file = join(directory, "progression.db");
+  const db = new DatabaseSync(file);
+  const writer = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    writer.exec("PRAGMA busy_timeout = 0");
+    initializeSeasonalSchema(db);
+    db.exec(STALE_SEASONAL_PROFILE_UPDATE_TRIGGER);
+    db.prepare(`INSERT INTO player_profiles
+      (mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, experience, pmc_raids,
+        scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc, first_seen_at, last_seen_at)
+      VALUES ('seasonal', 's1', 42, 'Reissue', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)`).run();
+    const revision = () => db.prepare("SELECT revision FROM leaderboard_seasonal_profile_changes WHERE cycle_id = 's1' AND aid = 42").get().revision;
+    assert.equal(revision(), 1);
+
+    let outcome: "committed" | "serialized" | null = null;
+    initializeSeasonalSchema({
+      prepare: db.prepare.bind(db),
+      exec(sql: string) {
+        if (/^\s*CREATE TRIGGER/i.test(sql)) {
+          // The reinstall is between the drop and the recreate right now.
+          try {
+            writer.prepare("UPDATE player_profiles SET leaderboard_activity_at = 7 WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 42").run();
+            outcome = "committed";
+          } catch { outcome = "serialized"; }
+        }
+        db.exec(sql);
+      },
+    });
+
+    assert.ok(outcome, "the concurrent write was never attempted");
+    // The write either lost the race to the drop/create pair and was refused, or it
+    // committed under the reinstalled trigger and the journal carries it. What it can
+    // never do is commit and stay invisible: with no trigger there is no journal entry,
+    // so no revision, so the materializer never re-scans the row.
+    if (outcome === "committed") assert.equal(revision(), 2);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("leaderboard_activity_at"), true);
+  } finally {
+    writer.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed recreate leaves the previous trigger installed", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE probe(id INTEGER, note TEXT); CREATE TRIGGER probe_watch AFTER UPDATE ON probe WHEN NEW.note IS NOT OLD.note BEGIN SELECT NEW.id; END;");
+    const installed = storedTriggerDdl(db, "probe_watch");
+    assert.ok(installed);
+
+    // SQLite resolves table and function names in a trigger body lazily, so the
+    // failure has to be a parse error to be a real CREATE-time failure. This is what a
+    // bad merge to the body leaves behind.
+    const broken = sqliteTrigger("probe_watch", "AFTER UPDATE ON probe BEGIN SELECT FROM WHERE; END;");
+    const reissuing = { prepare: db.prepare.bind(db), exec: (sql: string) => db.exec(sql) };
+    assert.throws(() => reissueEditedTriggers(reissuing, [broken]), /syntax error/);
+
+    // The drop and the recreate are one unit, so the old body is still the live one:
+    // a write path left with no trigger at all is a permanent, silent data loss.
+    assert.equal(storedTriggerDdl(db, "probe_watch"), installed);
+  } finally { db.close(); }
+});
+
