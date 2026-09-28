@@ -4,6 +4,7 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 registerHooks({
@@ -18,39 +19,7 @@ registerHooks({
     }
     return nextResolve(specifier, context);
   },
-  // Handing back a subclass of the real handle lets a case count the opens and
-  // the closes, which is the only way to see a leaked file descriptor: a poisoned
-  // database still reports unavailable either way.
-  load(url, context, nextLoad) {
-    if (url === "node:sqlite") {
-      return {
-        format: "module",
-        shortCircuit: true,
-        // getBuiltinModule reads the builtin without going back through the hooks.
-        source: `
-          const real = process.getBuiltinModule("node:sqlite");
-          export const openedHandles = [];
-          export let closedHandles = 0;
-          export class DatabaseSync extends real.DatabaseSync {
-            constructor(...args) {
-              super(...args);
-              openedHandles.push(this);
-            }
-            close() {
-              closedHandles += 1;
-              return super.close();
-            }
-          }
-          export const Backup = real.Backup;
-          export const StatementSync = real.StatementSync;
-        `,
-      };
-    }
-    return nextLoad(url, context);
-  },
 });
-
-const sqliteTrace = await import("node:sqlite");
 
 const directory = mkdtempSync(join(tmpdir(), "sqlite-handle-recovery-"));
 const playersPath = join(directory, "players.db");
@@ -224,15 +193,47 @@ test("the progression store opener closes a handle whose initialization failed",
   });
   try {
     poison(storeProgressionPath);
-    const openedBefore = sqliteTrace.openedHandles.length;
-    const closedBefore = sqliteTrace.closedHandles;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      assert.equal(await getProgressionStore("regular"), null, "a failed schema init reports unavailable");
+    // A poisoned database still reports unavailable whether its handle was closed
+    // or leaked, so the leak has to be counted rather than inferred from the
+    // return value. The openers reach node:sqlite through the same module this
+    // file imports, so patching the prototype sees every handle they construct.
+    // That keeps the real namespace intact for every other import, and it needs
+    // no hook for a version the documentation does not promise.
+    const { close, exec, prepare } = DatabaseSync.prototype;
+    const seen = new WeakSet();
+    const opened = [];
+    const closed = [];
+    const track = (handle) => {
+      if (!seen.has(handle)) {
+        seen.add(handle);
+        opened.push(handle);
+      }
+    };
+    // Any statement marks the handle live, so the open count does not depend on
+    // which of the two the opener happens to reach first.
+    DatabaseSync.prototype.close = function (...args) {
+      closed.push(this);
+      return close.apply(this, args);
+    };
+    DatabaseSync.prototype.exec = function (...args) {
+      track(this);
+      return exec.apply(this, args);
+    };
+    DatabaseSync.prototype.prepare = function (...args) {
+      track(this);
+      return prepare.apply(this, args);
+    };
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        assert.equal(await getProgressionStore("regular"), null, "a failed schema init reports unavailable");
+      }
+      assert.equal(opened.length, 3, "each attempt opens a handle, the failed one being left uncached");
+      assert.equal(closed.length, opened.length, "every handle a failed initialization opened is closed again");
+    } finally {
+      DatabaseSync.prototype.close = close;
+      DatabaseSync.prototype.exec = exec;
+      DatabaseSync.prototype.prepare = prepare;
     }
-    const opened = sqliteTrace.openedHandles.length - openedBefore;
-    const closed = sqliteTrace.closedHandles - closedBefore;
-    assert.equal(opened, 3, "each attempt opens a handle, the failed one being left uncached");
-    assert.equal(closed, opened, "every handle a failed initialization opened is closed again");
 
     replace(storeProgressionPath);
     const store = await getProgressionStore("regular");
