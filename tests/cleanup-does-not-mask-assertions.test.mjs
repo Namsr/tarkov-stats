@@ -149,9 +149,14 @@ function wordBefore(code, at) {
   return Array.isArray(code) ? code.slice(start, at).join("") : code.slice(start, at);
 }
 
-// A `/` opens a regex unless something that can end an expression comes first.
-// This is the one ambiguity a lexer without a parser has, and it decides both
-// whether a later `/` closes a regex and whether what follows it is code.
+// Whether a `/` opens a regex is the one ambiguity a lexer without a parser has,
+// and it decides both whether a later `/` closes a regex and whether what follows
+// it is code. The default is that it opens one, unless something that can end an
+// expression comes first. "Comes first" means in the masked text, which is a
+// narrower thing than it sounds: masking has already turned every literal into
+// spaces, delimiters included, so a `/` that divides a literal is judged by the
+// token in front of the blank rather than by the literal. The four shapes that
+// fall out of that are named below rather than left to be found.
 function startsRegex(chars, at) {
   const previous = lastCodeIndex(chars, at);
   // `n++ / 4` and `n-- / 4` divide after a postfix. Neither `+` nor `-` can end an
@@ -163,12 +168,26 @@ function startsRegex(chars, at) {
   // carries such a line, which is why the cases below are built here rather than
   // found in the tree.
   //
-  // `n! / 4` is the shape this still misses, and it is left there on purpose: `!`
-  // is not in `afterExpression`, so a `/` behind one opens a regex whatever came
-  // before it, and widening the guard to cover that also reads the `!/re/.test(s)`
-  // this repository is full of as a division. Telling a postfix `!` from a prefix
-  // one is the expression question this function has no answer to, so the gap is
-  // named here rather than closed with a guess.
+  // `n! / 4` is one of the four shapes this still misreads, and it is not the
+  // likeliest of them. The likeliest is a `/` dividing a closed string, template
+  // or regex literal on the same line as a delete: masking blanks a literal's own
+  // delimiters, so the character this function inspects is whatever came before
+  // it - `=`, `(`, `,` - and none of those ends an expression either, so the `/`
+  // opens a regex and hides the delete behind it. Those three shapes are legal in
+  // the `.mjs` suites that hold most of the 79 sites, while `n!` needs a
+  // TypeScript file, which is why the comment above counts four and not one.
+  //
+  // Closing them needs two answers this function has no way to give. The first is
+  // whether a `!` is postfix or prefix, which is the difference between `n! / 4`
+  // and the `!/re/.test(s)` this repository is full of; `!` is not in
+  // `afterExpression`, and widening the guard to cover it reads the second as a
+  // division. The second is whether a blank in front of a `/` hides a literal or
+  // is ordinary whitespace, which is the difference between the other three
+  // shapes and a real division; the mask holds spaces, so the two are
+  // indistinguishable here. Both are questions about what an expression is rather
+  // than about what a character is, so the gap is named here rather than closed
+  // with a guess. A real fix marks the masked range instead of blanking it, which
+  // is a change to the mask rather than to this function.
   if (previous > 0 && (chars[previous] === "+" || chars[previous] === "-")
     && chars[lastCodeIndex(chars, previous)] === chars[previous]) return false;
   if (previous === -1 || !afterExpression.test(chars[previous])) return true;
@@ -519,9 +538,91 @@ const unguardedDeleteSources = [
     ].join("\n"),
     expected: [5],
   },
+  {
+    why: "a delete inside the try block itself, not inside the handler: the catch that follows belongs to a different try further down, which is the shape a window reads as guarded and the block structure does not",
+    source: [
+      "function cleanup(dir) {",
+      "  try {",
+      "    rmSync(dir, { recursive: true, force: true });",
+      "  } finally {",
+      "    report();",
+      "  }",
+      "}",
+      "class T {",
+      "  m() {",
+      "    try { run(); } catch (e) { }",
+      "  }",
+      "}",
+    ].join("\n"),
+    expected: [3],
+  },
+  {
+    why: "the bare `rm(` form, not `rmSync(`: 37 of the 79 forced sites in the suites are written this way, so a call regex that stops matching it drops findings file for file and no case here would notice",
+    source: [
+      "try {",
+      "  await rm(dir, { recursive: true, force: true });",
+      "} finally {",
+      "  report();",
+      "}",
+    ].join("\n"),
+    expected: [2],
+  },
+  {
+    why: "a closed quoted string is masked the same way a template is: the rm call in the message does not guard the delete below it",
+    source: [
+      "try {",
+      "  const hint = '} catch { try { rm(dir, { force: true }) }';",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "} finally {",
+      "  report();",
+      "}",
+    ].join("\n"),
+    expected: [3],
+  },
+  {
+    why: "and the same bait inside a comment, which is masked before either quote is read. The call in front of the comment is what makes the case bite: a `/*` behind a `{` is re-read as a regex opener once the comment branch is gone, so the bait stays hidden and the case passes. Behind a `)` it is not, and the comment becomes the live code it was never meant to be",
+    source: [
+      "try {",
+      "  report() /* } catch { try { rm(dir, { force: true }) } */",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "} finally {",
+      "  report();",
+      "}",
+    ].join("\n"),
+    expected: [3],
+  },
+  {
+    why: "braces inside a regex body are characters in a pattern, not block delimiters",
+    source: [
+      "try {",
+      "  const t = s.replace(/}/g, \"\");",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "} finally {",
+      "  report();",
+      "}",
+    ].join("\n"),
+    expected: [3],
+  },
+  {
+    why: "a `}` inside a regex body followed by a `catch` the pattern hides: masking is the only thing keeping it from reading as the try's own catch, so a delete the pattern guards is a violation that ships",
+    source: [
+      "try {",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "  const re = /} catch/;",
+      "} finally {",
+      "  report();",
+      "}",
+    ].join("\n"),
+    expected: [2],
+  },
 ];
 
 test("the detector reports a delete that a lexical misread would hide", () => {
+  // The table is the only thing this test asserts against, and an emptied one
+  // would make the loop below pass on every run. The sibling test carries the
+  // same guard on its own source.
+  assert.ok(unguardedDeleteSources.length > 0,
+    "the detector has nothing to report on if the table of sources is empty");
   for (const { why, source, expected } of unguardedDeleteSources) {
     assert.deepEqual(unguardedDeleteLines(source), expected, why);
   }
