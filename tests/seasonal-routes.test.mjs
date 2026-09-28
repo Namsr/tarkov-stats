@@ -15,6 +15,7 @@ test("every direct Seasonal page and API entry point uses the full rollout gate"
     "app/player/[[...segments]]/page.tsx",
     "app/average/[mode]/page.tsx",
     "app/api/player/profile/route.ts",
+    "app/api/player/risk/route.ts",
     "app/api/seasonal/progression/route.ts",
     "app/api/operator/seasonal/ban/route.ts",
     "app/api/operator/seasonal/profile/route.ts",
@@ -61,4 +62,18 @@ test("the Seasonal refresh route reports a missing cycle and a missing owner dif
   // The sibling operator route already reports the same class of problem as a 400.
   const run = await readFile("app/api/operator/seasonal/run/route.ts", "utf8");
   assert.match(run, /\{ error: "cycleId and owner are required" \}, \{ status: 400, headers \}/);
+});
+
+test("the player risk route gates Seasonal on the active cycle, not just on syntax", async () => {
+  const risk = await readFile("app/api/player/risk/route.ts", "utf8");
+  // `normalizeCycleId` accepts any well-formed cycle string, so without the gate a
+  // request could read a verdict for a cycle the site does not expose — the JSON
+  // collector warms exactly those rows before `isSeasonalRolloutReady()` is true.
+  assert.match(risk, /if \(mode === "seasonal"\) \{/);
+  assert.match(risk, /if \(!isSeasonalRolloutReady\(\) \|\| !cycle \|\| cycleId !== cycle\.cycleId\)/);
+  // The gate has to run before storage is opened.
+  assert.ok(
+    risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("getRiskEvaluation("),
+    "the rollout gate must precede the risk read",
+  );
 });

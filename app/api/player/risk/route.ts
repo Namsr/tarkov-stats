@@ -5,6 +5,7 @@ import { getClientIp } from "@/lib/client-ip";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { parsePlayerId } from "@/lib/player-id";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
+import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { toPublicRiskView } from "@/lib/player-profile-view";
 
 export const runtime = "nodejs";
@@ -28,6 +29,15 @@ export async function GET(request: NextRequest) {
   const cycleId = normalizeCycleId(request.nextUrl.searchParams.get("cycle"), mode);
   if (cycleId === null) {
     return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
+  }
+  // `normalizeCycleId` only checks syntax, so any well-formed cycle string used to
+  // reach storage. Seasonal stays fail-closed: the JSON collector warms rows before
+  // the site exposes the mode, and those verdicts must not be readable until then.
+  if (mode === "seasonal") {
+    const cycle = loadSeasonalCycleConfig();
+    if (!isSeasonalRolloutReady() || !cycle || cycleId !== cycle.cycleId) {
+      return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
+    }
   }
 
   const stored = await getRiskEvaluation({ aid, mode, cycleId }).catch(() => null);
