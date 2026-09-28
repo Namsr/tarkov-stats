@@ -272,10 +272,12 @@ export default function SeasonalPlayer({
     setProgressionRefreshRevision(0);
     setForceProgressionRefresh(isReload());
     if (!cachedProfile) {
-      setProfile((current) => {
-        if (current?.nickname) setDisplayNickname(current.nickname);
-        return null;
-      });
+      // Keep the header nickname while the profile itself resets. Reading the
+      // previous profile here keeps the reset a pure `setProfile(null)`; doing it
+      // inside the updater would be a render-phase side effect, which React may
+      // run for a render it discards.
+      if (profile?.nickname) setDisplayNickname(profile.nickname);
+      setProfile(null);
       setAchievements(null);
       setSkillItems(null);
       setMasteryItems(null);
@@ -335,7 +337,10 @@ export default function SeasonalPlayer({
       cancelled = true;
       riskPollGeneration.current += 1;
     };
+    // `profile` is read only to carry the nickname across the reset above; adding
+    // it would re-run this reset every time a new profile arrives.
     // `t` is read through `translate` so a language switch cannot re-run this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aid, cycleId, profileRequestUrl]);
 
   const refreshProfile = useCallback(() => {

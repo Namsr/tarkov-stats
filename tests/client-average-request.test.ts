@@ -65,3 +65,65 @@ test("failed requests are not retained", async () => {
   assert.deepEqual(await requests.loadAverageJson("/retry"), { total: 1 });
   assert.equal(fetches, 2);
 });
+
+test("a 503 retry wait does not leave an abort listener on the caller's signal", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return fetches === 1
+      ? new Response(JSON.stringify({ error: "busy" }), { status: 503, headers: { "retry-after": "5" } })
+      : new Response(JSON.stringify({ total: 1 }), { status: 200 });
+  };
+  // The retry backoff is 5s, so run the wait on a microtask instead of real time.
+  const setTimeout = browser.setTimeout;
+  const clearTimeout = browser.clearTimeout;
+  browser.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  browser.clearTimeout = () => undefined;
+
+  const controller = new AbortController();
+  const live = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal);
+  const remove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (type, listener, options) => {
+    if (type === "abort") live.add(listener);
+    add(type, listener, options);
+  };
+  controller.signal.removeEventListener = (type, listener, options) => {
+    if (type === "abort") live.delete(listener);
+    remove(type, listener, options);
+  };
+
+  try {
+    const body = await requests.loadAverageJson("/api/average?busy", {
+      signal: controller.signal,
+      retryUnavailable: true,
+    });
+    assert.deepEqual(body, { total: 1 });
+    assert.equal(fetches, 2);
+    assert.deepEqual([...live], []);
+  } finally {
+    browser.setTimeout = setTimeout;
+    browser.clearTimeout = clearTimeout;
+  }
+});
+
+test("the session response cache evicts instead of growing without bound", async () => {
+  let fetches = 0;
+  globalThis.fetch = async (url) => {
+    fetches += 1;
+    return new Response(JSON.stringify({ url: String(url) }), { status: 200 });
+  };
+
+  // Fill past the cap, then ask for the oldest key again. If it had survived, the
+  // second call would come from cache and `fetches` would not move.
+  const urls = Array.from({ length: 80 }, (_, index) => `/api/average?n=${index}`);
+  for (const url of urls) await requests.loadAverageJson(url);
+  assert.equal(fetches, 80);
+
+  await requests.loadAverageJson(urls[0]);
+  assert.equal(fetches, 81, "the oldest entry must have been evicted");
+
+  // A recently cached key is still served without a request.
+  await requests.loadAverageJson(urls[79]);
+  assert.equal(fetches, 81);
+});

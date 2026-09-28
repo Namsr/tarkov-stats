@@ -29,7 +29,7 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-function extractBlock(source, selector) {
+function block(source, selector) {
   const index = source.indexOf(selector);
   assert.ok(index >= 0, `missing block ${selector}`);
   const open = source.indexOf("{", index);
@@ -38,147 +38,99 @@ function extractBlock(source, selector) {
   return source.slice(open + 1, close);
 }
 
-function extractVars(block) {
-  const vars = new Map();
-  for (const match of block.matchAll(/(--timeline-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{6})/g)) {
-    vars.set(match[1], match[2].toLowerCase());
+function vars(source) {
+  const found = new Map();
+  for (const match of source.matchAll(/(--profile-[a-z-]+)\s*:\s*(#[0-9a-fA-F]{6})/g)) {
+    found.set(match[1], match[2].toLowerCase());
   }
-  return vars;
+  return found;
 }
 
-test("progression timeline defines a separate light-theme palette", async () => {
-  const styles = await readFile("app/globals.css", "utf8");
+const CHART_COLORS = ["--profile-positive", "--profile-other", "--profile-report"];
 
-  assert.match(styles, /html\[data-theme="light"\]\s*\.progression-timeline\s*\{/);
+test("the profile chart redefines its palette for the light theme", async () => {
+  const css = await readFile("components/profile.css", "utf8");
+  const dark = vars(block(css, ".profile-page {"));
+  const light = vars(block(css, 'html[data-theme="light"] .profile-page'));
 
-  const darkBlock = extractBlock(styles, ".progression-timeline {");
-  const lightSelector = 'html[data-theme="light"] .progression-timeline {';
-  const lightIndex = styles.indexOf(lightSelector);
-  assert.ok(lightIndex >= 0, "missing light-theme timeline palette");
-  const lightBlock = extractBlock(styles.slice(lightIndex), ".progression-timeline {");
-
-  const darkVars = extractVars(darkBlock);
-  const lightVars = extractVars(styles.slice(lightIndex, lightIndex + lightBlock.length + lightSelector.length));
-
-  const required = [
-    "--timeline-xp",
-    "--timeline-xp-day",
-    "--timeline-raids-day",
-    "--timeline-pmc-kills-day",
-    "--timeline-non-pmc-kills-day",
-    "--timeline-pmc-kills-raid",
-    "--timeline-non-pmc-kills-raid",
-    "--timeline-survival",
-    "--timeline-pvp-kd",
-    "--timeline-ai-kd",
-    "--timeline-xp-line",
-    "--timeline-raids-line",
-    "--timeline-pvp-kd-line",
-    "--timeline-ai-kd-line",
-    "--timeline-survival-line",
-  ];
-  for (const name of required) {
-    assert.ok(lightVars.has(name), `light palette must define ${name}`);
+  // Every colour the timeline paints with must have a light-theme override, or
+  // the dark value ships on white and the chart drops below readable contrast.
+  for (const name of CHART_COLORS) {
+    assert.ok(dark.has(name), `dark palette must define ${name}`);
+    assert.ok(light.has(name), `light palette must define ${name}`);
+    assert.notEqual(light.get(name), dark.get(name), `${name} must actually change in light theme`);
   }
-
-  // Light card background is #ffffff (see html[data-theme="light"]).
-  assert.match(styles, /html\[data-theme="light"\][\s\S]*?--card-bg:\s*#ffffff/);
-});
-
-test("light-theme active timeline colors keep at least 3:1 contrast on white", async () => {
-  const styles = await readFile("app/globals.css", "utf8");
-  const lightSelector = 'html[data-theme="light"] .progression-timeline {';
-  const lightIndex = styles.indexOf(lightSelector);
-  const lightBlock = extractBlock(styles.slice(lightIndex), ".progression-timeline {");
-  const lightVars = extractVars(styles.slice(lightIndex, lightIndex + lightBlock.length + lightSelector.length));
 
   const white = "#ffffff";
-  const failures = [];
-  for (const [name, color] of lightVars) {
-    const ratio = contrast(color, white);
-    if (ratio < 3) failures.push(`${name} ${color} = ${ratio.toFixed(2)}:1`);
-  }
-  assert.deepEqual(failures, [], `light timeline colors below 3:1 on white: ${failures.join(", ")}`);
-
-  // Regression anchors from issue #16: these dark-theme values failed on white
-  // (XP 2.02, raids 2.40, survival 1.90, PVP K/D 1.67, XP_COLOR 1.73).
-  const anchors = {
-    "--timeline-xp": "#b45309",
-    "--timeline-raids-line": "#0f766e",
-    "--timeline-survival-line": "#15803d",
-    "--timeline-pvp-kd": "#a16207",
-    "--timeline-xp-line": "#b45309",
-  };
-  for (const [name, expected] of Object.entries(anchors)) {
-    assert.equal(lightVars.get(name), expected);
-    assert.ok(contrast(expected, white) >= 3, `${name} ${expected} must be >= 3:1`);
+  for (const name of CHART_COLORS) {
+    const value = light.get(name);
+    assert.ok(contrast(value, white) >= 3, `${name} ${value} must be >= 3:1 on white, got ${contrast(value, white).toFixed(2)}`);
   }
 });
 
-test("progression timeline component resolves line colors through light-theme variables", async () => {
+test("the timeline paints through theme variables, never a hardcoded series colour", async () => {
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
+  const css = await readFile("components/profile.css", "utf8");
 
-  assert.match(chart, /var\(--timeline-xp-line,\s*#ffb74d\)/);
-  assert.match(chart, /var\(--timeline-raids-line,\s*#81b29a\)/);
-  assert.match(chart, /var\(--timeline-pvp-kd-line,\s*#f778ba\)/);
-  assert.match(chart, /var\(--timeline-ai-kd-line,\s*#58a6ff\)/);
-  assert.match(chart, /var\(--timeline-survival-line,\s*#3fb950\)/);
-  // No hardcoded low-contrast line color may remain as the resolved value.
-  assert.doesNotMatch(chart, /const XP_COLOR = "#ffb74d"/);
-  assert.doesNotMatch(chart, /const RAIDS_COLOR = "#81b29a"/);
-  assert.doesNotMatch(chart, /\{\s*key:\s*"pvp_kd"[^}]*color:\s*"#f778ba"/);
-  // SVG gradient and axis paint must go through style so var() resolves.
-  assert.match(chart, /<stop[^>]*style=\{\{\s*stopColor:\s*leftColor\s*\}\}/);
-  assert.match(chart, /style=\{\{\s*stroke:\s*metric\.color\s*\}\}/);
-  assert.match(chart, /style=\{\{\s*fill:\s*metric\.color\s*\}\}/);
+  // Stroke paint is declared once in the stylesheet and routed through the
+  // palette variables, so switching theme re-colours the chart.
+  assert.match(css, /\.profile-chart-line \{[^}]*stroke: var\(--foreground\)/);
+  assert.match(css, /\.profile-chart-line\.is-overall \{[^}]*stroke: var\(--profile-positive\)/);
+  assert.match(css, /\.profile-chart-line\.is-old \{[^}]*stroke: var\(--profile-other\)/);
+  assert.match(css, /\.profile-chart-line\.is-selected \{[^}]*stroke: var\(--profile-other\)/);
+  assert.match(css, /\.profile-chart-legend i\.is-overall \{[^}]*border-top: 2px dashed var\(--profile-positive\)/);
+
+  // The per-metric palette this chart used to carry is gone, along with the
+  // low-contrast dark-theme defaults it fell back to. None may come back.
+  for (const removed of ["#ffb74d", "#81b29a", "#f778ba", "#58a6ff", "#3fb950"]) {
+    assert.doesNotMatch(chart, new RegExp(removed, "i"), `${removed} must not return as a series colour`);
+  }
+  for (const removed of ["XP_COLOR", "RAIDS_COLOR", "SERIES_STYLES", "SELECTED_SERIES_STYLE", "leftColor"]) {
+    assert.doesNotMatch(chart, new RegExp(removed), `${removed} must not return`);
+  }
+  // The component resolves its own accent colours through the palette, not hex.
+  for (const name of CHART_COLORS) {
+    assert.ok(chart.includes(`var(${name})`) || css.includes(`var(${name})`), `${name} must be consumed somewhere`);
+  }
+  assert.doesNotMatch(chart, /fill="#[0-9a-fA-F]{3,6}"/);
+  assert.doesNotMatch(chart, /stroke="#[0-9a-fA-F]{3,6}"/);
+  // The superseded --timeline-* custom properties are not part of this design.
+  assert.doesNotMatch(chart, /var\(--timeline-/);
 });
 
-test("light theme keeps selected, nearby, overall, highlight and dim states readable", async () => {
-  const styles = await readFile("app/globals.css", "utf8");
+test("player, average, previous-character and comparison lines stay distinguishable", async () => {
+  const css = await readFile("components/profile.css", "utf8");
   const chart = await readFile("components/ProgressionTimelineChart.tsx", "utf8");
 
-  // All series/state selectors still exist.
-  for (const selector of [
-    "progression-timeline__line--player",
-    "progression-timeline__line--nearby",
-    "progression-timeline__line--overall",
-    "progression-timeline__line--selected",
-    "progression-timeline__line--dim",
-    "progression-timeline__line--segment-context",
-    "progression-timeline__line--highlight",
-    "progression-timeline__point--overall",
-    "progression-timeline__point--nearby",
-    "progression-timeline__point--dim",
-    "progression-timeline__point--highlight",
-  ]) {
-    assert.ok(styles.includes(selector), `missing state ${selector}`);
+  const rules = new Map();
+  for (const match of css.matchAll(/(\.profile-chart-line(?:\.[a-z-]+)?)\s*\{([^}]*)\}/g)) {
+    rules.set(match[1], match[2]);
   }
 
-  // Dark-theme dim/context baselines from the issue.
-  assert.match(styles, /\.progression-timeline__line--dim[^}]*opacity:\s*\.18/);
-  assert.match(styles, /\.progression-timeline__line--segment-context[^}]*opacity:\s*\.32/);
+  // A previous character and the compared profile share --profile-other, so
+  // they must be told apart by dash pattern or they render identically.
+  const old = rules.get(".profile-chart-line.is-old");
+  const selected = rules.get(".profile-chart-line.is-selected");
+  assert.ok(old && selected, "both de-emphasised states need a rule");
+  assert.match(old, /stroke-dasharray: \d/);
+  assert.match(selected, /stroke-dasharray: \d/);
+  assert.notEqual(
+    old.match(/stroke-dasharray: ([^;]+)/)[1].trim(),
+    selected.match(/stroke-dasharray: ([^;]+)/)[1].trim(),
+    "previous-character and comparison lines must not share a dash pattern",
+  );
+  // The average is the one positive series and must stay visually distinct.
+  assert.match(rules.get(".profile-chart-line.is-overall"), /stroke-dasharray: \d/);
 
-  // Light-theme overrides raise dim/context above the dark baselines
-  // while staying visibly de-emphasized (below full opacity).
-  const dimLight = styles.match(/html\[data-theme="light"\]\s*\.progression-timeline__line--dim[^}]*opacity:\s*([.\d]+)/);
-  const contextLight = styles.match(/html\[data-theme="light"\]\s*\.progression-timeline__line--segment-context[^}]*opacity:\s*([.\d]+)/);
-  assert.ok(dimLight, "light theme must override --dim line opacity");
-  assert.ok(contextLight, "light theme must override --segment-context line opacity");
-  assert.ok(Number(dimLight[1]) > 0.32, `light dim ${dimLight[1]} must exceed dark 0.18/0.32`);
-  assert.ok(Number(contextLight[1]) > 0.5, `light segment-context ${contextLight[1]} must exceed dark 0.32`);
-  assert.ok(Number(dimLight[1]) < 1 && Number(contextLight[1]) <= 1, "dim states must stay below full opacity");
-
-  // Overall/nearby stay distinguishable in light theme via raised paint opacity.
-  assert.match(styles, /html\[data-theme="light"\]\s*\.progression-timeline__line--overall[^}]*stroke-opacity:\s*\.8/);
-  assert.match(styles, /html\[data-theme="light"\]\s*\.progression-timeline__line--nearby[^}]*stroke-opacity:\s*\.9/);
-  assert.match(styles, /html\[data-theme="light"\]\s*\.progression-timeline__point--overall[^}]*opacity:\s*\.8/);
-
-  // Component still renders every series state.
-  assert.match(chart, /progression-timeline__line--\$\{seriesKey\}/);
-  assert.match(chart, /progression-timeline__line--\$\{layer\}/);
-  assert.match(chart, /progression-timeline__line--dim/);
-  assert.match(chart, /progression-timeline__line--segment-context/);
-  assert.match(chart, /progression-timeline__line--highlight/);
-  assert.match(chart, /SELECTED_SERIES_STYLE/);
-  assert.match(chart, /SERIES_STYLES\[seriesKey\]/);
+  // The component still emits all four series states.
+  for (const state of ["is-overall", "is-selected", "is-old"]) {
+    assert.ok(chart.includes(state), `component must still render ${state}`);
+  }
+  assert.match(chart, /className="profile-chart-line is-overall"/);
+  assert.match(chart, /className=\{`profile-chart-line /);
+  assert.match(chart, /data-series=\{segment\[0\]\?\.seriesId \?\? "player"\}/);
+  // Keyboard and pointer affordances the chart depends on.
+  assert.match(chart, /className="profile-chart-hit"/);
+  assert.match(chart, /role="button" tabIndex=\{0\}/);
+  assert.match(chart, /if \(event\.key === "Escape"\) clear\(\)/);
 });

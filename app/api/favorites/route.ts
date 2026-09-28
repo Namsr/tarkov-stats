@@ -11,6 +11,13 @@ export const runtime = "nodejs";
 const NICK_MAX = 32;
 const NOTE_MAX = 120;
 
+// The limiter no longer emits any header of its own (`getRateLimitHeaders`
+// always returns `{}`), so spreading `headers` contributed nothing and every
+// error branch below shipped with no Cache-Control at all. In front of the
+// Cloudflare CDN that let a 401/503/429 be stored and replayed to the next
+// visitor. No response from this route is cacheable: it is all per-user state.
+const noStore = { "Cache-Control": "no-store" };
+
 /** Trim a free-text field to `max` chars; empty/non-string becomes null. */
 function clean(v: unknown, max: number): string | null {
   if (typeof v !== "string") return null;
@@ -35,13 +42,15 @@ type Guard =
 async function guard(request: NextRequest): Promise<Guard> {
   const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "favorites" });
   if (!allowed) {
-    return { ok: false, response: NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers }) };
+    return { ok: false, response: NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { ...headers, ...noStore } }) };
   }
   const user = await getSession();
   if (!user) {
-    return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401, headers }) };
+    return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { ...headers, ...noStore } }) };
   }
-  return { ok: true, sub: user.sub, headers };
+  // Every downstream mutation echoes these straight onto its response, so the
+  // no-store directive is merged in once here instead of at each return site.
+  return { ok: true, sub: user.sub, headers: { ...headers, ...noStore } };
 }
 
 // List the signed-in user's pinned accounts.
@@ -51,18 +60,18 @@ export async function GET(request: NextRequest) {
   // and the client learned nothing it could not learn from this shape.
   const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "favorites" });
   if (!allowed) {
-    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers });
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { ...headers, ...noStore } });
   }
   const user = await getSession();
   if (!user) {
     return NextResponse.json(
       { favorites: [], authenticated: false },
-      { headers: { ...headers, "Cache-Control": "no-store" } },
+      { headers: { ...headers, ...noStore } },
     );
   }
 
   const store = await getFavoritesStore();
-  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers });
+  if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: { ...headers, ...noStore } });
 
   const all = request.nextUrl.searchParams.get("all") === "1";
   const identity = all
@@ -72,12 +81,12 @@ export async function GET(request: NextRequest) {
         request.nextUrl.searchParams.get("cycle")
       );
   if (!all && !identity) {
-    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers });
+    return NextResponse.json({ error: "Invalid favorite identity" }, { status: 400, headers: { ...headers, ...noStore } });
   }
   const favorites = await store.list(user.sub, identity);
   return NextResponse.json(
     { favorites, authenticated: true },
-    { headers: { ...headers, "Cache-Control": "no-store" } },
+    { headers: { ...headers, ...noStore } },
   );
 }
 

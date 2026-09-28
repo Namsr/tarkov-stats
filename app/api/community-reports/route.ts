@@ -7,6 +7,7 @@ import { parsePlayerId } from "@/lib/player-id";
 import { getProgressionStore } from "@/lib/progression-db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
+import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { isGameMode, normalizeCycleId, type GameMode } from "@/types/seasonal";
 
 export const runtime = "nodejs";
@@ -29,6 +30,13 @@ function identity(body: unknown): { aid: number; mode: GameMode; cycleId: string
 
 async function profileExists(input: { aid: number; mode: GameMode; cycleId: string }): Promise<boolean> {
   if (input.mode === "seasonal") {
+    // Seasonal is fail-closed: a gated-off cycle has no public profile, and the
+    // request must not confirm that one exists for an arbitrary caller-supplied
+    // `cycle`. Mirrors the gate in app/api/seasonal/cohort/route.ts. Reporting
+    // `false` keeps the caller's "Profile not found" 404 rather than adding a
+    // response that would distinguish "gated" from "absent".
+    const cycle = loadSeasonalCycleConfig();
+    if (!isSeasonalRolloutReady() || !cycle || cycle.cycleId !== input.cycleId || !cycle.enabled) return false;
     const store = await getSeasonalStore();
     return Boolean(store && await store.latestSnapshot(input));
   }
