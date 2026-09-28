@@ -108,6 +108,15 @@ test("ordinary profile failures retain the generic error UI", async () => {
   assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
 });
 
+test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+
+  // React updater functions must be pure: a nested setState runs during the render
+  // phase, and React may invoke the updater for a render it throws away.
+  assert.doesNotMatch(seasonal, /setProfile\(\(current\) => \{[\s\S]*?setDisplayNickname/);
+  assert.match(seasonal, /if \(profile\?\.nickname\) setDisplayNickname\(profile\.nickname\);\s*\n\s*setProfile\(null\);/);
+});
+
 test("profile actions share a top edge and helper copy sits underneath", async () => {
   const regular = await readFile("components/RegularPlayer.tsx", "utf8");
   const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
@@ -623,8 +632,14 @@ test("profile refresh checks automatically after returning without requiring F5"
   const button = await readFile("components/RefreshButton.tsx", "utf8");
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
 
-  assert.match(button, /window\.addEventListener\("focus", handleFocus\)/);
+  // Returning from tarkov.dev still checks without an F5, but the trigger is page
+  // visibility: a background tab never hides this one, so a ctrl/cmd or middle click
+  // must not leave a pending flag that fires on the next unrelated focus.
+  assert.match(button, /document\.addEventListener\("visibilitychange", handleVisible\)/);
+  assert.match(button, /document\.visibilityState !== "visible" \|\| !awaitingReturn\.current/);
+  assert.match(button, /event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey/);
   assert.match(button, /awaitingReturn\.current = true/);
+  assert.doesNotMatch(button, /window\.addEventListener\("focus"/);
   assert.match(button, /if \(!onCheck\) return/);
   assert.match(button, /if \(!onCheck \|\| checking\.current\) return/);
   assert.match(button, /player\.refreshCheckAgain/);

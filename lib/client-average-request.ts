@@ -123,11 +123,17 @@ function aborted(signal?: AbortSignal): void {
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       window.clearTimeout(timer);
       reject(new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    };
+    // `{ once: true }` only detaches the listener if it fires, so the timer
+    // winning the race has to remove it explicitly.
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

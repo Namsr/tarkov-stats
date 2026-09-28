@@ -128,7 +128,7 @@ function metricsFor(row: ProgressionDetailIntervalRow): IntervalMetrics | null {
     !Object.values(row.changes).every(Number.isFinite)
   ) return null;
   const result = buildSequentialIntervals([
-    { profileUpdatedAt: 0, counters: zeroCounters() },
+    { profileUpdatedAt: 0, counters: exactIntervalBaseline() },
     { profileUpdatedAt: row.elapsedDays * DAY_MS, counters: row.changes },
   ])[0];
   return result?.status === "valid" ? result.metrics : null;
@@ -144,6 +144,16 @@ function zeroCounters(): SeasonalCounters {
     pmcKills: 0,
     killedPmc: 0,
   };
+}
+
+/** Synthetic start-of-range snapshot for a single interval. It offers an exact
+ *  counter so buildSequentialIntervals accepts an interval row's exact delta
+ *  instead of falling back to `killedPmc`, which also contains Scav kills in
+ *  regular/PvE rows. This must stay separate from `zeroCounters()`, which seeds
+ *  the cross-interval sum: adding the key there would make a range with no exact
+ *  counter anywhere report an exact zero rather than the legacy fallback. */
+function exactIntervalBaseline(): SeasonalCounters {
+  return { ...zeroCounters(), pmcKilledPmc: 0 };
 }
 
 function metricValue(metrics: IntervalMetrics, metric: AnomalyMetric): number | null {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import { useFavorites } from "@/lib/favorites/context";
@@ -57,6 +57,11 @@ function FavoriteRow({
 }) {
   const { t } = useI18n();
   const [note, setNoteLocal] = useState(fav.note ?? "");
+  // A rejected save reverts `fav.note` and the row is keyed by identity, so it
+  // never remounts. Resync or the input keeps showing text that was not stored.
+  useEffect(() => {
+    setNoteLocal(fav.note ?? "");
+  }, [fav.note]);
   const identity = { mode: fav.mode, cycleId: fav.cycleId };
   const modeLabel = fav.mode === "regular"
     ? t("fav.mode.regular")

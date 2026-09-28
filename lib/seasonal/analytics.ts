@@ -171,7 +171,11 @@ function zeroCounters(): SeasonalCounters {
 
 /** Exact PMC-vs-PMC kills are optional for legacy rows. */
 function exactPmcKills(counters: SeasonalCounters): number | null {
-  const value = Number(counters.pmcKilledPmc);
+  // Seasonal storage and the JSON feed write an explicit `null` when the upstream
+  // profile has no exact counter, so guard before coercing: `Number(null)` is 0.
+  const exact = counters.pmcKilledPmc;
+  if (exact == null) return null;
+  const value = Number(exact);
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
