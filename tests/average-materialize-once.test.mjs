@@ -12,6 +12,8 @@ const materialize = (directory) => spawnSync(process.execPath, [
   cwd: process.cwd(), encoding: 'utf8', timeout: 120_000,
   env: {
     ...process.env, AVERAGE_MATERIALIZE_ONCE: 'true', AVERAGE_PUBLICATIONS_ENABLED: 'true',
+    // Pin the seasonal flag so an ambient seasonal cycle cannot add a `seasonal:<cycle>` scope.
+    SEASONAL_ENABLED: 'false',
     SQLITE_PATH: join(directory, 'players.db'),
     AVERAGE_PUBLICATION_SQLITE_PATH: join(directory, 'publications.db'),
   },
