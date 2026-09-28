@@ -65,3 +65,44 @@ test("failed requests are not retained", async () => {
   assert.deepEqual(await requests.loadAverageJson("/retry"), { total: 1 });
   assert.equal(fetches, 2);
 });
+
+test("a 503 retry wait does not leave an abort listener on the caller's signal", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return fetches === 1
+      ? new Response(JSON.stringify({ error: "busy" }), { status: 503, headers: { "retry-after": "5" } })
+      : new Response(JSON.stringify({ total: 1 }), { status: 200 });
+  };
+  // The retry backoff is 5s, so run the wait on a microtask instead of real time.
+  const setTimeout = browser.setTimeout;
+  const clearTimeout = browser.clearTimeout;
+  browser.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  browser.clearTimeout = () => undefined;
+
+  const controller = new AbortController();
+  const live = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal);
+  const remove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = (type, listener, options) => {
+    if (type === "abort") live.add(listener);
+    add(type, listener, options);
+  };
+  controller.signal.removeEventListener = (type, listener, options) => {
+    if (type === "abort") live.delete(listener);
+    remove(type, listener, options);
+  };
+
+  try {
+    const body = await requests.loadAverageJson("/api/average?busy", {
+      signal: controller.signal,
+      retryUnavailable: true,
+    });
+    assert.deepEqual(body, { total: 1 });
+    assert.equal(fetches, 2);
+    assert.deepEqual([...live], []);
+  } finally {
+    browser.setTimeout = setTimeout;
+    browser.clearTimeout = clearTimeout;
+  }
+});
