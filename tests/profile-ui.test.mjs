@@ -828,6 +828,22 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   assert.match(profile, /const pvpStatsKnown = stats\.pvpStatsKnown !== false/);
   assert.match(profile, /pvpStatsKnown \? stats\.pmcKdRatio : t\("common\.notAvailable"\)/);
   assert.match(profile, /pvpStatsKnown \? stats\.killedPmc\.toLocaleString\(\) : t\("common\.notAvailable"\)/);
+  // The overview card is the one place a placeholder is shown next to a unit, so
+  // the "%" has to be part of the same guard: an unconditional suffix rendered
+  // "Н/Д%" / "N/A%", i.e. a percentage on a value that does not exist.
+  assert.match(
+    profile,
+    /\{ label: t\("player\.survivalRate"\), value: pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: pvpStatsKnown \? "%" : undefined \}/,
+  );
+  assert.doesNotMatch(
+    profile,
+    /pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: "%"/,
+  );
+  // The fix belongs to the card, not to the shared shell: it renders whatever
+  // suffix the caller passes, so the caller has to withhold it.
+  const shell = await readFile("components/ProfileShell.tsx", "utf8");
+  assert.match(shell, /\{item\.value\}\{item\.suffix && <span>\{item\.suffix\}<\/span>\}/);
+  assert.doesNotMatch(shell, /common\.notAvailable/);
   assert.match(radar, /playerValues = demo[\s\S]*?playerStatsKnown \? valuesFromStats\(stats\) : null/);
   assert.match(radar, /favoriteStats && favoriteStatsKnown/);
   assert.match(radar, /radar\.incompletePvp\.player/);
