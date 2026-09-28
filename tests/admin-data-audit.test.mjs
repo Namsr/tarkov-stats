@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -10,6 +12,32 @@ import {
   createDataAuditStore,
   runDataAudit,
 } from "../lib/admin/data-audit.ts";
+
+// A failed initialization caches its `null` for the life of the process unless the
+// promise is cleared, so the probe runs in a child process with a controlled clock.
+function runInitializationProbe(source) {
+  const directory = mkdtempSync(join(tmpdir(), "data-audit-init-"));
+  try {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+      import { dirname } from "node:path";
+      import { getDataAuditStore } from ${JSON.stringify(new URL("../lib/admin/data-audit.ts", import.meta.url).href)};
+      const errors = [];
+      console.warn = (message) => errors.push(message);
+      let now = Date.now();
+      Date.now = () => now;
+      ${source}
+    `], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, ADMIN_ANALYTICS_SQLITE_PATH: join(directory, "blocker", "sub", "admin-analytics.db") },
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 test("manual admin data audit is guarded, explicit, durable, and does not redownload feeds", async () => {
   const [route, audit, dashboard, dictionary] = await Promise.all([
@@ -205,4 +233,25 @@ test("audit store rejects active lease, exposes expired lease as idle, and allow
   assert.deepEqual(store.start("run-2", expiredAt), { started: true });
   assert.equal(store.read(expiredAt).running, true);
   db.close();
+});
+
+test("a failed data audit open is retried after the cooldown instead of staying unavailable", () => {
+  runInitializationProbe(`
+    const file = process.env.ADMIN_ANALYTICS_SQLITE_PATH;
+    const parent = dirname(dirname(file));
+    // A regular file stands where the parent directory belongs, so the first open cannot succeed.
+    writeFileSync(parent, "not a directory");
+    assert.equal(await getDataAuditStore(), null);
+    assert.match(errors[0], /admin data audit unavailable/);
+    rmSync(parent);
+    mkdirSync(dirname(file), { recursive: true });
+    assert.equal(await getDataAuditStore(), null, "requests during the cooldown must not retry");
+    assert.equal(errors.length, 1, "the failure is reported once per process");
+    now += 30_000;
+    const [first, second] = await Promise.all([getDataAuditStore(), getDataAuditStore()]);
+    assert.ok(first, "the audit must recover without restarting the process");
+    assert.equal(first, second, "the recovered store is shared");
+    first.start("run-1", now);
+    assert.equal(first.read(now).running, true, "the recovered store is usable");
+  `);
 });
