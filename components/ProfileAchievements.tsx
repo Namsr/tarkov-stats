@@ -161,6 +161,11 @@ function AchievementIcon({ imageUrl }: { imageUrl: string | null }) {
       width={56}
       height={56}
       alt=""
+      // Same as the skill icons: the official webp is already smaller than the
+      // optimizer's output, so `/_next/image` only added a round trip to the
+      // origin. assets.tarkov.dev serves these from a CDN edge and is already
+      // allowed by img-src.
+      unoptimized
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"

@@ -46,8 +46,15 @@ test("portrait render carries the character and equipment, excluding unrelated p
 
 test("portrait route isolates and caches modes, validates cycles, and handles upstream failure", async (t) => {
   const calls = [];
+  const renders = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
-    const aid = Number(new URL(url).pathname.match(/(\d+)\.json$/)[1]);
+    const parsed = new URL(url);
+    if (parsed.hostname === "imagemagic.tarkov.dev") {
+      // Only the verdict is used, so a small body is enough.
+      renders.push(parsed.pathname);
+      return new Response("img", { status: Number(parsed.pathname.match(/(\d+)\.webp$/)[1]) === 95 ? 500 : 200 });
+    }
+    const aid = Number(parsed.pathname.match(/(\d+)\.json$/)[1]);
     calls.push(String(url));
     assert.equal(new Headers(init.headers).get("User-Agent"), "tarkovstats.ru");
     if (aid === 91) return new Response(null, { status: 404 });
@@ -85,6 +92,18 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   assert.deepEqual(calls, ["profile", "pve", "arena", "pvp-season"].map((path) => `https://players.tarkov.dev/${path}/42.json`));
   await request("aid=42&mode=pve");
   assert.equal(calls.length, 4, "cached portraits must not refetch the profile");
+  assert.deepEqual(renders, ["/player/42.webp"], "the render probe must be cached too");
+
+  // imagemagic returns 500 for some loadouts after 2-3.5 s. That verdict belongs
+  // to the encoded loadout, so the route must answer with the same cacheable 404
+  // as a missing portrait instead of redirecting into another failing request.
+  for (let i = 0; i < 2; i += 1) {
+    const response = await request("aid=95&mode=regular");
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("location"), null);
+    assert.match(response.headers.get("cache-control"), /max-age=300/);
+  }
+  assert.deepEqual(renders, ["/player/42.webp", "/player/95.webp"], "a failed render must not be re-probed");
   // A missing portrait is a stable answer, so the 404 is cacheable. An upstream
   // failure must not be, or a Cloudflare blip would stick for the whole max-age.
   for (const [aid, status, cacheable] of [[91, 404, true], [92, 502, false], [93, 404, true]]) {

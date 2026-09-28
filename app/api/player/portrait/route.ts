@@ -16,6 +16,35 @@ const loadPortrait = unstable_cache(async (url: string, aid: number) => {
   return profilePortraitUrl(await response.json(), aid);
 }, ["player-portrait-v1"], { revalidate: 300 });
 
+/**
+ * imagemagic answers 500 for plenty of loadouts, and it burns 2-3.5 s before
+ * saying so. Redirecting blind meant every view of such a profile paid that
+ * wait and then showed the placeholder anyway, because the browser — not us —
+ * was the one holding the failure. Probing first makes the answer ours to
+ * cache.
+ *
+ * Caching the failure is the deliberate trade-off: the verdict is a function of
+ * the loadout encoded in the URL, not a transient blip, so an unchanged URL
+ * keeps its answer and any loadout change yields a new URL and a fresh probe.
+ * The TTL is short so a genuine upstream outage still clears on its own.
+ */
+const loadPortraitRenderable = unstable_cache(async (url: string) => {
+  try {
+    // `force-cache` lets the platform fetch cache answer a repeat probe without
+    // a new render, so re-probing after the TTL does not re-render the loadout.
+    const response = await fetch(url, { cache: "force-cache", signal: AbortSignal.timeout(8_000) });
+    // Only the verdict matters; draining the body releases the socket.
+    await response.arrayBuffer();
+    if (response.ok) return true;
+    console.warn("player portrait upstream render failed", { upstreamStatus: response.status });
+  } catch (error) {
+    console.warn("player portrait upstream render failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return false;
+}, ["player-portrait-renderable-v1"], { revalidate: 600 });
+
 /** A negative answer is stable, so let the browser and CDN remember it. */
 const notAvailableHeaders = { "Cache-Control": "public, max-age=300, s-maxage=300" };
 
@@ -54,6 +83,9 @@ export async function GET(request: NextRequest) {
   try {
     const url = await loadPortrait(upstream, aid);
     if (!url) return notAvailable();
+    // The same stable answer as a missing portrait, so it uses the cacheable
+    // 404 instead of handing the browser another guaranteed-to-fail request.
+    if (!await loadPortraitRenderable(url)) return notAvailable();
     return NextResponse.redirect(url, {
       status: 307,
       headers: { "Cache-Control": "public, max-age=300, s-maxage=300" },
