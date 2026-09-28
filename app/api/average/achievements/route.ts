@@ -61,6 +61,11 @@ const memo = new Map<string, BaselineCache>();
 const baselineLoads = new Map<string, Promise<BaselineCache>>();
 const MEMO_TTL_MS = 5 * 60 * 1000;
 
+// The client requests this URL with cache: "default", so a cacheable 404 would
+// be pinned in the browser and CDN after one transient failure. This is a
+// rollout gate, so a pinned 404 would outlive the gate opening.
+const noStore = { "Cache-Control": "no-store" };
+
 async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCache, "ts">> {
   if (!store) return { total: 0, rows: [], storage: "unavailable" };
 
@@ -103,11 +108,11 @@ export async function GET(request: NextRequest) {
       // malformed or stale `cycle` stays a 400.
       if (!isSeasonalRolloutReady() || !cycle) {
         timing.finish({ operation: "average_achievements", mode: rawMode, outcome: "not_found", status: 404 });
-        return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 404 });
+        return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 404, headers: noStore });
       }
       if (cycleId !== cycle.cycleId || request.nextUrl.searchParams.getAll("cycle").length !== 1) {
         timing.finish({ operation: "average_achievements", mode: rawMode, outcome: "invalid", status: 400 });
-        return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
+        return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400, headers: noStore });
       }
     }
     const now = Date.now();
@@ -197,6 +202,6 @@ export async function GET(request: NextRequest) {
       operation: "average_achievements", outcome: "error", status: 500,
       storage, memo: memoStatus, storeOpenMs, baselineMs, metadataMs,
     });
-    return NextResponse.json({ error: "Failed to compute achievement baseline" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to compute achievement baseline" }, { status: 500, headers: noStore });
   }
 }

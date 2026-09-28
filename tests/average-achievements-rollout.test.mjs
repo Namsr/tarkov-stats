@@ -63,10 +63,11 @@ test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still an
   // a pre-rollout season indistinguishable from a client bug, which is what the
   // sibling routes on this gate already avoid (seasonal/cohort, progression,
   // progression/timeline, seasonal/progression, progression/average,
-  // player/profile). player/risk still folds the two into one 400 — see the
-  // follow-up issue; it is deliberately out of scope here.
+  // player/profile). Not every sibling answers this way yet, so this route does
+  // not treat any of their current behaviour as a contract.
   const gated = await request("mode=seasonal&cycle=test-cycle", { ...ROLLED_OUT, SEASONAL_ENABLED: "false" });
   assert.equal(gated.status, 404);
+  assert.equal(gated.headers.get("cache-control"), "no-store");
   assert.deepEqual(await gated.json(), { error: "Seasonal average unavailable" });
 
   // No cycle configured at all is the same absence, not a malformed request.
@@ -75,6 +76,7 @@ test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still an
     SEASONAL_PROFILE_URL_TEMPLATE: ROLLED_OUT.SEASONAL_PROFILE_URL_TEMPLATE,
   });
   assert.equal(unconfigured.status, 404);
+  assert.equal(unconfigured.headers.get("cache-control"), "no-store");
 
   // The gate is on, so every remaining failure really is the request's fault.
   for (const query of [
@@ -85,6 +87,22 @@ test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still an
   ]) {
     const invalid = await request(query, ROLLED_OUT);
     assert.equal(invalid.status, 400, query);
+    assert.equal(invalid.headers.get("cache-control"), "no-store", query);
     assert.deepEqual(await invalid.json(), { error: "Invalid Seasonal cycle" }, query);
   }
+});
+
+test("a rolled-out cycle with a matching `cycle` still answers 200 with the public cache headers", async (t) => {
+  restoreSeasonalEnv(t);
+
+  // The gate must not cost the live case anything: with the gate fully on and
+  // the requested cycle equal to the configured one, this stays the 200 it was
+  // before the gate existed, with the same cache headers. Without this the fix
+  // would be indistinguishable from simply disabling the route. No DB and no
+  // network are needed: the baseline load degrades to storage: "unavailable"
+  // and getAchievements already swallows its own failure.
+  const live = await request("mode=seasonal&cycle=test-cycle", ROLLED_OUT);
+  assert.equal(live.status, 200);
+  assert.equal(live.headers.get("cache-control"), "public, max-age=300, s-maxage=300, stale-while-revalidate=3600");
+  assert.deepEqual(await live.json(), { total: 0, achievements: [] });
 });
