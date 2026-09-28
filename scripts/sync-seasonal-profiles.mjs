@@ -453,8 +453,9 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
       if (error?.fatal) throw error;
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
       const waitMs = backoff(attempt);
-      if (waitMs >= config.maxRunMs - (Date.now() - startedAt)) {
+      if (waitMs >= remainingMs) {
         return stopForRunBudget(startedAt, { phase: "backoff", aid, attempt });
       }
       await delay(waitMs);

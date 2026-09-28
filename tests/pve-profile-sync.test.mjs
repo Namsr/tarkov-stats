@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -46,6 +46,19 @@ function createPlayersDb(path) {
     CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
   `);
   return db;
+}
+
+// A missing clamp lets the feed ladder run out of retries and rethrow the 503 as
+// FATAL, so the process exits non-zero before any assertion below runs. Resolving
+// with the exit code keeps the detection on the request count, which is the signal
+// the regression actually moves.
+async function runCollectorReportingExit(...args) {
+  try {
+    const { stdout, stderr } = await runCollector(...args);
+    return { stdout, stderr, code: 0 };
+  } catch (error) {
+    return { stdout: error.stdout ?? "", stderr: error.stderr ?? "", code: error.code ?? 1 };
+  }
 }
 
 test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes isolated", async () => {
@@ -569,10 +582,11 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
   const { port } = server.address();
 
   try {
-    const { stdout } = await runCollector(dbPath, progressionDbPath, port, 3, {
+    const { stdout, code } = await runCollectorReportingExit(dbPath, progressionDbPath, port, 3, {
       PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 700),
     });
     assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
+    assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
@@ -587,6 +601,51 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PvE feed ladder opens no request once the run budget is already spent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-feed-guard-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const feedLog = join(directory, "feed.log");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  // The guard at the top of the feed loop stops the ladder before it opens a
+  // request it has no budget to finish. A queue deadline already in the past
+  // spends the whole budget on schema, lease and baseline work, so the first
+  // feed attempt finds nothing left; the stub counts requests so the test fails
+  // if the guard is removed and a doomed request is issued anyway.
+  const preload = join(directory, "stub-feed.mjs");
+  await writeFile(preload, `import { appendFileSync } from "node:fs";
+    globalThis.fetch = async () => {
+      appendFileSync(process.env.PVE_TEST_FEED_LOG, "feed\\n");
+      return new Response("stuck", { status: 503 });
+    };`);
+
+  try {
+    const { stdout, code } = await runCollectorReportingExit(dbPath, progressionDbPath, 9, 3, {
+      PVE_TEST_FEED_LOG: feedLog,
+      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() - 1_000),
+    }, preload);
+    const requests = await readFile(feedLog, "utf8").catch(() => "");
+    assert.equal(requests.split("\n").filter(Boolean).length, 0, "no feed request may open without budget");
+    assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
+    assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
+    const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
+    assert.ok(cut, "the cut is logged");
+    const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
+    assert.equal(fields.phase, "feed");
+    assert.equal(
+      players.prepare("SELECT COUNT(*) AS n FROM pve_profile_sync_queue").get().n,
+      0,
+      "a feed that was never admitted queues nothing",
+    );
+  } finally {
     players.close();
     progression.close();
     await rm(directory, { recursive: true, force: true });

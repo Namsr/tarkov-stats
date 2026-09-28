@@ -20,6 +20,19 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// A missing clamp lets the feed ladder run out of retries and rethrow the 503 as
+// FATAL, so the process exits non-zero before any assertion runs. Resolving with
+// the exit code keeps the detection on the request count, which is the signal the
+// regression actually moves.
+async function runCollectorReportingExit(args, options) {
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, args, options);
+    return { stdout, stderr, code: 0 };
+  } catch (error) {
+    return { stdout: error.stdout ?? "", stderr: error.stderr ?? "", code: error.code ?? 1 };
+  }
+}
+
 test("shared queue deadline preserves a tighter mode budget and rejects invalid timestamps", () => {
   assert.equal(remainingRunBudget(100, undefined, 1000), 100);
   assert.equal(remainingRunBudget(100, "1050", 1000), 50);
@@ -638,7 +651,7 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
   const { port } = server.address();
 
   try {
-    const { stdout } = await execFileAsync(process.execPath, [
+    const { stdout, code } = await runCollectorReportingExit([
       "--experimental-sqlite",
       "scripts/sync-regular-profiles.mjs",
     ], {
@@ -657,6 +670,7 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
       },
     });
     assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
+    assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");

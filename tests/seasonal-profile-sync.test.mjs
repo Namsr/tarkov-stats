@@ -20,6 +20,19 @@ import { DatabaseSync } from "node:sqlite";
 
 const execFileAsync = promisify(execFile);
 
+// A missing clamp lets the feed ladder run out of retries and rethrow the 503 as
+// FATAL, so the process exits non-zero before any assertion runs. Resolving with
+// the exit code keeps the detection on the request count, which is the signal the
+// regression actually moves.
+async function runCollectorReportingExit(args, options) {
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, args, options);
+    return { stdout, stderr, code: 0 };
+  } catch (error) {
+    return { stdout: error.stdout ?? "", stderr: error.stderr ?? "", code: error.code ?? 1 };
+  }
+}
+
 test("Seasonal updated parser streams versions and normalizes timestamps", () => {
   const entries = [];
   const parser = createTimestampObjectParser((aid, updatedAt) => entries.push([aid, updatedAt]));
@@ -191,7 +204,7 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
     };`);
 
   try {
-    const { stdout } = await execFileAsync(process.execPath, [
+    const { stdout, code } = await runCollectorReportingExit([
       "--import", pathToFileURL(preload).href,
       "--experimental-strip-types",
       "--experimental-sqlite",
@@ -220,6 +233,7 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
     });
     const feedRequests = (await readFile(feedLog, "utf8")).split("\n").filter(Boolean);
     assert.equal(feedRequests.length, 1, "the feed ladder must stop instead of sleeping past the run budget");
+    assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
