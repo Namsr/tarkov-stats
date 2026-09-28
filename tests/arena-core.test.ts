@@ -954,7 +954,7 @@ test("Arena averages expose averageMatches for mode bars", async () => {
   assert.equal(sparseCohort?.averageMatches.value, null);
 });
 
-test("Arena average bounds survive a peer set larger than the V8 argument limit", async () => {
+test("Arena average bounds survive a peer set larger than the thread stack can hold", async () => {
   // The eligible peer scan has no LIMIT and grows with every collected player in
   // a mode, while Math.min(...values) throws RangeError once the spread is larger
   // than the thread stack can hold (roughly 125k arguments at the default stack,
