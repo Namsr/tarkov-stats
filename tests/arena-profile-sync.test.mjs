@@ -20,11 +20,12 @@ import {
 const execFileAsync = promisify(execFile);
 const secret = "test-secret-that-is-at-least-32-characters";
 
-function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1, environment = {}) {
+function launch(dbPath, baseUrl, feedUrl, maxCompleted = null, concurrency = 1, environment = {}, options = {}) {
   return execFileAsync(process.execPath, [
     "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-arena-profiles.mjs",
   ], {
     cwd: process.cwd(),
+    ...options,
     env: {
       ...process.env,
       NODE_NO_WARNINGS: "1",
@@ -266,6 +267,84 @@ test("Arena profile sync refreshes a stale index before reading updated.json", a
       { aid: 2, nickname: "NewName" },
     ]);
   } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Arena profile sync aborts a stalled index on the request timeout, not the run budget", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-index-stall-"));
+  const dbPath = join(directory, "players.db");
+  const players = new DatabaseSync(dbPath);
+  players.exec(`
+    CREATE TABLE mode_players (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, profile_updated_at INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL, achievements TEXT,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE arena_mode_stats (
+      aid INTEGER NOT NULL, arena_mode TEXT NOT NULL, upstream_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL, PRIMARY KEY (aid, arena_mode)
+    );
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (
+      mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    INSERT INTO arena_player_index (mode, aid, nickname, nickname_lower, synced_at)
+      VALUES ('arena', 1, 'OldName', 'oldname', 1);
+  `);
+  let indexRequests = 0;
+  const server = createServer((request, response) => {
+    if (request.url?.startsWith("/arena/index.json")) {
+      indexRequests += 1;
+      // Headers, then a body that stops mid-object: the collector waits in
+      // reader.read() instead of parsing.
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"1":"');
+      return;
+    }
+    if (request.url?.startsWith("/arena/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      response.end("{}");
+      return;
+    }
+    if (request.url === "/api/operator/profile-refresh/sync") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ state: "not_found" }));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const startedAt = Date.now();
+    const run = await launch(
+      dbPath, baseUrl, `${baseUrl}/arena/updated.json`, null, 1,
+      {
+        // The smallest bound envInteger accepts, against the largest run
+        // budget: an operator lowering the request timeout has to contain a
+        // stalled upstream, whatever the run budget is.
+        ARENA_PROFILE_SYNC_TIMEOUT_MS: "1000",
+        ARENA_PROFILE_SYNC_MAX_RUN_MS: String(12 * 60 * 60_000),
+      },
+      // The collector traps SIGTERM, so the harness deadline has to be fatal.
+      { timeout: 20_000, killSignal: "SIGKILL" },
+    ).then((result) => result, (error) => error);
+    assert.equal(run.killed ?? false, false,
+      "the collector must abort the stalled index on the request timeout, not wait out its run budget");
+    assert.ok(Date.now() - startedAt < 10_000,
+      "the abort must land near the 1s request bound, not near the harness deadline");
+    assert.equal(indexRequests, 1);
+    assert.match(run.stdout, /INDEX_FAILED/);
+    const summary = summaryFrom(run.stdout);
+    assert.match(summary.index.error, /abort|timed out/i);
+    assert.equal(summary.attempted, 1, "the run keeps going after the index abort");
+  } finally {
+    server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     players.close();
     await rm(directory, { recursive: true, force: true });
@@ -1081,7 +1160,9 @@ test("Arena publication failures and deadline writes remain retryable", async ()
   assert.match(averageRoute, /loadCachedArenaAverage\([\s\S]*cacheVersion/);
   assert.match(source, /offline_v3_to_v4_publication_pending/);
   assert.match(source, /runBudgetExpired\(startedAt\)/);
-  assert.match(source, /signal: AbortSignal\.timeout\(Math\.max\(1, remainingMs\)\)/);
+  // The index download must be bounded by the request timeout the two sibling
+  // awaits clamp to, not only by the run budget.
+  assert.match(source, /signal: AbortSignal\.timeout\(Math\.max\(1, Math\.min\(config\.requestTimeoutMs, remainingMs\)\)\)/);
   assert.match(source, /loadUpdatedFeedWithRetry\(feedUrlForRun\(\), tracked, excluded, startedAt\)/);
   assert.match(source, /if \(waitMs >= remainingMs\)/);
   assert.match(source, /await writeTransaction\(\(\) => \{[\s\S]*DELETE FROM arena_profile_sync_queue/);
