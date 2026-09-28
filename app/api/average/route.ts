@@ -5,7 +5,6 @@ import {
   parseAverageStatistic,
   type AveragePeriod,
   type AverageStatistic,
-  getArenaBackend,
   type CrossSectionMode,
   type RangeDimension,
 } from "@/lib/db";
@@ -14,14 +13,18 @@ import { resolveY } from "@/lib/metrics";
 import { computeAverage } from "@/lib/average-compute";
 import { isGameMode } from "@/types/seasonal";
 import {
-  ARENA_AVERAGE_CACHE_TAG,
   AVERAGE_CACHE_CONTROL,
   AVERAGE_PUBLICATION_CACHE_CONTROL,
   AVERAGE_CACHE_TTL_SECONDS,
 } from "@/lib/average-cache";
+import {
+  arenaAverageCacheKey,
+  arenaAverageCacheVersion,
+  loadCachedArenaAverage,
+} from "@/lib/arena-average-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
-import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
-import { ARENA_METRIC_KEYS, ARENA_MODE_KEYS, type ArenaDimension, type ArenaMetricKey, type ArenaModeKey, type ArenaStatistic } from "@/types/arena";
+import { ARENA_PARSER_VERSION } from "@/lib/arena/service";
+import { ARENA_METRIC_KEYS, ARENA_MODE_KEYS, type ArenaMetricKey, type ArenaModeKey } from "@/types/arena";
 import {
   averagePublicationsEnabled,
   readAveragePublication,
@@ -73,49 +76,12 @@ const loadCachedAverage = unstable_cache(
   { revalidate: AVERAGE_CACHE_TTL_SECONDS },
 );
 
-const loadCachedArenaAverage = unstable_cache(
-  async (
-    arenaMode: ArenaModeKey,
-    statistic: ArenaStatistic,
-    dimension: ArenaDimension,
-    metric: "players" | ArenaMetricKey,
-    minHours: number | null,
-    maxHours: number | null,
-    minMatches: number | null,
-    maxMatches: number | null,
-    cacheVersion: number,
-  ) => {
-    void cacheVersion;
-    return getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches });
-  },
-  ["arena-average-v2", String(ARENA_PARSER_VERSION)],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
-);
-
 function isArenaMode(value: string | null): value is ArenaModeKey {
   return value !== null && (ARENA_MODE_KEYS as readonly string[]).includes(value);
 }
 
 function isArenaMetric(value: string | null): value is "players" | ArenaMetricKey {
   return value === "players" || (value !== null && (ARENA_METRIC_KEYS as readonly string[]).includes(value));
-}
-
-async function arenaDynamicCacheVersion(): Promise<number> {
-  try {
-    const backend = await getArenaBackend();
-    if (!backend) return 0;
-    const table = backend.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'arena_profile_sync_meta'"
-    ).get();
-    if (!table) return 0;
-    const row = backend.db.prepare(
-      "SELECT value FROM arena_profile_sync_meta WHERE key = 'dynamic_cache_version'"
-    ).get() as { value?: unknown } | undefined;
-    const version = Number(row?.value);
-    return Number.isSafeInteger(version) && version >= 0 ? version : 0;
-  } catch {
-    return 0;
-  }
 }
 
 function arenaRange(params: URLSearchParams, key: "minHours" | "maxHours" | "minMatches" | "maxMatches") {
@@ -172,8 +138,8 @@ async function arenaAverageResponse(
       timing.finish({ operation: "average", mode: "arena", outcome: "unavailable", status: 503, source: "publication" });
       return NextResponse.json({ error: "Arena average publication unavailable" }, { status: 503, headers: { "Retry-After": "5" } });
     }
-    const cacheVersion = await arenaDynamicCacheVersion();
-    const dynamicKey = JSON.stringify(["arena", arenaMode, statistic, dimension, metric, ...ranges.map((range) => range.value), cacheVersion]);
+    const cacheVersion = await arenaAverageCacheVersion();
+    const dynamicKey = arenaAverageCacheKey(arenaMode, statistic, dimension, metric, ranges.map((range) => range.value), cacheVersion);
     const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedArenaAverage(
       arenaMode,

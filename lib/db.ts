@@ -1073,6 +1073,12 @@ export interface PlayerStore {
     period?: AveragePeriod,
     statistic?: AverageStatistic,
   ): Promise<BucketAgg[]>;
+  /**
+   * Accounts in the period population: neither the playtime range nor the
+   * metric-eligibility filter narrows it. The average dashboard reports this as
+   * the scanned sample, so it must not move with the Y-axis metric.
+   */
+  populationCount(period?: AveragePeriod): Promise<number>;
   /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
   rangeBounds(dimension: RangeDimension, period?: AveragePeriod): Promise<RangeBounds>;
   /** Adaptive comparison group around one player's playtime or PMC raid count. */
@@ -1396,6 +1402,11 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);
+      },
+      async populationCount(period = "all") {
+        const where = averagePeriodWhere(mode, period, "");
+        const row = db.prepare(countSql(where)).get() as { n?: unknown } | undefined;
+        return Number(row?.n ?? 0) || 0;
       },
       async rangeBounds(dimension, period = "all") {
         const column = rangeColumn(dimension);
@@ -1786,8 +1797,13 @@ export interface FavoritesStore {
    * applied one. Rewriting the same note still reports a match.
    */
   setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<boolean>;
-  /** Mark one favorite as the user's main account (clears the flag on the rest). */
-  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
+  /**
+   * Mark one favorite as the user's main account (clears the flag on the rest).
+   * False when the AID is not one of the user's favorites: the statement's
+   * ownership guard then matches nothing and no row is written, so the caller
+   * has to be able to tell a refused mutation from an applied one.
+   */
+  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<boolean>;
   /** Refresh the stored nickname snapshot. */
   updateNickname(userSub: string, aid: number, nickname: string | null, identity?: FavoriteIdentity): Promise<void>;
 }
@@ -1881,7 +1897,10 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
       return db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid).changes > 0;
     },
     async setMain(userSub, aid) {
-      db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid);
+      // The EXISTS guard makes a zero row count mean "not the caller's favorite",
+      // not "already in that state" — the statement rewrites every one of the
+      // user's rows either way, so a matching aid always reports at least one.
+      return db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid).changes > 0;
     },
     async updateNickname(userSub, aid, nickname) {
       db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
