@@ -124,6 +124,9 @@ test("regular risk backfill uses the matched two-dimensional baseline", () => {
   const bansPath = join(directory, "bans.db");
   const progressionPath = join(directory, "progression.db");
   const reportsPath = join(directory, "reports.db");
+  // The backfill refuses a missing database, so the progression store has to exist even
+  // though this scenario only asserts on the regular baseline.
+  for (const path of [bansPath, progressionPath, reportsPath]) new DatabaseSync(path).close();
   const players = new DatabaseSync(playersPath);
   try {
     players.exec(`

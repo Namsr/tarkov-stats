@@ -14,6 +14,11 @@ import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
 
 const playersPath = process.env.SQLITE_PATH || "/data/players.db";
 const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
+// A mistyped path used to skip a whole source silently: the run scored nothing,
+// printed `{"scored":0}` and exited 0, leaving stale risk tiers behind a green
+// status. Refuse the run here, the way the siblings do.
+if (!existsSync(playersPath)) throw new Error(`players database does not exist: ${playersPath}`);
+if (!existsSync(progressionPath)) throw new Error(`progression database does not exist: ${progressionPath}`);
 
 function parsedJson(value, fallback) {
   try { return JSON.parse(String(value ?? "")); } catch { return fallback; }
@@ -73,7 +78,7 @@ function statsFromRow(row, mode) {
 
 const achievementBaselines = new Map();
 const baselines = new Map();
-const playersDb = existsSync(playersPath) ? new DatabaseSync(playersPath, { readOnly: true }) : null;
+const playersDb = new DatabaseSync(playersPath, { readOnly: true });
 
 function sourceFor(mode) {
   return mode === "regular"
@@ -306,42 +311,38 @@ async function scoreSeasonalRow(row, cycleId) {
 }
 
 let scored = 0;
-if (playersDb) {
-  try {
-    for (const row of playersDb.prepare(`SELECT p.* FROM players p
-      WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
-      await scoreRow(row, "regular", "persistent");
+try {
+  for (const row of playersDb.prepare(`SELECT p.* FROM players p
+    WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
+    await scoreRow(row, "regular", "persistent");
+    scored += 1;
+  }
+  for (const row of playersDb.prepare(`SELECT p.* FROM mode_players p
+    WHERE p.mode = 'pve'
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
+    await scoreRow(row, String(row.mode), "persistent");
+    scored += 1;
+  }
+} finally { }
+
+const db = new DatabaseSync(progressionPath, { readOnly: true });
+try {
+  const hasProfiles = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_profiles'").get();
+  if (hasProfiles) {
+    const sql = `SELECT s.*, p.lifetime_pvp_hours FROM progression_snapshots s
+      JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
+      WHERE s.mode = 'seasonal' AND p.confirmed_banned = 0
+        AND s.profile_updated_at = (SELECT MAX(latest.profile_updated_at)
+          FROM progression_snapshots latest WHERE latest.mode = s.mode
+            AND latest.cycle_id = s.cycle_id AND latest.aid = s.aid)
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)`;
+    for (const row of db.prepare(sql).iterate()) {
+      await scoreSeasonalRow(row, String(row.cycle_id));
       scored += 1;
     }
-    for (const row of playersDb.prepare(`SELECT p.* FROM mode_players p
-      WHERE p.mode = 'pve'
-        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).iterate()) {
-      await scoreRow(row, String(row.mode), "persistent");
-      scored += 1;
-    }
-  } finally { }
-}
+  }
+} finally { db.close(); }
 
-if (existsSync(progressionPath)) {
-  const db = new DatabaseSync(progressionPath, { readOnly: true });
-  try {
-    const hasProfiles = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_profiles'").get();
-    if (hasProfiles) {
-      const sql = `SELECT s.*, p.lifetime_pvp_hours FROM progression_snapshots s
-        JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid
-        WHERE s.mode = 'seasonal' AND p.confirmed_banned = 0
-          AND s.profile_updated_at = (SELECT MAX(latest.profile_updated_at)
-            FROM progression_snapshots latest WHERE latest.mode = s.mode
-              AND latest.cycle_id = s.cycle_id AND latest.aid = s.aid)
-          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid)`;
-      for (const row of db.prepare(sql).iterate()) {
-        await scoreSeasonalRow(row, String(row.cycle_id));
-        scored += 1;
-      }
-    }
-  } finally { db.close(); }
-}
-
-playersDb?.close();
+playersDb.close();
 
 console.log(JSON.stringify({ scored }));
