@@ -1,5 +1,7 @@
-const PLAYERS_UPDATE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_update
-AFTER UPDATE ON players WHEN
+// @ts-expect-error Node's strip-types test runner requires the explicit extension.
+import { reissueEditedTriggers, sqliteTrigger } from "./sqlite-trigger-ddl.ts";
+
+const PLAYERS_UPDATE_TRIGGER = sqliteTrigger("trg_players_leaderboard_change_update", `AFTER UPDATE ON players WHEN
   OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
   OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
   OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
@@ -12,10 +14,12 @@ BEGIN
   ON CONFLICT(mode, aid) DO UPDATE SET
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
-END;`;
+END;`);
 
-const MODE_PLAYERS_UPDATE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_mode_players_leaderboard_change_update
-AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
+// prestige is watched only inside the 'pve' branch: arena rows hardcode
+// `prestige: null` in lib/leaderboard/source.ts, so a wider clause would bump the
+// journal on writes that cannot change an arena fingerprint.
+const MODE_PLAYERS_UPDATE_TRIGGER = sqliteTrigger("trg_mode_players_leaderboard_change_update", `AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
   OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
   (NEW.mode = 'pve' AND (
     OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
@@ -31,7 +35,7 @@ AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
   ON CONFLICT(mode, aid) DO UPDATE SET
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
-END;`;
+END;`);
 
 export const PROFILE_CHANGE_JOURNAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS leaderboard_profile_changes (
@@ -52,7 +56,7 @@ AFTER INSERT ON players BEGIN
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
 END;
-${PLAYERS_UPDATE_TRIGGER}
+${PLAYERS_UPDATE_TRIGGER.ddl}
 CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_delete
 AFTER DELETE ON players BEGIN
   INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
@@ -69,7 +73,7 @@ AFTER INSERT ON mode_players WHEN NEW.mode IN ('pve', 'arena') BEGIN
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
 END;
-${MODE_PLAYERS_UPDATE_TRIGGER}
+${MODE_PLAYERS_UPDATE_TRIGGER.ddl}
 CREATE TRIGGER IF NOT EXISTS trg_mode_players_leaderboard_change_delete
 AFTER DELETE ON mode_players WHEN OLD.mode IN ('pve', 'arena') BEGIN
   INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
@@ -90,37 +94,17 @@ interface JournalDatabase {
 // trigger names are unchanged, so currentSqlitePlayerSchema() in lib/db.ts still
 // reports the schema as current and the whole migration is skipped. The only
 // symptom is a silently stale journal, which is the worst shape for a bug fix.
-// Dropping first is the fix; comparing the stored DDL is what keeps the drop off
-// the path where it would otherwise recur on every process open and on every
-// scheduled materializer run, each time opening a window in which the write path
-// has no trigger at all. Same convention as ensureIndexDefinition() in lib/db.ts.
+// The shared reissue in lib/sqlite-trigger-ddl.ts owns the drop/recreate and
+// compares the stored DDL, which keeps the drop off the path where it would
+// otherwise recur on every process open and on every scheduled materializer run,
+// each time opening a window in which the write path has no trigger at all.
 const EDITED_UPDATE_TRIGGERS = [PLAYERS_UPDATE_TRIGGER, MODE_PLAYERS_UPDATE_TRIGGER] as const;
-
-// SQLite stores the statement it parsed, so the stored text carries neither
-// `IF NOT EXISTS` nor the trailing semicolon. Compare a normalized form of both.
-function normalizedTriggerDdl(ddl: string): string {
-  return ddl.replace(/\bIF NOT EXISTS\b/gi, "").replace(/\s+/g, " ").replace(/;\s*$/, "").trim().toLowerCase();
-}
-
-function reissueEditedTriggers(db: JournalDatabase): void {
-  for (const ddl of EDITED_UPDATE_TRIGGERS) {
-    const name = /CREATE TRIGGER (?:IF NOT EXISTS )?(\S+)/.exec(ddl)?.[1];
-    if (!name) continue;
-    // An absent trigger needs no drop; the schema below creates it in order.
-    const stored = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
-      .get(name) as { sql?: string | null } | undefined;
-    if (typeof stored?.sql !== "string") continue;
-    if (normalizedTriggerDdl(stored.sql) === normalizedTriggerDdl(ddl)) continue;
-    db.exec(`DROP TRIGGER IF EXISTS ${name};`);
-    db.exec(ddl);
-  }
-}
 
 export function initializeProfileChangeJournal(db: JournalDatabase): { created: boolean } {
   const existed = Boolean(db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='leaderboard_profile_changes'",
   ).get());
-  reissueEditedTriggers(db);
+  reissueEditedTriggers(db, EDITED_UPDATE_TRIGGERS);
   db.exec(PROFILE_CHANGE_JOURNAL_SCHEMA);
   return { created: !existed };
 }

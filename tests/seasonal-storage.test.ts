@@ -8,6 +8,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { createSqliteSeasonalStore, initializeSeasonalSchema, moscowDate, SEASONAL_SCHEMA, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
+import { reissueEditedTriggers, sqliteTrigger } from "../lib/sqlite-trigger-ddl.ts";
 import {
   FAVORITE_INSERT_SQL,
   FAVORITE_SET_MAIN_SQL,
@@ -425,5 +426,158 @@ test("a current database missing the prestige snapshot trigger gets it back on r
 
     bump();
     assert.equal(revision(), before + 1);
+  } finally { db.close(); }
+});
+
+// A journal trigger body from before an edit, kept verbatim so this test can rebuild
+// the state any body edit leaves on a database deployed before it. `CREATE TRIGGER IF
+// NOT EXISTS` keeps the old body because the name is unchanged, and every check
+// currentSeasonalSchema() makes still passes, so the early return in
+// initializeSeasonalSchema is taken and the change schema is never exec'd.
+const STALE_SEASONAL_PROFILE_UPDATE_TRIGGER = `
+DROP TRIGGER leaderboard_seasonal_profile_update;
+CREATE TRIGGER leaderboard_seasonal_profile_update
+AFTER UPDATE ON player_profiles WHEN NEW.mode = 'seasonal' AND (
+  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
+  OLD.last_access_at IS NOT NEW.last_access_at
+) BEGIN
+  INSERT INTO leaderboard_seasonal_profile_changes(cycle_id, aid, revision, changed_at)
+  VALUES (NEW.cycle_id, NEW.aid, 1, NEW.last_seen_at)
+  ON CONFLICT(cycle_id, aid) DO UPDATE SET
+    change_id = excluded.change_id,
+    revision = leaderboard_seasonal_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;`;
+
+function storedTriggerDdl(db, name) {
+  return db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name).sql;
+}
+
+test("a current database whose journal trigger body drifted gets the definition reinstalled", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const untouched = ["leaderboard_seasonal_profile_insert", "leaderboard_seasonal_profile_delete"]
+      .map((name) => storedTriggerDdl(db, name));
+    const insertProfile = db.prepare(`INSERT INTO player_profiles
+      (mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, experience, pmc_raids,
+        scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc, first_seen_at, last_seen_at)
+      VALUES ('seasonal', 's1', 42, 'Drift', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)`);
+    insertProfile.run();
+
+    db.exec(STALE_SEASONAL_PROFILE_UPDATE_TRIGGER);
+    const revision = () => db.prepare("SELECT revision FROM leaderboard_seasonal_profile_changes WHERE cycle_id = 's1' AND aid = 42").get().revision;
+    // leaderboard_activity_at is watched by the current definition only, so this
+    // update is invisible to the stale body.
+    const bump = (at: number) => db.prepare("UPDATE player_profiles SET leaderboard_activity_at = ? WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 42").run(at);
+    bump(5);
+    assert.equal(revision(), 1);
+
+    // The database is current by every check currentSeasonalSchema() makes: all
+    // objects present and the trigger name unchanged. Only the body differs.
+    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update")
+      .includes("leaderboard_activity_at"), true);
+
+    // The write path works again, and the journal cursor survived the reinstall: the
+    // trigger is a write path, the revision lives in the table.
+    bump(6);
+    assert.equal(revision(), 2);
+
+    // The two triggers that already matched were not dropped and recreated.
+    for (const [index, name] of ["leaderboard_seasonal_profile_insert", "leaderboard_seasonal_profile_delete"].entries()) {
+      assert.equal(storedTriggerDdl(db, name), untouched[index]);
+    }
+
+    // Once the stored body matches, a second init must not churn the trigger.
+    const settled = storedTriggerDdl(db, "leaderboard_seasonal_profile_update");
+    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update"), settled);
+  } finally { db.close(); }
+});
+
+// A concurrent writer on a second connection, run in the instant between the drop and
+// the recreate. This is the window the review reproduced: with the two statements
+// autocommitted, the trigger is already gone from sqlite_master when the writer runs.
+test("a concurrent write during the reinstall is serialized or journaled, never lost", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-reissue-"));
+  const file = join(directory, "progression.db");
+  const db = new DatabaseSync(file);
+  const writer = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    writer.exec("PRAGMA busy_timeout = 0");
+    initializeSeasonalSchema(db);
+    db.exec(STALE_SEASONAL_PROFILE_UPDATE_TRIGGER);
+    db.prepare(`INSERT INTO player_profiles
+      (mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, experience, pmc_raids,
+        scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc, first_seen_at, last_seen_at)
+      VALUES ('seasonal', 's1', 42, 'Reissue', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)`).run();
+    const revision = () => db.prepare("SELECT revision FROM leaderboard_seasonal_profile_changes WHERE cycle_id = 's1' AND aid = 42").get().revision;
+    assert.equal(revision(), 1);
+
+    let outcome: "committed" | "serialized" | null = null;
+    initializeSeasonalSchema({
+      prepare: db.prepare.bind(db),
+      exec(sql: string) {
+        if (/^\s*CREATE TRIGGER/i.test(sql)) {
+          // The reinstall is between the drop and the recreate right now.
+          try {
+            writer.prepare("UPDATE player_profiles SET leaderboard_activity_at = 7 WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 42").run();
+            outcome = "committed";
+          } catch { outcome = "serialized"; }
+        }
+        db.exec(sql);
+      },
+    });
+
+    assert.ok(outcome, "the concurrent write was never attempted");
+    // The write either lost the race to the drop/create pair and was refused, or it
+    // committed under the reinstalled trigger and the journal carries it. What it can
+    // never do is commit and stay invisible: with no trigger there is no journal entry,
+    // so no revision, so the materializer never re-scans the row.
+    if (outcome === "committed") assert.equal(revision(), 2);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("leaderboard_activity_at"), true);
+  } finally {
+    writer.close();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed recreate leaves the previous trigger installed", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE probe(id INTEGER, note TEXT); CREATE TRIGGER probe_watch AFTER UPDATE ON probe WHEN NEW.note IS NOT OLD.note BEGIN SELECT NEW.id; END;");
+    const installed = storedTriggerDdl(db, "probe_watch");
+    assert.ok(installed);
+
+    // SQLite resolves table and function names in a trigger body lazily, so the
+    // failure has to be a parse error to be a real CREATE-time failure. This is what a
+    // bad merge to the body leaves behind.
+    const broken = sqliteTrigger("probe_watch", "AFTER UPDATE ON probe BEGIN SELECT FROM WHERE; END;");
+    const reissuing = { prepare: db.prepare.bind(db), exec: (sql: string) => db.exec(sql) };
+    assert.throws(() => reissueEditedTriggers(reissuing, [broken]), /syntax error/);
+
+    // The drop and the recreate are one unit, so the old body is still the live one:
+    // a write path left with no trigger at all is a permanent, silent data loss.
+    assert.equal(storedTriggerDdl(db, "probe_watch"), installed);
+  } finally { db.close(); }
+});
+
+test("a case-only edit to a string literal in a trigger body is still a change", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const current = storedTriggerDdl(db, "leaderboard_seasonal_profile_update");
+    // Take the real body and change nothing but the case of one literal. SQLite
+    // compares strings case-sensitively, so the trigger now watches a different mode.
+    db.exec(`DROP TRIGGER leaderboard_seasonal_profile_update;
+      ${current.replace("NEW.mode = 'seasonal'", "NEW.mode = 'Seasonal'")}`);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("'Seasonal'"), true);
+
+    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("'Seasonal'"), false);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("NEW.mode = 'seasonal'"), true);
   } finally { db.close(); }
 });

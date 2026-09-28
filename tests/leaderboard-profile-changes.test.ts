@@ -305,3 +305,38 @@ test("re-initializing a database that predates the prestige clause reinstalls th
     db.close();
   }
 });
+
+test("a failed leaderboard trigger recreate leaves the previous body installed", () => {
+  // The leaderboard journal reaches the shared reissue through this initializer, so
+  // the drop and the recreate have to be one unit here too: a failed recreate that
+  // left the trigger dropped would silently end the journal for every process after
+  // it, and the journal cursor lives in the table, not the trigger.
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec(PRE_PRESTIGE_UPDATE_TRIGGERS);
+    const prePrestige = triggerBody(db, "trg_players_leaderboard_change_update");
+
+    // SQLite resolves table and function names in a trigger body lazily, so the
+    // failure has to be a parse error to be a real CREATE-time failure. This is what
+    // a bad merge to the body leaves behind.
+    const reissuing = {
+      prepare: db.prepare.bind(db),
+      exec(sql) {
+        // The name is never parsed back out of the DDL, so the statement head is
+        // what identifies the reinstall.
+        db.exec(sql.replace(
+          /^(CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_update)[\s\S]*$/,
+          "$1\nAFTER UPDATE ON players BEGIN SELECT FROM WHERE; END;",
+        ));
+      },
+    };
+    assert.throws(() => initializeProfileChangeJournal(reissuing), /syntax error/);
+
+    // The rollback restored the body that was live before the reinstall, so the
+    // journal still fires. `triggerBody` throws on a missing row, so this also
+    // proves the trigger was not left dropped.
+    assert.equal(triggerBody(db, "trg_players_leaderboard_change_update"), prePrestige);
+  } finally {
+    db.close();
+  }
+});
