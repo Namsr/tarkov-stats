@@ -81,7 +81,7 @@ export async function verifyTask(request: NextRequest) {
         achievementIds: profile.achievements ? Object.keys(profile.achievements) : [],
         profileUpdatedAt: stats.profileUpdatedAt ?? null,
       });
-      if (!await context.store.finish(task.id, context.helperId, "completed")) {
+      if (!await context.store.finish(task.id, context.helperId, context.cycle.cycleId, "completed")) {
         return helperError("Invalid lease", 409);
       }
       await finalizeSeasonalTaskLifecycle(context.cycle, task.id).catch((error) =>
@@ -114,7 +114,7 @@ export async function verifyTask(request: NextRequest) {
   await context.seasonal.upsertProfile(validated.profile);
   const capture = await context.seasonal.captureSnapshot(validated.profile);
   await recordSeasonalCaptureLifecycle(context.cycle, validated.profile, capture, "task");
-  if (!await context.store.finish(task.id, context.helperId, "completed")) return helperError("Invalid lease", 409);
+  if (!await context.store.finish(task.id, context.helperId, context.cycle.cycleId, "completed")) return helperError("Invalid lease", 409);
   await finalizeSeasonalTaskLifecycle(context.cycle, task.id).catch((error) =>
     console.error("Seasonal profile follow-up failed", error));
   return NextResponse.json({ completed: true, capture: capture.status }, { headers: noStore });
