@@ -1,9 +1,42 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { registerHooks } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { groupPlayerSearchResults, selectPlayerSearchProfile } from "../lib/player-search.ts";
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "next/server") return nextResolve("next/server.js", context);
+    if (specifier.startsWith("@/")) {
+      return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const directory = mkdtempSync(join(tmpdir(), "tarkov-player-search-"));
+process.env.SQLITE_PATH = join(directory, "players.db");
+// The route records a request event on every branch. Point the analytics store
+// at the temp directory so it does not reach for the container's /data path.
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin-analytics.db");
+process.env.OBSERVABILITY_SAMPLE_RATE = "0";
+
+const { GET } = await import("../app/api/player/search/route.ts");
+const { NextRequest } = await import("next/server");
+
+function search(name, ip) {
+  const params = new URLSearchParams({ name, mode: "regular" });
+  return GET(new NextRequest(`http://local/api/player/search?${params}`, {
+    headers: { "x-real-ip": ip },
+  }));
+}
 
 test("multi-mode search groups one AID and ranks exact matches before prefixes", () => {
   const results = groupPlayerSearchResults([
@@ -75,6 +108,52 @@ test("search API reads all four indexes and tolerates unavailable modes", async 
   assert.match(component, /onClick=\{\(\) => openProfile\(player\.aid, profile\)\}/);
   assert.match(component, /search-unit__result-hitarea[\s\S]*search-unit__result-name/);
   assert.doesNotMatch(component, /role="link"/);
+});
+
+test("every player search response is no-store, so a shared cache cannot replay a 429 or 503", async () => {
+  // The index tables exist but carry no `synced_at`, so the store reports
+  // itself unavailable and the route takes its 503 branch.
+  const unavailable = await search("Alpha", "198.51.100.11");
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(await unavailable.json(), { error: "Player nickname index is not ready" });
+  assert.equal(unavailable.headers.get("cache-control"), "no-store");
+
+  const invalid = await search("not a nickname", "198.51.100.12");
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.headers.get("cache-control"), "no-store");
+
+  // Mark the regular index synced so the success path is reachable too.
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  db.exec("INSERT INTO player_index (aid, nickname, nickname_lower, synced_at) VALUES (7, 'Alpha', 'alpha', 1)");
+  db.exec("INSERT INTO player_index_meta (key, value) VALUES ('synced_at', '1')");
+  db.close();
+
+  const found = await search("Alpha", "198.51.100.13");
+  assert.equal(found.status, 200);
+  assert.equal(found.headers.get("cache-control"), "no-store");
+  assert.deepEqual(
+    (await found.json()).map((player) => ({ aid: player.aid, name: player.name })),
+    [{ aid: 7, name: "Alpha" }],
+  );
+
+  // The default search bucket allows 30 requests a minute, so the 31st is the
+  // rate-limited one. It used to ship the empty limiter header bag, leaving a
+  // shared cache free to store and replay that 429 for every other visitor.
+  let rateLimited = null;
+  for (let attempt = 0; attempt <= 30; attempt += 1) {
+    const response = await search("Alpha", "198.51.100.14");
+    if (response.status === 429) rateLimited = response;
+  }
+  assert.ok(rateLimited, "the 31st request from one IP must be rate limited");
+  assert.deepEqual(await rateLimited.json(), { error: "Rate limit exceeded" });
+  assert.equal(rateLimited.headers.get("cache-control"), "no-store");
+
+  // The limiter has nothing left to merge, so the directive stays single-sourced.
+  const route = await readFile("app/api/player/search/route.ts", "utf8");
+  assert.match(route, /const noStore = \{ \.\.\.headers, "Cache-Control": "no-store" \}/);
+  assert.equal((route.match(/"Cache-Control"/g) ?? []).length, 1);
+  assert.doesNotMatch(route, /\{ status: \d+, headers \}/);
+  assert.doesNotMatch(route, /NextResponse\.json\(results, \{ headers \}\)/);
 });
 
 test("saved nickname results hide on blur and reopen before recent history", async () => {

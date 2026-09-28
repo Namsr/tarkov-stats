@@ -5,6 +5,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
   createSqliteCommunityReportsStore,
+  getCommunityReportsStore,
   type CommunityReportsStore,
 // @ts-ignore -- Node's strip-types runner resolves the explicit .ts module.
 } from "../lib/community-reports-db.ts";
@@ -147,6 +148,83 @@ test("both halves of the community report endpoint are rate limited", async () =
   // A separate bucket so browsing cannot eat the report budget.
   assert.equal(get.includes('bucket: "community-reports"'), false);
   assert.match(post, /bucket: "community-reports"/);
+});
+
+test("the store opener waits for the write lock and drops the handle when init fails", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "community-reports-init-"));
+  const reportsPath = join(directory, "community-reports.db");
+  const previousPath = process.env.REPORTS_SQLITE_PATH;
+  process.env.REPORTS_SQLITE_PATH = reportsPath;
+
+  // The opener is a singleton with no reset, so both cases live in one test and
+  // the failing one has to run first: once a handle is cached the open path is
+  // never taken again.
+  const close = DatabaseSync.prototype.close;
+  const exec = DatabaseSync.prototype.exec;
+  const closed: DatabaseSync[] = [];
+  const opened: DatabaseSync[] = [];
+  DatabaseSync.prototype.close = function (this: DatabaseSync) {
+    closed.push(this);
+    return close.call(this);
+  };
+  DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
+    if (!opened.includes(this)) opened.push(this);
+    return exec.call(this, sql);
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // Not a SQLite database. The constructor opens lazily, so the handle exists
+    // and only the schema exec fails, which is the path that must close it.
+    writeFileSync(reportsPath, "this is not a sqlite database");
+    assert.equal(await getCommunityReportsStore(), null, "a failed schema init reports unavailable");
+    assert.equal(closed.length, 1, "the handle opened before the failed schema exec must be closed");
+    assert.equal(closed[0], opened[0], "the closed handle is the one that failed, not a later open");
+  } finally {
+    DatabaseSync.prototype.close = close;
+    DatabaseSync.prototype.exec = exec;
+    console.warn = warn;
+    if (previousPath === undefined) delete process.env.REPORTS_SQLITE_PATH;
+    else process.env.REPORTS_SQLITE_PATH = previousPath;
+  }
+
+  // Left behind on purpose: the opener caches its handle for the life of the
+  // process, and Windows refuses to delete an open database file.
+});
+
+test("the store opener sets a busy timeout before running the schema", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "community-reports-pragma-"));
+  const previousPath = process.env.REPORTS_SQLITE_PATH;
+  process.env.REPORTS_SQLITE_PATH = join(directory, "community-reports.db");
+
+  const exec = DatabaseSync.prototype.exec;
+  const opened: DatabaseSync[] = [];
+  DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
+    if (!opened.includes(this)) opened.push(this);
+    return exec.call(this, sql);
+  };
+  try {
+    const store = await getCommunityReportsStore();
+    assert.ok(store, "the store opens against a fresh file");
+    assert.equal(opened.length, 1, "the opener opened the database once");
+    // Read the effective value back off the live handle rather than matching the
+    // statement text: SQLite's default is 0, so 0 here is the defect.
+    assert.equal(
+      Number((opened[0].prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout),
+      5000,
+      "the handle waits for the write lock instead of failing on the first CREATE",
+    );
+  } finally {
+    DatabaseSync.prototype.exec = exec;
+    if (previousPath === undefined) delete process.env.REPORTS_SQLITE_PATH;
+    else process.env.REPORTS_SQLITE_PATH = previousPath;
+  }
 });
 
 test("both review queries pin their tie order with the unique AID key", async () => {

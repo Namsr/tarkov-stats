@@ -406,6 +406,52 @@ test("Arena mode baselines compute matches without publications", async () => {
   }
 });
 
+test("Arena mode baselines recompute the population cohort once a sync bumps the population version", async () => {
+  const publications = await import("../lib/average-publication.ts");
+  const dynamic = await import("../lib/average-dynamic-cache.ts");
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  process.env.AVERAGE_PUBLATIONS_ENABLED = "false";
+  publications.resetAveragePublicationForTests();
+  // The version the Arena sync bumps. Without the table both routes read 0,
+  // which is what a fresh install reports, so the column is created here.
+  db.exec("CREATE TABLE IF NOT EXISTS arena_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const setVersion = (value) => db.prepare(
+    "INSERT INTO arena_profile_sync_meta (key, value) VALUES ('dynamic_cache_version', ?) "
+    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(value));
+  const lateAids = [900_001, 900_002, 900_003];
+  const lastHeroCohort = async () => {
+    const response = await getBaselinesBatch(new NextRequest(
+      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=lastHero",
+    ));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.unavailable, []);
+    return body.cohorts.lastHero;
+  };
+  try {
+    setVersion(1);
+    dynamic.resetDynamicAverageCacheForTests();
+    const before = await lastHeroCohort();
+    assert.equal(before.strategy, "population");
+    // The sync that bumps the version is the one that brought the new
+    // players in, so the served cohort has to move with it instead of
+    // surviving on the 15-minute LRU entry warmed above.
+    for (const aid of lateAids) insert.run(aid, "lastHero", 100, 100, aid, 50, 25, 2, 500, ARENA_PARSER_VERSION);
+    setVersion(2);
+    const after = await lastHeroCohort();
+    assert.equal(after.sampleN, before.sampleN + lateAids.length);
+    assert.equal(after.averageMatches.count, before.averageMatches.count + lateAids.length);
+  } finally {
+    for (const aid of lateAids) db.prepare("DELETE FROM arena_mode_stats WHERE aid = ?").run(aid);
+    db.exec("DROP TABLE IF EXISTS arena_profile_sync_meta");
+    dynamic.resetDynamicAverageCacheForTests();
+    publications.resetAveragePublicationForTests();
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+  }
+});
+
 test("Arena mode baselines ignore stale publications without averageMatches", async () => {
   const publications = await import("../lib/average-publication.ts");
   const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
