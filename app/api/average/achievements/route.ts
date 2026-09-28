@@ -98,7 +98,14 @@ export async function GET(request: NextRequest) {
     const cycleId = rawMode === "seasonal" ? request.nextUrl.searchParams.get("cycle") : null;
     if (rawMode === "seasonal") {
       const cycle = loadSeasonalCycleConfig();
-      if (!isSeasonalRolloutReady() || !cycle || cycleId !== cycle.cycleId || request.nextUrl.searchParams.getAll("cycle").length !== 1) {
+      // A season that has not rolled out is absent, not a client mistake: the
+      // same 404 app/api/seasonal/average answers for its own gate. Only a
+      // malformed or stale `cycle` stays a 400.
+      if (!isSeasonalRolloutReady() || !cycle) {
+        timing.finish({ operation: "average_achievements", mode: rawMode, outcome: "not_found", status: 404 });
+        return NextResponse.json({ error: "Seasonal average unavailable" }, { status: 404 });
+      }
+      if (cycleId !== cycle.cycleId || request.nextUrl.searchParams.getAll("cycle").length !== 1) {
         timing.finish({ operation: "average_achievements", mode: rawMode, outcome: "invalid", status: 400 });
         return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
       }
