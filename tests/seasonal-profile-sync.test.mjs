@@ -232,7 +232,7 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
         SEASONAL_TEST_FEED_LOG: feedLog,
       },
     });
-    const feedRequests = (await readFile(feedLog, "utf8")).split("\n").filter(Boolean);
+    const feedRequests = (await readFile(feedLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
     const elapsedMs = Date.now() - startedAt;
     assert.equal(feedRequests.length, 1, "the feed ladder must stop instead of sleeping past the run budget");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
@@ -241,9 +241,10 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
     // is the sleep that outlives the deadline, and the loop-top guard only runs
     // once that sleep returns, so an unclamped collector still opens exactly one
     // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms is ~3.9x the worst clean run measured here (229ms under
-    // 12 CPU burners) and under the 1000 ms the first backoff must cost, so it
-    // cannot flake on a loaded worker and cannot miss the overshoot either.
+    // two shapes. 900 ms sits above the worst clean run measured here (428ms, 14
+    // runs under 12 CPU burners) and below the 1000 ms the first backoff must cost
+    // plus process start (1160-1174ms unclamped), so it cannot flake on a loaded
+    // worker and cannot miss the overshoot either.
     assert.ok(
       elapsedMs < 900,
       `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,

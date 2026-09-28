@@ -594,9 +594,10 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
     // is the sleep that outlives the deadline, and the loop-top guard only runs
     // once that sleep returns, so an unclamped collector still opens exactly one
     // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms is ~2.7x the worst clean run measured here (336ms under
-    // 12 CPU burners) and under the 1000 ms the first backoff must cost, so it
-    // cannot flake on a loaded worker and cannot miss the overshoot either.
+    // two shapes. 900 ms sits above the worst clean run measured here (253ms over
+    // 20 runs, 14 of them under 12 CPU burners) and below the 1000 ms the first
+    // backoff must cost plus process start (1158-1181ms unclamped), so it cannot
+    // flake on a loaded worker and cannot miss the overshoot either.
     assert.ok(
       elapsedMs < 900,
       `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,

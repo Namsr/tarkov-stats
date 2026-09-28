@@ -678,9 +678,10 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
     // is the sleep that outlives the deadline, and the loop-top guard only runs
     // once that sleep returns, so an unclamped collector still opens exactly one
     // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms is ~4x the worst clean run measured here (209ms under
-    // 12 CPU burners) and under the 1000 ms the first backoff must cost, so it
-    // cannot flake on a loaded worker and cannot miss the overshoot either.
+    // two shapes. 900 ms sits above the worst clean run measured here (224ms under
+    // 12 CPU burners) and below the 1000 ms the first backoff must cost plus
+    // process start (1146-1542ms unclamped), so it cannot flake on a loaded worker
+    // and cannot miss the overshoot either.
     assert.ok(
       elapsedMs < 900,
       `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
