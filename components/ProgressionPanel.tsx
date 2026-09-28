@@ -135,6 +135,15 @@ export default function ProgressionPanel({
   const [secondaryError, setSecondaryError] = useState(false);
   const secondaryGeneration = useRef(0);
   const secondaryController = useRef<AbortController | null>(null);
+  // The timeline does not depend on the language, but `t` is memoized on `lang` and
+  // was in the load effect's dependencies, so every EN/RU switch re-ran the effect
+  // and re-fetched /api/progression/timeline with unchanged parameters. The ref
+  // keeps the error strings current instead. Declared before the load effect so it
+  // is already up to date when that one runs.
+  const translate = useRef(t);
+  useEffect(() => {
+    translate.current = t;
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -158,10 +167,10 @@ export default function ProgressionPanel({
           signal: controller.signal,
           cache: forceRefresh || refreshRevision > 0 ? "no-store" : "default",
         });
-        if (!response.ok) throw new Error(t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
+        if (!response.ok) throw new Error(translate.current(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
         const result: unknown = await response.json();
         if (!response.ok || !validTimelineResponse(result, { aid, mode, cycleId })) {
-          throw new Error(t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
+          throw new Error(translate.current(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
         }
         if (controller.signal.aborted) return;
         timelineCache.set(cacheKey, result);
@@ -183,7 +192,8 @@ export default function ProgressionPanel({
       window.removeEventListener("profile-mode-navigate", abortForNavigation);
       controller.abort();
     };
-  }, [aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t]);
+    // `t` is read through `translate` so a language switch cannot re-run this effect.
+  }, [aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision]);
 
   const history = data?.history;
   const longTerm = data?.longTerm;

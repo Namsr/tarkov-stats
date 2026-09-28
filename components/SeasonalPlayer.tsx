@@ -200,7 +200,7 @@ export default function SeasonalPlayer({
   cycleId: string;
   levelBands: LevelBand[];
 }) {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({
     aid: String(aid),
     mode: "seasonal",
@@ -241,6 +241,16 @@ export default function SeasonalPlayer({
   // Without it a poll started for an older profile can land after a manual
   // refresh and overwrite the newer risk value.
   const riskPollGeneration = useRef(0);
+  // `t` is memoized on `lang`, so it changes identity on every EN/RU switch. In the
+  // load effect's dependencies it made a language toggle bump requestGeneration and
+  // discard an in-flight «Обновить» (wait=1), which then reported 'unchanged'. The
+  // ref keeps the error strings current without re-running the effect. `lang` was
+  // never read in the body, so it goes as well. Declared before the load effect so
+  // it is already up to date when that one runs.
+  const translate = useRef(t);
+  useEffect(() => {
+    translate.current = t;
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -281,14 +291,14 @@ export default function SeasonalPlayer({
             if (!cancelled && generation === requestGeneration.current) setModeUnavailable(true);
             return null;
           }
-          throw new Error(body.error ?? t("seasonal.profileUnavailable"));
+          throw new Error(body.error ?? translate.current("seasonal.profileUnavailable"));
         }
         if (
           body.identity?.aid !== aid ||
           body.identity?.mode !== "seasonal" ||
           body.identity?.cycleId !== cycleId
         ) {
-          throw new Error(t("seasonal.profileUnavailable"));
+          throw new Error(translate.current("seasonal.profileUnavailable"));
         }
         if (cancelled || generation !== requestGeneration.current) return null;
         const initialRisk = body.viewModel?.risk ?? body.risk ?? null;
@@ -317,8 +327,8 @@ export default function SeasonalPlayer({
       .catch((caught: unknown) => {
         if (cancelled || generation !== requestGeneration.current) return;
         setError(caught instanceof PlayerProfileResponseError
-          ? t("seasonal.profileUnavailable")
-          : caught instanceof Error ? caught.message : t("seasonal.profileUnavailable"));
+          ? translate.current("seasonal.profileUnavailable")
+          : caught instanceof Error ? caught.message : translate.current("seasonal.profileUnavailable"));
       })
       .finally(() => {
         if (!cancelled && generation === requestGeneration.current) setLoading(false);
@@ -329,8 +339,9 @@ export default function SeasonalPlayer({
     };
     // `profile` is read only to carry the nickname across the reset above; adding
     // it would re-run this reset every time a new profile arrives.
+    // `t` is read through `translate` so a language switch cannot re-run this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aid, cycleId, lang, profileRequestUrl, t]);
+  }, [aid, cycleId, profileRequestUrl]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;

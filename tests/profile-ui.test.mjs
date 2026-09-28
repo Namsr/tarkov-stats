@@ -126,8 +126,51 @@ test("missing mode keeps the profile shell without mounting data sections", asyn
 test("ordinary profile failures retain the generic error UI", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   assert.match(source, /const unavailable = data\.code === "mode_profile_unavailable"/);
-  assert.match(source, /throw new Error\(data\.error \?\? t\("player\.loadError"\)\)/);
+  // Anchored on the load effect's own `unavailable` branch: `refreshProfile` throws
+  // the same shape, so an unanchored match would pass against either code path.
+  assert.match(
+    source,
+    /const unavailable = data\.code === "mode_profile_unavailable"[\s\S]*?throw new Error\(data\.error \?\? translate\.current\("player\.loadError"\)\)/,
+  );
   assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
+});
+
+test("a language switch does not re-request the profile or discard a refresh", async () => {
+  const [regular, seasonal, panel] = await Promise.all([
+    readFile("components/RegularPlayer.tsx", "utf8"),
+    readFile("components/SeasonalPlayer.tsx", "utf8"),
+    readFile("components/ProgressionPanel.tsx", "utf8"),
+  ]);
+
+  // `t` is memoized on `lang`, so it changes identity on every EN/RU toggle. With it
+  // in the dependency array the load effect re-ran, which bumps requestGeneration —
+  // and an in-flight «Обновить» (wait=1, so it can run for seconds) then resolved to
+  // "unchanged" for a result that had been thrown away.
+  assert.doesNotMatch(regular, /\}, \[aid, mode, profileRequestUrl, t\]\);/);
+  assert.match(regular, /\}, \[aid, mode, profileRequestUrl\]\);/);
+  // The translator is read through a ref so the error strings stay current.
+  assert.match(regular, /const translate = useRef\(t\);/);
+  assert.match(regular, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
+  assert.equal((regular.match(/translate\.current\("player\.loadError"\)/g) ?? []).length, 4);
+  // Only the load effect changes. `refreshProfile` is a useCallback, so a new `t`
+  // just gives the button a new callback and re-runs nothing.
+  assert.equal((regular.match(/\bt\("player\.loadError"\)/g) ?? []).length, 3);
+
+  // Same defect on a seasonal profile, where the array also carried a `lang` the body
+  // never read. `refreshProfile` keeps its own generation check, so the callback here
+  // only needs the plain `t` to stay a useCallback.
+  assert.doesNotMatch(seasonal, /\}, \[aid, cycleId, lang, profileRequestUrl, t\]\);/);
+  assert.match(seasonal, /\}, \[aid, cycleId, profileRequestUrl\]\);/);
+  assert.match(seasonal, /const translate = useRef\(t\);/);
+  assert.match(seasonal, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
+  assert.equal((seasonal.match(/translate\.current\("seasonal\.profileUnavailable"\)/g) ?? []).length, 4);
+  assert.match(seasonal, /if \(error instanceof PlayerProfileResponseError\) throw new Error\(t\("seasonal\.profileUnavailable"\)\)/);
+
+  // The timeline parameters carry no language, so the fetch must not re-run for one.
+  assert.doesNotMatch(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);
+  assert.match(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]\);/);
+  assert.match(panel, /const translate = useRef\(t\);/);
+  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 2);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
@@ -793,7 +836,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /ProgressionTimelineResponse/);
   assert.match(panel, /setData\(result\)/);
   assert.match(panel, /function timelineHasPoints/);
-  assert.match(panel, /\[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]/);
+  assert.match(panel, /\[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]/);
   assert.doesNotMatch(panel, /params\.(?:set|append)\("revision"/);
   assert.match(panel, /role="status"/);
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);
