@@ -95,6 +95,14 @@ async function save(source) {
   await store.upsert(source.aid, parseArenaProfileStats(source), []);
 }
 
+// Declared fixture: getStore is the only thing that creates the arena schema,
+// and lib/db caches the connection per process. Calling it before each test
+// makes every test below runnable on its own instead of inheriting the tables
+// from whichever test opened the database first.
+test.beforeEach(async () => {
+  assert.ok(await getStore("arena"));
+});
+
 test("Arena parser preserves zeroes, missing counters, source counters, and incomplete fifth modes", () => {
   const parsed = parseArenaProfileStats(profile(501, { kills: 0, deaths: 0, headshots: null, missingMode: true, future: true }));
   const arena = parsed.arenaProfile;
