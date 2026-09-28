@@ -632,8 +632,14 @@ test("profile refresh checks automatically after returning without requiring F5"
   const button = await readFile("components/RefreshButton.tsx", "utf8");
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
 
-  assert.match(button, /window\.addEventListener\("focus", handleFocus\)/);
+  // Returning from tarkov.dev still checks without an F5, but the trigger is page
+  // visibility: a background tab never hides this one, so a ctrl/cmd or middle click
+  // must not leave a pending flag that fires on the next unrelated focus.
+  assert.match(button, /document\.addEventListener\("visibilitychange", handleVisible\)/);
+  assert.match(button, /document\.visibilityState !== "visible" \|\| !awaitingReturn\.current/);
+  assert.match(button, /event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey/);
   assert.match(button, /awaitingReturn\.current = true/);
+  assert.doesNotMatch(button, /window\.addEventListener\("focus"/);
   assert.match(button, /if \(!onCheck\) return/);
   assert.match(button, /if \(!onCheck \|\| checking\.current\) return/);
   assert.match(button, /player\.refreshCheckAgain/);
