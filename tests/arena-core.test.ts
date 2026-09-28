@@ -953,3 +953,30 @@ test("Arena averages expose averageMatches for mode bars", async () => {
   assert.equal(sparseCohort?.reason, "insufficient_cohort");
   assert.equal(sparseCohort?.averageMatches.value, null);
 });
+
+test("Arena average bounds survive a peer set larger than the V8 argument limit", async () => {
+  // The eligible peer scan has no LIMIT and grows with every collected player in
+  // a mode, while Math.min(...values) throws RangeError past ~125k arguments on
+  // V8, so the bounds have to be folded.
+  resetArenaData();
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { db } = await getArenaBackend();
+  const peers = 130_000;
+  const insert = db.prepare(`INSERT INTO arena_mode_stats
+    (aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate, kills_per_match,
+     damage_per_match, upstream_version, parser_version, raw_json, fetched_at)
+    VALUES (?, 'teamFight', ?, ?, 1, 50, 20, 1, 400, 1800000000000, ?, '{}', 1800000000000)`);
+  db.exec("BEGIN");
+  for (let aid = 1; aid <= peers; aid += 1) {
+    insert.run(aid, 50 + (aid % 97), 10 + (aid % 53), ARENA_PARSER_VERSION);
+  }
+  db.exec("COMMIT");
+  try {
+    const average = await getArenaAverage({ mode: "teamFight" });
+    assert.equal(average?.sampleN, peers);
+    assert.deepEqual(average?.bounds.hours, { min: 50, max: 146 });
+    assert.deepEqual(average?.bounds.matches, { min: 10, max: 62 });
+  } finally {
+    resetArenaData();
+  }
+});

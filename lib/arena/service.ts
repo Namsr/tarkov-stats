@@ -136,7 +136,18 @@ function metricSummary(rows: Row[], kind: ArenaStatistic, minimum = 0): Record<A
 
 function bounds(rows: Row[], key: "hours" | "games_count"): ArenaRangeBounds {
   const values = rows.map((row) => numberOrNull(row[key])).filter((value): value is number => value !== null);
-  return values.length ? { min: Math.min(...values), max: Math.max(...values) } : { min: null, max: null };
+  if (!values.length) return { min: null, max: null };
+  // The eligible peer scan is uncapped, so one mode can hand us more values than
+  // Math.min(...values) accepts arguments for before V8 throws RangeError. Fold
+  // instead of spreading, like lib/seasonal/progression.ts and
+  // lib/seasonal/daily-aggregates.ts.
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return { min, max };
 }
 
 function validateLimit(value: number | null | undefined, name: string): number | null {
