@@ -28,8 +28,23 @@ export function sqliteTrigger(name: string, body: string): TriggerDdl {
 
 // SQLite stores the statement it parsed, so the stored text carries neither
 // `IF NOT EXISTS` nor the trailing semicolon. Compare a normalized form of both.
+//
+// Case is preserved on purpose. SQLite folds keywords and identifiers, and stores
+// the source text verbatim, so source and stored text already agree on case
+// everywhere except inside string literals — where comparison IS case-sensitive. A
+// `'Seasonal'` -> `'seasonal'` edit is a real change to what the trigger watches, and
+// folding case here would call the two definitions equal and skip the reinstall.
+//
+// Limitation: this comparison collapses runs of whitespace, including whitespace
+// inside a string literal, so a body edit that changes only the spacing within a
+// literal is not detected. No trigger in this repo carries such a literal. Making
+// this exact would mean tokenizing SQL to find literal boundaries, whose failure mode
+// is worse: a mis-detected difference reinstalls the trigger on every process open
+// forever, which costs a write lock each time and gives up the read-only-under-a-
+// concurrent-writer property the stored comparison exists to protect.
 function normalizedTriggerDdl(ddl: string): string {
-  return ddl.replace(/\bIF NOT EXISTS\b/gi, "").replace(/\s+/g, " ").replace(/;\s*$/, "").trim().toLowerCase();
+  return ddl.replace(/^(\s*CREATE\s+TRIGGER)\s+IF\s+NOT\s+EXISTS\b/i, "$1")
+    .replace(/\s+/g, " ").replace(/;\s*$/, "").trim();
 }
 
 /**

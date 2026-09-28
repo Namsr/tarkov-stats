@@ -531,3 +531,19 @@ test("a failed recreate leaves the previous trigger installed", () => {
   } finally { db.close(); }
 });
 
+test("a case-only edit to a string literal in a trigger body is still a change", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const current = storedTriggerDdl(db, "leaderboard_seasonal_profile_update");
+    // Take the real body and change nothing but the case of one literal. SQLite
+    // compares strings case-sensitively, so the trigger now watches a different mode.
+    db.exec(`DROP TRIGGER leaderboard_seasonal_profile_update;
+      ${current.replace("NEW.mode = 'seasonal'", "NEW.mode = 'Seasonal'")}`);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("'Seasonal'"), true);
+
+    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("'Seasonal'"), false);
+    assert.equal(storedTriggerDdl(db, "leaderboard_seasonal_profile_update").includes("NEW.mode = 'seasonal'"), true);
+  } finally { db.close(); }
+});
