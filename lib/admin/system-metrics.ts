@@ -329,20 +329,28 @@ export function createSystemMetricsStore(db: any): SystemMetricsStore {
 
 let storePromise: Promise<SystemMetricsStore | null> | null = null;
 let warned = false;
+let retryAfter = 0;
 
 export function getSystemMetricsStore(): Promise<SystemMetricsStore | null> {
   if (storePromise) return storePromise;
+  // A failed open must not disable system metrics until the process is restarted.
+  if (Date.now() < retryAfter) return Promise.resolve(null);
   storePromise = (async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let db: any = null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = await import("node:sqlite" as string) as any;
-      const db = new sqlite.DatabaseSync(process.env.SYSTEM_METRICS_SQLITE_PATH || "/data/system-metrics.db");
+      db = new sqlite.DatabaseSync(process.env.SYSTEM_METRICS_SQLITE_PATH || "/data/system-metrics.db");
       return createSystemMetricsStore(db);
     } catch (error) {
+      try { db?.close(); } catch { /* Preserve the initialization error. */ }
       if (!warned) {
         warned = true;
         console.warn("system metrics unavailable: " + (error as Error).message);
       }
+      retryAfter = Date.now() + 5_000;
+      storePromise = null;
       return null;
     }
   })();
