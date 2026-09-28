@@ -520,6 +520,12 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
           data-open={showResults}
           aria-hidden={!showResults}
           inert={!showResults}
+          // `aria-controls` points here whenever results are shown, so this needs a
+          // popup role to match `aria-haspopup="dialog"` on the input. The rows are
+          // buttons rather than options, so a listbox would be wrong; this mirrors
+          // the recent list above.
+          role="dialog"
+          aria-label={t("search.resultsHeading")}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             event.preventDefault();

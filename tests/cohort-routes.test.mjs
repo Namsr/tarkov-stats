@@ -4,6 +4,7 @@ import test from "node:test";
 
 const regularRoute = readFileSync(new URL("../app/api/average/cohort/route.ts", import.meta.url), "utf8");
 const seasonalRoute = readFileSync(new URL("../app/api/seasonal/cohort/route.ts", import.meta.url), "utf8");
+const seasonalAverageRoute = readFileSync(new URL("../app/api/seasonal/average/route.ts", import.meta.url), "utf8");
 const seasonalHelper = readFileSync(new URL("../lib/seasonal/comparison-cohort.ts", import.meta.url), "utf8");
 
 test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
@@ -140,4 +141,19 @@ test("regular and arena cohort successes carry private max-age while errors stay
   // 4xx/5xx paths keep no-store.
   assert.match(arenaBranch, /"Cache-Control":\s*"no-store"/);
   assert.match(persistentBranch, /"Cache-Control":\s*"no-store"/);
+});
+
+test("every Seasonal average branch reports request timing", () => {
+  // `timing.finish()` is the only caller of `recordRequestEvent`, so a branch that
+  // skips it is invisible in admin.health. Both sibling routes finish on every
+  // return; this one skipped six of them.
+  const handler = seasonalAverageRoute.slice(seasonalAverageRoute.indexOf("export async function GET"));
+  const returns = handler.match(/return NextResponse\.json\(/g) ?? [];
+  const finishes = handler.match(/timing\.finish\(/g) ?? [];
+  assert.equal(returns.length, finishes.length,
+    `every early return must finish timing (${returns.length} returns, ${finishes.length} finishes)`);
+  // The 400 branches use the same vocabulary as the sibling cohort routes.
+  assert.equal(
+    (handler.match(/outcome: "invalid", status: 400/g) ?? []).length, 5);
+  assert.match(handler, /outcome: "not_found", status: 404/);
 });

@@ -2,8 +2,12 @@
 // @ts-nocheck -- node:sqlite types are not present in the project's Node 20 type package.
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -375,4 +379,216 @@ test("regular average progression exposes the median PvP raid series without a t
   const pve = queryPersistentProgressionAverage(db, "pve");
   assert.equal(pve.mode, "pve");
   assert.deepEqual(pve.series.cumulative.overall, []);
+});
+
+// `VACUUM INTO` refuses an existing target and the stamped name is all that separates two
+// runs, so the tests below pin it. The preload replaces the no-argument `Date` the script
+// stamps the name with, which `--import` runs before the script itself.
+const frozenStamp = "2026-09-27T19-56-03-443Z";
+const stampedBackupName = `progression.db.before-progression-backfill-${frozenStamp}.bak`;
+
+function writeFrozenClock(directory: string): string {
+  const file = join(directory, "frozen-clock.mjs");
+  writeFileSync(file, [
+    "const Real = Date;",
+    'const fixed = new Real("2026-09-27T19:56:03.443Z").getTime();',
+    "globalThis.Date = class extends Real {",
+    "  constructor(...args) { super(...(args.length ? args : [fixed])); }",
+    "  static now() { return Real.now(); }",
+    "};",
+  ].join("\n"));
+  return file;
+}
+
+function runBackfill(path: string, clock?: string) {
+  return spawnSync(process.execPath, [
+    "--experimental-strip-types",
+    "--experimental-sqlite",
+    ...(clock ? [`--import=${pathToFileURL(clock).href}`] : []),
+    resolve("scripts/backfill-progression.mjs"),
+    path,
+  ], { encoding: "utf8" });
+}
+
+test("the progression backfill publishes a backup that holds the frames left in the WAL", () => {
+  // `copyFileSync` copied only the main database file, so a `.bak` published while the
+  // web container held this database was missing the frames still sitting in the -wal:
+  // it passed `quick_check` on restore and had silently lost the newest commits. The
+  // backup is taken from one read snapshot, so the reader and the WAL-only row must both
+  // survive into the published restore point.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-wal-"));
+  const path = join(directory, "progression.db");
+  const seed = new DatabaseSync(path);
+  let reader;
+  try {
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("INSERT INTO t VALUES (1)");
+    seed.close();
+
+    reader = new DatabaseSync(path);
+    reader.exec("BEGIN");
+    reader.prepare("SELECT COUNT(*) AS n FROM t").get();
+
+    // Commit a row into the WAL while the reader still holds its snapshot, so the frame
+    // is in the -wal only and never reaches the main database file.
+    const writer = new DatabaseSync(path);
+    writer.exec("INSERT INTO t VALUES (2)");
+    writer.close();
+
+    const result = runBackfill(path);
+    assert.equal(result.status, 0, `the run must succeed while a reader is open: ${result.stderr}`);
+
+    const backups = readdirSync(directory).filter((name) => name.endsWith(".bak"));
+    assert.equal(backups.length, 1, "exactly one restore point must be published");
+    const backup = new DatabaseSync(join(directory, backups[0]), { readOnly: true });
+    try {
+      assert.equal(Object.values(backup.prepare("PRAGMA quick_check").get())[0], "ok");
+      assert.deepEqual(
+        backup.prepare("SELECT x FROM t ORDER BY x").all().map((row) => row.x), [1, 2],
+        "the published backup must contain the row committed to the -wal",
+      );
+    } finally {
+      backup.close();
+    }
+  } finally {
+    try { reader?.exec("ROLLBACK"); } catch {}
+    try { reader?.close(); } catch {}
+    try { seed.close(); } catch {}
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test("the progression backfill leaves a published restore point at a taken name alone", () => {
+  // `VACUUM INTO` throws on an existing target, and the catch that deletes an unsound copy
+  // used to answer that by removing the file it collided with. A name that is already taken
+  // holds a restore point an earlier run published, so the run has to stop there instead.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-taken-"));
+  const path = join(directory, "progression.db");
+  const target = join(directory, stampedBackupName);
+  try {
+    const seed = new DatabaseSync(path);
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("INSERT INTO t VALUES (1)");
+    seed.close();
+
+    const published = new DatabaseSync(target);
+    published.exec("CREATE TABLE earlier_run (x INTEGER)");
+    published.exec("INSERT INTO earlier_run VALUES (7)");
+    published.close();
+
+    const result = runBackfill(path, writeFrozenClock(directory));
+    assert.notEqual(result.status, 0, "a taken name must abort the run");
+
+    // The survivor is checked before the abort message, so a run that deletes the file it
+    // collided with fails here and names the data loss rather than the wording of the abort.
+    assert.ok(existsSync(target), "the restore point published by the earlier run must survive the run");
+    const survivor = new DatabaseSync(target, { readOnly: true });
+    try {
+      assert.deepEqual(
+        survivor.prepare("SELECT x FROM earlier_run").all().map((row) => row.x), [7],
+        "the restore point published by the earlier run must survive untouched",
+      );
+    } finally {
+      survivor.close();
+    }
+    assert.deepEqual(
+      readdirSync(directory).filter((name) => name.endsWith(".bak")), [stampedBackupName],
+      "the run must not publish a second restore point under the taken name",
+    );
+    assert.match(result.stderr, /restore point already exists/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test("the progression backfill keeps a sound backup when a writer moves the source", async () => {
+  // The counts are only decidable against a source `data_version` proves unchanged, because
+  // a commit landing after the copy can shrink the source below the copy -- `daily_aggregates`
+  // is rewritten on this same database by the population materializer -- and a sound restore
+  // point then holds more rows than the source. The writer below commits the moment the copy
+  // appears, which `VACUUM INTO` does only after it has fixed its snapshot, so the run really
+  // does read a source that moved and must publish the copy rather than delete it.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-writer-"));
+  const path = join(directory, "progression.db");
+  const target = join(directory, stampedBackupName);
+  const writer = new Worker(`
+    const { parentPort, workerData } = require("node:worker_threads");
+    const { existsSync } = require("node:fs");
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(workerData.path);
+    while (!existsSync(workerData.target)) {}
+    db.exec("BEGIN IMMEDIATE");
+    db.exec("DELETE FROM t WHERE x > 195");
+    db.exec("COMMIT");
+    db.close();
+    parentPort.postMessage("committed");
+  `, { eval: true, workerData: { path, target } });
+  try {
+    const seed = new DatabaseSync(path);
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE t (x INTEGER)");
+    seed.exec("CREATE TABLE bulk (x INTEGER)");
+    // A large table keeps the run busy between the copy and the read of the source, so the
+    // writer's single commit lands inside that window on a loaded machine too.
+    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM series WHERE x < 49999)
+      INSERT INTO bulk (x) SELECT x FROM series`);
+    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM series WHERE x < 200)
+      INSERT INTO t (x) SELECT x FROM series`);
+    seed.close();
+
+    // The status is asserted before the worker's message is awaited: a run that aborts before
+    // the copy leaves the `.bak` the writer waits for unwritten, and `node --test` has no
+    // default per-test timeout, so awaiting first would hang the suite instead of failing it.
+    const committed = new Promise((resolve) => writer.once("message", resolve));
+    const result = runBackfill(path, writeFrozenClock(directory));
+    assert.equal(result.status, 0, `the run must succeed while a writer commits: ${result.stderr}`);
+    assert.deepEqual(await committed, "committed");
+
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.backupSourceUnchanged, false, "the writer must have moved the source");
+    assert.equal(summary.backupRows.t, 200);
+    assert.equal(summary.backupSourceRows.t, 195, "the summary must report the source it read");
+
+    const backup = new DatabaseSync(target, { readOnly: true });
+    try {
+      assert.equal(
+        Object.values(backup.prepare("PRAGMA quick_check").get())[0], "ok",
+        "the sound copy must stay published",
+      );
+      assert.equal(Number(backup.prepare("SELECT COUNT(*) AS n FROM t").get().n), 200);
+    } finally {
+      backup.close();
+    }
+    const source = new DatabaseSync(path, { readOnly: true });
+    try {
+      assert.equal(Number(source.prepare("SELECT COUNT(*) AS n FROM t").get().n), 195);
+    } finally {
+      source.close();
+    }
+  } finally {
+    await writer.terminate();
+    rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test("the regular progression backfill refuses a missing database instead of creating one", () => {
+  // `DatabaseSync` creates the file it is given, so before the path guard a typo
+  // produced a green run: fresh file, schema created in it, quickCheck "ok" and
+  // every count 0, while the real progression database was never touched.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-regular-"));
+  const missing = join(directory, "progresion.db");
+  try {
+    const result = spawnSync(process.execPath, [
+      "--experimental-strip-types",
+      resolve("scripts/backfill-regular-progression.mjs"),
+      missing,
+    ], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, "a missing progression database must fail the run");
+    assert.match(result.stderr, /progression database does not exist/);
+    assert.equal(existsSync(missing), false, "the script must not create the database");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

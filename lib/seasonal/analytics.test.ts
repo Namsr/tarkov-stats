@@ -130,6 +130,30 @@ test("uses exact PMC-vs-PMC deltas when regular snapshots also contain Scav PMC 
   assert.equal(intervals[0].metrics?.aiScavKd, 2);
 });
 
+test("treats a null exact PMC-vs-PMC counter as unknown, not as a measured zero", () => {
+  // Seasonal storage and the JSON feed both write an explicit `null` when the
+  // upstream profile has no `KilledPmc`, so `Number(null)` must not become 0.
+  assert.deepEqual(
+    calculateKd(counters({ pmcKills: 12, killedPmc: 5, pmcDeaths: 2, pmcKilledPmc: null })),
+    { pvpKd: 2.5, aiScavKd: 3.5, overallPmcKd: 6 }
+  );
+  assert.deepEqual(
+    calculateKd(counters({ pmcKills: 12, killedPmc: 5, pmcDeaths: 2, pmcKilledPmc: undefined })),
+    { pvpKd: 2.5, aiScavKd: 3.5, overallPmcKd: 6 }
+  );
+});
+
+test("does not derive an exact interval delta from a null exact counter", () => {
+  const intervals = buildSequentialIntervals([
+    snapshot(1, { pmcRaids: 10, pmcDeaths: 4, pmcKills: 20, killedPmc: 12, pmcKilledPmc: null }),
+    snapshot(2, { pmcRaids: 12, pmcDeaths: 5, pmcKills: 24, killedPmc: 15, pmcKilledPmc: null }),
+  ]);
+  assert.equal(intervals[0].changes.pmcKilledPmc, undefined);
+  // Falls back to the legacy `killedPmc` delta of 3 over a death delta of 1.
+  assert.equal(intervals[0].metrics?.pvpKd, 3);
+  assert.equal(intervals[0].metrics?.aiScavKd, 1);
+});
+
 test("uses average ranks for percentile ties and maps endpoints to 0..100", () => {
   assert.equal(percentileRank(1, [1, 2, 3]), 0);
   assert.equal(percentileRank(2, [1, 2, 3]), 50);
