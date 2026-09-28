@@ -5,11 +5,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-// SQLite opens its files without FILE_SHARE_DELETE, so a handle that is still
-// live when a suite cleans up makes the forced delete throw EPERM. Because the
-// delete sits in a `finally`, that throw replaces the assertion failure that
-// caused the cleanup: the report shows a locked temp path and no diff, and the
-// real defect has to be found a second time.
+// SQLite opens its files without FILE_SHARE_DELETE, so on Windows a handle that
+// is still live when a suite cleans up makes the forced delete throw EPERM.
+// Because the delete sits in a `finally`, that throw replaces the assertion
+// failure that caused the cleanup: the report shows a locked temp path and no
+// diff, and the real defect has to be found a second time. POSIX unlink(2) has
+// no such rule, so off Windows the same delete succeeds and the assertion
+// failure is the one that surfaces. Both branches are asserted, so a platform
+// that starts behaving like the other fails here instead of silently skipping.
+
+const isWindows = process.platform === "win32";
 
 function lockedDeleteCode() {
   const directory = mkdtempSync(join(tmpdir(), "cleanup-lock-"));
@@ -31,27 +36,30 @@ function lockedDeleteCode() {
 
 const locked = lockedDeleteCode();
 
-test("a live SQLite handle makes a forced delete throw instead of removing the directory", () => {
-  assert.equal(locked, "EPERM",
-    "this suite is the regression gate for the Windows lock the guard exists for");
+test("a live SQLite handle makes a forced delete throw on Windows and succeed on POSIX", () => {
+  assert.equal(locked, isWindows ? "EPERM" : null, isWindows
+    ? "this suite is the regression gate for the Windows lock the guard exists for"
+    : "unlink(2) removes an open file, so the delete succeeds here and there is no lock to mask a failure with");
 });
 
-test("an unguarded cleanup delete reports EPERM and loses the failure that caused it", () => {
+test("an unguarded cleanup delete loses the failure that caused it", () => {
   const directory = mkdtempSync(join(tmpdir(), "cleanup-mask-"));
   const db = new DatabaseSync(join(directory, "live.db"));
   db.exec("CREATE TABLE t (a)");
   try {
-    // The bare form: the finally throws, and the real assertion is discarded.
+    // The bare form. On Windows the finally throws EPERM and the assertion is
+    // discarded; on POSIX the delete succeeds and the assertion is what the
+    // report carries, which is the only reason the guard is not visible there.
     assert.throws(() => {
       try {
         assert.fail("no such column: OLD.prestige");
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
-    }, { code: "EPERM" });
+    }, isWindows ? { code: "EPERM" } : { message: "no such column: OLD.prestige" });
 
     // The guarded form the suite uses: the cleanup stays best effort, so the
-    // real failure is what the report carries.
+    // real failure is what the report carries on either platform.
     assert.throws(() => {
       try {
         assert.fail("no such column: OLD.prestige");
@@ -88,10 +96,17 @@ test("every cleanup delete that can meet a live SQLite handle is guarded", () =>
       // belongs to a domain option such as getPublicProfile({ force: true }).
       if (!/(?:^|[^\w.$])rm(?:Sync)?\(/.test(line)) return;
       if (!line.includes("force: true")) return;
-      if (line.includes("try {") && line.includes("catch {")) return;
+      // A guard counts only when `try` and `catch` share the delete's own line.
+      // That is the shape every guarded call site in tests/ already uses, and
+      // the strict reading is the one that keeps the gate sound: a wider window
+      // would also accept a delete that merely sits near a try, so a real
+      // violation could pass. The failure message carries the exact line.
+      if (/\btry\s*\{/.test(line) && /\bcatch\b/.test(line)) return;
       unguarded.push(`${name}:${index + 1}`);
     });
   }
   assert.deepEqual(unguarded, [],
-    "wrap the delete in try/catch so a locked database cannot replace a real assertion failure");
+    "put the delete on one line inside try/catch, as in "
+    + "`try { await rm(directory, { recursive: true, force: true }); } catch { }`, "
+    + "so a locked database cannot replace a real assertion failure");
 });

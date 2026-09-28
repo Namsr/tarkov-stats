@@ -82,7 +82,7 @@ test("a stalled PvE index download aborts instead of holding the data-sync lock"
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* the aborted sync can still hold the database open. */ }
   }
 });
 
