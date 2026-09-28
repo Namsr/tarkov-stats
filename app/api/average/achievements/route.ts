@@ -98,7 +98,7 @@ export async function GET(request: NextRequest) {
     const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
     if (!isGameMode(rawMode)) {
       timing.finish({ operation: "average_achievements", outcome: "invalid", status: 400 });
-      return NextResponse.json({ error: "Invalid game mode" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid game mode" }, { status: 400, headers: noStore });
     }
     const cycleId = rawMode === "seasonal" ? request.nextUrl.searchParams.get("cycle") : null;
     if (rawMode === "seasonal") {

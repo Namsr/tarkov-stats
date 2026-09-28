@@ -105,4 +105,12 @@ test("a rolled-out cycle with a matching `cycle` still answers 200 with the publ
   assert.equal(live.status, 200);
   assert.equal(live.headers.get("cache-control"), "public, max-age=300, s-maxage=300, stale-while-revalidate=3600");
   assert.deepEqual(await live.json(), { total: 0, achievements: [] });
+
+  // Every error response is no-store, not only the gate's 404: the client fetches
+  // this URL with default cache mode, so a cacheable 400 would be pinned in the
+  // browser and the CDN after one bad request. `isGameMode` rejects the mode
+  // before the seasonal branch, so this needs no cycle configuration.
+  const badMode = await request("mode=bogus", ROLLED_OUT);
+  assert.equal(badMode.status, 400);
+  assert.equal(badMode.headers.get("cache-control"), "no-store");
 });
