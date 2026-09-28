@@ -502,13 +502,31 @@ test("ban review request results are dropped after unmount", async () => {
 
   assert.match(review, /const mounted = useRef\(true\);/);
   assert.match(review, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
-  for (const [setter, expected] of [["setCandidates", 2], ["setError", 2], ["setLoading", 1], ["setVoting", 1]]) {
+  for (const [setter, expected] of [["setCandidates", 2], ["setError", 3], ["setLoading", 1], ["setVoting", 1]]) {
     assert.equal(
       (review.match(new RegExp(`if \\(mounted\\.current\\) ${setter}\\(`, "g")) ?? []).length,
       expected,
       `${setter} must be guarded after each await`,
     );
   }
+});
+
+test("a successful ban-review claim clears the stale load error", async () => {
+  const review = await readFile("components/CommunityBanReview.tsx", "utf8");
+
+  // `claim` is keyed on `t`, so the header EN/RU toggle re-claims the queue.
+  // A claim that failed once must clear its own banner once a later one
+  // succeeds, otherwise the alert stacks on the list it just loaded -- and
+  // with an empty queue there is no vote left to clear it.
+  const claim = review.slice(
+    review.indexOf("const claim = useCallback"),
+    review.indexOf("useEffect(() => { void claim(); }, [claim]);"),
+  );
+  assert.match(claim, /setCandidates\(body\.candidates \?\? \[\]\);[\s\S]{0,200}if \(mounted\.current\) setError\(""\);/);
+  // The clear waits for the response, guarded like every other post-await
+  // setter. Hoisting it into the preamble (where `vote` can put its clear,
+  // because it runs before its await) would blank a claim still in flight.
+  assert.doesNotMatch(claim.slice(0, claim.indexOf("await fetch(")), /setError\(""\)/);
 });
 
 test("community helper drops poll and request results after unmount", async () => {
