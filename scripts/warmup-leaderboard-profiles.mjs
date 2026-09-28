@@ -21,12 +21,21 @@ export function parseWarmupModes(value) {
   return [...new Set(modes)].sort((a, b) => WARMUP_MODES.indexOf(a) - WARMUP_MODES.indexOf(b));
 }
 
-export function warmupModesFromArgs(argv = process.argv.slice(2)) {
-  for (const arg of argv) {
-    if (arg.startsWith("--modes=")) return parseWarmupModes(arg.slice("--modes=".length));
-    if (arg.startsWith("--mode=")) return parseWarmupModes(arg.slice("--mode=".length));
+/** Same two spellings as argValue in the index-sync scripts: --modes=arena and --modes arena. */
+function warmupModesArgValue(argv, name, fallback) {
+  const prefix = `${name}=`;
+  const inline = argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = argv.indexOf(name);
+  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
   }
-  return parseWarmupModes(process.env.LEADERBOARD_WARMUP_MODES);
+  return fallback;
+}
+
+export function warmupModesFromArgs(argv = process.argv.slice(2)) {
+  const value = warmupModesArgValue(argv, "--modes", warmupModesArgValue(argv, "--mode", undefined));
+  return parseWarmupModes(value ?? process.env.LEADERBOARD_WARMUP_MODES);
 }
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");

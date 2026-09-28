@@ -25,6 +25,7 @@ import {
   requestCandidate,
   runWarmup,
   selectWarmupCandidates,
+  warmupModesFromArgs,
 } from "../scripts/warmup-leaderboard-profiles.mjs";
 
 test("the persistent process lock rejects overlap and is released by its owner", () => {
@@ -195,6 +196,24 @@ test("mode filtering rejects typos and retains checkpoint state for other modes"
   assert.equal(result.checkpoint.modes.regular.skipped, 1);
   assert.equal(result.checkpoint.modes.arena.skipped, 1);
   assert.equal(result.bounded, false);
+});
+
+test("the warmup modes flag accepts the space-separated form like the other scripts", () => {
+  const previous = process.env.LEADERBOARD_WARMUP_MODES;
+  process.env.LEADERBOARD_WARMUP_MODES = "pve";
+  try {
+    assert.deepEqual(warmupModesFromArgs(["--modes", "arena"]), ["arena"]);
+    assert.deepEqual(warmupModesFromArgs(["--modes=arena"]), ["arena"]);
+    assert.deepEqual(warmupModesFromArgs(["--mode", "arena"]), ["arena"]);
+    assert.deepEqual(warmupModesFromArgs(["--mode=arena"]), ["arena"]);
+    assert.deepEqual(warmupModesFromArgs(["--modes", "arena,pve"]), ["pve", "arena"]);
+    assert.deepEqual(warmupModesFromArgs([]), ["pve"], "no flag keeps the environment default");
+    assert.deepEqual(warmupModesFromArgs(["--modes", "--mode=arena"]), ["arena"], "a value-less flag falls back");
+    assert.throws(() => warmupModesFromArgs(["--modes", "arnea"]), /expected modes from/);
+  } finally {
+    if (previous === undefined) delete process.env.LEADERBOARD_WARMUP_MODES;
+    else process.env.LEADERBOARD_WARMUP_MODES = previous;
+  }
 });
 
 test("a full run resumes terminal skips after failure and reaches the last mode", async () => {
