@@ -43,6 +43,28 @@ test("favorites are global by AID while mode widgets project the preferred link 
   assert.doesNotMatch(radar, /payload\.viewModel\?\.comparison \?\? payload\.stats/);
 });
 
+test("every favorites response is no-store, so the CDN cannot replay a 401 or 503 to the next visitor", async () => {
+  const route = await readFile("app/api/favorites/route.ts", "utf8");
+
+  // The limiter stopped emitting headers of its own, so spreading `headers`
+  // contributed nothing and every error branch shipped with no directive.
+  assert.match(route, /const noStore = \{ "Cache-Control": "no-store" \}/);
+  // Merged once in guard(), which is what the 14 mutation branches echo.
+  assert.match(route, /return \{ ok: true, sub: user\.sub, headers: \{ \.\.\.headers, \.\.\.noStore \} \}/);
+  // guard()'s own two rejections, plus GET's rate-limit/store/identity failures.
+  assert.match(route, /status: 429, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 401, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 503, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  assert.match(route, /status: 400, headers: \{ \.\.\.headers, \.\.\.noStore \}/);
+  // A new response must merge no-store or reuse g.headers, never the raw bag.
+  assert.doesNotMatch(route, /\{ status: \d+, headers \}/);
+  assert.doesNotMatch(route, /\{ headers \}\)/);
+  assert.doesNotMatch(route, /NextResponse\.json\([^)]*\{ headers: headers \}/);
+  // Keep the directive single-sourced rather than re-spelled at a return site.
+  assert.equal((route.match(/"Cache-Control"/g) ?? []).length, 1);
+  assert.doesNotMatch(route, /NextResponse\.json\([\s\S]{0,200}"Cache-Control"/);
+});
+
 test("seasonal profiles poll the risk-only endpoint after background evaluation", async () => {
   const [source, route] = await Promise.all([
     readFile("components/SeasonalPlayer.tsx", "utf8"),
@@ -106,6 +128,15 @@ test("ordinary profile failures retain the generic error UI", async () => {
   assert.match(source, /const unavailable = data\.code === "mode_profile_unavailable"/);
   assert.match(source, /throw new Error\(data\.error \?\? t\("player\.loadError"\)\)/);
   assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
+});
+
+test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+
+  // React updater functions must be pure: a nested setState runs during the render
+  // phase, and React may invoke the updater for a render it throws away.
+  assert.doesNotMatch(seasonal, /setProfile\(\(current\) => \{[\s\S]*?setDisplayNickname/);
+  assert.match(seasonal, /if \(profile\?\.nickname\) setDisplayNickname\(profile\.nickname\);\s*\n\s*setProfile\(null\);/);
 });
 
 test("profile actions share a top edge and helper copy sits underneath", async () => {
@@ -623,8 +654,14 @@ test("profile refresh checks automatically after returning without requiring F5"
   const button = await readFile("components/RefreshButton.tsx", "utf8");
   const profile = await readFile("components/RegularPlayer.tsx", "utf8");
 
-  assert.match(button, /window\.addEventListener\("focus", handleFocus\)/);
+  // Returning from tarkov.dev still checks without an F5, but the trigger is page
+  // visibility: a background tab never hides this one, so a ctrl/cmd or middle click
+  // must not leave a pending flag that fires on the next unrelated focus.
+  assert.match(button, /document\.addEventListener\("visibilitychange", handleVisible\)/);
+  assert.match(button, /document\.visibilityState !== "visible" \|\| !awaitingReturn\.current/);
+  assert.match(button, /event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey/);
   assert.match(button, /awaitingReturn\.current = true/);
+  assert.doesNotMatch(button, /window\.addEventListener\("focus"/);
   assert.match(button, /if \(!onCheck\) return/);
   assert.match(button, /if \(!onCheck \|\| checking\.current\) return/);
   assert.match(button, /player\.refreshCheckAgain/);

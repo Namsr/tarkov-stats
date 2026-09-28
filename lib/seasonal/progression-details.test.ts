@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 // @ts-expect-error Node's native TypeScript runner requires an explicit .ts extension.
-import { buildSeasonalProgressionDetails } from "./progression-details.ts";
+import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails } from "./progression-details.ts";
 import type { ProgressionDetailIntervalRow } from "./progression-details.ts";
 import type { SeasonalCounters } from "../../types/seasonal.ts";
 
@@ -70,6 +70,33 @@ test("computes exact long-term deltas from valid covered intervals", () => {
     intervals: 2,
     coveredRaids: 10,
   });
+});
+
+test("uses the exact PMC-vs-PMC delta when the interval row carries one", () => {
+  // The synthetic start-of-range snapshot has to offer an exact counter too,
+  // otherwise buildSequentialIntervals never accepts the row's exact delta and
+  // falls back to `killedPmc`, which also contains Scav kills in regular/PvE.
+  // 20 PMC kills with 8 against PMCs leaves 12 against AI/Scav.
+  const distributions = buildProgressionPercentileDistributions([
+    row(1, "2026-07-06", {
+      experience: 100, pmcRaids: 10, pmcSurvived: 5, pmcDeaths: 5,
+      pmcKills: 20, killedPmc: 12, pmcKilledPmc: 8,
+    }),
+  ]);
+
+  assert.deepEqual(distributions["2026-07-06"].pvpKd, [1.6]);
+  assert.deepEqual(distributions["2026-07-06"].killedPmcPerRaid, [0.8]);
+  assert.deepEqual(distributions["2026-07-06"].allPmcKillsPerRaid, [2]);
+
+  // A row without an exact counter keeps the legacy killedPmc split.
+  const legacy = buildProgressionPercentileDistributions([
+    row(2, "2026-07-06", {
+      experience: 100, pmcRaids: 10, pmcSurvived: 5, pmcDeaths: 5,
+      pmcKills: 20, killedPmc: 12,
+    }),
+  ]);
+  assert.deepEqual(legacy["2026-07-06"].pvpKd, [2.4]);
+  assert.deepEqual(legacy["2026-07-06"].killedPmcPerRaid, [1.2]);
 });
 
 test("builds anomaly populations only from valid same-cycle same-date Seasonal rows", () => {

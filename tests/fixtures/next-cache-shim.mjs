@@ -11,3 +11,6 @@ export function unstable_cache(fn, keyParts = [], options = {}) {
     return value;
   };
 }
+
+export function revalidateTag() {}
+

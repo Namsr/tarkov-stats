@@ -62,14 +62,20 @@ export async function POST(request: Request) {
 
   let body: Record<string, unknown>;
   try {
-    body = await request.json() as Record<string, unknown>;
+    // `request.json()` resolves for a literal `null` body, so the parsed value has
+    // to be checked before the field reads below can throw a TypeError.
+    const parsed: unknown = await request.json();
+    if (typeof parsed !== "object" || parsed === null) throw new TypeError("body is not an object");
+    body = parsed as Record<string, unknown>;
   } catch {
     return Response.json({ error: "Invalid JSON" }, { status: 400, headers });
   }
 
   const cycle = loadSeasonalCycleConfig();
   const owner = typeof body.owner === "string" ? body.owner : "";
-  if (!cycle || !owner) return Response.json({ error: "Active Seasonal cycle is required" }, { status: 409, headers });
+  // A missing cycle is a server-state conflict; a missing `owner` is a bad request.
+  if (!cycle) return Response.json({ error: "Active Seasonal cycle is required" }, { status: 409, headers });
+  if (!owner) return Response.json({ error: "owner is required" }, { status: 400, headers });
   if (body.cycleId != null && body.cycleId !== cycle.cycleId) {
     return Response.json({ error: "Seasonal cycle changed" }, { status: 409, headers });
   }
