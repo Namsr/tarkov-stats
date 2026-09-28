@@ -12,6 +12,9 @@ const { normalizeAid, normalizeNickname, createStringObjectParser, isClearlyTrun
 
 const DEFAULT_URL = "https://players.tarkov.dev/pve/index.json";
 const DEFAULT_DB = "/data/players.db";
+// A stalled upstream must not hold the shared data-sync lock: the deploy path
+// probes the same flock. The arena index sibling uses the same bound.
+const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 function hasArg(name) {
   return process.argv.includes(name);
@@ -87,7 +90,7 @@ function currentRowCount(db) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM pve_player_index WHERE mode = 'pve'").get()?.n) || 0;
 }
 
-async function requestIndex(db, url, force) {
+async function requestIndex(db, url, force, signal) {
   const headers = {};
   if (!force) {
     const etag = getMeta(db, "etag");
@@ -96,7 +99,7 @@ async function requestIndex(db, url, force) {
     if (lastModified) headers["if-modified-since"] = lastModified;
   }
 
-  const response = await fetchTarkovJson(url, { headers, cache: "no-store" });
+  const response = await fetchTarkovJson(url, { headers, cache: "no-store", signal });
   if (response.status === 304) return { unchanged: true };
   if (!response.ok) throw new Error(`PvE index download failed: HTTP ${response.status}`);
   return {
@@ -107,7 +110,7 @@ async function requestIndex(db, url, force) {
   };
 }
 
-async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
+async function consumeIndex(db, response, syncedAt, dryRun, previousRows, signal) {
   let insert = null;
   if (!dryRun) {
     db.exec("BEGIN IMMEDIATE");
@@ -147,6 +150,7 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (signal?.aborted) throw signal.reason ?? new Error("PvE index sync aborted");
       bytes += value.byteLength;
       parser.append(decoder.decode(value, { stream: true }));
     }
@@ -205,6 +209,7 @@ async function main() {
   const url = argValue("--url", process.env.PVE_PLAYER_INDEX_URL || DEFAULT_URL);
   const force = hasArg("--force");
   const dryRun = hasArg("--dry-run");
+  const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
   const startedAt = Date.now();
   const resolved = path.resolve(dbPath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -215,7 +220,7 @@ async function main() {
   initSchema(db);
 
   try {
-    const downloaded = await requestIndex(db, url, force);
+    const downloaded = await requestIndex(db, url, force, signal);
     if (downloaded.unchanged) {
       if (!dryRun) {
         setMeta(db, "last_poll_at", Date.now());
@@ -227,7 +232,7 @@ async function main() {
     }
 
     const syncedAt = Date.now();
-    const result = await consumeIndex(db, downloaded.response, syncedAt, dryRun, currentRowCount(db));
+    const result = await consumeIndex(db, downloaded.response, syncedAt, dryRun, currentRowCount(db), signal);
     if (dryRun) {
       console.log(JSON.stringify({ ...result, dryRun: true, url }));
       return;
