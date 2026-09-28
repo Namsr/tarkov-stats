@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
@@ -351,6 +352,31 @@ test("achievement icon host is allowed by the production CSP", async () => {
   const config = await readFile("next.config.ts", "utf8");
   assert.match(config, /img-src 'self' blob: data: https:\/\/lh3\.googleusercontent\.com https:\/\/assets\.tarkov\.dev/);
   assert.match(config, /remotePatterns:[\s\S]*?protocol: "https"[\s\S]*?hostname: "assets\.tarkov\.dev"[\s\S]*?pathname: "\/\*\*"/);
+});
+
+test("image remote pattern accepts a query string so upstream cache-busters do not 400", async () => {
+  // Проверяем семантику через сам матчер Next, а не текст конфига: `search` в
+  // RemotePattern сравнивается с `url.search` на ТОЧНОЕ равенство, поэтому
+  // `search: ""` оставлял бы оптимизатору только ссылки без query. Ассет с
+  // cache-buster — это 400 на /_next/image, а иконка в UI просто исчезает.
+  const require = createRequire(import.meta.url);
+  const { matchRemotePattern } = require("next/dist/shared/lib/match-remote-pattern.js");
+  const { default: nextConfig } = await import("../next.config.ts");
+  const [pattern] = nextConfig.images.remotePatterns;
+
+  for (const asset of [
+    "https://assets.tarkov.dev/achievement-6512ea46f7a078264a4376e4-icon.webp",
+    "https://assets.tarkov.dev/achievement-6512ea46f7a078264a4376e4-icon.webp?v=2",
+  ]) {
+    assert.equal(
+      matchRemotePattern(pattern, new URL(asset)),
+      true,
+      `remote pattern must accept ${asset}`,
+    );
+  }
+  // Нестандартный порт и чужой хост по-прежнему отвергаются.
+  assert.equal(matchRemotePattern(pattern, new URL("https://assets.tarkov.dev:8443/a.webp")), false);
+  assert.equal(matchRemotePattern(pattern, new URL("https://example.invalid/a.webp")), false);
 });
 
 test("profile mode switch stays below profile actions and is available before profile data", async () => {
