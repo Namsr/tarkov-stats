@@ -85,7 +85,13 @@ test("an unguarded cleanup delete loses the failure that caused it", () => {
 // matched through one window rather than one line, because an options object
 // spread over several lines is ordinary formatting, and because a whitespace
 // literal like "force: true" misses the `rm(dir,{recursive:true,force:true})`
-// that suites actually write. The call regex takes the `fs.` and `fs.promises.`
+// that suites actually write. `WINDOW` is how far the scan looks for the option
+// from the `(`, so a delete with more than 200 characters between the two - a
+// long comment, a long string argument - is not seen at all. The widest gap in
+// the suites is 42, so none of them is close; the way to close the gap for good
+// is to walk the call's parentheses, which is a change to what counts as a delete
+// rather than a fix to a hole in it, so it is recorded here rather than left for
+// the next reader to discover. The call regex takes the `fs.` and `fs.promises.`
 // forms as well, which are the most likely way a violating suite names the
 // delete. It cannot tell those from a `store.rm(` on an object of the caller's
 // own and does not try to; what keeps a domain option such as
@@ -101,9 +107,13 @@ const forcedOption = /\bforce\s*:\s*true\b/;
 // inside the same window; and it calls a real guard unguarded once the delete
 // sits more than `WINDOW` characters from its own `try`. The first direction
 // ships a violation and the second manufactures false alarms, which is what
-// pressures a contributor towards the exemption list below, so the window goes:
-// a delete is guarded exactly when the `try` block that contains it ends in a
-// `catch`, however far back that block starts.
+// pressures a contributor towards the exemption list below, so the window that
+// reads the guard goes: a delete is guarded exactly when the `try` block that
+// contains it ends in a `catch`, however far back that block starts. The window
+// that reaches the `force: true` option stays, and the one way it is wrong is
+// narrow enough to name: a long comment or a long string between the `(` and the
+// option hides the delete, which is the safe direction for a gate whose findings
+// someone has to read.
 const identifier = /[\w$]/;
 const space = /\s/;
 const afterExpression = /[\w$)\]}]/;
@@ -144,19 +154,45 @@ function wordBefore(code, at) {
 // whether a later `/` closes a regex and whether what follows it is code.
 function startsRegex(chars, at) {
   const previous = lastCodeIndex(chars, at);
+  // `n++ / 4` and `n-- / 4` divide after a postfix. Neither `+` nor `-` can end an
+  // expression on its own, and the same one twice is not a binary operator either,
+  // so this is the one `/` this function must not read as a regex opener. Reading
+  // one as an opener is not a one-line misreading: everything from that `/` to the
+  // newline is masked as a regex body, so a delete written after the `/` on the
+  // same line is invisible to the scan and a violation passes silently. No suite
+  // carries such a line, which is why the cases below are built here rather than
+  // found in the tree.
+  //
+  // `n! / 4` is the shape this still misses, and it is left there on purpose: `!`
+  // is not in `afterExpression`, so a `/` behind one opens a regex whatever came
+  // before it, and widening the guard to cover that also reads the `!/re/.test(s)`
+  // this repository is full of as a division. Telling a postfix `!` from a prefix
+  // one is the expression question this function has no answer to, so the gap is
+  // named here rather than closed with a guess.
+  if (previous > 0 && (chars[previous] === "+" || chars[previous] === "-")
+    && chars[lastCodeIndex(chars, previous)] === chars[previous]) return false;
   if (previous === -1 || !afterExpression.test(chars[previous])) return true;
   // `return /x/`, `of /x/` and `await /x/` are regexes after all: the word in
-  // front of them wants a value rather than an operand.
-  return valueKeyword.has(wordBefore(chars, previous + 1));
+  // front of them wants a value rather than an operand. The same word behind a `.`
+  // is a property name instead of the keyword, and a member expression is complete,
+  // so `store.of / 2` divides.
+  const word = wordBefore(chars, previous + 1);
+  if (!valueKeyword.has(word)) return false;
+  return chars[lastCodeIndex(chars, previous + 1 - word.length)] !== ".";
 }
 
-// The index just past a closing quote, or the end of the suite when the literal
-// is unterminated.
+// The index just past a closing quote. A quoted string cannot hold a raw newline,
+// so one that is never closed ends where its line does rather than at the end of
+// the suite, and the same is true of a regex body: the tail of a suite masked as
+// one literal is a suite the scan reports as clean.
 function quotedEnd(source, at, quote) {
   for (let index = at + 1; index < source.length; index += 1) {
     if (source[index] === "\\") index += 1;
     else if (source[index] === quote) return index + 1;
-    else if (source[index] === "\n") break;
+    // This `index` is a position in the suite rather than its length, and that is
+    // the whole point: a `\` continuation is handled above, so nothing that gets
+    // here is still inside a legal string.
+    else if (source[index] === "\n") return index;
   }
   return source.length;
 }
@@ -171,7 +207,9 @@ function regexEnd(source, at) {
     else if (char === "[") inClass = true;
     else if (char === "]") inClass = false;
     else if (char === "/" && !inClass) return index + 1;
-    else if (char === "\n") break;
+    // Same reasoning as in `quotedEnd`: the regex was not closed on this line, so
+    // stop where it stops rather than blanking every later delete.
+    else if (char === "\n") return index;
   }
   return source.length;
 }
@@ -248,7 +286,21 @@ function blockKind(code, at) {
   const word = wordBefore(code, previous + 1);
   if (word === "try") return "try";
   if (word === "catch" || word === "finally") return "handler";
-  if (code[previous] === ">") return code[lastCodeIndex(code, previous)] === "=" ? "body" : "block";
+  // A `>` in front of a `{` is an arrow or a type parameter list, and the brace in
+  // both opens a body a `try` outside it does not own: `class Store<T> {` read as a
+  // plain block hands the deletes in its static block to whichever `try` happens to
+  // be on the stack. `=>` already answered "body"; making the whole branch answer it
+  // costs nothing on the suites - the same findings, file for file - and a body the
+  // scan cannot see into that carries its own guard is still guarded, because the
+  // search for the guard happens inside it.
+  //
+  // A return type is the case this still cannot see: `cleanup(dir: string): void {`
+  // puts a plain word in front of the brace and answers "block". Telling a return
+  // type from a statement needs a parser, the nine return-typed functions in the
+  // scanned suites are all top level and none holds a delete, and a delete wrongly
+  // passed is worse than one wrongly reported, so it is named here rather than
+  // guessed at.
+  if (code[previous] === ">") return "body";
   if (code[previous] === ")") return parenthesesKind(code, previous);
   return "block";
 }
@@ -329,6 +381,197 @@ function unguardedDeleteLines(source) {
     .map(({ at }) => source.slice(0, at).split(/\r?\n/).length);
 }
 
+// The detector above is a lexer, and a lexer that misreads a line hides a delete
+// rather than reporting one: an unterminated literal masks the rest of the line it
+// is on, and the scan then answers "no findings" for the rest of the suite. That is
+// how this check came to pass a violation, so the detection is exercised here on
+// sources built in memory, where the line it owes a finding on is known, instead of
+// only on the suites - which currently contain no trigger for it.
+const unguardedDeleteSources = [
+  {
+    why: "a `/` that divides after a postfix, not one that opens a regex: read as a regex it does not close on the line, and the rest of that line is masked as a regex body, so a delete below it is never reached",
+    source: [
+      "function share(n) {",
+      "  const share = n++ / 4;",
+      "  try {",
+      "    assert.equal(share, 2);",
+      "  } finally {",
+      "    rmSync(dir, { recursive: true, force: true });",
+      "  }",
+      "  return share;",
+      "}",
+      "try { run(); } catch { /* unrelated, and far below */ }",
+    ].join("\n"),
+    expected: [6],
+  },
+  {
+    why: "a `/` that divides after a property named like a keyword: `of` and `in` want a value, but behind a `.` they are property names and the member expression is complete",
+    source: [
+      "function share(store) {",
+      "  const share = store.of / 2 + store.in / 2;",
+      "  try {",
+      "    assert.equal(share, 2);",
+      "  } finally {",
+      "    rmSync(dir, { recursive: true, force: true });",
+      "  }",
+      "  return share;",
+      "}",
+      "try { run(); } catch { /* unrelated, and far below */ }",
+    ].join("\n"),
+    expected: [6],
+  },
+  {
+    why: "a `/` that divides where nothing in front of it can end an expression, so nothing there says regex either",
+    source: [
+      "function share(n) {",
+      "  const share = n! / 4;",
+      "  try {",
+      "    assert.equal(share, 2);",
+      "  } finally {",
+      "    rmSync(dir, { recursive: true, force: true });",
+      "  }",
+      "  return share;",
+      "}",
+      "try { run(); } catch { /* unrelated, and far below */ }",
+    ].join("\n"),
+    expected: [6],
+  },
+  {
+    why: "the delete on the line the division is on: bounding the misread at the newline still masks everything after the `/` on that line, so this is the case the postfix guard in `startsRegex` exists for",
+    source: [
+      "const share = n++ / 4; rmSync(dir, { recursive: true, force: true });",
+    ].join("\n"),
+    expected: [1],
+  },
+  {
+    why: "and the same shape after `n--`, which is the other half of that guard: a test that only ever divides after `n++` leaves the `-` untested, and a survivor there is a division the scan still misreads",
+    source: [
+      "const share = n-- / 4; rmSync(dir, { recursive: true, force: true });",
+    ].join("\n"),
+    expected: [1],
+  },
+  {
+    why: "and the same shape after a property name, where the word in front of the `/` is a keyword that is not one there",
+    source: [
+      "const share = store.of / 2; rmSync(dir, { recursive: true, force: true });",
+    ].join("\n"),
+    expected: [1],
+  },
+  {
+    why: "a string that is never closed on its line blanks the deletes below it",
+    source: [
+      'const label = "unterminated;',
+      "try {",
+      "  assert.ok(true);",
+      "} finally {",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "}",
+      "try { run(); } catch { }",
+    ].join("\n"),
+    expected: [5],
+  },
+  {
+    why: "a delete in a catch handler is not covered by the try around it",
+    source: [
+      "try {",
+      "  run();",
+      "} catch (error) {",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "}",
+    ].join("\n"),
+    expected: [4],
+  },
+  {
+    why: "a delete in a finally is not covered by the try around it",
+    source: [
+      "try {",
+      "  run();",
+      "} finally {",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "}",
+    ].join("\n"),
+    expected: [4],
+  },
+  {
+    why: "a type parameter list opens a body too: a `try` around the class declaration does not own the delete in its static block",
+    source: [
+      "try {",
+      "  class Store<T> {",
+      "    static {",
+      "      rmSync(dir, { recursive: true, force: true });",
+      "    }",
+      "  }",
+      "} catch (error) {",
+      "  report(error);",
+      "}",
+    ].join("\n"),
+    expected: [4],
+  },
+  {
+    why: "braces quoted inside a template literal are characters in a string, so the rm call in the message does not guard the delete below it",
+    source: [
+      "const hint = `write it as: } catch { try { rm(dir, { force: true }) }`;",
+      "try {",
+      "  assert.ok(hint);",
+      "} finally {",
+      "  rmSync(dir, { recursive: true, force: true });",
+      "}",
+    ].join("\n"),
+    expected: [5],
+  },
+];
+
+test("the detector reports a delete that a lexical misread would hide", () => {
+  for (const { why, source, expected } of unguardedDeleteSources) {
+    assert.deepEqual(unguardedDeleteLines(source), expected, why);
+  }
+});
+
+test("a delete is guarded however far back its own try starts", () => {
+  // The window this replaced was 200 characters, so this is the case it missed: a
+  // real guard is not a nearby token, and the block the delete is written in is
+  // what answers the question.
+  const source = [
+    "try {",
+    ...Array.from({ length: 12 }, () => "  assert.ok(true); // padding the block out past the old window"),
+    "  rmSync(dir, { recursive: true, force: true });",
+    "} catch (error) {",
+    "  report(error);",
+    "}",
+  ].join("\n");
+  assert.ok(source.indexOf("rmSync") > WINDOW, "the try has to start more than a window back for this to test what it says");
+  assert.deepEqual(unguardedDeleteLines(source), [],
+    "the delete is in a try block that ends in a catch, so it is guarded");
+});
+
+test("a body the scan cannot see into is still guarded when it guards itself", () => {
+  // The other side of the same rule. A body the scan treats as opaque - an arrow,
+  // a class with a type parameter list - cannot be credited to a `try` around it,
+  // so it has to be able to carry its own guard; if it could not, every suite
+  // written in TypeScript would report a delete it has already fixed. The two that
+  // read as plain blocks are here for the same assertion from the other side: the
+  // scan does see into those, and it finds the guard rather than the delete.
+  const bodies = [
+    ["const clear = (dir: string): void => {", "};", "opaque"],
+    ["class Store<T> {", "  clear(dir: string): void {\n  }\n}", "opaque"],
+    ["function clear(dir: string): void {", "}", "read as a block"],
+    ["class Store {", "  static {\n  }\n}", "read as a block"],
+  ];
+  for (const [opener, closer, how] of bodies) {
+    const source = [
+      opener,
+      "  try {",
+      "    rmSync(dir, { recursive: true, force: true });",
+      "  } catch (error) {",
+      "    report(error);",
+      "  }",
+      closer,
+    ].join("\n");
+    assert.deepEqual(unguardedDeleteLines(source), [],
+      `${opener} is ${how} to the scan, and the guard it carries answers for the delete either way`);
+  }
+});
+
 // The suites below force-delete a directory they opened a DatabaseSync into, so
 // their cleanup can meet a live handle and the delete has to be best effort. Six
 // open that handle in the test body; the other seven reach it through a module
@@ -353,9 +596,9 @@ const suitesWhoseDeleteNeedsAGuard = [
 
 // The other suites that force-delete a temp directory close every handle, or
 // wait for the child process that owns it, before the delete runs: a guard there
-// would be unreachable code. Seven of the suites above carry one anyway, so the
-// real distinction is not guarded versus unguarded, it is whether a handle can
-// still be live at the delete.
+// would be unreachable code. Every one of the suites above carries a catch guard
+// on its delete anyway, so the real distinction is not guarded versus unguarded,
+// it is whether a handle can still be live at the delete.
 const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/admin-analytics.test.ts",
   "tests/admin-data-audit.test.mjs",
@@ -385,12 +628,14 @@ const suitesThatReproduceTheMasking = [
   "tests/cleanup-does-not-mask-assertions.test.mjs",
 ];
 
-// Between them the two classification lists hold every forced delete the scan
-// finds in the suite directories: 18 sites across the 13 suites that need a guard,
-// 56 across the 20 that close the handle or the process first, 74 in all, counted
-// for this change. The number is a record of the sweep rather than the check. The
-// classification test below is what keeps the lists complete, and it never counts
-// sites, so a site added later shows up there rather than as a wrong number here.
+// Between them the two classification lists hold every forced delete the scan finds
+// outside this suite: 18 sites across the 13 suites that need a guard, 56 across the
+// 20 that close the handle or the process first, 74 in all, counted for this change.
+// This suite's own five are the third list, and adding them is what makes the
+// arithmetic close: 79 sites over 34 files, 13 + 20 + 1. The number is a record of
+// the sweep rather than the check. The classification test below is what keeps the
+// lists complete, and it never counts sites, so a site added later shows up there
+// rather than as a wrong number here.
 const classified = new Set([
   ...suitesWhoseDeleteNeedsAGuard,
   ...suitesThatCloseTheHandleOrTheProcessFirst,
