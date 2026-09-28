@@ -487,10 +487,13 @@ async function refreshIndexIfDue(startedAt) {
   }
   try {
     const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    // Clamp to the request timeout the way the profile POST and the feed fetch
+    // do: the run budget only caps the download from above, and the signal
+    // reaches the response body stream as well as the connection.
     const result = await syncArenaIndex(db, {
       url: config.indexUrl,
       beforeWrite: assertLeaseHeld,
-      signal: AbortSignal.timeout(Math.max(1, remainingMs)),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(config.requestTimeoutMs, remainingMs))),
     });
     return { checked: true, previousPollAt, ...result };
   } catch (error) {
