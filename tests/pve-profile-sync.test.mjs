@@ -306,6 +306,7 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
   try {
     // No-attempt run: the feed is admitted, then the budget is spent before the
     // queue is claimed, so the pre-processing coverage loop reports the numbers.
+    // A spent budget is a cut run, so the reason has to reach the summary.
     const feedPreload = join(directory, "advance-clock-on-feed.mjs");
     await writeFile(feedPreload, `const originalFetch = globalThis.fetch;
       const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
@@ -532,11 +533,125 @@ test("PvE collector cuts the retry ladder when the run budget is spent", async (
     assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
     assert.equal(summary.stopReason, "max_run_ms", "a cut run names the reason, so it cannot read as a clean drain");
     assert.equal(summary.errors, 0, "a cut attempt is deferred, not failed; the row stays queued");
-    assert.match(stdout, / RUN_CUT {"stopReason":"max_run_ms","remainingMs":0,"phase":"\w+","aid":10,"attempt":1}/);
+    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":0,"phase":"\w+","aid":10,"attempt":1\}/);
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 10").get().status,
       "pending",
       "the untouched profile stays queued for the next run",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PvE feed ladder stops at the run budget instead of sleeping past it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-feed-budget-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  // The feed ladder is charged against the same budget as the capture ladder.
+  // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
+  // ladder must stop after the first attempt instead of sleeping 1s+2s+4s past
+  // the deadline. The budget is a real one, so the regression costs real
+  // seconds only when the clamp is missing.
+  let feedRequests = 0;
+  const server = createServer((request, response) => {
+    if (!request.url?.startsWith("/pve/updated.json")) return response.writeHead(404).end();
+    feedRequests += 1;
+    response.writeHead(503).end("stuck");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const { stdout } = await runCollector(dbPath, progressionDbPath, port, 3, {
+      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 700),
+    });
+    assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
+    assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
+    const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
+    assert.ok(cut, "the cut is logged");
+    const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
+    assert.equal(fields.stopReason, "max_run_ms");
+    assert.equal(fields.phase, "feed");
+    assert.ok(fields.remainingMs < 1_000, "the log reports the budget the ladder gave up on");
+    assert.equal(
+      players.prepare("SELECT COUNT(*) AS n FROM pve_profile_sync_queue").get().n,
+      0,
+      "a feed that was never admitted queues nothing",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PvE rate-limit wait is clamped to the run budget", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-rate-limit-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
+  // 0.1 RPS is the configured floor: the second profile's rate-limit wait is
+  // 10s, which no longer fits in the ~1.2s left of the run budget. The wait has
+  // to be clamped, otherwise the collector keeps sleeping a full spacing after
+  // the deadline and the unfixed run ends ~10s past it.
+  const feed = { 10: cutoff + 1_000, 11: cutoff + 2_000 };
+  const syncCalls = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pve/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      return response.end(JSON.stringify(feed));
+    }
+    if (request.url !== "/api/operator/pve/profile-sync") return response.writeHead(404).end();
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid, expectedUpdatedAt } = JSON.parse(raw);
+    syncCalls.push(aid);
+    players.prepare(`INSERT INTO mode_players
+      (mode, aid, profile_updated_at, fetched_at, stats_json, achievements) VALUES ('pve', ?, ?, ?, ?, '[]')`)
+      .run(aid, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    progression.prepare(`INSERT OR IGNORE INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, stats_json)
+      VALUES ('pve', 'persistent', ?, ?, ?, ?, 'x', ?)`)
+      .run(aid, expectedUpdatedAt, expectedUpdatedAt, expectedUpdatedAt + 1, stats);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ state: "updated", profileUpdatedAt: expectedUpdatedAt }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const { stdout } = await runCollector(dbPath, progressionDbPath, port, 0, {
+      PVE_PROFILE_SYNC_RPS: "0.1",
+      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 1_200),
+    });
+    assert.deepEqual(syncCalls, [10], "the second profile waits for a spacing that no longer fits");
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+    assert.equal(summary.attempted, 2, "the cut profile was claimed before its wait was refused");
+    assert.equal(summary.completed, 1);
+    assert.equal(summary.stopped, true);
+    assert.equal(summary.stopReason, "max_run_ms");
+    assert.ok(
+      summary.durationMs < 4_000,
+      `the run must end on time, not one 10s spacing past the deadline (was ${summary.durationMs}ms)`,
+    );
+    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":0,"phase":"rate_limit","aid":11,"attempt":1\}/);
+    assert.equal(
+      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 11").get().status,
+      "pending",
+      "the unclaimed profile stays queued for the next run",
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
