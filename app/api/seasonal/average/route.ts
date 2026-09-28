@@ -52,23 +52,28 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const cycle = params.get("cycle")?.trim() ?? "";
   if (!configured || !cycle || cycle !== configured.cycleId || params.getAll("cycle").length !== 1) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
   }
   const statistic: AverageStatistic = params.get("statistic") === "median" ? "median" : "trimmed_mean";
   if (params.has("statistic") && !["median", "trimmed_mean"].includes(params.get("statistic")!)) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid statistic" }, { status: 400 });
   }
   const period: AveragePeriod = params.get("period") === "90d" ? "90d" : "all";
   if (params.has("period") && !["all", "90d"].includes(params.get("period")!)) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid period" }, { status: 400 });
   }
   const dimension = params.get("dimension") === "pmc_raids" ? "pmc_raids" : "hours";
   if (params.has("dimension") && !["hours", "pmc_raids"].includes(params.get("dimension")!)) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
   }
   const min = numberParam(params.get("min"));
   const max = numberParam(params.get("max"));
   if (Number.isNaN(min) || Number.isNaN(max) || (min != null && max != null && min > max)) {
+    timing.finish({ operation: "average", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ error: "Invalid range" }, { status: 400 });
   }
   const metric = resolveY(params.get("metric")).key;
@@ -99,6 +104,7 @@ export async function GET(request: NextRequest) {
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max));
     const cached = loaded.value;
     if (cached.status === "not-found") {
+      timing.finish({ operation: "average", mode: "seasonal", outcome: "not_found", status: 404 });
       return NextResponse.json({ error: "Season cycle not found" }, { status: 404 });
     }
     timing.finish({ operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });

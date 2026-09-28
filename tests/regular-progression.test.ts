@@ -572,3 +572,23 @@ test("the progression backfill keeps a sound backup when a writer moves the sour
     rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
   }
 });
+
+test("the regular progression backfill refuses a missing database instead of creating one", () => {
+  // `DatabaseSync` creates the file it is given, so before the path guard a typo
+  // produced a green run: fresh file, schema created in it, quickCheck "ok" and
+  // every count 0, while the real progression database was never touched.
+  const directory = mkdtempSync(join(tmpdir(), "backfill-regular-"));
+  const missing = join(directory, "progresion.db");
+  try {
+    const result = spawnSync(process.execPath, [
+      "--experimental-strip-types",
+      resolve("scripts/backfill-regular-progression.mjs"),
+      missing,
+    ], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, "a missing progression database must fail the run");
+    assert.match(result.stderr, /progression database does not exist/);
+    assert.equal(existsSync(missing), false, "the script must not create the database");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
