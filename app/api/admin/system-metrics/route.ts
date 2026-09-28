@@ -31,7 +31,10 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const expected = process.env.SYSTEM_METRICS_INGEST_TOKEN?.trim() ?? "";
-  if (!expected) return NextResponse.json({ error: "collector_not_configured" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
+  // A short secret cannot gate a write, so treat it as unconfigured rather than
+  // publishing the endpoint behind a brute-forceable token. Same 32-character
+  // floor as lib/operator-auth.ts.
+  if (!expected || expected.length < 32) return NextResponse.json({ error: "collector_not_configured" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
   if (!validCollectorToken(request, expected)) return NextResponse.json({ error: "collector_access_denied" }, { status: 401, headers: ADMIN_NO_STORE_HEADERS });
 
   let body: unknown;
