@@ -1064,9 +1064,10 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
 });
 
 test("Arena publication failures and deadline writes remain retryable", async () => {
-  const [service, averageRoute, source, database] = await Promise.all([
+  const [service, averageRoute, arenaAverageCache, source, database] = await Promise.all([
     readFile("lib/arena/service.ts", "utf8"),
     readFile("app/api/average/route.ts", "utf8"),
+    readFile("lib/arena-average-cache.ts", "utf8"),
     readFile("scripts/sync-arena-profiles.mjs", "utf8"),
     readFile("lib/db.ts", "utf8"),
   ]);
@@ -1077,7 +1078,10 @@ test("Arena publication failures and deadline writes remain retryable", async ()
   // The batch collector keeps its stricter contract: an incomplete run must be
   // visible so the operator retries it.
   assert.match(source, /if \(publicationRequired && await markAveragePublicationDirty\("arena"\) === false\) \{\s*\n\s*complete = false;/);
-  assert.match(averageRoute, /dynamic_cache_version/);
+  // The population version moved next to the key builder it versions, so both
+  // routes read it from one place instead of two copies of the query.
+  assert.match(arenaAverageCache, /dynamic_cache_version/);
+  assert.match(averageRoute, /arenaAverageCacheVersion\(\)/);
   assert.match(averageRoute, /loadCachedArenaAverage\([\s\S]*cacheVersion/);
   assert.match(source, /offline_v3_to_v4_publication_pending/);
   assert.match(source, /runBudgetExpired\(startedAt\)/);

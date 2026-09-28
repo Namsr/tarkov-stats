@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const regularRoute = readFileSync(new URL("../app/api/average/cohort/route.ts", import.meta.url), "utf8");
+const averageRoute = readFileSync(new URL("../app/api/average/route.ts", import.meta.url), "utf8");
+const batchRoute = readFileSync(new URL("../app/api/average/cohort/batch/route.ts", import.meta.url), "utf8");
 const seasonalRoute = readFileSync(new URL("../app/api/seasonal/cohort/route.ts", import.meta.url), "utf8");
 const seasonalAverageRoute = readFileSync(new URL("../app/api/seasonal/average/route.ts", import.meta.url), "utf8");
 const seasonalHelper = readFileSync(new URL("../lib/seasonal/comparison-cohort.ts", import.meta.url), "utf8");
@@ -90,6 +92,57 @@ test("arena cohort caches repeated identical requests with a hit on the second",
   assert.match(arenaBranch, /cohortMs/);
   assert.match(arenaBranch, /storage:\s*"sqlite"/);
   dynamic.resetDynamicAverageCacheForTests();
+});
+
+test("the Arena batch population cohort reuses the versioned average key and the tagged loader", async () => {
+  const dynamic = await import("../lib/average-dynamic-cache.ts");
+  const { arenaAverageCacheKey } = await import("../lib/average-cache.ts");
+  dynamic.resetDynamicAverageCacheForTests();
+  // Both routes describe the same payload: the batch asks for the unbounded
+  // matches/players slice of one mode, and that is what the average page
+  // serves for the same query.
+  const range = [null, null, null, null];
+  const batchKey = (cacheVersion) => arenaAverageCacheKey("teamFight", "trimmed_mean", "matches", "players", range, cacheVersion);
+  const averageKey = (cacheVersion) => arenaAverageCacheKey("teamFight", "trimmed_mean", "matches", "players", range, cacheVersion);
+  assert.equal(batchKey(3), averageKey(3));
+  // The version is the trailing element, so a sync bump retires the entry
+  // instead of leaving a pre-sync cohort readable for the LRU TTL.
+  assert.notEqual(batchKey(3), batchKey(4));
+  assert.deepEqual(
+    JSON.parse(averageKey(3)),
+    ["arena", "teamFight", "trimmed_mean", "matches", "players", null, null, null, null, 3],
+  );
+
+  let calls = 0;
+  const load = async () => {
+    calls += 1;
+    return { sampleN: calls };
+  };
+  assert.equal((await dynamic.loadDynamicAverage(averageKey(3), load)).cache, "miss");
+  // One shared entry: the batch request below reuses what the average page
+  // already warmed.
+  assert.equal((await dynamic.loadDynamicAverage(batchKey(3), load)).cache, "hit");
+  assert.equal(calls, 1);
+  // A bumped version is a different key, so it recomputes against the
+  // post-sync population.
+  assert.equal((await dynamic.loadDynamicAverage(batchKey(4), load)).cache, "miss");
+  assert.equal(calls, 2);
+  dynamic.resetDynamicAverageCacheForTests();
+});
+
+test("both Arena average routes build the population key through the shared builder", () => {
+  // Inlining the key in either route is what let the batch copy drift: it
+  // dropped the trailing version, so the two never shared an entry and the
+  // batch cohort outlived a sync.
+  for (const route of [averageRoute, batchRoute]) {
+    assert.match(route, /arenaAverageCacheKey\(/);
+    assert.match(route, /arenaAverageCacheVersion\(\)/);
+    assert.doesNotMatch(route, /JSON\.stringify\(\["arena"/);
+    assert.doesNotMatch(route, /getArenaAverage\(/);
+  }
+  // Same mode, statistic, dimension, metric and unbounded range on both sides.
+  assert.match(averageRoute, /arenaAverageCacheKey\(arenaMode, statistic, dimension, metric, ranges\.map\(\(range\) => range\.value\), cacheVersion\)/);
+  assert.match(batchRoute, /arenaAverageCacheKey\(mode, statistic, "matches", "players", \[null, null, null, null\], cacheVersion\)/);
 });
 
 test("arena cohort invalid query stays 400 without cache interaction", async () => {

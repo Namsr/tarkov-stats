@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAverageStatistic } from "@/lib/db";
 import { createRequestTiming } from "@/lib/observability/request-timing";
-import { ARENA_PARSER_VERSION, getArenaAverage, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
 import {
   ARENA_MODE_KEYS,
   type ArenaCohortResult,
@@ -14,6 +14,11 @@ import {
   toArenaPopulationCohort,
 } from "@/components/arena-ui";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import {
+  arenaAverageCacheKey,
+  arenaAverageCacheVersion,
+  loadCachedArenaAverage,
+} from "@/lib/arena-average-cache";
 import { readAveragePublication, standardArenaVariant } from "@/lib/average-publication";
 
 export const runtime = "nodejs";
@@ -67,10 +72,13 @@ async function populationCohort(
     const hasRequiredMatches = matches != null && matches.value !== null && matches.count >= 20;
     if (cohort && !shouldFallbackToPopulation(cohort) && (!needsMatches || hasRequiredMatches)) return cohort;
   }
-  // Same LRU key shape as GET /api/average, so batch and single requests share entries.
-  const dynamicKey = JSON.stringify(["arena", mode, statistic, "matches", "players", null, null, null, null]);
+  // Same versioned LRU key and same tagged loader as GET /api/average, so the
+  // two routes share one entry: a sync that bumps the population version
+  // retires it instead of leaving a pre-sync cohort in place for the TTL.
+  const cacheVersion = await arenaAverageCacheVersion();
+  const dynamicKey = arenaAverageCacheKey(mode, statistic, "matches", "players", [null, null, null, null], cacheVersion);
   const loaded = await loadDynamicAverage(dynamicKey, () =>
-    getArenaAverage({ mode, statistic, dimension: "matches", metric: "players" }));
+    loadCachedArenaAverage(mode, statistic, "matches", "players", null, null, null, null, cacheVersion));
   if (!loaded.value) return null;
   return toArenaPopulationCohort(
     { mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...loaded.value },
