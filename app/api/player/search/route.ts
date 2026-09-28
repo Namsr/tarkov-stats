@@ -71,11 +71,15 @@ export async function GET(request: NextRequest) {
   const ip = getClientIp(request);
 
   const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "search" });
+  // `getRateLimitHeaders` no longer emits anything, which used to leave the
+  // 429/503/502 paths with no Cache-Control at all and a shared cache free to
+  // store and replay a rate-limit or outage error for another visitor.
+  const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {
     timing.finish({ operation: "player_search", outcome: "rate_limited", status: 429 });
     return NextResponse.json(
       { error: "Rate limit exceeded" },
-      { status: 429, headers }
+      { status: 429, headers: noStore }
     );
   }
 
@@ -87,7 +91,7 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "player_search", outcome: "invalid", status: 400 });
     return NextResponse.json(
       { error: "Invalid nickname. Use alphanumeric characters, dashes, or underscores (1-15 chars)." },
-      { status: 400, headers }
+      { status: 400, headers: noStore }
     );
   }
 
@@ -105,7 +109,7 @@ export async function GET(request: NextRequest) {
       timing.finish({ operation: "player_search", outcome: "unavailable", status: 503 });
       return NextResponse.json(
         { error: "Player nickname index is not ready" },
-        { status: 503, headers }
+        { status: 503, headers: noStore }
       );
     }
     const results = groupPlayerSearchResults(
@@ -124,12 +128,12 @@ export async function GET(request: NextRequest) {
       status: 200,
       source: "index",
     });
-    return NextResponse.json(results, { headers });
+    return NextResponse.json(results, { headers: noStore });
   } catch {
     timing.finish({ operation: "player_search", outcome: "error", status: 502 });
     return NextResponse.json(
       { error: "Failed to search players" },
-      { status: 502, headers }
+      { status: 502, headers: noStore }
     );
   }
 }
