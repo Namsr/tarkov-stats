@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 registerHooks({
@@ -51,6 +51,7 @@ const { getHelperStore } = await import("../lib/seasonal/helper-storage.ts");
 const { openLeaderboardDatabase } = await import("../lib/leaderboard/publication.ts");
 const { getBanStore } = await import("../lib/ban-db.ts");
 const { getModerationStore } = await import("../lib/admin/moderation-db.ts");
+const { getProgressionStore } = await import("../lib/progression-db.ts");
 
 test.after(() => {
   for (const [key, value] of Object.entries(previousEnvironment)) {
@@ -177,6 +178,67 @@ test("the moderation store opener retries initialization instead of serving a po
     });
     assert.equal(store.riskFor({ aid: 12345, mode: "regular", cycleId: "" })?.aid, 12345,
       "the moderation schema was applied on the retry");
+  } finally {
+    restore();
+  }
+});
+
+test("the progression store opener closes a handle whose initialization failed", async () => {
+  // This store is asked for on every player profile request, so a handle left
+  // open here is a leaked descriptor per request until the process hits EMFILE.
+  const storeProgressionPath = join(directory, "progression-store.db");
+  const restore = useEnvironment({
+    PROGRESSION_SQLITE_PATH: storeProgressionPath,
+    SQLITE_PATH: join(directory, "progression-store-players.db"),
+  });
+  try {
+    poison(storeProgressionPath);
+    // A poisoned database still reports unavailable whether its handle was closed
+    // or leaked, so the leak has to be counted rather than inferred from the
+    // return value. The openers reach node:sqlite through the same module this
+    // file imports, so patching the prototype sees every handle they construct.
+    // That keeps the real namespace intact for every other import, and it needs
+    // no hook for a version the documentation does not promise.
+    const { close, exec, prepare } = DatabaseSync.prototype;
+    const seen = new WeakSet();
+    const opened = [];
+    const closed = [];
+    const track = (handle) => {
+      if (!seen.has(handle)) {
+        seen.add(handle);
+        opened.push(handle);
+      }
+    };
+    // Any statement marks the handle live, so the open count does not depend on
+    // which of the two the opener happens to reach first.
+    DatabaseSync.prototype.close = function (...args) {
+      closed.push(this);
+      return close.apply(this, args);
+    };
+    DatabaseSync.prototype.exec = function (...args) {
+      track(this);
+      return exec.apply(this, args);
+    };
+    DatabaseSync.prototype.prepare = function (...args) {
+      track(this);
+      return prepare.apply(this, args);
+    };
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        assert.equal(await getProgressionStore("regular"), null, "a failed schema init reports unavailable");
+      }
+      assert.equal(opened.length, 3, "each attempt opens a handle, the failed one being left uncached");
+      assert.equal(closed.length, opened.length, "every handle a failed initialization opened is closed again");
+    } finally {
+      DatabaseSync.prototype.close = close;
+      DatabaseSync.prototype.exec = exec;
+      DatabaseSync.prototype.prepare = prepare;
+    }
+
+    replace(storeProgressionPath);
+    const store = await getProgressionStore("regular");
+    assert.ok(store, "the next call reopens and initializes the database");
+    assert.equal(await store.latest(1), null, "the progression schema is queryable on the retry");
   } finally {
     restore();
   }

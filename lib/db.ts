@@ -1073,6 +1073,12 @@ export interface PlayerStore {
     period?: AveragePeriod,
     statistic?: AverageStatistic,
   ): Promise<BucketAgg[]>;
+  /**
+   * Accounts in the period population: neither the playtime range nor the
+   * metric-eligibility filter narrows it. The average dashboard reports this as
+   * the scanned sample, so it must not move with the Y-axis metric.
+   */
+  populationCount(period?: AveragePeriod): Promise<number>;
   /** Slider bounds derived from the collected sample, with stable empty-dataset fallbacks. */
   rangeBounds(dimension: RangeDimension, period?: AveragePeriod): Promise<RangeBounds>;
   /** Adaptive comparison group around one player's playtime or PMC raid count. */
@@ -1405,6 +1411,11 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);
+      },
+      async populationCount(period = "all") {
+        const where = averagePeriodWhere(mode, period, "");
+        const row = db.prepare(countSql(where)).get() as { n?: unknown } | undefined;
+        return Number(row?.n ?? 0) || 0;
       },
       async rangeBounds(dimension, period = "all") {
         const column = rangeColumn(dimension);
