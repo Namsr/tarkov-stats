@@ -135,12 +135,12 @@ function metricSummary(rows: Row[], kind: ArenaStatistic, minimum = 0): Record<A
 }
 
 function bounds(rows: Row[], key: "hours" | "games_count"): ArenaRangeBounds {
-  const values = rows.map((row) => numberOrNull(row[key])).filter((value): value is number => value !== null);
-  if (!values.length) return { min: null, max: null };
   // The eligible peer scan is uncapped, so one mode can hand us more values than
   // Math.min(...values) accepts arguments for before V8 throws RangeError. Fold
   // instead of spreading, like lib/seasonal/progression.ts and
   // lib/seasonal/daily-aggregates.ts.
+  const values = rows.map((row) => numberOrNull(row[key])).filter((value): value is number => value !== null);
+  if (!values.length) return { min: null, max: null };
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
   for (const value of values) {

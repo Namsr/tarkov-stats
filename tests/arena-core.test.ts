@@ -956,11 +956,17 @@ test("Arena averages expose averageMatches for mode bars", async () => {
 
 test("Arena average bounds survive a peer set larger than the V8 argument limit", async () => {
   // The eligible peer scan has no LIMIT and grows with every collected player in
-  // a mode, while Math.min(...values) throws RangeError past ~125k arguments on
-  // V8, so the bounds have to be folded.
+  // a mode, while Math.min(...values) throws RangeError once the spread is larger
+  // than the thread stack can hold (roughly 125k arguments at the default stack,
+  // further out on a bigger one), so the bounds have to be folded.
   resetArenaData();
   const { getArenaBackend } = await import("../lib/db.ts");
   const { db } = await getArenaBackend();
+  // Keep this above ~130k. The ceiling is a stack-size artifact, not a fixed
+  // count: the first-failing spread measured on the default thread stack runs
+  // 124,729-124,933 across repeats, so 130k clears it by only ~4%. It moves to
+  // ~250k at --stack-size=1960, and a fixture below the ceiling stops reproducing
+  // the RangeError and would pass against the unfixed bounds.
   const peers = 130_000;
   const insert = db.prepare(`INSERT INTO arena_mode_stats
     (aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate, kills_per_match,
