@@ -44,12 +44,18 @@ export async function computeAverage(
     };
   }
 
-  const [averageResult, bucketResult, boundsResult] = await Promise.all([
+  const [averageResult, bucketResult, boundsResult, populationCount] = await Promise.all([
     store.averages({ dimension, min, max, maxInclusive }, statistic, period),
     store.bucketAggregate(dimension, metric.agg === "avg" ? metric.column! : null, period, statistic),
     store.rangeBounds(dimension, period),
+    store.populationCount(period),
   ]);
-  const total = bucketResult.reduce((sum, bucket) => sum + bucket.n, 0);
+  // The scanned sample is the period population, not the metric-filtered
+  // buckets: bucketAggregate drops rows whose metric is unknown (and, for the
+  // PMC metrics, every row without a known PvP profile), so summing it made
+  // `total` shrink when only the Y-axis metric changed. The seasonal dashboard
+  // already counts the whole period, so both tabs now agree.
+  const total = populationCount;
   const { metricCounts, ...averageValues } = averageResult ?? { metricCounts: {} };
   const histogram = buildNumericHistogram(bucketResult, maxBins).map((bin) => ({
     ...bin,
