@@ -87,40 +87,246 @@ test("an unguarded cleanup delete loses the failure that caused it", () => {
 // literal like "force: true" misses the `rm(dir,{recursive:true,force:true})`
 // that suites actually write. The call regex takes the `fs.` and `fs.promises.`
 // forms as well, which are the most likely way a violating suite names the
-// delete, and still skips a property call such as `store.rm(`.
+// delete. It cannot tell those from a `store.rm(` on an object of the caller's
+// own and does not try to; what keeps a domain option such as
+// getPublicProfile({ force: true }) out is that no rm call opens the window.
 const WINDOW = 200;
-const rmCall = /(?<![\w$])(?:\w+\.)*rm(?:Sync)?\(/g;
+const rmCall = /(?<![\w$])(?:\w+\.)*rm(?:Sync)?\(/y;
 const forcedOption = /\bforce\s*:\s*true\b/;
-const tryBlock = /\btry\s*\{/g;
-const catchClause = /\bcatch\b/;
-const catchOrFinally = /\b(?:catch|finally)\b/;
 
-// The delete is guarded when the nearest `try` before it still owns it where the
-// `catch` after it arrives. A `catch` or a `finally` between the two means
-// something closed that block first, so the delete is in a handler or beside a
-// try/catch that already ended, not inside a guard. Reading both halves through
-// the same window the flag uses keeps the two consistent, and the strict reading
-// is the one that keeps the gate sound: a delete that merely sits near a try
-// still fails here, because a false pass hides a real violation.
-function isGuarded(source, at) {
-  const before = source.slice(Math.max(0, at - WINDOW), at);
-  let opened = -1;
-  for (const match of before.matchAll(tryBlock)) opened = match.index;
-  if (opened === -1 || catchOrFinally.test(before.slice(opened))) return false;
-  return catchClause.test(source.slice(at, at + WINDOW));
+// Whether a delete is guarded is a property of the block it is written in, so it
+// is read from the structure and not from the text around the call. A window is
+// wrong in both directions. Paired with a forward `catch` it passes a delete
+// whose own handler is a `finally`, because an unrelated `catch` happens to land
+// inside the same window; and it calls a real guard unguarded once the delete
+// sits more than `WINDOW` characters from its own `try`. The first direction
+// ships a violation and the second manufactures false alarms, which is what
+// pressures a contributor towards the exemption list below, so the window goes:
+// a delete is guarded exactly when the `try` block that contains it ends in a
+// `catch`, however far back that block starts.
+const identifier = /[\w$]/;
+const space = /\s/;
+const afterExpression = /[\w$)\]}]/;
+const valueKeyword = new Set([
+  "await", "case", "delete", "do", "else", "in", "instanceof", "new", "of", "return",
+  "throw", "typeof", "void", "yield",
+]);
+const controlKeyword = new Set(["for", "if", "switch", "while", "with"]);
+const loopKeyword = new Set(["await", "in", "of"]);
+
+// The last code character before `at`, or -1 when there is none.
+function lastCodeIndex(code, at) {
+  for (let index = at - 1; index >= 0; index -= 1) {
+    if (!space.test(code[index])) return index;
+  }
+  return -1;
+}
+
+// The first code character at or after `at`, or the end of the suite.
+function nextCodeIndex(code, at) {
+  for (let index = at; index < code.length; index += 1) {
+    if (!space.test(code[index])) return index;
+  }
+  return code.length;
+}
+
+// The word that ends at `at`, empty when no word does. The masked characters are
+// an array while the lexer is still filling them in and a string once it is done,
+// and this is the one lookup that has to answer for both.
+function wordBefore(code, at) {
+  let start = at;
+  while (start > 0 && identifier.test(code[start - 1])) start -= 1;
+  return Array.isArray(code) ? code.slice(start, at).join("") : code.slice(start, at);
+}
+
+// A `/` opens a regex unless something that can end an expression comes first.
+// This is the one ambiguity a lexer without a parser has, and it decides both
+// whether a later `/` closes a regex and whether what follows it is code.
+function startsRegex(chars, at) {
+  const previous = lastCodeIndex(chars, at);
+  if (previous === -1 || !afterExpression.test(chars[previous])) return true;
+  // `return /x/`, `of /x/` and `await /x/` are regexes after all: the word in
+  // front of them wants a value rather than an operand.
+  return valueKeyword.has(wordBefore(chars, previous + 1));
+}
+
+// The index just past a closing quote, or the end of the suite when the literal
+// is unterminated.
+function quotedEnd(source, at, quote) {
+  for (let index = at + 1; index < source.length; index += 1) {
+    if (source[index] === "\\") index += 1;
+    else if (source[index] === quote) return index + 1;
+    else if (source[index] === "\n") break;
+  }
+  return source.length;
+}
+
+// The index just past the closing `/` of a regex, where a backslash escape and a
+// character class count as content, so `/\//` and `/[a/]b/` end where they should.
+function regexEnd(source, at) {
+  let inClass = false;
+  for (let index = at + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "\\") index += 1;
+    else if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    else if (char === "/" && !inClass) return index + 1;
+    else if (char === "\n") break;
+  }
+  return source.length;
+}
+
+// Every comment, string, template and regex body is replaced by a space in place,
+// so a brace inside a failure message is not a brace and an offset here is the
+// same offset in the suite. A template literal is the one construct that mixes
+// text with code, so one stack entry per open template carries the state: the
+// text itself, or the brace depth of the substitution it is in, where a `}` at
+// depth zero turns the entry back into text. Nothing else is touched: braces are
+// what the scan below is reading.
+function maskLiterals(source) {
+  const chars = source.split("");
+  const literals = [];
+  const blank = (from, to) => {
+    for (let index = from; index < to && index < chars.length; index += 1) chars[index] = " ";
+  };
+  let at = 0;
+  while (at < source.length) {
+    const from = at;
+    const char = source[at];
+    const frame = literals[literals.length - 1];
+    const pair = source.slice(at, at + 2);
+    if (frame === "template") {
+      // Template text is not code, and neither are the delimiters around it.
+      if (char === "`") { blank(at, at + 1); literals.pop(); at += 1; continue; }
+      if (pair === "${") { blank(at, at + 2); literals[literals.length - 1] = 0; at += 2; continue; }
+      if (char === "\\") { blank(at, at + 2); at += 2; continue; }
+      blank(at, at + 1);
+      at += 1;
+      continue;
+    }
+    if (pair === "//" || pair === "/*") {
+      const stop = source.indexOf(pair === "//" ? "\n" : "*/", at + 2);
+      at = stop === -1 ? source.length : stop + (pair === "/*" ? 2 : 0);
+      blank(from, at);
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      at = quotedEnd(source, at, char);
+      blank(from, at);
+      continue;
+    }
+    if (char === "`") {
+      blank(at, at + 1);
+      literals.push("template");
+      at += 1;
+      continue;
+    }
+    if (char === "/" && startsRegex(chars, at)) {
+      at = regexEnd(source, at);
+      blank(from, at);
+      continue;
+    }
+    if (typeof frame === "number") {
+      // Inside a substitution every brace is real, so the depth finds the one
+      // that ends it and the braces stay for the block scan.
+      if (char === "{") literals[literals.length - 1] = frame + 1;
+      else if (char === "}" && frame > 0) literals[literals.length - 1] = frame - 1;
+      else if (char === "}") { blank(at, at + 1); literals[literals.length - 1] = "template"; }
+    }
+    at += 1;
+  }
+  return chars.join("");
+}
+
+// What a `{` opens, from the token in front of it. Two of the answers decide the
+// result: a `try` is the guard, and a handler or a function body ends the search
+// outwards. Everything else - a plain block, an object literal, a type annotation
+// - still sits inside the `try` around it.
+function blockKind(code, at) {
+  const previous = lastCodeIndex(code, at);
+  if (previous === -1) return "block";
+  const word = wordBefore(code, previous + 1);
+  if (word === "try") return "try";
+  if (word === "catch" || word === "finally") return "handler";
+  if (code[previous] === ">") return code[lastCodeIndex(code, previous)] === "=" ? "body" : "block";
+  if (code[previous] === ")") return parenthesesKind(code, previous);
+  return "block";
+}
+
+// A `{` after a `)` opens a plain block only when the parentheses were a control
+// condition. `catch (error) {` is a handler, and `function f() {`, `async () => {`
+// and `reset() {` open a body that a `try` outside it does not own.
+function parenthesesKind(code, close) {
+  let depth = 0;
+  let index = close;
+  while (index >= 0) {
+    if (code[index] === ")") depth += 1;
+    else if (code[index] === "(") {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+    index -= 1;
+  }
+  let end = lastCodeIndex(code, index) + 1;
+  let word = wordBefore(code, end);
+  // `for await (const row of rows) {` reaches its loop through a second word.
+  while (loopKeyword.has(word)) {
+    end = lastCodeIndex(code, end - word.length) + 1;
+    word = wordBefore(code, end);
+  }
+  if (word === "catch") return "handler";
+  return controlKeyword.has(word) ? "block" : "body";
+}
+
+// Whether a `catch` is the next token after a block. Comments are already blanked,
+// so this only has to step over whitespace.
+function catchFollows(code, at) {
+  const index = nextCodeIndex(code, at + 1);
+  return code.startsWith("catch", index) && !identifier.test(code[index + 5] ?? "");
+}
+
+// Whether the delete is guarded: the innermost `try` that contains it has to end
+// in a `catch`. The walk stops at a handler or a function body, because a delete
+// in a `catch` or a `finally` is not covered by that same try, and a `try` that
+// merely surrounds a function does not own the deletes written inside it. Both
+// refusals are the safe direction: a delete reported here is one a reader has to
+// look at, and one wrongly passed is a violation that ships.
+function guardedBy(containing) {
+  for (let index = containing.length - 1; index >= 0; index -= 1) {
+    const block = containing[index];
+    if (block.kind === "block") continue;
+    if (block.kind === "try") return block.catches;
+    return false;
+  }
+  return false;
 }
 
 // The lines each unguarded forced delete is written on, empty when the suite has
 // none. A domain option such as getPublicProfile({ force: true }) never reaches
-// this: it is not inside the window of an rm call.
+// this: it is not inside the window of an rm call. One pass records the block
+// every brace opens and the blocks every forced delete sits in, so the question
+// a delete asks - which block owns it - is answered from the structure, and gets
+// the same answer however far away that block starts.
 function unguardedDeleteLines(source) {
-  const lines = [];
-  for (const match of source.matchAll(rmCall)) {
-    if (!forcedOption.test(source.slice(match.index, match.index + WINDOW))) continue;
-    if (isGuarded(source, match.index)) continue;
-    lines.push(source.slice(0, match.index).split(/\r?\n/).length);
+  const code = maskLiterals(source);
+  const open = [];
+  const forced = [];
+  for (let at = 0; at < code.length; at += 1) {
+    if (code[at] === "{") {
+      open.push({ kind: blockKind(code, at), catches: false });
+    } else if (code[at] === "}") {
+      const block = open.pop();
+      if (block !== undefined && block.kind === "try") block.catches = catchFollows(code, at);
+    } else if (code[at] === "r") {
+      rmCall.lastIndex = at;
+      if (!rmCall.test(code)) continue;
+      if (!forcedOption.test(code.slice(at, at + WINDOW))) continue;
+      forced.push({ at, containing: open.slice() });
+    }
   }
-  return lines;
+  return forced
+    .filter(({ containing }) => !guardedBy(containing))
+    .map(({ at }) => source.slice(0, at).split(/\r?\n/).length);
 }
 
 // The suites below force-delete a directory they opened a DatabaseSync into, so
@@ -179,6 +385,12 @@ const suitesThatReproduceTheMasking = [
   "tests/cleanup-does-not-mask-assertions.test.mjs",
 ];
 
+// Between them the two classification lists hold every forced delete the scan
+// finds in the suite directories: 18 sites across the 13 suites that need a guard,
+// 56 across the 20 that close the handle or the process first, 74 in all, counted
+// for this change. The number is a record of the sweep rather than the check. The
+// classification test below is what keeps the lists complete, and it never counts
+// sites, so a site added later shows up there rather than as a wrong number here.
 const classified = new Set([
   ...suitesWhoseDeleteNeedsAGuard,
   ...suitesThatCloseTheHandleOrTheProcessFirst,
@@ -205,8 +417,12 @@ test("every cleanup delete that can meet a live SQLite handle is guarded", () =>
 // forced delete has to say which side it is on. The directories are the two
 // `npm test` runs suites from, and a new one has to be added here or it is
 // invisible. A walk of the whole tree is not an option: `.next/standalone/tests`
-// is a build copy of the same suites.
+// is a build copy of the same suites. `tests/fixtures` is left out on purpose: it
+// holds the shims and JSON that suites import, and readdirSync is not recursive,
+// so a suite dropped in there would be run by nothing and seen by nothing. The
+// test below says that out loud rather than trusting it.
 const suiteDirectories = ["tests", "lib/seasonal"];
+const fixtureDirectory = "tests/fixtures";
 
 test("every suite that force-deletes a temp directory is classified", () => {
   const unclassified = [];
@@ -222,4 +438,7 @@ test("every suite that force-deletes a temp directory is classified", () => {
   assert.deepEqual(unclassified, [],
     "classify the suite: guard the delete if a handle can be live when it runs, "
     + "or record why no handle can be");
+  assert.deepEqual(readdirSync(fixtureDirectory).filter((name) => /\.test\.(?:mjs|ts)$/.test(name)), [],
+    `${fixtureDirectory} is a fixture directory, not a suite directory: npm test does not run it, `
+    + "and the scan above never looks inside it, so a suite placed there would be invisible");
 });
