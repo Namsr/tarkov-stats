@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 import type {
   CaptureSnapshotResult,
   PlayerProfileRecord,
@@ -15,6 +16,8 @@ import type {
   SeasonCycle,
 } from "@/types/seasonal";
 import type { WeaponMasteryProgress } from "@/types/tarkov";
+// @ts-ignore Node's strip-types test runner requires the explicit extension.
+import { reissueEditedTriggers, sqliteTrigger } from "../sqlite-trigger-ddl.ts";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
 // the existing progression store already relies on. Keeping schema ownership in
@@ -373,28 +376,20 @@ CREATE TABLE IF NOT EXISTS helper_sessions (
 );
 `;
 
-const SEASONAL_LEADERBOARD_CHANGE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS leaderboard_seasonal_profile_changes (
-  change_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  cycle_id TEXT NOT NULL,
-  aid INTEGER NOT NULL,
-  revision INTEGER NOT NULL,
-  changed_at INTEGER NOT NULL,
-  UNIQUE(cycle_id, aid)
-);
-CREATE INDEX IF NOT EXISTS idx_leaderboard_seasonal_changes_cycle_change
-  ON leaderboard_seasonal_profile_changes(cycle_id, change_id);
-CREATE TRIGGER IF NOT EXISTS leaderboard_seasonal_profile_insert
-AFTER INSERT ON player_profiles WHEN NEW.mode = 'seasonal' BEGIN
+// `CREATE TRIGGER IF NOT EXISTS` keeps an existing body even when its definition has
+// moved on, so an edit to any of these three would silently no-op on every database
+// deployed before it. The names are carried alongside the DDL so the reinstall never
+// has to parse them back out of it.
+const SEASONAL_JOURNAL_TRIGGERS = [
+  sqliteTrigger("leaderboard_seasonal_profile_insert", `AFTER INSERT ON player_profiles WHEN NEW.mode = 'seasonal' BEGIN
   INSERT INTO leaderboard_seasonal_profile_changes(cycle_id, aid, revision, changed_at)
   VALUES (NEW.cycle_id, NEW.aid, 1, NEW.last_seen_at)
   ON CONFLICT(cycle_id, aid) DO UPDATE SET
     change_id = excluded.change_id,
     revision = leaderboard_seasonal_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
-END;
-CREATE TRIGGER IF NOT EXISTS leaderboard_seasonal_profile_update
-AFTER UPDATE ON player_profiles WHEN NEW.mode = 'seasonal' AND (
+END;`),
+  sqliteTrigger("leaderboard_seasonal_profile_update", `AFTER UPDATE ON player_profiles WHEN NEW.mode = 'seasonal' AND (
   OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
   OLD.last_access_at IS NOT NEW.last_access_at OR
   OLD.leaderboard_activity_at IS NOT NEW.leaderboard_activity_at OR
@@ -410,16 +405,29 @@ AFTER UPDATE ON player_profiles WHEN NEW.mode = 'seasonal' AND (
     change_id = excluded.change_id,
     revision = leaderboard_seasonal_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
-END;
-CREATE TRIGGER IF NOT EXISTS leaderboard_seasonal_profile_delete
-AFTER DELETE ON player_profiles WHEN OLD.mode = 'seasonal' BEGIN
+END;`),
+  sqliteTrigger("leaderboard_seasonal_profile_delete", `AFTER DELETE ON player_profiles WHEN OLD.mode = 'seasonal' BEGIN
   INSERT INTO leaderboard_seasonal_profile_changes(cycle_id, aid, revision, changed_at)
   VALUES (OLD.cycle_id, OLD.aid, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
   ON CONFLICT(cycle_id, aid) DO UPDATE SET
     change_id = excluded.change_id,
     revision = leaderboard_seasonal_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
-END;
+END;`),
+];
+
+const SEASONAL_LEADERBOARD_CHANGE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS leaderboard_seasonal_profile_changes (
+  change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cycle_id TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  changed_at INTEGER NOT NULL,
+  UNIQUE(cycle_id, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_leaderboard_seasonal_changes_cycle_change
+  ON leaderboard_seasonal_profile_changes(cycle_id, change_id);
+${SEASONAL_JOURNAL_TRIGGERS.map((trigger) => trigger.ddl).join("\n")}
 `;
 
 function columns(db: SqliteDatabase, table: string): Set<string> {
@@ -474,13 +482,26 @@ function currentSeasonalSchema(db: SqliteDatabase): boolean {
 export function initializeSeasonalLeaderboardChangeJournal(db: SqliteDatabase): { created: boolean } {
   const existed = Boolean(db.prepare(`SELECT 1 FROM sqlite_master
     WHERE type = 'table' AND name = 'leaderboard_seasonal_profile_changes'`).get());
+  // The body-edit hazard: the DDL below cannot update an existing trigger in place,
+  // so an edited body needs an explicit drop first.
+  reissueEditedTriggers(db, SEASONAL_JOURNAL_TRIGGERS);
   db.exec(SEASONAL_LEADERBOARD_CHANGE_SCHEMA);
   return { created: !existed };
 }
 
 export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean } {
   db.exec("PRAGMA busy_timeout = 30000");
-  if (currentSeasonalSchema(db)) return { created: false };
+  if (currentSeasonalSchema(db)) {
+    // A current database already has every object in SEASONAL_LEADERBOARD_CHANGE_SCHEMA
+    // — all of them are in CURRENT_SCHEMA_OBJECTS — so exec'ing that schema here would
+    // be a no-op. The three journal triggers still need the body-drift check though:
+    // `CREATE TRIGGER IF NOT EXISTS` cannot have updated them, and this branch is the
+    // one a deployed database takes, so without it a body edit shipped after the deploy
+    // was unreachable on every open. Reads only; the "no migration writes" guarantee
+    // that keeps an unchanged cycle usable under a concurrent writer still holds.
+    reissueEditedTriggers(db, SEASONAL_JOURNAL_TRIGGERS);
+    return { created: false };
+  }
   const snapshotColumns = columns(db, "progression_snapshots");
   if (snapshotColumns.size > 0 && !snapshotColumns.has("mode")) {
     db.exec("BEGIN IMMEDIATE");
