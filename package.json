@@ -15,6 +15,7 @@
     "pretest": "npm run test:ops && npm run test:average-publication && npm run test:average-client && npm run test:leaderboard",
     "test:arena-ui": "node --experimental-strip-types --test tests/arena-ui.test.mjs",
     "test:regular-progression": "node --experimental-strip-types --test tests/regular-progression.test.ts",
+    "test:progression-memory": "node --experimental-strip-types --test tests/progression-memory.test.mjs",
     "test:progression-population": "node --experimental-strip-types --experimental-sqlite --test tests/progression-population-snapshot.test.ts",
     "test:leaderboard": "node --experimental-strip-types --experimental-sqlite --test tests/leaderboard-ranking.test.ts tests/leaderboard-materialize.test.ts tests/leaderboard-publication.test.ts tests/leaderboard-persistence.test.ts tests/leaderboard-profile-changes.test.ts tests/leaderboard-source.test.ts && node --experimental-strip-types --experimental-sqlite --test tests/leaderboard-cli.test.mjs tests/leaderboard-ui.test.mjs tests/leaderboard-warmup.test.mjs",
     "test:index-sync": "node --experimental-strip-types --experimental-sqlite --test tests/player-index-sync.test.mjs tests/pve-index-sync.test.mjs tests/arena-index-sync.test.mjs tests/seasonal-index-sync.test.mjs",
