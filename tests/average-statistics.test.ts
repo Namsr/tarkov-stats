@@ -986,3 +986,33 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
     "the range check must precede the store open",
   );
 });
+
+test("the average route rejects the legacy minHours/maxHours pair instead of dropping it", async () => {
+  reset();
+  add(1, { hours: 100, totalRaids: 1 });
+  add(2, { hours: 2000, totalRaids: 2 });
+
+  // `dimension` is optional and defaults to "hours", so the route reads min/max with
+  // an inclusive upper bound. On the regular path minHours/maxHours are read by
+  // nothing: with a dimension present they were silently dropped, and with no
+  // dimension and no min/max they selected an exclusive upper bound. Both shapes
+  // answered 200 and both are rejected now, so the second one loses a range that
+  // used to work. /api/baseline still honours these keys for the non-arena callers,
+  // and the arena branch of the same route reads them too, so the pair is not gone.
+  for (const query of [
+    "?mode=regular&dimension=hours&minHours=100",
+    "?mode=regular&dimension=hours&maxHours=1000",
+    "?mode=regular&dimension=hours&minHours=100&maxHours=1000",
+    "?mode=regular&minHours=100&maxHours=1000",
+  ]) {
+    const response = await getAverage(new NextRequest(`http://local/api/average${query}`));
+    assert.equal(response.status, 400, `${query} must not answer with population statistics`);
+  }
+
+  // The supported pair still narrows the population and stays a 200.
+  const ranged = await getAverage(new NextRequest(
+    "http://local/api/average?mode=regular&dimension=hours&min=100&max=1000",
+  ));
+  assert.equal(ranged.status, 200);
+  assert.equal((await ranged.json()).averages.n, 1);
+});

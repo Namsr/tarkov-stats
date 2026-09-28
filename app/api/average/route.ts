@@ -247,11 +247,25 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid dimension" }, { status: 400 });
   }
 
-  // New min/max ranges are inclusive. Legacy minHours/maxHours preserve their
-  // previous exclusive upper-bound behavior for existing consumers.
-  const usesNewRange = params.has("dimension") || params.has("min") || params.has("max");
-  const parsedMin = parseNonNegative(params.get(usesNewRange ? "min" : "minHours"));
-  const parsedMax = parseNonNegative(params.get(usesNewRange ? "max" : "maxHours"));
+  // `dimension` is optional and defaults to "hours", so the range keys read here are
+  // min and max, with an inclusive upper bound (`maxInclusive` is always true).
+  // On the regular/pve path minHours/maxHours are read by nothing: the old key switch
+  // reached them only when no dimension and no min/max were present, and it gave them
+  // an exclusive upper bound. That request shape answered 200 and is rejected now,
+  // deliberately, rather than dropping the filter and answering with whole-population
+  // statistics. The guard sits below the arena early return in GET because the arena
+  // branch does read them: arenaRange passes minHours/maxHours into getArenaAverage,
+  // and components/ArenaAverage.tsx sends them. /api/baseline still reads the pair for
+  // the non-arena callers, so the keys are not simply gone.
+  if (params.has("minHours") || params.has("maxHours")) {
+    timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
+    return NextResponse.json(
+      { error: "Invalid average range: use min and max" },
+      { status: 400 },
+    );
+  }
+  const parsedMin = parseNonNegative(params.get("min"));
+  const parsedMax = parseNonNegative(params.get("max"));
   if (!parsedMin.valid || !parsedMax.valid) {
     timing.finish({ operation: "average", mode: rawMode, outcome: "invalid", status: 400 });
     return NextResponse.json(
@@ -282,7 +296,7 @@ export async function GET(request: NextRequest) {
       timing.finish({ operation: "average", mode: rawMode, outcome: "success", status: 200, storage: "sqlite", source: "publication", cache: "hit" });
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
-    const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, usesNewRange]);
+    const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, true]);
     const averagesStarted = timing.now();
     const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
       rawMode,
@@ -293,7 +307,7 @@ export async function GET(request: NextRequest) {
       period,
       parsedMin.value,
       parsedMax.value,
-      usesNewRange,
+      true,
     )).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
