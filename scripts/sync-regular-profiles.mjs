@@ -79,7 +79,14 @@ async function main() {
     maxRunMs: config.maxRunMs,
   });
 
-  const { counters: feed, coverage: preProcessingCoverage } = await loadFeed();
+  let feedResult;
+  try {
+    feedResult = await loadFeed(startedAt);
+  } catch (error) {
+    if (error?.runBudgetExceeded) return;
+    throw error;
+  }
+  const { counters: feed, coverage: preProcessingCoverage } = feedResult;
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM regular_profile_sync_queue GROUP BY status")
@@ -209,7 +216,7 @@ function heartbeat() {
   if (Number(result.changes) !== 1) throw new Error("regular profile sync lease was lost");
 }
 
-async function loadFeed() {
+async function loadFeed(startedAt) {
   const tracked = new Map();
   const excluded = new Set();
   for (const row of db.prepare(`
@@ -274,7 +281,7 @@ async function loadFeed() {
 
   // One URL per poll attempt (stable across retries inside this run). Validators
   // from the last accepted feed are reused; a changed source resets them.
-  const feed = await requestFeedWithRetry(feedUrlForRun());
+  const feed = await requestFeedWithRetry(feedUrlForRun(), startedAt);
   const parser = createTimestampObjectParser((aidValue, timestampValue) => {
     counters.sourceEntries += 1;
     const aid = Number(aidValue);
@@ -586,15 +593,19 @@ function feedValidators() {
   return { ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) };
 }
 
-async function requestFeedWithRetry(url) {
+async function requestFeedWithRetry(url, startedAt) {
   const { etag, lastModified } = feedValidators();
   const headers = {};
   if (etag) headers["if-none-match"] = etag;
   else if (lastModified) headers["if-modified-since"] = lastModified;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
+    // The feed ladder shares the run budget with the capture ladder: a stuck
+    // feed must not keep the collector alive past `maxRunMs` either.
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw runBudgetError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const response = await fetchTarkovJson(url, { cache: "no-store", signal: controller.signal, headers });
       if (response.status === 304) {
@@ -619,9 +630,13 @@ async function requestFeedWithRetry(url) {
         text,
       };
     } catch (error) {
+      if (runBudgetExpired(startedAt)) throw runBudgetError();
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
-      await delay(backoff(attempt));
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) throw runBudgetError();
+      await delay(waitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -682,6 +697,12 @@ function saveRunMeta(summary) {
   }
 }
 
+function runBudgetExpired(startedAt) { return Date.now() - startedAt >= config.maxRunMs; }
+function runBudgetError() {
+  const error = new Error("Regular profile sync run budget exceeded");
+  error.runBudgetExceeded = true;
+  return error;
+}
 async function rateLimit() {
   const now = Date.now();
   if (nextRequestAt > now) await delay(nextRequestAt - now);

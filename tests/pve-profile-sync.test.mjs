@@ -304,10 +304,19 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
   };
 
   try {
-    // No-attempt run: the budget expires before the queued aid is fetched, so
-    // the pre-processing coverage loop reports the numbers.
+    // No-attempt run: the feed is admitted, then the budget is spent before the
+    // queue is claimed, so the pre-processing coverage loop reports the numbers.
+    const feedPreload = join(directory, "advance-clock-on-feed.mjs");
+    await writeFile(feedPreload, `const originalFetch = globalThis.fetch;
+      const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+      globalThis.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[1]?.method !== "POST") offset += 1_000_000;
+        return response;
+      };`);
     const noAttempt = summaryFrom((await runCollector(dbPath, progressionDbPath, port, 0, {
-      PROFILE_QUEUE_DEADLINE_MS: "1",
+      PVE_PROFILE_SYNC_MAX_RUN_MS: "60000",
+      NODE_OPTIONS: `--import ${pathToFileURL(feedPreload).href}`,
     })).stdout);
     assert.equal(noAttempt.attempted, 0);
     assert.equal(noAttempt.snapshotLagging, 1, "a queued version ahead of the snapshot is lagging");

@@ -325,7 +325,7 @@ test("coverage uses every tracked non-excluded regular profile", async () => {
 
 test("regular no-attempt runs reuse the pre-processing coverage snapshot", async () => {
   const source = await readFile(new URL("../scripts/sync-regular-profiles.mjs", import.meta.url), "utf8");
-  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = await loadFeed\(\);/);
+  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = feedResult;/);
   assert.match(source, /processed\.attempted === 0 \? preProcessingCoverage : db\.prepare/);
 });
 

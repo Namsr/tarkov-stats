@@ -73,7 +73,13 @@ async function main() {
   const startedAt = Date.now();
   acquireLease();
   leaseHeld = true;
-  const feed = await loadFeed();
+  let feed;
+  try {
+    feed = await loadFeed(startedAt);
+  } catch (error) {
+    if (error?.runBudgetExceeded) return;
+    throw error;
+  }
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM seasonal_profile_sync_queue WHERE cycle_id = ? GROUP BY status")
@@ -186,7 +192,7 @@ function heartbeat() {
   if (Number(result.changes) !== 1) throw new Error("Seasonal profile sync lease was lost");
 }
 
-async function loadFeed() {
+async function loadFeed(startedAt) {
   const counters = {
     sourceEntries: 0,
     invalidEntries: 0,
@@ -207,7 +213,7 @@ async function loadFeed() {
   // One URL per poll attempt (stable across retries inside this run). Validators
   // from the last accepted feed are reused; a changed source or cycle resets
   // them because meta is keyed by cycle and the source URL is recorded.
-  const feedResponse = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl));
+  const feedResponse = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl), startedAt);
   if (feedResponse.notModified) {
     // 304 proves the representation is unchanged, not that every tracked
     // profile is fresh: the queue below and the seasonal index reconciliation
@@ -287,14 +293,18 @@ async function loadFeed() {
   return counters;
 }
 
-async function requestFeed(url) {
+async function requestFeed(url, startedAt) {
   const useValidators = getMeta("feed_source_url") === config.updatedUrl;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
+    // The feed ladder shares the run budget with the capture ladder: a stuck
+    // feed must not keep the collector alive past `maxRunMs` either.
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw runBudgetError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const headers = {};
       if (savedEtag) headers["if-none-match"] = savedEtag;
@@ -327,11 +337,17 @@ async function requestFeed(url) {
       lastError = new Error(`Seasonal updated feed HTTP ${response.status}`);
       if (![408, 429].includes(response.status) && response.status < 500) break;
     } catch (error) {
+      if (runBudgetExpired(startedAt)) throw runBudgetError();
       lastError = error;
     } finally {
       clearTimeout(timeout);
     }
-    if (attempt <= config.maxRetries) await delay(backoff(attempt));
+    if (attempt <= config.maxRetries) {
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) throw runBudgetError();
+      await delay(waitMs);
+    }
   }
   throw lastError ?? new Error("Seasonal updated feed request failed");
 }
@@ -463,6 +479,12 @@ function deleteMeta(key) {
     .run(cycle.cycleId, key);
 }
 
+function runBudgetExpired(startedAt) { return Date.now() - startedAt >= config.maxRunMs; }
+function runBudgetError() {
+  const error = new Error("Seasonal profile sync run budget exceeded");
+  error.runBudgetExceeded = true;
+  return error;
+}
 async function rateLimit() {
   const now = Date.now();
   if (nextRequestAt > now) await delay(nextRequestAt - now);
