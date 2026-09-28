@@ -47,8 +47,9 @@ export function sqliteTrigger(name: string, body: string): TriggerDdl {
 // to an edit that changes the character or the length of a run that is already
 // there — a tab for a space, a newline for a space, one space for two. Adding or
 // removing a run is still detected, because that changes the run count. No trigger
-// compared here carries a run inside a literal; the three seasonal bodies hold only
-// 'seasonal' and 'subsec'.
+// compared here carries a run inside a literal; the four seasonal bodies hold only
+// 'seasonal' and 'subsec', and the two leaderboard journal bodies only 'regular',
+// 'pve' and 'arena'.
 //
 // Making this exact would mean tokenizing SQL to find the literal boundaries. The
 // two ways that goes wrong are not symmetric. A tokenizer that reports a difference
