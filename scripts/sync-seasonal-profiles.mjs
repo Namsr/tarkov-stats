@@ -276,6 +276,13 @@ async function loadFeed() {
     throw error;
   }
   Object.assign(counters, enqueueMissingSeasonalIndexProfiles(db, cycle.cycleId, cycle.startsAt));
+  // A tombstone can be written after a version was queued, so the enqueue-time
+  // exclusion above is not enough: drop those rows before the queue is claimed
+  // again. The delete is idempotent and never touches a non-excluded aid.
+  db.prepare(`
+    DELETE FROM seasonal_profile_sync_queue
+    WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = seasonal_profile_sync_queue.aid)
+  `).run();
   heartbeat();
   return counters;
 }
@@ -334,6 +341,7 @@ async function processQueue(startedAt) {
   const next = db.prepare(`
     SELECT aid, feed_updated_at FROM seasonal_profile_sync_queue
     WHERE cycle_id = ? AND status IN ('pending', 'error')
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = seasonal_profile_sync_queue.aid)
       AND (last_run_id IS NULL OR last_run_id <> ?)
     ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, feed_updated_at, aid LIMIT 1
   `);

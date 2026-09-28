@@ -258,6 +258,102 @@ test("PvE collector uses the JSON helper and a distinct mode queue", async () =>
   assert.doesNotMatch(route, /\bfetch\s*\(/);
 });
 
+test("PvE coverage counts a queued version ahead of the snapshot as lagging", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-coverage-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
+  // aid 10: the snapshot equals the stored profile, but the queue already knows
+  // upstream moved 5000 ms on and the fetch never happens.
+  // aid 11: caught up, and must stay counted as current.
+  for (const [aid, version] of [[10, cutoff + 1_000], [11, cutoff + 6_000]]) {
+    players.prepare(`INSERT INTO mode_players (mode, aid, profile_updated_at, fetched_at, stats_json, achievements)
+      VALUES ('pve', ?, ?, ?, ?, '[]')`).run(aid, version, version, stats);
+    progression.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, stats_json)
+      VALUES ('pve', 'persistent', ?, ?, ?, ?, 'x', ?)`)
+      .run(aid, version, version, version + 1, stats);
+  }
+  players.exec(`CREATE TABLE pve_profile_sync_queue (
+    aid INTEGER PRIMARY KEY, feed_updated_at INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    http_status INTEGER, error TEXT, last_run_id TEXT, updated_at INTEGER NOT NULL);
+    CREATE TABLE pve_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  const queue = players.prepare("INSERT INTO pve_profile_sync_queue (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, ?)");
+  queue.run(10, cutoff + 6_000, "pending", 1);
+  players.prepare("INSERT INTO pve_profile_sync_meta (key, value) VALUES ('feed_watermark', ?)").run(String(cutoff + 7_000));
+
+  const feed = { 10: cutoff + 6_000, 11: cutoff + 6_000 };
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pve/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      return response.end(JSON.stringify(feed));
+    }
+    if (request.url !== "/api/operator/pve/profile-sync") return response.writeHead(404).end();
+    for await (const chunk of request) void chunk;
+    response.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const summaryFrom = (stdout) => {
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    return JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+  };
+
+  try {
+    // No-attempt run: the budget expires before the queued aid is fetched, so
+    // the pre-processing coverage loop reports the numbers.
+    const noAttempt = summaryFrom((await runCollector(dbPath, progressionDbPath, port, 0, {
+      PROFILE_QUEUE_DEADLINE_MS: "1",
+    })).stdout);
+    assert.equal(noAttempt.attempted, 0);
+    assert.equal(noAttempt.snapshotLagging, 1, "a queued version ahead of the snapshot is lagging");
+    assert.equal(noAttempt.snapshotCurrent, 1, "a caught-up profile is still current");
+    assert.equal(noAttempt.snapshotMissing, 0);
+    assert.equal(noAttempt.coverageTotal, 2);
+    assert.equal(noAttempt.coveragePercent, 50);
+
+    // Attempted run: the SQL fallback has to reach the same verdict. aid 12 has
+    // no snapshot at all and is queued oldest, so it is fetched first (404 ->
+    // not_found) and the advanced clock ends the run before aid 10 is reached.
+    players.prepare(`INSERT INTO mode_players (mode, aid, profile_updated_at, fetched_at, stats_json, achievements)
+      VALUES ('pve', 12, ?, ?, ?, '[]')`).run(cutoff + 7_000, cutoff + 7_000, stats);
+    queue.run(12, cutoff + 7_000, "pending", 0);
+    const preload = join(directory, "advance-clock.mjs");
+    await writeFile(preload, `const originalFetch = globalThis.fetch;
+      const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+      globalThis.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (args[1]?.method === "POST") offset += 60001;
+        return response;
+      };`);
+    const attempted = summaryFrom((await runCollector(dbPath, progressionDbPath, port, 0, {
+      PVE_PROFILE_SYNC_MAX_RUN_MS: "60000",
+      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 30_000),
+      NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+    })).stdout);
+    assert.equal(attempted.attempted, 1);
+    assert.equal(
+      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 10").get().status,
+      "pending",
+      "the lagging profile is never fetched",
+    );
+    assert.equal(attempted.snapshotLagging, 1, "the SQL fallback applies the same queue-aware target");
+    assert.equal(attempted.snapshotCurrent, 1, "the SQL fallback still counts the caught-up profile as current");
+    assert.equal(attempted.snapshotMissing, 1, "the SQL fallback still counts the snapshotless profile as missing");
+    assert.equal(attempted.coverageTotal, 3);
+    assert.equal(attempted.coveragePercent, 33.3333);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("PvE conditional feed requests skip the body on 304 but keep serving the queue", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-304-"));
   const dbPath = join(directory, "players.db");

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
@@ -242,4 +242,231 @@ test("Seasonal timer uses the hourly Moscow cadence and shared waiting lock", as
   assert.match(feedService, /WorkingDirectory=\/opt\/tarkovstats-auto/);
   assert.match(indexService, /ConditionPathExists=\/opt\/tarkovstats-auto\/docker-compose\.vps\.yml/);
   assert.match(indexService, /WorkingDirectory=\/opt\/tarkovstats-auto/);
+});
+
+// The collector refuses to start unless the feed URLs are the real
+// players.tarkov.dev ones, so the fixture server is reached by rewriting only
+// the host inside a preload instead of weakening the readiness gate.
+const FEED_HOST_PRELOAD = `
+const origin = process.env.SEASONAL_TEST_FEED_ORIGIN;
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  return Reflect.apply(nativeFetch, globalThis, [url.replace("https://players.tarkov.dev", origin), init]);
+};
+`;
+
+test("Seasonal profile queue purges and skips moderation-excluded accounts", async () => {
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const directory = await mkdtemp(join(tmpdir(), "seasonal-profile-excluded-"));
+  const dbPath = join(directory, "progression.db");
+  const preloadPath = join(directory, "feed-host-preload.cjs");
+  await writeFile(preloadPath, FEED_HOST_PRELOAD);
+  const cycleId = "excluded-test";
+  const startsAt = Date.parse("2026-01-01T00:00:00Z");
+  const feedUpdatedAt = startsAt + 1_000;
+
+  // Both accounts are queued while they are still allowed, then aid 22 is
+  // banned: confirmManualBan writes only the tombstone, so the queue row and
+  // the snapshot survive it.
+  const db = new DatabaseSync(dbPath);
+  initializeSeasonalSchema(db);
+  db.exec(`
+    CREATE TABLE seasonal_profile_sync_queue (
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      feed_updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'not_found', 'error', 'superseded')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      http_status INTEGER,
+      error TEXT,
+      last_run_id TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid, feed_updated_at)
+    );
+  `);
+  const enqueue = db.prepare(`INSERT INTO seasonal_profile_sync_queue
+    (cycle_id, aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, 'pending', ?)`);
+  enqueue.run(cycleId, 21, feedUpdatedAt, 10);
+  enqueue.run(cycleId, 22, feedUpdatedAt, 10);
+  db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (22, 'admin_manual', ?)")
+    .run(20);
+  db.close();
+
+  const posted = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pvp-season/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ 21: feedUpdatedAt }));
+      return;
+    }
+    if (request.url !== "/api/operator/seasonal/profile-sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid, cycleId: bodyCycleId } = JSON.parse(raw);
+    assert.equal(bodyCycleId, cycleId);
+    posted.push(aid);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ profileUpdatedAt: feedUpdatedAt, capture: { inserted: true } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    await execFileAsync(process.execPath, [
+      "--require", preloadPath,
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "scripts/sync-seasonal-profiles.mjs",
+    ], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        SEASONAL_TEST_FEED_ORIGIN: origin,
+        PROGRESSION_SQLITE_PATH: dbPath,
+        PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+        SEASONAL_PROFILE_SYNC_BASE_URL: origin,
+        SEASONAL_FEED_RPS: "20",
+        SEASONAL_FEED_MAX_RETRIES: "0",
+        SEASONAL_CYCLE_ID: cycleId,
+        SEASONAL_STARTS_AT: new Date(startsAt).toISOString(),
+        SEASONAL_UPSTREAM_CONTRACT: "direct_profile",
+        SEASONAL_COLLECTION_SOURCE: "json_feed",
+        SEASONAL_UPSTREAM_FIXTURE_CONFIRMED: "true",
+        SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/profile/{aid}.json",
+        SEASONAL_PROFILE_UPDATED_URL: "https://players.tarkov.dev/pvp-season/updated.json",
+        SEASONAL_PROFILE_INDEX_URL: "https://players.tarkov.dev/pvp-season/index.json",
+      },
+    });
+
+    const after = new DatabaseSync(dbPath);
+    const queue = after.prepare(
+      "SELECT aid, status FROM seasonal_profile_sync_queue WHERE cycle_id = ? ORDER BY aid",
+    ).all(cycleId).map((row) => ({ ...row }));
+    const summary = JSON.parse(after.prepare(
+      "SELECT value FROM seasonal_profile_sync_meta WHERE cycle_id = ? AND key = 'last_summary'",
+    ).get(cycleId).value);
+    after.close();
+
+    // The tombstoned account costs no upstream request and leaves no queue row;
+    // an account without a tombstone is still captured.
+    assert.deepEqual(posted, [21]);
+    assert.deepEqual(queue, [{ aid: 21, status: "completed" }]);
+    assert.equal(summary.attempted, 1);
+    assert.equal(summary.completed, 1);
+    assert.equal(summary.backlog, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A ban confirmed while the collector is already past its purge is honoured by
+// the claim itself; the leftover row is drained by the next poll's purge.
+test("Seasonal profile queue stops claiming an account banned mid-run", async () => {
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const directory = await mkdtemp(join(tmpdir(), "seasonal-profile-midrun-ban-"));
+  const dbPath = join(directory, "progression.db");
+  const preloadPath = join(directory, "feed-host-preload.cjs");
+  await writeFile(preloadPath, FEED_HOST_PRELOAD);
+  const cycleId = "midrun-ban-test";
+  const startsAt = Date.parse("2026-01-01T00:00:00Z");
+  const feedUpdatedAt = startsAt + 1_000;
+
+  const db = new DatabaseSync(dbPath);
+  initializeSeasonalSchema(db);
+  db.exec(`
+    CREATE TABLE seasonal_profile_sync_queue (
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      feed_updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'not_found', 'error', 'superseded')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      http_status INTEGER,
+      error TEXT,
+      last_run_id TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid, feed_updated_at)
+    );
+  `);
+  const enqueue = db.prepare(`INSERT INTO seasonal_profile_sync_queue
+    (cycle_id, aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, 'pending', ?)`);
+  enqueue.run(cycleId, 31, feedUpdatedAt, 10);
+  enqueue.run(cycleId, 32, feedUpdatedAt, 10);
+  db.close();
+
+  const posted = [];
+  const moderator = new DatabaseSync(dbPath);
+  moderator.exec("PRAGMA busy_timeout = 30000");
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pvp-season/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({}));
+      return;
+    }
+    if (request.url !== "/api/operator/seasonal/profile-sync") {
+      response.writeHead(404).end();
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const { aid } = JSON.parse(raw);
+    posted.push(aid);
+    // The purge already ran by the time the first capture is requested, so
+    // only the claim-time exclusion can still stop aid 32.
+    if (aid === 31) {
+      moderator.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (32, 'admin_manual', ?)")
+        .run(Date.now());
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ profileUpdatedAt: feedUpdatedAt, capture: { inserted: true } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    await execFileAsync(process.execPath, [
+      "--require", preloadPath,
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "scripts/sync-seasonal-profiles.mjs",
+    ], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        SEASONAL_TEST_FEED_ORIGIN: origin,
+        PROGRESSION_SQLITE_PATH: dbPath,
+        PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+        SEASONAL_PROFILE_SYNC_BASE_URL: origin,
+        SEASONAL_FEED_RPS: "20",
+        SEASONAL_FEED_MAX_RETRIES: "0",
+        SEASONAL_CYCLE_ID: cycleId,
+        SEASONAL_STARTS_AT: new Date(startsAt).toISOString(),
+        SEASONAL_UPSTREAM_CONTRACT: "direct_profile",
+        SEASONAL_COLLECTION_SOURCE: "json_feed",
+        SEASONAL_UPSTREAM_FIXTURE_CONFIRMED: "true",
+        SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/profile/{aid}.json",
+        SEASONAL_PROFILE_UPDATED_URL: "https://players.tarkov.dev/pvp-season/updated.json",
+        SEASONAL_PROFILE_INDEX_URL: "https://players.tarkov.dev/pvp-season/index.json",
+      },
+    });
+
+    const after = new DatabaseSync(dbPath);
+    const queue = after.prepare(
+      "SELECT aid, status FROM seasonal_profile_sync_queue WHERE cycle_id = ? ORDER BY aid",
+    ).all(cycleId).map((row) => ({ ...row }));
+    after.close();
+
+    assert.deepEqual(posted, [31]);
+    assert.deepEqual(queue, [{ aid: 31, status: "completed" }, { aid: 32, status: "pending" }]);
+  } finally {
+    moderator.close();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

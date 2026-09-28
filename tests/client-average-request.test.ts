@@ -12,8 +12,12 @@ Object.defineProperty(globalThis, "window", { configurable: true, value: browser
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { connection: { effectiveType: "4g", saveData: false } } });
 
 const requests = await import("../lib/client-average-request.ts");
+const originalFetch = globalThis.fetch;
 
-test.afterEach(() => requests.resetAverageResponseCacheForTests());
+test.afterEach(() => {
+  globalThis.fetch = originalFetch;
+  requests.resetAverageResponseCacheForTests();
+});
 
 test("average response cache shares successful requests in one browser session", async () => {
   let fetches = 0;
@@ -126,4 +130,13 @@ test("the session response cache evicts instead of growing without bound", async
   // A recently cached key is still served without a request.
   await requests.loadAverageJson(urls[79]);
   assert.equal(fetches, 81);
+});
+
+test("regression: this suite installs a fetch stub", () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ total: 99 }), { status: 200 });
+  assert.notEqual(globalThis.fetch, originalFetch);
+});
+
+test("regression: the stub does not survive into the next case", () => {
+  assert.equal(globalThis.fetch, originalFetch);
 });

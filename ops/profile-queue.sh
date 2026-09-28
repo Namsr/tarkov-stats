@@ -11,6 +11,11 @@ log=/var/log/tarkovstats-warmup-batch.json
 failures=""
 # Retry only the failing mode once; preserve nonzero exit for observability.
 RETRY_DELAY=10
+# A retry is only worth starting if it still gets a real run window. Below this
+# the bounded mode aborts at its first budget checkpoint and exits 0 without
+# syncing anything, which would erase the failure the retry exists to rescue.
+# Matches the 60s floor the sync scripts accept for *_MAX_RUN_MS.
+RETRY_MIN_BUDGET=60
 
 log_line() {
   printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$1" "$2"
@@ -24,6 +29,8 @@ record_failure() {
 #   run_mode <name> <command...>
 # On failure the same mode is retried once after $RETRY_DELAY so transient
 # errors (e.g. feed `terminated`) do not skip the mode until the next hour.
+# The retry only runs when it would still have $RETRY_MIN_BUDGET seconds of run
+# window; otherwise the first failure stands and is recorded.
 run_mode() {
   _mode_name="$1"
   shift
@@ -33,11 +40,15 @@ run_mode() {
   fi
   "$@"
   _mode_status=$?
-  if [ "$_mode_status" -ne 0 ] && [ "$(date +%s)" -lt "$deadline" ]; then
+  # Seconds the retry would actually get, once the delay is paid.
+  _retry_budget=$(( deadline - $(date +%s) - RETRY_DELAY ))
+  if [ "$_mode_status" -ne 0 ] && [ "$_retry_budget" -ge "$RETRY_MIN_BUDGET" ]; then
     log_line MODE_RETRY "mode=$_mode_name attempt=1 status=$_mode_status retry_in=$RETRY_DELAY"
     sleep "$RETRY_DELAY"
     "$@"
     _mode_status=$?
+  elif [ "$_mode_status" -ne 0 ]; then
+    log_line MODE_RETRY "mode=$_mode_name attempt=skipped status=$_mode_status reason=insufficient-budget budget=${_retry_budget}s"
   fi
   log_line MODE_RESULT "mode=$_mode_name status=$_mode_status"
   if [ "$_mode_status" -ne 0 ]; then

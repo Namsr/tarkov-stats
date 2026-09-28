@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSystemMetricsStore, parseSystemMetricSample } from "../lib/admin/system-metrics.ts";
@@ -104,6 +108,66 @@ test("system metrics retain 90 days and API keeps reads admin-only", async () =>
   assert.match(route, /authorization\.startsWith\("Bearer "\)/);
   assert.match(route, /export async function POST/);
   assert.match(route, /status: 204/);
+});
+
+// A failed initialization caches its `null` for the life of the process unless the
+// promise is cleared, so the probe runs in a child process with a controlled clock.
+function runInitializationProbe(source: string) {
+  const directory = mkdtempSync(join(tmpdir(), "system-metrics-init-"));
+  try {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { DatabaseSync } from "node:sqlite";
+      import { getSystemMetricsStore } from ${JSON.stringify(new URL("../lib/admin/system-metrics.ts", import.meta.url).href)};
+      const errors = [];
+      console.warn = (message) => errors.push(message);
+      let now = Date.now();
+      Date.now = () => now;
+      ${source}
+    `], {
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, SYSTEM_METRICS_SQLITE_PATH: join(directory, "system-metrics.db") },
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("a failed system metrics open is retried after the cooldown instead of staying unavailable", () => {
+  runInitializationProbe(`
+    const exec = DatabaseSync.prototype.exec;
+    let attempts = 0;
+    let failedDb;
+    DatabaseSync.prototype.exec = function(sql) {
+      attempts += 1;
+      if (attempts === 1) {
+        failedDb = this;
+        throw new Error("probe: schema initialization failed");
+      }
+      return exec.call(this, sql);
+    };
+    assert.equal(await getSystemMetricsStore(), null);
+    DatabaseSync.prototype.exec = exec;
+    assert.match(errors[0], /system metrics unavailable/);
+    assert.equal(await getSystemMetricsStore(), null, "requests during the cooldown must not retry");
+    assert.equal(attempts, 1, "the cooldown must not reopen the database");
+    assert.equal(errors.length, 1, "the failure is reported once per process");
+    now += 30_000;
+    const [first, second] = await Promise.all([getSystemMetricsStore(), getSystemMetricsStore()]);
+    assert.ok(first, "system metrics must recover without restarting the process");
+    assert.equal(first, second, "the recovered store is shared");
+    first.record({
+      uptimeSeconds: 100, load1: 0.5, load5: 0.4, load15: 0.3,
+      cpuUser: 25, cpuNice: 0, cpuSystem: 25, cpuIdle: 50, cpuIowait: 0, cpuIrq: 0, cpuSoftirq: 0, cpuSteal: 0,
+      memoryTotalBytes: 1_000, memoryAvailableBytes: 400, swapTotalBytes: 200, swapFreeBytes: 150,
+      diskTotalBytes: 10_000, diskUsedBytes: 6_000, diskAvailableBytes: 3_500,
+      diskReadSectors: 1_000, diskWriteSectors: 2_000, networkRxBytes: 10_000, networkTxBytes: 20_000,
+    }, now);
+    assert.equal(first.range("24h", now).sampleCount, 1);
+    assert.throws(() => failedDb.prepare("SELECT 1"), /not open|closed/i, "the failed handle must be closed");
+  `);
 });
 
 test("Linux collector reads aggregate counters and posts only with its bearer token", async () => {

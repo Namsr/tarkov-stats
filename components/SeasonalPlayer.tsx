@@ -462,7 +462,7 @@ export default function SeasonalPlayer({
           <StatCard label={t("player.pmcKills")} value={profile.counters.pmcKills} />
           <StatCard label={t("player.deaths")} value={stats.deaths ?? unknownValue} />
           <StatCard label={t("seasonal.metric.pvpKd")} value={displayNumber(stats.pmcKdRatio, 2, unknownValue)} />
-          <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix="%" />
+          <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix={stats.pmcSurvivalRate == null ? undefined : "%"} />
         </div>
       </section>
       <section>
@@ -496,7 +496,7 @@ export default function SeasonalPlayer({
       activity={<ProfileActivity aid={aid} mode="seasonal" updatedAt={profile.profileUpdatedAt} lastPlayedAt={profile.lastAccessAt} onCheck={refreshProfile} />}
       overviewCards={[
         { label: t("player.pmcKd"), value: displayNumber(stats.pmcKdRatio, 2, unknownValue) },
-        { label: t("seasonal.pmcSurvival"), value: displayNumber(stats.pmcSurvivalRate, 1, unknownValue), suffix: "%" },
+        { label: t("seasonal.pmcSurvival"), value: displayNumber(stats.pmcSurvivalRate, 1, unknownValue), suffix: stats.pmcSurvivalRate == null ? undefined : "%" },
         { label: t("player.pmcRaids"), value: profile.counters.pmcRaids },
         { label: t("metric.hours"), value: displayNumber(profile.lifetimePvpHours, 0, unknownValue) },
       ]}

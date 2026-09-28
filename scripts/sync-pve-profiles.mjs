@@ -84,17 +84,22 @@ async function main() {
       FROM progression_sync.progression_snapshots
       WHERE mode = 'pve' AND cycle_id = 'persistent'
       GROUP BY aid
+    ), targets AS (
+      SELECT p.aid, latest.snapshot_updated_at,
+        MAX(COALESCE(p.profile_updated_at, 0), COALESCE(q.feed_updated_at, 0)) AS target_updated_at
+      FROM mode_players p
+      LEFT JOIN excluded_players e ON e.aid = p.aid
+      LEFT JOIN latest ON latest.aid = p.aid
+      LEFT JOIN pve_profile_sync_queue q ON q.aid = p.aid
+      WHERE p.mode = 'pve' AND e.aid IS NULL
     )
     SELECT COUNT(*) AS total,
-      SUM(CASE WHEN latest.snapshot_updated_at IS NULL THEN 1 ELSE 0 END) AS missing,
-      SUM(CASE WHEN latest.snapshot_updated_at IS NOT NULL
-        AND latest.snapshot_updated_at < p.profile_updated_at THEN 1 ELSE 0 END) AS lagging,
-      SUM(CASE WHEN latest.snapshot_updated_at IS NOT NULL
-        AND latest.snapshot_updated_at >= p.profile_updated_at THEN 1 ELSE 0 END) AS current
-    FROM mode_players p
-    LEFT JOIN excluded_players e ON e.aid = p.aid
-    LEFT JOIN latest ON latest.aid = p.aid
-    WHERE p.mode = 'pve' AND e.aid IS NULL
+      SUM(CASE WHEN snapshot_updated_at IS NULL THEN 1 ELSE 0 END) AS missing,
+      SUM(CASE WHEN snapshot_updated_at IS NOT NULL
+        AND snapshot_updated_at < target_updated_at THEN 1 ELSE 0 END) AS lagging,
+      SUM(CASE WHEN snapshot_updated_at IS NOT NULL
+        AND snapshot_updated_at >= target_updated_at THEN 1 ELSE 0 END) AS current
+    FROM targets
   `).get();
   const coverageSummary = summarizeCoverage(coverage.total, coverage.current);
   const summary = {
@@ -217,9 +222,10 @@ async function loadFeed() {
   const savedWatermark = normalizeUpdatedAt(getMeta("feed_watermark"));
   const { counters, pendingVersions, feed } = await loadFeedWithRetry(feedUrlForRun(), tracked, excluded, savedWatermark);
 
+  let queuedRows;
   await writeTransaction(() => {
     const queuedAt = Date.now();
-    const queuedRows = new Map(db.prepare("SELECT aid, feed_updated_at, status FROM pve_profile_sync_queue").all()
+    queuedRows = new Map(db.prepare("SELECT aid, feed_updated_at, status FROM pve_profile_sync_queue").all()
       .map((row) => [Number(row.aid), row]));
     // A 304 only validates the feed, not the local snapshot store. Reconcile
     // tracked profiles even when the response had no entries to parse.
@@ -244,9 +250,13 @@ async function loadFeed() {
     for (const [aid, pending] of pendingVersions) {
       const queued = queuedRows.get(aid);
       let changed = 0;
-      if (!queued) changed = Number(insert.run(aid, pending.feedUpdatedAt, queuedAt).changes);
-      else if (pending.feedUpdatedAt > Number(queued.feed_updated_at)) changed = Number(replace.run(pending.feedUpdatedAt, queuedAt, aid).changes);
-      else if (queued.status === "completed" && (pending.snapshotUpdatedAt ?? latestSnapshotVersion(aid)) < Number(queued.feed_updated_at)) {
+      if (!queued) {
+        changed = Number(insert.run(aid, pending.feedUpdatedAt, queuedAt).changes);
+        if (changed === 1) queuedRows.set(aid, { aid, feed_updated_at: pending.feedUpdatedAt, status: "pending" });
+      } else if (pending.feedUpdatedAt > Number(queued.feed_updated_at)) {
+        changed = Number(replace.run(pending.feedUpdatedAt, queuedAt, aid).changes);
+        if (changed === 1) queued.feed_updated_at = pending.feedUpdatedAt;
+      } else if (queued.status === "completed" && (pending.snapshotUpdatedAt ?? latestSnapshotVersion(aid)) < Number(queued.feed_updated_at)) {
         changed = Number(reopen.run(queuedAt, aid).changes);
       }
       counters.queuedVersions += changed;
@@ -291,8 +301,9 @@ async function loadFeed() {
     if (excluded.has(aid)) continue;
     coverage.total += 1;
     const snapshotUpdatedAt = profile.snapshotUpdatedAt;
+    const targetUpdatedAt = Math.max(profile.playerUpdatedAt, Number(queuedRows.get(aid)?.feed_updated_at) || 0);
     if (snapshotUpdatedAt === null) coverage.missing += 1;
-    else if (snapshotUpdatedAt < profile.playerUpdatedAt) coverage.lagging += 1;
+    else if (snapshotUpdatedAt < targetUpdatedAt) coverage.lagging += 1;
     else coverage.current += 1;
   }
   await heartbeat();
