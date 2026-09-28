@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -12,8 +13,9 @@ const execFileAsync = promisify(execFile);
 const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
 const cutoff = Date.parse("2025-11-15T00:00:00+03:00");
 
-function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}) {
+function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}, preload = null) {
   return execFileAsync(process.execPath, [
+    ...(preload ? ["--import", pathToFileURL(preload).href] : []),
     "--experimental-strip-types",
     "--experimental-sqlite",
     "scripts/sync-pve-profiles.mjs",
@@ -367,6 +369,65 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 99").get().status,
       "completed",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    players.close();
+    progression.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("PvE collector cuts the retry ladder when the run budget is spent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pve-profile-sync-budget-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const players = createPlayersDb(dbPath);
+  const progression = new DatabaseSync(progressionDbPath);
+  initializeSeasonalSchema(progression);
+  const version = cutoff + 1_000;
+  // One failing attempt spends the whole remaining budget, so the ladder must be
+  // cut instead of sleeping 1s+2s+4s past `maxRunMs`. The clock is faked so the
+  // regression costs no wall-clock seconds.
+  const preload = join(directory, "advance-clock.mjs");
+  await writeFile(preload, `const originalFetch = globalThis.fetch;
+    const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+    globalThis.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      if (args[1]?.method === "POST") offset += 10_000;
+      return response;
+    };`);
+  let attempts = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pve/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      return response.end(JSON.stringify({ 10: version }));
+    }
+    if (request.url !== "/api/operator/pve/profile-sync") return response.writeHead(404).end();
+    let body = 0;
+    for await (const chunk of request) body += chunk.length;
+    assert.ok(body > 0, "the capture request carries the aid and expected version");
+    attempts += 1;
+    response.writeHead(503).end("try later");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const { stdout } = await runCollector(dbPath, progressionDbPath, port, 3, {
+      PVE_PROFILE_SYNC_MAX_RUN_MS: "60000",
+      PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 10_000),
+    }, preload);
+    assert.equal(attempts, 1, "the ladder must stop instead of sleeping past the run budget");
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+    assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
+    assert.equal(summary.errors, 0);
+    assert.equal(
+      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 10").get().status,
+      "pending",
+      "the untouched profile stays queued for the next run",
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));

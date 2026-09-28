@@ -510,3 +510,93 @@ test("regular queue stops gracefully on its work budget without losing tasks", a
   assert.match(source, /const processed = await processQueue\(startedAt\);/);
   assert.match(source, /if \(Date\.now\(\) - startedAt >= config\.maxRunMs\) \{\s*stopping = true;\s*break;\s*\}/);
 });
+
+test("regular collector cuts the retry ladder when the run budget is spent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-budget-"));
+  const dbPath = join(directory, "players.db");
+  const progressionDbPath = join(directory, "progression.db");
+  const version = 1_720_000_000_000;
+  const apiDb = new DatabaseSync(dbPath);
+  const progressionDb = new DatabaseSync(progressionDbPath);
+  apiDb.exec(`
+    CREATE TABLE players (aid INTEGER PRIMARY KEY, profile_updated_at INTEGER DEFAULT 0);
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    INSERT INTO players (aid, profile_updated_at) VALUES (1, 0);
+  `);
+  progressionDb.exec(`
+    CREATE TABLE progression_snapshots (
+      id INTEGER PRIMARY KEY,
+      mode TEXT NOT NULL,
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      profile_updated_at INTEGER NOT NULL,
+      UNIQUE(mode, cycle_id, aid, profile_updated_at)
+    );
+  `);
+  // One failing attempt spends the whole remaining budget, so the ladder must be
+  // cut instead of sleeping 1s+2s+4s past `maxRunMs`. The clock is faked so the
+  // regression costs no wall-clock seconds.
+  const preload = join(directory, "advance-clock.mjs");
+  await writeFile(preload, `const originalFetch = globalThis.fetch;
+    const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+    globalThis.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      if (args[1]?.method === "POST") offset += 10_000;
+      return response;
+    };`);
+  let attempts = 0;
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/profile/updated.json")) {
+      response.setHeader("content-type", "application/json");
+      return response.end(JSON.stringify({ 1: version }));
+    }
+    if (request.url !== "/api/operator/profile-refresh/sync") return response.writeHead(404).end();
+    let body = 0;
+    for await (const chunk of request) body += chunk.length;
+    assert.ok(body > 0, "the capture request carries the aid and expected version");
+    attempts += 1;
+    response.writeHead(503).end("try later");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--import", pathToFileURL(preload).href,
+      "--experimental-sqlite",
+      "scripts/sync-regular-profiles.mjs",
+    ], {
+      cwd: new URL("..", import.meta.url),
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        SQLITE_PATH: dbPath,
+        PROGRESSION_SQLITE_PATH: progressionDbPath,
+        PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+        REGULAR_PROFILE_UPDATED_URL: `http://127.0.0.1:${port}/profile/updated.json`,
+        REGULAR_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
+        REGULAR_PROFILE_SYNC_RPS: "20",
+        REGULAR_PROFILE_SYNC_MAX_RETRIES: "3",
+        REGULAR_PROFILE_SYNC_MAX_RUN_MS: "3000000",
+        PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 10_000),
+      },
+    });
+    assert.equal(attempts, 1, "the ladder must stop instead of sleeping past the run budget");
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+    assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
+    assert.equal(summary.errors, 0);
+    assert.equal(
+      apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 1").get().status,
+      "pending",
+      "the untouched profile stays queued for the next run",
+    );
+    assert.equal(apiDb.prepare("SELECT profile_updated_at FROM players WHERE aid = 1").get().profile_updated_at, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    apiDb.close();
+    progressionDb.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

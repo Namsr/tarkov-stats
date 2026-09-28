@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   classifySeasonalVersion,
@@ -11,6 +16,8 @@ import {
   seasonalIndexCacheUrl,
 } from "../scripts/seasonal-profile-sync-core.mjs";
 import { DatabaseSync } from "node:sqlite";
+
+const execFileAsync = promisify(execFile);
 
 test("Seasonal updated parser streams versions and normalizes timestamps", () => {
   const entries = [];
@@ -88,6 +95,80 @@ test("Seasonal collectors use the authenticated capture endpoint and JSON helper
   assert.match(profileSource + indexSource, /isSeasonalCollectorReady/);
   assert.doesNotMatch(profileSource + indexSource, /isSeasonalRolloutReady/);
   assert.doesNotMatch(profileSource + indexSource, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
+});
+
+test("Seasonal collector cuts the retry ladder when the run budget is spent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "seasonal-profile-sync-budget-"));
+  const dbPath = join(directory, "progression.db");
+  const attemptLog = join(directory, "attempts.log");
+  const version = Date.now() - 3_600_000;
+  // The Seasonal collector is fail-closed to https://players.tarkov.dev feeds,
+  // so the stub answers the feed in-process. One failing attempt spends the whole
+  // remaining budget, so the ladder must be cut instead of sleeping 1s+2s+4s
+  // past `maxRunMs`; the faked clock keeps the regression free of real seconds.
+  const preload = join(directory, "stub-fetch.mjs");
+  await writeFile(preload, `import { appendFileSync } from "node:fs";
+    const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
+    globalThis.fetch = async (input, init) => {
+      if (init?.method === "POST") {
+        appendFileSync(process.env.SEASONAL_TEST_ATTEMPT_LOG, "attempt\\n");
+        offset += 10_000;
+        return new Response("try later", { status: 503 });
+      }
+      return new Response(JSON.stringify({ 7: ${version} }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    };`);
+
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--import", pathToFileURL(preload).href,
+      "--experimental-strip-types",
+      "--experimental-sqlite",
+      "scripts/sync-seasonal-profiles.mjs",
+    ], {
+      cwd: new URL("..", import.meta.url),
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        PROGRESSION_SQLITE_PATH: dbPath,
+        PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+        SEASONAL_CYCLE_ID: "s1",
+        SEASONAL_STARTS_AT: String(Date.now() - 86_400_000),
+        SEASONAL_COLLECTION_SOURCE: "json_feed",
+        SEASONAL_UPSTREAM_CONTRACT: "game_mode",
+        SEASONAL_UPSTREAM_FIXTURE_CONFIRMED: "true",
+        SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/1/{aid}.json",
+        SEASONAL_PROFILE_UPDATED_URL: "https://players.tarkov.dev/pvp-season/updated.json",
+        SEASONAL_PROFILE_INDEX_URL: "https://players.tarkov.dev/pvp-season/index.json",
+        SEASONAL_PROFILE_SYNC_BASE_URL: "http://127.0.0.1:9",
+        SEASONAL_FEED_RPS: "20",
+        SEASONAL_FEED_MAX_RETRIES: "3",
+        SEASONAL_FEED_MAX_RUN_MS: "60000",
+        PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 10_000),
+        SEASONAL_TEST_ATTEMPT_LOG: attemptLog,
+      },
+    });
+    const attempts = (await readFile(attemptLog, "utf8")).split("\n").filter(Boolean);
+    assert.equal(attempts.length, 1, "the ladder must stop instead of sleeping past the run budget");
+    const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
+    assert.ok(line, "collector writes a summary");
+    const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
+    assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
+    assert.equal(summary.errors, 0);
+    const db = new DatabaseSync(dbPath);
+    try {
+      assert.equal(
+        db.prepare("SELECT status FROM seasonal_profile_sync_queue WHERE aid = 7").get().status,
+        "pending",
+        "the untouched profile stays queued for the next run",
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Seasonal feed revalidates with stored validators and keeps the queue on 304", async () => {

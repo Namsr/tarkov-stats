@@ -348,7 +348,8 @@ async function processQueue(startedAt) {
     const aid = Number(row.aid);
     const expectedUpdatedAt = Number(row.feed_updated_at);
     counters.attempted += 1;
-    const result = await syncProfile(aid, expectedUpdatedAt);
+    const result = await syncProfile(aid, expectedUpdatedAt, startedAt);
+    if (!result) break;
     if (result.kind === "completed") counters.completed += 1;
     else if (result.kind === "not_found") counters.notFound += 1;
     else if (result.kind === "superseded") counters.superseded += 1;
@@ -362,14 +363,22 @@ async function processQueue(startedAt) {
   return counters;
 }
 
-async function syncProfile(aid, expectedUpdatedAt) {
+async function syncProfile(aid, expectedUpdatedAt, startedAt) {
   let lastError;
   let attempts = 0;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     attempts = attempt;
     await rateLimit();
+    // Never let one in-flight profile outlive the run budget: both the request
+    // and the ladder wait are bounded by what is left, so the collector stops
+    // on time instead of being cut off by the systemd unit.
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      stopping = true;
+      return null;
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const response = await fetch(config.endpoint, {
         method: "POST",
@@ -410,7 +419,12 @@ async function syncProfile(aid, expectedUpdatedAt) {
       if (error?.fatal) throw error;
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
-      await delay(backoff(attempt));
+      const waitMs = backoff(attempt);
+      if (waitMs >= config.maxRunMs - (Date.now() - startedAt)) {
+        stopping = true;
+        return null;
+      }
+      await delay(waitMs);
     } finally {
       clearTimeout(timeout);
     }
