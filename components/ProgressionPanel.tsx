@@ -291,7 +291,7 @@ export default function ProgressionPanel({
     window.addEventListener("profile-mode-navigate", abortForNavigation, { once: true });
     const cacheKey = `${mode}\0${cycleId}\0${favorite.aid}`;
     const cached = timelineCache.get(cacheKey) ?? null;
-    const nickname = favorite.nickname?.trim() || t("progression.compare.playerId", { aid: favorite.aid });
+    const nickname = favorite.nickname?.trim() || translate.current("progression.compare.playerId", { aid: favorite.aid });
     setSecondary(cached ? { aid: favorite.aid, nickname, timeline: cached } : null);
     setSecondaryLoading(cached === null);
     setSecondaryError(false);
@@ -309,7 +309,7 @@ export default function ProgressionPanel({
         });
         const result: unknown = await response.json();
         if (!response.ok || !validTimelineResponse(result, { aid: favorite.aid, mode, cycleId })) {
-          throw new Error(t("progression.compare.error"));
+          throw new Error(translate.current("progression.compare.error"));
         }
         if (controller.signal.aborted || generation !== secondaryGeneration.current) return;
         timelineCache.set(cacheKey, result);
@@ -336,7 +336,10 @@ export default function ProgressionPanel({
       controller.abort();
       if (secondaryController.current === controller) secondaryController.current = null;
     };
-  }, [cycleId, eligibleFavorites, mode, selectedAid, t]);
+    // Same reasoning as the load effect above: the comparison parameters carry no
+    // language, and entering this effect aborts whatever request is in flight, so
+    // `t` here cancelled and re-issued the favorite's timeline on every EN/RU toggle.
+  }, [cycleId, eligibleFavorites, mode, selectedAid]);
 
   return <section className="profile-progression" aria-labelledby="progression-heading">
     <div className="profile-progress-heading"><h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
