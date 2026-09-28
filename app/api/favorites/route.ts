@@ -158,7 +158,12 @@ export async function PATCH(request: NextRequest) {
 
   if (body.main === true) await store.setMain(g.sub, aid);
   // Only touch the note when the field is present (distinguishes "clear" from "absent").
-  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX));
+  if ("note" in body && !(await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX)))) {
+    // The client paints the note before the request lands and only rolls it back
+    // on a non-2xx, so a 200 for a favorite the caller does not own reported a
+    // save that never happened.
+    return NextResponse.json({ error: "Favorite not found" }, { status: 404, headers: g.headers });
+  }
 
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }
