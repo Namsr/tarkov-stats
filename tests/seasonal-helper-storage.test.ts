@@ -24,9 +24,27 @@ test("only the active lease owner can skip and helper leases cannot consume ban 
   assert.equal(helper.getActiveLease(lease.id, "helper-a", "forged-cycle", 2_000), null);
   assert.equal(helper.getActiveLease(lease.id, "helper-a", "c1", 2_000)?.aid, 7);
   assert.equal(helper.getActiveLease(lease.id, "helper-a", "c1", lease.leasedUntil!), null);
-  assert.equal(helper.finish(lease.id, "forged-owner", "skipped", 2_000), false);
-  assert.equal(helper.finish(lease.id, "helper-a", "skipped", lease.leasedUntil!), false);
-  assert.equal(helper.finish(lease.id, "helper-a", "skipped", 2_000), true);
+  assert.equal(helper.finish(lease.id, "forged-owner", "c1", "skipped", 2_000), false);
+  assert.equal(helper.finish(lease.id, "helper-a", "c1", "skipped", lease.leasedUntil!), false);
+  assert.equal(helper.finish(lease.id, "helper-a", "c1", "skipped", 2_000), true);
+  assert.equal(helper.getTask(lease.id)?.state, "skipped");
+});
+
+test("a lease that outlives its cycle cannot be finished against the cycle that superseded it", async () => {
+  const db = new DatabaseSync(":memory:");
+  const helper = createSqliteHelperStore(db);
+  const seasonal = createSqliteSeasonalStore(db);
+  await seasonal.enqueueTask({ mode: "seasonal", cycleId: "c1", aid: 7, kind: "profile", priority: 1, now: 1_000 });
+  const [lease] = await seasonal.claimTasks({ mode: "seasonal", cycleId: "c1", actor: "helper", owner: "helper-a", limit: 1, now: 1_000 });
+  // The 5-minute lease is still valid, but the cycle has rolled over: the
+  // verify read is cycle-scoped, so the write must be too.
+  assert.equal(helper.finish(lease.id, "helper-a", "c2", "skipped", 2_000), false);
+  assert.equal(helper.getTask(lease.id)?.state, "leased");
+  assert.equal(helper.getTask(lease.id)?.leaseOwner, "helper-a");
+  assert.equal(helper.getActiveLease(lease.id, "helper-a", "c1", 2_000)?.aid, 7);
+  assert.equal(helper.getActiveLease(lease.id, "helper-a", "c2", 2_000), null);
+  // The owning cycle still finishes the task, so the gate is not a blanket deny.
+  assert.equal(helper.finish(lease.id, "helper-a", "c1", "skipped", 2_000), true);
   assert.equal(helper.getTask(lease.id)?.state, "skipped");
 });
 
@@ -43,11 +61,11 @@ test("snapshot remains idempotent when lease completion loses an expiry race", a
   const [first] = await seasonal.claimTasks({ mode: "seasonal", cycleId: "c1", actor: "helper", owner: "helper-a", limit: 1, now: 1_000 });
   await seasonal.upsertProfile(profile, 2_000);
   assert.equal((await seasonal.captureSnapshot(profile, 2_000)).status, "baseline");
-  assert.equal(helper.finish(first.id, "helper-a", "completed", first.leasedUntil! + 1), false);
+  assert.equal(helper.finish(first.id, "helper-a", "c1", "completed", first.leasedUntil! + 1), false);
 
   const [retry] = await seasonal.claimTasks({ mode: "seasonal", cycleId: "c1", actor: "helper", owner: "helper-b", limit: 1, now: first.leasedUntil! + 1 });
   assert.equal(retry.id, first.id);
   assert.equal((await seasonal.captureSnapshot(profile, 2_001)).status, "duplicate");
-  assert.equal(helper.finish(retry.id, "helper-b", "completed", first.leasedUntil! + 2), true);
+  assert.equal(helper.finish(retry.id, "helper-b", "c1", "completed", first.leasedUntil! + 2), true);
   assert.equal((await seasonal.snapshotHistory({ mode: "seasonal", cycleId: "c1", aid: 7 })).length, 1);
 });

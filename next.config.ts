@@ -59,7 +59,10 @@ const nextConfig: NextConfig = {
         hostname: "assets.tarkov.dev",
         port: "",
         pathname: "/**",
-        search: "",
+        // `search` не указываем намеренно: Next сравнивает его с `url.search`
+        // на точное равенство, поэтому `search: ""` разрешил бы ТОЛЬКО ссылки
+        // без query-строки, а любой cache-buster у ассета давал бы 400 от
+        // /_next/image. Отсутствующий ключ просто пропускает эту проверку.
       },
     ],
   },

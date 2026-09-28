@@ -21,12 +21,21 @@ export function parseWarmupModes(value) {
   return [...new Set(modes)].sort((a, b) => WARMUP_MODES.indexOf(a) - WARMUP_MODES.indexOf(b));
 }
 
-export function warmupModesFromArgs(argv = process.argv.slice(2)) {
-  for (const arg of argv) {
-    if (arg.startsWith("--modes=")) return parseWarmupModes(arg.slice("--modes=".length));
-    if (arg.startsWith("--mode=")) return parseWarmupModes(arg.slice("--mode=".length));
+/** Same two spellings as argValue in the index-sync scripts: --modes=arena and --modes arena. */
+function warmupModesArgValue(argv, name, fallback) {
+  const prefix = `${name}=`;
+  const inline = argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = argv.indexOf(name);
+  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
   }
-  return parseWarmupModes(process.env.LEADERBOARD_WARMUP_MODES);
+  return fallback;
+}
+
+export function warmupModesFromArgs(argv = process.argv.slice(2)) {
+  const value = warmupModesArgValue(argv, "--modes", warmupModesArgValue(argv, "--mode", undefined));
+  return parseWarmupModes(value ?? process.env.LEADERBOARD_WARMUP_MODES);
 }
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");
@@ -51,13 +60,29 @@ export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (
   };
 }
 
+/**
+ * `typeof null` is "object" and so is an array, and an array survives a save
+ * because JSON.stringify drops the properties a run adds to it. A checkpoint
+ * whose state is `null` crashes the first mode read; one whose state is `[]`
+ * discards every save without failing. Both must be refused up front.
+ */
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function loadCheckpoint(path) {
-  if (!existsSync(path)) return { version: 1, skipped: {}, modes: {} };
-  const value = JSON.parse(readFileSync(path, "utf8"));
-  if (value?.version !== 1 || typeof value.skipped !== "object" || typeof value.modes !== "object") {
-    throw new Error("unsupported leaderboard warmup checkpoint");
+  if (!existsSync(path)) return { checkpoint: { version: 1, skipped: {}, modes: {} }, reset: false };
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    return { checkpoint: { version: 1, skipped: {}, modes: {} }, reset: true };
   }
-  return value;
+  if (value?.version !== 1 || !isPlainRecord(value.skipped) || !isPlainRecord(value.modes)) {
+    throw new Error(`unsupported leaderboard warmup checkpoint: ${path}`);
+  }
+  return { checkpoint: value, reset: false };
 }
 
 function saveCheckpoint(path, checkpoint) {
@@ -290,7 +315,7 @@ export async function requestCandidate(candidate, options) {
 export async function runWarmup(options) {
   const now = options.now ?? Date.now;
   const startedAt = now();
-  const checkpoint = loadCheckpoint(options.checkpointPath);
+  const { checkpoint, reset: checkpointReset } = loadCheckpoint(options.checkpointPath);
   const modes = options.modes ?? WARMUP_MODES;
   const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
   for (const candidate of options.candidates) {
@@ -304,11 +329,11 @@ export async function runWarmup(options) {
     for (const candidate of grouped[mode]) {
       if (options.shouldStop?.()) {
         saveCheckpoint(options.checkpointPath, checkpoint);
-        return { processed, bounded: false, stopped: true, checkpoint };
+        return { processed, bounded: false, stopped: true, checkpoint, checkpointReset };
       }
       if (processed >= options.maxProfiles || now() - startedAt >= (options.maxRunMs ?? Infinity)) {
         saveCheckpoint(options.checkpointPath, checkpoint);
-        return { processed, bounded: true, stopped: false, checkpoint };
+        return { processed, bounded: true, stopped: false, checkpoint, checkpointReset };
       }
       if (checkpoint.skipped[skippedKey(candidate)]) continue;
       state.attempted += 1;
@@ -327,7 +352,7 @@ export async function runWarmup(options) {
       if (result.kind === "stopped") {
         state.attempted -= 1;
         saveCheckpoint(options.checkpointPath, checkpoint);
-        return { processed, bounded: false, stopped: true, checkpoint };
+        return { processed, bounded: false, stopped: true, checkpoint, checkpointReset };
       }
       processed += 1;
       state.lastError = null;
@@ -341,7 +366,7 @@ export async function runWarmup(options) {
     state.completedAt = Date.now();
     saveCheckpoint(options.checkpointPath, checkpoint);
   }
-  return { processed, bounded: false, stopped: false, checkpoint };
+  return { processed, bounded: false, stopped: false, checkpoint, checkpointReset };
 }
 
 async function main() {
@@ -362,7 +387,7 @@ async function main() {
   process.once("SIGINT", () => { stopping = true; });
   process.once("SIGTERM", () => { stopping = true; });
   try {
-    const checkpoint = loadCheckpoint(checkpointPath);
+    const { checkpoint } = loadCheckpoint(checkpointPath);
     const requestedModes = warmupModesFromArgs();
     const pivot = Math.max(0, requestedModes.indexOf(checkpoint.nextMode));
     const modes = [...requestedModes.slice(pivot), ...requestedModes.slice(0, pivot)];
@@ -399,6 +424,8 @@ async function main() {
       modes,
       candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
       processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
+      // ops/profile-queue.sh captures stdout only, so the reset warn is invisible where the operator looks.
+      checkpointReset: result.checkpointReset,
     })}\n`);
   } finally {
     players?.close();

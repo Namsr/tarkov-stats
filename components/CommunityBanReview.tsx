@@ -31,6 +31,8 @@ export default function CommunityBanReview() {
       if (!response.ok) throw new Error();
       const body = await response.json() as { candidates?: Candidate[] };
       if (mounted.current) setCandidates(body.candidates ?? []);
+      // Clear a previous failure's banner: `claim` re-runs on every `t` change.
+      if (mounted.current) setError("");
     } catch {
       if (mounted.current) setError(t("review.loadFailed"));
     } finally {

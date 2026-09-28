@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const exists = (path) => access(path).then(() => true, () => false);
 
@@ -118,3 +120,115 @@ test("community reports refuse a Seasonal profile from a cycle that is not the l
   assert.match(reports, /getProgressionStore\("regular"\)/);
   assert.match(reports, /getStore\(input\.mode as CrossSectionMode\)/);
 });
+
+// A route that reaches `node:sqlite` breaks at request time under `runtime =
+// "edge"`, and the failure surfaces as a 500 rather than a build error. The
+// SQLite-backed family is large and its routes are added gradually, so the
+// invariant is asserted across `app/api` instead of per route.
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]+$/, "");
+// Only these trees are importable from a route, so the scan stays bounded and
+// never walks `node_modules`, generated output, or the test suite itself.
+const SOURCE_ROOTS = ["app", "lib", "components", "scripts"];
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".js", ".mjs", ".jsx"];
+const SQLITE_MARKER = "node:sqlite";
+// Matches static `import ... from "x"`, `export ... from "x"`, and `import("x")`.
+const IMPORT_PATTERN = /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
+const RUNTIME_DECLARATION = /export\s+const\s+runtime\s*(?::\s*[^=]+?)?=\s*["']([a-z]+)["']/;
+
+const posix = (path) => path.split(/[\\/]/).join("/");
+const isFile = (path) => stat(path).then((s) => s.isFile(), () => false);
+
+async function sourceFiles(dir, out = []) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) await sourceFiles(full, out);
+    else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) out.push(full);
+  }
+  return out;
+}
+
+async function resolveImport(specifier, fromFile) {
+  let base = null;
+  if (specifier.startsWith("@/")) base = join(REPO_ROOT, specifier.slice(2));
+  else if (specifier.startsWith(".")) base = resolve(dirname(fromFile), specifier);
+  if (!base) return null;
+  for (const candidate of [
+    base,
+    ...SOURCE_EXTENSIONS.map((ext) => base + ext),
+    ...SOURCE_EXTENSIONS.map((ext) => join(base, "index" + ext)),
+  ]) {
+    if (await isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+// Every module that opens the SQLite driver, and every module that imports one.
+async function sqliteImportGraph() {
+  const files = [];
+  for (const root of SOURCE_ROOTS) {
+    const abs = join(REPO_ROOT, root);
+    if (await exists(abs)) await sourceFiles(abs, files);
+  }
+
+  const sources = new Map();
+  for (const file of files) sources.set(file, await readFile(file, "utf8"));
+
+  const seeds = new Set();
+  const deps = new Map();
+  for (const [file, source] of sources) {
+    if (source.includes(SQLITE_MARKER)) seeds.add(file);
+    const imports = new Set();
+    for (const match of source.matchAll(IMPORT_PATTERN)) {
+      const resolved = await resolveImport(match[1], file);
+      if (resolved) imports.add(resolved);
+    }
+    deps.set(file, imports);
+  }
+  return { sources, seeds, deps };
+}
+
+function reachesSqlite(file, seeds, deps, seen = new Set()) {
+  if (seen.has(file)) return false;
+  seen.add(file);
+  if (seeds.has(file)) return true;
+  for (const dep of deps.get(file) ?? []) {
+    if (reachesSqlite(dep, seeds, deps, seen)) return true;
+  }
+  return false;
+}
+
+test("every SQLite-backed API route declares the nodejs runtime", async () => {
+  const { sources, seeds, deps } = await sqliteImportGraph();
+
+  const routes = [...sources.keys()]
+    .map((file) => posix(file.slice(REPO_ROOT.length + 1)))
+    .filter((file) => file.startsWith("app/api/") && /route\.(ts|tsx|mts|js|mjs)$/.test(file))
+    .sort();
+
+  // Guard the guard: a scan that resolves nothing would otherwise pass vacuously.
+  for (const known of [
+    "app/api/seasonal/progression/route.ts",
+    "app/api/progression/route.ts",
+    "app/api/progression/timeline/route.ts",
+    "app/api/progression/average/route.ts",
+    "app/api/player/profile/route.ts",
+    "app/api/admin/bans/route.ts",
+    "app/api/operator/seasonal/run/route.ts",
+    "app/api/average/route.ts",
+  ]) {
+    assert.ok(routes.includes(known), `scan missed ${known}`);
+  }
+
+  const backed = routes.filter((route) => reachesSqlite(join(REPO_ROOT, route), seeds, deps));
+  assert.ok(backed.length >= routes.length - 5, `only ${backed.length}/${routes.length} routes resolved`);
+
+  const undeclared = backed.filter((route) => !RUNTIME_DECLARATION.test(sources.get(join(REPO_ROOT, route))));
+  assert.deepEqual(undeclared, [], `SQLite-backed routes must set runtime = "nodejs": ${undeclared.join(", ")}`);
+
+  // The declaration must pin nodejs, not merely exist.
+  for (const route of backed) {
+    const [, value] = RUNTIME_DECLARATION.exec(sources.get(join(REPO_ROOT, route)));
+    assert.equal(value, "nodejs", `${route} declares runtime = "${value}"`);
+  }
+});
+
