@@ -6,6 +6,8 @@ import {
 import { parseProgressionTimelineRequest } from "@/lib/seasonal/progression";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 
+export const runtime = "nodejs";
+
 function errorResponse(error: string, status: number) {
   return NextResponse.json(
     { error },

@@ -65,6 +65,15 @@ async function readJson(response) {
   return response.json();
 }
 
+const PUBLIC_CACHE_POLICY = "public, max-age=30, s-maxage=60";
+
+/** Assert the exact policy, not a substring: a fallback that shipped no
+ *  Cache-Control at all also satisfies `/max-age/`, which is how it survived. */
+function assertPublicCachePolicy(response) {
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), PUBLIC_CACHE_POLICY);
+}
+
 test("home showcase returns the active group mode and the current seasonal cycle", async (t) => {
   const path = tempDb(t, (store) => {
     const group = store.createGroup("Main", "pve");
@@ -79,7 +88,9 @@ test("home showcase returns the active group mode and the current seasonal cycle
   assert.equal(body.seasonalCycleId, "cycle-42");
   assert.deepEqual(body.aids, [101]);
   assert.match(String(body.updatedAt), /^\d+$/);
-  assert.match(response.headers.get("cache-control"), /max-age=30/);
+  // Held to the same exact value as the fallback, so the two paths cannot drift
+  // apart. A substring match is what let the fallback ship with no policy.
+  assertPublicCachePolicy(response);
 });
 
 test("home showcase keeps the configured mode when the seasonal rollout is off", async (t) => {
@@ -106,4 +117,34 @@ test("home showcase returns the safe fallback when the store cannot open", async
   assert.deepEqual(body.aids, []);
   assert.deepEqual(body.items, []);
   assert.equal(body.updatedAt, null);
+});
+
+// The showcase is deliberately public, so no response from this route may be
+// left for a shared cache to age on its own heuristics. The fallback used to
+// ship with no Cache-Control, which let an edge cache hold an empty showcase
+// far past the s-maxage=60 the success path declares. The client's
+// `cache: "no-store"` in components/HomePage.tsx bypasses the browser and Next
+// caches only, so it does not cover this.
+test("home showcase gives the fallback the same public cache policy as the active config", async (t) => {
+  // Initialization mkdirs the parent directory, and package.json is a tracked
+  // file that is always present, so the mkdir fails with EEXIST. That fails fast
+  // and does not depend on a local-only directory such as ops/ existing, which
+  // a fresh CI checkout does not have.
+  withEnv(t, { ADMIN_ANALYTICS_SQLITE_PATH: "package.json/showcase.db", SEASONAL_ENABLED: "false", SEASONAL_CYCLE_ID: "", SEASONAL_PROFILE_URL_TEMPLATE: "" });
+
+  // First call: the store is missing, so the route answers with the fallback.
+  // The body is checked too, so the test proves it reached the fallback rather
+  // than silently succeeding and asserting the policy of the happy path.
+  const unavailable = await GET();
+  assert.deepEqual(await readJson(unavailable), {
+    groupId: null, groupName: null, mode: "regular", aids: [], items: [], seasonalCycleId: null, updatedAt: null,
+  });
+  assertPublicCachePolicy(unavailable);
+  // Second call: the failed initialization armed a five-second backoff, so the
+  // store is skipped entirely. Different trigger, same fallback, same policy.
+  const backingOff = await GET();
+  assert.deepEqual(await readJson(backingOff), {
+    groupId: null, groupName: null, mode: "regular", aids: [], items: [], seasonalCycleId: null, updatedAt: null,
+  });
+  assertPublicCachePolicy(backingOff);
 });
