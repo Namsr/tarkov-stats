@@ -392,7 +392,11 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
   let attempts = 0;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     attempts = attempt;
-    await rateLimit();
+    const rateReady = await rateLimit(startedAt);
+    if (!rateReady) {
+      stopping = true;
+      return null;
+    }
     // Never let one in-flight profile outlive the run budget: both the request
     // and the ladder wait are bounded by what is left, so the collector stops
     // on time instead of being cut off by the systemd unit.
@@ -485,10 +489,18 @@ function runBudgetError() {
   error.runBudgetExceeded = true;
   return error;
 }
-async function rateLimit() {
-  const now = Date.now();
-  if (nextRequestAt > now) await delay(nextRequestAt - now);
-  nextRequestAt = Math.max(nextRequestAt, Date.now()) + Math.ceil(1000 / config.requestsPerSecond);
+async function rateLimit(startedAt) {
+  const startAt = Math.max(nextRequestAt, Date.now());
+  nextRequestAt = startAt + Math.ceil(1000 / config.requestsPerSecond);
+  const waitMs = startAt - Date.now();
+  if (waitMs <= 0) return true;
+  const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+  if (waitMs >= remainingMs) {
+    await delay(Math.max(0, remainingMs));
+    return false;
+  }
+  await delay(waitMs);
+  return true;
 }
 
 function retryableError(text, status) {
