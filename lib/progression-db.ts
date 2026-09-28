@@ -156,19 +156,27 @@ async function getSqliteDb(): Promise<any | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(files.progression);
-    initializeSeasonalSchema(db);
-    db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
+    // Initialize before caching, so a failed schema init cannot leave a
+    // half-initialized handle behind: the cache stays empty, every later request
+    // would reopen one, and each of those would leak a descriptor.
     try {
-      db.prepare("SELECT aid FROM players_db.excluded_players LIMIT 0").get();
+      initializeSeasonalSchema(db);
+      db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
+      try {
+        db.prepare("SELECT aid FROM players_db.excluded_players LIMIT 0").get();
+      } catch (error) {
+        if (!/no such table/i.test((error as Error).message)) throw error;
+        db.exec(`
+          CREATE TABLE players_db.excluded_players (
+            aid INTEGER PRIMARY KEY,
+            reason TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          )
+        `);
+      }
     } catch (error) {
-      if (!/no such table/i.test((error as Error).message)) throw error;
-      db.exec(`
-        CREATE TABLE players_db.excluded_players (
-          aid INTEGER PRIMARY KEY,
-          reason TEXT NOT NULL,
-          created_at INTEGER NOT NULL
-        )
-      `);
+      try { db.close(); } catch { /* already closed */ }
+      throw error;
     }
     sqliteDb = db;
     return db;

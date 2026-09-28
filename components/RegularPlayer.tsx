@@ -527,7 +527,7 @@ function LegacyPlayer({
         ]
       : [
           { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
-          { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: "%" },
+          { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: pvpStatsKnown ? "%" : undefined },
           { label: t("player.pmcRaids"), value: stats.pmcRaids },
           { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ];
