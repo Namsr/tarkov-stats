@@ -371,7 +371,8 @@ test("the nullable-portrait upgrade keeps the snapshot revision triggers", () =>
     assert.deepEqual(
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots' ORDER BY name")
         .all().map((row) => row.name),
-      ["progression_snapshot_revision_insert", "progression_snapshot_revision_update"],
+      ["leaderboard_seasonal_snapshot_prestige_update", "progression_snapshot_revision_insert",
+        "progression_snapshot_revision_update"],
     );
     // Both rows survived the rebuild and the 0 -> NULL normalisation still holds.
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
@@ -389,7 +390,7 @@ test("the nullable-portrait upgrade keeps the snapshot revision triggers", () =>
     initializeSeasonalSchema(db);
     initializeSeasonalSchema(db);
     assert.equal(
-      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots'").get().n, 2);
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'progression_snapshots'").get().n, 3);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 3);
   } finally { db.close(); }
 });

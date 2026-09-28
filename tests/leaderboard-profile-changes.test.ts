@@ -26,6 +26,9 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 const { getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats, parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { initializeProfileChangeJournal } = await import("../lib/profile-change-journal.ts");
+const { leaderboardChangeWindow } = await import("../lib/leaderboard/source.ts");
+const { createSqliteSeasonalStore, initializeSeasonalSchema, upsertSqliteSeasonCycle } =
+  await import("../lib/seasonal/storage.ts");
 
 function profile(aid, updated, killedPmc) {
   return {
@@ -70,13 +73,15 @@ test("standalone startup installs the journal before the first profile capture",
     db.exec(`CREATE TABLE players (
       aid INTEGER PRIMARY KEY, nickname TEXT, profile_updated_at INTEGER, pmc_killed_pmc INTEGER,
       pmc_deaths INTEGER, pmc_raids INTEGER, hours REAL, last_played_at INTEGER,
-      pvp_stats_known INTEGER, pvp_stats_version INTEGER, fetched_at INTEGER NOT NULL
+      pvp_stats_known INTEGER, pvp_stats_version INTEGER, prestige INTEGER DEFAULT 0,
+      fetched_at INTEGER NOT NULL
     );
     CREATE TABLE mode_players (
       mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT, profile_updated_at INTEGER,
       pmc_killed_pmc INTEGER, pmc_deaths INTEGER, pmc_raids INTEGER, hours REAL,
       last_played_at INTEGER, pvp_stats_known INTEGER, pvp_stats_version INTEGER,
-      stats_json TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY(mode, aid)
+      prestige INTEGER DEFAULT 0, stats_json TEXT NOT NULL, fetched_at INTEGER NOT NULL,
+      PRIMARY KEY(mode, aid)
     )`);
     assert.deepEqual(initializeProfileChangeJournal(db), { created: true });
     assert.deepEqual(initializeProfileChangeJournal(db), { created: false });
@@ -148,6 +153,64 @@ test("PvE and Arena bump once per persisted profile and rollback markers with fa
     );
     assert.equal(marker(db, "arena", 203), undefined);
     assert.equal(db.prepare("SELECT 1 FROM mode_players WHERE mode = 'arena' AND aid = 203").get(), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+// prestige is part of the materialized source fingerprint, so a prestige-only
+// write has to reopen the incremental materializer's change window.
+test("a prestige-only update reopens the regular and PvE change windows", async () => {
+  const store = await getStore("regular");
+  const pve = await getStore("pve");
+  assert.ok(store && pve);
+  await store.upsert(301, parseProfileStats(profile(301, 1_799_000_000_003)), []);
+  await pve.upsert(302, parseProfileStats(profile(302, 1_799_000_000_004)), []);
+
+  const db = new DatabaseSync(databasePath);
+  try {
+    const regular = leaderboardChangeWindow(db, "regular", 0);
+    const pveWindow = leaderboardChangeWindow(db, "pve", 0);
+    assert.ok(regular.cutoff > 0 && pveWindow.cutoff > 0);
+
+    db.prepare("UPDATE players SET prestige=1, fetched_at=400 WHERE aid=301").run();
+    db.prepare("UPDATE mode_players SET prestige=2, fetched_at=400 WHERE mode='pve' AND aid=302").run();
+
+    assert.deepEqual(leaderboardChangeWindow(db, "regular", regular.cutoff).changes, [{ aid: 301, revision: 2 }]);
+    assert.deepEqual(leaderboardChangeWindow(db, "pve", pveWindow.cutoff).changes, [{ aid: 302, revision: 2 }]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a prestige-only Seasonal snapshot replay reopens the seasonal change window", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    upsertSqliteSeasonCycle(db, { mode: "seasonal", cycleId: "s1", startsAt: 1, endsAt: null,
+      enabled: true, upstreamContract: "direct_profile" });
+    const store = createSqliteSeasonalStore(db);
+    const seasonal = (prestige) => ({
+      mode: "seasonal", cycleId: "s1", aid: 7, nickname: "Seasonal", profileUpdatedAt: 300,
+      lastAccessAt: 300, lifetimePvpHours: 100,
+      counters: { experience: 100, pmcRaids: 20, scavRaids: 1, pmcSurvived: 5, pmcDeaths: 4,
+        pmcKills: 30, killedPmc: 25 },
+      seasonalStats: { totalRaids: 20, survivedRaids: 5, totalKills: 30, deaths: 4, runThrough: 2,
+        survivalRate: 0.25, kdRatio: 7.5, pmcKdRatio: 7.5, killsPerRaid: 1.5, pmcSurvivalRate: 0.25,
+        level: 5, prestige, longestWinStreak: 3, achievementsCount: 1 },
+    });
+    await store.upsertProfile(seasonal(0), 300);
+    await store.captureSnapshot(seasonal(0), 400);
+    const first = leaderboardChangeWindow(db, "pvp-season", 0, "s1");
+    assert.deepEqual(first.changes, [{ aid: 7, revision: 1 }]);
+
+    // The idempotent portrait backfill rewrites prestige on the existing
+    // progression point without touching player_profiles.
+    assert.equal((await store.captureSnapshot(seasonal(4), 500)).status, "duplicate");
+    assert.equal(db.prepare("SELECT prestige FROM progression_snapshots WHERE mode='seasonal' AND aid=7")
+      .get().prestige, 4);
+    assert.deepEqual(leaderboardChangeWindow(db, "pvp-season", first.cutoff, "s1").changes,
+      [{ aid: 7, revision: 2 }]);
   } finally {
     db.close();
   }

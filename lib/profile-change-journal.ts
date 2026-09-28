@@ -23,7 +23,8 @@ AFTER UPDATE ON players WHEN
   OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
   OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
   OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
-  OLD.pvp_stats_version IS NOT NEW.pvp_stats_version
+  OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
+  OLD.prestige IS NOT NEW.prestige
 BEGIN
   INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
   VALUES ('regular', NEW.aid, 1, NEW.fetched_at)
@@ -54,7 +55,8 @@ AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
     OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
     OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
     OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
-    OLD.pvp_stats_version IS NOT NEW.pvp_stats_version
+    OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
+    OLD.prestige IS NOT NEW.prestige
   )) OR
   (NEW.mode = 'arena' AND (OLD.stats_json IS NOT NEW.stats_json OR OLD.fetched_at IS NOT NEW.fetched_at))
 ) BEGIN

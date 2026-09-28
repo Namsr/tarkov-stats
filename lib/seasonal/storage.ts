@@ -420,6 +420,16 @@ AFTER DELETE ON player_profiles WHEN OLD.mode = 'seasonal' BEGIN
     revision = leaderboard_seasonal_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
 END;
+CREATE TRIGGER IF NOT EXISTS leaderboard_seasonal_snapshot_prestige_update
+AFTER UPDATE ON progression_snapshots
+WHEN NEW.mode = 'seasonal' AND OLD.prestige IS NOT NEW.prestige BEGIN
+  INSERT INTO leaderboard_seasonal_profile_changes(cycle_id, aid, revision, changed_at)
+  VALUES (NEW.cycle_id, NEW.aid, 1, NEW.captured_at)
+  ON CONFLICT(cycle_id, aid) DO UPDATE SET
+    change_id = excluded.change_id,
+    revision = leaderboard_seasonal_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;
 `;
 
 function columns(db: SqliteDatabase, table: string): Set<string> {
@@ -440,7 +450,7 @@ const CURRENT_SCHEMA_OBJECTS = [
   "progression_profile_revision_update", "scan_cohorts", "scan_candidates", "scan_discovery_state",
   "leaderboard_seasonal_profile_changes", "idx_leaderboard_seasonal_changes_cycle_change",
   "leaderboard_seasonal_profile_insert", "leaderboard_seasonal_profile_update",
-  "leaderboard_seasonal_profile_delete",
+  "leaderboard_seasonal_profile_delete", "leaderboard_seasonal_snapshot_prestige_update",
   "scan_daily_requeues", "scan_members", "scan_tasks", "idx_scan_tasks_claim", "scan_runs",
   "idx_scan_runs_active_owner", "helper_sessions",
 ] as const;
