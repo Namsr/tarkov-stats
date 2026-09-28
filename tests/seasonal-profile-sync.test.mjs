@@ -156,7 +156,9 @@ test("Seasonal collector cuts the retry ladder when the run budget is spent", as
     assert.ok(line, "collector writes a summary");
     const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
     assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
-    assert.equal(summary.errors, 0);
+    assert.equal(summary.stopReason, "max_run_ms", "a cut run names the reason, so it cannot read as a clean drain");
+    assert.equal(summary.errors, 0, "a cut attempt is deferred, not failed; the row stays queued");
+    assert.match(stdout, / RUN_CUT {"stopReason":"max_run_ms","remainingMs":0,"phase":"\w+","aid":7,"attempt":1}/);
     const db = new DatabaseSync(dbPath);
     try {
       assert.equal(

@@ -46,10 +46,11 @@ db.exec("PRAGMA synchronous = NORMAL");
 
 let leaseHeld = false;
 let stopping = false;
+let stopReason = null;
 let nextRequestAt = 0;
 
-process.once("SIGINT", () => { stopping = true; });
-process.once("SIGTERM", () => { stopping = true; });
+process.once("SIGINT", () => { stopping = true; stopReason = "signal"; });
+process.once("SIGTERM", () => { stopping = true; stopReason = "signal"; });
 
 main().catch((error) => {
   log("FATAL", { error: message(error) });
@@ -83,8 +84,11 @@ async function main() {
   try {
     feedResult = await loadFeed(startedAt);
   } catch (error) {
-    if (error?.runBudgetExceeded) return;
-    throw error;
+    // A feed ladder that ran out of budget is a cut run, not a failed one: stop
+    // quietly like the sibling collectors instead of reporting a fatal error.
+    if (!error?.runBudgetExceeded) throw error;
+    stopForRunBudget(startedAt, { phase: "feed" });
+    return;
   }
   const { counters: feed, coverage: preProcessingCoverage } = feedResult;
   const processed = await processQueue(startedAt);
@@ -130,6 +134,7 @@ async function main() {
     ...coverageSummary,
     statuses,
     stopped: stopping,
+    stopReason,
     durationMs: Date.now() - startedAt,
   };
   saveRunMeta(summary);
@@ -469,8 +474,11 @@ async function processQueue(startedAt) {
   `);
 
   while (!stopping) {
+    // Nothing is in flight here, so the last attempt's queue row is already
+    // recorded; the reason still has to reach the SUMMARY.
     if (Date.now() - startedAt >= config.maxRunMs) {
       stopping = true;
+      stopReason = "max_run_ms";
       break;
     }
     const row = next.get(runId);
@@ -510,18 +518,12 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     const rateReady = await rateLimit(startedAt);
-    if (!rateReady) {
-      stopping = true;
-      return null;
-    }
+    if (!rateReady) return stopForRunBudget(startedAt, { phase: "rate_limit", aid, attempt });
     // Never let one in-flight profile outlive the run budget: both the request
     // and the ladder wait are bounded by what is left, so the collector stops
     // on time instead of being cut off by the systemd unit.
     const remainingMs = config.maxRunMs - (Date.now() - startedAt);
-    if (remainingMs <= 0) {
-      stopping = true;
-      return null;
-    }
+    if (remainingMs <= 0) return stopForRunBudget(startedAt, { phase: "capture", aid, attempt });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
@@ -565,8 +567,7 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
       if (attempt > config.maxRetries || error?.retryable === false) break;
       const waitMs = backoff(attempt);
       if (waitMs >= config.maxRunMs - (Date.now() - startedAt)) {
-        stopping = true;
-        return null;
+        return stopForRunBudget(startedAt, { phase: "backoff", aid, attempt });
       }
       await delay(waitMs);
     } finally {
@@ -707,6 +708,19 @@ function runBudgetError() {
   error.runBudgetExceeded = true;
   return error;
 }
+// A cut run is a deferred run, not a clean drain: record why the ladder stopped
+// so the log and the SUMMARY cannot be read as a finished pass.
+function stopForRunBudget(startedAt, fields) {
+  stopping = true;
+  stopReason = "max_run_ms";
+  log("RUN_CUT", {
+    stopReason,
+    remainingMs: Math.max(0, config.maxRunMs - (Date.now() - startedAt)),
+    ...fields,
+  });
+  return null;
+}
+
 async function rateLimit(startedAt) {
   const startAt = Math.max(nextRequestAt, Date.now());
   nextRequestAt = startAt + Math.ceil(1000 / config.requestsPerSecond);

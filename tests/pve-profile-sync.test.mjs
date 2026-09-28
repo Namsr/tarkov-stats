@@ -319,6 +319,8 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
       NODE_OPTIONS: `--import ${pathToFileURL(feedPreload).href}`,
     })).stdout);
     assert.equal(noAttempt.attempted, 0);
+    assert.equal(noAttempt.stopped, true);
+    assert.equal(noAttempt.stopReason, "max_run_ms");
     assert.equal(noAttempt.snapshotLagging, 1, "a queued version ahead of the snapshot is lagging");
     assert.equal(noAttempt.snapshotCurrent, 1, "a caught-up profile is still current");
     assert.equal(noAttempt.snapshotMissing, 0);
@@ -528,7 +530,9 @@ test("PvE collector cuts the retry ladder when the run budget is spent", async (
     assert.ok(line, "collector writes a summary");
     const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
     assert.equal(summary.stopped, true, "a spent budget ends the run instead of finishing the ladder");
-    assert.equal(summary.errors, 0);
+    assert.equal(summary.stopReason, "max_run_ms", "a cut run names the reason, so it cannot read as a clean drain");
+    assert.equal(summary.errors, 0, "a cut attempt is deferred, not failed; the row stays queued");
+    assert.match(stdout, / RUN_CUT {"stopReason":"max_run_ms","remainingMs":0,"phase":"\w+","aid":10,"attempt":1}/);
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 10").get().status,
       "pending",
