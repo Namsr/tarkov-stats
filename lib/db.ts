@@ -1183,16 +1183,21 @@ function warn(msg: string) {
   }
 }
 
-// node:sqlite backend (self-hosted). DB handle is cached per process and shared
-// by the player store and the favorites store (one file, one connection, schema
-// applied once).
+// node:sqlite backend (self-hosted). The open is memoized as the in-flight
+// promise rather than as the handle, and the promise is published synchronously
+// before the first await. Caching the handle left a gap between the null check
+// and the assignment three dynamic imports later: every request that arrived in
+// that window passed the check, opened its own DatabaseSync and re-ran the whole
+// schema initialization, and all but the last assignment became unreachable and
+// stayed open for the life of the process. One promise, one open.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let sqliteDb: any = null;
+let opening: Promise<any | null> | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getSqliteDb(): Promise<any | null> {
-  try {
-    if (!sqliteDb) {
+function getSqliteDb(): Promise<any | null> {
+  if (opening) return opening;
+  opening = (async () => {
+    try {
       const fs = await import("node:fs");
       const path = await import("node:path");
       const file = process.env.SQLITE_PATH || "/data/players.db";
@@ -1200,7 +1205,7 @@ async function getSqliteDb(): Promise<any | null> {
       // Specifier cast keeps the build from type-resolving the (Node-only) module.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
-      // The handle is cached only after the schema is in place: a failed
+      // The handle is published only after the schema is in place: a failed
       // initialization must not leave a half-initialized connection behind for
       // the rest of the process, or every later call would skip the schema work
       // and fail on a missing table.
@@ -1211,13 +1216,17 @@ async function getSqliteDb(): Promise<any | null> {
         try { opened.close(); } catch { /* already closed */ }
         throw error;
       }
-      sqliteDb = opened;
+      return opened;
+    } catch (e) {
+      warn("sqlite unavailable: " + (e as Error).message);
+      // A failed open must never become the cached answer. Dropping the promise
+      // here is what makes the next call retry: caching it would disable the
+      // player store for the life of the process over one transient failure.
+      opening = null;
+      return null;
     }
-    return sqliteDb;
-  } catch (e) {
-    warn("sqlite unavailable: " + (e as Error).message);
-    return null;
-  }
+  })();
+  return opening;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
