@@ -112,6 +112,8 @@ test("materializer CLI performs an initial build, a persisted delta, and a no-op
       beforeUnavailable);
     unchanged.close();
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    // Best-effort cleanup: a bare rmSync that throws here replaces the real
+    // assertion failure with an EPERM.
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite may retain the adapter briefly. */ }
   }
 });

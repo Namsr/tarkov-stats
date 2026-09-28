@@ -1,3 +1,38 @@
+const PLAYERS_UPDATE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_update
+AFTER UPDATE ON players WHEN
+  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
+  OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
+  OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
+  OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
+  OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
+  OLD.prestige IS NOT NEW.prestige
+BEGIN
+  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
+  VALUES ('regular', NEW.aid, 1, NEW.fetched_at)
+  ON CONFLICT(mode, aid) DO UPDATE SET
+    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;`;
+
+const MODE_PLAYERS_UPDATE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_mode_players_leaderboard_change_update
+AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
+  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
+  (NEW.mode = 'pve' AND (
+    OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
+    OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
+    OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
+    OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
+    OLD.prestige IS NOT NEW.prestige
+  )) OR
+  (NEW.mode = 'arena' AND (OLD.stats_json IS NOT NEW.stats_json OR OLD.fetched_at IS NOT NEW.fetched_at))
+) BEGIN
+  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
+  VALUES (NEW.mode, NEW.aid, 1, NEW.fetched_at)
+  ON CONFLICT(mode, aid) DO UPDATE SET
+    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;`;
+
 export const PROFILE_CHANGE_JOURNAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS leaderboard_profile_changes (
   change_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,21 +52,7 @@ AFTER INSERT ON players BEGIN
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
 END;
-CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_update
-AFTER UPDATE ON players WHEN
-  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
-  OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
-  OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
-  OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
-  OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
-  OLD.prestige IS NOT NEW.prestige
-BEGIN
-  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
-  VALUES ('regular', NEW.aid, 1, NEW.fetched_at)
-  ON CONFLICT(mode, aid) DO UPDATE SET
-    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
-    changed_at = excluded.changed_at;
-END;
+${PLAYERS_UPDATE_TRIGGER}
 CREATE TRIGGER IF NOT EXISTS trg_players_leaderboard_change_delete
 AFTER DELETE ON players BEGIN
   INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
@@ -48,24 +69,7 @@ AFTER INSERT ON mode_players WHEN NEW.mode IN ('pve', 'arena') BEGIN
     change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
     changed_at = excluded.changed_at;
 END;
-CREATE TRIGGER IF NOT EXISTS trg_mode_players_leaderboard_change_update
-AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
-  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
-  (NEW.mode = 'pve' AND (
-    OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
-    OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
-    OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
-    OLD.pvp_stats_version IS NOT NEW.pvp_stats_version OR
-    OLD.prestige IS NOT NEW.prestige
-  )) OR
-  (NEW.mode = 'arena' AND (OLD.stats_json IS NOT NEW.stats_json OR OLD.fetched_at IS NOT NEW.fetched_at))
-) BEGIN
-  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
-  VALUES (NEW.mode, NEW.aid, 1, NEW.fetched_at)
-  ON CONFLICT(mode, aid) DO UPDATE SET
-    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
-    changed_at = excluded.changed_at;
-END;
+${MODE_PLAYERS_UPDATE_TRIGGER}
 CREATE TRIGGER IF NOT EXISTS trg_mode_players_leaderboard_change_delete
 AFTER DELETE ON mode_players WHEN OLD.mode IN ('pve', 'arena') BEGIN
   INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
@@ -76,13 +80,47 @@ AFTER DELETE ON mode_players WHEN OLD.mode IN ('pve', 'arena') BEGIN
 END;
 `;
 
-export function initializeProfileChangeJournal(db: {
+interface JournalDatabase {
   exec(sql: string): void;
   prepare(sql: string): { get(...params: unknown[]): unknown };
-}): { created: boolean } {
+}
+
+// `CREATE TRIGGER IF NOT EXISTS` never replaces an existing trigger body, so a
+// database created before a body edit keeps the old WHEN clause forever: the
+// trigger names are unchanged, so currentSqlitePlayerSchema() in lib/db.ts still
+// reports the schema as current and the whole migration is skipped. The only
+// symptom is a silently stale journal, which is the worst shape for a bug fix.
+// Dropping first is the fix; comparing the stored DDL is what keeps the drop off
+// the path where it would otherwise recur on every process open and on every
+// scheduled materializer run, each time opening a window in which the write path
+// has no trigger at all. Same convention as ensureIndexDefinition() in lib/db.ts.
+const EDITED_UPDATE_TRIGGERS = [PLAYERS_UPDATE_TRIGGER, MODE_PLAYERS_UPDATE_TRIGGER] as const;
+
+// SQLite stores the statement it parsed, so the stored text carries neither
+// `IF NOT EXISTS` nor the trailing semicolon. Compare a normalized form of both.
+function normalizedTriggerDdl(ddl: string): string {
+  return ddl.replace(/\bIF NOT EXISTS\b/gi, "").replace(/\s+/g, " ").replace(/;\s*$/, "").trim().toLowerCase();
+}
+
+function reissueEditedTriggers(db: JournalDatabase): void {
+  for (const ddl of EDITED_UPDATE_TRIGGERS) {
+    const name = /CREATE TRIGGER (?:IF NOT EXISTS )?(\S+)/.exec(ddl)?.[1];
+    if (!name) continue;
+    // An absent trigger needs no drop; the schema below creates it in order.
+    const stored = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+      .get(name) as { sql?: string | null } | undefined;
+    if (typeof stored?.sql !== "string") continue;
+    if (normalizedTriggerDdl(stored.sql) === normalizedTriggerDdl(ddl)) continue;
+    db.exec(`DROP TRIGGER IF EXISTS ${name};`);
+    db.exec(ddl);
+  }
+}
+
+export function initializeProfileChangeJournal(db: JournalDatabase): { created: boolean } {
   const existed = Boolean(db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='leaderboard_profile_changes'",
   ).get());
+  reissueEditedTriggers(db);
   db.exec(PROFILE_CHANGE_JOURNAL_SCHEMA);
   return { created: !existed };
 }

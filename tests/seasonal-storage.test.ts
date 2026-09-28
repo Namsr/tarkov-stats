@@ -394,3 +394,36 @@ test("the nullable-portrait upgrade keeps the snapshot revision triggers", () =>
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 3);
   } finally { db.close(); }
 });
+
+test("a current database missing the prestige snapshot trigger gets it back on re-init", () => {
+  // The CURRENT_SCHEMA_OBJECTS registration is the only thing that forces a
+  // re-run on a database that is otherwise current, so it is the load-bearing half
+  // of the trigger's rollout. The nullable-portrait case above proves the rebuild
+  // path; this proves the path the registration exists for.
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    db.prepare(`INSERT INTO progression_snapshots
+      (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date, prestige)
+      VALUES ('seasonal', 's1', 42, 1, 1, 1, '2026-01-01', 0)`).run();
+    const revision = () => (db.prepare(
+      "SELECT revision FROM leaderboard_seasonal_profile_changes WHERE cycle_id = 's1' AND aid = 42").get() as
+      { revision: number } | undefined)?.revision ?? 0;
+    const bump = () => db.prepare("UPDATE progression_snapshots SET prestige = prestige + 1 WHERE mode = 'seasonal' AND aid = 42").run();
+
+    db.exec("DROP TRIGGER leaderboard_seasonal_snapshot_prestige_update");
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'leaderboard_seasonal_snapshot_prestige_update'")
+        .get().n, 0);
+    bump();
+    const before = revision();
+
+    assert.deepEqual(initializeSeasonalSchema(db), { created: false });
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'leaderboard_seasonal_snapshot_prestige_update'")
+        .get().n, 1);
+
+    bump();
+    assert.equal(revision(), before + 1);
+  } finally { db.close(); }
+});

@@ -23,7 +23,7 @@ const databasePath = join(directory, "players.db");
 process.env.SQLITE_PATH = databasePath;
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 
-const { getStore } = await import("../lib/db.ts");
+const { currentSqlitePlayerSchema, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats, parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { initializeProfileChangeJournal } = await import("../lib/profile-change-journal.ts");
 const { leaderboardChangeWindow } = await import("../lib/leaderboard/source.ts");
@@ -211,6 +211,96 @@ test("a prestige-only Seasonal snapshot replay reopens the seasonal change windo
       .get().prestige, 4);
     assert.deepEqual(leaderboardChangeWindow(db, "pvp-season", first.cutoff, "s1").changes,
       [{ aid: 7, revision: 2 }]);
+  } finally {
+    db.close();
+  }
+});
+
+// The two UPDATE triggers as they were before prestige was added to the WHEN
+// clause, kept verbatim so this test can rebuild a database the way a deployment
+// that predates the prestige fix left it. `CREATE TRIGGER IF NOT EXISTS` never
+// replaces an existing body, so an initializer that only re-runs the schema keeps
+// these forever — and currentSqlitePlayerSchema() agrees, because it compares
+// trigger names rather than bodies.
+const PRE_PRESTIGE_UPDATE_TRIGGERS = `
+DROP TRIGGER IF EXISTS trg_players_leaderboard_change_update;
+CREATE TRIGGER trg_players_leaderboard_change_update
+AFTER UPDATE ON players WHEN
+  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
+  OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
+  OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
+  OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
+  OLD.pvp_stats_version IS NOT NEW.pvp_stats_version
+BEGIN
+  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
+  VALUES ('regular', NEW.aid, 1, NEW.fetched_at)
+  ON CONFLICT(mode, aid) DO UPDATE SET
+    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;
+DROP TRIGGER IF EXISTS trg_mode_players_leaderboard_change_update;
+CREATE TRIGGER trg_mode_players_leaderboard_change_update
+AFTER UPDATE ON mode_players WHEN NEW.mode IN ('pve', 'arena') AND (
+  OLD.nickname IS NOT NEW.nickname OR OLD.profile_updated_at IS NOT NEW.profile_updated_at OR
+  (NEW.mode = 'pve' AND (
+    OLD.pmc_killed_pmc IS NOT NEW.pmc_killed_pmc OR OLD.pmc_deaths IS NOT NEW.pmc_deaths OR
+    OLD.pmc_raids IS NOT NEW.pmc_raids OR OLD.hours IS NOT NEW.hours OR
+    OLD.last_played_at IS NOT NEW.last_played_at OR OLD.pvp_stats_known IS NOT NEW.pvp_stats_known OR
+    OLD.pvp_stats_version IS NOT NEW.pvp_stats_version
+  )) OR
+  (NEW.mode = 'arena' AND (OLD.stats_json IS NOT NEW.stats_json OR OLD.fetched_at IS NOT NEW.fetched_at))
+) BEGIN
+  INSERT INTO leaderboard_profile_changes (mode, aid, revision, changed_at)
+  VALUES (NEW.mode, NEW.aid, 1, NEW.fetched_at)
+  ON CONFLICT(mode, aid) DO UPDATE SET
+    change_id = excluded.change_id, revision = leaderboard_profile_changes.revision + 1,
+    changed_at = excluded.changed_at;
+END;`;
+
+function triggerBody(db, name) {
+  return db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name).sql;
+}
+
+test("re-initializing a database that predates the prestige clause reinstalls the update triggers", () => {
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.prepare("INSERT INTO players (aid, nickname, fetched_at) VALUES (900, 'Nine', 100)").run();
+    db.prepare(`INSERT INTO mode_players (mode, aid, nickname, fetched_at, stats_json)
+      VALUES ('pve', 901, 'NinePve', 100, '{}')`).run();
+    const seeded = {
+      regular: { ...marker(db, "regular", 900) },
+      pve: { ...marker(db, "pve", 901) },
+    };
+
+    // Production shape: every object currentSqlitePlayerSchema() looks for is
+    // present, but the two update triggers still carry the pre-prestige bodies.
+    db.exec(PRE_PRESTIGE_UPDATE_TRIGGERS);
+    assert.equal(currentSqlitePlayerSchema(db), true);
+    assert.equal(triggerBody(db, "trg_players_leaderboard_change_update").includes("OLD.prestige"), false);
+
+    assert.deepEqual(initializeProfileChangeJournal(db), { created: false });
+
+    // The bodies are what changed, not the names, so re-running the schema alone
+    // leaves the old WHEN clause in place on a database that is already current.
+    assert.equal(triggerBody(db, "trg_players_leaderboard_change_update").includes("OLD.prestige"), true);
+    assert.equal(triggerBody(db, "trg_mode_players_leaderboard_change_update").includes("OLD.prestige"), true);
+
+    // The journal rows and their revisions survived the reinstall: the trigger is
+    // a write path, the cursor lives in the table.
+    assert.deepEqual(
+      { ...marker(db, "regular", 900) },
+      seeded.regular,
+    );
+    assert.deepEqual({ ...marker(db, "pve", 901) }, seeded.pve);
+
+    db.prepare("UPDATE players SET prestige = 7 WHERE aid = 900").run();
+    db.prepare("UPDATE mode_players SET prestige = 3 WHERE mode = 'pve' AND aid = 901").run();
+    assert.equal(marker(db, "regular", 900).revision, seeded.regular.revision + 1);
+    assert.equal(marker(db, "pve", 901).revision, seeded.pve.revision + 1);
+
+    // Once the stored body matches, a second init must not churn the trigger.
+    assert.deepEqual(initializeProfileChangeJournal(db), { created: false });
+    assert.equal(triggerBody(db, "trg_players_leaderboard_change_update").includes("OLD.prestige"), true);
   } finally {
     db.close();
   }
