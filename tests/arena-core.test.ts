@@ -95,6 +95,14 @@ async function save(source) {
   await store.upsert(source.aid, parseArenaProfileStats(source), []);
 }
 
+// Declared fixture: getStore is the only thing that creates the arena schema,
+// and lib/db caches the connection per process. Calling it before each test
+// makes every test below runnable on its own instead of inheriting the tables
+// from whichever test opened the database first.
+test.beforeEach(async () => {
+  assert.ok(await getStore("arena"));
+});
+
 test("Arena parser preserves zeroes, missing counters, source counters, and incomplete fifth modes", () => {
   const parsed = parseArenaProfileStats(profile(501, { kills: 0, deaths: 0, headshots: null, missingMode: true, future: true }));
   const arena = parsed.arenaProfile;
@@ -952,4 +960,37 @@ test("Arena averages expose averageMatches for mode bars", async () => {
   assert.equal(sparseCohort?.quality, "unavailable");
   assert.equal(sparseCohort?.reason, "insufficient_cohort");
   assert.equal(sparseCohort?.averageMatches.value, null);
+});
+
+test("Arena average bounds survive a peer set larger than the thread stack can hold", async () => {
+  // The eligible peer scan has no LIMIT and grows with every collected player in
+  // a mode, while Math.min(...values) throws RangeError once the spread is larger
+  // than the thread stack can hold (roughly 125k arguments at the default stack,
+  // further out on a bigger one), so the bounds have to be folded.
+  resetArenaData();
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { db } = await getArenaBackend();
+  // Keep this above ~130k. The ceiling is a stack-size artifact, not a fixed
+  // count: the first-failing spread measured on the default thread stack runs
+  // 124,729-124,933 across repeats, so 130k clears it by only ~4%. It moves to
+  // ~250k at --stack-size=1960, and a fixture below the ceiling stops reproducing
+  // the RangeError and would pass against the unfixed bounds.
+  const peers = 130_000;
+  const insert = db.prepare(`INSERT INTO arena_mode_stats
+    (aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate, kills_per_match,
+     damage_per_match, upstream_version, parser_version, raw_json, fetched_at)
+    VALUES (?, 'teamFight', ?, ?, 1, 50, 20, 1, 400, 1800000000000, ?, '{}', 1800000000000)`);
+  db.exec("BEGIN");
+  for (let aid = 1; aid <= peers; aid += 1) {
+    insert.run(aid, 50 + (aid % 97), 10 + (aid % 53), ARENA_PARSER_VERSION);
+  }
+  db.exec("COMMIT");
+  try {
+    const average = await getArenaAverage({ mode: "teamFight" });
+    assert.equal(average?.sampleN, peers);
+    assert.deepEqual(average?.bounds.hours, { min: 50, max: 146 });
+    assert.deepEqual(average?.bounds.matches, { min: 10, max: 62 });
+  } finally {
+    resetArenaData();
+  }
 });
