@@ -15,26 +15,31 @@ function validCollectorToken(request: NextRequest, expected: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+// A short secret cannot gate a write, so it counts as unconfigured for reads too.
+// Same 32-character floor as lib/operator-auth.ts. The read shares this verdict
+// because the dashboard shows its "collector is not configured" notice off the GET's
+// `configured` flag, and a token the POST refuses is exactly what that notice explains.
+function collectorConfigured(): boolean {
+  return (process.env.SYSTEM_METRICS_INGEST_TOKEN?.trim() ?? "").length >= 32;
+}
+
 export async function GET(request: NextRequest) {
   const access = await requireAdmin();
   if (!access.ok) return NextResponse.json({ error: "admin_access_denied" }, { status: access.status, headers: ADMIN_NO_STORE_HEADERS });
   const period = parseAdminPeriod(request.nextUrl.searchParams.get("period"));
   if (!period) return NextResponse.json({ error: "invalid_query" }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   const store = await getSystemMetricsStore();
-  if (!store) return NextResponse.json({ available: false, configured: Boolean(process.env.SYSTEM_METRICS_INGEST_TOKEN), reason: "storage_unavailable", latest: null, points: [] }, { headers: ADMIN_NO_STORE_HEADERS });
+  if (!store) return NextResponse.json({ available: false, configured: collectorConfigured(), reason: "storage_unavailable", latest: null, points: [] }, { headers: ADMIN_NO_STORE_HEADERS });
   return NextResponse.json({
     available: true,
-    configured: Boolean(process.env.SYSTEM_METRICS_INGEST_TOKEN),
+    configured: collectorConfigured(),
     ...store.range(period),
   }, { headers: ADMIN_NO_STORE_HEADERS });
 }
 
 export async function POST(request: NextRequest) {
   const expected = process.env.SYSTEM_METRICS_INGEST_TOKEN?.trim() ?? "";
-  // A short secret cannot gate a write, so treat it as unconfigured rather than
-  // publishing the endpoint behind a brute-forceable token. Same 32-character
-  // floor as lib/operator-auth.ts.
-  if (!expected || expected.length < 32) return NextResponse.json({ error: "collector_not_configured" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
+  if (!collectorConfigured()) return NextResponse.json({ error: "collector_not_configured" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS });
   if (!validCollectorToken(request, expected)) return NextResponse.json({ error: "collector_access_denied" }, { status: 401, headers: ADMIN_NO_STORE_HEADERS });
 
   let body: unknown;
