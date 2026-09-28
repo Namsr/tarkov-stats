@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,6 +34,56 @@ test("the persistent process lock rejects overlap and is released by its owner",
   assert.throws(() => acquireWarmupLock(path), /verify the recorded process/);
   release();
   acquireWarmupLock(path)();
+});
+
+test("a zero-length checkpoint is named and replaced instead of failing every later run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-corrupt-"));
+  const checkpointPath = join(dir, "state.json");
+  writeFileSync(checkpointPath, "");
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (message) => { warnings.push(String(message)); };
+  let result;
+  try {
+    result = await runWarmup({
+      candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+      checkpointPath, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }),
+    });
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(result.processed, 1);
+  // main() and runWarmup each load the checkpoint, so a real run warns more than once.
+  assert.ok(warnings.length >= 1, `expected a warning, got ${warnings.length}`);
+  assert.ok(warnings.every((warning) => warning.includes(checkpointPath)), warnings.join("\n"));
+  assert.equal(result.checkpointReset, true);
+  const parsed = JSON.parse(readFileSync(checkpointPath, "utf8"));
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.modes.regular.lastAid, 1, "the healed file records this run's progress, not just its shape");
+  assert.equal(Array.isArray(parsed.skipped), false);
+  assert.equal(typeof parsed.skipped, "object");
+  assert.deepEqual(parsed.skipped, {}, "a fresh checkpoint carries no skipped records");
+});
+
+test("a checkpoint whose fields are null or arrays is refused instead of silently losing state", async () => {
+  const request = async () => ({ kind: "completed", outcome: "ok" });
+  // `typeof null === "object"` and an array is an object, so the shape guard has to exclude both by hand.
+  for (const [label, contents] of [
+    ["null fields", '{"version":1,"skipped":null,"modes":null}'],
+    ["array fields", '{"version":1,"skipped":[],"modes":[]}'],
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-shape-"));
+    const checkpointPath = join(dir, "state.json");
+    writeFileSync(checkpointPath, contents);
+    await assert.rejects(runWarmup({
+      candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+      checkpointPath, maxProfiles: 10, request,
+    }), new RegExp(`unsupported leaderboard warmup checkpoint: ${checkpointPath.replaceAll("\\", "\\\\")}`), label);
+    // The refused file is left untouched rather than half-rewritten as an array.
+    assert.equal(readFileSync(checkpointPath, "utf8"), contents, label);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("warmup selection uses parser generations and keeps modes sequential", async () => {
