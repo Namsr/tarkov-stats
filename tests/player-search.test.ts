@@ -94,6 +94,9 @@ test("saved nickname results hide on blur and reopen before recent history", asy
   assert.match(component, /const showResults = resultsOpen && results\.length > 0 && searchedNickname === query\.trim\(\)/);
   assert.match(component, /\{results\.length > 0 && \(\s*<div[\s\S]*className="search-unit__results"/);
   assert.match(component, /className="search-unit__results"[\s\S]*data-open=\{showResults\}[\s\S]*aria-hidden=\{!showResults\}[\s\S]*inert=\{!showResults\}/);
+  // `aria-controls` points at this element while results are shown, so it has to
+  // carry the popup role the input advertises with `aria-haspopup="dialog"`.
+  assert.match(component, /id=\{resultListId\}[\s\S]*inert=\{!showResults\}[\s\S]*role="dialog"\s*\n\s*aria-label=\{t\("search\.resultsHeading"\)\}/);
   assert.match(component, /if \(!recentOpen && !modeMenuOpen && !resultsOpen && !pendingResultsOpenRef\.current\) return/);
   assert.match(component, /searchFormRef\.current\?\.contains\(target\) \|\| resultsRef\.current\?\.contains\(target\)/);
   assert.match(component, /function closeOnFocusOut\(event: FocusEvent\) \{\s*if \(!isSearchTarget\(event\.relatedTarget\)\) closePanels\(\);/);
