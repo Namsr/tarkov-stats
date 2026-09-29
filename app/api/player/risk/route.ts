@@ -35,7 +35,13 @@ export async function GET(request: NextRequest) {
   // the site exposes the mode, and those verdicts must not be readable until then.
   if (mode === "seasonal") {
     const cycle = loadSeasonalCycleConfig();
-    if (!isSeasonalRolloutReady() || !cycle || cycleId !== cycle.cycleId) {
+    // A season that has not rolled out is absent, not a client mistake: this is
+    // the same 404 app/api/seasonal/average and app/api/player/profile answer for
+    // their own gate. Only a stale or malformed `cycle` is the caller's fault.
+    if (!isSeasonalRolloutReady() || !cycle) {
+      return NextResponse.json({ error: "Seasonal risk unavailable" }, { status: 404, headers: noStore });
+    }
+    if (cycleId !== cycle.cycleId) {
       return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
     }
   }
