@@ -53,6 +53,9 @@ test('queue retries only failures, preserves error status and runs one warmup af
         .replace('warn=/var/log/tarkovstats-warmup-batch.warn', `warn=${quote(path + '/warmup.warn')}`);
       const file = join(dir, 'queue.sh');
       await writeFile(file, script.replaceAll('\r\n','\n'));
+      // `2> "$warn"` truncates, so the last run's warnings must not survive into
+      // this one's log. `2>>` would pass every other assertion below.
+      if (scenario === 'warn') await writeFile(join(dir, 'warmup.warn'), 'stale line from an earlier run\n');
       const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
       assert.ifError(result.error);
       assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' || scenario === 'starved' ? 1 : scenario === 'stopped' ? 143 : 0, `${scenario}: ${result.stderr}\n${result.stdout}`);
@@ -67,7 +70,8 @@ test('queue retries only failures, preserves error status and runs one warmup af
         // reads is still the summary and a healthy batch is not reported as a parse failure.
         assert.deepEqual((await readFile(join(dir, 'warmup.json'), 'utf8')).trim().split(/\r?\n/),
           ['{"bounded":true,"stopped":false,"processed":100}']);
-        assert.match((await readFile(join(dir, 'warmup.warn'), 'utf8')), /unreadable leaderboard warmup checkpoint/);
+        assert.deepEqual((await readFile(join(dir, 'warmup.warn'), 'utf8')).trim().split(/\r?\n/),
+          ['unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint']);
       }
       if (scenario === 'starved') {
         // A retry that cannot get a real run window must not turn the failure into

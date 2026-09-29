@@ -170,13 +170,19 @@ test("a run leaves no checkpoint temp file behind, including when the rename fai
 
 test("a checkpoint directory that does not exist fails on the write, not on the sweep", async () => {
   const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-nodir-"));
-  // The sweep has to stay quiet about a directory it cannot list, or it replaces
-  // the ENOENT that names the missing path with one that names nothing.
+  // The code alone cannot tell these apart: readdirSync on a missing directory
+  // also reports ENOENT, so the syscall and the path are what separate this run's
+  // write from the sweep's readdir swallowing its own.
   await assert.rejects(runWarmup({
     candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
     checkpointPath: join(dir, "absent", "state.json"), maxProfiles: 10,
     request: async () => ({ kind: "completed", outcome: "ok" }),
-  }), { code: "ENOENT" });
+  }), (error) => {
+    assert.equal(error.code, "ENOENT");
+    assert.equal(error.syscall, "open", "the failure is this run's write, not the sweep's readdir");
+    assert.equal(error.path, join(dir, "absent", `state.json.${process.pid}.tmp`));
+    return true;
+  });
   rmSync(dir, { recursive: true, force: true });
 });
 

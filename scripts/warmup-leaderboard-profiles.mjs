@@ -95,15 +95,17 @@ function loadCheckpoint(path) {
 
 /**
  * A checkpoint temp file is written and renamed away back to back, so the window a
- * live writer holds one is a single local syscall wide. The run window only decides
- * how many of them a run creates, not how long one exists.
+ * live writer holds one spans a write and a rename and nothing else. The run window
+ * only decides how many of them a run creates, not how long one exists.
  */
 const ORPHANED_TEMP_MIN_AGE_MS = 60_000;
 
 /**
- * A pid cannot exceed /proc/sys/kernel/pid_max, and Linux caps that sysctl at
- * 4194304 (PID_MAX_LIMIT) on 64-bit. A larger number is not a process, so it is
- * something an operator put there - a dated copy - and not this sweep's to delete.
+ * The largest value any arm of PID_MAX_LIMIT can take: 4 * 1024 * 1024 when long is
+ * wider than four bytes, PID_MAX_DEFAULT (32768) otherwise, PAGE_SIZE * 8 under
+ * CONFIG_BASE_SMALL. Every operator-settable pid_max is bounded by it, and a tid is
+ * always < pid_max, so this is an upper bound on every configuration rather than the
+ * 64-bit one. A number here or above it is not a process.
  */
 const MAX_PID = 4_194_304;
 
@@ -131,10 +133,12 @@ function saveCheckpoint(path, checkpoint) {
  * cleaned by `finally`, and the run that wrote them is gone, so nothing else
  * removes them and the checkpoint volume grows one file per kill.
  *
- * Only `<checkpoint name>.<pid>.tmp` is a candidate, and a pid is bounded. Under
- * that bound a name is another checkpoint's temp file, whose own name starts with
- * this one's, or an operator's dated copy. Deleting either on a guess about what
- * the author meant is not a trade this makes.
+ * Only `<checkpoint name>.<pid>.tmp` is a candidate, and a pid is bounded. Outside
+ * that shape a name belongs to another file: another checkpoint whose own name
+ * starts with this one's, or an operator's copy. The bound separates a dated copy
+ * from a pid; a small numbered copy such as `state.json.1.tmp` still sits under it
+ * and is still swept an hour later, because telling those apart would mean guessing
+ * what an author meant, and this shape is what the price of not guessing looks like.
  *
  * Three guards keep the sweep off a file that is still in use: this process's own
  * temp file is skipped by pid, and one younger than ORPHANED_TEMP_MIN_AGE_MS is
@@ -144,6 +148,12 @@ function saveCheckpoint(path, checkpoint) {
  * neighbour. The lock makes a miss unreachable in this deployment; if that ever
  * stops holding, catching ENOENT in saveCheckpoint and writing again is the fix to
  * reach for, not widening this match.
+ *
+ * The lock cuts both ways, and that bounds what this cleanup can deliver. A run
+ * killed mid-flight leaves its lock behind, the lock is never stolen, and
+ * acquireWarmupLock runs before this sweep, so the run that would have collected the
+ * orphan is itself the run that cannot start. The operator clearing the lock is what
+ * gets the sweep running, not the sweep itself.
  */
 function removeOrphanedCheckpointTemps(path) {
   const directory = dirname(path);
@@ -159,7 +169,7 @@ function removeOrphanedCheckpointTemps(path) {
     if (!name.startsWith(prefix)) continue;
     const suffix = name.slice(prefix.length);
     if (!/^\d+\.tmp$/.test(suffix)) continue;
-    if (Number(suffix.slice(0, -4)) > MAX_PID) continue;
+    if (Number(suffix.slice(0, -4)) >= MAX_PID) continue;
     if (suffix === `${process.pid}.tmp`) continue;
     const temporary = join(directory, name);
     try {
