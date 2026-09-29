@@ -112,7 +112,16 @@ export interface InAppLinkLocation {
 
 /** A click anywhere in the app, reduced to what decides a navigation. */
 export interface InAppLinkClick extends ActiveLinkClick {
-  /** Something already handled it, e.g. the back affordance. */
+  /**
+   * Whether something already called `preventDefault()`.
+   *
+   * `next/link` does exactly that for every local, unmodified anchor click
+   * (`link.js`: `linkClicked` → `e.preventDefault()`), synchronously inside
+   * React's handler. So by the time this runs the flag is `true` for precisely
+   * the clicks the router is about to navigate on, and it must not gate them.
+   * The only click that must not count is the one the back affordance hijacked,
+   * and that one is identified by its `href` being the current URL (below).
+   */
   defaultPrevented: boolean;
   /** Resolved absolute `href` of the clicked anchor, `null` when none. */
   href: string | null;
@@ -130,13 +139,15 @@ export interface InAppLinkClick extends ActiveLinkClick {
  * was invisible to a flag set only by `handleActiveLinkClick`, which left the
  * reported bug reachable through them. Every in-app link goes through this
  * check instead.
+ *
+ * This must not bail on `defaultPrevented`: `next/link` calls
+ * `preventDefault()` synchronously for every local anchor click it takes over,
+ * which is every navigation the app router is about to commit.
  */
 export function startsInAppNavigation(
   click: InAppLinkClick,
   current: InAppLinkLocation,
 ): boolean {
-  // A click already turned into router.back() is not a new navigation.
-  if (click.defaultPrevented) return false;
   if (!isPrimaryClick(click)) return false;
   // Only a link navigates. Clicks on buttons, toggles and inputs do not.
   if (click.href === null) return false;

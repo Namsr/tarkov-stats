@@ -203,8 +203,6 @@ test("a click that navigates nothing never marks a navigation pending", () => {
   assert.equal(startsInAppNavigation(linkClick("https://example.com/about"), current), false);
   assert.equal(startsInAppNavigation(linkClick("https://tarkovstats.online/about", { target: "_blank" }), current), false);
   assert.equal(startsInAppNavigation(linkClick("https://tarkovstats.online/about", { download: true }), current), false);
-  // The click the back affordance already hijacked starts no new navigation.
-  assert.equal(startsInAppNavigation(linkClick("https://tarkovstats.online/about", { defaultPrevented: true }), current), false);
   // Neither does the current URL, nor one that only moves the fragment: the
   // app router re-renders on neither, so nothing would clear the flag.
   assert.equal(startsInAppNavigation(linkClick("https://tarkovstats.online/leaderboard"), current), false);
@@ -212,11 +210,66 @@ test("a click that navigates nothing never marks a navigation pending", () => {
   assert.equal(startsInAppNavigation(linkClick("https://tarkovstats.online/about?a=1#x"), at("/about", "?a=1")), false);
 });
 
-test("regression: a nav click during a footer-initiated navigation reaches its destination", () => {
+test("an already-prevented link click still starts a navigation", () => {
+  // This is the property that broke: `next/link` calls `preventDefault()`
+  // synchronously for every local anchor click it takes over, so the event the
+  // root tracker reads on `document` ALREADY has `defaultPrevented === true`.
+  // A gate that returns false on that flag marks nothing at all, and every
+  // footer / FAQ / in-page navigation leaves the bug reachable.
+  const current = at("/leaderboard");
+  assert.equal(
+    startsInAppNavigation(
+      linkClick("https://tarkovstats.online/support", { defaultPrevented: true }),
+      current,
+    ),
+    true,
+    "a Link click next/link has already preventDefault()ed must count as a navigation",
+  );
+  // The back affordance hijack is the one already-prevented click that must not
+  // count, and it is recognised by its href being the URL we are already on.
+  assert.equal(
+    startsInAppNavigation(
+      linkClick("https://tarkovstats.online/leaderboard", { defaultPrevented: true }),
+      current,
+    ),
+    false,
+    "the hijacked click points at the current URL, so it starts nothing new",
+  );
+});
+
+test("regression: a nav click during a footer-initiated navigation reaches its destination", async () => {
   // The reviewer's probe: the flag used to be set only by the nav bar, so a
   // navigation started from the footer left the nav affordance live and the
   // next tab click was hijacked into router.back(), dropping the destination.
-  markNavigationPending();
+  //
+  // The footer click is replayed through the root tracker's own gate rather
+  // than by calling `markNavigationPending()` by hand, so this fails whenever
+  // the tracker stops marking. `defaultPrevented: true` is what the real event
+  // carries: `next/link` prevents the default before the tracker's document
+  // bubble listener runs.
+  //
+  // There is no DOM here, so the two halves are pinned separately: the source
+  // pins prove the tracker still feeds the native event into that gate and
+  // marks on it (deleting the component fails this), and the calls below run
+  // the gate and the flag for real.
+  const tracker = await readFile("components/NavigationPendingTracker.tsx", "utf8");
+  assert.match(
+    tracker,
+    /startsInAppNavigation\(\s*\{[\s\S]*?defaultPrevented: event\.defaultPrevented,/,
+    "the tracker must hand the native event's defaultPrevented to the gate",
+  );
+  assert.match(
+    tracker,
+    /if \(navigates\) markNavigationPending\(\);/,
+    "the tracker must mark on the gate's verdict",
+  );
+
+  const current = at("/leaderboard");
+  const footerClick = linkClick("https://tarkovstats.online/support", { defaultPrevented: true });
+  if (startsInAppNavigation(footerClick, current)) markNavigationPending();
+  assert.equal(isNavigationPending(), true, "the footer click must have marked a navigation");
+
+  // The nav bar still reads the previous route while that navigation loads.
   const stalePathname = "/leaderboard";
   const atDestination = stalePathname === "/leaderboard";
   assert.equal(atDestination, true, "the stale pathname still reports the old route");
@@ -247,10 +300,60 @@ test("the pending flag is marked and cleared for the whole app, not per nav comp
   assert.doesNotMatch(tracker, /addEventListener\("click", onClick, true\)/);
   assert.match(tracker, /if \(navigates\) markNavigationPending\(\);/);
   assert.match(tracker, /startsInAppNavigation\(/);
+  // The listener is registered once and taken down again on unmount, so a
+  // remount cannot leave a second copy marking on every click.
+  assert.match(
+    tracker,
+    /addEventListener\("click", onClick\);\s*return \(\) => document\.removeEventListener\("click", onClick\);\s*\}, \[\]\);/,
+    "the listener must be removed on cleanup, from a mount-only effect",
+  );
   // The clear side lives with it, so the three nav components no longer own a
   // copy of it, and it keys on the query so a query-only navigation clears too.
   assert.match(tracker, /clearNavigationPending\(\);\s*\}, \[pathname, searchParams\]\);/);
   for (const source of [header, average, modes]) {
     assert.doesNotMatch(source, /clearNavigationPending/);
   }
+});
+
+test("app-initiated navigation marks the flag before it pushes", async () => {
+  // A search result or a saved nickname is not an anchor click, so the
+  // document-level tracker never sees it. `useTrackedRouter` closes that window
+  // for every caller. The mark has to come BEFORE the push: a push that is
+  // already in flight cannot be marked afterwards in time to matter.
+  const hook = await readFile("lib/use-tracked-router.ts", "utf8");
+  for (const method of ["push", "replace"] as const) {
+    const body = hook.match(
+      new RegExp(`${method}: \\(href: string[\\s\\S]*?\\n {4}\\},`),
+    );
+    assert.ok(body, `${method} must be wrapped`);
+    assert.match(
+      body![0],
+      /markNavigationPending\(\);\s*\n\s*router\.\w+\(href, options\);/,
+      `${method} must mark the flag before delegating`,
+    );
+  }
+  assert.match(hook, /\.\.\.router,/, "the rest of the router API must pass through");
+
+  // The user-initiated callers use the wrapper; the URL-state-sync ones keep
+  // the raw router, because a query-only `replace` commits a route the user is
+  // already on and marking it would burn the TTL on every tweak.
+  const search = await readFile("components/SearchBar.tsx", "utf8");
+  assert.match(search, /import \{ useTrackedRouter \} from "@\/lib\/use-tracked-router"/);
+  assert.match(search, /const router = useTrackedRouter\(\)/);
+  for (const source of [
+    await readFile("components/AdminDashboard.tsx", "utf8"),
+    await readFile("components/PlayerRadarComparison.tsx", "utf8"),
+  ]) {
+    assert.doesNotMatch(source, /useTrackedRouter/, "URL-state sync must not mark a navigation");
+  }
+
+  // What the wrapper buys, stated against the real flag: a navigation the app
+  // started keeps a following nav-tab click from being hijacked.
+  markNavigationPending();
+  const calls: string[] = [];
+  const router = { back: () => calls.push("back"), replace: (href: string) => calls.push(`replace:${href}`) };
+  let prevented = false;
+  handleActiveLinkClick({ ...plainClick, preventDefault: () => { prevented = true; } }, true, router);
+  assert.deepEqual(calls, [], "a tab click during a search-initiated navigation must not go back");
+  assert.equal(prevented, false);
 });
