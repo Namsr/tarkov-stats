@@ -241,7 +241,7 @@ test("every timer-driven sync unit leaves its collector room to stop inside Time
         `${name} starts ${script} without -e ${budget.name}=..., so the collector falls back to its default of ${describeMs(budget.defaultMs)}` +
         (fits
           ? `; that default happens to fit TimeoutStartSec=${windowText}, but a unit that leans on a collector default states no budget of its own`
-          : ` and TimeoutStartSec=${windowText} cuts the run off before that budget`));
+          : ` and TimeoutStartSec=${windowText} leaves no room for the ${describeMs(MIN_EXIT_MARGIN_MS)} of unwind a run of that length still has to make`));
       continue;
     }
     if (!Number.isInteger(budgetMs)) {
