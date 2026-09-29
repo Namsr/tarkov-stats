@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
@@ -286,7 +286,10 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   const { authStatus, favorites } = useFavorites();
   const [remoteCohort, setRemoteCohort] = useState<NormalizedCohort | null>(null);
   const [cohortLoading, setCohortLoading] = useState(!demo);
-  const [cohortError, setCohortError] = useState("");
+  // A flag, not a string: the effect that sets it no longer re-runs on a language
+  // switch, so a stored message would keep rendering in the language it was
+  // created in. Translated at render instead, as the panel does for its series.
+  const [cohortError, setCohortError] = useState(false);
   const [showFavorite, setShowFavorite] = useState(demo);
   const [selectedAid, setSelectedAid] = useState<number | null>(null);
   const [favoriteProfile, setFavoriteProfile] = useState<{
@@ -294,7 +297,10 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     stats: ComparisonStats;
   } | null>(null);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
-  const [favoriteError, setFavoriteError] = useState("");
+  // `key` is translated at render so the message tracks the language; `message`
+  // carries a transport-level string that no dictionary can own, and `null` means
+  // "fall back to `key`". Nothing thrown locally may put dictionary text there.
+  const [favoriteError, setFavoriteError] = useState<{ key: string; message: string | null } | null>(null);
 
   useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
 
@@ -304,6 +310,22 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   const hoursCenter = Number.isFinite(Number(stats.hoursPlayed)) ? Number(stats.hoursPlayed) : 0;
   const raidsCenter = Number.isFinite(Number(stats.pmcRaids)) ? Number(stats.pmcRaids) : 0;
   const cohortRequestId = `${aid}:${mode}:${cycleId}:${hoursCenter}:${raidsCenter}:${statistic}:${period}`;
+
+  // Neither request below carries a language: the cohort parameters are the aid,
+  // mode, cycle, centers, statistic and period, and the favorite is identified by
+  // mode/cycle/aid. `t` is memoized on `lang`, so it changed identity on every
+  // EN/RU toggle and re-ran both effects with unchanged inputs — a fetch on every
+  // EN/RU toggle, a browser-cached re-parse of the same cohort at best and a round
+  // trip once max-age=60 has expired, plus a setCohortLoading(true) and a
+  // setFavoriteProfile(null) that flashed the whole comparison into loading (and
+  // left it aria-busy) for data that had not moved. The ref keeps the throws
+  // current; the render body translates the two error states, which no longer
+  // re-run on a switch. Declared before both effects so it is up to date when
+  // they run.
+  const translate = useRef(t);
+  useEffect(() => {
+    translate.current = t;
+  }, [t]);
 
   useEffect(() => {
     if (demo) return;
@@ -323,18 +345,18 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       params.set("excludeAid", String(aid));
     }
     setCohortLoading(true);
-    setCohortError("");
+    setCohortError(false);
     const endpoint = mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort";
     fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (response) => {
         const payload = (await response.json()) as CohortResponse;
-        if (!response.ok) throw new Error(t("radar.error.cohort"));
+        if (!response.ok) throw new Error(translate.current("radar.error.cohort"));
         if (payload.identity && (
           (payload.identity.aid != null && payload.identity.aid !== aid) ||
           (payload.identity.mode != null && payload.identity.mode !== mode) ||
           (payload.identity.cycleId != null && payload.identity.cycleId !== cycleId)
         )) {
-          throw new Error(t("radar.error.cohort"));
+          throw new Error(translate.current("radar.error.cohort"));
         }
         return normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
       })
@@ -345,14 +367,17 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
         if (controller.signal.aborted) return;
         setRemoteCohort(null);
         // Browser fetch errors are implementation details (for example,
-        // "Failed to fetch"). Keep them behind the localized app message.
-        setCohortError(t("radar.error.cohort"));
+        // "Failed to fetch"). Keep them behind the localized app message, which
+        // the render body resolves against the current language.
+        setCohortError(true);
       })
       .finally(() => {
         if (!controller.signal.aborted) setCohortLoading(false);
       });
     return () => controller.abort();
-  }, [aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic, t]);
+    // `t` is read through `translate` so a language switch cannot re-run this effect
+    // and re-request the cohort with unchanged parameters.
+  }, [aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic]);
 
   function changeStatistic(next: AverageStatistic) {
     if (next === statistic) return;
@@ -399,7 +424,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     }
     let cancelled = false;
     setFavoriteLoading(true);
-    setFavoriteError("");
+    setFavoriteError(null);
     setFavoriteProfile(null);
     const favoriteParams = new URLSearchParams({
       aid: String(effectiveFavoriteAid),
@@ -417,7 +442,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
             && payload.identity.mode === mode
             && payload.identity.cycleId === cycleId;
         if (!ok || !nextStats || !identityMatches) {
-          throw new Error(t("radar.error.favorite"));
+          // Whatever is thrown here lands in `message` and is rendered verbatim, so
+          // it must not be dictionary text: a translated throw would freeze in the
+          // language of the failure. This class is the one the catch below maps to
+          // `message: null`, which hands the render back to the stored key.
+          throw new PlayerProfileResponseError();
         }
         return nextStats;
       })
@@ -428,9 +457,12 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setFavoriteError(error instanceof PlayerProfileResponseError
-            ? t("radar.error.favorite")
-            : error instanceof Error ? error.message : t("radar.error.favorite"));
+          setFavoriteError({
+            key: "radar.error.favorite",
+            message: error instanceof PlayerProfileResponseError
+              ? null
+              : error instanceof Error ? error.message : null,
+          });
         }
       })
       .finally(() => {
@@ -439,7 +471,9 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     return () => {
       cancelled = true;
     };
-  }, [authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t]);
+    // Same reasoning as the cohort effect above: the favorite is identified by
+    // mode/cycle/aid, so `t` here re-blanked the card on every EN/RU toggle.
+  }, [authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite]);
 
   const cohort = demo
     ? demoCohort(hoursCenter, raidsCenter, statistic, period)
@@ -495,7 +529,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       <label className="profile-select"><span className="sr-only">{t("average.statistic.label")}</span><select value={statistic} onChange={(event) => changeStatistic(event.target.value as AverageStatistic)}><option value="trimmed_mean">{t("average.statistic.trimmedMean")}</option><option value="median">{t("average.statistic.median")}</option></select></label>
       {mode === "regular" && <label className="profile-select"><span className="sr-only">{t("average.period.label")}</span><select value={period} onChange={(event) => changePeriod(event.target.value as AveragePeriod)}><option value="all">{t("average.period.all")}</option><option value="90d">{t("average.period.last90Days")}</option></select></label>}
     </div>
-    {(cohortLoading || cohortError || (useFavorite && (favoriteLoading || favoriteError))) && <p className="profile-chart-notice" role="status">{cohortError || (useFavorite && favoriteError) || t("common.loading")}</p>}
+    {(cohortLoading || cohortError || (useFavorite && (favoriteLoading || favoriteError))) && <p className="profile-chart-notice" role="status">{cohortError
+      ? t("radar.error.cohort")
+      : useFavorite && favoriteError
+        ? favoriteError.message ?? t(favoriteError.key)
+        : t("common.loading")}</p>}
     {!playerStatsKnown && <p className="profile-chart-notice" role="status">{t("radar.incompletePvp.player")}</p>}
     {useFavorite && favoriteStats && !favoriteStatsKnown && <p className="profile-chart-notice" role="status">{t("radar.incompletePvp.favorite")}</p>}
     <ProfileRadar key={`${aid}:${mode}:${cycleId}:${statistic}:${period}:${useFavorite}:${effectiveFavoriteAid}`} metrics={rows} playerName={nickname || ("nickname" in stats ? stats.nickname : t("radar.series.player"))} otherName={otherName} />

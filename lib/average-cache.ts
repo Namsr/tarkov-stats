@@ -1,4 +1,10 @@
-import type { ArenaDimension, ArenaMetricKey, ArenaModeKey, ArenaStatistic } from "@/types/arena";
+import type {
+  ArenaDimension,
+  ArenaMetricKey,
+  ArenaModeKey,
+  ArenaStatistic,
+  ArenaStoredMode,
+} from "@/types/arena";
 
 export const AVERAGE_CACHE_TTL_SECONDS = 30 * 60;
 export const SEASONAL_AVERAGE_CACHE_TAG = "average-seasonal-dashboard-v2";
@@ -28,4 +34,24 @@ export function arenaAverageCacheKey(
   cacheVersion: number,
 ): string {
   return JSON.stringify(["arena", mode, statistic, dimension, metric, ...range, cacheVersion]);
+}
+
+/**
+ * LRU key for one per-aid Arena cohort, shared by GET /api/average/cohort and
+ * GET /api/average/cohort/batch. Same reasoning as `arenaAverageCacheKey`: the
+ * two routes hand the same entry to the same 15-minute LRU, and a population
+ * sync that bumps the version has to retire it, or a pre-sync cohort stays
+ * readable to both routes until the TTL expires.
+ *
+ * The cohort is read from local SQLite rather than the publication, so it is
+ * keyed on the same population version the sync bumps. The version is the last
+ * element, as in `arenaAverageCacheKey`.
+ */
+export function arenaCohortCacheKey(
+  aid: number,
+  mode: ArenaStoredMode,
+  statistic: ArenaStatistic,
+  cacheVersion: number,
+): string {
+  return ["cohort", "arena", aid, mode, statistic, cacheVersion].join(":");
 }

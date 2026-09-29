@@ -49,6 +49,17 @@ function createPublicationDatabase() {
 let db = createPublicationDatabase();
 test.beforeEach(() => { db.close(); db = createPublicationDatabase(); });
 
+// A re-rank drops idx_leaderboard_order_ordinal and rebuilds it inside one transaction, and no
+// query plan in the suite looks for it, so without this a build that never recreates the index
+// would look identical from the outside. Presence alone is not enough: a plain index would pass
+// it, so the check also has to fail on a duplicate ordinal.
+function assertOrdinalIndexEnforces() {
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_leaderboard_order_ordinal'").get());
+  assert.throws(() => db.prepare(`INSERT INTO leaderboard_order
+    (scope,generation,sort,aid,ordinal,k1,k2,k3,k4,k5,stable_key) VALUES (?,?,?,?,1,0,0,0,0,0,?)`)
+    .run("regular", 100, "primary", 900_001, 900_001), /UNIQUE constraint failed/);
+}
+
 test("ascending pages read the global tail and preserve ranks with bans and fresh overlays", () => {
   const local = new DatabaseSync(":memory:");
   try {
@@ -313,6 +324,41 @@ test("incremental failure rolls back member, order, publication token, and curso
   assert.equal(db.prepare("SELECT source_revision FROM leaderboard_members WHERE scope='regular' AND aid=61").get().source_revision, 0);
   assert.deepEqual(publication.leaderboardSourceCursor(db, "regular"), { initialized: false, changeId: 0 });
   assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
+});
+
+test("a re-rank that permutes ordinals rebuilds the unique ordinal index", () => {
+  const current = db.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get();
+  const candidate = materializeCandidate({ ...source(63, 40_000), sourceUpdatedAt: 2 }, { config, formula });
+  const updated = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
+    { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 63, ...candidate }], 500);
+  assert.ok(updated.touchedSorts > 0);
+  assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=63").get().ordinal, 1);
+  assertOrdinalIndexEnforces();
+});
+
+test("a failure between the ordinal index drop and its rebuild rolls the index back", () => {
+  const current = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get();
+  const candidate = materializeCandidate({ ...source(64, 50_000), sourceUpdatedAt: 2 }, { config, formula });
+  // reassignOrdinals drops the index, fills the temp table, then swaps ordinals in with this
+  // UPDATE and only then recreates the index. Nothing runs on leaderboard_order before that swap
+  // in updateLeaderboardScope, so the trigger lands inside the window the rollback has to cover.
+  // The WHEN clause is the assertion that it really is that window: while the index is still
+  // present the trigger stays silent and the swap fails on the unique constraint instead.
+  db.exec(`CREATE TRIGGER fail_ordinal_swap BEFORE UPDATE OF ordinal ON leaderboard_order
+    WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name='idx_leaderboard_order_ordinal')
+    BEGIN SELECT RAISE(ABORT,'ordinal swap fixture failure'); END`);
+  try {
+    assert.throws(() => publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
+      { formulaVersion: 2, params: { ...config, formula }, meta: {} }, [{ aid: 64, ...candidate }], 501),
+      /ordinal swap fixture failure/);
+  } finally {
+    db.exec("DROP TRIGGER fail_ordinal_swap");
+  }
+  assert.equal(db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get().generated_at, current.generated_at);
+  // 50k kills would have taken the top primary rank if the swap had committed.
+  assert.ok(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=64").get().ordinal > 1);
+  assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
+  assertOrdinalIndexEnforces();
 });
 
 test("a stale publisher cannot overwrite a newer revision or advance its cursor", () => {

@@ -3,6 +3,7 @@ import { cookies, headers } from "next/headers";
 import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
+import NavigationPendingTracker from "@/components/NavigationPendingTracker";
 import SkipLink from "@/components/SkipLink";
 import FaqWidget from "@/components/FaqWidget";
 import PageviewBeacon from "@/components/PageviewBeacon";
@@ -59,6 +60,7 @@ export default async function RootLayout({
           <FavoritesProvider>
             <SkipLink />
             <SiteHeader />
+            <NavigationPendingTracker />
             <div id="main-content" className="site-main" tabIndex={-1}>
               {children}
             </div>

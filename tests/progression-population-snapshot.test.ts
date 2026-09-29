@@ -155,10 +155,15 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
       },
     },
   };
+  // Prod-shaped PvP state: seasonalLeaderboardSnapshotValue() in storage.ts stores
+  // pmcKilledPmc and pvpStatsKnown (no pmcKdRatio), and seasonal-upstream.ts sets
+  // counters.killedPmc = pmcKilledPmc ?? 0, so killed_pmc equals pmc_killed_pmc.
+  // Risk scoring is fail-closed on unknown PvP stats, so a null block would score 0
+  // and this test's comparison would degenerate into 0 > 0.
   const profile = {
     nickname: "p7", experience: 1_000, pmc_raids: 10, scav_raids: 0, pmc_survived: 5,
-    pmc_deaths: 5, pmc_kills: 20, killed_pmc: 5, pmc_killed_pmc: null, pmc_kd_ratio: null,
-    pvp_stats_known: null, lifetime_pvp_hours: 100, prestige: 0, longest_win_streak: 2,
+    pmc_deaths: 5, pmc_kills: 20, killed_pmc: 5, pmc_killed_pmc: 5, pmc_kd_ratio: null,
+    pvp_stats_known: 1, lifetime_pvp_hours: 100, prestige: 0, longest_win_streak: 2,
     achievements: JSON.stringify([{ id: "seasonal-ach", unlockedAt: 100 }]),
   };
   const args = [

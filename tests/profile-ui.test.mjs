@@ -213,10 +213,11 @@ test("ordinary profile failures retain the generic error UI", async () => {
 });
 
 test("a language switch does not re-request the profile or discard a refresh", async () => {
-  const [regular, seasonal, panel] = await Promise.all([
+  const [regular, seasonal, panel, radar] = await Promise.all([
     readFile("components/RegularPlayer.tsx", "utf8"),
     readFile("components/SeasonalPlayer.tsx", "utf8"),
     readFile("components/ProgressionPanel.tsx", "utf8"),
+    readFile("components/PlayerRadarComparison.tsx", "utf8"),
   ]);
 
   // `t` is memoized on `lang`, so it changes identity on every EN/RU toggle. With it
@@ -265,6 +266,78 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(compare, /throw new Error\(translate\.current\("progression\.compare\.error"\)\);/);
   // Both load effects now read the translator through the ref: two sites each.
   assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 4);
+
+  // PlayerRadarComparison mounts on both profile pages, so the same defect there
+  // was the remaining half of the report: every EN/RU toggle re-ran a fetch that
+  // the route answers with `max-age=60`, so it was a cached re-parse at best.
+  assert.doesNotMatch(radar, /\}, \[aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic, t\]\);/);
+  assert.match(radar, /\}, \[aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic\]\);/);
+  // The favorite effect answered from the 5-minute response cache, so no request
+  // went out — but it blanks the loaded favorite and flips favoriteLoading on
+  // first, which is what made the comparison card flash "loading" on a toggle.
+  assert.doesNotMatch(radar, /\}, \[authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t\]\);/);
+  assert.match(radar, /\}, \[authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite\]\);/);
+  assert.match(radar, /const translate = useRef\(t\);/);
+  assert.match(radar, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
+  // The checks below anchor on multi-line declarations, and sliceDeclaration
+  // takes string anchors, so a CRLF checkout would never match a "\n" needle.
+  const radarSource = radar.replace(/\r\n/g, "\n");
+  // The declaration has to precede both effects, not merely sit somewhere in the
+  // component: moving it into either effect body puts it after a reader that could
+  // run first. Only the declaration is pinned. Where the updater effect sits is
+  // deliberately not asserted — `useRef(t)` seeds the current language, and every
+  // read happens in an async callback, so moving the updater below both fetches
+  // changes nothing and would only make this test brittle.
+  const refPos = radarSource.indexOf("const translate = useRef(t);");
+  const cohortStart = radarSource.indexOf("useEffect(() => {\n    if (demo) return;");
+  const favoriteStart = radarSource.indexOf("useEffect(() => {\n    if (\n      demo ||");
+  assert.ok(cohortStart >= 0, "the cohort effect must start at its own useEffect");
+  assert.ok(favoriteStart >= 0, "the favorite effect must start at its own useEffect");
+  assert.ok(refPos >= 0 && refPos < cohortStart, "the translator ref must precede the cohort effect");
+  assert.ok(refPos < favoriteStart, "the translator ref must precede the favorite effect");
+  // Sliced from each effect's own opening `useEffect(() => {`, not from a line
+  // inside the body: slicing at `if (demo) return;` left the preamble outside and
+  // a `t("…")` reintroduced there would have passed the bare-`t` check. The render
+  // tree's many `t` calls stay out for the same reason.
+  const cohortEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (demo) return;", "function changeStatistic(");
+  assert.doesNotMatch(cohortEffect, /\bt\(/);
+  assert.equal((cohortEffect.match(/throw new Error\(translate\.current\("radar\.error\.cohort"\)\);/g) ?? []).length, 2);
+  // Dropping `t` from the array stopped the effect from re-running, so nothing
+  // clears the error any more: it has to be a flag the render body translates.
+  assert.match(cohortEffect, /setCohortError\(true\);/);
+  assert.doesNotMatch(cohortEffect, /setCohortError\("|setCohortError\(translate/);
+  const favoriteEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (\n      demo ||", "const cohort = demo");
+  assert.ok(favoriteEffect.length > 0, "the favorite profile effect must be present");
+  assert.doesNotMatch(favoriteEffect, /\bt\(/);
+  // `error.message` can be a transport string no dictionary owns, so the state
+  // carries the key alongside it and the render resolves the key.
+  assert.match(favoriteEffect, /setFavoriteError\(\{\s*\n\s*key: "radar\.error\.favorite",\s*\n\s*message: error instanceof PlayerProfileResponseError\s*\n\s*\? null\s*\n\s*: error instanceof Error \? error\.message : null,\s*\n\s*\}\);/);
+  assert.doesNotMatch(favoriteEffect, /setFavoriteError\("|setFavoriteError\(translate/);
+  // The identity guard still fails closed, but it must not fail with dictionary
+  // text. The catch copies `error.message` into state and the render prints it
+  // verbatim, so a translated throw would keep rendering in the language of the
+  // failure — the exact regression this report is about, and the common path
+  // (an HTTP 4xx/5xx returns `{ ok: false }` rather than throwing a
+  // `PlayerProfileResponseError`). Only that class maps to `message: null`, which
+  // hands the render back to `t(favoriteError.key)`.
+  assert.doesNotMatch(favoriteEffect, /throw new Error\(/);
+  assert.match(favoriteEffect, /throw new PlayerProfileResponseError\(\);/);
+  // The guard is fail-closed on identity: an unrecognised payload or a foreign aid
+  // must still drop the card rather than render someone else's numbers.
+  assert.match(favoriteEffect, /!ok \|\| !nextStats \|\| !identityMatches/);
+  // Both error paths must end at a live `t(...)` in the render body, or a language
+  // switch leaves a message stranded in the language it was created in.
+  const notice = sliceDeclaration(radarSource, 'cohortLoading || cohortError || (useFavorite && (favoriteLoading || favoriteError))', "useFavorite && favoriteStats && !favoriteStatsKnown");
+  assert.doesNotMatch(notice, /\{cohortError \|\|/);
+  assert.match(notice, /\? t\("radar\.error\.cohort"\)/);
+  assert.match(notice, /favoriteError\.message \?\? t\(favoriteError\.key\)/);
+  // Both remaining `translate.current` calls are the cohort effect's own throws,
+  // whose text is never read: its `.catch` drops it for the flag the render
+  // translates. The favorite effect must translate nothing — anything it threw
+  // would be pinned into `message` at the moment of failure.
+  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 2);
+  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 2);
+  assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 0);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
@@ -764,10 +837,28 @@ test("active navigation links go back only for an unmodified click at their dest
     assert.equal(activeLinkAction({ ...primary, [modifier]: true }, true, 2), null);
   }
   assert.equal(activeLinkAction({ ...primary, button: 1 }, true, 2), null);
+  // A click while a navigation is still in flight must not be read as a click
+  // on the current page: `usePathname()` keeps the old route until the new one
+  // commits, and hijacking that click into router.back() drops the destination.
+  assert.equal(activeLinkAction(primary, true, 2, true), null);
 
-  assert.match(helper, /event\.button !== 0/);
+  // The modifier/primary-button guard is now one predicate; assert all four
+  // modifiers still live in it and that both call sites use it.
+  assert.match(
+    helper,
+    /function isPrimaryClick\([\s\S]*?event\.button === 0[\s\S]*?!event\.metaKey[\s\S]*?!event\.ctrlKey[\s\S]*?!event\.shiftKey[\s\S]*?!event\.altKey/,
+  );
+  assert.match(helper, /activeLinkAction\([\s\S]*?!isPrimaryClick\(event\)/);
   assert.doesNotMatch(helper, /document\.referrer/);
-  assert.match(helper, /activeLinkAction\(event, atDestination, window\.history\.length\)/);
+  assert.match(helper, /activeLinkAction\(event, atDestination, window\.history\.length, pending\)/);
+  // The pending flag must be read before this click marks itself, otherwise the
+  // back affordance suppresses its own click. Only a click the router would
+  // navigate on may mark it at all.
+  assert.match(helper, /const startsNavigation = isPrimaryClick\(event\);/);
+  assert.match(
+    helper,
+    /const pending = isNavigationPending\(\);\s*if \(startsNavigation\) markNavigationPending\(\);/,
+  );
   assert.match(helper, /router\.back\(\)/);
   assert.match(helper, /router\.replace\(fallback\)/);
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);

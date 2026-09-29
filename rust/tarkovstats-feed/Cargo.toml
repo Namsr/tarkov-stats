@@ -1,0 +1,17 @@
+[package]
+name = "tarkovstats-feed"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Byte-level streaming lexer for the Tarkov \"updated\" feed"
+publish = false
+
+[lib]
+name = "tarkovstats_feed"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tarkovstats-feed"
+path = "src/main.rs"
+
+[dependencies]
