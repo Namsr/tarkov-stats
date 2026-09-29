@@ -248,8 +248,8 @@ test("the pending flag is marked and cleared for the whole app, not per nav comp
   assert.match(tracker, /if \(navigates\) markNavigationPending\(\);/);
   assert.match(tracker, /startsInAppNavigation\(/);
   // The clear side lives with it, so the three nav components no longer own a
-  // copy of it.
-  assert.match(tracker, /clearNavigationPending\(\);\s*\}, \[pathname\]\);/);
+  // copy of it, and it keys on the query so a query-only navigation clears too.
+  assert.match(tracker, /clearNavigationPending\(\);\s*\}, \[pathname, searchParams\]\);/);
   for (const source of [header, average, modes]) {
     assert.doesNotMatch(source, /clearNavigationPending/);
   }

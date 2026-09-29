@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { clearNavigationPending, markNavigationPending, startsInAppNavigation } from "@/lib/active-link";
 
 /**
@@ -14,10 +14,15 @@ import { clearNavigationPending, markNavigationPending, startsInAppNavigation } 
  */
 export default function NavigationPendingTracker() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
 
+  // A committed navigation clears the flag, so a link for the current page may
+  // act as the back affordance again. Keying on the query as well as the path
+  // covers a navigation that changes one without the other; a fragment change
+  // commits nothing, so it never gets here (see `startsInAppNavigation`).
   useEffect(() => {
     clearNavigationPending();
-  }, [pathname]);
+  }, [pathname, searchParams]);
 
   useEffect(() => {
     function onClick(event: MouseEvent) {
