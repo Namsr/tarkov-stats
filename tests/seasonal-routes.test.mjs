@@ -90,7 +90,21 @@ test("the player risk route gates Seasonal on the active cycle, not just on synt
   // request could read a verdict for a cycle the site does not expose — the JSON
   // collector warms exactly those rows before `isSeasonalRolloutReady()` is true.
   assert.match(risk, /if \(mode === "seasonal"\) \{/);
-  assert.match(risk, /if \(!isSeasonalRolloutReady\(\) \|\| !cycle \|\| cycleId !== cycle\.cycleId\)/);
+  // A season that has not rolled out is absent, not a client mistake, so the gate
+  // answers 404 like the sibling routes on this gate do and only a cycle mismatch
+  // is a 400. This assertion used to pin the folded one-liner instead, which
+  // presented the 400 as deliberate fail-closed; the invariant worth keeping is
+  // that the two cases are answered differently, not how the source is spelled.
+  assert.match(
+    risk,
+    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle\) \{\s*return NextResponse\.json\(\{ error: "Seasonal risk unavailable" \}, \{ status: 404, headers: noStore \}\);/,
+  );
+  assert.match(
+    risk,
+    /if \(cycleId !== cycle\.cycleId\) \{\s*return NextResponse\.json\(\{ error: "Invalid or missing cycle" \}, \{ status: 400, headers: noStore \}\);/,
+  );
+  // Do not fold the mismatch back onto the gate line: that is the original defect.
+  assert.doesNotMatch(risk, /!isSeasonalRolloutReady\(\) \|\| !cycle \|\|/);
   // The gate has to run before storage is opened.
   assert.ok(
     risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("getRiskEvaluation("),
