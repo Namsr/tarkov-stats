@@ -17,8 +17,6 @@ ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker comp
 # and then unwind (lease, SQLite, SUMMARY) before systemd kills it. This unit takes
 # the shared writer lock at :05, so the part of its 12 min that runs past :15 is
 # the wait the blocking seasonal unit at :15 gets - tests/sync-unit-budgets.test.mjs
-# holds the two to that sum. That sum assumes the :05 and :15 ticks stay ten
-# minutes apart. Persistent=true with AccuracySec=1s does not promise that: a host
-# down across both replays them at boot within the same second, the gap is zero,
-# and the seasonal unit is killed at its own window.
+# holds the two to that sum. The seasonal unit caps its lock wait separately,
+# so a Persistent timer catch-up cannot consume its collector's run window.
 TimeoutStartSec=14m

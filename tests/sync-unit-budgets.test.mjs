@@ -143,15 +143,14 @@ function execEnvironment(execStart) {
   return values;
 }
 
-// `flock -n` skips the run when another writer holds the lock; a bare `flock`
-// waits for it, and TimeoutStartSec keeps running while it waits. Null when the
-// unit never takes the writer lock.
+// TimeoutStartSec includes lock acquisition. -n never waits, -w caps the wait
+// in seconds, and a bare flock can consume the entire service window.
 function writerLockMode(execStart) {
-  const match = /\/usr\/bin\/flock\s+(-n\s+)?\/run\/tarkovstats-data-sync\.lock/.exec(execStart);
+  const match = /\/usr\/bin\/flock\s+(?:(-n)|-w\s+(\d+))?\s*\/run\/tarkovstats-data-sync\.lock/.exec(execStart);
   if (!match) return null;
   assert.equal(match.index, execStart.indexOf("/usr/bin/flock"),
     "the data-sync lock is no longer the first flock on the ExecStart line");
-  return match[1] ? "skips" : "waits";
+  return { mode: match[1] ? "skips" : "waits", maxWaitMs: match[1] ? 0 : match[2] ? Number(match[2]) * 1000 : Infinity };
 }
 
 // The timer field is what turns "these units share a lock" into arithmetic: the
@@ -201,7 +200,8 @@ async function readSyncUnits() {
       windowText,
       windowMs: parseDurationMs(windowText),
       execStart,
-      lockMode: writerLockMode(execStart),
+      lockMode: writerLockMode(execStart)?.mode ?? null,
+      lockWaitMs: writerLockMode(execStart)?.maxWaitMs ?? 0,
       tick: budget ? tickMinuteOfDay(calendar[1]) : null,
     };
   }));
@@ -292,6 +292,15 @@ test("a sync unit does not claim more run budget than the hourly queue gives the
   assert.deepEqual(problems, [], problems.join("\n"));
 });
 
+test("lock contention at boot or behind the queue leaves time for a complete run", async () => {
+  const units = (await readSyncUnits()).filter((unit) => unit.budget);
+  for (const unit of units) {
+    assert.ok(Number.isFinite(unit.lockWaitMs), `${unit.name} must bound lock acquisition regardless of timer order`);
+    assert.ok(unit.lockWaitMs + unit.budgetMs + MIN_EXIT_MARGIN_MS <= unit.windowMs,
+      `${unit.name}: lock wait + run + unwind must fit inside TimeoutStartSec`);
+  }
+});
+
 test("a unit that waits for the writer lock still has window left to finish", async () => {
   // The feed units share one writer lock and their timers sit minutes apart, and
   // TimeoutStartSec covers the whole ExecStart, lock wait included. A unit that
@@ -299,7 +308,7 @@ test("a unit that waits for the writer lock still has window left to finish", as
   // The wait is whatever the earlier run can still be holding, and a run keeps
   // the lock past its budget: the collector unwinds before it exits. So a holder
   // holds `budget + unwind`, capped by its own window, and only a unit that takes
-  // a bare flock pays the wait term - a `-n` unit skips instead.
+  // waiting flock pays the wait term, capped by -w; a -n unit skips instead.
   //
   // Both sides of the sum are unit configuration. An unbudgeted unit has no
   // number to schedule against - its 14h window is a hang backstop, and that is
@@ -308,15 +317,9 @@ test("a unit that waits for the writer lock still has window left to finish", as
   // while running these same modes) are separate questions from whether a feed
   // unit's budget fits its window. Neither depends on the values checked here.
   //
-  // The gap the sum subtracts comes from OnCalendar MINUTES alone; Persistent= is
-  // not modelled. All four feed timers set it with AccuracySec=1s, so a host that
-  // was down across :05 and :15 replays both activations at boot inside the same
-  // second: the gap collapses to nothing and the waiter is left with 840s of wait
-  // in front of its own 480s budget and 120s of unwind, against an 840s window.
-  // Closing that would take a design decision - a shorter budget than the window
-  // allows, a missed-tick guard, or timers that are not Persistent - rather than a
-  // number this file can check, so it is a second known limit of the same family
-  // as the queue and the index sweeps above, not something a budget here settles.
+  // This checks normal ticks. The test above checks the full configured lock
+  // wait even when Persistent timers catch up together or another writer holds
+  // the lock; it does not depend on any gap between scheduled activations.
   const units = (await readSyncUnits()).filter((unit) => unit.budget);
   assert.ok(units.length > 1, "expected more than one budgeted sync unit to compare");
   assert.ok(units.some((unit) => unit.lockMode === "waits"), "no unit waits on the writer lock: the grid is not being exercised");
@@ -335,7 +338,7 @@ test("a unit that waits for the writer lock still has window left to finish", as
       // Forward distance between the two ticks on the daily cycle, so a run that
       // ends before the next tick contributes no wait at all.
       const gapMs = ((waiter.tick - holder.tick + 1440) % 1440) * 60_000;
-      const waitMs = Math.max(0, heldMs - gapMs);
+      const waitMs = Math.min(waiter.lockWaitMs, Math.max(0, heldMs - gapMs));
       const neededMs = waitMs + waiter.budgetMs + MIN_EXIT_MARGIN_MS;
       if (neededMs > waiter.windowMs) {
         problems.push(
