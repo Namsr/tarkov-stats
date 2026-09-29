@@ -1,5 +1,4 @@
-import type { ArenaModeKey } from "@/types/arena";
-import type { LeaderboardStats, LeaderboardSubjectStatus, LeaderboardSort } from "@/types/leaderboard";
+import type { LeaderboardStats, LeaderboardSubjectStatus } from "@/types/leaderboard";
 import type { LeaderboardScopeConfig } from "./config";
 import {
   LEADERBOARD_FORMULA_VERSION,
@@ -158,14 +157,6 @@ export function referenceFormula(rows: Iterable<LeaderboardSourceRow>, activityC
   if (t0 == null || k0 == null || d0 == null || t0 <= 0 || k0 <= 0 || d0 <= 0) return null;
   return { killsWeight: 0.4, kdWeight: 0.3, killsPerMatchWeight: 0.3, smoothing: 20,
     referenceTotalKills: t0, referenceKillsPerMatch: k0, referenceDeathsPerMatch: d0 };
-}
-
-export function primaryMetricForArena(mode: ArenaModeKey): "arp" | "killsPerMatch" | "performance" {
-  return mode === "blastGang" ? "arp" : mode === "lastHero" ? "killsPerMatch" : "performance";
-}
-
-export function allowedSorts(): readonly LeaderboardSort[] {
-  return ["primary", "score", "kd", "killsPerMatch", "kills", "hours"];
 }
 
 export { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION };

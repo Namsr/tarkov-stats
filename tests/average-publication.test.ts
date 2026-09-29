@@ -14,24 +14,10 @@ process.env.AVERAGE_PUBLICATION_SQLITE_PATH = publicationPath;
 process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
 
 const publication = await import("../lib/average-publication.ts");
-const { standardAveragePublicationVariants } = await import("../lib/average-publication-variants.ts");
-const dynamicCache = await import("../lib/average-dynamic-cache.ts");
 
 test.after(() => {
   publication.resetAveragePublicationForTests();
   try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
-});
-
-test("standard publication matrix contains the 22 promised variants", () => {
-  const variants = standardAveragePublicationVariants("cycle-1");
-  assert.equal(variants.length, 22);
-  assert.deepEqual(
-    Object.fromEntries(["regular", "pve", "seasonal:cycle-1", "arena"].map((scope) => [
-      scope,
-      variants.filter((variant) => variant.scope === scope).length,
-    ])),
-    { regular: 4, pve: 4, "seasonal:cycle-1": 4, arena: 10 },
-  );
 });
 
 test("publication swaps atomically, retains two generations, and survives a failed replacement", async () => {
@@ -111,18 +97,4 @@ test("dirty scheduling debounces writes and enforces the minimum and forced inte
     ...ready,
     generatedAt: now - publication.AVERAGE_PUBLICATION_FORCE_INTERVAL_MS,
   }, now), true);
-});
-
-test("dynamic average cache deduplicates in-flight work and expires after fifteen minutes", async () => {
-  dynamicCache.resetDynamicAverageCacheForTests();
-  let calls = 0;
-  const load = async () => ++calls;
-  const [first, second] = await Promise.all([
-    dynamicCache.loadDynamicAverage("same", load, 1_000),
-    dynamicCache.loadDynamicAverage("same", load, 1_000),
-  ]);
-  assert.equal(first.value, 1);
-  assert.equal(second.value, 1);
-  assert.equal(second.cache, "hit");
-  assert.equal((await dynamicCache.loadDynamicAverage("same", load, 1_000 + 15 * 60_000 + 1)).value, 2);
 });

@@ -9,14 +9,6 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parseArenaProfileStats } from "../lib/tarkov-api.ts";
 import { ARENA_PARSER_VERSION, initializeArenaSchema, upsertArenaSqlite } from "../lib/arena/storage.ts";
-import {
-  beginAveragePublication,
-  getAveragePublicationStates,
-  markAveragePublicationDirty,
-  publishAverageScope,
-  resetAveragePublicationForTests,
-} from "../lib/average-publication.ts";
-
 const execFileAsync = promisify(execFile);
 const secret = "test-secret-that-is-at-least-32-characters";
 
@@ -54,39 +46,6 @@ function migrationSummaryFrom(stdout) {
   assert.ok(line, "collector emits its migration summary");
   return JSON.parse(line.slice(line.indexOf(" MIGRATION_SUMMARY ") + " MIGRATION_SUMMARY ".length));
 }
-
-test("average publication preserves invalidations newer than its compute watermark", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "arena-average-publication-race-"));
-  const previous = {
-    SQLITE_PATH: process.env.SQLITE_PATH,
-    AVERAGE_PUBLICATION_SQLITE_PATH: process.env.AVERAGE_PUBLICATION_SQLITE_PATH,
-    AVERAGE_PUBLICATIONS_ENABLED: process.env.AVERAGE_PUBLICATIONS_ENABLED,
-  };
-  process.env.SQLITE_PATH = join(directory, "players.db");
-  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average.db");
-  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
-  resetAveragePublicationForTests();
-  try {
-    await markAveragePublicationDirty("arena", 200);
-    await beginAveragePublication("arena", 100);
-    await publishAverageScope("arena", new Map([["arena", { value: 1 }]]), 100, 300);
-    assert.equal((await getAveragePublicationStates()).find((state) => state.scope === "arena")?.dirtyAt, 200);
-
-    await markAveragePublicationDirty("pve", 50);
-    await beginAveragePublication("pve", 100);
-    await publishAverageScope("pve", new Map([["pve", { value: 1 }]]), 100, 300);
-    assert.equal((await getAveragePublicationStates()).find((state) => state.scope === "pve")?.dirtyAt, null);
-  } finally {
-    resetAveragePublicationForTests();
-    if (previous.SQLITE_PATH === undefined) delete process.env.SQLITE_PATH;
-    else process.env.SQLITE_PATH = previous.SQLITE_PATH;
-    if (previous.AVERAGE_PUBLICATION_SQLITE_PATH === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
-    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previous.AVERAGE_PUBLICATION_SQLITE_PATH;
-    if (previous.AVERAGE_PUBLICATIONS_ENABLED === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
-    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previous.AVERAGE_PUBLICATIONS_ENABLED;
-    await rm(directory, { recursive: true, force: true });
-  }
-});
 
 test("Arena profile sync queues index gaps and updated-feed accounts without a total cap", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-"));

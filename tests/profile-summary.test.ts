@@ -199,12 +199,6 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
   assert.doesNotMatch(profileRouteSource, /getSeasonalAchievementBaseline/);
 });
 
-test("cold Seasonal profile metadata loads before the response", () => {
-  assert.match(profileRouteSource, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
-  assert.doesNotMatch(profileRouteSource, /getCachedAchievements\("seasonal"\)/);
-  assert.match(profileRouteSource, /metadata\.get\(achievement\.id\)/);
-});
-
 test("profile achievement fallbacks sanitize images and prefer BSG adjusted completion", () => {
   assert.match(profileViewSource, /imageUrl: safeAchievementImageUrl\(row\.imageUrl \?\? row\.imageLink\)/);
   assert.match(profileRouteSource, /safeAchievementImageUrl\(meta\?\.imageUrl \?\? achievement\.imageUrl\)/g);

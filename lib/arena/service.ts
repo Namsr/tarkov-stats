@@ -47,12 +47,6 @@ export const ARENA_RISK_TTL_MS = 5 * 60 * 60 * 1000;
 export const ARENA_MIN_TARGET_MATCHES = 1;
 export const ARENA_MIN_PEER_MATCHES = 10;
 
-export function parseArenaProfile(profile: PlayerProfile): ArenaProfile {
-  const parsed = parseArenaProfileStats(profile).arenaProfile;
-  if (!parsed) throw new Error("Arena profile parsing failed");
-  return parsed;
-}
-
 /** Parses and atomically writes both the legacy envelope and normalized Arena rows. */
 export async function persistArenaProfile(
   profile: PlayerProfile,

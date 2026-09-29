@@ -46,12 +46,9 @@ test("home showcase keeps the previous mode on screen while the next one loads",
 
 test("home showcase fetches per-mode data and degrades unsupported sections", async () => {
   const component = await read("components/HomePage.tsx");
-  const helpers = await read("lib/home-showcase.ts");
   // Profile always loads for the selected mode; seasonal carries the cycle.
   // The query itself lives in the shared helper so the retry button can name the
   // same URL the effect requests.
-  assert.match(helpers, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
-  assert.match(helpers, /mode === "seasonal" && cycle\) params\.set\("cycle", cycle\)/);
   assert.match(component, /showcaseProfileRequest\(mode, aid, seasonalCycleId\)/);
   // Timeline and cohort capability come from the shared helpers: arena has no
   // timeline, and neither arena's match-metric cohort nor a cycle-less seasonal
@@ -63,8 +60,6 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   // The cohort payload is normalized at the boundary, so a mismatched shape
   // (arena metrics, error bodies) degrades instead of crashing the block.
   assert.match(component, /load<unknown>\(cohortUrl\)\.then\(homeCohort\)/);
-  assert.match(helpers, /timeline: \{ regular: true, pve: true, arena: false, seasonal: true \}/);
-  assert.match(helpers, /cohort: \{ regular: true, pve: true, arena: false, seasonal: true \}/);
 });
 
 test("home comparison block follows the displayed game mode", async () => {
@@ -118,12 +113,10 @@ test("home showcase shows the faction beside the mode instead of the empty squar
 });
 
 test("home risk renders the stored showcase risk immediately", async () => {
-  const [component, showcase, route] = await Promise.all([
+  const [component, route] = await Promise.all([
     read("components/HomePage.tsx"),
-    read("lib/home-showcase.ts"),
     read("app/api/player/profile/route.ts"),
   ]);
-  assert.match(showcase, /new URLSearchParams\(\{ aid: String\(aid\), mode, allowStaleRisk: "1" \}\)/);
   assert.match(component, /<CheaterScore compact risk=\{display\?\.profile\?\.risk \?\? null\}[\s\S]*?mode=\{displayMode\}/);
   assert.match(route, /allowStaleRisk = request\.nextUrl\.searchParams\.get\("allowStaleRisk"\) === "1"/);
   assert.match(route, /scoreVersion === riskScoreVersion\("pve", cycleId\) \|\| allowStaleRisk/);
@@ -169,4 +162,3 @@ test("home showcase achievement icons are the rarest unlocked ones", async () =>
   // The strip used to render the first five ids the profile API happened to send.
   assert.doesNotMatch(component, /slice\(0, 5\)/);
 });
-

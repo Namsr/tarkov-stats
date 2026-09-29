@@ -42,8 +42,6 @@ export interface ShowcaseConfig {
   updatedAt: number | null;
 }
 
-export const HOME_SHOWCASE_MODES = GAME_MODES;
-
 export function showcaseMode(config: Pick<ShowcaseConfig, "mode"> | null | undefined): GameMode {
   return config && isGameMode(config.mode) ? config.mode : "regular";
 }
@@ -52,11 +50,6 @@ export function showcaseProfileHref(mode: GameMode, aid: number, seasonalCycleId
   const base = `/player/${appRouteMode(mode)}/${aid}`;
   return mode === "seasonal" && seasonalCycleId ? `${base}?cycle=${encodeURIComponent(seasonalCycleId)}` : base;
 }
-
-export const SHOWCASE_SECTIONS = {
-  timeline: { regular: true, pve: true, arena: false, seasonal: true },
-  cohort: { regular: true, pve: true, arena: false, seasonal: true },
-} as const satisfies Record<"timeline" | "cohort", Record<GameMode, boolean>>;
 
 export function showcaseTimelineCycle(mode: GameMode, seasonalCycleId: string | null): string | null {
   if (mode === "arena") return null;

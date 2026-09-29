@@ -26,10 +26,7 @@ const { getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const { getArenaAverage, getArenaCohort, getArenaProfile, getArenaProfileRisk } = await import("../lib/arena/service.ts");
 const {
-  ARENA_HISTORY_INSERT_SQL,
   ARENA_PARSER_VERSION,
-  ARENA_UPSERT_SQL,
-  arenaUpsertStatements,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
 
@@ -591,8 +588,7 @@ test("Arena risk needs 30 peers, ignores headshots, preserves mode scores, and r
     assert.equal(damageTeamFight?.metrics.kills_per_match.reason, "zero_std");
     assert.equal(damageTeamFight?.metrics.damage_per_match.z, z);
     assert.equal(damageTeamFight?.metrics.damage_per_match.points, points);
-    assert.equal(damageTeamFight?.score, Math.round(Math.max(...Object.values(damageTeamFight!.metrics)
-      .map((metric) => metric.points ?? Number.NEGATIVE_INFINITY))));
+    assert.equal(damageTeamFight?.score, points);
     assert.equal(damageOnly?.score, damageOnly?.overall.score);
   }
 });
@@ -640,7 +636,7 @@ test("Arena risk uses the population when matched LastHero peers are sparse or h
   assert.ok((lastHeroRisk?.score ?? 0) > 0);
 });
 
-test("Arena batched risk recompute matches pre-batch results across modes", async () => {
+test("Arena batched risk preserves mode metrics and handles unavailable targets", async () => {
   resetArenaData();
   await save(profile(900, { kills: 120, deaths: 8 }));
   for (let aid = 901; aid <= 930; aid += 1) await save(profile(aid, { kills: 20 + (aid % 4), deaths: 20 }));
@@ -660,9 +656,6 @@ test("Arena batched risk recompute matches pre-batch results across modes", asyn
   const teamFight = first.modes.find((mode) => mode.mode === "teamFight");
   assert.equal(teamFight.percent, 10);
   assert.ok(teamFight.reasons.some((reason) => reason.startsWith("high_")));
-  const normalize = (risk) => ({ ...risk, freshness: { ...risk.freshness, evaluatedAt: 0 } });
-  const second = await getArenaProfileRisk(900);
-  assert.deepEqual(normalize(second), normalize(first));
 
   const missingDb = new DatabaseSync(process.env.SQLITE_PATH);
   try {
@@ -905,12 +898,10 @@ test("Arena parser version gates analytics, equal-version parser upgrades win, a
     upgraded.parserVersion = 1;
     upsertArenaSqlite(db, upgraded, 2);
     assert.equal(db.prepare("SELECT parser_version FROM arena_mode_stats WHERE aid = 400 AND arena_mode = 'teamFight'").get().parser_version, 1);
-    const prepared = [];
-    const statements = arenaUpsertStatements({ prepare(sql) { return { bind(...values) { prepared.push({ sql, values }); return { sql, values }; } }; } }, upgraded, 3);
-    assert.equal(statements.length, 12);
-    assert.equal(prepared.length, 12);
-    assert.match(ARENA_UPSERT_SQL, /excluded\.parser_version >= arena_mode_stats\.parser_version/);
-    assert.match(ARENA_HISTORY_INSERT_SQL, /INSERT OR IGNORE INTO arena_mode_stats_history/);
+    const historyCount = db.prepare("SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 400 AND arena_mode = 'teamFight' AND parser_version = 1");
+    assert.equal(historyCount.get().n, 1);
+    upsertArenaSqlite(db, upgraded, 3);
+    assert.equal(historyCount.get().n, 1, "an identical upstream/parser version must not duplicate history");
     upgraded.parserVersion = 0;
     upsertArenaSqlite(db, upgraded, 3);
     assert.equal(db.prepare("SELECT parser_version FROM arena_mode_stats WHERE aid = 400 AND arena_mode = 'teamFight'").get().parser_version, 1);

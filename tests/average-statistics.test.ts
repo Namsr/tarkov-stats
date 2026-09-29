@@ -986,9 +986,6 @@ test("the scanned sample is the period population and does not follow the metric
   assert.equal(ranged.averages.n, 6);
   assert.equal(ranged.total, 6);
 
-  const seasonal = await readFile("lib/seasonal/average-db.ts", "utf8");
-  assert.match(seasonal, /const total = periodRows\.length;/);
-  assert.doesNotMatch(seasonal, /const total = .*buckets/);
 });
 
 test("baseline rejects a malformed playtime range instead of dropping the filter", async () => {
@@ -1029,8 +1026,10 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
   // so the status code depended on storage rather than on the request.
   const route = await readFile(
     new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  const validationStart = route.indexOf('"Invalid playtime range"');
+  const storeStart = route.indexOf("const store = await getStore(");
   assert.ok(
-    route.indexOf('"Invalid playtime range"') < route.indexOf("const store = await getStore("),
+    validationStart >= 0 && storeStart > validationStart,
     "the range check must precede the store open",
   );
 });

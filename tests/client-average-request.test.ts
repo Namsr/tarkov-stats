@@ -131,12 +131,3 @@ test("the session response cache evicts instead of growing without bound", async
   await requests.loadAverageJson(urls[79]);
   assert.equal(fetches, 81);
 });
-
-test("regression: this suite installs a fetch stub", () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ total: 99 }), { status: 200 });
-  assert.notEqual(globalThis.fetch, originalFetch);
-});
-
-test("regression: the stub does not survive into the next case", () => {
-  assert.equal(globalThis.fetch, originalFetch);
-});

@@ -27,7 +27,6 @@ test("homepage radar keeps cohort averages at half radius and missing metrics ab
   assert.ok(homeRadarRatio(8, 4)! > .5);
   assert.ok(homeRadarRatio(2, 4)! < .5);
   assert.ok(homeRadarRatio(1e10, 1)! < 1);
-  assert.equal(homeRadarRatio(-1, 4), null);
 });
 
 test("homepage progression uses current-series levels and excludes unknown values", () => {

@@ -129,7 +129,7 @@ const ARENA_COLUMNS = [
   "upstream_version", "parser_version", "raw_json", "fetched_at",
 ] as const;
 
-export const ARENA_UPSERT_SQL = `INSERT INTO arena_mode_stats (${ARENA_COLUMNS.join(", ")})
+const ARENA_UPSERT_SQL = `INSERT INTO arena_mode_stats (${ARENA_COLUMNS.join(", ")})
   SELECT ${ARENA_COLUMNS.map(() => "?").join(", ")}
   WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
   ON CONFLICT(aid, arena_mode) DO UPDATE SET
@@ -139,7 +139,7 @@ export const ARENA_UPSERT_SQL = `INSERT INTO arena_mode_stats (${ARENA_COLUMNS.j
     OR (excluded.upstream_version = arena_mode_stats.upstream_version
       AND excluded.parser_version >= arena_mode_stats.parser_version)`;
 
-export const ARENA_HISTORY_INSERT_SQL = `INSERT OR IGNORE INTO arena_mode_stats_history (${ARENA_COLUMNS.join(", ")})
+const ARENA_HISTORY_INSERT_SQL = `INSERT OR IGNORE INTO arena_mode_stats_history (${ARENA_COLUMNS.join(", ")})
   SELECT ${ARENA_COLUMNS.map(() => "?").join(", ")}
   WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)`;
 
@@ -237,20 +237,6 @@ export function initializeArenaSchema(db: {
   // Only the schema upgrade performs this write. Later cold starts remain
   // read-only and every new profile writes its own immutable history row.
   if (!historyExists) db.exec(ARENA_HISTORY_BACKFILL_SQL);
-}
-
-export function arenaUpsertStatements(
-  db: { prepare(sql: string): { bind(...values: unknown[]): unknown } },
-  profile: ArenaProfile,
-  now = Date.now(),
-): unknown[] {
-  return arenaStoredSnapshots(profile).flatMap((snapshot) => {
-    const values = valuesFor(profile, snapshot, now);
-    return [
-      db.prepare(ARENA_UPSERT_SQL).bind(...values),
-      db.prepare(ARENA_HISTORY_INSERT_SQL).bind(...values),
-    ];
-  });
 }
 
 export function upsertArenaSqlite(

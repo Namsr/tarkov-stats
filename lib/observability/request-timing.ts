@@ -116,32 +116,6 @@ function failureDiagnostic(input: RequestTimingInput): { stage: FailureStage | n
   };
 }
 
-export function startTimingPhase<T>(now: () => number, run: () => Promise<T>) {
-  const startedAt = now();
-  const promise = run();
-  const syncMs = roundedMs(now() - startedAt);
-  let settled = false;
-  let completedMs = syncMs;
-  const tracked = promise.then(
-    (value) => {
-      completedMs = roundedMs(now() - startedAt);
-      settled = true;
-      return value;
-    },
-    (error) => {
-      completedMs = roundedMs(now() - startedAt);
-      settled = true;
-      throw error;
-    },
-  );
-
-  return {
-    promise: tracked,
-    isSettled: () => settled,
-    durationMs: (synchronous: boolean) => synchronous ? syncMs : completedMs,
-  };
-}
-
 export function createRequestTiming(options: Options = {}) {
   const now = options.now ?? defaultNow;
   const sampleRate = options.sampleRate ?? getObservabilitySampleRate(undefined, options.nodeEnv);

@@ -352,9 +352,3 @@ export function advanceLeaderboardSourceCursor(db: any, mode: string, changeId: 
   db.prepare(`INSERT INTO leaderboard_source_cursor(mode,change_id) VALUES (?,?)
     ON CONFLICT(mode) DO UPDATE SET change_id=MAX(change_id,excluded.change_id)`).run(mode, changeId);
 }
-
-export function resetLeaderboardPublicationForTests(): void {
-  database?.close?.();
-  database = null;
-  databasePath = null;
-}

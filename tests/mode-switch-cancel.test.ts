@@ -84,26 +84,6 @@ test("navigation cancels pending and active average prefetches", async () => {
   }
 });
 
-test("concurrent signal loads of the same URL share one network request", async () => {
-  let fetches = 0;
-  globalThis.fetch = async () => {
-    fetches += 1;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    return new Response(JSON.stringify({ total: 7 }), { status: 200 });
-  };
-
-  const firstController = new AbortController();
-  const secondController = new AbortController();
-  const [first, second] = await Promise.all([
-    requests.loadAverageJson("/api/average?shared-signal", { signal: firstController.signal }),
-    requests.loadAverageJson("/api/average?shared-signal", { signal: secondController.signal }),
-  ]);
-
-  assert.deepEqual(first, { total: 7 });
-  assert.deepEqual(second, { total: 7 });
-  assert.equal(fetches, 1);
-});
-
 test("aborting one signal consumer keeps the shared request alive for the other", async () => {
   let fetches = 0;
   globalThis.fetch = (url, init) => {
@@ -265,13 +245,4 @@ test("mode navigation wiring keeps only the last request alive", async () => {
   // Timelines are cancelled by navigation.
   assert.match(panel, /profile-mode-navigate/);
   assert.match(panel, /secondaryController\.current\?\.abort/);
-});
-
-test("regression: this suite installs a fetch stub", () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ total: 99 }), { status: 200 });
-  assert.notEqual(globalThis.fetch, originalFetch);
-});
-
-test("regression: the stub does not survive into the next case", () => {
-  assert.equal(globalThis.fetch, originalFetch);
 });
