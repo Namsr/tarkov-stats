@@ -213,10 +213,11 @@ test("ordinary profile failures retain the generic error UI", async () => {
 });
 
 test("a language switch does not re-request the profile or discard a refresh", async () => {
-  const [regular, seasonal, panel] = await Promise.all([
+  const [regular, seasonal, panel, radar] = await Promise.all([
     readFile("components/RegularPlayer.tsx", "utf8"),
     readFile("components/SeasonalPlayer.tsx", "utf8"),
     readFile("components/ProgressionPanel.tsx", "utf8"),
+    readFile("components/PlayerRadarComparison.tsx", "utf8"),
   ]);
 
   // `t` is memoized on `lang`, so it changes identity on every EN/RU toggle. With it
@@ -265,6 +266,66 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(compare, /throw new Error\(translate\.current\("progression\.compare\.error"\)\);/);
   // Both load effects now read the translator through the ref: two sites each.
   assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 4);
+
+  // PlayerRadarComparison mounts on both profile pages, so the same defect there
+  // was the remaining half of the report: every EN/RU toggle re-ran a fetch that
+  // the route answers with `max-age=60`, so it was a cached re-parse at best.
+  assert.doesNotMatch(radar, /\}, \[aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic, t\]\);/);
+  assert.match(radar, /\}, \[aid, cohortRequestId, cycleId, demo, hoursCenter, mode, period, raidsCenter, statistic\]\);/);
+  // The favorite effect answered from the 5-minute response cache, so no request
+  // went out — but it blanks the loaded favorite and flips favoriteLoading on
+  // first, which is what made the comparison card flash "loading" on a toggle.
+  assert.doesNotMatch(radar, /\}, \[authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite, t\]\);/);
+  assert.match(radar, /\}, \[authStatus, cycleId, demo, effectiveFavoriteAid, favoriteRequestId, mode, showFavorite\]\);/);
+  assert.match(radar, /const translate = useRef\(t\);/);
+  assert.match(radar, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
+  // The checks below anchor on multi-line declarations, and sliceDeclaration
+  // takes string anchors, so a CRLF checkout would never match a "\n" needle.
+  const radarSource = radar.replace(/\r\n/g, "\n");
+  // The ref has to be assigned before BOTH effects run, not merely declared
+  // somewhere in the component: the cohort effect's preamble and the favorite
+  // effect's guard are the only things that can read it first. Anchored on each
+  // effect's own `useEffect(() => {` so moving the ref into either body is caught.
+  const refPos = radarSource.indexOf("const translate = useRef(t);");
+  const cohortStart = radarSource.indexOf("useEffect(() => {\n    if (demo) return;");
+  const favoriteStart = radarSource.indexOf("useEffect(() => {\n    if (\n      demo ||");
+  assert.ok(cohortStart >= 0, "the cohort effect must start at its own useEffect");
+  assert.ok(favoriteStart >= 0, "the favorite effect must start at its own useEffect");
+  assert.ok(refPos >= 0 && refPos < cohortStart, "the translator ref must precede the cohort effect");
+  assert.ok(refPos < favoriteStart, "the translator ref must precede the favorite effect");
+  // Sliced from each effect's own opening `useEffect(() => {`, not from a line
+  // inside the body: slicing at `if (demo) return;` left the preamble outside and
+  // a `t("…")` reintroduced there would have passed the bare-`t` check. The render
+  // tree's many `t` calls stay out for the same reason.
+  const cohortEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (demo) return;", "function changeStatistic(");
+  assert.doesNotMatch(cohortEffect, /\bt\(/);
+  assert.equal((cohortEffect.match(/throw new Error\(translate\.current\("radar\.error\.cohort"\)\);/g) ?? []).length, 2);
+  // Dropping `t` from the array stopped the effect from re-running, so nothing
+  // clears the error any more: it has to be a flag the render body translates.
+  assert.match(cohortEffect, /setCohortError\(true\);/);
+  assert.doesNotMatch(cohortEffect, /setCohortError\("|setCohortError\(translate/);
+  const favoriteEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (\n      demo ||", "const cohort = demo");
+  assert.ok(favoriteEffect.length > 0, "the favorite profile effect must be present");
+  assert.doesNotMatch(favoriteEffect, /\bt\(/);
+  // `error.message` can be a transport string no dictionary owns, so the state
+  // carries the key alongside it and the render resolves the key.
+  assert.match(favoriteEffect, /setFavoriteError\(\{\s*\n\s*key: "radar\.error\.favorite",\s*\n\s*message: error instanceof PlayerProfileResponseError\s*\n\s*\? null\s*\n\s*: error instanceof Error \? error\.message : null,\s*\n\s*\}\);/);
+  assert.doesNotMatch(favoriteEffect, /setFavoriteError\("|setFavoriteError\(translate/);
+  // The guard is fail-closed on identity: an unrecognised payload or a foreign aid
+  // must still drop the card rather than render someone else's numbers.
+  assert.match(favoriteEffect, /!ok \|\| !nextStats \|\| !identityMatches/);
+  // Both error paths must end at a live `t(...)` in the render body, or a language
+  // switch leaves a message stranded in the language it was created in.
+  const notice = sliceDeclaration(radarSource, 'cohortLoading || cohortError || (useFavorite && (favoriteLoading || favoriteError))', "useFavorite && favoriteStats && !favoriteStatsKnown");
+  assert.doesNotMatch(notice, /\{cohortError \|\|/);
+  assert.match(notice, /\? t\("radar\.error\.cohort"\)/);
+  assert.match(notice, /favoriteError\.message \?\? t\(favoriteError\.key\)/);
+  // The one remaining `translate.current` in the file is the favorite effect's own
+  // fail-closed throw, whose message is what the render cannot re-translate; the
+  // cohort throws abort the chain and their text is never read.
+  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 3);
+  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 2);
+  assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 1);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
