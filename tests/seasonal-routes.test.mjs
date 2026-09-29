@@ -67,6 +67,23 @@ test("the Seasonal refresh route reports a missing cycle and a missing owner dif
   assert.match(run, /\{ error: "cycleId and owner are required" \}, \{ status: 400, headers \}/);
 });
 
+test("the Seasonal run route authorizes before it reads a lease or opens the store", async () => {
+  const run = await readFile("app/api/operator/seasonal/run/route.ts", "utf8");
+  // `activeLease` answers whoever supplies a runId, taskId, and owner, and the
+  // store read is the same kind of read, so either one hoisted above the auth
+  // check would hand a caller lease data before it is authorized.
+  // The call forms, not the import block: a bare `isOperatorRequest` matches the
+  // import on line 1, which sits above every read and pins nothing.
+  const auth = run.indexOf("isOperatorRequest(request)");
+  assert.notEqual(auth, -1, "isOperatorRequest is missing from the run route");
+  for (const name of ["activeLease(", "getSeasonalOperatorStore("]) {
+    const at = run.indexOf(name);
+    // A missing name is `indexOf` -1, which would sail past an ordering check.
+    assert.notEqual(at, -1, `${name} is missing from the run route`);
+    assert.ok(auth < at, `isOperatorRequest must precede ${name}`);
+  }
+});
+
 test("the player risk route gates Seasonal on the active cycle, not just on syntax", async () => {
   const risk = await readFile("app/api/player/risk/route.ts", "utf8");
   // `normalizeCycleId` accepts any well-formed cycle string, so without the gate a

@@ -22,11 +22,18 @@ async function openSourceDatabase(config: LeaderboardScopeConfig): Promise<any> 
   const existing = sourceDatabases.get(path);
   if (existing) return existing;
   const sqlite = await import("node:sqlite" as string);
-  const db = new sqlite.DatabaseSync(path, { readOnly: true });
-  if (config.mode === "pvp-season") db.prepare("ATTACH DATABASE ? AS players_db")
-    .run(process.env.SQLITE_PATH || "/data/players.db");
-  sourceDatabases.set(path, db);
-  return db;
+  // Attach before caching, so a failed ATTACH closes the handle it opened instead
+  // of leaking one per call: the cache stays empty, so every later call reopens.
+  const opened = new sqlite.DatabaseSync(path, { readOnly: true });
+  try {
+    if (config.mode === "pvp-season") opened.prepare("ATTACH DATABASE ? AS players_db")
+      .run(process.env.SQLITE_PATH || "/data/players.db");
+  } catch (error) {
+    try { opened.close(); } catch { /* already closed */ }
+    throw error;
+  }
+  sourceDatabases.set(path, opened);
+  return opened;
 }
 
 async function attachExclusions(db: any, includeSeasonal: boolean): Promise<void> {
