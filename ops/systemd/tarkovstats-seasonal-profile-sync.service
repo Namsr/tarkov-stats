@@ -9,5 +9,11 @@ ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats-auto
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
-ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/bin/flock -n /run/tarkovstats-seasonal-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/sync-seasonal-profiles.mjs
+# `exec -e` carries the run budget: the compose service passes no environment, so
+# a unit-level Environment= would stop at the docker CLI and never reach the collector.
+ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/bin/flock -n /run/tarkovstats-seasonal-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e SEASONAL_FEED_MAX_RUN_MS=480000 web node --experimental-strip-types --experimental-sqlite scripts/sync-seasonal-profiles.mjs
+# 8 min budget, 6 min short of the window: the same budget the hourly queue gives
+# this mode. This unit waits on the shared writer lock instead of skipping, and
+# TimeoutStartSec runs while it waits, so the budget also has to leave room for
+# whatever of the regular run at :05 is still going at :15.
 TimeoutStartSec=14m

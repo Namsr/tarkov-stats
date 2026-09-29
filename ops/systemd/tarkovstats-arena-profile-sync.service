@@ -9,5 +9,10 @@ ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats-auto
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
-ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e ARENA_PROFILE_SYNC_RPS=2 web node --experimental-strip-types --experimental-sqlite scripts/sync-arena-profiles.mjs
+# `exec -e` carries the run budget: the compose service passes no environment, so
+# a unit-level Environment= would stop at the docker CLI and never reach the collector.
+ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 web node --experimental-strip-types --experimental-sqlite scripts/sync-arena-profiles.mjs
+# 12 min budget, 2 min short of the window, for the same reason as the other feed
+# units. The queue gives this mode 25 min; here the 14m window is the limit, and a
+# shorter budget stops the collector cleanly instead of letting systemd cut it.
 TimeoutStartSec=14m
