@@ -152,12 +152,13 @@ test("the callback's session-issuing redirect is no-store when it is actually re
   assert.equal(res.headers.get("location"), "https://example.test/");
   // A deletion also emits `session=`, so decode the value instead: this branch
   // has to hand back a session cookie the app itself would accept.
-  const setCookie = res.headers.get("set-cookie") ?? "";
-  assert.match(setCookie, /oauth_state=;/);
-  const token = /^session=([^;]+)/.exec(setCookie)?.[1];
-  assert.ok(token, `the success branch must hand back a session cookie, got: ${setCookie}`);
+  const setCookies = res.headers.getSetCookie();
+  assert.ok(setCookies.some((cookie) => /^oauth_state=;/.test(cookie)));
+  const sessionCookie = setCookies.find((cookie) => cookie.startsWith("session=")) ?? "";
+  const token = /^session=([^;]+)/.exec(sessionCookie)?.[1];
+  assert.ok(token, `the success branch must hand back a session cookie, got: ${sessionCookie}`);
   // Without the HttpOnly flag the cookie is readable by any script on the page.
-  assert.match(setCookie, /HttpOnly/);
+  assert.match(sessionCookie, /;\s*HttpOnly(?:;|$)/i);
   assert.equal((await decryptSession(token))?.sub, "google-user-1");
   assert.equal(res.headers.get("cache-control"), "no-store");
 });
