@@ -299,7 +299,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   // `key` is translated at render so the message tracks the language; `message`
   // carries a transport-level string that no dictionary can own, and `null` means
-  // "fall back to `key`".
+  // "fall back to `key`". Nothing thrown locally may put dictionary text there.
   const [favoriteError, setFavoriteError] = useState<{ key: string; message: string | null } | null>(null);
 
   useEffect(() => setSelectedPeriod(urlPeriod), [urlPeriod]);
@@ -442,7 +442,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
             && payload.identity.mode === mode
             && payload.identity.cycleId === cycleId;
         if (!ok || !nextStats || !identityMatches) {
-          throw new Error(translate.current("radar.error.favorite"));
+          // Whatever is thrown here lands in `message` and is rendered verbatim, so
+          // it must not be dictionary text: a translated throw would freeze in the
+          // language of the failure. This class is the one the catch below maps to
+          // `message: null`, which hands the render back to the stored key.
+          throw new PlayerProfileResponseError();
         }
         return nextStats;
       })

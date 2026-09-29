@@ -282,10 +282,12 @@ test("a language switch does not re-request the profile or discard a refresh", a
   // The checks below anchor on multi-line declarations, and sliceDeclaration
   // takes string anchors, so a CRLF checkout would never match a "\n" needle.
   const radarSource = radar.replace(/\r\n/g, "\n");
-  // The ref has to be assigned before BOTH effects run, not merely declared
-  // somewhere in the component: the cohort effect's preamble and the favorite
-  // effect's guard are the only things that can read it first. Anchored on each
-  // effect's own `useEffect(() => {` so moving the ref into either body is caught.
+  // The declaration has to precede both effects, not merely sit somewhere in the
+  // component: moving it into either effect body puts it after a reader that could
+  // run first. Only the declaration is pinned. Where the updater effect sits is
+  // deliberately not asserted — `useRef(t)` seeds the current language, and every
+  // read happens in an async callback, so moving the updater below both fetches
+  // changes nothing and would only make this test brittle.
   const refPos = radarSource.indexOf("const translate = useRef(t);");
   const cohortStart = radarSource.indexOf("useEffect(() => {\n    if (demo) return;");
   const favoriteStart = radarSource.indexOf("useEffect(() => {\n    if (\n      demo ||");
@@ -311,6 +313,15 @@ test("a language switch does not re-request the profile or discard a refresh", a
   // carries the key alongside it and the render resolves the key.
   assert.match(favoriteEffect, /setFavoriteError\(\{\s*\n\s*key: "radar\.error\.favorite",\s*\n\s*message: error instanceof PlayerProfileResponseError\s*\n\s*\? null\s*\n\s*: error instanceof Error \? error\.message : null,\s*\n\s*\}\);/);
   assert.doesNotMatch(favoriteEffect, /setFavoriteError\("|setFavoriteError\(translate/);
+  // The identity guard still fails closed, but it must not fail with dictionary
+  // text. The catch copies `error.message` into state and the render prints it
+  // verbatim, so a translated throw would keep rendering in the language of the
+  // failure — the exact regression this report is about, and the common path
+  // (an HTTP 4xx/5xx returns `{ ok: false }` rather than throwing a
+  // `PlayerProfileResponseError`). Only that class maps to `message: null`, which
+  // hands the render back to `t(favoriteError.key)`.
+  assert.doesNotMatch(favoriteEffect, /throw new Error\(/);
+  assert.match(favoriteEffect, /throw new PlayerProfileResponseError\(\);/);
   // The guard is fail-closed on identity: an unrecognised payload or a foreign aid
   // must still drop the card rather than render someone else's numbers.
   assert.match(favoriteEffect, /!ok \|\| !nextStats \|\| !identityMatches/);
@@ -320,12 +331,13 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.doesNotMatch(notice, /\{cohortError \|\|/);
   assert.match(notice, /\? t\("radar\.error\.cohort"\)/);
   assert.match(notice, /favoriteError\.message \?\? t\(favoriteError\.key\)/);
-  // The one remaining `translate.current` in the file is the favorite effect's own
-  // fail-closed throw, whose message is what the render cannot re-translate; the
-  // cohort throws abort the chain and their text is never read.
-  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 3);
+  // Both remaining `translate.current` calls are the cohort effect's own throws,
+  // whose text is never read: its `.catch` drops it for the flag the render
+  // translates. The favorite effect must translate nothing — anything it threw
+  // would be pinned into `message` at the moment of failure.
+  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 2);
   assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 2);
-  assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 1);
+  assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 0);
 });
 
 test("the Seasonal reset keeps the header nickname without a render-phase side effect", async () => {
