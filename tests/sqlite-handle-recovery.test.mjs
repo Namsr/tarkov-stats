@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -52,6 +52,8 @@ const { openLeaderboardDatabase } = await import("../lib/leaderboard/publication
 const { getBanStore } = await import("../lib/ban-db.ts");
 const { getModerationStore } = await import("../lib/admin/moderation-db.ts");
 const { getProgressionStore } = await import("../lib/progression-db.ts");
+const { prepareLeaderboardCandidate, resetLeaderboardRuntimeForTests } = await import("../lib/leaderboard/runtime.ts");
+const { LEADERBOARD_METRIC_VERSION } = await import("../lib/leaderboard/ranking.ts");
 
 test.after(() => {
   for (const [key, value] of Object.entries(previousEnvironment)) {
@@ -239,6 +241,132 @@ test("the progression store opener closes a handle whose initialization failed",
     const store = await getProgressionStore("regular");
     assert.ok(store, "the next call reopens and initializes the database");
     assert.equal(await store.latest(1), null, "the progression schema is queryable on the retry");
+  } finally {
+    restore();
+  }
+});
+
+test("the leaderboard runtime source opener closes a handle whose player attach failed", async () => {
+  // The runtime source opener reads both paths at call time and caches the handle
+  // for the life of the process, so this case owns its own pair of files and
+  // leaves every other case alone.
+  const runtimeProgressionPath = join(directory, "runtime-progression.db");
+  const runtimePlayersPath = join(directory, "runtime-players.db");
+  const restore = useEnvironment({
+    SQLITE_PATH: runtimePlayersPath,
+    PROGRESSION_SQLITE_PATH: runtimeProgressionPath,
+  });
+  new DatabaseSync(runtimeProgressionPath).close();
+  poison(runtimePlayersPath);
+  // The library loads node:sqlite dynamically, which yields this same class
+  // object, so wrapping the prototype counts the handles the opener closes.
+  const nativeClose = DatabaseSync.prototype.close;
+  let closed = 0;
+  DatabaseSync.prototype.close = function countedClose(...args) {
+    closed += 1;
+    return nativeClose.apply(this, args);
+  };
+  // A pvp-season scope with no cycle still attaches the player database but
+  // stops before reading a table, so the case needs no schema on either file.
+  const config = {
+    scope: "seasonal:recovery", mode: "pvp-season", arenaMode: null, cycleId: null,
+    primaryMetric: "performance", minimumSample: 6, activityCutoffMs: 1,
+    arpSeasonId: null, arpSourceConfirmed: false,
+  };
+  const reader = {
+    snapshot: () => ({ generation: 1, generatedAt: 2, params: { metricVersion: LEADERBOARD_METRIC_VERSION } }),
+  };
+  try {
+    await assert.rejects(
+      () => prepareLeaderboardCandidate(reader, config, 1),
+      "a failed player attach is reported",
+    );
+    assert.equal(closed, 1, "the source handle is closed when its attach fails");
+
+    await assert.rejects(
+      () => prepareLeaderboardCandidate(reader, config, 1),
+      "the retry reports the failure again",
+    );
+    assert.equal(closed, 2, "the retry closes its own handle instead of reusing the failed one");
+
+    replace(runtimePlayersPath);
+    new DatabaseSync(runtimePlayersPath).close();
+    assert.deepEqual(await prepareLeaderboardCandidate(reader, config, 1),
+      { generation: 1, generatedAt: 2, candidate: null },
+      "the next call reopens and attaches the player database");
+  } finally {
+    DatabaseSync.prototype.close = nativeClose;
+    resetLeaderboardRuntimeForTests();
+    restore();
+  }
+});
+
+test("concurrent cold-start callers share one player database open", async () => {
+  const racePath = join(directory, "cold-start-race.db");
+  const restore = useEnvironment({ SQLITE_PATH: racePath });
+  try {
+    // Migrate the file first, through a throwaway module instance: the one this
+    // file imported at the top already memoized a handle on the player database,
+    // and its opener never re-reads SQLITE_PATH, so calling it here would report
+    // success while leaving the race database unmigrated. The instance below has
+    // its own memo, so this call really does create and migrate the file. On an
+    // already-migrated database initializeSqliteSchema is almost entirely
+    // IF NOT EXISTS no-ops, so every racing opener succeeds and the extra handles
+    // are lost silently instead of failing loudly — which is exactly the
+    // cold-start shape to guard.
+    const base = pathToFileURL(resolve("lib/db.ts")).href;
+    const warm = await import(`${base}?migrate=1`);
+    assert.ok(await warm.getArenaBackend(), "the database is created and migrated first");
+    assert.ok(existsSync(racePath), "the warm call migrated the file, not the player database");
+
+    // The opener memoizes its in-flight promise, and that memo is per module
+    // instance. A second instance of lib/db.ts is what a process that has not
+    // warmed the module yet looks like, and it lets this case race without a
+    // child process. The query is part of the cache key, so the sibling imports
+    // the instance already loaded are still shared and only this module is new.
+    const coldStart = await import(`${base}?cold-start=1`);
+
+    // Counting the handles the openers touch is the only way to see the leak: the
+    // losing racers are indistinguishable from the winner at the call site. The
+    // openers reach node:sqlite through the same module this file imports, so
+    // patching the prototype sees every handle they construct and leaves the real
+    // namespace intact for every other import.
+    const { exec, prepare } = DatabaseSync.prototype;
+    const seen = new WeakSet();
+    const opened = [];
+    const track = (handle) => {
+      if (!seen.has(handle)) {
+        seen.add(handle);
+        opened.push(handle);
+      }
+    };
+    DatabaseSync.prototype.exec = function (...args) {
+      track(this);
+      return exec.apply(this, args);
+    };
+    DatabaseSync.prototype.prepare = function (...args) {
+      track(this);
+      return prepare.apply(this, args);
+    };
+    let callers;
+    try {
+      callers = await Promise.all(
+        Array.from({ length: 5 }, () => coldStart.getArenaBackend()),
+      );
+    } finally {
+      DatabaseSync.prototype.exec = exec;
+      DatabaseSync.prototype.prepare = prepare;
+    }
+
+    assert.ok(callers.every(Boolean), "every racing caller gets a working backend");
+    assert.equal(opened.length, 1, "five concurrent cold-start callers open one handle, not five");
+    assert.equal(
+      new Set(callers.map((backend) => backend.db)).size,
+      1,
+      "every racing caller is handed the same handle",
+    );
+    const after = await coldStart.getArenaBackend();
+    assert.equal(after?.db, callers[0].db, "the handle stays cached for later callers");
   } finally {
     restore();
   }

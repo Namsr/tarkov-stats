@@ -5,6 +5,14 @@ const intervalMs = Number.isFinite(configuredInterval) && configuredInterval > 0
   : 25 * 60_000;
 const retryDelayMs = 2_000;
 const maxAttempts = 60;
+// One stalled response must not wedge the warmup: the paths are awaited
+// sequentially, so an unbounded request blocks every later path and leaves the
+// `running` guard set, which turns the interval into a permanent no-op. The
+// target is the app's own /api/* on the container network, not an upstream
+// download, so the same 30s bound the profile/index syncs use is already
+// generous. A fresh signal per request, not one per run: a slow-but-healthy
+// 20-path sweep must not spend the budget of the next request.
+const requestTimeoutMs = envInteger("AVERAGE_WARM_TIMEOUT_MS", 30_000, 1_000, 300_000);
 const modes = ["regular", "pve"];
 const arenaModes = ["teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"];
 const statistics = ["trimmed_mean", "median"];
@@ -15,9 +23,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function envInteger(name, fallback, minimum, maximum) {
+  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  return value;
+}
+
 async function request(path) {
+  // The signal reaches the response body as well as the connection, so this one
+  // bound also ends `arrayBuffer()` on a body that stops trickling.
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(requestTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(`${response.status} ${path}`);

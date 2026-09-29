@@ -1,4 +1,12 @@
-/** Shared queue deadline limits admission; an in-flight request finishes normally. */
+/**
+ * Shared queue deadline caps the run budget. Collectors bound every in-flight
+ * request and every ladder wait by what is left of it, so a request still open
+ * at the deadline is aborted rather than allowed to finish. The abort is
+ * recoverable: a capture that reached the server anyway is not repeated as a
+ * full recapture. The PvE/Regular queue skips rows whose snapshot already
+ * reached `feed_updated_at`, and a superseded Seasonal row settles on the cheap
+ * `superseded` outcome.
+ */
 export function remainingRunBudget(maxRunMs, deadline, now = Date.now()) {
   if (deadline == null || deadline === "") return maxRunMs;
   const end = Number(deadline);
