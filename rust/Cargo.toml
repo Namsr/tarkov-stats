@@ -1,0 +1,7 @@
+[workspace]
+members = ["tarkovstats-feed"]
+resolver = "2"
+
+# The lexer handles untrusted upstream bytes, so the dependency surface is kept
+# at zero on purpose: byte reading, the state machine and buffered output are all
+# implemented here against the standard library only.

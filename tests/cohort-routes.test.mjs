@@ -93,11 +93,12 @@ test("seasonal route delegates center lookup to the identity-scoped helper", () 
 
 test("arena cohort caches repeated identical requests with a hit on the second", async () => {
   const dynamic = await import("../lib/average-dynamic-cache.ts");
+  const { arenaCohortCacheKey } = await import("../lib/average-cache.ts");
   dynamic.resetDynamicAverageCacheForTests();
   const aid = 987654321;
   const arenaMode = "teamFight";
   const statistic = "median";
-  const key = ["cohort", "arena", aid, arenaMode, statistic].join(":");
+  const key = arenaCohortCacheKey(aid, arenaMode, statistic, 1);
   let calls = 0;
   const cohortBody = { aid, mode: arenaMode, statistic, sampleN: 21, quality: "sufficient" };
   const loader = async () => {
@@ -116,7 +117,8 @@ test("arena cohort caches repeated identical requests with a hit on the second",
     regularRoute.indexOf("async function arenaCohortResponse"),
     regularRoute.indexOf("export async function GET"),
   );
-  assert.match(arenaBranch, /\["cohort",\s*"arena",\s*aid,\s*arenaMode,\s*statistic\]\.join\(":"\)/);
+  assert.match(arenaBranch, /loadDynamicAverage\(\s*arenaCohortCacheKey\(aid, arenaMode, statistic, cacheVersion\),/);
+  assert.match(arenaBranch, /const cacheVersion = await arenaAverageCacheVersion\(\)/);
   assert.match(arenaBranch, /loadDynamicAverage\(/);
   assert.match(arenaBranch, /timing\.setRequestContext\(\{\s*aid\s*\}\)/);
   assert.match(arenaBranch, /cohortMs/);
@@ -221,6 +223,138 @@ test("the Arena average and batch cohort routes share one LRU key, and a version
   }
 });
 
+test("both Arena cohort routes pass the same key arguments to the shared builder", async () => {
+  // Pinned on the sources, not on behaviour. The drift behind #273 was a
+  // hand-built copy of the key in the batch route: both routes agreed on the
+  // payload, so no response-level test could see the split, and the batch copy
+  // simply had no version in it. A behaviour test can only prove the two share
+  // an entry, which is exactly what the copy already did, so what each route
+  // feeds the builder is asserted here instead.
+  //
+  // The routes name the mode differently (`arenaMode` vs the loop's `mode`),
+  // so the argument text cannot be compared literally. What must match is the
+  // key those arguments produce, and the strongest source-level statement of
+  // that is that each route builds the key from the exact variables it hands
+  // its loader, in the same order: same inputs in, same string out.
+  const keyCall = (source) => {
+    const call = /arenaCohortCacheKey\(([^)]*)\)/.exec(source);
+    assert.ok(call, "the route must build the key through arenaCohortCacheKey");
+    return call[1].split(",").map((argument) => argument.trim());
+  };
+  for (const [name, source] of [["cohort", regularRoute], ["batch", batchRoute]]) {
+    // aid, mode, statistic, version: one builder call, no inlined copy. A second
+    // spelling of the key is free to drift, and did.
+    assert.equal((source.match(/arenaCohortCacheKey\(/g) ?? []).length, 1,
+      `the ${name} route must build its key once, through the builder`);
+    assert.doesNotMatch(source, /\["cohort",\s*"arena"/,
+      `the ${name} route must not inline the cohort key`);
+
+    // The key is a function of exactly what the loader computes, in the same
+    // order, so swapping mode and statistic cannot quietly fork the key.
+    assert.deepEqual(keyCall(source), /getArenaCohort\(([^)]*)\)/.exec(source)[1]
+      .split(",").map((argument) => argument.trim()).concat("cacheVersion"),
+    `the ${name} route must key the cohort on the same values it loads`);
+
+    // The version is read once per request and threaded down, not re-read per
+    // cohort, so one response cannot mix two population versions.
+    assert.equal((source.match(/arenaAverageCacheVersion\(\)/g) ?? []).length, 1,
+      `the ${name} route must read the population version once`);
+    assert.match(source, /const cacheVersion = await arenaAverageCacheVersion\(\)/);
+  }
+
+  // The builder itself carries the version, which is what retires the entry.
+  const { arenaCohortCacheKey } = await import("../lib/average-cache.ts");
+  assert.equal(arenaCohortCacheKey(1, "lastHero", "trimmed_mean", 7),
+    "cohort:arena:1:lastHero:trimmed_mean:7");
+  assert.notEqual(
+    arenaCohortCacheKey(1, "lastHero", "trimmed_mean", 7),
+    arenaCohortCacheKey(1, "lastHero", "trimmed_mean", 8),
+  );
+  // "overall" is a stored mode the cohort routes serve too, so it keys as well.
+  assert.equal(arenaCohortCacheKey(1, "overall", "median", 0), "cohort:arena:1:overall:median:0");
+});
+
+test("the Arena cohort routes share one LRU entry, and a version bump retires it", async () => {
+  // Both handlers are driven for real, and what is asserted is the key each one
+  // hands to the shared LRU plus the cohort it answers with. Before the version
+  // joined the key, the entry below survived the sync: the second request read
+  // the pre-sync cohort out of it for the rest of the 15-minute TTL.
+  const recorder = await import("./fixtures/average-lru-recorder.mjs");
+  const dynamic = await import("../lib/average-dynamic-cache.ts");
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
+  const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
+  const { GET: getBaselinesBatch } = await import("../app/api/average/cohort/batch/route.ts");
+  const { NextRequest } = await import("next/server");
+  const backend = await getArenaBackend();
+  assert.ok(backend, "the driven routes need the local SQLite store");
+  const db = backend.db;
+  const mode = "lastHero";
+  const insertPeer = (aid) => db.prepare(`INSERT INTO arena_mode_stats (
+      aid, arena_mode, hours, games_count, kd_ratio, win_rate, headshot_rate,
+      kills_per_match, damage_per_match, upstream_version, parser_version, raw_json, fetched_at
+    ) VALUES (?, ?, 100, 100, 1.5, 50, 25, 20, 500, 1, ?, '{}', 1)`).run(aid, mode, ARENA_PARSER_VERSION);
+  db.exec("CREATE TABLE IF NOT EXISTS arena_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const setVersion = (value) => db.prepare(
+    "INSERT INTO arena_profile_sync_meta (key, value) VALUES ('dynamic_cache_version', ?) "
+    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(value));
+  const cohortUrl = `http://local/api/average/cohort?mode=arena&aid=1&arenaMode=${mode}&statistic=trimmed_mean`;
+  const batchUrl = `http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&arenaModes=${mode}`;
+  const drive = async (handler, url) => {
+    const start = recorder.requestedKeys.length;
+    const response = await handler(new NextRequest(url));
+    return { response, body: await response.json(), keys: recorder.requestedKeys.slice(start) };
+  };
+  // How often the LRU actually ran its loader for one key, i.e. how often the
+  // cohort was recomputed instead of served from the entry.
+  const computesFor = (key) => recorder.computedKeys.filter((computed) => computed === key).length;
+  const cohortKey = (version) => `cohort:arena:1:${mode}:trimmed_mean:${version}`;
+  try {
+    setVersion(1);
+    // Six peers is under the 20-player cohort floor, so the cohort is short.
+    for (let aid = 1; aid <= 6; aid += 1) insertPeer(aid);
+    dynamic.resetDynamicAverageCacheForTests();
+    recorder.resetAverageLruRecorder();
+
+    const single = await drive(getCohort, cohortUrl);
+    assert.equal(single.response.status, 200);
+    const batch = await drive(getBaselinesBatch, batchUrl);
+    assert.equal(batch.response.status, 200);
+    // The same entry, byte for byte: the batch served its cohort out of the
+    // one the single route had just warmed.
+    assert.deepEqual(single.keys, [cohortKey(1)]);
+    assert.ok(batch.keys.includes(cohortKey(1)), `the batch asked for ${JSON.stringify(batch.keys)}`);
+    assert.equal(computesFor(cohortKey(1)), 1);
+    assert.equal(single.body.sampleN, 5);
+
+    // The sync bumps the version it writes and lands 40 more peers, so the
+    // cohort crosses the floor. Serving the entry above would keep reporting
+    // the short pre-sync cohort; recomputing answers with the post-sync one.
+    setVersion(2);
+    for (let aid = 7; aid <= 46; aid += 1) insertPeer(aid);
+
+    const singleAfterBump = await drive(getCohort, cohortUrl);
+    assert.equal(singleAfterBump.response.status, 200);
+    const batchAfterBump = await drive(getBaselinesBatch, batchUrl);
+    assert.equal(batchAfterBump.response.status, 200);
+    // Both routes moved onto the new version, and onto the same one.
+    assert.deepEqual(singleAfterBump.keys, [cohortKey(2)]);
+    assert.ok(batchAfterBump.keys.includes(cohortKey(2)));
+    assert.equal(singleAfterBump.body.sampleN, 45);
+    assert.equal(singleAfterBump.body.quality, "sufficient");
+    // The retired entry is not recomputed, and the new one is computed once
+    // across both requests.
+    assert.equal(computesFor(cohortKey(1)), 1);
+    assert.equal(computesFor(cohortKey(2)), 1);
+  } finally {
+    db.exec("DROP TABLE IF EXISTS arena_profile_sync_meta");
+    db.prepare("DELETE FROM arena_mode_stats WHERE arena_mode = ?").run(mode);
+    dynamic.resetDynamicAverageCacheForTests();
+    recorder.resetAverageLruRecorder();
+  }
+});
+
 test("both Arena average routes build the population key through the shared builder", () => {
   // Inlining the key in either route is what let the batch copy drift: it
   // dropped the trailing version, so the two never shared an entry and the
@@ -258,8 +392,9 @@ test("arena cohort invalid query stays 400 without cache interaction", async () 
 
   // Runtime: an invalid query never invokes the loader, so the next identical
   // valid load is still a miss (no cache pollution).
+  const { arenaCohortCacheKey } = await import("../lib/average-cache.ts");
   let calls = 0;
-  const key = ["cohort", "arena", 12345, "teamFight", "median"].join(":");
+  const key = arenaCohortCacheKey(12345, "teamFight", "median", 0);
   const first = await dynamic.loadDynamicAverage(key, async () => {
     calls += 1;
     return { ok: true };
