@@ -39,8 +39,6 @@ export function fetchTarkovJson(url: string | URL, init: RequestInit = {}): Prom
   return fetch(url, { ...init, headers });
 }
 
-/** Captcha-gated live service (nickname search + live account fetch). */
-const PLAYER_API_BASE = "https://player.tarkov.dev";
 /** Captcha-free static cache of already-viewed profiles, keyed by account id. */
 const PUBLIC_PROFILE_BASE = "https://players.tarkov.dev";
 const ITEMS_URL = "https://json.tarkov.dev/regular/items";
@@ -56,45 +54,6 @@ const ACHIEVEMENT_ENDPOINTS = {
     russian: "https://json.tarkov.dev/pvp-season/tasks_ru",
   },
 } as const;
-
-/**
- * Nickname search. Requires a valid Cloudflare Turnstile token bound to
- * tarkov.dev's hostname, so it only works from a real browser session on
- * tarkov.dev — not server-to-server. Kept for reference / future use.
- */
-export async function searchPlayer(
-  nickname: string,
-  turnstileToken?: string
-): Promise<{ aid: number; name: string }[]> {
-  const params = new URLSearchParams();
-  if (turnstileToken) params.set("token", turnstileToken);
-  const qs = params.toString();
-  const url = `${PLAYER_API_BASE}/name/${encodeURIComponent(nickname)}${qs ? `?${qs}` : ""}`;
-
-  const res = await fetchTarkovJson(url, { cache: "no-store" });
-  if (!res.ok) {
-    if (res.status === 404) return [];
-    throw new Error(`Player search failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-/** Live, captcha-gated profile fetch by account id. Kept for reference. */
-export async function getPlayerProfile(
-  aid: number,
-  turnstileToken?: string
-): Promise<PlayerProfile> {
-  const params = new URLSearchParams();
-  if (turnstileToken) params.set("token", turnstileToken);
-  const qs = params.toString();
-  const url = `${PLAYER_API_BASE}/account/${aid}${qs ? `?${qs}` : ""}`;
-
-  const res = await fetchTarkovJson(url, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`Profile fetch failed: ${res.status}`);
-  }
-  return res.json();
-}
 
 // In-process кэш upstream-профилей по aid. Снижает удары по players.tarkov.dev
 // (риск бана IP VPS / амплификации) и частоту записи одинаковых строк в БД.

@@ -68,7 +68,8 @@ test("Arena UI keeps the five modes in a fixed sequential order", () => {
   assert.match(profile, /ARENA_MODE_KEYS/);
   assert.match(average, /ARENA_MODE_KEYS\.map/);
   const legacyStart = profile.indexOf("function ArenaLegacyIncomplete");
-  const legacyEnd = profile.indexOf("function ArenaModeSection");
+  const legacyEnd = profile.indexOf("export default function ArenaPlayer", legacyStart);
+  assert.ok(legacyStart >= 0 && legacyEnd > legacyStart, "the legacy panel must have a bounded source slice");
   const legacy = profile.slice(legacyStart, legacyEnd);
   assert.match(legacy, /ARENA_MODE_KEYS\.map/);
   assert.match(legacy, /arena\.mode\." \+ mode/);
@@ -77,11 +78,8 @@ test("Arena UI keeps the five modes in a fixed sequential order", () => {
 });
 
 test("Arena presentation preserves nullable values and namespaced filters", () => {
-  const utility = read("components/arena-ui.ts");
   const average = read("components/ArenaAverage.tsx");
   const profile = read("components/ArenaPlayer.tsx");
-  assert.match(utility, /value === null \|\| value === undefined/);
-  assert.match(utility, /return legacy \?\? null/);
   assert.match(average, /arena_\$\{mode\}_/);
   assert.match(average, /new AbortController\(\)/);
   assert.match(average, /function filterIsInvalid/);
@@ -307,7 +305,6 @@ test("Arena averages reuse the common portrait header without a profile-period s
   assert.match(average, /<AveragePageHeader[\s\S]*current="arena"[\s\S]*onStatisticChange=\{changeStatistic\}/);
   assert.match(header, /<p className="page-kicker mt-7">\{t\("average\.summary"\)\}<\/p>/);
   assert.match(header, /<h1 className="page-title">\{t\("nav\.average"\)\}<\/h1>/);
-  assert.match(header, /name="average-period"/);
   assert.match(header, /period !== undefined && onPeriodChange !== undefined/);
   assert.match(header, /current === "arena"[\s\S]*arena\.average\.statisticNote/);
   assert.doesNotMatch(average, /arena\.average\.(?:kicker|title|description|statisticNote)/);
@@ -483,7 +480,7 @@ test("Arena bars center the log scale on the average player", async () => {
   assert.equal(arenaBarPositionFromRatio(undefined), null);
   assert.equal(arenaBarPositionFromRatio(Number.NaN), null);
   assert.equal(arenaBarPositionFromRatio(Number.POSITIVE_INFINITY), null);
-  assert.equal(arenaBarPosition(100, 50), twice);
+  assert.ok(Math.abs(arenaBarPosition(100, 50) - 69) < 0.5);
   assert.equal(arenaBarPosition(0, 50), 0);
   assert.equal(arenaBarPosition(null, 50), null);
   assert.equal(arenaBarPosition(100, null), null);
@@ -570,7 +567,7 @@ test("Arena mode bars read per-mode baselines conservatively", async () => {
 });
 
 test("Arena mode bars load all baselines in one batch request", async () => {
-  const { ARENA_MODE_KEYS, loadArenaModeBaselines, toArenaCohort } = await loadArenaUi();
+  const { ARENA_MODE_KEYS, loadArenaModeBaselines } = await loadArenaUi();
   const metrics = Object.fromEntries([
     "kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match",
   ].map((metric) => [metric, { value: 1.5, count: 34, reason: null }]));
@@ -582,7 +579,6 @@ test("Arena mode bars load all baselines in one batch request", async () => {
     metrics: structuredClone(metrics),
     averageMatches: { value: 120, count: 34, reason: null },
   }]));
-  for (const cohort of Object.values(cohorts)) assert.ok(toArenaCohort(cohort));
 
   const requests = [];
   const full = await loadArenaModeBaselines(

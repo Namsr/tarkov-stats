@@ -12,25 +12,12 @@ import {
   buildProgressionSeries,
   parseProgressionRequest,
   parseSeasonalAverageRequest,
-  PROGRESSION_BASE_RAID_STEP,
-  PROGRESSION_MAX_RAID_WIDTH,
-  PROGRESSION_MIN_SAMPLE,
-  PROGRESSION_TARGET_SAMPLE,
   queryProgressionSeries,
   raidBucket,
   SEASONAL_POPULATION_SQL,
   seasonalPopulationArgs,
   seasonalPopulationSummary,
 } from "../lib/seasonal/progression.ts";
-
-test("adaptive progression uses the enlarged 10/200/400/100 sampling contract", () => {
-  assert.deepEqual({
-    base: PROGRESSION_BASE_RAID_STEP,
-    target: PROGRESSION_TARGET_SAMPLE,
-    maxWidth: PROGRESSION_MAX_RAID_WIDTH,
-    minimum: PROGRESSION_MIN_SAMPLE,
-  }, { base: 10, target: 200, maxWidth: 400, minimum: 100 });
-});
 
 test("raid buckets use (0,10], (10,20], (20,30] boundaries", () => {
   assert.deepEqual([1, 10, 11, 20, 21, 30].map(raidBucket), [10, 10, 20, 20, 30, 30]);

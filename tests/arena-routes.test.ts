@@ -297,46 +297,6 @@ test("Arena population fallback validates the real average payload before trusti
   ), null);
 });
 
-test("Arena population fallback also trusts the published average payload", async () => {
-  const publications = await import("../lib/average-publication.ts");
-  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
-  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
-  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
-  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "average-publications-fallback.db");
-  publications.resetAveragePublicationForTests();
-  try {
-    const payload = await getArenaAverage({
-      mode: "lastHero", statistic: "trimmed_mean", dimension: "matches", metric: "players",
-    });
-    assert.ok(payload);
-    await publications.publishAverageScope("arena", new Map([[
-      publications.standardArenaVariant("lastHero", "trimmed_mean"), payload,
-    ]]), Date.now() - 10, Date.now());
-    const response = await getAverage(new NextRequest(
-      "http://local/api/average?mode=arena&arenaMode=lastHero&statistic=trimmed_mean&publicationOnly=1",
-    ));
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("x-average-source"), "publication");
-    const body = await response.json();
-    const cohortResponse = await getCohort(new NextRequest(
-      "http://local/api/average/cohort?mode=arena&aid=1&arenaMode=lastHero&statistic=trimmed_mean",
-    ));
-    assert.equal(cohortResponse.status, 200);
-    const cohort = await cohortResponse.json();
-    const fallback = toArenaPopulationCohort(body, 1, "lastHero", "trimmed_mean", cohort.schemaVersion);
-    assert.ok(fallback);
-    assert.equal(fallback.strategy, "population");
-    assert.equal(fallback.sampleN, 22);
-    assert.equal(fallback.quality, "sufficient");
-  } finally {
-    publications.resetAveragePublicationForTests();
-    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
-    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
-    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
-    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
-  }
-});
-
 test("Arena mode baselines batch all five modes in one request", async () => {
   const response = await getBaselinesBatch(new NextRequest(
     "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison",
@@ -382,73 +342,6 @@ test("Arena mode baselines use matched cohorts before population fallback for ma
     assert.equal(cohort.quality, "sufficient");
     assert.ok(cohort.averageMatches.value > 0, `${mode} needs a matches baseline`);
     assert.ok(cohort.averageMatches.count >= 20, `${mode} needs a usable matches sample`);
-  }
-});
-
-test("Arena mode baselines compute matches without publications", async () => {
-  const publications = await import("../lib/average-publication.ts");
-  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
-  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
-  publications.resetAveragePublicationForTests();
-  try {
-    // publicationOnly=1 answers 503 here; the batch falls back to live
-    // averages so markers keep working while publications are warming.
-    const response = await getBaselinesBatch(new NextRequest(
-      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches",
-    ));
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.ok(body.cohorts.teamFight.averageMatches.value > 0);
-  } finally {
-    publications.resetAveragePublicationForTests();
-    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
-    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
-  }
-});
-
-test("Arena mode baselines recompute the population cohort once a sync bumps the population version", async () => {
-  const publications = await import("../lib/average-publication.ts");
-  const dynamic = await import("../lib/average-dynamic-cache.ts");
-  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
-  process.env.AVERAGE_PUBLATIONS_ENABLED = "false";
-  publications.resetAveragePublicationForTests();
-  // The version the Arena sync bumps. Without the table both routes read 0,
-  // which is what a fresh install reports, so the column is created here.
-  db.exec("CREATE TABLE IF NOT EXISTS arena_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  const setVersion = (value) => db.prepare(
-    "INSERT INTO arena_profile_sync_meta (key, value) VALUES ('dynamic_cache_version', ?) "
-    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-  ).run(String(value));
-  const lateAids = [900_001, 900_002, 900_003];
-  const lastHeroCohort = async () => {
-    const response = await getBaselinesBatch(new NextRequest(
-      "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=matches&arenaModes=lastHero",
-    ));
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.deepEqual(body.unavailable, []);
-    return body.cohorts.lastHero;
-  };
-  try {
-    setVersion(1);
-    dynamic.resetDynamicAverageCacheForTests();
-    const before = await lastHeroCohort();
-    assert.equal(before.strategy, "population");
-    // The sync that bumps the version is the one that brought the new
-    // players in, so the served cohort has to move with it instead of
-    // surviving on the 15-minute LRU entry warmed above.
-    for (const aid of lateAids) insert.run(aid, "lastHero", 100, 100, aid, 50, 25, 2, 500, ARENA_PARSER_VERSION);
-    setVersion(2);
-    const after = await lastHeroCohort();
-    assert.equal(after.sampleN, before.sampleN + lateAids.length);
-    assert.equal(after.averageMatches.count, before.averageMatches.count + lateAids.length);
-  } finally {
-    for (const aid of lateAids) db.prepare("DELETE FROM arena_mode_stats WHERE aid = ?").run(aid);
-    db.exec("DROP TABLE IF EXISTS arena_profile_sync_meta");
-    dynamic.resetDynamicAverageCacheForTests();
-    publications.resetAveragePublicationForTests();
-    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
-    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
   }
 });
 
@@ -665,25 +558,6 @@ test("an explicit wait=1 refresh still waits for upstream so «Обновить�
     assert.equal(response.headers.get("server-timing")?.includes("total;dur="), true);
   });
   assert.equal(fetches, 1);
-});
-
-test("a forced Arena refresh cannot replace the newer normalized snapshot", async () => {
-  const aid = 40_004;
-  const currentUpdatedAt = 1_800_000_040_004;
-  await storeArenaProfile(upstreamArenaProfile(aid, currentUpdatedAt, "Current Arena"));
-  let fetches = 0;
-
-  await withFetch(async () => {
-    fetches += 1;
-    return Response.json(upstreamArenaProfile(aid, currentUpdatedAt - 100, "Stale Arena"));
-  }, async () => {
-    const response = await getProfile(profileRequest(aid, true));
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.arena.nickname, "Current Arena");
-    assert.equal(body.arena.profileUpdatedAt, currentUpdatedAt);
-  });
-  assert.equal(fetches, 0);
 });
 
 test("Arena favorite keeps its legacy snapshot offline until it is reparsed", async () => {

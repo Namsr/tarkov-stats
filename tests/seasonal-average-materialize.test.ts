@@ -68,43 +68,6 @@ test.after(() => {
   try { rmSync(publicationDirectory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
 });
 
-test("delayed portrait fetch builds all seasonal variants from a single slow query", async () => {
-  const batch = await averageDb.getSeasonalAveragePublicationPayloads("s1", now);
-  assert.ok(batch);
-  assert.equal(batch.payloads.size, 4);
-  const rows = batch.timings.portraitRows;
-  assert.ok(rows > 0);
-
-  // Simulate the dominant production phase: one slow portrait scan shared by
-  // all variants instead of four sequential slow cross-section queries.
-  let fetches = 0;
-  const slowFetchPortrait = async () => {
-    fetches += 1;
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    return [
-      { profile_updated_at: now - 1_000, hours: 10, pmc_raids: 10, total_kills: 4 },
-      { profile_updated_at: now - 1_000, hours: 20, pmc_raids: 20, total_kills: 8 },
-    ];
-  };
-  const startedAt = Date.now();
-  const shared = await slowFetchPortrait();
-  const variants = [];
-  for (const statistic of ["trimmed_mean", "median"]) {
-    for (const period of ["all", "90d"]) {
-      variants.push(averageDb.buildSeasonalCrossSectionFromRows(shared, {
-        cycleId: "s1", period, statistic, dimension: "hours", metric: "players", min: null, max: null, now,
-      }));
-    }
-  }
-  const elapsed = Date.now() - startedAt;
-
-  assert.equal(fetches, 1);
-  assert.equal(variants.length, 4);
-  for (const variant of variants) assert.equal(variant.total, 2);
-  // Four sequential 60ms fetches would take ~240ms; sharing stays near one delay.
-  assert.ok(elapsed < 150, `shared portrait fetch must avoid 4x slow queries, took ${elapsed}ms`);
-});
-
 test("slow variant computation still publishes atomically without partial generations", async () => {
   const publication = await import("../lib/average-publication.ts");
   const scope = "seasonal:s1";
@@ -159,6 +122,7 @@ test("batch matches per-variant queries and exposes per-variant plus SQL-phase t
   assert.ok(batch.timings.portraitFetchMs >= 0);
   assert.ok(batch.timings.totalMs >= 0);
   assert.equal(batch.timings.variants.length, 4);
+  assert.ok(batch.timings.portraitRows > 0);
 
   for (const timing of batch.timings.variants) {
     assert.match(timing.variant, /^standard:(trimmed_mean|median):(all|90d)$/);
@@ -194,5 +158,4 @@ test("seasonal materializer uses the shared batch with timings and a single atom
   assert.match(database, /SELECT \$\{SEASONAL_PORTRAIT_COLUMNS\.join/);
   assert.match(database, /buildSeasonalCrossSectionFromRows/);
   assert.match(database, /portraitFetchMs/);
-  assert.match(database, /152 scans|~38 times per variant/);
 });

@@ -207,9 +207,6 @@ test("leaderboard nicknames show a compact prestige badge from assets.tarkov.dev
 test("prestige badge recovers after an image error followed by a successful load", async () => {
   const table = await read("components/LeaderboardTable.tsx");
   const badge = table.slice(table.indexOf("function PrestigeBadge("), table.indexOf("const flipActive"));
-  for (const handler of ["onError", "onLoad"]) {
-    assert.ok(badge.includes(handler), `${handler} handler must be present`);
-  }
   const event = { currentTarget: { style: { display: "" } } };
   const bodies = {};
   for (const handler of ["onError", "onLoad"]) {

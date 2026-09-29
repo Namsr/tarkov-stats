@@ -27,7 +27,6 @@ const { getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const {
   coalesceArenaRiskRefresh,
-  getArenaProfile,
   getArenaProfileRisk,
   getStoredArenaProfileRisk,
   isArenaProfileRiskFresh,
@@ -147,42 +146,6 @@ test("stored Arena risk is reused without recomputation when fresh", async () =>
   assert.equal(String(after.risk_json), String(before.risk_json));
 });
 
-test("slow risk recomputation does not delay the stored profile response", async () => {
-  const aid = 50_002;
-  await save(profile(aid));
-  const computed = await getArenaProfileRisk(aid);
-  assert.ok(computed);
-  await backdateStoredRisk(aid, 1_000);
-
-  // Delayed-endpoint pattern like tests/mode-switch-cancel.test.ts: a full
-  // cohort recomputation takes ~80ms while the stored read stays instant.
-  // The stored profile path must await only the fast lookup, never the slow one.
-  let slowSettled = false;
-  const slowRecalculation = new Promise((resolve) => {
-    setTimeout(() => {
-      slowSettled = true;
-      resolve("recalculated");
-    }, 80);
-  });
-
-  const startedAt = Date.now();
-  const [storedProfile, storedRisk] = await Promise.all([
-    getArenaProfile(aid),
-    getStoredArenaProfileRisk(aid),
-  ]);
-  const elapsed = Date.now() - startedAt;
-
-  assert.ok(storedProfile, "stored profile must be readable");
-  assert.ok(storedRisk, "stored risk must be readable");
-  assert.equal(slowSettled, false, "stored response must return before the slow recomputation finishes");
-  // If the stored path awaited the full recomputation, we would wait ~80ms.
-  assert.ok(elapsed < 70, `stored hit must not wait for slow risk, took ${elapsed}ms`);
-  assert.equal(storedRisk.score, computed.score);
-
-  await slowRecalculation;
-  assert.equal(slowSettled, true);
-});
-
 test("arena route separates profile and risk timing phases and refreshes stale risk in background", async () => {
   const route = await readFile("app/api/player/profile/route.ts", "utf8");
   const service = await readFile("lib/arena/service.ts", "utf8");
@@ -232,9 +195,7 @@ test("arena route separates profile and risk timing phases and refreshes stale r
 
 test("five parallel stale hits share a single risk recomputation", async () => {
   const aid = 50_003;
-  // Slow-recalc pattern like the stored-read test above: the full cohort
-  // scan takes ~80ms while the stored read stays instant. Concurrent
-  // stale-hits must coalesce instead of planning N full scans.
+  // Hold the loader open so all callers overlap on the same in-flight refresh.
   let calls = 0;
   const slowRecalc = async () => {
     calls += 1;

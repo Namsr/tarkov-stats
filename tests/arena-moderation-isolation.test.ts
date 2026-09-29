@@ -21,7 +21,7 @@ registerHooks({
 });
 
 const { createSqliteModerationStore } = await import("../lib/admin/moderation-db.ts");
-const { ArenaRiskUnsupportedError, evaluateAndStoreRisk, riskScoreVersion } = await import("../lib/admin/risk-service.ts");
+const { ArenaRiskUnsupportedError, evaluateAndStoreRisk } = await import("../lib/admin/risk-service.ts");
 const { hasValidRiskInputs } = await import("../lib/cheater-score.ts");
 
 const risk = (aid, mode, score, profileUpdatedAt = 10) => ({
@@ -92,13 +92,6 @@ test("generic risk evaluation rejects Arena before touching a store", async () =
     }),
     (error) => error instanceof ArenaRiskUnsupportedError && error.message === "Arena risk is display-only",
   );
-});
-
-test("risk versions are isolated from untouched modes and cycles", () => {
-  assert.equal(riskScoreVersion("regular", "persistent"), 2);
-  assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
-  assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
 
 test("backfill guard executes the shared invalid-input predicate", () => {

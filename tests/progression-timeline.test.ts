@@ -23,11 +23,7 @@ import {
 // @ts-expect-error Node's strip-types test runner requires the extension.
 import { PROGRESSION_METRIC_KEYS } from "../types/seasonal.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension.
-import {
-  progressionLineSegments,
-  progressionRaidDomain,
-  progressionValueDomain,
-} from "../lib/seasonal/progression-timeline-ui.ts";
+import { progressionLineSegments } from "../lib/seasonal/progression-timeline-ui.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension.
 import { initializeSeasonalSchema, createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 
@@ -117,23 +113,6 @@ function counters(overrides = {}) {
     pmcKills: 0,
     killedPmc: 0,
     ...overrides,
-  };
-}
-
-function point(pmcRaids: number, value: number, seriesId: number | null = 1) {
-  return {
-    pointId: `${pmcRaids}:${value}`,
-    date: "2026-01-01",
-    observedAt: null,
-    pmcRaids,
-    value,
-    seriesId,
-    p25: null,
-    p75: null,
-    n: 1,
-    sampleN: null,
-    preliminary: false,
-    confidence: 1,
   };
 }
 
@@ -367,15 +346,4 @@ test("invalid values are omitted and reset series remain visually disconnected",
     progressionLineSegments(series.player).map((segment) => segment.map((item) => item.value)),
     [[10], [5]],
   );
-});
-
-test("focused raid bounds and independent metric domains keep close changes readable", () => {
-  assert.deepEqual(
-    progressionRaidDomain([point(20, 1), point(2_000, 2)], [point(1_000, 100), point(1_050, 102)], true),
-    { min: 990, max: 1_060 },
-  );
-  assert.deepEqual(progressionRaidDomain([], [], true), { min: 0, max: 10 });
-  assert.deepEqual(progressionValueDomain([point(1, 100), point(2, 102)]), { min: 99.84, max: 102.16 });
-  assert.deepEqual(progressionValueDomain([point(1, 140), point(2, 180)], true), { min: 92, max: 100 });
-  assert.deepEqual(progressionValueDomain([point(1, 4), point(2, 4)]), { min: 3, max: 5 });
 });

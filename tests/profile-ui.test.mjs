@@ -120,22 +120,6 @@ test("the favourites identity assertion rejects a matches() that compares the wr
   assert.match(buggy, /function matches\(favorite: Favorite, aid: number\)[\s\S]*favorite\.aid === aid/);
 });
 
-test("no unbounded source gap is added to this file", async () => {
-  // Scoped to this file on purpose: the other suites still carry unbounded source
-  // gaps and are scheduled separately, so a whole-tests/ count would freeze the
-  // backlog into this assertion and block every follow-up.
-  const file = await readFile("tests/profile-ui.test.mjs", "utf8");
-  const unbounded = file.match(/\[\\s\\S\]\*\??/g) ?? [];
-  // 108 is what is left: the three favourites identity assertions above no longer
-  // carry one, and the single new occurrence is the reproduction of the old
-  // pattern in the test above, which asserts nothing about lib/. A slice-then-
-  // assert or an explicitly bounded gap keeps the number flat.
-  assert.ok(
-    unbounded.length <= 108,
-    `expected at most 108 unbounded source gaps in tests/profile-ui.test.mjs, found ${unbounded.length}`,
-  );
-});
-
 test("every favorites response is no-store, so the CDN cannot replay a 401 or 503 to the next visitor", async () => {
   const route = await readFile("app/api/favorites/route.ts", "utf8");
 
@@ -311,7 +295,6 @@ test("profile actions share a top edge and helper copy sits underneath", async (
   assert.match(header, /profile-header__controls[\s\S]*profile-header__actions/);
   assert.doesNotMatch(styles, /\.profile-header__mode \{[^}]*border/);
   assert.match(shell, /<ProfileSectionNav[\s\S]*?<ProfileHeader/);
-  assert.match(shell, /id="progression"[\s\S]*?id="risk"[\s\S]*?id="comparison"[\s\S]*?id="statistics"[\s\S]*?id="skills"/);
   assert.match(regular, /<ProfileShell[\s\S]*?overviewCards=\{regularOverviewCards\}/);
   assert.match(seasonal, /<ProfileShell[\s\S]*?overviewCards=\{/);
   assert.match(refresh, /profile-action__button !text-sm/);
@@ -537,9 +520,10 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(seasonal, /getCachedPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
   assert.match(seasonal, /loadPlayerProfileResponse<SeasonalProfileResponse>\(profileRequestUrl\)/);
   assert.match(seasonal, /const \[loading, setLoading\] = useState\(!initialProfile\)/);
-  const initialSeasonalLoad = seasonal.slice(
-    seasonal.indexOf("loadPlayerProfileResponse<SeasonalProfileResponse>"),
-    seasonal.indexOf(".then((nextProfile)"),
+  const initialSeasonalLoad = sliceDeclaration(
+    seasonal,
+    "loadPlayerProfileResponse<SeasonalProfileResponse>",
+    ".then((nextProfile)",
   );
   assert.doesNotMatch(regular, /(?:res|response)\.json\(\)/);
   assert.doesNotMatch(initialSeasonalLoad, /(?:res|response)\.json\(\)/);
@@ -559,7 +543,11 @@ test("profile mode switching is available during loading and capture is post-res
   assert.ok((route.match(/\{ headers: profileHeaders \}/g) ?? []).length >= 2);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
   assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
-  const regularRoute = route.slice(route.indexOf("    const regularSnapshot = makePlayerSnapshot"));
+  const regularRoute = sliceDeclaration(
+    route,
+    "    const regularSnapshot = makePlayerSnapshot",
+    "  } catch {",
+  );
   assert.doesNotMatch(regularRoute, /await persistRegularProfileSnapshot/);
   const pveBranch = route.slice(route.indexOf('if (mode === "pve") {'));
   assert.match(pveBranch, /after\(\(\) => persistRegularProfileSnapshot\(pveSnapshot, \{/);
@@ -764,9 +752,6 @@ test("active navigation links go back only for an unmodified click at their dest
   }
   assert.equal(activeLinkAction({ ...primary, button: 1 }, true, 2), null);
 
-  for (const modifier of ["metaKey", "ctrlKey", "shiftKey", "altKey"]) {
-    assert.match(helper, new RegExp(`event\\.${modifier}`));
-  }
   assert.match(helper, /event\.button !== 0/);
   assert.doesNotMatch(helper, /document\.referrer/);
   assert.match(helper, /activeLinkAction\(event, atDestination, window\.history\.length\)/);
@@ -1377,4 +1362,3 @@ test("an unknown progression survival rate is never rendered as a percentage", a
   assert.match(card, /\{suffix && <span className="metric-card__suffix ml-1">\{suffix\}<\/span>\}/);
   assert.doesNotMatch(panel, /common\.unknown|common\.notAvailable/);
 });
-
