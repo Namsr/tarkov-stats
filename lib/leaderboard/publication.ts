@@ -146,7 +146,7 @@ export function failLeaderboardPublication(db: any, scope: string, error: unknow
  * compared against the previous implementation and against a JS reference:
  * a fresh publication 13.5s -> 3.8s, a re-rank 15.4s -> 2.0s, both byte-identical.
  * A fresh publication keeps the index and still gains, because the win there is
- * the join replacing 150k correlated lookups rather than the index rebuild.
+ * the join replacing 600k correlated lookups rather than the index rebuild.
  *
  * SQLite DDL is transactional, so a failure anywhere below restores the index on
  * ROLLBACK. Dropping it mid-transaction is safe for concurrent readers because
