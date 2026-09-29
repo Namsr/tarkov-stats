@@ -24,6 +24,9 @@ const scopePauseMs = 500;
 const arenaSyncLeaseMaxAgeMs = 30 * 60_000;
 let running = false;
 let stopping = false;
+// Scopes that failed to publish. Counted instead of thrown so the long-running
+// mode can keep retrying on its schedule, while the one-shot mode can report it.
+let failedScopes = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -121,6 +124,7 @@ async function materialize(scope, reason) {
     console.log(`average publication completed (${reason})`, { scope, ...publication, durationMs: Date.now() - startedAt });
   } catch (error) {
     await failAveragePublication(scope, error);
+    failedScopes += 1;
     console.warn(`average publication failed (${reason})`, { scope, error: error instanceof Error ? error.message : String(error) });
   }
 }
@@ -149,8 +153,14 @@ const initialStates = await getAveragePublicationStates();
 const missing = scopes().some((scope) => !initialStates.some((state) => state.scope === scope && state.generation !== null));
 if (!missing) await sleep(30_000);
 await runDue("startup");
-if (process.env.AVERAGE_MATERIALIZE_ONCE === "true") process.exitCode = 0;
-else {
+// A one-shot run exists to be observed by an operator or CI: a scope that never
+// published must fail the run instead of reporting success. The exit code is only
+// ever raised, never forced, so a nonzero code set by a failure path survives.
+if (process.env.AVERAGE_MATERIALIZE_ONCE === "true") {
+  if (failedScopes > 0) process.exitCode = 1;
+} else {
+  // The long-running mode stays lenient on purpose: runDue retries every failed
+  // scope on the next scheduled pass, so a failure must not end the process.
   const timer = setInterval(() => void runDue("scheduled"), pollMs);
   timer.unref?.();
   while (!stopping) await sleep(30_000);

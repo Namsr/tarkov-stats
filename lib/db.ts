@@ -1801,8 +1801,13 @@ export interface FavoritesStore {
   remove(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
   /** Set/clear the note. */
   setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<void>;
-  /** Mark one favorite as the user's main account (clears the flag on the rest). */
-  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
+  /**
+   * Mark one favorite as the user's main account (clears the flag on the rest).
+   * False when the AID is not one of the user's favorites: the statement's
+   * ownership guard then matches nothing and no row is written, so the caller
+   * has to be able to tell a refused mutation from an applied one.
+   */
+  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<boolean>;
   /** Refresh the stored nickname snapshot. */
   updateNickname(userSub: string, aid: number, nickname: string | null, identity?: FavoriteIdentity): Promise<void>;
 }
@@ -1893,7 +1898,10 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
       db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
     },
     async setMain(userSub, aid) {
-      db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid);
+      // The EXISTS guard makes a zero row count mean "not the caller's favorite",
+      // not "already in that state" — the statement rewrites every one of the
+      // user's rows either way, so a matching aid always reports at least one.
+      return db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid).changes > 0;
     },
     async updateNickname(userSub, aid, nickname) {
       db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
