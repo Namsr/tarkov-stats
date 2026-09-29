@@ -3,7 +3,7 @@ interface ActiveLinkRouter {
   replace: (href: string) => void;
 }
 
-interface ActiveLinkClick {
+export interface ActiveLinkClick {
   button: number;
   metaKey: boolean;
   ctrlKey: boolean;
@@ -53,23 +53,30 @@ export function resetActiveLinkStateForTests(): void {
   clearNavigationPending();
 }
 
+/**
+ * Whether a click is one this tab's router owns.
+ *
+ * A ctrl/meta/shift/alt click and a non-primary button open a new tab or
+ * window instead, so they commit nothing here. They must neither drive the
+ * back affordance nor count as a navigation in flight.
+ */
+export function isPrimaryClick(event: ActiveLinkClick): boolean {
+  return (
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
+
 export function activeLinkAction(
   event: ActiveLinkClick,
   atDestination: boolean,
   historyLength: number,
   pending = false,
 ): "back" | "fallback" | null {
-  if (
-    pending ||
-    !atDestination ||
-    event.button !== 0 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    event.altKey
-  ) {
-    return null;
-  }
+  if (pending || !atDestination || !isPrimaryClick(event)) return null;
   return historyLength > 1 ? "back" : "fallback";
 }
 
@@ -79,10 +86,14 @@ export function handleActiveLinkClick(
   router: ActiveLinkRouter,
   fallback = "/",
 ) {
+  // Only a click the router would navigate on starts a navigation. A modified
+  // or middle click opens a new tab and commits nothing here, so marking one
+  // would leave the back affordance disabled until the TTL expires.
+  const startsNavigation = isPrimaryClick(event);
   // Read the state from before this click: the caller marks the navigation as
   // pending in the same handler, and this click must not suppress itself.
   const pending = isNavigationPending();
-  markNavigationPending();
+  if (startsNavigation) markNavigationPending();
 
   const action = activeLinkAction(event, atDestination, window.history.length, pending);
   if (!action) return;
@@ -91,3 +102,4 @@ export function handleActiveLinkClick(
   if (action === "back") router.back();
   else router.replace(fallback);
 }
+

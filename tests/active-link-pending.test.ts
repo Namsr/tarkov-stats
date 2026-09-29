@@ -57,6 +57,36 @@ test("modified clicks never trigger the back affordance", () => {
   assert.equal(activeLinkAction({ ...plainClick, button: 1 }, true, 4), null);
 });
 
+test("a modified or middle click does not mark a navigation pending", () => {
+  // A ctrl/meta/shift/alt click or a middle click opens a new tab: nothing
+  // navigates in this tab, so no pathname effect ever clears the flag and the
+  // back affordance would stay dead for the whole TTL.
+  const calls: string[] = [];
+  const router = { back: () => calls.push("back"), replace: (href: string) => calls.push(`replace:${href}`) };
+  const noop = { preventDefault: () => {} };
+
+  for (const modified of [
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+    { altKey: true },
+    { button: 1 },
+  ]) {
+    resetActiveLinkStateForTests();
+    handleActiveLinkClick({ ...plainClick, ...modified, ...noop }, true, router);
+    assert.equal(
+      isNavigationPending(),
+      false,
+      `${JSON.stringify(modified)} starts no navigation and must not mark one`,
+    );
+  }
+  assert.deepEqual(calls, [], "none of those clicks may be hijacked either");
+
+  // The affordance therefore still works on the very next plain click.
+  handleActiveLinkClick({ ...plainClick, ...noop }, true, router);
+  assert.deepEqual(calls, ["back"], "a plain click right after must still go back");
+});
+
 test("markNavigationPending blocks the affordance until the navigation commits", () => {
   assert.equal(isNavigationPending(), false);
   markNavigationPending(1_000);
@@ -124,3 +154,4 @@ test("regression: a second tab click during the first tab's load reaches the sec
   const action = activeLinkAction(plainClick, atDestination, 4, isNavigationPending());
   assert.equal(action, null, "the second click must not become router.back()");
 });
+
