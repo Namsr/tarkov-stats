@@ -76,23 +76,63 @@ export async function signHelperSession(
     .sign(key);
 }
 
-/** Invalid, expired, or misconfigured cookies deliberately resolve to no session. */
-export async function verifyHelperSession(
+export type HelperSessionCheck =
+  | { status: "valid"; helperId: string }
+  | { status: "absent" }
+  | { status: "invalid" };
+
+/**
+ * Tell a first visit apart from a cookie the client sent but cannot prove.
+ *
+ * `absent` may mint a new identity; `invalid` (corrupted, expired, forged, or
+ * signed with a different key) must not, because handing out a fresh identity
+ * in answer to a broken cookie silently moves the helper to a new vote key and
+ * the queue resets behind them.
+ *
+ * A missing signing key is reported as `absent`, not `invalid`: it is a server
+ * misconfiguration rather than a client fault, and no client can be at fault
+ * for a cookie the server can no longer check. `claim` never observes this
+ * branch, because `isCommunityReviewEnabled` rejects the request with 404
+ * first on the same `HELPER_COOKIE_SECRET` length threshold; it is here for
+ * the callers that no such gate covers.
+ *
+ * An empty value counts as `absent` for the same reason as no cookie at all:
+ * minting is already free for a client that sends no `Cookie` header, so
+ * `seasonal_helper=` opens nothing new. The only thing that stops it from
+ * being read as tampering is that a browser which dropped the cookie sends
+ * nothing, so treating an empty value as `invalid` would turn ordinary cookie
+ * clearing into a permanent 401.
+ */
+export async function classifyHelperSession(
   token: string | undefined,
   env: HelperEnvironment = process.env,
-): Promise<string | null> {
+): Promise<HelperSessionCheck> {
   const key = helperKey(env);
-  if (!token || !key) return null;
+  if (!token || !key) return { status: "absent" };
   try {
     const { payload } = await jwtVerify(token, key, { algorithms: ["HS256"] });
     return payload.scope === "seasonal-helper" &&
       typeof payload.sub === "string" &&
       /^[0-9a-f-]{36}$/i.test(payload.sub)
-      ? payload.sub
-      : null;
+      ? { status: "valid", helperId: payload.sub }
+      : { status: "invalid" };
   } catch {
-    return null;
+    return { status: "invalid" };
   }
+}
+
+/**
+ * Session id for callers that only need to know whether one exists.
+ *
+ * Invalid, expired, or misconfigured cookies still deliberately resolve to no
+ * session here; see {@link classifyHelperSession} for the case this collapses.
+ */
+export async function verifyHelperSession(
+  token: string | undefined,
+  env: HelperEnvironment = process.env,
+): Promise<string | null> {
+  const session = await classifyHelperSession(token, env);
+  return session.status === "valid" ? session.helperId : null;
 }
 
 /**
