@@ -1799,8 +1799,13 @@ export interface FavoritesStore {
   ): Promise<"ok" | "exists" | "limit">;
   /** Unpin every stored identity for this AID. */
   remove(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
-  /** Set/clear the note. */
-  setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<void>;
+  /**
+   * Set/clear the note. False when the AID is not one of the user's favorites:
+   * the update is scoped to `user_sub`, so a zero row count means the write was
+   * skipped and the caller has to be able to tell a refused mutation from an
+   * applied one. Rewriting the same note still reports a match.
+   */
+  setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<boolean>;
   /**
    * Mark one favorite as the user's main account (clears the flag on the rest).
    * False when the AID is not one of the user's favorites: the statement's
@@ -1895,7 +1900,10 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
       db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").run(userSub, aid);
     },
     async setNote(userSub, aid, note) {
-      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
+      // SQLite counts an UPDATE by the rows it matched, not by the values it
+      // changed, so an owned aid always reports at least one even when the note
+      // is rewritten to the text it already had.
+      return db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid).changes > 0;
     },
     async setMain(userSub, aid) {
       // The EXISTS guard makes a zero row count mean "not the caller's favorite",
