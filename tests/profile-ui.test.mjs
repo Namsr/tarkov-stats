@@ -764,10 +764,28 @@ test("active navigation links go back only for an unmodified click at their dest
     assert.equal(activeLinkAction({ ...primary, [modifier]: true }, true, 2), null);
   }
   assert.equal(activeLinkAction({ ...primary, button: 1 }, true, 2), null);
+  // A click while a navigation is still in flight must not be read as a click
+  // on the current page: `usePathname()` keeps the old route until the new one
+  // commits, and hijacking that click into router.back() drops the destination.
+  assert.equal(activeLinkAction(primary, true, 2, true), null);
 
-  assert.match(helper, /event\.button !== 0/);
+  // The modifier/primary-button guard is now one predicate; assert all four
+  // modifiers still live in it and that both call sites use it.
+  assert.match(
+    helper,
+    /function isPrimaryClick\([\s\S]*?event\.button === 0[\s\S]*?!event\.metaKey[\s\S]*?!event\.ctrlKey[\s\S]*?!event\.shiftKey[\s\S]*?!event\.altKey/,
+  );
+  assert.match(helper, /activeLinkAction\([\s\S]*?!isPrimaryClick\(event\)/);
   assert.doesNotMatch(helper, /document\.referrer/);
-  assert.match(helper, /activeLinkAction\(event, atDestination, window\.history\.length\)/);
+  assert.match(helper, /activeLinkAction\(event, atDestination, window\.history\.length, pending\)/);
+  // The pending flag must be read before this click marks itself, otherwise the
+  // back affordance suppresses its own click. Only a click the router would
+  // navigate on may mark it at all.
+  assert.match(helper, /const startsNavigation = isPrimaryClick\(event\);/);
+  assert.match(
+    helper,
+    /const pending = isNavigationPending\(\);\s*if \(startsNavigation\) markNavigationPending\(\);/,
+  );
   assert.match(helper, /router\.back\(\)/);
   assert.match(helper, /router\.replace\(fallback\)/);
   assert.match(header, /handleActiveLinkClick\(event, pathname === item\.href, router\)/);
