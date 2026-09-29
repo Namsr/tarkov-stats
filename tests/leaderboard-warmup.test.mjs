@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -85,6 +85,63 @@ test("a checkpoint whose fields are null or arrays is refused instead of silentl
     assert.equal(readFileSync(checkpointPath, "utf8"), contents, label);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("the checkpoint sweep takes a killed process's temp file and spares a live writer's", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-temp-"));
+  const checkpointPath = join(dir, "state.json");
+  const hourAgo = new Date(Date.now() - 3_600_000);
+  const orphan = join(dir, "state.json.4242.tmp");
+  const live = join(dir, "state.json.4343.tmp");
+  const own = `${checkpointPath}.${process.pid}.tmp`;
+  // A process killed between writeFileSync and renameSync leaves exactly this: a
+  // foreign pid, no reader, and no owner left to remove it.
+  writeFileSync(orphan, "{");
+  utimesSync(orphan, hourAgo, hourAgo);
+  // A peer that created its temp file a moment ago is still mid-write.
+  writeFileSync(live, "{");
+  writeFileSync(own, "{");
+  utimesSync(own, hourAgo, hourAgo);
+  // Refused by loadCheckpoint, so the run stops after the sweep and before its first save.
+  writeFileSync(checkpointPath, '{"version":1,"skipped":null,"modes":null}');
+  await assert.rejects(runWarmup({
+    candidates: [], checkpointPath, maxProfiles: 10,
+    request: async () => ({ kind: "completed", outcome: "ok" }),
+  }), /unsupported leaderboard warmup checkpoint/);
+  assert.equal(existsSync(orphan), false, "a temp file a killed process left is removed");
+  assert.equal(existsSync(live), true, "a temp file a live peer is still writing is kept");
+  assert.equal(existsSync(own), true, "this process never removes its own in-flight temp file");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a run leaves no checkpoint temp file behind, including when the rename fails", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-leak-"));
+  const checkpointPath = join(dir, "state.json");
+  const temps = () => readdirSync(dir).filter((name) => name.endsWith(".tmp"));
+  await runWarmup({
+    candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }, { mode: "regular", aid: 2, sourceVersion: 100 }],
+    checkpointPath, maxProfiles: 10,
+    request: async () => ({ kind: "completed", outcome: "ok" }),
+  });
+  assert.deepEqual(temps(), []);
+
+  // A directory where the checkpoint belongs: the write succeeds and the rename
+  // cannot, which is the case a run that never cleans up would leak on.
+  const blocked = join(dir, "blocked.json");
+  mkdirSync(blocked);
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await assert.rejects(runWarmup({
+      candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+      checkpointPath: blocked, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }),
+    }));
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.deepEqual(temps(), [], "a save that could not rename deletes its own temp file");
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("warmup selection uses parser generations and keeps modes sequential", async () => {

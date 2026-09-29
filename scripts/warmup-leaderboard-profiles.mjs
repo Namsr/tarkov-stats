@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
@@ -85,10 +85,62 @@ function loadCheckpoint(path) {
   return { checkpoint: value, reset: false };
 }
 
+/**
+ * A checkpoint temp file is created and renamed away back to back, so one that
+ * is this old cannot be a write in progress no matter how wide the run window is.
+ */
+const ORPHANED_TEMP_MIN_AGE_MS = 60_000;
+
 function saveCheckpoint(path, checkpoint) {
+  // The write and the rename land together or not at all, so a process killed in
+  // between leaves the previous checkpoint readable. The temp file is the only
+  // thing such a kill can lose, and the catch below gives it back on a rename
+  // that fails for a reason a retry cannot fix (ENOSPC, EIO, a wrong owner).
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify({ ...checkpoint, updatedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify({ ...checkpoint, updatedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // A write that never created the temp file, or one the sweep already took.
+    }
+    throw error;
+  }
+}
+
+/**
+ * Drop the temp files a killed process left behind. They are never read, never
+ * cleaned by `finally`, and the run that wrote them is gone, so nothing else
+ * removes them and the checkpoint volume grows one file per kill.
+ *
+ * Two guards keep this away from a file that is still in use. This process's own
+ * temp file is skipped by pid, and a temp file younger than
+ * ORPHANED_TEMP_MIN_AGE_MS is skipped by age, which also covers a peer running
+ * against a checkpoint this run does not share a lock with.
+ */
+function removeOrphanedCheckpointTemps(path) {
+  const directory = dirname(path);
+  let names;
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return; // Nothing to sweep, and a missing directory still fails in saveCheckpoint.
+  }
+  const prefix = `${basename(path)}.`;
+  const cutoff = Date.now() - ORPHANED_TEMP_MIN_AGE_MS;
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    if (name === `${prefix}${process.pid}.tmp`) continue;
+    const temporary = join(directory, name);
+    try {
+      if (statSync(temporary).mtimeMs > cutoff) continue;
+      unlinkSync(temporary);
+    } catch {
+      // A peer that renamed or removed it first leaves nothing to clean.
+    }
+  }
 }
 
 function skippedKey(candidate) {
@@ -315,6 +367,8 @@ export async function requestCandidate(candidate, options) {
 export async function runWarmup(options) {
   const now = options.now ?? Date.now;
   const startedAt = now();
+  // Before this run writes anything: a temp file can only predate it if a killed process left it.
+  removeOrphanedCheckpointTemps(options.checkpointPath);
   const { checkpoint, reset: checkpointReset } = loadCheckpoint(options.checkpointPath);
   const modes = options.modes ?? WARMUP_MODES;
   const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
@@ -424,7 +478,8 @@ async function main() {
       modes,
       candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
       processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
-      // ops/profile-queue.sh captures stdout only, so the reset warn is invisible where the operator looks.
+      // ops/profile-queue.sh keeps stderr out of $log and replays it into the journal as
+      // WARMUP_WARN, so a reset is reported both as prose and as this machine-readable flag.
       checkpointReset: result.checkpointReset,
     })}\n`);
   } finally {

@@ -14,13 +14,14 @@ test('queue retries only failures, preserves error status and runs one warmup af
   assert.ok(source.indexOf('run_mode regular') < source.indexOf('run_mode pve'));
   assert.ok(source.indexOf('run_mode pve') < source.indexOf('run_mode seasonal'));
   assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
-  for (const scenario of ['success', 'retry', 'persistent', 'starved', 'stopped', 'invalid', 'budget']) {
+  for (const scenario of ['success', 'retry', 'persistent', 'starved', 'stopped', 'invalid', 'budget', 'warn']) {
     const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
     try {
       const path = dir.replaceAll('\\', '/');
       const mock = `dc() {
         case "$*" in
-          *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}';;
+          *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}'
+            if [ "$SCENARIO" = warn ]; then echo 'unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint' >&2; fi;;
           *sync-regular-profiles*) echo regular >> calls
             if [ "$SCENARIO" = persistent ]; then return 7; fi
             if [ "$SCENARIO" = retry ] && [ ! -f retried ]; then touch retried; return 7; fi;;
@@ -43,7 +44,8 @@ test('queue retries only failures, preserves error status and runs one warmup af
       `;
       const script = source.replace('cd /opt/tarkovstats-auto || exit 1', `cd ${quote(path)} || exit 1`)
         .replace(/^dc\(\).*$/m, () => mock)
-        .replace('log=/var/log/tarkovstats-warmup-batch.json', `log=${quote(path + '/warmup.json')}`);
+        .replace('log=/var/log/tarkovstats-warmup-batch.json', `log=${quote(path + '/warmup.json')}`)
+        .replace('warn=/var/log/tarkovstats-warmup-batch.warn', `warn=${quote(path + '/warmup.warn')}`);
       const file = join(dir, 'queue.sh');
       await writeFile(file, script.replaceAll('\r\n','\n'));
       const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
@@ -52,6 +54,16 @@ test('queue retries only failures, preserves error status and runs one warmup af
       assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
         scenario === 'budget' ? ['arena'] : ['arena', ...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','seasonal','warmup']);
       if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
+      if (scenario === 'warn') {
+        // The operator sees the warning in the journal, framed like every other queue line.
+        assert.match(result.stdout, /WARMUP_WARN unreadable leaderboard warmup checkpoint at/);
+        assert.doesNotMatch(result.stdout, /state-parse-failed/);
+        // ...and the JSON log stays pure stdout, so the last line the state parser
+        // reads is still the summary and a healthy batch is not reported as a parse failure.
+        assert.deepEqual((await readFile(join(dir, 'warmup.json'), 'utf8')).trim().split(/\r?\n/),
+          ['{"bounded":true,"stopped":false,"processed":100}']);
+        assert.match((await readFile(join(dir, 'warmup.warn'), 'utf8')), /unreadable leaderboard warmup checkpoint/);
+      }
       if (scenario === 'starved') {
         // A retry that cannot get a real run window must not turn the failure into
         // a success: the bounded run aborts on its first checkpoint and exits 0.
