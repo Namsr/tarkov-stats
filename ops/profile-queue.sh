@@ -10,12 +10,15 @@ node='node --experimental-strip-types --experimental-sqlite'
 log=/var/log/tarkovstats-warmup-batch.json
 # stderr is captured out of band: the state parser below reads the last line of
 # $log as JSON, and a warning landing between that line and the end of the run
-# would turn a healthy batch into state-parse-failed. Truncated every run.
+# would turn a healthy batch into state-parse-failed.
 # The price of the framing: stderr now arrives with the batch instead of
 # streaming, so a warmup that hangs mid-run shows nothing under `journalctl -f`
 # and a service killed mid-run loses that stderr entirely. Streaming it back by
 # merging into $log is what breaks the parser, so an unfinished run is read from
-# this file rather than from the journal.
+# this file rather than from the journal. The file is emptied at the top of every
+# run, warmup reached or not, so what is in it belongs to the run reading it: a
+# run that skipped the warmup holds nothing at all rather than an earlier run's
+# warnings, which nothing on the file would date.
 warn=/var/log/tarkovstats-warmup-batch.warn
 failures=""
 # Retry only the failing mode once; preserve nonzero exit for observability.
@@ -71,6 +74,15 @@ run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=
 run_mode regular dc -e REGULAR_PROFILE_SYNC_RPS=1 -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-regular-profiles.mjs
 run_mode pve dc -e PVE_PROFILE_SYNC_RPS=1 -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 web $node scripts/sync-pve-profiles.mjs
 run_mode seasonal dc -e SEASONAL_FEED_RPS=1 -e SEASONAL_FEED_MAX_RUN_MS=480000 web $node scripts/sync-seasonal-profiles.mjs
+
+# Emptied here, not only by the redirect below: the four mode budgets above
+# already outrun the window, so a run can reach the deadline without ever
+# reaching the warmup, and the file an operator reads for an unfinished run
+# would otherwise still hold the last run that did run it. `printf` rather than
+# `:` because dash aborts the whole script on a redirection error to a special
+# built-in, and an unwritable /var/log must still reach QUEUE_SUMMARY; the
+# discard is written first because dash applies redirections left to right.
+printf '' 2>/dev/null > "$warn" || log_line WARN_TRUNCATE "could not empty $warn; it may hold an earlier run's stderr"
 
 if [ "$(date +%s)" -lt "$deadline" ]; then
 # One batch only; bounded=true means resume next scheduled run.

@@ -54,15 +54,23 @@ test('queue retries only failures, preserves error status and runs one warmup af
         .replace('warn=/var/log/tarkovstats-warmup-batch.warn', `warn=${quote(path + '/warmup.warn')}`);
       const file = join(dir, 'queue.sh');
       await writeFile(file, script.replaceAll('\r\n','\n'));
-      // `2> "$warn"` truncates, so the last run's warnings must not survive into
-      // this one's log.
-      if (scenario === 'warn') await writeFile(join(dir, 'warmup.warn'), 'stale line from an earlier run\n');
+      // Seeded for `warn` and for `budget`. `2> "$warn"` truncates, so the last
+      // run's warnings must not survive into this one's log; the run that never
+      // reaches the warmup needs the empty-at-the-top truncation, because the
+      // redirect that would have truncated for it never runs.
+      if (scenario === 'warn' || scenario === 'budget') await writeFile(join(dir, 'warmup.warn'), 'stale line from an earlier run\n');
       const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
       assert.ifError(result.error);
       assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' || scenario === 'starved' ? 1 : scenario === 'stopped' ? 143 : 0, `${scenario}: ${result.stderr}\n${result.stdout}`);
       assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
         scenario === 'budget' ? ['arena'] : ['arena', ...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','seasonal','warmup']);
-      if (scenario === 'budget') assert.match(result.stdout, /status=deferred-budget/);
+      if (scenario === 'budget') {
+        assert.match(result.stdout, /status=deferred-budget/);
+        // The warmup never ran, so the file an operator reads for an unfinished run
+        // must be empty rather than still holding the last run that did run it.
+        assert.equal(await readFile(join(dir, 'warmup.warn'), 'utf8'), '', 'a run that skipped the warmup still empties the warn file');
+        assert.doesNotMatch(result.stdout, /WARMUP_WARN/);
+      }
       if (scenario === 'warn') {
         // The operator sees the warning in the journal, framed like every other queue line.
         assert.match(result.stdout, /WARMUP_WARN unreadable leaderboard warmup checkpoint at/);
