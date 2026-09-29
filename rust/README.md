@@ -62,15 +62,29 @@ genuinely streaming instead of buffering the body.
 
 ### Verification
 
+The crate's central claim is that it is byte-exact with
+`createTimestampObjectParser`. That claim is enforced, not asserted: it is
+checked by `npm run test:feed-differential`, which imports the **unmodified**
+reference and drives the built binary and that function over the same bytes,
+whole and split, and fails on any divergence in acceptance, dispatched entry
+count, value or message. Without it an edit to `scripts/regular-profile-sync-core.mjs`
+— imported by five live sync scripts — would leave the crate claiming an
+exactness it no longer had, with nothing failing. See
+[`tarkovstats-feed/README.md`](tarkovstats-feed/README.md#verifying-byte-exactness)
+for how the splits are proven real rather than assumed.
+
+- The committed harness: 123 curated documents and 100 seeded random ones, 574
+  runs of which 358 are split across a real pipe, 0 divergences.
+- A one-off wider sweep during development, not re-run per commit: ~212 000
+  distinct input documents against the same unmodified function, 153 curated,
+  7 500 randomized, 107 799 exhaustive, plus chunk-plan sweeps over 29
+  documents at every single cut point.
 - The real 68.58 MiB feed matches the original exactly: entry count, first key,
   first value, last key, and `sha256` of the `key:value` stream —
   `ea40b07c34b74fa473bf5db9d34da1d2a0225afc8798835d0a829a02a8291ebd`.
-- ~212 000 distinct input documents compared against the unmodified
-  `createTimestampObjectParser`: 153 curated, 7 500 randomized, 107 799
-  exhaustive, plus chunk-plan sweeps over 29 documents at every single cut point.
-- 116 Rust tests. `cargo clippy --all-targets` clean with `forbid(unsafe_code)`,
-  `missing_docs`, `clippy::pedantic` and `rust_2018_idioms` forced on all six
-  targets.
+- 116 Rust tests, `npm run test:rust`. `cargo clippy --all-targets` clean with
+  `forbid(unsafe_code)`, `missing_docs`, `clippy::pedantic` and
+  `rust_2018_idioms` forced on all six targets.
 - Zero third-party crates. `cargo tree` prints only the workspace member.
 
 ### Accepted deviation
@@ -118,10 +132,13 @@ The crate is not part of the Docker image and no Node script invokes it, so the
 image needs no Rust toolchain. To build locally:
 
 ```console
-$ cargo test --manifest-path rust/Cargo.toml
-$ cargo clippy --manifest-path rust/Cargo.toml --all-targets
-$ cargo build --release --manifest-path rust/Cargo.toml
+$ npm run test:rust               # cargo test + cargo clippy --all-targets -D warnings
+$ npm run test:feed-differential  # build the release binary, then diff it against the JS
+$ npm run build:rust              # just the release binary
 ```
+
+None of these are part of `npm test`: the Node gate must stay fast and must not
+need a Rust toolchain for a change that never touches `rust/`.
 
 The local development toolchain is whatever `rustup` selects by default. The
 project's `rust-version` is 1.74, matching the oldest edition the crate claims to

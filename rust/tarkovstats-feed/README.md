@@ -158,6 +158,57 @@ and after:
 `tests/fuzz.rs` enforces this with a timing assertion rather than asserting it
 in a comment.
 
+## Verifying byte-exactness
+
+The Rust tests check the grammar against themselves. Only one thing in this
+repository checks the claim that actually matters — that the port agrees with
+`createTimestampObjectParser`, byte for byte, on every input — and it cannot
+be written in Rust, because it is a claim about a JavaScript function:
+
+```console
+$ npm run test:feed-differential
+```
+
+`tools/differential.mjs` imports the **unmodified** reference, feeds it a real
+`TextDecoder({ stream: true })` the way the live collectors do, and feeds the
+same bytes to the built binary through a pipe, one write per planned chunk with
+a real gap between them, so the splits are the binary's own 64 KiB reads plus
+the ones each case asks for. It then compares acceptance, the number of
+dispatched entries, every key and value after the reader above, and the message
+a caller would rethrow. 123 curated documents and 100 seeded random ones, 574
+runs, of which 358 are split.
+
+Two things are worth knowing about how it decides.
+
+**It proves the splits are real before it trusts itself.** The lexer is
+split-invariant by design, which is the problem: a binary handed every byte in
+one write answers correctly for every case in the corpus and the harness would
+report a pass it did not earn. So `proveStreaming()` runs first. It times the
+binary's startup, because a binary cannot read before it has started and a gap
+shorter than startup silently collapses the first two writes, and it drives a
+probe that reports the size of every read it performed with the identical write
+path. Fewer than two reads is a hard failure with a nonzero exit, not a warning.
+
+**It cannot fail quietly.** A child may legitimately stop reading before the
+last planned chunk — a document it has already rejected needs nothing more — so
+the writes after that point meet a closed pipe. Awaiting a `'drain'` that can
+never arrive leaves the process with no live handles, and Node reports that as
+an unsettled top-level await and exits **zero**. Every write therefore settles
+on `drain`, `close` or `error`, `stdin` carries an error listener, and a
+watchdog timer is held for the whole run.
+
+The number of runs that ended early is printed in the summary, so the claim
+above is auditable rather than asserted.
+
+The Rust side of the crate is reachable from the same place:
+
+```console
+$ npm run test:rust
+```
+
+`npm test` runs neither of them. Both need a Rust toolchain, and the Node gate
+has to stay fast and toolchain-free for a change that never touches `rust/`.
+
 ## Layout
 
 ```
@@ -174,10 +225,10 @@ rust/tarkovstats-feed/
   tests/whitespace_split.rs        every member, every state, every split offset
   tests/process.rs                 the stdin/stdout contract and exit codes
   tests/fuzz.rs                    prefix sweeps, byte mutations, the linearity bound
+  tools/differential.mjs           the byte-exactness check, against the real reference
 ```
 
 ```console
-$ cargo test --manifest-path rust/Cargo.toml
-$ cargo clippy --manifest-path rust/Cargo.toml --all-targets
-$ cargo build --release --manifest-path rust/Cargo.toml
+$ npm run test:rust               # cargo test + cargo clippy --all-targets
+$ npm run test:feed-differential  # build the release binary, then diff it against the JS
 ```
