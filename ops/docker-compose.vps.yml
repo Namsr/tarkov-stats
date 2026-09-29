@@ -34,6 +34,10 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    environment:
+      # Leave 64 MiB for sockets, binary pages and other non-Go memory.
+      # Go's limit is soft; proxy concurrency is also bounded in ops/Caddyfile.
+      GOMEMLIMIT: 192MiB
     restart: unless-stopped
     ports:
       - "80:80"
