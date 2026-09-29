@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
@@ -7,6 +8,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { authSecretKey } from "../lib/auth/secret.ts";
+
+// Next's Node server loads `node-environment` first, which is the only reason
+// `after()`'s work store is a real AsyncLocalStorage instead of a fake whose
+// `run()` throws. Reproduce that one line before any Next module is loaded.
+globalThis.AsyncLocalStorage ??= AsyncLocalStorage;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -22,13 +28,24 @@ registerHooks({
 const directory = mkdtempSync(join(tmpdir(), "tarkov-auth-routes-"));
 process.env.SQLITE_PATH = join(directory, "players.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin-analytics.db");
-// `encryptSession` signs with AUTH_SECRET; the callback records a sign-in event,
-// so keep the analytics store off the container's /data path.
+// `encryptSession` signs with AUTH_SECRET. The callback's `after()` task is
+// deliberately dropped by the no-op work context below, so no analytics are
+// written here; the store paths stay off the container's /data regardless, in
+// case that context ever stops being a no-op.
 process.env.AUTH_SECRET = "auth-routes-test-secret";
 process.env.PUBLIC_BASE_URL = "https://example.test";
 process.env.OBSERVABILITY_SAMPLE_RATE = "0";
 
 const { NextRequest } = await import("next/server");
+const { decryptSession } = await import("../lib/auth/session.ts");
+// `after()` reads Next's own work-context AsyncLocalStorage and throws without
+// one, which drops the success branch into its `login_failed` catch. Borrowing
+// the store is the only way to invoke that branch outside a real request.
+// The deep path is acceptable because it is the very module `next/server`
+// itself loads (next/server.js -> after/index.js -> after.js ->
+// work-async-storage.external): renaming it breaks Next wholesale rather than
+// this one test, and `next` ships no `exports` map offering a stabler route.
+const { workAsyncStorage } = await import("next/dist/server/app-render/work-async-storage.external.js");
 const { POST: logout } = await import("../app/api/auth/logout/route.ts");
 const { GET: startGoogleLogin } = await import("../app/api/auth/google/route.ts");
 const { GET: finishGoogleLogin } = await import("../app/api/auth/google/callback/route.ts");
@@ -101,15 +118,48 @@ test("every reachable Google callback redirect is no-store", async () => {
   assert.equal(failed.headers.get("cache-control"), "no-store");
 });
 
-test("the callback's session-issuing redirect is no-store even though it cannot run here", async () => {
-  // `after()` throws outside a request scope, so the one branch that mints a
-  // session cookie is not reachable from a direct invocation. It is the most
-  // cache-sensitive response in the app, so assert it against the source.
-  const source = await readFile("app/api/auth/google/callback/route.ts", "utf8");
-  assert.match(
-    source,
-    /const res = NextResponse\.redirect\(home, \{ headers: noStore \}\);\s+res\.cookies\.set\(SESSION_COOKIE, token, sessionCookieOptions\(\)\);/
-  );
+test("the callback's session-issuing redirect is no-store when it is actually reached", async () => {
+  // Unlike the other six branches this one signs a real session, so it is the
+  // response a shared cache must never replay. Drive it live rather than
+  // reading the source: the branch used to hide behind an `after()` call that
+  // threw outside a request scope, and nothing here would have noticed.
+  process.env.GOOGLE_CLIENT_ID = "test-client-id";
+  process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+
+  // Answer both Google endpoints so the route gets past the CSRF check and
+  // signs a session instead of landing in its `login_failed` catch.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url) => {
+    const body = String(url).startsWith("https://oauth2.googleapis.com/token")
+      ? { access_token: "test-access-token" }
+      : { sub: "google-user-1", email: "player@example.test", name: "Player" };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  let res;
+  try {
+    res = await workAsyncStorage.run(
+      { afterContext: { after: () => {} } },
+      () => finishGoogleLogin(
+        new NextRequest(`${callbackUrl}?code=c&state=s`, { headers: { cookie: "oauth_state=s" } })
+      )
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+  }
+
+  assert.equal(res.status, 307);
+  assert.equal(res.headers.get("location"), "https://example.test/");
+  // A deletion also emits `session=`, so decode the value instead: this branch
+  // has to hand back a session cookie the app itself would accept.
+  const setCookie = res.headers.get("set-cookie") ?? "";
+  assert.match(setCookie, /oauth_state=;/);
+  const token = /^session=([^;]+)/.exec(setCookie)?.[1];
+  assert.ok(token, `the success branch must hand back a session cookie, got: ${setCookie}`);
+  // Without the HttpOnly flag the cookie is readable by any script on the page.
+  assert.match(setCookie, /HttpOnly/);
+  assert.equal((await decryptSession(token))?.sub, "google-user-1");
+  assert.equal(res.headers.get("cache-control"), "no-store");
 });
 
 test("the auth routes single-source the directive and never redirect bare", async () => {
