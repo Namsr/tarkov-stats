@@ -28,6 +28,7 @@ const customization = {
   feet: "5cc085bb14c02e000e67a5c5", hands: "5cc0876314c02e000c6bea6b",
 };
 const equipment = { Id: "root", Items: [{ _id: "helmet", _tpl: "5b432d215acfc4771e1c6624", parentId: "root", slotId: "Headwear" }] };
+const imageBytes = Uint8Array.from([82, 73, 70, 70, 0, 255, 128, 0, 87, 69, 66, 80]);
 const profile = (aid) => ({ aid, customization, equipment, info: { nickname: "Player" }, pmcStats: {} });
 const request = (query) => GET(new NextRequest(`http://localhost/api/player/portrait?${query}`));
 
@@ -46,10 +47,28 @@ test("portrait render carries the character and equipment, excluding unrelated p
 
 test("portrait route isolates and caches modes, validates cycles, and handles upstream failure", async (t) => {
   const calls = [];
+  const renders = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
-    const aid = Number(new URL(url).pathname.match(/(\d+)\.json$/)[1]);
-    calls.push(String(url));
+    const parsed = new URL(url);
     assert.equal(new Headers(init.headers).get("User-Agent"), "tarkovstats.ru");
+    if (parsed.hostname === "imagemagic.tarkov.dev") {
+      renders.push(parsed.pathname);
+      const rendered = Number(parsed.pathname.match(/(\d+)\.webp$/)[1]);
+      const attempt = renders.filter((path) => path === parsed.pathname).length;
+      assert.equal(init.cache, "no-store", "only complete images may enter our result cache");
+      if (attempt === 1) {
+        if (rendered === 95) return new Response("render failed", { status: 500 });
+        if (rendered === 96) throw new Error("renderer offline");
+        if (rendered === 97) return new Response(new ReadableStream({
+          start(controller) { controller.error(new TypeError("image body connection reset")); },
+        }), { headers: { "Content-Type": "image/webp" } });
+        if (rendered === 98) return new Response("<html>upstream error</html>", { headers: { "Content-Type": "text/html" } });
+        if (rendered === 99) return new Response(null, { headers: { "Content-Type": "image/webp" } });
+      }
+      return new Response(imageBytes, { headers: { "Content-Type": "image/webp" } });
+    }
+    const aid = Number(parsed.pathname.match(/(\d+)\.json$/)[1]);
+    calls.push(String(url));
     if (aid === 91) return new Response(null, { status: 404 });
     if (aid === 92) throw new Error("offline");
     if (aid === 93) return Response.json({ ...profile(aid), aid: 999 });
@@ -78,13 +97,36 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   assert.equal(calls.length, 0);
   for (const mode of ["regular", "pve", "arena", "seasonal"]) {
     const response = await request(`aid=42&mode=${mode}&cycle=portrait-test`);
-    assert.equal(response.status, 307);
-    assert.equal(new URL(response.headers.get("location")).hostname, "imagemagic.tarkov.dev");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("location"), null, "the browser must receive the image, not another render request");
+    assert.equal(response.headers.get("content-type"), "image/webp");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), imageBytes);
     assert.match(response.headers.get("cache-control"), /max-age=300/);
   }
   assert.deepEqual(calls, ["profile", "pve", "arena", "pvp-season"].map((path) => `https://players.tarkov.dev/${path}/42.json`));
-  await request("aid=42&mode=pve");
+  const cached = await request("aid=42&mode=pve");
+  assert.equal(cached.status, 200);
+  assert.deepEqual(new Uint8Array(await cached.arrayBuffer()), imageBytes);
   assert.equal(calls.length, 4, "cached portraits must not refetch the profile");
+  assert.deepEqual(renders, ["/player/42.webp"], "the image bytes must be cached too");
+
+  for (const [aid, failure] of [[95, "HTTP 500"], [96, "network failure"], [97, "body read failure"], [98, "HTML response"], [99, "empty image"]]) {
+    await t.test(`${failure} does not cache a missing portrait and recovers on the next request`, async () => {
+      const fallback = await request(`aid=${aid}&mode=regular`);
+      assert.equal(fallback.status, 307);
+      assert.equal(new URL(fallback.headers.get("location")).hostname, "imagemagic.tarkov.dev");
+      assert.match(fallback.headers.get("cache-control"), /no-store/);
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const recovered = await request(`aid=${aid}&mode=regular`);
+        assert.equal(recovered.status, 200);
+        assert.equal(recovered.headers.get("content-type"), "image/webp");
+        assert.deepEqual(new Uint8Array(await recovered.arrayBuffer()), imageBytes);
+      }
+      assert.equal(renders.filter((path) => path === `/player/${aid}.webp`).length, 2, "retry the failure, then reuse the complete image");
+    });
+  }
   // A missing portrait is a stable answer, so the 404 is cacheable. An upstream
   // failure must not be, or a Cloudflare blip would stick for the whole max-age.
   for (const [aid, status, cacheable] of [[91, 404, true], [92, 502, false], [93, 404, true]]) {
