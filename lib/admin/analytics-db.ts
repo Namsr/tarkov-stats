@@ -91,6 +91,9 @@ export interface HealthSeriesPoint {
   p50Ms: number | null;
   p95Ms: number | null;
   p99Ms: number | null;
+  p999Ms: number | null;
+  /** Slowest request of the bucket, failures included, so outliers stay visible. */
+  maxMs: number | null;
 }
 
 export interface LocalSummary {
@@ -115,6 +118,8 @@ export interface LocalSummary {
     operations: HealthOperationSummary[];
     issues: HealthIssueSummary[];
     series: HealthSeriesPoint[];
+    /** Width of one `series` bucket. The client renders it instead of a period table. */
+    bucketMs: number;
   };
   freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null };
   auth: { activeUsers: number; signIns: number };
@@ -797,13 +802,17 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           SUM(CASE WHEN outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500 THEN 1 ELSE 0 END) AS problems,
           MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
           MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
-          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 999 + 999) / 1000 AS INTEGER) THEN latency_ms END) AS p999_ms,
+          MAX(latency_ms) AS max_ms
         FROM ranked GROUP BY at ORDER BY at`).all(bucketMs, bucketMs, ...args) as Record<string, unknown>[] : [];
       const series: HealthSeriesPoint[] = seriesRows.map((seriesRow) => ({
         at: Number(seriesRow.at), requests: Number(seriesRow.requests), problems: Number(seriesRow.problems),
         p50Ms: seriesRow.p50_ms == null ? null : Number(seriesRow.p50_ms),
         p95Ms: seriesRow.p95_ms == null ? null : Number(seriesRow.p95_ms),
         p99Ms: seriesRow.p99_ms == null ? null : Number(seriesRow.p99_ms),
+        p999Ms: seriesRow.p999_ms == null ? null : Number(seriesRow.p999_ms),
+        maxMs: seriesRow.max_ms == null ? null : Number(seriesRow.max_ms),
       }));
       const currentSignal = includeDiagnostics ? queryHealthSignal(db, domain, now) : {
         status: "healthy" as const, activeIssueCount: 0, firstSeenAt: null, lastSeenAt: null,
@@ -824,7 +833,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           statusSinceAt: currentSignal.firstSeenAt,
           activeIssueCount: currentSignal.activeIssueCount,
           recentIssueCount: issues.reduce((total, issue) => total + issue.count, 0),
-          operations, issues, series,
+          operations, issues, series, bucketMs,
         },
         freshness: {
           lastEventAt: row.last_event_at == null ? null : Number(row.last_event_at),

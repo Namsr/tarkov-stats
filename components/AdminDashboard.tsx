@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
@@ -22,8 +22,8 @@ type HealthOperationVariant = { source: string | null; cache: string | null; for
 type HealthPhase = { phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "store_read" | "store_write"; samples: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
 type HealthOperation = { operation: string; mode: string | null; requests: number; success: number; serverErrors: number; rateLimited: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; lastIssueAt: number | null; variants: HealthOperationVariant[]; phases: HealthPhase[] };
 type HealthIssue = { operation: string; mode: string | null; aid: number | null; stage: string; code: string; status: number; count: number; activeCount: number; firstSeenAt: number; lastSeenAt: number; maxLatencyMs: number; active: boolean; severity: "warning" | "critical" };
-type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
-type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[] };
+type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; p999Ms: number | null; maxMs: number | null };
+type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[]; bucketMs: number };
 type AveragePublication = { scope: string; generation: number | null; generatedAt: number | null; dirtyAt: number | null; lastStartedAt: number | null; lastCompletedAt: number | null; lastDurationMs: number | null; lastError: string | null; variants: number; status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error" };
 type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
 type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
@@ -678,34 +678,188 @@ function healthReport(summary: Summary): string {
   }, null, 2);
 }
 
-function HealthSeriesCharts({ points, lang, t }: { points: HealthSeriesPoint[]; lang: string; t: T }) {
+/** Chart-scale latency split into its number and unit so the unit can be dimmed. Each chip
+ *  picks its own unit from its own value, which is what the value itself calls for. */
+function healthLatencyParts(value: number | null, locale: string, t: T): { value: string; unit: string } | null {
+  if (value == null) return null;
+  const seconds = Math.abs(value) >= 1000;
+  const amount = new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(seconds ? value / 1000 : value);
+  return { value: amount, unit: seconds ? t("admin.health.unitSeconds") : t("admin.health.unitMilliseconds") };
+}
+
+/** One unit for a whole axis, taken from its maximum, so labels never mix ms and seconds.
+ *  The unit is decided here and applied to the number directly: routing it back through
+ *  `healthLatencyParts` would let a label near the boundary re-choose its own unit, and an
+ *  axis whose top rounds up past 1000 ms would read in two units. */
+function healthLatencyAxisFormat(max: number, locale: string, t: T): (value: number) => string {
+  const seconds = max >= 1000;
+  const unit = seconds ? t("admin.health.unitSeconds") : t("admin.health.unitMilliseconds");
+  const amount = new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  return (value: number) => `${amount.format(seconds ? value / 1000 : value)} ${unit}`;
+}
+
+/** Bucket width as a compact duration, matching the widths the server buckets by. */
+function healthBucketLabel(ms: number, locale: string, t: T): string {
+  if (!(ms > 0)) return t("common.notAvailable");
+  const count = new Intl.NumberFormat(locale).format(ms < 3_600_000 ? Math.round(ms / 60_000) : Math.round(ms / 3_600_000));
+  return ms < 3_600_000 ? t("admin.health.durationMinutes", { n: count }) : t("admin.health.durationHours", { n: count });
+}
+
+/** Round the top label up to a readable 1/2/2.5/5 step, so a 44 s outlier cannot set the scale. */
+function healthNiceMax(rawMax: number, divisions: number): number {
+  const target = Math.max(rawMax, 0) / divisions;
+  if (target <= 0) return divisions;
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  const normalized = target / magnitude;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  // toPrecision drops the float noise of the power-of-ten step, which would print
+  // as duplicate one-decimal gridline labels.
+  return Number((nice * magnitude * divisions).toPrecision(6));
+}
+
+function healthBucketTime(value: number, lang: string, withDate = false): string {
+  return new Date(value).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", withDate
+    ? { timeZone: "Europe/Moscow", day: "2-digit", month: "short" }
+    : { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Zone name in the same zone the clock is rendered in, so the two cannot disagree. */
+function healthZoneName(value: number): string {
+  return new Intl.DateTimeFormat(undefined, { timeZone: "Europe/Moscow", timeZoneName: "short" }).formatToParts(new Date(value)).find((part) => part.type === "timeZoneName")?.value ?? "";
+}
+
+type HealthLatencySeries = { key: "p50Ms" | "p95Ms" | "p99Ms"; tone: "p50" | "p95" | "p99" };
+
+const HEALTH_LATENCY_SERIES: readonly HealthLatencySeries[] = [{ key: "p50Ms", tone: "p50" }, { key: "p95Ms", tone: "p95" }, { key: "p99Ms", tone: "p99" }];
+
+/** Latest non-null value of a percentile, so a chip agrees with the line's end marker. */
+function healthLatest(points: HealthSeriesPoint[], key: "p50Ms" | "p95Ms" | "p99Ms" | "p999Ms"): number | null {
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const value = points[index][key];
+    if (value != null) return value;
+  }
+  return null;
+}
+
+/** Slowest request anywhere in the window, so an outlier stays visible next to the percentiles. */
+function healthSlowest(points: HealthSeriesPoint[]): number | null {
+  const values = points.flatMap((point) => point.maxMs == null ? [] : [point.maxMs]);
+  return values.length ? Math.max(...values) : null;
+}
+
+export function HealthSeriesCharts({ points, bucketMs, lang, t, onShowTable }: { points: HealthSeriesPoint[]; bucketMs: number; lang: string; t: T; onShowTable: () => void }) {
+  // useId keeps the gradient ids unique when the panel mounts more than once, so
+  // its characters have to survive a `url(#...)` reference.
+  const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const [latencyOpen, setLatencyOpen] = useState(true);
+  const [volumeOpen, setVolumeOpen] = useState(true);
   if (!points.length) return <Empty t={t} />;
-  const left = 7;
-  const right = 97;
-  const top = 4;
-  const bottom = 38;
+  const locale = lang === "ru" ? "ru-RU" : "en-US";
   const firstAt = points[0].at;
   const lastAt = points.at(-1)!.at;
   const span = Math.max(1, lastAt - firstAt);
-  const xFor = (at: number) => points.length === 1 ? 52 : left + (at - firstAt) / span * (right - left);
-  const latencyMax = Math.max(1, ...points.flatMap((point) => [point.p50Ms ?? 0, point.p95Ms ?? 0, point.p99Ms ?? 0]));
-  const volumeMax = Math.max(1, ...points.flatMap((point) => [point.requests, point.problems]));
-  const line = (key: "p50Ms" | "p95Ms" | "p99Ms", max: number) => points
-    .filter((point) => point[key] != null)
-    .map((point) => `${xFor(point.at)},${bottom - Number(point[key]) / max * (bottom - top)}`)
-    .join(" ");
-  const volumeLine = (key: "requests" | "problems") => points
-    .map((point) => `${xFor(point.at)},${bottom - point[key] / volumeMax * (bottom - top)}`)
-    .join(" ");
-  const axis = <div className="admin-health-chart-axis" aria-hidden="true"><span>{formatChartAxis(firstAt, lang, span)}</span><span>{formatChartAxis(lastAt, lang, span)}</span></div>;
+  // The y axis labels sit in their own gutter on the left, so the plot starts at 16.
+  const left = 16;
+  const right = 99;
+  const top = 6;
+  const bottom = 43;
+  const chartHeight = 58;
+  const divisions = 3;
+  const xFor = (at: number) => points.length === 1 ? (left + right) / 2 : left + (at - firstAt) / span * (right - left);
+  const yFor = (value: number, max: number) => bottom - Math.min(max, Math.max(0, value)) / max * (bottom - top);
+  // Only the top line sets the scale; p99.9 and the slowest request stay off it.
+  const latencyPeak = Math.max(0, ...points.map((point) => point.p99Ms ?? point.p95Ms ?? point.p50Ms ?? 0));
+  const latencyMax = healthNiceMax(latencyPeak, divisions);
+  // Counts stay whole, so the volume labels never show a fraction of a request.
+  const volumeStep = Math.max(1, Math.ceil(healthNiceMax(Math.max(1, ...points.flatMap((point) => [point.requests, point.problems])), divisions) / divisions));
+  const volumeMax = volumeStep * divisions;
+  const gridLines = [0, 1, 2, 3].map((index) => bottom - index / divisions * (bottom - top));
+  // A bucket with no successful request repeats the previous value, so one quiet
+  // bucket cannot cut a band in two. Each series remembers the index it starts at.
+  const raw = HEALTH_LATENCY_SERIES.map((series) => {
+    const start = Math.max(0, points.findIndex((point) => point[series.key] != null));
+    let carried: number | null = null;
+    const track: { x: number; y: number }[] = [];
+    for (let index = start; index < points.length; index += 1) {
+      const value = points[index][series.key];
+      if (value != null) carried = value;
+      if (carried != null) track.push({ x: xFor(points[index].at), y: yFor(carried, latencyMax) });
+    }
+    return { ...series, start, track };
+  });
+  // A band needs both edges on the same buckets, so trim every series back to the
+  // last one to start rather than losing the whole fill over a leading gap.
+  const from = Math.max(...raw.map((series) => series.start));
+  const tracks = raw.map((series) => ({ ...series, points: series.track.slice(from - series.start) }));
+  // Each band fills from its own line down to the one below it: p99 over p95 over p50 over the baseline.
+  const band = (upper: { x: number; y: number }[], lower: { x: number; y: number }[]) => upper.length < 2 || lower.length !== upper.length
+    ? null
+    : `M${upper.map((point) => `${point.x},${point.y}`).join("L")}L${lower.map((point) => `${point.x},${point.y}`).reverse().join("L")}Z`;
+  const baseline = tracks[0].points.map((point) => ({ x: point.x, y: bottom }));
+  const bands = tracks.map((series, index) => ({ ...series, d: band(series.points, index === 0 ? baseline : tracks[index - 1].points) }));
+  const volumeTrack = (key: "requests" | "problems") => points.map((point) => `${xFor(point.at)},${yFor(point[key], volumeMax)}`).join(" ");
+  const grid = <>{gridLines.map((y, index) => <line key={y} className={`admin-chart__grid${index === 0 ? "" : " admin-chart__grid--dashed"}`} x1={left} x2={right} y1={y} y2={y} />)}</>;
+  const yAxis = (max: number, format: (value: number) => string) => <div className="admin-chart-overlay" aria-hidden="true">{gridLines.map((y, index) => <span key={y} className="admin-chart__axis" style={{ top: `${y / chartHeight * 100}%` }}>{format(index / divisions * max)}</span>)}</div>;
+  // Clock ticks: every three hours over a day, then daily, weekly, and monthly.
+  const tickStep = span <= 2 * 86_400_000 ? 3 * 3_600_000 : span <= 14 * 86_400_000 ? 86_400_000 : span <= 60 * 86_400_000 ? 7 * 86_400_000 : 30 * 86_400_000;
+  const tickTimes: number[] = [];
+  for (let at = Math.ceil(firstAt / tickStep) * tickStep; at <= lastAt; at += tickStep) tickTimes.push(at);
+  const ticks = tickTimes.length > 1 ? tickTimes : points.length === 1 ? [firstAt] : [firstAt, lastAt];
+  const withDate = tickStep >= 86_400_000;
+  const xAxis = <div className="admin-chart-axis admin-health-chart__axis-x" aria-hidden="true">{ticks.map((at) => {
+    const x = (xFor(at) - left) / (right - left) * 100;
+    return <span key={at} style={{ left: `${x}%`, transform: `translateX(${x <= 0 ? "0" : x >= 100 ? "-100%" : "-50%"})` }}>{healthBucketTime(at, lang, withDate)}</span>;
+  })}</div>;
+  const clock = <p className="admin-health-chart__clock"><b>{healthBucketTime(lastAt, lang)}</b>{" "}<span>{healthZoneName(lastAt)}</span><small>{t("admin.health.resolution", { n: healthBucketLabel(bucketMs, locale, t) })}</small></p>;
+  const chip = (tone: string, label: string, value: number | null, note?: string) => {
+    const parts = healthLatencyParts(value, locale, t);
+    return <div key={tone} className="admin-health-chart__chip" title={note}><dt><span className={`admin-health-chart__dot admin-health-chart__dot--${tone}`} aria-hidden="true" />{label}:</dt><dd>{parts ? <>{parts.value}<span className="admin-health-chart__unit">{parts.unit}</span></> : t("common.notAvailable")}{note && <span className="sr-only">{note}</span>}</dd></div>;
+  };
+  const heading = (label: string, open: boolean, toggle: () => void) => <h2 className="admin-health-chart__heading"><button type="button" className="admin-health-chart__title" aria-expanded={open} onClick={toggle}>{label}<i className="admin-health-chart__chevron" aria-hidden="true" /></button></h2>;
   return <div className="admin-health-chart-grid">
-    <section className="data-panel admin-panel admin-health-chart"><h2 className="section-heading">{t("admin.health.latencyChart")}</h2><p className="admin-chart-description">{t("admin.health.latencyChartDescription")}</p><div className="admin-health-chart-stage"><svg viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true">{[top, bottom].map((y) => <line key={y} className="admin-chart__grid" x1={left} x2={right} y1={y} y2={y} />)}<polyline className="admin-health-chart__line admin-health-chart__line--p50" points={line("p50Ms", latencyMax)} /><polyline className="admin-health-chart__line admin-health-chart__line--p95" points={line("p95Ms", latencyMax)} /><polyline className="admin-health-chart__line admin-health-chart__line--p99" points={line("p99Ms", latencyMax)} /></svg><span className="admin-health-chart-max">{healthLatency(latencyMax, t)}</span></div>{axis}<div className="admin-chart-legend"><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p50" />{t("admin.health.p50Short")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p95" />{t("admin.health.p95Short")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--p99" />{t("admin.health.p99Short")}</span></div></section>
-    <section className="data-panel admin-panel admin-health-chart"><h2 className="section-heading">{t("admin.health.volumeChart")}</h2><p className="admin-chart-description">{t("admin.health.volumeChartDescription")}</p><div className="admin-health-chart-stage"><svg viewBox="0 0 100 42" preserveAspectRatio="none" aria-hidden="true">{[top, bottom].map((y) => <line key={y} className="admin-chart__grid" x1={left} x2={right} y1={y} y2={y} />)}<polyline className="admin-health-chart__line admin-health-chart__line--requests" points={volumeLine("requests")} /><polyline className="admin-health-chart__line admin-health-chart__line--problems" points={volumeLine("problems")} /></svg><span className="admin-health-chart-max">{formatNumber(volumeMax)}</span></div>{axis}<div className="admin-chart-legend"><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--requests" />{t("admin.health.requests")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--problems" />{t("admin.health.problems")}</span></div></section>
+    <section className="data-panel admin-panel admin-health-chart">
+      <div className="admin-health-chart__head">{heading(t("admin.health.latencyChart"), latencyOpen, () => setLatencyOpen(!latencyOpen))}<button type="button" className="admin-health-chart__action" onClick={onShowTable}>{t("admin.health.queryInsights")}</button></div>
+      <p className="admin-chart-description">{t("admin.health.latencyChartDescription")}</p>
+      {latencyOpen && <>
+      <div className="admin-health-chart__summary"><dl className="admin-health-chart__chips">
+        {HEALTH_LATENCY_SERIES.map((series) => chip(series.tone, t("admin.health." + series.key.replace("Ms", "Short")), healthLatest(points, series.key)))}
+        {chip("p999", t("admin.health.p999Short"), healthLatest(points, "p999Ms"))}
+        {chip("max", t("admin.health.maxShort"), healthSlowest(points), t("admin.health.maxShortTitle"))}
+      </dl>{clock}</div>
+      <div className="admin-health-chart-stage"><svg viewBox="0 0 100 58" preserveAspectRatio="none" aria-hidden="true"><defs>{HEALTH_LATENCY_SERIES.map((series) => <linearGradient key={series.tone} id={`${gradientId}-${series.tone}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" style={{ stopColor: `var(--health-${series.tone})` }} stopOpacity=".34" /><stop offset="100%" style={{ stopColor: `var(--health-${series.tone})` }} stopOpacity="0" /></linearGradient>)}</defs>
+        {grid}
+        {bands.map((series) => series.d && <path key={series.tone} className="admin-health-chart__band" fill={`url(#${gradientId}-${series.tone})`} d={series.d} />)}
+        {tracks.map((series) => <polyline key={series.tone} className={`admin-health-chart__line admin-health-chart__line--${series.tone}`} points={series.points.map((point) => `${point.x},${point.y}`).join(" ")} />)}
+      </svg>
+        {/* The unit follows the data, not the rounded axis top, so a sub-second p99
+            still reads in milliseconds instead of flipping to seconds at 1500 ms. */}
+        {yAxis(latencyMax, healthLatencyAxisFormat(latencyPeak, locale, t))}
+        {tracks.map((series) => series.points.length > 0 && <span key={series.tone} className={`admin-health-chart__marker admin-health-chart__marker--${series.tone}`} style={{ left: `${series.points.at(-1)!.x}%`, top: `${series.points.at(-1)!.y / chartHeight * 100}%` }} />)}
+      </div>
+      {xAxis}
+      </>}
+    </section>
+    <section className="data-panel admin-panel admin-health-chart">
+      <div className="admin-health-chart__head">{heading(t("admin.health.volumeChart"), volumeOpen, () => setVolumeOpen(!volumeOpen))}</div>
+      <p className="admin-chart-description">{t("admin.health.volumeChartDescription")}</p>
+      {volumeOpen && <>
+      <div className="admin-health-chart-stage"><svg viewBox="0 0 100 58" preserveAspectRatio="none" aria-hidden="true">
+        {grid}
+        <polyline className="admin-health-chart__line admin-health-chart__line--requests" points={volumeTrack("requests")} />
+        <polyline className="admin-health-chart__line admin-health-chart__line--problems" points={volumeTrack("problems")} />
+      </svg>
+        {yAxis(volumeMax, formatNumber)}
+      </div>
+      <div className="admin-chart-legend"><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--requests" />{t("admin.health.requests")}</span><span><i className="admin-chart-legend__swatch admin-health-chart__swatch--problems" />{t("admin.health.problems")}</span></div>
+      {xAxis}
+      </>}
+    </section>
   </div>;
 }
 
 function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudit }: { summary: Summary | null; lang: string; t: T; audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void> }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const seriesTable = useRef<HTMLDetailsElement>(null);
   const health = summary?.health;
   if (!health || !summary) return <div className="admin-stack"><div className="admin-notice admin-notice--error" role="alert">{t("admin.warning.storage")}</div><DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} /></div>;
   const cached = health.cacheHits + health.cacheMisses;
@@ -724,6 +878,15 @@ function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudi
     try { await navigator.clipboard.writeText(healthReport(summary)); setCopyState("copied"); }
     catch { setCopyState("error"); }
   };
+  // The panel's own "view all" chip opens the series table instead of dead-ending.
+  const showSeriesTable = () => {
+    if (!seriesTable.current) return;
+    seriesTable.current.open = true;
+    seriesTable.current.scrollIntoView({ block: "start" });
+    // Revealing content off-screen is invisible to a keyboard or screen reader
+    // user unless focus follows it.
+    seriesTable.current.querySelector("summary")?.focus();
+  };
   const statusDescription = health.status === "healthy" && health.recentIssueCount > 0
     ? t("admin.health.status.recovered", { n: health.recentIssueCount })
     : t("admin.health.status." + health.status + "Description", { active: health.activeIssueCount, recent: health.recentIssueCount });
@@ -732,11 +895,11 @@ function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudi
     <p className="admin-notice">{t("admin.health.scope")}</p>
     <div className="admin-metrics admin-health-metrics">{values.map(([key, value]) => <StatCard key={key} label={t("admin.health." + key)} value={value} />)}</div>
     {health.requests > 0 && health.requests < 100 && <p className="admin-notice">{t("admin.health.p99LowConfidence", { n: health.requests })}</p>}
-    <HealthSeriesCharts points={health.series ?? []} lang={lang} t={t} />
+    <HealthSeriesCharts points={health.series ?? []} bucketMs={health.bucketMs} lang={lang} t={t} onShowTable={showSeriesTable} />
     <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.publicationsHeading")}</h2><p className="admin-chart-description">{t("admin.health.publicationsDescription")}</p>{publications.length ? <div className="admin-health-table-wrap"><table className="admin-health-table"><thead><tr><th scope="col">{t("admin.health.publication.scope")}</th><th scope="col">{t("admin.health.table.state")}</th><th scope="col">{t("admin.health.publication.generation")}</th><th scope="col">{t("admin.health.publication.generatedAt")}</th><th scope="col">{t("admin.health.publication.duration")}</th><th scope="col">{t("admin.health.publication.variants")}</th><th scope="col">{t("admin.health.publication.error")}</th></tr></thead><tbody>{publications.map((publication) => <tr key={publication.scope}><th scope="row">{publication.scope}</th><td>{t("admin.health.publication.status." + publication.status)}</td><td>{publication.generation == null ? t("common.notAvailable") : formatNumber(publication.generation)}</td><td>{formatDate(publication.generatedAt, lang, t)}</td><td>{healthLatency(publication.lastDurationMs, t)}</td><td>{formatNumber(publication.variants)}</td><td>{publication.lastError ?? t("common.notAvailable")}</td></tr>)}</tbody></table></div> : <p className="admin-empty">{t("admin.health.publication.empty")}</p>}</section>
     <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.operationsHeading")}</h2><p className="admin-chart-description">{t("admin.health.operationsDescription")}</p><div className="admin-health-table-wrap"><table className="admin-health-table"><thead><tr><th scope="col">{t("admin.health.table.operation")}</th><th scope="col">{t("admin.health.table.mode")}</th><th scope="col">{t("admin.health.table.requests")}</th><th scope="col">{t("admin.health.table.success")}</th><th scope="col">{t("admin.health.table.server5xx")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th><th scope="col">{t("admin.health.table.lastSuccess")}</th><th scope="col">{t("admin.health.table.lastIssue")}</th></tr></thead><tbody>{health.operations.map((operation) => <tr key={`${operation.operation}-${operation.mode ?? "all"}`}><th scope="row">{healthOperationLabel(operation.operation, t)}{operation.variants.map((variant, index) => <small key={`${variant.source}-${variant.cache}-${String(variant.force)}-${index}`}>{healthVariantLabel(variant, t)}</small>)}{operation.phases.map((phase) => <small key={phase.phase}>{healthPhaseLabel(phase, t)}</small>)}</th><td>{healthModeLabel(operation.mode, t)}</td><td>{formatNumber(operation.requests)}</td><td>{healthPercent(operation.success, operation.requests, lang)}</td><td>{formatNumber(operation.serverErrors)}</td><td>{healthLatency(operation.p50Ms, t)}</td><td>{healthLatency(operation.p95Ms, t)}</td><td>{healthLatency(operation.p99Ms, t)}{operation.requests < 100 && <span className="admin-health-confidence" title={t("admin.health.lowConfidence")}>*</span>}</td><td>{formatDate(operation.lastSuccessAt, lang, t)}</td><td>{formatDate(operation.lastIssueAt, lang, t)}</td></tr>)}</tbody></table></div></section>
     <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.issuesHeading")}</h2><p className="admin-chart-description">{t("admin.health.issuesDescription")}</p>{health.issues.length ? <div className="admin-health-table-wrap"><table className="admin-health-table admin-health-issues"><thead><tr><th scope="col">{t("admin.health.table.state")}</th><th scope="col">{t("admin.health.table.operation")}</th><th scope="col">{t("admin.health.table.aid")}</th><th scope="col">{t("admin.health.table.stage")}</th><th scope="col">{t("admin.health.table.code")}</th><th scope="col">{t("admin.health.table.http")}</th><th scope="col">{t("admin.health.table.count")}</th><th scope="col">{t("admin.health.table.firstSeen")}</th><th scope="col">{t("admin.health.table.lastSeen")}</th><th scope="col">{t("admin.health.table.maxLatency")}</th></tr></thead><tbody>{health.issues.map((issue) => <tr key={`${issue.operation}-${issue.mode}-${issue.aid ?? "all"}-${issue.stage}-${issue.code}-${issue.status}`}><td><span className={`admin-health-issue-badge admin-health-issue-badge--${issue.active ? issue.severity : "resolved"}`}>{t(issue.active ? "admin.health.issue.active" : "admin.health.issue.resolved")}</span></td><th scope="row">{healthOperationLabel(issue.operation, t)}<small>{healthModeLabel(issue.mode, t)}</small></th><td>{issue.aid ?? t("common.notAvailable")}</td><td>{healthStageLabel(issue.stage, t)}</td><td><code>{issue.code}</code></td><td>{issue.status}</td><td>{formatNumber(issue.count)}{issue.activeCount > 0 && <small>{t("admin.health.issue.activeCount", { n: issue.activeCount })}</small>}</td><td>{formatDate(issue.firstSeenAt, lang, t)}</td><td>{formatDate(issue.lastSeenAt, lang, t)}</td><td>{healthLatency(issue.maxLatencyMs, t)}</td></tr>)}</tbody></table></div> : <p className="admin-empty">{t("admin.health.noIssues")}</p>}</section>
-    <details className="data-panel admin-monitoring-table"><summary>{t("admin.health.seriesTable")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr><th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.health.requests")}</th><th scope="col">{t("admin.health.problems")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th></tr></thead><tbody>{health.series.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{formatNumber(point.requests)}</td><td>{formatNumber(point.problems)}</td><td>{healthLatency(point.p50Ms, t)}</td><td>{healthLatency(point.p95Ms, t)}</td><td>{healthLatency(point.p99Ms, t)}</td></tr>)}</tbody></table></div></details>
+    <details className="data-panel admin-monitoring-table" ref={seriesTable}><summary>{t("admin.health.seriesTable")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr><th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.health.requests")}</th><th scope="col">{t("admin.health.problems")}</th><th scope="col">{t("admin.health.p50Short")}</th><th scope="col">{t("admin.health.p95Short")}</th><th scope="col">{t("admin.health.p99Short")}</th><th scope="col">{t("admin.health.p999Short")}</th><th scope="col">{t("admin.health.maxShort")}</th></tr></thead><tbody>{health.series.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{formatNumber(point.requests)}</td><td>{formatNumber(point.problems)}</td><td>{healthLatency(point.p50Ms, t)}</td><td>{healthLatency(point.p95Ms, t)}</td><td>{healthLatency(point.p99Ms, t)}</td><td>{healthLatency(point.p999Ms, t)}</td><td>{healthLatency(point.maxMs, t)}</td></tr>)}</tbody></table></div></details>
     <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.health.freshness")}</h2><dl className="admin-health-dates"><div><dt>{t("admin.health.lastSuccess")}</dt><dd>{formatDate(health.lastSuccessAt, lang, t)}</dd></div><div><dt>{t("admin.health.lastEvent")}</dt><dd>{formatDate(summary.freshness?.lastEventAt ?? null, lang, t)}</dd></div><div><dt>{t("admin.health.lastProfile")}</dt><dd>{formatDate(summary.freshness?.lastProfileRequestAt ?? null, lang, t)}</dd></div></dl></section>
     <DataAuditPanel audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={onRunAudit} lang={lang} t={t} />
   </div>;
