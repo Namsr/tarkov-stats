@@ -1189,16 +1189,21 @@ function warn(msg: string) {
   }
 }
 
-// node:sqlite backend (self-hosted). DB handle is cached per process and shared
-// by the player store and the favorites store (one file, one connection, schema
-// applied once).
+// node:sqlite backend (self-hosted). The open is memoized as the in-flight
+// promise rather than as the handle, and the promise is published synchronously
+// before the first await. Caching the handle left a gap between the null check
+// and the assignment three dynamic imports later: every request that arrived in
+// that window passed the check, opened its own DatabaseSync and re-ran the whole
+// schema initialization, and all but the last assignment became unreachable and
+// stayed open for the life of the process. One promise, one open.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let sqliteDb: any = null;
+let opening: Promise<any | null> | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getSqliteDb(): Promise<any | null> {
-  try {
-    if (!sqliteDb) {
+function getSqliteDb(): Promise<any | null> {
+  if (opening) return opening;
+  opening = (async () => {
+    try {
       const fs = await import("node:fs");
       const path = await import("node:path");
       const file = process.env.SQLITE_PATH || "/data/players.db";
@@ -1206,7 +1211,7 @@ async function getSqliteDb(): Promise<any | null> {
       // Specifier cast keeps the build from type-resolving the (Node-only) module.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sqlite = (await import("node:sqlite" as string)) as any;
-      // The handle is cached only after the schema is in place: a failed
+      // The handle is published only after the schema is in place: a failed
       // initialization must not leave a half-initialized connection behind for
       // the rest of the process, or every later call would skip the schema work
       // and fail on a missing table.
@@ -1217,13 +1222,17 @@ async function getSqliteDb(): Promise<any | null> {
         try { opened.close(); } catch { /* already closed */ }
         throw error;
       }
-      sqliteDb = opened;
+      return opened;
+    } catch (e) {
+      warn("sqlite unavailable: " + (e as Error).message);
+      // A failed open must never become the cached answer. Dropping the promise
+      // here is what makes the next call retry: caching it would disable the
+      // player store for the life of the process over one transient failure.
+      opening = null;
+      return null;
     }
-    return sqliteDb;
-  } catch (e) {
-    warn("sqlite unavailable: " + (e as Error).message);
-    return null;
-  }
+  })();
+  return opening;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1790,10 +1799,20 @@ export interface FavoritesStore {
   ): Promise<"ok" | "exists" | "limit">;
   /** Unpin every stored identity for this AID. */
   remove(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
-  /** Set/clear the note. */
-  setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<void>;
-  /** Mark one favorite as the user's main account (clears the flag on the rest). */
-  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<void>;
+  /**
+   * Set/clear the note. False when the AID is not one of the user's favorites:
+   * the update is scoped to `user_sub`, so a zero row count means the write was
+   * skipped and the caller has to be able to tell a refused mutation from an
+   * applied one. Rewriting the same note still reports a match.
+   */
+  setNote(userSub: string, aid: number, note: string | null, identity?: FavoriteIdentity): Promise<boolean>;
+  /**
+   * Mark one favorite as the user's main account (clears the flag on the rest).
+   * False when the AID is not one of the user's favorites: the statement's
+   * ownership guard then matches nothing and no row is written, so the caller
+   * has to be able to tell a refused mutation from an applied one.
+   */
+  setMain(userSub: string, aid: number, identity?: FavoriteIdentity): Promise<boolean>;
   /** Refresh the stored nickname snapshot. */
   updateNickname(userSub: string, aid: number, nickname: string | null, identity?: FavoriteIdentity): Promise<void>;
 }
@@ -1881,10 +1900,16 @@ function sqliteFavoritesStore(db: any): FavoritesStore {
       db.prepare("DELETE FROM favorites WHERE user_sub = ? AND aid = ?").run(userSub, aid);
     },
     async setNote(userSub, aid, note) {
-      db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid);
+      // SQLite counts an UPDATE by the rows it matched, not by the values it
+      // changed, so an owned aid always reports at least one even when the note
+      // is rewritten to the text it already had.
+      return db.prepare("UPDATE favorites SET note = ? WHERE user_sub = ? AND aid = ?").run(note, userSub, aid).changes > 0;
     },
     async setMain(userSub, aid) {
-      db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid);
+      // The EXISTS guard makes a zero row count mean "not the caller's favorite",
+      // not "already in that state" — the statement rewrites every one of the
+      // user's rows either way, so a matching aid always reports at least one.
+      return db.prepare(FAVORITE_SET_MAIN_SQL).run(aid, userSub, userSub, aid).changes > 0;
     },
     async updateNickname(userSub, aid, nickname) {
       db.prepare("UPDATE favorites SET nickname = ? WHERE user_sub = ? AND aid = ?").run(nickname, userSub, aid);
