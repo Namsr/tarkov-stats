@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -297,6 +297,77 @@ test("the leaderboard runtime source opener closes a handle whose player attach 
   } finally {
     DatabaseSync.prototype.close = nativeClose;
     resetLeaderboardRuntimeForTests();
+    restore();
+  }
+});
+
+test("concurrent cold-start callers share one player database open", async () => {
+  const racePath = join(directory, "cold-start-race.db");
+  const restore = useEnvironment({ SQLITE_PATH: racePath });
+  try {
+    // Migrate the file first, through a throwaway module instance: the one this
+    // file imported at the top already memoized a handle on the player database,
+    // and its opener never re-reads SQLITE_PATH, so calling it here would report
+    // success while leaving the race database unmigrated. The instance below has
+    // its own memo, so this call really does create and migrate the file. On an
+    // already-migrated database initializeSqliteSchema is almost entirely
+    // IF NOT EXISTS no-ops, so every racing opener succeeds and the extra handles
+    // are lost silently instead of failing loudly — which is exactly the
+    // cold-start shape to guard.
+    const base = pathToFileURL(resolve("lib/db.ts")).href;
+    const warm = await import(`${base}?migrate=1`);
+    assert.ok(await warm.getArenaBackend(), "the database is created and migrated first");
+    assert.ok(existsSync(racePath), "the warm call migrated the file, not the player database");
+
+    // The opener memoizes its in-flight promise, and that memo is per module
+    // instance. A second instance of lib/db.ts is what a process that has not
+    // warmed the module yet looks like, and it lets this case race without a
+    // child process. The query is part of the cache key, so the sibling imports
+    // the instance already loaded are still shared and only this module is new.
+    const coldStart = await import(`${base}?cold-start=1`);
+
+    // Counting the handles the openers touch is the only way to see the leak: the
+    // losing racers are indistinguishable from the winner at the call site. The
+    // openers reach node:sqlite through the same module this file imports, so
+    // patching the prototype sees every handle they construct and leaves the real
+    // namespace intact for every other import.
+    const { exec, prepare } = DatabaseSync.prototype;
+    const seen = new WeakSet();
+    const opened = [];
+    const track = (handle) => {
+      if (!seen.has(handle)) {
+        seen.add(handle);
+        opened.push(handle);
+      }
+    };
+    DatabaseSync.prototype.exec = function (...args) {
+      track(this);
+      return exec.apply(this, args);
+    };
+    DatabaseSync.prototype.prepare = function (...args) {
+      track(this);
+      return prepare.apply(this, args);
+    };
+    let callers;
+    try {
+      callers = await Promise.all(
+        Array.from({ length: 5 }, () => coldStart.getArenaBackend()),
+      );
+    } finally {
+      DatabaseSync.prototype.exec = exec;
+      DatabaseSync.prototype.prepare = prepare;
+    }
+
+    assert.ok(callers.every(Boolean), "every racing caller gets a working backend");
+    assert.equal(opened.length, 1, "five concurrent cold-start callers open one handle, not five");
+    assert.equal(
+      new Set(callers.map((backend) => backend.db)).size,
+      1,
+      "every racing caller is handed the same handle",
+    );
+    const after = await coldStart.getArenaBackend();
+    assert.equal(after?.db, callers[0].db, "the handle stays cached for later callers");
+  } finally {
     restore();
   }
 });
