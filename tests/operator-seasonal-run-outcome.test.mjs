@@ -50,7 +50,7 @@ process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 // the best this can do here.
 test.after(async () => {
   db.close();
-  await rm(directory, { recursive: true, force: true }).catch(() => {});
+  try { await rm(directory, { recursive: true, force: true }); } catch { /* The route keeps its adapter open. */ }
 });
 
 Object.assign(process.env, {

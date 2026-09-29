@@ -82,7 +82,7 @@ test("a stalled PvE index download aborts instead of holding the data-sync lock"
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* the aborted sync can still hold the database open. */ }
   }
 });
 
@@ -183,7 +183,7 @@ test("PvE index validates a streamed payload and swaps it atomically", async () 
     after.close();
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 });
 
@@ -209,6 +209,6 @@ test("malformed PvE index leaves the last committed table untouched", async () =
     db.close();
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 });

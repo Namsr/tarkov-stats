@@ -112,7 +112,7 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
     assert.equal(requests.length, 5, "one interrupted stream is retried from a fresh staging table");
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
   }
 });
 
