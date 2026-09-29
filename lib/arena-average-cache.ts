@@ -4,11 +4,12 @@ import {
   ARENA_AVERAGE_CACHE_TAG,
   AVERAGE_CACHE_TTL_SECONDS,
   arenaAverageCacheKey,
+  arenaCohortCacheKey,
 } from "@/lib/average-cache";
 import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
 import type { ArenaDimension, ArenaMetricKey, ArenaModeKey, ArenaStatistic } from "@/types/arena";
 
-export { arenaAverageCacheKey };
+export { arenaAverageCacheKey, arenaCohortCacheKey };
 
 /**
  * Population version the Arena profile sync bumps. No table, no row or an

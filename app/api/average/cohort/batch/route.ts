@@ -17,6 +17,7 @@ import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 import {
   arenaAverageCacheKey,
   arenaAverageCacheVersion,
+  arenaCohortCacheKey,
   loadCachedArenaAverage,
 } from "@/lib/arena-average-cache";
 import { readAveragePublication, standardArenaVariant } from "@/lib/average-publication";
@@ -55,6 +56,7 @@ async function populationCohort(
   mode: ArenaModeKey,
   statistic: ArenaStatistic,
   needsMatches: boolean,
+  cacheVersion: number,
 ): Promise<ArenaCohortResult | null> {
   const publication = await readAveragePublication<Record<string, unknown>>(
     "arena",
@@ -75,7 +77,8 @@ async function populationCohort(
   // Same versioned LRU key and same tagged loader as GET /api/average, so the
   // two routes share one entry: a sync that bumps the population version
   // retires it instead of leaving a pre-sync cohort in place for the TTL.
-  const cacheVersion = await arenaAverageCacheVersion();
+  // `cacheVersion` is the one the batch already read for the per-aid cohorts,
+  // so both halves of a response describe the same population.
   const dynamicKey = arenaAverageCacheKey(mode, statistic, "matches", "players", [null, null, null, null], cacheVersion);
   const loaded = await loadDynamicAverage(dynamicKey, () =>
     loadCachedArenaAverage(mode, statistic, "matches", "players", null, null, null, null, cacheVersion));
@@ -94,16 +97,17 @@ async function comparisonCohort(
   mode: ArenaModeKey,
   statistic: ArenaStatistic,
   needsMatches: boolean,
+  cacheVersion: number,
 ): Promise<ArenaCohortResult | null> {
   // Same LRU key as GET /api/average/cohort, so batch and single requests share entries.
   const loaded = await loadDynamicAverage(
-    ["cohort", "arena", aid, mode, statistic].join(":"),
+    arenaCohortCacheKey(aid, mode, statistic, cacheVersion),
     () => getArenaCohort(aid, mode, statistic),
   );
   const cohort = loaded.value;
   if (!cohort) return null;
   if (!shouldFallbackToPopulation(cohort)) return cohort;
-  return (await populationCohort(aid, mode, statistic, needsMatches)) ?? cohort;
+  return (await populationCohort(aid, mode, statistic, needsMatches, cacheVersion)) ?? cohort;
 }
 
 async function batchResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
@@ -127,6 +131,10 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
   const selectedPurpose: ArenaModeBaselinesPurpose = purpose;
   let cohortMs: number | undefined;
   try {
+    // One read per request, shared by the per-aid cohort keys and by the
+    // population fallback they can both reach, so one response never mixes two
+    // population versions.
+    const cacheVersion = await arenaAverageCacheVersion();
     const batchStarted = timing.now();
     const entries = await Promise.all(modes.map(async (mode) => {
       try {
@@ -135,6 +143,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
           mode,
           statistic,
           selectedPurpose === "matches",
+          cacheVersion,
         );
         return [mode, cohort] as const;
       } catch {

@@ -13,6 +13,7 @@ import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { arenaAverageCacheVersion, arenaCohortCacheKey } from "@/lib/arena-average-cache";
 
 export const runtime = "nodejs";
 
@@ -75,11 +76,17 @@ async function arenaCohortResponse(
   let cohortMs: number | undefined;
   let cache: "hit" | "miss" | undefined;
   try {
+    // Same versioned key as GET /api/average/cohort/batch, so single and batch
+    // requests share one entry and a sync that bumps the population version
+    // retires both instead of leaving a pre-sync cohort for the LRU TTL. Read
+    // before the timer starts, like the sibling routes do, so `cohortMs` keeps
+    // measuring the cohort rather than this version lookup.
+    const cacheVersion = await arenaAverageCacheVersion();
     const cohortStarted = timing.now();
     let loaded: { value: Awaited<ReturnType<typeof getArenaCohort>>; cache: "hit" | "miss" };
     try {
       loaded = await loadDynamicAverage(
-        ["cohort", "arena", aid, arenaMode, statistic].join(":"),
+        arenaCohortCacheKey(aid, arenaMode, statistic, cacheVersion),
         () => getArenaCohort(aid, arenaMode, statistic),
       );
     } finally {
