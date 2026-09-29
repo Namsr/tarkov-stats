@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { useRouter } from "next/navigation";
 import { parsePlayerInput } from "@/lib/player-id";
+import { useTrackedRouter } from "@/lib/use-tracked-router";
 import {
   filterRecentPlayers,
   getRecentPlayerHref,
@@ -46,7 +46,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const recentListId = useId();
   const resultListId = useId();
   const modeMenuId = useId();
-  const router = useRouter();
+  const router = useTrackedRouter();
 
   function modeLabel(mode: GameMode): string {
     if (mode === "regular") return t("fav.mode.regular");
