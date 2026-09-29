@@ -22,8 +22,6 @@ const ROOTS = ["pretest", "test"];
 // (there is no CI).
 const UNREGISTERED_BY_DESIGN = new Map([
   // "path/relative/to/repo.test.ts" -> "why it cannot be registered",
-  ["tests/progression-population-snapshot.test.ts",
-    "Red on main, so wiring it would turn `npm test` red: the last test, \"materialized percentiles prevent self-ranking and preserve achievement risk\", fails on \"materialized achievement baseline remains part of static risk\" at line 180. Fixing that assertion and naming this file in a script is the follow-up, after which this entry goes stale and must be deleted."],
 ]);
 
 async function collectTestFiles(dir) {
