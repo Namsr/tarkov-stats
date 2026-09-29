@@ -636,11 +636,11 @@ test("PvE feed ladder opens no request once the run budget is already spent", as
   // container start before it - can spend it and a later mode boots with none.
   // The systemd units do the opposite: they exec the collectors directly and
   // set no PROFILE_QUEUE_DEADLINE_MS in any ExecStart or compose file, so
-  // remainingRunBudget returns maxRunMs unchanged and config.maxRunMs stays at
-  // its full 12/50/13/25 minutes, which the guard never trips on. A queue
-  // deadline already in the past is how that zero-budget boot is modelled; the
-  // stub counts requests so the test fails if the guard is removed and a doomed
-  // request is issued anyway.
+  // remainingRunBudget returns the maxRunMs those units pass themselves
+  // unchanged (8 min for PvE, see tests/sync-unit-budgets.test.mjs), which the
+  // guard never trips on. A queue deadline already in the past is how that
+  // zero-budget boot is modelled; the stub counts requests so the test fails if
+  // the guard is removed and a doomed request is issued anyway.
   const preload = join(directory, "stub-feed.mjs");
   await writeFile(preload, `import { appendFileSync } from "node:fs";
     globalThis.fetch = async () => {

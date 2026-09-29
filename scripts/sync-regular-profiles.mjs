@@ -32,8 +32,13 @@ const config = {
   overlapMs: envInteger("REGULAR_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
   // Graceful queue budget (PvE/Seasonal/Arena already have one). The default
   // covers the observed worst hourly catch-up (~15.5 min for 861 attempts at
-  // 1 RPS) with margin and leaves room for the remaining modes inside the
-  // hourly queue; it does not change normal short runs.
+  // 1 RPS) with margin, so a manual run gets room to drain what it started; it
+  // does not change normal short runs. Every scheduled path states its own
+  // budget instead: the queue gives this mode 25 min inside its shared 3300s
+  // deadline, and the systemd unit 12 min - the largest its own 14m window
+  // leaves once this run's own unwind is paid for. The seasonal unit at :15
+  // waits on the same lock, so every minute added here comes out of that unit's
+  // window as well: tests/sync-unit-budgets.test.mjs holds the two to that sum.
   maxRunMs: envInteger("REGULAR_PROFILE_SYNC_MAX_RUN_MS", 50 * 60_000, 60_000, 24 * 60 * 60_000),
 };
 config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
