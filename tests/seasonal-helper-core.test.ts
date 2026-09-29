@@ -2,8 +2,10 @@
 // @ts-nocheck -- Node's direct TypeScript test runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SignJWT } from "jose";
 
 import {
+  classifyHelperSession,
   parseHelperTaskId,
   signHelperSession,
   verifyHelperCompletion,
@@ -11,6 +13,7 @@ import {
 } from "../lib/seasonal/helper-core.ts";
 
 const secret = { HELPER_COOKIE_SECRET: "a-secure-test-secret-with-32-characters" };
+const otherSecret = { HELPER_COOKIE_SECRET: "a-different-secret-of-32-characters-xx" };
 const helperId = "9e1d2b11-90c4-4b49-a57e-24e066f128d2";
 const now = 1_790_000_000_000;
 
@@ -38,6 +41,37 @@ test("task request accepts only one positive integer taskId", () => {
     null, [], {}, { taskId: 0 }, { taskId: -1 }, { taskId: 7.5 }, { taskId: "7" },
     { taskId: 7, aid: 42 }, { taskId: 7, profile: { aid: 42 } },
   ]) assert.equal(parseHelperTaskId(forged), null);
+});
+
+test("session classification keeps a first visit apart from a cookie that fails to verify", async () => {
+  const token = await signHelperSession(helperId, secret);
+  const sign = (payload: Record<string, unknown>, expires = "3600s", secretEnv = secret) => new SignJWT(payload)
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(helperId)
+    .setIssuedAt()
+    .setExpirationTime(expires)
+    .sign(new TextEncoder().encode(secretEnv.HELPER_COOKIE_SECRET));
+
+  // No cookie, an emptied one, and no signing key are all "mint me": the first
+  // is a first visit, and a client that sends nothing gets an identity for
+  // free either way, so the other two grant nothing new.
+  assert.deepEqual(await classifyHelperSession(undefined, secret), { status: "absent" });
+  assert.deepEqual(await classifyHelperSession("", secret), { status: "absent" });
+  // One character short of the threshold that `isCommunityReviewEnabled`
+  // applies, so the key is unusable rather than the cookie being forged.
+  assert.deepEqual(
+    await classifyHelperSession(token, { HELPER_COOKIE_SECRET: secret.HELPER_COOKIE_SECRET.slice(0, 31) }),
+    { status: "absent" },
+  );
+  assert.deepEqual(await classifyHelperSession(token, secret), { status: "valid", helperId });
+  // Everything the client could send that does not verify is one case, because
+  // `claim` answers all of them the same way: 401, and no second identity.
+  for (const rejected of [
+    `${token}x`,
+    await sign({ scope: "seasonal-helper" }, "-1s"),
+    await sign({ scope: "some-other-scope" }),
+    await sign({ scope: "seasonal-helper" }, "3600s", otherSecret),
+  ]) assert.deepEqual(await classifyHelperSession(rejected, secret), { status: "invalid" });
 });
 
 test("anonymous helper cookie is signed and rejects tampering or missing secret", async () => {

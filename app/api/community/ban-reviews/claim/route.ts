@@ -4,7 +4,7 @@ import { getClientIp } from "@/lib/client-ip";
 import { getCommunityReportsStore } from "@/lib/community-reports-db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { isCommunityReviewEnabled } from "@/lib/seasonal/config";
-import { HELPER_COOKIE, helperCookieOptions, signHelperSession, verifyHelperSession } from "@/lib/seasonal/helper-core";
+import { HELPER_COOKIE, classifyHelperSession, helperCookieOptions, signHelperSession } from "@/lib/seasonal/helper-core";
 
 export const runtime = "nodejs";
 
@@ -23,9 +23,18 @@ export async function POST(request: NextRequest) {
   if (!isCommunityReviewEnabled()) return NextResponse.json({ error: "Feature unavailable" }, { status: 404, headers: { ...noStore, ...headers } });
   const requested = limit(await request.json().catch(() => null));
   if (requested === null) return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: { ...noStore, ...headers } });
+  // Fail closed on a cookie that was sent and did not verify. It used to be
+  // answered with a freshly minted identity, which cost the helper their whole
+  // queue: the vote landed under a new helper id that `(helper_id, aid)`
+  // deduplication cannot see. A request with no cookie at all is still a first
+  // visit, so this rejects tampering rather than locking out clean browsers.
+  const session = await classifyHelperSession(request.cookies.get(HELPER_COOKIE)?.value);
+  if (session.status === "invalid") {
+    return NextResponse.json({ error: "Invalid helper session" }, { status: 401, headers: { ...noStore, ...headers } });
+  }
   const store = await getCommunityReportsStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: { ...noStore, ...headers } });
-  let helperId = await verifyHelperSession(request.cookies.get(HELPER_COOKIE)?.value);
+  let helperId = session.status === "valid" ? session.helperId : null;
   let token: string | null = null;
   if (!helperId) {
     helperId = randomUUID();

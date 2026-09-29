@@ -410,7 +410,7 @@ test("Seasonal timer uses the hourly Moscow cadence and shared waiting lock", as
   assert.match(feedTimer, /Description=Hourly TarkovStats Seasonal JSON profile sync/);
   assert.match(feedTimer, /OnCalendar=\*-\*-\* \*:15:00 Europe\/Moscow/);
   assert.match(indexTimer, /OnCalendar=\*-\*-\* 00:10:00 Europe\/Moscow/);
-  assert.match(feedService, /flock \/run\/tarkovstats-data-sync\.lock/);
+  assert.match(feedService, /flock -w 180 \/run\/tarkovstats-data-sync\.lock/);
   assert.match(indexService, /flock \/run\/tarkovstats-data-sync\.lock/);
   assert.match(feedService, /flock -n \/run\/tarkovstats-seasonal-sync\.lock/);
   assert.match(indexService, /flock \/run\/tarkovstats-seasonal-sync\.lock/);

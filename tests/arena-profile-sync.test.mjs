@@ -1086,7 +1086,7 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.match(dockerfile, /lib\/arena\/storage\.ts/);
   assert.match(dockerfile, /types\/arena\.ts/);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
-  assert.match(service, /exec -T -e ARENA_PROFILE_SYNC_RPS=2 web/);
+  assert.match(service, /exec -T -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 web/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);

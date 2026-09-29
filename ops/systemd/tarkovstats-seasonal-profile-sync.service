@@ -9,5 +9,12 @@ ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats-auto
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
-ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/bin/flock -n /run/tarkovstats-seasonal-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T web node --experimental-strip-types --experimental-sqlite scripts/sync-seasonal-profiles.mjs
+# `exec -e` carries the run budget: the compose service passes no environment, so
+# a unit-level Environment= would stop at the docker CLI and never reach the collector.
+ExecStart=/usr/bin/flock -w 180 /run/tarkovstats-data-sync.lock /usr/bin/flock -n /run/tarkovstats-seasonal-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e SEASONAL_FEED_MAX_RUN_MS=480000 web node --experimental-strip-types --experimental-sqlite scripts/sync-seasonal-profiles.mjs
+# 8 min budget, 6 min short of the window: the same budget the hourly queue gives
+# this mode. Lock acquisition gets at most 3 min, including when Persistent timers
+# catch up together after boot or the hourly queue holds the lock. If it stays
+# busy, flock exits without starting the collector; the next timer retries.
+# 3 min wait + 8 min run + 2 min unwind leaves 1 min before the 14 min timeout.
 TimeoutStartSec=14m

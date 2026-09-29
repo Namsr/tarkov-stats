@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
 
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
+
+const warnedCheckpoints = new Set();
 
 /** Comma-separated mode filter, e.g. LEADERBOARD_WARMUP_MODES=arena or --modes=arena,pve. */
 export function parseWarmupModes(value) {
@@ -76,7 +78,13 @@ function loadCheckpoint(path) {
   try {
     value = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    // main() reads the checkpoint for its pivot and runWarmup reads it again, so
+    // without this one reset would print twice per process, and ops/profile-queue.sh
+    // frames both into the journal as WARMUP_WARN.
+    if (!warnedCheckpoints.has(path)) {
+      warnedCheckpoints.add(path);
+      console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    }
     return { checkpoint: { version: 1, skipped: {}, modes: {} }, reset: true };
   }
   if (value?.version !== 1 || !isPlainRecord(value.skipped) || !isPlainRecord(value.modes)) {
@@ -85,10 +93,92 @@ function loadCheckpoint(path) {
   return { checkpoint: value, reset: false };
 }
 
+/**
+ * A checkpoint temp file is written and renamed away back to back, so the window a
+ * live writer holds one spans a write and a rename and nothing else. The run window
+ * only decides how many of them a run creates, not how long one exists.
+ */
+const ORPHANED_TEMP_MIN_AGE_MS = 60_000;
+
+/**
+ * The largest value any arm of PID_MAX_LIMIT can take: 4 * 1024 * 1024 when long is
+ * wider than four bytes, PID_MAX_DEFAULT (32768) otherwise, PAGE_SIZE * 8 under
+ * CONFIG_BASE_SMALL. Every operator-settable pid_max is bounded by it, and a tid is
+ * always < pid_max, so this is an upper bound on every configuration rather than the
+ * 64-bit one. A number here or above it is not a process.
+ */
+const MAX_PID = 4_194_304;
+
 function saveCheckpoint(path, checkpoint) {
+  // The write and the rename land together or not at all, so a process killed in
+  // between leaves the previous checkpoint readable. The temp file is the only
+  // thing such a kill can lose, and the catch below gives it back on a rename
+  // that fails for a reason a retry cannot fix (ENOSPC, EIO, a wrong owner).
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify({ ...checkpoint, updatedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify({ ...checkpoint, updatedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // A write that never created the temp file, or one the sweep already took.
+    }
+    throw error;
+  }
+}
+
+/**
+ * Drop the temp files a killed process left behind. They are never read, never
+ * cleaned by `finally`, and the run that wrote them is gone, so nothing else
+ * removes them and the checkpoint volume grows one file per kill.
+ *
+ * Only `<checkpoint name>.<pid>.tmp` is a candidate, and a pid is bounded. Outside
+ * that shape a name belongs to another file: another checkpoint whose own name
+ * starts with this one's, or an operator's copy. The bound separates a dated copy
+ * from a pid; a small numbered copy such as `state.json.1.tmp` still sits under it
+ * and is still swept an hour later, because telling those apart would mean guessing
+ * what an author meant, and this shape is what the price of not guessing looks like.
+ *
+ * Three guards keep the sweep off a file that is still in use: this process's own
+ * temp file is skipped by pid, and one younger than ORPHANED_TEMP_MIN_AGE_MS is
+ * skipped by age, which also covers a peer on a checkpoint this run does not share
+ * a lock with. A miss is not free - the peer's renameSync would take ENOENT and
+ * the whole batch would die on a message naming neither the sweep nor the
+ * neighbour. The lock makes a miss unreachable in this deployment; if that ever
+ * stops holding, catching ENOENT in saveCheckpoint and writing again is the fix to
+ * reach for, not widening this match.
+ *
+ * The lock cuts both ways, and that bounds what this cleanup can deliver. A run
+ * killed mid-flight leaves its lock behind, the lock is never stolen, and
+ * acquireWarmupLock runs before this sweep, so the run that would have collected the
+ * orphan is itself the run that cannot start. The operator clearing the lock is what
+ * gets the sweep running, not the sweep itself.
+ */
+function removeOrphanedCheckpointTemps(path) {
+  const directory = dirname(path);
+  let names;
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return; // Nothing to sweep, and a missing directory still fails in saveCheckpoint.
+  }
+  const prefix = `${basename(path)}.`;
+  const cutoff = Date.now() - ORPHANED_TEMP_MIN_AGE_MS;
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const suffix = name.slice(prefix.length);
+    if (!/^\d+\.tmp$/.test(suffix)) continue;
+    if (Number(suffix.slice(0, -4)) >= MAX_PID) continue;
+    if (suffix === `${process.pid}.tmp`) continue;
+    const temporary = join(directory, name);
+    try {
+      if (statSync(temporary).mtimeMs > cutoff) continue;
+      unlinkSync(temporary);
+    } catch {
+      // A peer that renamed or removed it first leaves nothing to clean.
+    }
+  }
 }
 
 function skippedKey(candidate) {
@@ -315,6 +405,8 @@ export async function requestCandidate(candidate, options) {
 export async function runWarmup(options) {
   const now = options.now ?? Date.now;
   const startedAt = now();
+  // Before this run writes anything: a temp file can only predate it if a killed process left it.
+  removeOrphanedCheckpointTemps(options.checkpointPath);
   const { checkpoint, reset: checkpointReset } = loadCheckpoint(options.checkpointPath);
   const modes = options.modes ?? WARMUP_MODES;
   const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
@@ -424,7 +516,8 @@ async function main() {
       modes,
       candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
       processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
-      // ops/profile-queue.sh captures stdout only, so the reset warn is invisible where the operator looks.
+      // ops/profile-queue.sh keeps stderr out of $log and replays it into the journal as
+      // WARMUP_WARN, so a reset is reported both as prose and as this machine-readable flag.
       checkpointReset: result.checkpointReset,
     })}\n`);
   } finally {
