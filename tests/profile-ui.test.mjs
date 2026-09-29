@@ -1340,3 +1340,41 @@ test("the shell renders no section anchor for an empty slot and links only rende
   assert.doesNotMatch(shell, /achievements !== undefined && <ProfileShellSection/);
   assert.match(shell, /\{\(hasSectionContent\(risk\) \|\| hasSectionContent\(comparison\)\) && \(\s*<div className="profile-analysis">/);
 });
+
+test("an unknown progression survival rate is never rendered as a percentage", async () => {
+  const panel = await readFile("components/ProgressionPanel.tsx", "utf8");
+  const card = await readFile("components/StatCard.tsx", "utf8");
+
+  // The progression placeholder is the local helper's em dash, not a dictionary value, so
+  // the defect reads `—%` in both languages. `number()` emits it for a null, an undefined,
+  // and a missing `longTerm`, which is what an empty interval set produces.
+  assert.match(
+    panel,
+    /function number\(value: number \| null \| undefined, digits = 1\): string \{\s*return value == null \|\| !Number\.isFinite\(value\)\s*\? "\u2014"/,
+  );
+
+  // The general rule: a value built from `number()` may be that placeholder, so it must
+  // not also carry a literal suffix. Asserted over every such card in the file rather than
+  // on one line, so a new one cannot reintroduce it.
+  const placeholderCards = panel.split("\n").filter((line) => line.includes("value={number("));
+  assert.ok(placeholderCards.length >= 4, `expected the progression placeholder cards, found ${placeholderCards.length}`);
+  for (const line of placeholderCards) {
+    assert.doesNotMatch(line, /suffix="/, `a placeholder value must not carry a literal suffix: ${line.trim()}`);
+  }
+
+  // The guard is the same expression the value is computed from, so it cannot drift from
+  // the fallback: an absent `longTerm` and a null `survivalRate` both withhold the unit.
+  assert.match(
+    panel,
+    /<StatCard label=\{t\("seasonal\.metric\.survival"\)\} value=\{number\(longTerm\?\.survivalRate\)\} suffix=\{longTerm\?\.survivalRate == null \? undefined : "%"\} \/>/,
+  );
+  // The siblings in the same block are dimensionless ratios and must stay suffix-free.
+  assert.match(panel, /<StatCard label=\{t\("seasonal\.metric\.pvpKd"\)\} value=\{number\(longTerm\?\.pvpKd\)\} \/>/);
+  assert.equal(placeholderCards.filter((line) => /suffix[:={]/.test(line)).length, 1, "the survival card is the only suffixed card in the block");
+
+  // The renderer and the helper stay generic: each prints what the caller supplies, and
+  // neither learns what a placeholder string means.
+  assert.match(card, /\{suffix && <span className="metric-card__suffix ml-1">\{suffix\}<\/span>\}/);
+  assert.doesNotMatch(panel, /common\.unknown|common\.notAvailable/);
+});
+

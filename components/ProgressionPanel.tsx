@@ -374,7 +374,7 @@ export default function ProgressionPanel({
           {history.lastObservedAt && <span>{t("progression.lastObserved", { date: new Date(history.lastObservedAt).toLocaleString(undefined, { timeZone: "Europe/Moscow" }) })}</span>}
         </div>
         {history.ready && <section className="profile-statistics"><div><h3>{t("seasonal.longTerm")}</h3><div className="data-ledger">
-          <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix="%" />
+          <StatCard label={t("seasonal.metric.survival")} value={number(longTerm?.survivalRate)} suffix={longTerm?.survivalRate == null ? undefined : "%"} />
           <StatCard label={t("seasonal.metric.pvpKd")} value={number(longTerm?.pvpKd)} />
           <StatCard label={t("seasonal.metric.aiKd")} value={number(longTerm?.aiKd)} />
           <StatCard label={t("seasonal.metric.overallPmcKd")} value={number(longTerm?.overallPmcKd)} />
