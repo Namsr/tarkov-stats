@@ -110,6 +110,51 @@ test("system metrics retain 90 days and API keeps reads admin-only", async () =>
   assert.match(route, /status: 204/);
 });
 
+// The POST already refused a token under 32 characters, but the GET answered
+// `configured: true` for that same value, so the dashboard's "collector is not
+// configured" notice stayed hidden exactly when the collector started failing.
+// One helper now owns the floor. Each claim below is bounded to the declaration
+// it is about, the way tests/profile-ui.test.mjs slices a source file, because an
+// unbounded gap only proves two tokens co-occur somewhere in the file.
+test("a short ingest token reads as unconfigured and the POST refusal shares that verdict", async () => {
+  const route = await readFile("app/api/admin/system-metrics/route.ts", "utf8");
+  const helper = route.indexOf("function collectorConfigured(): boolean {");
+  const get = route.indexOf("export async function GET(");
+  const post = route.indexOf("export async function POST(");
+  assert.ok(helper >= 0, "the 32-character floor must live in one shared collectorConfigured() helper");
+  assert.ok(get > helper && post > get, "GET and POST must both read the helper");
+
+  // The helper only reads the env var, so its own return expression runs here
+  // against a driven env rather than being pattern-matched. Same slice-then-run
+  // shape tests/stored-profile-risk.test.mjs uses on a route block.
+  const expression = route.slice(helper, get).match(/return ([^;]+);/);
+  assert.ok(expression, "collectorConfigured() must return a single expression");
+  const collectorConfigured = new Function("process", `return ${expression[1]}`);
+
+  const previous = process.env.SYSTEM_METRICS_INGEST_TOKEN;
+  try {
+    // Same 32-character floor as lib/operator-auth.ts, measured after the trim
+    // the POST compares the bearer token against.
+    for (const token of [undefined, "", "1", "c".repeat(31), `  ${"c".repeat(31)}  `]) {
+      if (token === undefined) delete process.env.SYSTEM_METRICS_INGEST_TOKEN;
+      else process.env.SYSTEM_METRICS_INGEST_TOKEN = token;
+      assert.equal(collectorConfigured(process), false, `${token === undefined ? "an unset" : `a ${token.trim().length}-character`} token must read as unconfigured`);
+    }
+    process.env.SYSTEM_METRICS_INGEST_TOKEN = "c".repeat(32);
+    assert.equal(collectorConfigured(process), true, "a 32-character token must read as configured");
+  } finally {
+    if (previous === undefined) delete process.env.SYSTEM_METRICS_INGEST_TOKEN;
+    else process.env.SYSTEM_METRICS_INGEST_TOKEN = previous;
+  }
+
+  // Both GET response shapes and the POST guard take that verdict rather than
+  // re-deriving one from the env var, which is the divergence this test exists for.
+  const getBody = route.slice(get, post);
+  assert.equal((getBody.match(/configured: collectorConfigured\(\)/g) ?? []).length, 2, "both GET response shapes must report the verdict the POST gates on");
+  assert.match(route.slice(post), /if \(!collectorConfigured\(\)\) return NextResponse\.json\(\{ error: "collector_not_configured" \}, \{ status: 503/, "the POST refusal must come from the same helper");
+  assert.doesNotMatch(route, /Boolean\(process\.env\.SYSTEM_METRICS_INGEST_TOKEN\)|expected\.length < 32/, "neither handler may re-derive the floor from the env var");
+});
+
 // A failed initialization caches its `null` for the life of the process unless the
 // promise is cleared, so the probe runs in a child process with a controlled clock.
 function runInitializationProbe(source: string) {
