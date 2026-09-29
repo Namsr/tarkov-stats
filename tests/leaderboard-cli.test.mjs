@@ -17,16 +17,16 @@ test("materializer CLI performs an initial build, a persisted delta, and a no-op
       CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
       CREATE TABLE players(aid INTEGER PRIMARY KEY,nickname TEXT,profile_updated_at INTEGER,fetched_at INTEGER,
         pmc_killed_pmc INTEGER,pmc_deaths INTEGER,pmc_raids INTEGER,hours REAL,last_played_at INTEGER,
-        pvp_stats_known INTEGER,pvp_stats_version INTEGER);
+        pvp_stats_known INTEGER,pvp_stats_version INTEGER,prestige INTEGER DEFAULT 0);
       CREATE TABLE mode_players(mode TEXT,aid INTEGER,nickname TEXT,profile_updated_at INTEGER,fetched_at INTEGER,
         pmc_killed_pmc INTEGER,pmc_deaths INTEGER,pmc_raids INTEGER,hours REAL,last_played_at INTEGER,
-        pvp_stats_known INTEGER,pvp_stats_version INTEGER,stats_json TEXT,PRIMARY KEY(mode,aid));
+        pvp_stats_known INTEGER,pvp_stats_version INTEGER,prestige INTEGER DEFAULT 0,stats_json TEXT,PRIMARY KEY(mode,aid));
       CREATE TABLE arena_mode_stats(aid INTEGER,arena_mode TEXT,hours REAL,games_count INTEGER,kills INTEGER,deaths INTEGER,
         kills_per_match REAL,upstream_version INTEGER,parser_version INTEGER,raw_json TEXT,fetched_at INTEGER,best_arp INTEGER,
         PRIMARY KEY(aid,arena_mode));
-      INSERT INTO players VALUES(1,'Regular',1,200,30,5,20,100,200,1,1);
-      INSERT INTO mode_players VALUES('pve',2,'PvE',1,200,40,4,20,120,200,1,1,'{}');
-      INSERT INTO mode_players VALUES('arena',3,'Arena',1,200,NULL,NULL,NULL,NULL,NULL,0,0,'{}');
+      INSERT INTO players VALUES(1,'Regular',1,200,30,5,20,100,200,1,1,0);
+      INSERT INTO mode_players VALUES('pve',2,'PvE',1,200,40,4,20,120,200,1,1,0,'{}');
+      INSERT INTO mode_players VALUES('arena',3,'Arena',1,200,NULL,NULL,NULL,NULL,NULL,0,0,NULL,'{}');
       INSERT INTO arena_mode_stats VALUES(3,'overall',50,NULL,NULL,NULL,NULL,1,2,'{}',200,1500);
       INSERT INTO arena_mode_stats VALUES(3,'blastGang',50,20,25,5,1.25,1,2,'{}',200,NULL);
       INSERT INTO arena_mode_stats VALUES(3,'teamFight',50,20,25,5,1.25,1,2,'{}',200,NULL);
@@ -112,6 +112,8 @@ test("materializer CLI performs an initial build, a persisted delta, and a no-op
       beforeUnavailable);
     unchanged.close();
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    // Best-effort cleanup: a bare rmSync that throws here replaces the real
+    // assertion failure with an EPERM.
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite may retain the adapter briefly. */ }
   }
 });
