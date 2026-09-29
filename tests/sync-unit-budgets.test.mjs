@@ -307,6 +307,16 @@ test("a unit that waits for the writer lock still has window left to finish", as
   // the profile-queue wrapper (which holds the lock for its own 3300s deadline
   // while running these same modes) are separate questions from whether a feed
   // unit's budget fits its window. Neither depends on the values checked here.
+  //
+  // The gap the sum subtracts comes from OnCalendar MINUTES alone; Persistent= is
+  // not modelled. All four feed timers set it with AccuracySec=1s, so a host that
+  // was down across :05 and :15 replays both activations at boot inside the same
+  // second: the gap collapses to nothing and the waiter is left with 840s of wait
+  // in front of its own 480s budget and 120s of unwind, against an 840s window.
+  // Closing that would take a design decision - a shorter budget than the window
+  // allows, a missed-tick guard, or timers that are not Persistent - rather than a
+  // number this file can check, so it is a second known limit of the same family
+  // as the queue and the index sweeps above, not something a budget here settles.
   const units = (await readSyncUnits()).filter((unit) => unit.budget);
   assert.ok(units.length > 1, "expected more than one budgeted sync unit to compare");
   assert.ok(units.some((unit) => unit.lockMode === "waits"), "no unit waits on the writer lock: the grid is not being exercised");
