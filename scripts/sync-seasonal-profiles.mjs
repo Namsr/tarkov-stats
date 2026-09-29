@@ -54,9 +54,10 @@ initSyncSchema();
 
 let leaseHeld = false;
 let stopping = false;
+let stopReason = null;
 let nextRequestAt = 0;
-process.once("SIGINT", () => { stopping = true; });
-process.once("SIGTERM", () => { stopping = true; });
+process.once("SIGINT", () => { stopping = true; stopReason = "signal"; });
+process.once("SIGTERM", () => { stopping = true; stopReason = "signal"; });
 
 main().catch((error) => {
   log("FATAL", { error: message(error) });
@@ -73,7 +74,16 @@ async function main() {
   const startedAt = Date.now();
   acquireLease();
   leaseHeld = true;
-  const feed = await loadFeed();
+  let feed;
+  try {
+    feed = await loadFeed(startedAt);
+  } catch (error) {
+    // A feed ladder that ran out of budget is a cut run, not a failed one: stop
+    // quietly like the sibling collectors instead of reporting a fatal error.
+    if (!error?.runBudgetExceeded) throw error;
+    stopForRunBudget(startedAt, { phase: "feed" });
+    return;
+  }
   const processed = await processQueue(startedAt);
   const statuses = Object.fromEntries(
     db.prepare("SELECT status, COUNT(*) AS n FROM seasonal_profile_sync_queue WHERE cycle_id = ? GROUP BY status")
@@ -95,6 +105,7 @@ async function main() {
     materializedAt: materialization.materialized_at == null ? null : Number(materialization.materialized_at),
     ...coverage,
     stopped: stopping,
+    stopReason,
     durationMs: Date.now() - startedAt,
   };
   saveMeta("last_summary", JSON.stringify({ at: Date.now(), ...summary }));
@@ -186,7 +197,7 @@ function heartbeat() {
   if (Number(result.changes) !== 1) throw new Error("Seasonal profile sync lease was lost");
 }
 
-async function loadFeed() {
+async function loadFeed(startedAt) {
   const counters = {
     sourceEntries: 0,
     invalidEntries: 0,
@@ -207,7 +218,7 @@ async function loadFeed() {
   // One URL per poll attempt (stable across retries inside this run). Validators
   // from the last accepted feed are reused; a changed source or cycle resets
   // them because meta is keyed by cycle and the source URL is recorded.
-  const feedResponse = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl));
+  const feedResponse = await requestFeed(seasonalFeedCacheUrl(config.updatedUrl), startedAt);
   if (feedResponse.notModified) {
     // 304 proves the representation is unchanged, not that every tracked
     // profile is fresh: the queue below and the seasonal index reconciliation
@@ -287,14 +298,18 @@ async function loadFeed() {
   return counters;
 }
 
-async function requestFeed(url) {
+async function requestFeed(url, startedAt) {
   const useValidators = getMeta("feed_source_url") === config.updatedUrl;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
+    // The feed ladder shares the run budget with the capture ladder: a stuck
+    // feed must not keep the collector alive past `maxRunMs` either.
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) throw runBudgetError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const headers = {};
       if (savedEtag) headers["if-none-match"] = savedEtag;
@@ -327,11 +342,17 @@ async function requestFeed(url) {
       lastError = new Error(`Seasonal updated feed HTTP ${response.status}`);
       if (![408, 429].includes(response.status) && response.status < 500) break;
     } catch (error) {
+      if (runBudgetExpired(startedAt)) throw runBudgetError();
       lastError = error;
     } finally {
       clearTimeout(timeout);
     }
-    if (attempt <= config.maxRetries) await delay(backoff(attempt));
+    if (attempt <= config.maxRetries) {
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) throw runBudgetError();
+      await delay(waitMs);
+    }
   }
   throw lastError ?? new Error("Seasonal updated feed request failed");
 }
@@ -350,13 +371,21 @@ async function processQueue(startedAt) {
     SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, last_run_id = ?, updated_at = ?
     WHERE cycle_id = ? AND aid = ? AND feed_updated_at = ?
   `);
-  while (!stopping && Date.now() - startedAt < config.maxRunMs) {
+  while (!stopping) {
+    // Nothing is in flight here, so the last attempt's queue row is already
+    // recorded; the reason still has to reach the SUMMARY.
+    if (Date.now() - startedAt >= config.maxRunMs) {
+      stopping = true;
+      stopReason = "max_run_ms";
+      break;
+    }
     const row = next.get(cycle.cycleId, runId);
     if (!row) break;
     const aid = Number(row.aid);
     const expectedUpdatedAt = Number(row.feed_updated_at);
     counters.attempted += 1;
-    const result = await syncProfile(aid, expectedUpdatedAt);
+    const result = await syncProfile(aid, expectedUpdatedAt, startedAt);
+    if (!result) break;
     if (result.kind === "completed") counters.completed += 1;
     else if (result.kind === "not_found") counters.notFound += 1;
     else if (result.kind === "superseded") counters.superseded += 1;
@@ -370,14 +399,20 @@ async function processQueue(startedAt) {
   return counters;
 }
 
-async function syncProfile(aid, expectedUpdatedAt) {
+async function syncProfile(aid, expectedUpdatedAt, startedAt) {
   let lastError;
   let attempts = 0;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
     attempts = attempt;
-    await rateLimit();
+    const rateReady = await rateLimit(startedAt);
+    if (!rateReady) return stopForRunBudget(startedAt, { phase: "rate_limit", aid, attempt });
+    // Never let one in-flight profile outlive the run budget: both the request
+    // and the ladder wait are bounded by what is left, so the collector stops
+    // on time instead of being cut off by the systemd unit.
+    const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) return stopForRunBudget(startedAt, { phase: "capture", aid, attempt });
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
       const response = await fetch(config.endpoint, {
         method: "POST",
@@ -418,7 +453,12 @@ async function syncProfile(aid, expectedUpdatedAt) {
       if (error?.fatal) throw error;
       lastError = error;
       if (attempt > config.maxRetries || error?.retryable === false) break;
-      await delay(backoff(attempt));
+      const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+      const waitMs = backoff(attempt);
+      if (waitMs >= remainingMs) {
+        return stopForRunBudget(startedAt, { phase: "backoff", aid, attempt });
+      }
+      await delay(waitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -449,10 +489,37 @@ function deleteMeta(key) {
     .run(cycle.cycleId, key);
 }
 
-async function rateLimit() {
-  const now = Date.now();
-  if (nextRequestAt > now) await delay(nextRequestAt - now);
-  nextRequestAt = Math.max(nextRequestAt, Date.now()) + Math.ceil(1000 / config.requestsPerSecond);
+function runBudgetExpired(startedAt) { return Date.now() - startedAt >= config.maxRunMs; }
+function runBudgetError() {
+  const error = new Error("Seasonal profile sync run budget exceeded");
+  error.runBudgetExceeded = true;
+  return error;
+}
+// A cut run is a deferred run, not a clean drain: record why the ladder stopped
+// so the log and the SUMMARY cannot be read as a finished pass.
+function stopForRunBudget(startedAt, fields) {
+  stopping = true;
+  stopReason = "max_run_ms";
+  log("RUN_CUT", {
+    stopReason,
+    remainingMs: Math.max(0, config.maxRunMs - (Date.now() - startedAt)),
+    ...fields,
+  });
+  return null;
+}
+
+async function rateLimit(startedAt) {
+  const startAt = Math.max(nextRequestAt, Date.now());
+  nextRequestAt = startAt + Math.ceil(1000 / config.requestsPerSecond);
+  const waitMs = startAt - Date.now();
+  if (waitMs <= 0) return true;
+  const remainingMs = config.maxRunMs - (Date.now() - startedAt);
+  if (waitMs >= remainingMs) {
+    await delay(Math.max(0, remainingMs));
+    return false;
+  }
+  await delay(waitMs);
+  return true;
 }
 
 function retryableError(text, status) {
