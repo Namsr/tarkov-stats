@@ -103,3 +103,57 @@ export function handleActiveLinkClick(
   else router.replace(fallback);
 }
 
+/** Where the user currently is, as far as the app router is concerned. */
+export interface InAppLinkLocation {
+  origin: string;
+  pathname: string;
+  search: string;
+}
+
+/** A click anywhere in the app, reduced to what decides a navigation. */
+export interface InAppLinkClick extends ActiveLinkClick {
+  /** Something already handled it, e.g. the back affordance. */
+  defaultPrevented: boolean;
+  /** Resolved absolute `href` of the clicked anchor, `null` when none. */
+  href: string | null;
+  /** The anchor's `target` attribute, `null` when it has none. */
+  target: string | null;
+  /** The anchor carries a `download` attribute. */
+  download: boolean;
+}
+
+/**
+ * Whether a click anywhere in the app starts a navigation the router commits.
+ *
+ * The nav bar is not the only place a navigation starts: the footer, the FAQ
+ * widget and in-page links all start one from a plain `Link`, and each of them
+ * was invisible to a flag set only by `handleActiveLinkClick`, which left the
+ * reported bug reachable through them. Every in-app link goes through this
+ * check instead.
+ */
+export function startsInAppNavigation(
+  click: InAppLinkClick,
+  current: InAppLinkLocation,
+): boolean {
+  // A click already turned into router.back() is not a new navigation.
+  if (click.defaultPrevented) return false;
+  if (!isPrimaryClick(click)) return false;
+  // Only a link navigates. Clicks on buttons, toggles and inputs do not.
+  if (click.href === null) return false;
+  // A new browsing context leaves this tab where it is.
+  if (click.target !== null && click.target !== "" && click.target !== "_self") return false;
+  if (click.download) return false;
+
+  let url: URL;
+  try {
+    url = new URL(click.href);
+  } catch {
+    return false;
+  }
+  if (url.origin !== current.origin) return false;
+  // The app router commits on a path or query change only. A link that changes
+  // neither re-renders nothing, so no effect clears the flag and marking it
+  // would only burn the TTL.
+  if (url.pathname === current.pathname && url.search === current.search) return false;
+  return true;
+}

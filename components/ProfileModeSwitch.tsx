@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { clearNavigationPending, handleActiveLinkClick } from "@/lib/active-link";
+import { handleActiveLinkClick } from "@/lib/active-link";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 import {
   appRouteMode,
@@ -62,12 +62,6 @@ export default function ProfileModeSwitch({
     window.addEventListener("hashchange", syncHash);
     return () => window.removeEventListener("hashchange", syncHash);
   }, []);
-
-  // A committed pathname means the previous mode switch finished, so a click on
-  // the current mode may act as the back-affordance again.
-  useEffect(() => {
-    clearNavigationPending();
-  }, [pathname]);
 
   useEffect(() => {
     if (!pendingNavigation) return;
