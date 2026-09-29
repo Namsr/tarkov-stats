@@ -446,6 +446,19 @@ test("achievement icon host is allowed by the production CSP", async () => {
   assert.match(config, /remotePatterns:[\s\S]*?protocol: "https"[\s\S]*?hostname: "assets\.tarkov\.dev"[\s\S]*?pathname: "\/\*\*"/);
 });
 
+test("achievement icons bypass the image optimizer and load from the asset CDN", async () => {
+  // Домен стоит DNS-only, без Cloudflare перед приложением, поэтому каждый
+  // /_next/image — полный круг до origin, и на холодном кэше иконка ехала
+  // ~0.6 с. Официальный webp уже меньше выхода оптимизатора, так что он давал
+  // нулевую пользу. assets.tarkov.dev отдаёт эти файлы с edge-кэша и уже
+  // разрешён img-src (см. тест выше), как и иконки навыков в ProfileSkills.
+  const source = await readFile("components/ProfileAchievements.tsx", "utf8");
+  const icon = source.slice(source.indexOf("function AchievementIcon"), source.indexOf("function AchievementPercentage"));
+  assert.match(icon, /unoptimized/);
+  const skills = await readFile("components/ProfileSkills.tsx", "utf8");
+  assert.match(skills, /assets\.tarkov\.dev\/skill-.*unoptimized/);
+});
+
 test("image remote pattern accepts a query string so upstream cache-busters do not 400", async () => {
   // Проверяем семантику через сам матчер Next, а не текст конфига: `search` в
   // RemotePattern сравнивается с `url.search` на ТОЧНОЕ равенство, поэтому
