@@ -53,6 +53,6 @@ test("PvE systemd units use offset Moscow schedules and the shared writer lock",
 
 test("PvE no-attempt runs reuse the pre-processing coverage snapshot", async () => {
   const source = await readFile("scripts/sync-pve-profiles.mjs", "utf8");
-  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = await loadFeed\(\);/);
+  assert.match(source, /const \{ counters: feed, coverage: preProcessingCoverage \} = feedResult;/);
   assert.match(source, /processed\.attempted === 0 \? preProcessingCoverage : db\.prepare/);
 });

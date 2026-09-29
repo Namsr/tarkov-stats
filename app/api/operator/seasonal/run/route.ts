@@ -59,16 +59,44 @@ export async function POST(request: Request) {
       ) {
         return Response.json({ error: "Invalid outcome" }, { status: 400, headers });
       }
-      const result = await store.recordOutcome({
-        runId: body.runId,
-        taskId: body.taskId,
-        owner: body.owner,
-        outcome: body.outcome as OperatorTaskOutcome,
-        detail: body.detail as string | null | undefined,
+      // A claim pins the cycle, but a five-minute lease can expire before the
+      // operator reports back, and a retired cycle keeps its run and tasks. Both
+      // make `recordOutcome` throw before it writes, so the outcome row and the
+      // `consecutive_errors` counter that stops a wedged run never happen. The
+      // same lease check the capture route uses keeps them reported as conflicts.
+      const cycle = loadSeasonalCycleConfig();
+      const lease = await store.activeLease({
+        runId: body.runId, taskId: body.taskId, owner: body.owner,
       });
+      if (!cycle || !lease || lease.cycleId !== cycle.cycleId) {
+        return Response.json({ error: "Active Seasonal lease not found" }, { status: 409, headers });
+      }
+      let result: Awaited<ReturnType<typeof store.recordOutcome>>;
+      try {
+        result = await store.recordOutcome({
+          runId: body.runId,
+          taskId: body.taskId,
+          owner: body.owner,
+          outcome: body.outcome as OperatorTaskOutcome,
+          detail: body.detail as string | null | undefined,
+        });
+      } catch (error) {
+        // The lease can still lapse between the check above and this write, so
+        // the store's own guards stay mapped. Anything else is a real outage and
+        // keeps falling through to the 503.
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === "outcome detail is too long") {
+          return Response.json({ error: message }, { status: 400, headers });
+        }
+        if (message === "leased task not found for active run") {
+          return Response.json({ error: "Active Seasonal lease not found" }, { status: 409, headers });
+        }
+        throw error;
+      }
       if (body.outcome === "completed") {
-        const cycle = loadSeasonalCycleConfig();
-        if (cycle) await finalizeSeasonalTaskLifecycle(cycle, body.taskId).catch((error) =>
+        // `cycle` is the cycle this task was just reported against, so the
+        // follow-up lands in the same cycle instead of being filtered away.
+        await finalizeSeasonalTaskLifecycle(cycle, body.taskId).catch((error) =>
           console.error("Seasonal task follow-up failed", error));
       }
       return Response.json(result, { headers });

@@ -156,9 +156,19 @@ export async function PATCH(request: NextRequest) {
   const store = await getFavoritesStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: g.headers });
 
-  if (body.main === true) await store.setMain(g.sub, aid);
+  if (body.main === true && !(await store.setMain(g.sub, aid))) {
+    // The client paints the main badge before the request lands and only rolls it
+    // back on a non-2xx, so a 200 for a favorite the caller does not own kept a
+    // wrong "main" on screen until the next refresh.
+    return NextResponse.json({ error: "Favorite not found" }, { status: 404, headers: g.headers });
+  }
   // Only touch the note when the field is present (distinguishes "clear" from "absent").
-  if ("note" in body) await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX));
+  if ("note" in body && !(await store.setNote(g.sub, aid, clean(body.note, NOTE_MAX)))) {
+    // The client paints the note before the request lands and only rolls it back
+    // on a non-2xx, so a 200 for a favorite the caller does not own reported a
+    // save that never happened.
+    return NextResponse.json({ error: "Favorite not found" }, { status: 404, headers: g.headers });
+  }
 
   return NextResponse.json({ ok: true }, { headers: g.headers });
 }
