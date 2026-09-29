@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n/context";
-import { handleActiveLinkClick } from "@/lib/active-link";
+import { clearNavigationPending, handleActiveLinkClick } from "@/lib/active-link";
+import { useEffect } from "react";
 
 /** Header link to the canonical Average Player Statistics page. */
 export default function AverageNavButton({ onNavigate }: { onNavigate?: () => void }) {
@@ -11,6 +12,12 @@ export default function AverageNavButton({ onNavigate }: { onNavigate?: () => vo
   const router = useRouter();
   const { t } = useI18n();
   const active = pathname.startsWith("/average");
+
+  // A committed pathname means the previous navigation finished, so a click on
+  // this link may act as the back-affordance again.
+  useEffect(() => {
+    clearNavigationPending();
+  }, [pathname]);
 
   const base = "tactical-nav-link";
   const className = active

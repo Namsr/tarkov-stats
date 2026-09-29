@@ -7,7 +7,7 @@ import AuthButton from "@/components/AuthButton";
 import LanguageToggle from "@/components/LanguageToggle";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useI18n } from "@/lib/i18n/context";
-import { handleActiveLinkClick } from "@/lib/active-link";
+import { clearNavigationPending, handleActiveLinkClick } from "@/lib/active-link";
 import { usePathname, useRouter } from "next/navigation";
 
 export default function SiteHeader() {
@@ -23,6 +23,12 @@ export default function SiteHeader() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+
+  // A committed pathname means the previous navigation finished, so the next
+  // click on a link for this page may act as the back-affordance again.
+  useEffect(() => {
+    clearNavigationPending();
+  }, [pathname]);
 
   return (
     <header className="site-header">
