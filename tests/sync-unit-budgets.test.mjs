@@ -158,7 +158,9 @@ function writerLockMode(execStart) {
 // distance from one unit's tick to the next is how long it may be held. A `*`
 // hour means every hour at that minute, and the daily cycle below only needs the
 // minute of for. A weekday restriction would break that cycle - Friday to Monday
-// is not 5 minutes - so it is refused rather than modelled wrong.
+// is not 5 minutes - so it is refused rather than modelled wrong. Only units in
+// that grid reach this function: an unbudgeted unit has no window to schedule
+// against, so a Mon-Fri daily sweep of its own is none of this file's business.
 function tickMinuteOfDay(calendar) {
   const fields = calendar.trim().split(/\s+/);
   if (/^(hourly|daily)$/.test(fields[0])) return 0;
@@ -183,6 +185,8 @@ async function readSyncUnits() {
     const budget = script ? collectorBudget(await readFile(path.join("scripts", script), "utf8")) : null;
     // The tick is what turns "these units share a lock" into arithmetic: the
     // distance from one unit's tick to the next is how long it may be held.
+    // Only a budgeted unit is a term in that grid, so only a budgeted unit's
+    // OnCalendar has to fit a model this file can represent - see above.
     const timerName = name.replace(/\.service$/, ".timer");
     const calendar = /^OnCalendar=(.+)$/m.exec(await readFile(path.join(UNITS_DIR, timerName), "utf8"));
     assert.ok(calendar, `${timerName} has no OnCalendar=`);
@@ -198,7 +202,7 @@ async function readSyncUnits() {
       windowMs: parseDurationMs(windowText),
       execStart,
       lockMode: writerLockMode(execStart),
-      tick: tickMinuteOfDay(calendar[1]),
+      tick: budget ? tickMinuteOfDay(calendar[1]) : null,
     };
   }));
 }
