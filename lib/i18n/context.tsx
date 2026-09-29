@@ -35,6 +35,13 @@ export function LanguageProvider({
     // Persist for SSR (read in the root layout) and future visits.
     document.cookie = `lang=${l}; path=/; max-age=31536000; SameSite=Lax`;
     document.documentElement.lang = l;
+    // The root layout renders these same two keys into <title> and the description
+    // meta, and nothing else in the app sets either, so after a switch the head is
+    // the last thing still showing the previous language. Written here rather than
+    // via router.refresh(), which would re-fetch the whole RSC payload for a two-word
+    // change — the refetch that #205 and #225 removed from every language switch.
+    document.title = dict[l]["meta.title"];
+    document.querySelector('meta[name="description"]')?.setAttribute("content", dict[l]["meta.description"]);
   }, []);
 
   const value = useMemo<I18nValue>(
