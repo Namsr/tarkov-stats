@@ -149,9 +149,9 @@ export function failLeaderboardPublication(db: any, scope: string, error: unknow
  * the join replacing 150k correlated lookups rather than the index rebuild.
  *
  * SQLite DDL is transactional, so a failure anywhere below restores the index on
- * ROLLBACK. Readers are unaffected: they plan against
- * idx_leaderboard_order_comparator, and an uncommitted schema change is not
- * visible to other connections.
+ * ROLLBACK. Dropping it mid-transaction is safe for concurrent readers because
+ * they hold their own connection, and an uncommitted schema change is not
+ * published to them: they keep the index until this transaction commits.
  */
 function reassignOrdinals(db: any, scope: string, generation: number, sorts: Iterable<string>, permuting: boolean): void {
   if (permuting) db.exec("DROP INDEX IF EXISTS idx_leaderboard_order_ordinal");
