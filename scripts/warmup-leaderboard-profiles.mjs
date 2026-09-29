@@ -10,6 +10,8 @@ import { pathToFileURL } from "node:url";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
 
+const warnedCheckpoints = new Set();
+
 /** Comma-separated mode filter, e.g. LEADERBOARD_WARMUP_MODES=arena or --modes=arena,pve. */
 export function parseWarmupModes(value) {
   if (value == null || String(value).trim() === "") return [...WARMUP_MODES];
@@ -76,7 +78,13 @@ function loadCheckpoint(path) {
   try {
     value = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    // main() reads the checkpoint for its pivot and runWarmup reads it again, so
+    // without this one reset would print twice per process, and ops/profile-queue.sh
+    // frames both into the journal as WARMUP_WARN.
+    if (!warnedCheckpoints.has(path)) {
+      warnedCheckpoints.add(path);
+      console.warn(`unreadable leaderboard warmup checkpoint at ${path} (${error instanceof Error ? error.message : String(error)}); starting from a fresh checkpoint`);
+    }
     return { checkpoint: { version: 1, skipped: {}, modes: {} }, reset: true };
   }
   if (value?.version !== 1 || !isPlainRecord(value.skipped) || !isPlainRecord(value.modes)) {
@@ -86,10 +94,18 @@ function loadCheckpoint(path) {
 }
 
 /**
- * A checkpoint temp file is created and renamed away back to back, so one that
- * is this old cannot be a write in progress no matter how wide the run window is.
+ * A checkpoint temp file is written and renamed away back to back, so the window a
+ * live writer holds one is a single local syscall wide. The run window only decides
+ * how many of them a run creates, not how long one exists.
  */
 const ORPHANED_TEMP_MIN_AGE_MS = 60_000;
+
+/**
+ * A pid cannot exceed /proc/sys/kernel/pid_max, and Linux caps that sysctl at
+ * 4194304 (PID_MAX_LIMIT) on 64-bit. A larger number is not a process, so it is
+ * something an operator put there - a dated copy - and not this sweep's to delete.
+ */
+const MAX_PID = 4_194_304;
 
 function saveCheckpoint(path, checkpoint) {
   // The write and the rename land together or not at all, so a process killed in
@@ -115,10 +131,19 @@ function saveCheckpoint(path, checkpoint) {
  * cleaned by `finally`, and the run that wrote them is gone, so nothing else
  * removes them and the checkpoint volume grows one file per kill.
  *
- * Two guards keep this away from a file that is still in use. This process's own
- * temp file is skipped by pid, and a temp file younger than
- * ORPHANED_TEMP_MIN_AGE_MS is skipped by age, which also covers a peer running
- * against a checkpoint this run does not share a lock with.
+ * Only `<checkpoint name>.<pid>.tmp` is a candidate, and a pid is bounded. Under
+ * that bound a name is another checkpoint's temp file, whose own name starts with
+ * this one's, or an operator's dated copy. Deleting either on a guess about what
+ * the author meant is not a trade this makes.
+ *
+ * Three guards keep the sweep off a file that is still in use: this process's own
+ * temp file is skipped by pid, and one younger than ORPHANED_TEMP_MIN_AGE_MS is
+ * skipped by age, which also covers a peer on a checkpoint this run does not share
+ * a lock with. A miss is not free - the peer's renameSync would take ENOENT and
+ * the whole batch would die on a message naming neither the sweep nor the
+ * neighbour. The lock makes a miss unreachable in this deployment; if that ever
+ * stops holding, catching ENOENT in saveCheckpoint and writing again is the fix to
+ * reach for, not widening this match.
  */
 function removeOrphanedCheckpointTemps(path) {
   const directory = dirname(path);
@@ -131,8 +156,11 @@ function removeOrphanedCheckpointTemps(path) {
   const prefix = `${basename(path)}.`;
   const cutoff = Date.now() - ORPHANED_TEMP_MIN_AGE_MS;
   for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
-    if (name === `${prefix}${process.pid}.tmp`) continue;
+    if (!name.startsWith(prefix)) continue;
+    const suffix = name.slice(prefix.length);
+    if (!/^\d+\.tmp$/.test(suffix)) continue;
+    if (Number(suffix.slice(0, -4)) > MAX_PID) continue;
+    if (suffix === `${process.pid}.tmp`) continue;
     const temporary = join(directory, name);
     try {
       if (statSync(temporary).mtimeMs > cutoff) continue;

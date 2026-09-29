@@ -11,6 +11,11 @@ log=/var/log/tarkovstats-warmup-batch.json
 # stderr is captured out of band: the state parser below reads the last line of
 # $log as JSON, and a warning landing between that line and the end of the run
 # would turn a healthy batch into state-parse-failed. Truncated every run.
+# The price of the framing: stderr now arrives with the batch instead of
+# streaming, so a warmup that hangs mid-run shows nothing under `journalctl -f`
+# and a service killed mid-run loses that stderr entirely. Streaming it back by
+# merging into $log is what breaks the parser, so an unfinished run is read from
+# this file rather than from the journal.
 warn=/var/log/tarkovstats-warmup-batch.warn
 failures=""
 # Retry only the failing mode once; preserve nonzero exit for observability.

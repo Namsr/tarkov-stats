@@ -41,25 +41,36 @@ test("a zero-length checkpoint is named and replaced instead of failing every la
   const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-corrupt-"));
   const checkpointPath = join(dir, "state.json");
   writeFileSync(checkpointPath, "");
+  let result;
+  let parsed;
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (message) => { warnings.push(String(message)); };
-  let result;
   try {
     result = await runWarmup({
       candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
       checkpointPath, maxProfiles: 10,
       request: async () => ({ kind: "completed", outcome: "ok" }),
     });
+    parsed = JSON.parse(readFileSync(checkpointPath, "utf8"));
+    // The same reset seen again, the way main()'s pre-read and runWarmup see one
+    // run's checkpoint. ops/profile-queue.sh frames stderr into the journal, and
+    // two identical WARMUP_WARN lines is what a count-based alert fires on.
+    writeFileSync(checkpointPath, "");
+    await runWarmup({
+      candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+      checkpointPath, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }),
+    });
   } finally {
     console.warn = realWarn;
+    // Guarded, so a failure in either run is what the report carries.
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* nothing holds this directory. */ }
   }
   assert.equal(result.processed, 1);
-  // main() and runWarmup each load the checkpoint, so a real run warns more than once.
-  assert.ok(warnings.length >= 1, `expected a warning, got ${warnings.length}`);
+  assert.equal(warnings.length, 1, "one reset warns once per process, not once per read");
   assert.ok(warnings.every((warning) => warning.includes(checkpointPath)), warnings.join("\n"));
   assert.equal(result.checkpointReset, true);
-  const parsed = JSON.parse(readFileSync(checkpointPath, "utf8"));
   assert.equal(parsed.version, 1);
   assert.equal(parsed.modes.regular.lastAid, 1, "the healed file records this run's progress, not just its shape");
   assert.equal(Array.isArray(parsed.skipped), false);
@@ -87,21 +98,26 @@ test("a checkpoint whose fields are null or arrays is refused instead of silentl
   }
 });
 
-test("the checkpoint sweep takes a killed process's temp file and spares a live writer's", async () => {
+test("the checkpoint sweep takes a killed process's temp file and spares everything else", async () => {
   const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-temp-"));
   const checkpointPath = join(dir, "state.json");
   const hourAgo = new Date(Date.now() - 3_600_000);
-  const orphan = join(dir, "state.json.4242.tmp");
-  const live = join(dir, "state.json.4343.tmp");
-  const own = `${checkpointPath}.${process.pid}.tmp`;
-  // A process killed between writeFileSync and renameSync leaves exactly this: a
-  // foreign pid, no reader, and no owner left to remove it.
-  writeFileSync(orphan, "{");
-  utimesSync(orphan, hourAgo, hourAgo);
+  const stale = (name) => {
+    const file = join(dir, name);
+    writeFileSync(file, "{");
+    utimesSync(file, hourAgo, hourAgo);
+    return file;
+  };
+  const orphan = stale("state.json.4242.tmp");
   // A peer that created its temp file a moment ago is still mid-write.
+  const live = join(dir, "state.json.4343.tmp");
   writeFileSync(live, "{");
-  writeFileSync(own, "{");
-  utimesSync(own, hourAgo, hourAgo);
+  const own = stale(`state.json.${process.pid}.tmp`);
+  // Neither of these is an orphaned pid temp: a dated copy an operator put here,
+  // and a temp file belonging to a second checkpoint whose own name starts with
+  // this one's. Both share the prefix, and only one shape is a pid temp.
+  const dated = stale("state.json.20260906.tmp");
+  const otherCheckpoint = stale("state.json.backup.json.999.tmp");
   // Refused by loadCheckpoint, so the run stops after the sweep and before its first save.
   writeFileSync(checkpointPath, '{"version":1,"skipped":null,"modes":null}');
   await assert.rejects(runWarmup({
@@ -111,6 +127,8 @@ test("the checkpoint sweep takes a killed process's temp file and spares a live 
   assert.equal(existsSync(orphan), false, "a temp file a killed process left is removed");
   assert.equal(existsSync(live), true, "a temp file a live peer is still writing is kept");
   assert.equal(existsSync(own), true, "this process never removes its own in-flight temp file");
+  assert.equal(existsSync(dated), true, "a dated copy that is not a pid temp is not this sweep's to delete");
+  assert.equal(existsSync(otherCheckpoint), true, "another checkpoint's temp file is not this sweep's to delete");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -118,12 +136,18 @@ test("a run leaves no checkpoint temp file behind, including when the rename fai
   const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-leak-"));
   const checkpointPath = join(dir, "state.json");
   const temps = () => readdirSync(dir).filter((name) => name.endsWith(".tmp"));
+  // Seeded the way a killed process leaves one. A successful run renames its own
+  // temp away anyway, so without this the assertion would hold on the unfixed
+  // script and say nothing about the sweep.
+  const orphan = join(dir, "state.json.4242.tmp");
+  writeFileSync(orphan, "{");
+  utimesSync(orphan, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
   await runWarmup({
     candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }, { mode: "regular", aid: 2, sourceVersion: 100 }],
     checkpointPath, maxProfiles: 10,
     request: async () => ({ kind: "completed", outcome: "ok" }),
   });
-  assert.deepEqual(temps(), []);
+  assert.deepEqual(temps(), [], "the run sweeps what the last one left and leaves nothing of its own");
 
   // A directory where the checkpoint belongs: the write succeeds and the rename
   // cannot, which is the case a run that never cleans up would leak on.
@@ -141,6 +165,18 @@ test("a run leaves no checkpoint temp file behind, including when the rename fai
     console.warn = realWarn;
   }
   assert.deepEqual(temps(), [], "a save that could not rename deletes its own temp file");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a checkpoint directory that does not exist fails on the write, not on the sweep", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "leaderboard-warmup-nodir-"));
+  // The sweep has to stay quiet about a directory it cannot list, or it replaces
+  // the ENOENT that names the missing path with one that names nothing.
+  await assert.rejects(runWarmup({
+    candidates: [{ mode: "regular", aid: 1, sourceVersion: 100 }],
+    checkpointPath: join(dir, "absent", "state.json"), maxProfiles: 10,
+    request: async () => ({ kind: "completed", outcome: "ok" }),
+  }), { code: "ENOENT" });
   rmSync(dir, { recursive: true, force: true });
 });
 

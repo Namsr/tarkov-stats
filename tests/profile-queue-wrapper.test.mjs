@@ -42,6 +42,11 @@ test('queue retries only failures, preserves error status and runs one warmup af
       }
       python3() { cat >/dev/null; case "$SCENARIO" in stopped) echo stopped;; invalid) return 1;; *) echo done;; esac; }
       `;
+      // Both rewrites below are literal needles. If either line is renamed or
+      // reformatted the replace silently does nothing and the script writes to the
+      // real /var/log on a Linux runner, so the assertion fails here instead.
+      assert.match(source, /^log=/m);
+      assert.match(source, /^warn=/m);
       const script = source.replace('cd /opt/tarkovstats-auto || exit 1', `cd ${quote(path)} || exit 1`)
         .replace(/^dc\(\).*$/m, () => mock)
         .replace('log=/var/log/tarkovstats-warmup-batch.json', `log=${quote(path + '/warmup.json')}`)
