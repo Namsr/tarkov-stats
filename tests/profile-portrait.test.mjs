@@ -52,7 +52,10 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
     if (parsed.hostname === "imagemagic.tarkov.dev") {
       // Only the verdict is used, so a small body is enough.
       renders.push(parsed.pathname);
-      return new Response("img", { status: Number(parsed.pathname.match(/(\d+)\.webp$/)[1]) === 95 ? 500 : 200 });
+      const rendered = Number(parsed.pathname.match(/(\d+)\.webp$/)[1]);
+      // 95 is a loadout the renderer rejects. 96 is a probe that never lands.
+      if (rendered === 96) throw new Error("render probe offline");
+      return new Response("img", { status: rendered === 95 ? 500 : 200 });
     }
     const aid = Number(parsed.pathname.match(/(\d+)\.json$/)[1]);
     calls.push(String(url));
@@ -104,6 +107,19 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
     assert.match(response.headers.get("cache-control"), /max-age=300/);
   }
   assert.deepEqual(renders, ["/player/42.webp", "/player/95.webp"], "a failed render must not be re-probed");
+
+  // A probe that never completed is not a verdict. A cold render for a real top
+  // seasonal player measured 7.8 s, so a timeout or a reset is an ordinary event
+  // here, not proof that the portrait is gone. The route must fall back to the
+  // redirect it used to issue unconditionally, so our own network failing cannot
+  // hide a picture that renders fine.
+  for (let i = 0; i < 2; i += 1) {
+    const response = await request("aid=96&mode=regular");
+    assert.equal(response.status, 307);
+    assert.equal(new URL(response.headers.get("location")).hostname, "imagemagic.tarkov.dev");
+    assert.match(response.headers.get("cache-control"), /max-age=300/);
+  }
+  assert.equal(renders.filter((path) => path === "/player/96.webp").length, 1, "an unanswered probe must not be retried in a loop");
   // A missing portrait is a stable answer, so the 404 is cacheable. An upstream
   // failure must not be, or a Cloudflare blip would stick for the whole max-age.
   for (const [aid, status, cacheable] of [[91, 404, true], [92, 502, false], [93, 404, true]]) {

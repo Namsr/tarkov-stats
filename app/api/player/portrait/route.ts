@@ -27,21 +27,28 @@ const loadPortrait = unstable_cache(async (url: string, aid: number) => {
  * the loadout encoded in the URL, not a transient blip, so an unchanged URL
  * keeps its answer and any loadout change yields a new URL and a fresh probe.
  * The TTL is short so a genuine upstream outage still clears on its own.
+ *
+ * A probe that never got an answer is NOT a verdict, and must not be cached as
+ * one. A measured cold render for a top seasonal player took 7.8 s, so an 8 s
+ * budget was close enough to turn a working portrait into a ten-minute
+ * placeholder; the budget is now 15 s. Even so, a timeout, a reset, or a DNS
+ * failure must fall back to the redirect instead of the cached 404 — otherwise
+ * our own network costs the user a picture that renders fine.
  */
 const loadPortraitRenderable = unstable_cache(async (url: string) => {
-  try {
-    // `force-cache` lets the platform fetch cache answer a repeat probe without
-    // a new render, so re-probing after the TTL does not re-render the loadout.
-    const response = await fetch(url, { cache: "force-cache", signal: AbortSignal.timeout(8_000) });
-    // Only the verdict matters; draining the body releases the socket.
-    await response.arrayBuffer();
-    if (response.ok) return true;
-    console.warn("player portrait upstream render failed", { upstreamStatus: response.status });
-  } catch (error) {
-    console.warn("player portrait upstream render failed", {
+  // `force-cache` lets the platform fetch cache answer a repeat probe without
+  // a new render, so re-probing after the TTL does not re-render the loadout.
+  const response = await fetch(url, { cache: "force-cache", signal: AbortSignal.timeout(15_000) }).catch((error: unknown) => {
+    console.warn("player portrait render probe did not complete", {
       message: error instanceof Error ? error.message : String(error),
     });
-  }
+    return null;
+  });
+  if (!response) return undefined;
+  // Only the verdict matters; draining the body releases the socket.
+  await response.arrayBuffer();
+  if (response.ok) return true;
+  console.warn("player portrait upstream render failed", { upstreamStatus: response.status });
   return false;
 }, ["player-portrait-renderable-v1"], { revalidate: 600 });
 
@@ -85,7 +92,10 @@ export async function GET(request: NextRequest) {
     if (!url) return notAvailable();
     // The same stable answer as a missing portrait, so it uses the cacheable
     // 404 instead of handing the browser another guaranteed-to-fail request.
-    if (!await loadPortraitRenderable(url)) return notAvailable();
+    // Only a definitive "no" qualifies: an unanswered probe keeps the redirect,
+    // which is what this route did unconditionally before, so our own network
+    // failing cannot hide a portrait that renders fine.
+    if (await loadPortraitRenderable(url) === false) return notAvailable();
     return NextResponse.redirect(url, {
       status: 307,
       headers: { "Cache-Control": "public, max-age=300, s-maxage=300" },
