@@ -28,16 +28,11 @@ const enKeys = keysOf(src.slice(0, ruIdx));
 const ruKeys = keysOf(src.slice(ruIdx));
 const allKeys = new Set([...enKeys, ...ruKeys]);
 
-function walk(dir) {
-  if (!fs.existsSync(dir)) return [];
-  let out = [];
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) out = out.concat(walk(p));
-    else if (e.name.endsWith(".tsx") || e.name.endsWith(".ts")) out.push(p);
-  }
-  return out;
-}
+const walk = (dir) => fs.existsSync(dir)
+  ? fs.readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile() && /\.tsx?$/.test(e.name))
+    .map((e) => path.join(e.parentPath, e.name))
+  : [];
 
 const usedMissing = [];
 for (const f of SCAN_DIRS.flatMap(walk)) {
