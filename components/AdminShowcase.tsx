@@ -7,6 +7,15 @@ import { GAME_MODES } from "@/types/seasonal";
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
+const SHOWCASE_COUNT_FORMATS = new Map<string, Intl.NumberFormat>();
+function showcaseCountFormat(locale: string): Intl.NumberFormat {
+  const cached = SHOWCASE_COUNT_FORMATS.get(locale);
+  if (cached) return cached;
+  const created = new Intl.NumberFormat(locale);
+  SHOWCASE_COUNT_FORMATS.set(locale, created);
+  return created;
+}
+
 type ShowcaseResponse = {
   ok?: boolean;
   error?: string;
@@ -45,7 +54,8 @@ function ShowcasePanel({ groups, available = true, t, lang, onChange }: {
     ?? groups[0]
     ?? null;
   const locale = lang === "ru" ? "ru-RU" : "en-US";
-  const formatCount = (value: number) => new Intl.NumberFormat(locale).format(value);
+  const countFormat = showcaseCountFormat(locale);
+  const formatCount = (value: number) => countFormat.format(value);
 
   async function mutate(action: string, extra: Record<string, unknown>) {
     setBusy(true);

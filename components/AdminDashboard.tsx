@@ -48,7 +48,17 @@ function isProfileMode(value: string): value is GameMode { return GAME_MODES.inc
 function profileHref(aid: number, mode: GameMode): string { return `/player/${appRouteMode(mode)}/${aid}`; }
 
 function finite(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
-function formatNumber(value: number): string { return new Intl.NumberFormat().format(value); }
+const DEFAULT_NUMBER_FORMAT = new Intl.NumberFormat();
+function formatNumber(value: number): string { return DEFAULT_NUMBER_FORMAT.format(value); }
+const LOCALE_NUMBER_FORMATS = new Map<string, Intl.NumberFormat>();
+function localeNumberFormat(locale: string, options?: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = `${locale}:${options?.maximumFractionDigits ?? ""}`;
+  const cached = LOCALE_NUMBER_FORMATS.get(key);
+  if (cached) return cached;
+  const created = new Intl.NumberFormat(locale, options);
+  LOCALE_NUMBER_FORMATS.set(key, created);
+  return created;
+}
 function metricDiff(current: number, previous: number): number | null { return previous > 0 ? (current - previous) / previous * 100 : null; }
 function validTab(value: string | null): Tab { return tabs.includes(value as Tab) ? value as Tab : "overview"; }
 
@@ -499,15 +509,16 @@ function SystemMetricChart({ title, points, series, fixedMax, lang, t }: { title
 
 function SystemMetricsTable({ points, lang, t }: { points: SystemMetricPoint[]; lang: string; t: T }) {
   const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const loadFormat = localeNumberFormat(locale, { maximumFractionDigits: 2 });
   const percentage = (value: number | null) => value == null ? t("common.notAvailable") : formatPercent(value, locale);
   const rate = (value: number | null) => value == null ? t("common.notAvailable") : t("admin.monitoring.perSecond", { value: formatBytes(value, locale, t) });
   return <details className="data-panel admin-monitoring-table"><summary>{t("admin.monitoring.table.show")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr>
     <th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.monitoring.cpu")}</th><th scope="col">{t("admin.monitoring.memory")}</th><th scope="col">{t("admin.monitoring.table.swap")}</th><th scope="col">{t("admin.monitoring.disk")}</th><th scope="col">{t("admin.monitoring.table.read")}</th><th scope="col">{t("admin.monitoring.table.write")}</th><th scope="col">{t("admin.monitoring.networkIn")}</th><th scope="col">{t("admin.monitoring.networkOut")}</th><th scope="col">{t("admin.monitoring.table.load")}</th>
-  </tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{percentage(point.cpuPercent)}</td><td>{percentage(point.memoryPercent)}</td><td>{percentage(point.swapPercent)}</td><td>{percentage(point.diskPercent)}</td><td>{rate(point.diskReadBytesPerSecond)}</td><td>{rate(point.diskWriteBytesPerSecond)}</td><td>{rate(point.networkRxBytesPerSecond)}</td><td>{rate(point.networkTxBytesPerSecond)}</td><td>{new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(point.load1)}</td></tr>)}</tbody></table></div></details>;
+  </tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{percentage(point.cpuPercent)}</td><td>{percentage(point.memoryPercent)}</td><td>{percentage(point.swapPercent)}</td><td>{percentage(point.diskPercent)}</td><td>{rate(point.diskReadBytesPerSecond)}</td><td>{rate(point.diskWriteBytesPerSecond)}</td><td>{rate(point.networkRxBytesPerSecond)}</td><td>{rate(point.networkTxBytesPerSecond)}</td><td>{loadFormat.format(point.load1)}</td></tr>)}</tbody></table></div></details>;
 }
 
 function formatPercent(value: number, locale: string): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value) + "%";
+  return localeNumberFormat(locale, { maximumFractionDigits: 1 }).format(value) + "%";
 }
 
 function formatBytes(value: number, locale: string, t: T): string {
@@ -516,7 +527,7 @@ function formatBytes(value: number, locale: string, t: T): string {
   let unit = 0;
   while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
   const digits = unit === 0 || amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
-  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(amount)} ${t("admin.monitoring.unit." + units[unit])}`;
+  return `${localeNumberFormat(locale, { maximumFractionDigits: digits }).format(amount)} ${t("admin.monitoring.unit." + units[unit])}`;
 }
 
 function formatUptime(seconds: number, t: T): string {

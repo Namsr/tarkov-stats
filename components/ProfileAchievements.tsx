@@ -117,14 +117,19 @@ function formatCount(value: number | null, locale: string): string | null {
   return value == null ? null : value.toLocaleString(locale, { maximumFractionDigits: 0 });
 }
 
+const ACHIEVEMENT_DATE_FORMATS = new Map<string, Intl.DateTimeFormat>();
 function formatDate(value: number | null, locale: string): string | null {
-  return value == null
-    ? null
-    : new Intl.DateTimeFormat(locale, {
+  if (value == null) return null;
+  let formatter = ACHIEVEMENT_DATE_FORMATS.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
       dateStyle: "medium",
       timeStyle: "short",
       timeZone: "Europe/Moscow",
-    }).format(value);
+    });
+    ACHIEVEMENT_DATE_FORMATS.set(locale, formatter);
+  }
+  return formatter.format(value);
 }
 
 function formatHours(value: number | null, locale: string, unit: string): string | null {
