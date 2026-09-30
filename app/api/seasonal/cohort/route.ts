@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   parseAveragePeriod,
   parseAverageStatistic,
+  parseDimension,
 } from "@/lib/db";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
@@ -29,8 +30,7 @@ export async function GET(request: NextRequest) {
   }
   const statistic = parseAverageStatistic(params.get("statistic"));
   const period = parseAveragePeriod(params.get("period"));
-  const dimension = params.get("dimension") === "pmc_raids" ? "pmc_raids" :
-    params.get("dimension") === "hours" || params.get("dimension") == null ? "hours" : null;
+  const dimension = parseDimension(params.get("dimension"));
   if (!statistic || !period || !dimension) {
     timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "invalid", status: 400 });
     return NextResponse.json({ identity, error: "Invalid comparison parameters" }, { status: 400 });
