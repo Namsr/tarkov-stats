@@ -476,8 +476,7 @@ export async function GET(request: NextRequest) {
 async function handleGet(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
   const ip = getClientIp(request);
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
-  const rawMode = request.nextUrl.searchParams.get("mode");
-  const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
+  const mode = request.nextUrl.searchParams.get("mode") || "regular";
   timing.setRequestContext({
     aid: aid ?? undefined,
     host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),

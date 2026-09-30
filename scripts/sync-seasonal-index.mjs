@@ -43,9 +43,9 @@ async function main() {
   const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
   const downloaded = await requestIndex(signal);
   if (downloaded.unchanged) {
-    saveMeta("last_poll_at", Date.now());
-    saveMeta("last_status", "unchanged");
-    saveMeta("duration_ms", Date.now() - startedAt);
+    setMeta("last_poll_at", Date.now());
+    setMeta("last_status", "unchanged");
+    setMeta("duration_ms", Date.now() - startedAt);
     console.log("Seasonal player index is unchanged");
     return;
   }
@@ -222,5 +222,3 @@ function argValue(name, fallback) {
   }
   return fallback;
 }
-
-function saveMeta(key, value) { setMeta(key, value); }

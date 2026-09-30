@@ -40,17 +40,6 @@ function ShowcasePanel({ groups, available = true, t, lang, onChange }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    if (groups.length === 0) {
-      setSelectedId(null);
-      return;
-    }
-    setSelectedId((current) => {
-      if (current != null && groups.some((group) => group.id === current)) return current;
-      return groups.find((group) => group.isActive)?.id ?? groups[0].id;
-    });
-  }, [groups]);
-
   const selected = groups.find((group) => group.id === selectedId)
     ?? groups.find((group) => group.isActive)
     ?? groups[0]

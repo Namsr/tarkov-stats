@@ -145,9 +145,7 @@ export async function getPublicProfile(
   }
 
   const canonicalUrl = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
-  const expectedUpdatedAt = mode === "regular" || mode === "pve" || mode === "arena"
-    ? profileUpdatedAt(opts.expectedUpdatedAt)
-    : null;
+  const expectedUpdatedAt = profileUpdatedAt(opts.expectedUpdatedAt);
   const cacheBust = expectedUpdatedAt ?? now;
   const url = opts.force && (mode === "regular" || mode === "arena" || expectedUpdatedAt !== null)
     ? `${canonicalUrl}?v=${cacheBust}`
@@ -301,11 +299,11 @@ export function parsePlayerLevels(payload: unknown): PlayerLevel[] {
     if (typeof exp !== "number" || !Number.isFinite(exp) || exp < 0) {
       throw new Error(`playerLevels[${index}].exp must be a finite non-negative number`);
     }
-    if (seen.has(Number(level))) {
+    if (seen.has(level)) {
       throw new Error(`playerLevels contains duplicate level ${level}`);
     }
-    seen.add(Number(level));
-    return { level: Number(level), exp };
+    seen.add(level);
+    return { level, exp };
   });
   return levels.sort((a, b) => a.level - b.level);
 }
