@@ -262,6 +262,22 @@ export function parseAveragePeriod(value: string | null): AveragePeriod | null {
   return null;
 }
 
+// An absent or empty parameter means "no bound", but a malformed one is a
+// client error. Returning the same null for both would silently drop the
+// range filter and answer with whole-population statistics.
+export function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
+  if (value == null || value === "") return { value: null, valid: true };
+  const number = Number(value);
+  const valid = Number.isFinite(number) && number >= 0;
+  return { value: valid ? number : null, valid };
+}
+
+export function parseDimension(value: string | null): RangeDimension | null {
+  if (value == null || value === "hours") return "hours";
+  if (value === "pmc_raids") return "pmc_raids";
+  return null;
+}
+
 const RANGE_COLUMNS: Record<RangeDimension, "hours" | "pmc_raids"> = {
   hours: "hours",
   pmc_raids: "pmc_raids",

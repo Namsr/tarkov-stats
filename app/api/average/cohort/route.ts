@@ -3,6 +3,7 @@ import {
   getStore,
   parseAveragePeriod,
   parseAverageStatistic,
+  parseDimension,
   type RadarMetric,
   type RangeDimension,
 } from "@/lib/db";
@@ -30,12 +31,6 @@ function emptyAverages() {
   return Object.fromEntries(
     RADAR_METRICS.map((metric) => [metric, { value: null, count: 0 }])
   );
-}
-
-function parseDimension(value: string | null): RangeDimension | null {
-  if (value == null || value === "hours") return "hours";
-  if (value === "pmc_raids") return "pmc_raids";
-  return null;
 }
 
 function boundsAtThirtyPercent(dimension: RangeDimension, center: number) {
