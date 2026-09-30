@@ -208,14 +208,7 @@ function totalInGameTimeHours(profile: UnknownRecord): number | null {
 }
 
 function counterValue(items: UnknownRecord[], ...keys: string[]): number {
-  const item = items.find(
-    (candidate) =>
-      Array.isArray(candidate.Key) &&
-      candidate.Key.length === keys.length &&
-      candidate.Key.every((key, index) => key === keys[index])
-  );
-  if (!item) return 0;
-  return nonNegativeInteger(item.Value, `counter ${keys.join("/")}`);
+  return optionalCounterValue(items, ...keys) ?? 0;
 }
 
 /** Derived portrait counters stay NULL when the upstream omits that counter. */
