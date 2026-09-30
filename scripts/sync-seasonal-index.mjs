@@ -3,7 +3,9 @@
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import {
+  argValue,
   createStringObjectParser,
+  hasArg,
   isClearlyTruncatedIndex,
   normalizeAid,
   normalizeNickname,
@@ -19,10 +21,10 @@ if (!cycle || !isSeasonalCollectorReady()) {
   throw new Error("Seasonal JSON feed is not configured or is not collector-ready");
 }
 const configuredSourceUrl = (process.env.SEASONAL_PROFILE_INDEX_URL || "").trim().replaceAll("{mode}", seasonalUpstreamMode());
-const sourceUrl = argValue("--url", configuredSourceUrl);
+const sourceUrl = argValue(process.argv, "--url", configuredSourceUrl);
 if (!sourceUrl) throw new Error("SEASONAL_PROFILE_INDEX_URL is required");
-const dbPath = argValue("--db", process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
-const force = hasArg("--force");
+const dbPath = argValue(process.argv, "--db", process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db");
+const force = hasArg(process.argv, "--force");
 // A stalled upstream must not hold the shared data-sync lock: the deploy path
 // probes the same flock. The arena and PvE index siblings use the same bound.
 const DOWNLOAD_TIMEOUT_MS = 30_000;
@@ -206,19 +208,4 @@ function currentRowCount() {
   return Number(db.prepare(
     "SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?",
   ).get(cycle.cycleId)?.n) || 0;
-}
-
-function hasArg(name) {
-  return process.argv.includes(name);
-}
-
-function argValue(name, fallback) {
-  const prefix = `${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(name);
-  if (index >= 0 && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
-    return process.argv[index + 1];
-  }
-  return fallback;
 }

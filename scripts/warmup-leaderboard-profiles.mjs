@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
+import { argValue, remainingRunBudget } from "./regular-profile-sync-core.mjs";
 
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -23,20 +23,8 @@ export function parseWarmupModes(value) {
   return [...new Set(modes)].sort((a, b) => WARMUP_MODES.indexOf(a) - WARMUP_MODES.indexOf(b));
 }
 
-/** Same two spellings as argValue in the index-sync scripts: --modes=arena and --modes arena. */
-function warmupModesArgValue(argv, name, fallback) {
-  const prefix = `${name}=`;
-  const inline = argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = argv.indexOf(name);
-  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
-    return argv[index + 1];
-  }
-  return fallback;
-}
-
 export function warmupModesFromArgs(argv = process.argv.slice(2)) {
-  const value = warmupModesArgValue(argv, "--modes", warmupModesArgValue(argv, "--mode", undefined));
+  const value = argValue(argv, "--modes", argValue(argv, "--mode", undefined));
   return parseWarmupModes(value ?? process.env.LEADERBOARD_WARMUP_MODES);
 }
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");

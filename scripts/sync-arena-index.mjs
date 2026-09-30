@@ -7,27 +7,12 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
-const { createStringObjectParser, normalizeAid, normalizeNickname, isClearlyTruncatedIndex } = await import(
+const { argValue, createStringObjectParser, hasArg, normalizeAid, normalizeNickname, isClearlyTruncatedIndex } = await import(
   "./seasonal-profile-sync-core.mjs"
 );
 
 const DEFAULT_URL = "https://players.tarkov.dev/arena/index.json";
 const DEFAULT_DB = "/data/players.db";
-
-function hasArg(name) {
-  return process.argv.includes(name);
-}
-
-function argValue(name, fallback) {
-  const prefix = `${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(name);
-  if (index >= 0 && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
-    return process.argv[index + 1];
-  }
-  return fallback;
-}
 
 function usage() {
   console.log(`Usage:
@@ -230,8 +215,8 @@ export async function syncArenaIndex(db, options = {}) {
 }
 
 async function main() {
-  if (hasArg("--help") || hasArg("-h")) return usage();
-  const dbPath = argValue("--db", process.env.SQLITE_PATH || DEFAULT_DB);
+  if (hasArg(process.argv, "--help") || hasArg(process.argv, "-h")) return usage();
+  const dbPath = argValue(process.argv, "--db", process.env.SQLITE_PATH || DEFAULT_DB);
   const resolved = path.resolve(dbPath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new DatabaseSync(resolved);
@@ -240,9 +225,9 @@ async function main() {
   db.exec("PRAGMA synchronous = NORMAL");
   try {
     const result = await syncArenaIndex(db, {
-      url: argValue("--url", process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL),
-      force: hasArg("--force"),
-      dryRun: hasArg("--dry-run"),
+      url: argValue(process.argv, "--url", process.env.ARENA_PLAYER_INDEX_URL || DEFAULT_URL),
+      force: hasArg(process.argv, "--force"),
+      dryRun: hasArg(process.argv, "--dry-run"),
     });
     if (result.unchanged) console.log("Arena player index is unchanged");
     else console.log(JSON.stringify(result));

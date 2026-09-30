@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
-const { normalizeAid, normalizeNickname, createStringObjectParser, isClearlyTruncatedIndex } = await import(
+const { argValue, hasArg, normalizeAid, normalizeNickname, createStringObjectParser, isClearlyTruncatedIndex } = await import(
   "./seasonal-profile-sync-core.mjs"
 );
 
@@ -17,21 +17,6 @@ const DEFAULT_DB = "/data/players.db";
 // starts in main() ahead of the SQLite setup, so it bounds the whole run rather
 // than the network alone.
 const DOWNLOAD_TIMEOUT_MS = 30_000;
-
-function hasArg(name) {
-  return process.argv.includes(name);
-}
-
-function argValue(name, fallback) {
-  const prefix = `${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = process.argv.indexOf(name);
-  if (index >= 0 && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
-    return process.argv[index + 1];
-  }
-  return fallback;
-}
 
 function usage() {
   console.log(`Usage:
@@ -206,15 +191,15 @@ function replaceIndex(db, metadata) {
 }
 
 async function main() {
-  if (hasArg("--help") || hasArg("-h")) {
+  if (hasArg(process.argv, "--help") || hasArg(process.argv, "-h")) {
     usage();
     return;
   }
 
-  const dbPath = argValue("--db", process.env.SQLITE_PATH || DEFAULT_DB);
-  const url = argValue("--url", process.env.PVE_PLAYER_INDEX_URL || DEFAULT_URL);
-  const force = hasArg("--force");
-  const dryRun = hasArg("--dry-run");
+  const dbPath = argValue(process.argv, "--db", process.env.SQLITE_PATH || DEFAULT_DB);
+  const url = argValue(process.argv, "--url", process.env.PVE_PLAYER_INDEX_URL || DEFAULT_URL);
+  const force = hasArg(process.argv, "--force");
+  const dryRun = hasArg(process.argv, "--dry-run");
   const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
   const startedAt = Date.now();
   const resolved = path.resolve(dbPath);

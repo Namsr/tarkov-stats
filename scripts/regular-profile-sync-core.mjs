@@ -186,3 +186,18 @@ export function retryableError(text, status) {
   error.retryable = true;
   return error;
 }
+
+export function hasArg(argv, name) {
+  return argv.includes(name);
+}
+
+export function argValue(argv, name, fallback) {
+  const prefix = `${name}=`;
+  const inline = argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = argv.indexOf(name);
+  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
+  }
+  return fallback;
+}

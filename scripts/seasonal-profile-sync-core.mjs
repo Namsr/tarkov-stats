@@ -1,10 +1,12 @@
 import {
+  argValue,
   createTimestampObjectParser,
   feedCacheSlot,
+  hasArg,
   normalizeUpdatedAt,
 } from "./regular-profile-sync-core.mjs";
 
-export { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt };
+export { argValue, createTimestampObjectParser, feedCacheSlot, hasArg, normalizeUpdatedAt };
 
 /**
  * Small streaming parser for Tarkov's `{ "aid": "nickname" }` index files.
