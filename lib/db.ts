@@ -1841,20 +1841,17 @@ interface FavRow {
 }
 
 function toFavorites(rows: FavRow[]): Favorite[] {
-  const groups = new Map<number, (Favorite & { sourceRowId: number })[]>();
-  for (const r of rows) {
-    const favorite = {
-      mode: r.mode,
-      cycleId: r.cycle_id,
-      aid: Number(r.aid),
-      nickname: r.nickname ?? null,
-      note: r.note ?? null,
-      isMain: Number(r.is_main) === 1,
-      createdAt: Number(r.created_at),
-      sourceRowId: Number(r.source_rowid),
-    } satisfies Favorite & { sourceRowId: number };
-    groups.set(favorite.aid, [...(groups.get(favorite.aid) ?? []), favorite]);
-  }
+  const mapped = rows.map((r) => ({
+    mode: r.mode,
+    cycleId: r.cycle_id,
+    aid: Number(r.aid),
+    nickname: r.nickname ?? null,
+    note: r.note ?? null,
+    isMain: Number(r.is_main) === 1,
+    createdAt: Number(r.created_at),
+    sourceRowId: Number(r.source_rowid),
+  } satisfies Favorite & { sourceRowId: number }));
+  const groups = Map.groupBy(mapped, (favorite) => favorite.aid);
   const favorites = [...groups.values()].map((group) => {
     const newest = [...group].sort((a, b) => b.createdAt - a.createdAt || b.sourceRowId - a.sourceRowId);
     const canonical = [...group].sort((a, b) =>
