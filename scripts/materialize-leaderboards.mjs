@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
+import { parseArgs } from "node:util";
 import { leaderboardConfigChanged, leaderboardFullReason, leaderboardScopeConfigs } from "../lib/leaderboard/config.ts";
 import { initializeProfileChangeJournal } from "../lib/profile-change-journal.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
@@ -24,12 +25,9 @@ import {
 } from "../lib/leaderboard/publication.ts";
 import { arenaTabCounts, leaderboardChangeWindow, leaderboardSourceRows } from "../lib/leaderboard/source.ts";
 
-const flags = new Set(process.argv.slice(2));
-if ([...flags].some((flag) => flag !== "--full" && flag !== "--recalibrate")) {
-  throw new Error("Usage: materialize-leaderboards.mjs [--full|--recalibrate]");
-}
-const forceFull = flags.has("--full") || flags.has("--recalibrate");
-const recalibrate = flags.has("--recalibrate");
+const { values } = parseArgs({ options: { full: { type: "boolean" }, recalibrate: { type: "boolean" } } });
+const forceFull = values.full === true || values.recalibrate === true;
+const recalibrate = values.recalibrate === true;
 
 function exclusionFingerprint(db, cycleId = null) {
   const hash = createHash("sha256");
