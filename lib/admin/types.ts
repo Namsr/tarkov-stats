@@ -20,6 +20,18 @@ export function periodMilliseconds(period: AdminPeriod): number {
   return period === "24h" ? 86_400_000 : Number.parseInt(period, 10) * 86_400_000;
 }
 
+const ADMIN_BUCKET_MS: Record<AdminPeriod, number> = {
+  "15m": 60_000,
+  "24h": 5 * 60_000,
+  "7d": 30 * 60_000,
+  "30d": 2 * 3_600_000,
+  "90d": 6 * 3_600_000,
+};
+
+export function bucketMilliseconds(period: AdminPeriod): number {
+  return ADMIN_BUCKET_MS[period];
+}
+
 export function canonicalAdminHost(value: string | null | undefined): string | null {
   const host = value?.split(",", 1)[0].trim().toLowerCase().replace(/:\d+$/, "").replace(/^www\./, "");
   return ADMIN_DOMAINS.includes(host as (typeof ADMIN_DOMAINS)[number]) ? host! : null;

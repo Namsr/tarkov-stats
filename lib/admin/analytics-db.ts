@@ -1,6 +1,6 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
-import { periodMilliseconds } from "./types.ts";
+import { bucketMilliseconds, periodMilliseconds } from "./types.ts";
 // @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { PAGEVIEW_SESSION_GAP_MS } from "./pageviews.ts";
 
@@ -289,14 +289,6 @@ function percentile(
   const offset = Math.max(0, Math.ceil(count * fraction) - 1);
   const row = db.prepare(`SELECT ${column} AS value FROM request_events WHERE ${where} ORDER BY ${column} LIMIT 1 OFFSET ?`).get(...args, offset);
   return row ? Number(row.value) : null;
-}
-
-function bucketMilliseconds(period: AdminPeriod): number {
-  if (period === "15m") return 60_000;
-  if (period === "24h") return 5 * 60_000;
-  if (period === "7d") return 30 * 60_000;
-  if (period === "30d") return 2 * 3_600_000;
-  return 6 * 3_600_000;
 }
 
 function diagnosticStageSql(): string {
