@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -34,12 +35,6 @@ Options:
   --force           Ignore saved ETag/Last-Modified and download anyway
   --dry-run         Download and validate, but do not write SQLite
 `);
-}
-
-function openDb(file) {
-  const resolved = path.resolve(file);
-  fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  return { resolved, dbPromise: import("node:sqlite") };
 }
 
 function getMeta(db, key) {
@@ -385,8 +380,8 @@ async function main() {
   const dryRun = hasArg("--dry-run");
   const started = Date.now();
 
-  const { resolved, dbPromise } = openDb(file);
-  const { DatabaseSync } = await dbPromise;
+  const resolved = path.resolve(file);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new DatabaseSync(resolved);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA journal_mode = WAL");
