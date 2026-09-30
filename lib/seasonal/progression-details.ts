@@ -246,16 +246,13 @@ export function buildSeasonalProgressionDetails(
     .map((row) => ({ row, metrics: metricsFor(row) }))
     .filter((entry): entry is { row: ProgressionDetailIntervalRow; metrics: IntervalMetrics } => entry.metrics !== null);
 
-  const populations = new Map<string, typeof eligible>();
-  for (const entry of eligible) {
-    populations.set(entry.row.localDate, [...(populations.get(entry.row.localDate) ?? []), entry]);
-  }
+  const populations = Object.groupBy(eligible, (entry) => entry.row.localDate);
 
   const player = eligible
     .filter((entry) => entry.row.aid === input.aid)
     .sort((a, b) => a.row.endedAt - b.row.endedAt);
   const scored: ScoredInterval[] = input.comparisonsReady === false ? [] : player.map((entry) => {
-    const daily = populations.get(entry.row.localDate) ?? [];
+    const daily = populations[entry.row.localDate] ?? [];
     const percentiles = {} as AnomalyPercentiles;
     for (const metric of Object.keys(REASON_BY_METRIC) as AnomalyMetric[]) {
       const value = metricValue(entry.metrics, metric);
