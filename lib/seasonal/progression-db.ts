@@ -1,7 +1,7 @@
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildProgressionMetricSeries, PROGRESSION_KINDS, queryPersistentProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
-import { buildSequentialIntervals, DAY_MS, quantile } from "./analytics.ts";
+import { buildSequentialIntervals, DAY_MS, percentile20, quantile } from "./analytics.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { loadSeasonalCycleConfig } from "./config.ts";
 // @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
@@ -517,12 +517,6 @@ function buildRiskBaseline(rows: readonly Record<string, unknown>[]): Baseline {
       return [[key, { n: entries.length, mean, std: Math.sqrt(Math.max(0, variance)) }]];
     })),
   };
-}
-
-function percentile20(values: readonly number[]): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.floor((sorted.length - 1) * 0.2)] ?? null;
 }
 
 function buildAchievementBaseline(
