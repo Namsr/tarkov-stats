@@ -516,13 +516,13 @@ function parsePersistedAchievements(payload: unknown, mode: AchievementMode): Ac
       throw new Error("invalid persisted achievement entry");
     }
     if (
-      !Object.prototype.hasOwnProperty.call(row, "descriptionEn") ||
-      !Object.prototype.hasOwnProperty.call(row, "descriptionRu") ||
-      !Object.prototype.hasOwnProperty.call(row, "imageUrl")
+      !Object.hasOwn(row, "descriptionEn") ||
+      !Object.hasOwn(row, "descriptionRu") ||
+      !Object.hasOwn(row, "imageUrl")
     ) {
       hasLegacyEntry = true;
     }
-    const nameRu = row.nameRu === null ? null : row.nameRu;
+    const nameRu = row.nameRu;
     data.set(row.id, {
       id: row.id,
       name: row.name,
