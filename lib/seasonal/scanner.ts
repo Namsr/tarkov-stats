@@ -1,3 +1,5 @@
+import { moscowDate } from "./storage.ts";
+
 export const SEASONAL_PANEL_SIZE = 2_000;
 export const SEASONAL_PANEL_MINIMUM_PER_BAND = 150;
 export const SEASONAL_PANEL_BUILD_WINDOW_MS = 72 * 60 * 60_000;
@@ -341,7 +343,7 @@ export function createSqliteScannerLifecycle(db: SqliteDatabase) {
     requeueDaily(cycle: SeasonCycle, now: number) {
       db.exec("BEGIN IMMEDIATE");
       try {
-        const date = reportingDate(now);
+        const date = moscowDate(now);
         const marker = db.prepare(`INSERT OR IGNORE INTO scan_daily_requeues
           (mode, cycle_id, local_date, created_at) VALUES ('seasonal', ?, ?, ?)`)
           .run(cycle.cycleId, date, now);
@@ -386,14 +388,6 @@ export function createSqliteScannerLifecycle(db: SqliteDatabase) {
 }
 
 let lifecycleDb: SqliteDatabase | null = null;
-
-function reportingDate(timestamp: number): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit",
-  }).formatToParts(new Date(timestamp));
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
 
 async function getLifecycle(cycle: SeasonCycle) {
   if (!lifecycleDb) {
