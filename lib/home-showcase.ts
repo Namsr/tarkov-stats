@@ -1,5 +1,6 @@
 import type { PlayerProfileViewModel } from "@/types/player-profile-view";
 import type { ProfileComparisonStats, PublicRiskView } from "@/types/profile-view";
+import { finiteNonNegativeCount, finiteNonNegativeMetricValue } from "./profile-cohort.ts";
 
 const SHOWCASE_MODES = ["regular", "pve", "arena", "seasonal"] as const;
 export type GameMode = (typeof SHOWCASE_MODES)[number];
@@ -82,15 +83,6 @@ function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
   }).toString();
 }
 
-function finiteNonNegative(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function finiteCount(value: unknown): number {
-  const count = Number(value);
-  return Number.isFinite(count) && count >= 0 ? count : 0;
-}
-
 export function homeCohort(payload: unknown): HomeCohort | null {
   if (payload == null || typeof payload !== "object") return null;
   const { quality, strategy, averages } = payload as { quality?: unknown; strategy?: unknown; averages?: unknown };
@@ -102,8 +94,8 @@ export function homeCohort(payload: unknown): HomeCohort | null {
     if (entry == null || typeof entry !== "object") continue;
     const { value, count } = entry as { value?: unknown; count?: unknown };
     picked[metric.key] = {
-      value: finiteNonNegative(value) ? value : null,
-      count: finiteCount(count),
+      value: finiteNonNegativeMetricValue(value),
+      count: finiteNonNegativeCount(count),
     };
   }
   return Object.keys(picked).length
