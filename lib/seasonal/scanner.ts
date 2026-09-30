@@ -1,3 +1,4 @@
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { moscowDate } from "./storage.ts";
 
 export const SEASONAL_PANEL_SIZE = 2_000;

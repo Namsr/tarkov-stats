@@ -1,5 +1,6 @@
 import type { PlayerProfileViewModel } from "@/types/player-profile-view";
 import type { ProfileComparisonStats, PublicRiskView } from "@/types/profile-view";
+// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { finiteNonNegativeCount, finiteNonNegativeMetricValue } from "./profile-cohort.ts";
 
 const SHOWCASE_MODES = ["regular", "pve", "arena", "seasonal"] as const;
