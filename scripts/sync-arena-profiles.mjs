@@ -22,13 +22,13 @@ import { syncArenaIndex } from "./sync-arena-index.mjs";
 const { fetchTarkovJson, parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const {
   ARENA_COUNTER_COLUMNS,
+  ARENA_PARSER_VERSION,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
 const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
 const { markAveragePublicationDirty } = await import("../lib/average-publication.ts");
-// Keep this queue target in lockstep with lib/arena/storage.ts. The collector
-// runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
-const ARENA_PARSER_VERSION = 4;
+// The collector runs under Node's type-strip loader, which cannot resolve the
+// app's @/ alias; ARENA_PARSER_VERSION comes from the storage import above.
 const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V3_PARSER_VERSION = 3;
 const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v4_complete";
