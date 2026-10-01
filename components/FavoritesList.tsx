@@ -63,7 +63,9 @@ function FavoriteRow({
     setNoteLocal(fav.note ?? "");
   }, [fav.note]);
   const identity = { mode: fav.mode, cycleId: fav.cycleId };
-  const modeLabel = t("fav.mode." + fav.mode);
+  const modeLabel = fav.mode === "regular" || fav.mode === "pve" || fav.mode === "arena" || fav.mode === "seasonal"
+    ? t("fav.mode." + fav.mode)
+    : t("fav.mode.seasonal");
 
   function saveNote() {
     const next = note.trim();

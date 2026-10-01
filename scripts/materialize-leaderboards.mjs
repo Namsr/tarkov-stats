@@ -25,7 +25,18 @@ import {
 } from "../lib/leaderboard/publication.ts";
 import { arenaTabCounts, leaderboardChangeWindow, leaderboardSourceRows } from "../lib/leaderboard/source.ts";
 
-const { values } = parseArgs({ options: { full: { type: "boolean" }, recalibrate: { type: "boolean" } } });
+const USAGE = "Usage: materialize-leaderboards.mjs [--full|--recalibrate]";
+let values;
+try {
+  ({ values } = parseArgs({
+    args: process.argv.slice(2),
+    strict: true,
+    allowPositionals: false,
+    options: { full: { type: "boolean" }, recalibrate: { type: "boolean" } },
+  }));
+} catch (error) {
+  throw new Error(USAGE, { cause: error });
+}
 const forceFull = values.full === true || values.recalibrate === true;
 const recalibrate = values.recalibrate === true;
 
