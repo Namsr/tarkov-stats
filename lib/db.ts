@@ -262,6 +262,22 @@ export function parseAveragePeriod(value: string | null): AveragePeriod | null {
   return null;
 }
 
+// An absent or empty parameter means "no bound", but a malformed one is a
+// client error. Returning the same null for both would silently drop the
+// range filter and answer with whole-population statistics.
+export function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
+  if (value == null || value === "") return { value: null, valid: true };
+  const number = Number(value);
+  const valid = Number.isFinite(number) && number >= 0;
+  return { value: valid ? number : null, valid };
+}
+
+export function parseDimension(value: string | null): RangeDimension | null {
+  if (value == null || value === "hours") return "hours";
+  if (value === "pmc_raids") return "pmc_raids";
+  return null;
+}
+
 const RANGE_COLUMNS: Record<RangeDimension, "hours" | "pmc_raids"> = {
   hours: "hours",
   pmc_raids: "pmc_raids",
@@ -1841,20 +1857,17 @@ interface FavRow {
 }
 
 function toFavorites(rows: FavRow[]): Favorite[] {
-  const groups = new Map<number, (Favorite & { sourceRowId: number })[]>();
-  for (const r of rows) {
-    const favorite = {
-      mode: r.mode,
-      cycleId: r.cycle_id,
-      aid: Number(r.aid),
-      nickname: r.nickname ?? null,
-      note: r.note ?? null,
-      isMain: Number(r.is_main) === 1,
-      createdAt: Number(r.created_at),
-      sourceRowId: Number(r.source_rowid),
-    } satisfies Favorite & { sourceRowId: number };
-    groups.set(favorite.aid, [...(groups.get(favorite.aid) ?? []), favorite]);
-  }
+  const mapped = rows.map((r) => ({
+    mode: r.mode,
+    cycleId: r.cycle_id,
+    aid: Number(r.aid),
+    nickname: r.nickname ?? null,
+    note: r.note ?? null,
+    isMain: Number(r.is_main) === 1,
+    createdAt: Number(r.created_at),
+    sourceRowId: Number(r.source_rowid),
+  } satisfies Favorite & { sourceRowId: number }));
+  const groups = Map.groupBy(mapped, (favorite) => favorite.aid);
   const favorites = [...groups.values()].map((group) => {
     const newest = [...group].sort((a, b) => b.createdAt - a.createdAt || b.sourceRowId - a.sourceRowId);
     const canonical = [...group].sort((a, b) =>

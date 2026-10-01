@@ -140,7 +140,7 @@ export function xpPerDay(points: readonly ({ value: number } & ({ seasonDay: num
     : Date.parse(`${point.date}T00:00:00Z`) / 86_400_000;
   const sorted = [...points].sort((a, b) => day(a) - day(b));
   const first = sorted[0];
-  const last = sorted[sorted.length - 1];
+  const last = sorted.at(-1)!;
   const days = day(last) - day(first);
   return days > 0 ? (last.value - first.value) / days : null;
 }

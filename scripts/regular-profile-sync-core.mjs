@@ -147,3 +147,57 @@ export function summarizeCoverage(totalValue, coveredValue) {
     : Math.min(99.9999, Number(((covered / coverageTotal) * 100).toFixed(4)));
   return { coverageTotal, covered, unresolved, coveragePercent };
 }
+
+export function envInteger(name, fallback, minimum, maximum) {
+  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+export function envNumber(name, fallback, minimum, maximum) {
+  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+export function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function message(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function log(event, fields = {}) {
+  process.stdout.write(`${new Date().toISOString()} ${event} ${JSON.stringify(fields)}\n`);
+}
+
+export function backoff(attempt) {
+  return Math.min(30_000, 1000 * 2 ** (attempt - 1));
+}
+
+export function retryableError(text, status) {
+  const error = new Error(text);
+  error.status = status;
+  error.retryable = true;
+  return error;
+}
+
+export function hasArg(argv, name) {
+  return argv.includes(name);
+}
+
+export function argValue(argv, name, fallback) {
+  const prefix = `${name}=`;
+  const inline = argv.find((arg) => arg.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = argv.indexOf(name);
+  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
+  }
+  return fallback;
+}

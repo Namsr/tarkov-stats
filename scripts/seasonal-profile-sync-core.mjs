@@ -1,10 +1,12 @@
 import {
+  argValue,
   createTimestampObjectParser,
   feedCacheSlot,
+  hasArg,
   normalizeUpdatedAt,
 } from "./regular-profile-sync-core.mjs";
 
-export { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt };
+export { argValue, createTimestampObjectParser, feedCacheSlot, hasArg, normalizeUpdatedAt };
 
 /**
  * Small streaming parser for Tarkov's `{ "aid": "nickname" }` index files.
@@ -140,6 +142,205 @@ export function normalizeNickname(value) {
 
 export function isClearlyTruncatedIndex(previousRows, nextRows) {
   return previousRows > 0 && nextRows * 2 < previousRows;
+}
+
+function initStringIndexSchema(db, mode) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${mode}_player_index (
+      mode TEXT NOT NULL CHECK (mode = '${mode}'),
+      aid INTEGER NOT NULL,
+      nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL,
+      synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_${mode}_player_index_nickname_lower
+      ON ${mode}_player_index(mode, nickname_lower, aid);
+    CREATE TABLE IF NOT EXISTS ${mode}_player_index_next (
+      mode TEXT NOT NULL CHECK (mode = '${mode}'),
+      aid INTEGER NOT NULL,
+      nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL,
+      synced_at INTEGER NOT NULL,
+      PRIMARY KEY (mode, aid)
+    );
+    CREATE TABLE IF NOT EXISTS ${mode}_player_index_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+}
+
+function getStringIndexMeta(db, mode, key) {
+  const row = db.prepare(`SELECT value FROM ${mode}_player_index_meta WHERE key = ?`).get(key);
+  return typeof row?.value === "string" ? row.value : null;
+}
+
+function setStringIndexMeta(db, mode, key, value) {
+  db.prepare(`
+    INSERT INTO ${mode}_player_index_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, String(value));
+}
+
+function deleteStringIndexMeta(db, mode, key) {
+  db.prepare(`DELETE FROM ${mode}_player_index_meta WHERE key = ?`).run(key);
+}
+
+function currentStringIndexRowCount(db, mode) {
+  return Number(db.prepare(`SELECT COUNT(*) AS n FROM ${mode}_player_index WHERE mode = '${mode}'`).get()?.n) || 0;
+}
+
+async function consumeStringIndex(db, { mode, label, response, syncedAt, dryRun, previousRows, beforeWrite, signal }) {
+  beforeWrite?.();
+  let insert = null;
+  let sourceRows = 0;
+  let inserted = 0;
+  let skipped = 0;
+  let bytes = 0;
+  if (!dryRun) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare(`DELETE FROM ${mode}_player_index_next WHERE mode = '${mode}'`).run();
+      insert = db.prepare(`
+        INSERT OR REPLACE INTO ${mode}_player_index_next
+          (mode, aid, nickname, nickname_lower, synced_at)
+        VALUES ('${mode}', ?, ?, ?, ?)
+      `);
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  try {
+    const parser = createStringObjectParser((aidRaw, nicknameRaw) => {
+      sourceRows += 1;
+      const aid = normalizeAid(aidRaw);
+      const nickname = normalizeNickname(nicknameRaw);
+      if (aid === null || nickname === null) {
+        skipped += 1;
+        return;
+      }
+      if (insert) insert.run(aid, nickname, nickname.toLowerCase(), syncedAt);
+      inserted += 1;
+      if (beforeWrite && inserted % 1000 === 0) beforeWrite();
+    });
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error(`${label} index response has no readable body`);
+
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (signal?.aborted) throw signal.reason ?? new Error(`${label} index sync aborted`);
+      bytes += value.byteLength;
+      parser.append(decoder.decode(value, { stream: true }));
+    }
+    parser.finish(decoder.decode());
+    const rowCount = dryRun
+      ? inserted
+      : Number(db.prepare(`SELECT COUNT(*) AS n FROM ${mode}_player_index_next WHERE mode = '${mode}'`).get()?.n) || 0;
+    if (rowCount === 0) throw new Error(`${label} index contains no valid players`);
+    if (isClearlyTruncatedIndex(previousRows, rowCount)) {
+      throw new Error(`${label} index appears truncated: ${rowCount} rows would replace ${previousRows}`);
+    }
+    if (!dryRun) {
+      beforeWrite?.();
+      db.exec("COMMIT");
+    }
+    return { sourceRows, inserted: rowCount, skipped, bytes };
+  } catch (error) {
+    if (!dryRun) db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function replaceStringIndex(db, mode, metadata, beforeWrite) {
+  beforeWrite?.();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      DROP TABLE ${mode}_player_index;
+      ALTER TABLE ${mode}_player_index_next RENAME TO ${mode}_player_index;
+      CREATE INDEX idx_${mode}_player_index_nickname_lower
+        ON ${mode}_player_index(mode, nickname_lower, aid);
+    `);
+    for (const [key, value] of Object.entries({
+      synced_at: metadata.syncedAt,
+      source_url: metadata.url,
+      row_count: metadata.inserted,
+      source_rows: metadata.sourceRows,
+      skipped: metadata.skipped,
+      bytes: metadata.bytes,
+      duration_ms: metadata.durationMs,
+      last_poll_at: Date.now(),
+      last_status: "updated",
+    })) setStringIndexMeta(db, mode, key, value);
+    if (metadata.etag) setStringIndexMeta(db, mode, "etag", metadata.etag);
+    else deleteStringIndexMeta(db, mode, "etag");
+    if (metadata.lastModified) setStringIndexMeta(db, mode, "last_modified", metadata.lastModified);
+    else deleteStringIndexMeta(db, mode, "last_modified");
+    beforeWrite?.();
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Shared download-validate-swap for the arena/pve string player indexes.
+ * `mode` selects the table family (`arena` or `pve`), `label` only names
+ * error strings. Table/column names interpolate the internal mode literal,
+ * never user input.
+ */
+export async function syncStringIndex(db, options) {
+  const { mode, label, url, force = false, dryRun = false, beforeWrite = null } = options;
+  const hook = typeof beforeWrite === "function" ? beforeWrite : null;
+  const signal = options.signal ?? AbortSignal.timeout(30_000);
+  const startedAt = Date.now();
+  const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+  initStringIndexSchema(db, mode);
+
+  const headers = {};
+  if (!force) {
+    const etag = getStringIndexMeta(db, mode, "etag");
+    const lastModified = getStringIndexMeta(db, mode, "last_modified");
+    if (etag) headers["if-none-match"] = etag;
+    if (lastModified) headers["if-modified-since"] = lastModified;
+  }
+  const response = await fetchTarkovJson(url, { headers, cache: "no-store", signal });
+  if (response.status === 304) {
+    if (!dryRun) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        hook?.();
+        setStringIndexMeta(db, mode, "last_poll_at", Date.now());
+        setStringIndexMeta(db, mode, "last_status", "unchanged");
+        setStringIndexMeta(db, mode, "duration_ms", Date.now() - startedAt);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    return { unchanged: true, dryRun, url, durationMs: Date.now() - startedAt };
+  }
+  if (!response.ok) throw new Error(`${label} index download failed: HTTP ${response.status}`);
+  const syncedAt = Date.now();
+  const result = await consumeStringIndex(db, {
+    mode, label, response, syncedAt, dryRun,
+    previousRows: currentStringIndexRowCount(db, mode),
+    beforeWrite: hook, signal,
+  });
+  if (!dryRun) {
+    replaceStringIndex(db, mode, {
+      ...result, syncedAt, durationMs: Date.now() - startedAt, url,
+      etag: response.headers.get("etag"),
+      lastModified: response.headers.get("last-modified"),
+    }, hook);
+  }
+  return { ...result, unchanged: false, dryRun, url, durationMs: Date.now() - startedAt };
 }
 
 export function enqueueMissingSeasonalIndexProfiles(db, cycleId, fallbackUpdatedAt, queuedAt = Date.now()) {

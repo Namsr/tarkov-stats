@@ -310,7 +310,7 @@ export function scoreCheater(
     z: null,
   });
 
-  const score = Math.min(100, Math.round(factors.reduce((s, f) => s + f.points, 0)));
+  const score = Math.min(100, Math.round(basePoints + compoundPoints));
   factors.sort((a, b) => b.points - a.points);
   return { score, tier: tierFor(score), factors, sampleN, basedOnSample };
 }

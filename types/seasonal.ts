@@ -202,17 +202,6 @@ export interface DailyAggregateRecord {
   scoreVersion: number;
 }
 
-export const LIFETIME_HOUR_BANDS = [
-  [0, 50],
-  [50, 100],
-  [100, 200],
-  [200, 500],
-  [500, 1_000],
-  [1_000, 2_000],
-  [2_000, 5_000],
-  [5_000, null],
-] as const;
-
 export type ScanTaskKind = "profile" | "linked_pvp" | "ban_check";
 export type ScanTaskPriority = 1 | 2 | 3 | 4;
 export type ScanTaskActor = "helper" | "operator";

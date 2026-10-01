@@ -18,8 +18,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: noStore });
   }
   const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
-  const rawMode = request.nextUrl.searchParams.get("mode");
-  const mode = rawMode === null || rawMode === "" ? "regular" : rawMode;
+  const mode = request.nextUrl.searchParams.get("mode") || "regular";
   if (aid === null) {
     return NextResponse.json({ error: "Invalid account ID" }, { status: 400, headers: noStore });
   }

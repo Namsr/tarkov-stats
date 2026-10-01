@@ -15,6 +15,8 @@ import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
+// @ts-ignore Node's strip-types test runner requires the explicit extension.
+import { percentile20 } from "./analytics.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -466,12 +468,6 @@ export function selectSeasonalRiskPercent(
   return SEASONAL_RISK_COHORT_PERCENTAGES.find((percent) =>
     finiteRiskCount(counts[percent]) >= SEASONAL_RISK_COHORT_TARGET
   ) ?? 30;
-}
-
-function percentile20(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.max(0, Math.floor((sorted.length - 1) * 0.2))] ?? null;
 }
 
 function summary(values: number[]): { mean: number; std: number; early: number } {

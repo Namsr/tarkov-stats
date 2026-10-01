@@ -370,6 +370,12 @@ export function trimmedMean(values: readonly number[], trimFraction = 0.05): num
   return kept.reduce((sum, value) => sum + value, 0) / kept.length;
 }
 
+export function percentile20(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor((sorted.length - 1) * 0.2)] ?? null;
+}
+
 export function quantile(values: readonly number[], probability: number): number | null {
   if (!(probability >= 0 && probability <= 1)) throw new RangeError("probability must be 0..1");
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);

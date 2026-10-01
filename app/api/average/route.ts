@@ -3,6 +3,8 @@ import { unstable_cache } from "next/cache";
 import {
   parseAveragePeriod,
   parseAverageStatistic,
+  parseDimension,
+  parseNonNegative,
   type AveragePeriod,
   type AverageStatistic,
   type CrossSectionMode,
@@ -34,19 +36,6 @@ import {
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 
 export const runtime = "nodejs";
-
-function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
-  if (value == null || value === "") return { value: null, valid: true };
-  const number = Number(value);
-  const valid = Number.isFinite(number) && number >= 0;
-  return { value: valid ? number : null, valid };
-}
-
-function parseDimension(value: string | null): RangeDimension | null {
-  if (value == null || value === "hours") return "hours";
-  if (value === "pmc_raids") return "pmc_raids";
-  return null;
-}
 
 function binCount(value: string | null): number {
   const number = Number(value);

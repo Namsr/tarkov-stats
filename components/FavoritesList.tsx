@@ -63,13 +63,9 @@ function FavoriteRow({
     setNoteLocal(fav.note ?? "");
   }, [fav.note]);
   const identity = { mode: fav.mode, cycleId: fav.cycleId };
-  const modeLabel = fav.mode === "regular"
-    ? t("fav.mode.regular")
-    : fav.mode === "pve"
-      ? t("fav.mode.pve")
-      : fav.mode === "arena"
-        ? t("fav.mode.arena")
-        : t("fav.mode.seasonal");
+  const modeLabel = fav.mode === "regular" || fav.mode === "pve" || fav.mode === "arena" || fav.mode === "seasonal"
+    ? t("fav.mode." + fav.mode)
+    : t("fav.mode.seasonal");
 
   function saveNote() {
     const next = note.trim();

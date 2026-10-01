@@ -6,10 +6,17 @@ import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import {
+  backoff,
   classifyFeedEntry,
   createTimestampObjectParser,
+  delay,
+  envInteger,
+  envNumber,
   feedCacheSlot,
+  log,
+  message,
   normalizeUpdatedAt,
+  retryableError,
   snapshotTargetVersion,
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
@@ -739,43 +746,4 @@ async function rateLimit(startedAt) {
   }
   await delay(waitMs);
   return true;
-}
-
-function retryableError(text, status) {
-  const error = new Error(text);
-  error.status = status;
-  error.retryable = true;
-  return error;
-}
-
-function backoff(attempt) {
-  return Math.min(30_000, 1000 * 2 ** (attempt - 1));
-}
-
-function envInteger(name, fallback, minimum, maximum) {
-  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
-  }
-  return value;
-}
-
-function envNumber(name, fallback, minimum, maximum) {
-  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
-  if (!Number.isFinite(value) || value < minimum || value > maximum) {
-    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
-  }
-  return value;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function message(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function log(event, fields = {}) {
-  process.stdout.write(`${new Date().toISOString()} ${event} ${JSON.stringify(fields)}\n`);
 }

@@ -1,28 +1,14 @@
 #!/usr/bin/env node
 
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 
 const { fetchTarkovJson } = await import("../lib/tarkov-api.ts");
-const { isClearlyTruncatedIndex } = await import("./seasonal-profile-sync-core.mjs");
+const { argValue, hasArg, isClearlyTruncatedIndex } = await import("./seasonal-profile-sync-core.mjs");
 
 const DEFAULT_URL = "https://players.tarkov.dev/profile/index.json";
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
-
-function hasArg(name) {
-  return process.argv.includes(name);
-}
-
-function argValue(name, fallback) {
-  const prefix = `${name}=`;
-  const inline = process.argv.find((arg) => arg.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const i = process.argv.indexOf(name);
-  if (i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
-    return process.argv[i + 1];
-  }
-  return fallback;
-}
 
 function usage() {
   console.log(`Usage:
@@ -34,12 +20,6 @@ Options:
   --force           Ignore saved ETag/Last-Modified and download anyway
   --dry-run         Download and validate, but do not write SQLite
 `);
-}
-
-function openDb(file) {
-  const resolved = path.resolve(file);
-  fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  return { resolved, dbPromise: import("node:sqlite") };
 }
 
 function getMeta(db, key) {
@@ -374,19 +354,19 @@ CREATE INDEX IF NOT EXISTS idx_player_index_nickname_lower
 }
 
 async function main() {
-  if (hasArg("--help") || hasArg("-h")) {
+  if (hasArg(process.argv, "--help") || hasArg(process.argv, "-h")) {
     usage();
     return;
   }
 
-  const file = argValue("--db", process.env.SQLITE_PATH || "/data/players.db");
-  const url = argValue("--url", DEFAULT_URL);
-  const force = hasArg("--force");
-  const dryRun = hasArg("--dry-run");
+  const file = argValue(process.argv, "--db", process.env.SQLITE_PATH || "/data/players.db");
+  const url = argValue(process.argv, "--url", DEFAULT_URL);
+  const force = hasArg(process.argv, "--force");
+  const dryRun = hasArg(process.argv, "--dry-run");
   const started = Date.now();
 
-  const { resolved, dbPromise } = openDb(file);
-  const { DatabaseSync } = await dbPromise;
+  const resolved = path.resolve(file);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new DatabaseSync(resolved);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA journal_mode = WAL");

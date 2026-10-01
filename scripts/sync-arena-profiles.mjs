@@ -5,9 +5,16 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import {
+  backoff,
   createTimestampObjectParser,
+  delay,
+  envInteger,
+  envNumber,
   feedCacheSlot,
+  log,
+  message,
   normalizeUpdatedAt,
+  retryableError,
   summarizeCoverage,
 } from "./regular-profile-sync-core.mjs";
 import { syncArenaIndex } from "./sync-arena-index.mjs";
@@ -15,13 +22,13 @@ import { syncArenaIndex } from "./sync-arena-index.mjs";
 const { fetchTarkovJson, parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
 const {
   ARENA_COUNTER_COLUMNS,
+  ARENA_PARSER_VERSION,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
 const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
 const { markAveragePublicationDirty } = await import("../lib/average-publication.ts");
-// Keep this queue target in lockstep with lib/arena/storage.ts. The collector
-// runs under Node's type-strip loader, which cannot resolve the app's @/ alias.
-const ARENA_PARSER_VERSION = 4;
+// The collector runs under Node's type-strip loader, which cannot resolve the
+// app's @/ alias; ARENA_PARSER_VERSION comes from the storage import above.
 const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V3_PARSER_VERSION = 3;
 const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v4_complete";
@@ -1179,23 +1186,8 @@ async function rateLimit(startedAt) {
   await delay(waitMs);
   return true;
 }
-function retryableError(text, status) { const error = new Error(text); error.status = status; error.retryable = true; return error; }
-function backoff(attempt) { return Math.min(30_000, 1000 * 2 ** (attempt - 1)); }
-function envInteger(name, fallback, minimum, maximum) {
-  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
-  return value;
-}
 function envOptionalPositiveInteger(name) {
   const value = process.env[name] == null || process.env[name] === "" ? null : Number(process.env[name]);
   if (value !== null && (!Number.isSafeInteger(value) || value <= 0)) throw new Error(`${name} must be a positive integer`);
   return value;
 }
-function envNumber(name, fallback, minimum, maximum) {
-  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
-  if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(`${name} must be between ${minimum} and ${maximum}`);
-  return value;
-}
-function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-function message(error) { return error instanceof Error ? error.message : String(error); }
-function log(event, fields = {}) { process.stdout.write(`${new Date().toISOString()} ${event} ${JSON.stringify(fields)}\n`); }

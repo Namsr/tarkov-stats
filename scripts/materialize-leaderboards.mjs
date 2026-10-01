@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
+import { parseArgs } from "node:util";
 import { leaderboardConfigChanged, leaderboardFullReason, leaderboardScopeConfigs } from "../lib/leaderboard/config.ts";
 import { initializeProfileChangeJournal } from "../lib/profile-change-journal.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
@@ -24,12 +25,20 @@ import {
 } from "../lib/leaderboard/publication.ts";
 import { arenaTabCounts, leaderboardChangeWindow, leaderboardSourceRows } from "../lib/leaderboard/source.ts";
 
-const flags = new Set(process.argv.slice(2));
-if ([...flags].some((flag) => flag !== "--full" && flag !== "--recalibrate")) {
-  throw new Error("Usage: materialize-leaderboards.mjs [--full|--recalibrate]");
+const USAGE = "Usage: materialize-leaderboards.mjs [--full|--recalibrate]";
+let values;
+try {
+  ({ values } = parseArgs({
+    args: process.argv.slice(2),
+    strict: true,
+    allowPositionals: false,
+    options: { full: { type: "boolean" }, recalibrate: { type: "boolean" } },
+  }));
+} catch (error) {
+  throw new Error(USAGE, { cause: error });
 }
-const forceFull = flags.has("--full") || flags.has("--recalibrate");
-const recalibrate = flags.has("--recalibrate");
+const forceFull = values.full === true || values.recalibrate === true;
+const recalibrate = values.recalibrate === true;
 
 function exclusionFingerprint(db, cycleId = null) {
   const hash = createHash("sha256");

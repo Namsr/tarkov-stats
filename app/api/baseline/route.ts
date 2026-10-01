@@ -1,20 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getStore } from "@/lib/db";
+import { getStore, parseNonNegative } from "@/lib/db";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
 export const runtime = "nodejs";
-
-// Mirrors parseNonNegative in app/api/average/route.ts: an absent or empty
-// parameter means "no bound", but a malformed one is a client error. Returning
-// the same null for both would silently drop the range filter and answer with
-// whole-population statistics.
-function parseNonNegative(value: string | null): { value: number | null; valid: boolean } {
-  if (value == null || value === "") return { value: null, valid: true };
-  const number = Number(value);
-  const valid = Number.isFinite(number) && number >= 0;
-  return { value: valid ? number : null, valid };
-}
 
 // Mean + std of each scored metric over a playtime range, for the within-bracket
 // z-scores behind the cheating-risk score. Reads our DB only (no upstream fetch).

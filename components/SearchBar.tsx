@@ -49,10 +49,7 @@ export default function SearchBar({ autoFocus = false, landing = false }: { auto
   const router = useTrackedRouter();
 
   function modeLabel(mode: GameMode): string {
-    if (mode === "regular") return t("fav.mode.regular");
-    if (mode === "pve") return t("fav.mode.pve");
-    if (mode === "arena") return t("fav.mode.arena");
-    return t("fav.mode.seasonal");
+    return t("fav.mode." + mode);
   }
 
   function searchModeLabel(mode: SearchMode): string {

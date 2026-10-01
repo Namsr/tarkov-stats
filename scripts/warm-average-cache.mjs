@@ -1,3 +1,5 @@
+import { envInteger } from "./regular-profile-sync-core.mjs";
+
 const baseUrl = (process.env.AVERAGE_WARM_BASE_URL || "http://web:3000").replace(/\/+$/, "");
 const configuredInterval = Number(process.env.AVERAGE_WARM_INTERVAL_MS);
 const intervalMs = Number.isFinite(configuredInterval) && configuredInterval > 0
@@ -21,12 +23,6 @@ let running = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function envInteger(name, fallback, minimum, maximum) {
-  const value = process.env[name] == null || process.env[name] === "" ? fallback : Number(process.env[name]);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
-  return value;
 }
 
 async function request(path) {

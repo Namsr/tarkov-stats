@@ -112,10 +112,6 @@ function riskView(
   };
 }
 
-function emptyRisk(): null {
-  return null;
-}
-
 export type PersistentProfileViewInput = {
   aid: number;
   mode: "regular" | "pve";
@@ -274,7 +270,7 @@ export function buildSeasonalProfileViewModel(
       prestige: finiteOrNull(stats?.prestige ?? profile.staticSignals?.prestige),
       achievementsCount: finiteOrNull(stats?.achievementsCount ?? ownAchievements.length),
     },
-    risk: riskView(risk, identityValue) ?? emptyRisk(),
+    risk: riskView(risk, identityValue),
     comparison: {
       lifetimePvpHours: finiteOrNull(profile.lifetimePvpHours),
       pmcRaids: finiteOrNull(counters.pmcRaids),

@@ -48,7 +48,17 @@ function isProfileMode(value: string): value is GameMode { return GAME_MODES.inc
 function profileHref(aid: number, mode: GameMode): string { return `/player/${appRouteMode(mode)}/${aid}`; }
 
 function finite(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
-function formatNumber(value: number): string { return new Intl.NumberFormat().format(value); }
+const DEFAULT_NUMBER_FORMAT = new Intl.NumberFormat();
+function formatNumber(value: number): string { return DEFAULT_NUMBER_FORMAT.format(value); }
+const LOCALE_NUMBER_FORMATS = new Map<string, Intl.NumberFormat>();
+function localeNumberFormat(locale: string, options?: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = `${locale}:${options?.maximumFractionDigits ?? ""}`;
+  const cached = LOCALE_NUMBER_FORMATS.get(key);
+  if (cached) return cached;
+  const created = new Intl.NumberFormat(locale, options);
+  LOCALE_NUMBER_FORMATS.set(key, created);
+  return created;
+}
 function metricDiff(current: number, previous: number): number | null { return previous > 0 ? (current - previous) / previous * 100 : null; }
 function validTab(value: string | null): Tab { return tabs.includes(value as Tab) ? value as Tab : "overview"; }
 
@@ -499,15 +509,16 @@ function SystemMetricChart({ title, points, series, fixedMax, lang, t }: { title
 
 function SystemMetricsTable({ points, lang, t }: { points: SystemMetricPoint[]; lang: string; t: T }) {
   const locale = lang === "ru" ? "ru-RU" : "en-US";
+  const loadFormat = localeNumberFormat(locale, { maximumFractionDigits: 2 });
   const percentage = (value: number | null) => value == null ? t("common.notAvailable") : formatPercent(value, locale);
   const rate = (value: number | null) => value == null ? t("common.notAvailable") : t("admin.monitoring.perSecond", { value: formatBytes(value, locale, t) });
   return <details className="data-panel admin-monitoring-table"><summary>{t("admin.monitoring.table.show")}</summary><div className="admin-monitoring-table__scroll"><table><thead><tr>
     <th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.monitoring.cpu")}</th><th scope="col">{t("admin.monitoring.memory")}</th><th scope="col">{t("admin.monitoring.table.swap")}</th><th scope="col">{t("admin.monitoring.disk")}</th><th scope="col">{t("admin.monitoring.table.read")}</th><th scope="col">{t("admin.monitoring.table.write")}</th><th scope="col">{t("admin.monitoring.networkIn")}</th><th scope="col">{t("admin.monitoring.networkOut")}</th><th scope="col">{t("admin.monitoring.table.load")}</th>
-  </tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{percentage(point.cpuPercent)}</td><td>{percentage(point.memoryPercent)}</td><td>{percentage(point.swapPercent)}</td><td>{percentage(point.diskPercent)}</td><td>{rate(point.diskReadBytesPerSecond)}</td><td>{rate(point.diskWriteBytesPerSecond)}</td><td>{rate(point.networkRxBytesPerSecond)}</td><td>{rate(point.networkTxBytesPerSecond)}</td><td>{new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(point.load1)}</td></tr>)}</tbody></table></div></details>;
+  </tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatChartDate(point.at, lang)}</th><td>{percentage(point.cpuPercent)}</td><td>{percentage(point.memoryPercent)}</td><td>{percentage(point.swapPercent)}</td><td>{percentage(point.diskPercent)}</td><td>{rate(point.diskReadBytesPerSecond)}</td><td>{rate(point.diskWriteBytesPerSecond)}</td><td>{rate(point.networkRxBytesPerSecond)}</td><td>{rate(point.networkTxBytesPerSecond)}</td><td>{loadFormat.format(point.load1)}</td></tr>)}</tbody></table></div></details>;
 }
 
 function formatPercent(value: number, locale: string): string {
-  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value) + "%";
+  return localeNumberFormat(locale, { maximumFractionDigits: 1 }).format(value) + "%";
 }
 
 function formatBytes(value: number, locale: string, t: T): string {
@@ -516,7 +527,7 @@ function formatBytes(value: number, locale: string, t: T): string {
   let unit = 0;
   while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
   const digits = unit === 0 || amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
-  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(amount)} ${t("admin.monitoring.unit." + units[unit])}`;
+  return `${localeNumberFormat(locale, { maximumFractionDigits: digits }).format(amount)} ${t("admin.monitoring.unit." + units[unit])}`;
 }
 
 function formatUptime(seconds: number, t: T): string {
@@ -551,7 +562,6 @@ function AccountList({ accounts, suspicious, title, description, empty, lang, t,
 }
 
 function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload, onResult }: { account: Account; suspicious: boolean; reportOnly?: boolean; lang: string; t: T; reload: (options?: { silent?: boolean }) => Promise<void>; onResult: (message: string) => void }) {
-  const [open, setOpen] = useState(false);
   const moderation = moderationFor(account);
   const accountModes = Array.from(new Set((account.modes ?? []).filter(isProfileMode)));
   const reportedModes = Array.from(new Set((account.reportedModes ?? []).filter(isProfileMode)));
@@ -564,7 +574,7 @@ function AccountRow({ account, suspicious, reportOnly = false, lang, t, reload, 
   const profileLabel = (mode: GameMode) => t("admin.account.openProfile", { mode: t("admin.mode." + mode) });
   const lastLabel = reportOnly ? t("admin.account.lastReported") : t("admin.account.last");
   const lastAt = reportOnly ? account.reportedAt ?? account.lastRequestedAt : account.lastRequestedAt;
-  return <details className="admin-account" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><strong><Link className="admin-account__profile-link" href={profileHref(account.aid, defaultMode)} prefetch={false} aria-label={profileLabel(defaultMode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{account.nickname || `#${account.aid}`}</Link></strong><small><span>AID {account.aid}</span><span aria-hidden="true"> / </span><span className="admin-account__mode-links" aria-label={t("admin.account.profileModes")}>{availableProfileModes.map((mode) => <Link className="admin-account__mode-link" key={mode} href={profileHref(account.aid, mode)} prefetch={false} aria-label={profileLabel(mode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{t("admin.mode." + mode)}</Link>)}</span></small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.snapshots")}>{formatNumber(account.snapshotCount)}</span><span data-label={lastLabel}>{new Date(lastAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} reportedModes={reportedModeNames} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.snapshots")}</dt><dd>{formatNumber(account.snapshotCount)}</dd></div><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}{reportOnly && <div><dt>{t("admin.account.reportedAt")}</dt><dd>{formatDate(account.reportedAt ?? null, lang, t)}</dd></div>}{reportOnly && reportedModeNames && <div><dt>{t("admin.account.reportedModes")}</dt><dd>{reportedModeNames}</dd></div>}<div><dt>{t("admin.account.profileUpdated")}</dt><dd>{formatDate(moderation?.risk?.profileUpdatedAt ?? null, lang, t)}</dd></div>{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} / {t("admin.risk." + moderation.risk.tier)} / {t("admin.mode." + moderation.risk.mode)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} onResult={onResult} />}</div></details>;
+  return <details className="admin-account"><summary><span><strong><Link className="admin-account__profile-link" href={profileHref(account.aid, defaultMode)} prefetch={false} aria-label={profileLabel(defaultMode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{account.nickname || `#${account.aid}`}</Link></strong><small><span>AID {account.aid}</span><span aria-hidden="true"> / </span><span className="admin-account__mode-links" aria-label={t("admin.account.profileModes")}>{availableProfileModes.map((mode) => <Link className="admin-account__mode-link" key={mode} href={profileHref(account.aid, mode)} prefetch={false} aria-label={profileLabel(mode)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{t("admin.mode." + mode)}</Link>)}</span></small></span><span data-label={t("admin.account.requests")}>{formatNumber(account.requestCount)}</span><span data-label={t("admin.account.snapshots")}>{formatNumber(account.snapshotCount)}</span><span data-label={lastLabel}>{new Date(lastAt).toLocaleString(lang === "ru" ? "ru-RU" : "en-US", { timeZone: "Europe/Moscow" })}</span><span className="admin-signals" data-label={t("admin.account.signals")}><Signals moderation={moderation} sources={account.sources} reportedModes={reportedModeNames} t={t} /></span></summary><div className="admin-account-details"><dl><div><dt>{t("admin.account.snapshots")}</dt><dd>{formatNumber(account.snapshotCount)}</dd></div><div><dt>{t("admin.account.refreshes")}</dt><dd>{formatNumber(account.refreshCount)}</dd></div>{Object.entries(account.outcomes ?? {}).map(([key, value]) => <div key={key}><dt>{outcomeLabel(key, t)}</dt><dd>{formatNumber(value)}</dd></div>)}{reportOnly && <div><dt>{t("admin.account.reportedAt")}</dt><dd>{formatDate(account.reportedAt ?? null, lang, t)}</dd></div>}{reportOnly && reportedModeNames && <div><dt>{t("admin.account.reportedModes")}</dt><dd>{reportedModeNames}</dd></div>}<div><dt>{t("admin.account.profileUpdated")}</dt><dd>{formatDate(moderation?.risk?.profileUpdatedAt ?? null, lang, t)}</dd></div>{moderation?.risk && <div><dt>{t("admin.account.risk")}</dt><dd>{moderation.risk.score} / {t("admin.risk." + moderation.risk.tier)} / {t("admin.mode." + moderation.risk.mode)}</dd></div>}</dl>{(suspicious || moderation) && <ModerationForm account={account} moderation={moderation} t={t} reload={reload} onResult={onResult} />}</div></details>;
 }
 
 function moderationFor(account: Account): AccountModeration | undefined {
