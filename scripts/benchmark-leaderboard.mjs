@@ -14,7 +14,7 @@ const directory = mkdtempSync(join(tmpdir(), "leaderboard-benchmark-"));
 const path = join(directory, "leaderboards.db");
 const db = new DatabaseSync(path);
 try {
-  db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=FILE; CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
   initializeLeaderboardSchema(db);
   const config = { scope: "regular", mode: "regular", arenaMode: null, cycleId: null, primaryMetric: "performance",
     minimumSample: 6, activityCutoffMs: 100, arpSeasonId: null, arpSourceConfirmed: false };

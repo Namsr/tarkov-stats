@@ -23,6 +23,7 @@ services:
       - /tmp
       - /app/.next/cache:uid=1001,gid=1001,mode=0700
     mem_limit: 1024m
+    oom_score_adj: -500
     pids_limit: 256
     volumes:
       - players_data:/data

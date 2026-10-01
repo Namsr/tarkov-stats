@@ -6,14 +6,13 @@ cd "$APP"
 compose() { docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" "$@"; }
 container() { compose ps -q web; }
 healthy() {
-  [ -n "$(container)" ] && compose exec -T web node -e \
-    'fetch("http://127.0.0.1:3000", {signal: AbortSignal.timeout(20000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'
+  [ -n "$(container)" ] && curl -sf --max-time 20 -H 'Host: tarkovstats.ru' http://127.0.0.1/ -o /dev/null
 }
 
 # Never discard operator edits. Untracked secrets and local compose are retained.
-git diff --quiet
-git diff --cached --quiet
-git fetch --prune origin
+git diff --quiet || { logger -t tarkovstats-deploy "deploy deferred: working tree dirty"; exit 0; }
+git diff --cached --quiet || { logger -t tarkovstats-deploy "deploy deferred: index dirty"; exit 0; }
+if ! git fetch --prune origin; then logger -t tarkovstats-deploy "git fetch failed, deferred"; exit 0; fi
 previous=$(git rev-parse HEAD)
 remote=$(git rev-parse origin/main)
 cid=$(container)

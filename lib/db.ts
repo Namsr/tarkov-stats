@@ -1253,7 +1253,7 @@ function getSqliteDb(): Promise<any | null> {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function initializeSqliteSchema(opened: any): void {
-  opened.exec("PRAGMA busy_timeout = 5000");
+  opened.exec("PRAGMA busy_timeout = 5000; PRAGMA temp_store = MEMORY");
   if (!currentSqlitePlayerSchema(opened)) {
     const hasFavorites = opened.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favorites'"
