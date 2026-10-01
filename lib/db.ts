@@ -1734,6 +1734,15 @@ export async function getPlayerIndexStore(
   return null;
 }
 
+/** Read-only handle on the index metadata table, for the coverage counters the
+ *  home page serves. Separate from the index store because that one prepares
+ *  search statements against the full table; this only needs `player_index_meta`
+ *  and must stay usable when the index itself is empty or absent. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getPublicIndexMetaReader(): Promise<any | null> {
+  return getSqliteDb();
+}
+
 /**
  * Stable pseudo-random traversal for the nickname-only public index. The index
  * has no activity metadata, so callers validate each returned aid separately.
