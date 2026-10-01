@@ -80,7 +80,7 @@ try {
   players.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000;");
   const { created: journalCreated } = initializeProfileChangeJournal(players);
   publication = new DatabaseSync(leaderboardPublicationPath());
-  publication.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA temp_store=FILE;");
+  publication.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY;");
   initializeLeaderboardSchema(publication);
   const configs = leaderboardScopeConfigs();
   let seasonalJournalCreated = false;

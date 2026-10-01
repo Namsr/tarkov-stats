@@ -23,7 +23,7 @@ export async function openLeaderboardDatabase(): Promise<any> {
   // half-initialized handle cached for the rest of the process.
   const opened = new sqlite.DatabaseSync(path);
   try {
-    opened.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA temp_store=FILE;");
+    opened.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY;");
     initializeLeaderboardSchema(opened);
   } catch (error) {
     try { opened.close(); } catch { /* already closed */ }

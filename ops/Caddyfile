@@ -27,6 +27,7 @@
 		# Shared across both sites because they use the same upstream address.
 		# Reject excess requests with 503 instead of retaining an unbounded queue.
 		unhealthy_request_count 32
+		fail_duration 5s
 		transport http {
 			response_header_timeout 20s
 			read_timeout 25s
