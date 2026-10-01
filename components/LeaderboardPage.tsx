@@ -16,6 +16,12 @@ import type {
 const MODES: LeaderboardMode[] = ["regular", "pve", "arena", "pvp-season"];
 const SORTS: LeaderboardSort[] = ["primary", "score", "kd", "killsPerMatch", "kills", "hours"];
 
+// Fail fast and retry on the client instead of hanging until Caddy's 20s
+// response_header_timeout turns the request into a 504 with no recovery UI.
+const LEADERBOARD_FETCH_TIMEOUT_MS = 15_000;
+const LEADERBOARD_FETCH_RETRIES = 1;
+const LEADERBOARD_RETRY_DELAY_MS = 800;
+
 function positiveAid(value: string | null): number | null {
   if (!value || !/^\d+$/.test(value)) return null;
   const aid = Number(value);
@@ -66,6 +72,11 @@ export default function LeaderboardPage() {
     error: string;
   } | null>(null);
   const [mobileList, setMobileList] = useState<"top" | "around">("top");
+  // Manual retry that re-issues the API request instead of reloading the page.
+  const [retryNonce, setRetryNonce] = useState(0);
+  // The request URL that last failed. Shown as a banner over the stale table
+  // when one exists, so mode tabs stay usable while a fetch is down.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
   // Edge-jump toggle: one button, both arrows inside. The lit arrow is the
   // last jump target (starts at top); press jumps to the other end.
   const [jumpDir, setJumpDir] = useState<"top" | "end">("top");
@@ -78,29 +89,50 @@ export default function LeaderboardPage() {
     return `/api/leaderboard?${params}`;
   }, [aid, arenaMode, cycle, mode, sort, direction]);
   const data = result?.key === requestUrl ? result.data : null;
-  const error = result?.key === requestUrl ? result.error : "";
   const loading = result?.key !== requestUrl;
   const visible = data ?? (loading ? result?.data : null);
   const switching = loading && visible != null;
+  const failed = failedUrl === requestUrl;
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetch(requestUrl, { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
+    const supersede = new AbortController();
+    let cancelled = false;
+    const load = async (retriesLeft: number): Promise<void> => {
+      const controller = new AbortController();
+      const onSupersede = () => controller.abort();
+      supersede.signal.addEventListener("abort", onSupersede);
+      const timeout = setTimeout(() => controller.abort(), LEADERBOARD_FETCH_TIMEOUT_MS);
+      try {
+        const response = await fetch(requestUrl, { signal: controller.signal, cache: "no-store" });
         const body = await response.json() as LeaderboardPageResponse | LeaderboardErrorResponse;
         if (!response.ok || !("meta" in body)) throw new Error(t("leaderboard.error"));
-        return body;
-      })
-      .then((response) => {
-        if (!controller.signal.aborted) setResult({ key: requestUrl, data: response, error: "" });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setResult({ key: requestUrl, data: null, error: t("leaderboard.error") });
+        if (cancelled) return;
+        setResult({ key: requestUrl, data: body, error: "" });
+        setFailedUrl((current) => (current === requestUrl ? null : current));
+      } catch {
+        if (cancelled) return;
+        if (retriesLeft > 0) {
+          await new Promise((resolve) => setTimeout(resolve, LEADERBOARD_RETRY_DELAY_MS));
+          if (cancelled) return;
+          await load(retriesLeft - 1);
+          return;
         }
-      });
-    return () => controller.abort();
-  }, [requestUrl, t]);
+        if (cancelled) return;
+        // Keep the previous table on screen instead of wiping to the error
+        // panel: mode tabs and controls stay usable while this fetch is down.
+        setResult((prev) => (prev?.data ? prev : { key: requestUrl, data: null, error: t("leaderboard.error") }));
+        setFailedUrl(requestUrl);
+      } finally {
+        clearTimeout(timeout);
+        supersede.signal.removeEventListener("abort", onSupersede);
+      }
+    };
+    void load(LEADERBOARD_FETCH_RETRIES);
+    return () => {
+      cancelled = true;
+      supersede.abort();
+    };
+  }, [requestUrl, t, retryNonce]);
 
   function updateQuery(next: {
     mode?: LeaderboardMode;
@@ -292,10 +324,10 @@ export default function LeaderboardPage() {
       {publicationKey && <p className="leaderboard-publication" role="status">{t(publicationKey)}</p>}
 
       {loading && !visible && <LeaderboardLoading />}
-      {error && (
+      {failed && (
         <div className="data-panel leaderboard-state" role="alert">
-          <p>{error}</p>
-          <button type="button" className="ghost-button" onClick={() => window.location.reload()}>{t("leaderboard.retry")}</button>
+          <p>{t("leaderboard.error")}</p>
+          <button type="button" className="ghost-button" onClick={() => setRetryNonce((nonce) => nonce + 1)}>{t("leaderboard.retry")}</button>
         </div>
       )}
 

@@ -33,3 +33,13 @@ test("home leaderboard still separates loading, error and retry states", async (
   assert.match(component, /setAttempt\(\(value\) => value \+ 1\)/);
   assert.match(component, /home-loading-panel/);
 });
+
+test("home leaderboard fails fast and keeps the stale table with a retry", async () => {
+  const component = await read("components/home/HomeLeaderboard.tsx");
+  assert.match(component, /HOME_LEADERBOARD_FETCH_TIMEOUT_MS = 15_000/);
+  assert.match(component, /setTimeout\(\(\) => \{[\s\S]*?timedOut = true;[\s\S]*?\}, HOME_LEADERBOARD_FETCH_TIMEOUT_MS\)/);
+  // A timeout still records the failure (it is our own abort, not navigation).
+  assert.match(component, /controller\.signal\.aborted && !timedOut/);
+  assert.match(component, /prev\?\.data \? prev : \{ mode, data: null \}/);
+  assert.match(component, /failedMode === mode/);
+});
