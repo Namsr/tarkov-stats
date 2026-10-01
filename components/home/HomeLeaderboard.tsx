@@ -5,11 +5,16 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { LeaderboardMode, LeaderboardPageResponse } from "@/types/leaderboard";
 
+// Same fail-fast budget as the full leaderboard page: hanging until Caddy's
+// 20s timeout leaves the home section dimmed with no recovery path.
+const HOME_LEADERBOARD_FETCH_TIMEOUT_MS = 15_000;
+
 export default function HomeLeaderboard() {
   const { t, lang } = useI18n();
   const [mode, setMode] = useState<LeaderboardMode>("regular");
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [failedMode, setFailedMode] = useState<LeaderboardMode | null>(null);
   const [result, setResult] = useState<{ mode: LeaderboardMode; data: LeaderboardPageResponse | null } | null>(null);
   const ref = useRef<HTMLElement>(null);
 
@@ -24,13 +29,32 @@ export default function HomeLeaderboard() {
   useEffect(() => {
     if (!visible) return;
     const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, HOME_LEADERBOARD_FETCH_TIMEOUT_MS);
     const params = new URLSearchParams({ mode, sort: "primary", dir: "desc", limit: "5" });
     if (mode === "arena") params.set("arenaMode", "blastGang");
     fetch(`/api/leaderboard?${params}`, { signal: controller.signal }).then(async (response) => {
       const data = response.ok ? await response.json() as LeaderboardPageResponse : null;
-      if (!controller.signal.aborted) setResult({ mode, data });
-    }).catch(() => { if (!controller.signal.aborted) setResult({ mode, data: null }); });
-    return () => controller.abort();
+      if (!controller.signal.aborted) {
+        setResult({ mode, data });
+        setFailedMode((current) => (current === mode ? null : current));
+      }
+    }).catch(() => {
+      // A timeout is our own abort: still record the failure so the banner
+      // offers a retry. A navigation abort leaves the next request in charge.
+      if (controller.signal.aborted && !timedOut) return;
+      // Keep the stale table instead of wiping to the error panel; the
+      // banner below offers the retry.
+      setResult((prev) => (prev?.data ? prev : { mode, data: null }));
+      setFailedMode(mode);
+    }).finally(() => clearTimeout(timeout));
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, [mode, visible, attempt]);
 
   // Stale-while-revalidate: keep the previous mode's table on screen while the
@@ -48,6 +72,7 @@ export default function HomeLeaderboard() {
     <div className="home-segments home-leader-modes" role="group" aria-label={t("leaderboard.mode")}>
       {(["regular", "pve", "arena", "pvp-season"] as const).map((key) => <button key={key} type="button" aria-pressed={key === mode} onClick={() => setMode(key)}>{t("fav.mode." + (key === "pvp-season" ? "seasonal" : key))}</button>)}
     </div>
+    {failedMode === mode && data?.top.length ? <p className="home-board-status" role="alert">{t("leaderboard.error")} <button className="home-text-link" type="button" onClick={() => setAttempt((value) => value + 1)}>{t("leaderboard.retry")}</button></p> : null}
     {data?.top.length ? <div className={switching ? "home-leaderboard-switching" : undefined} aria-busy={switching || undefined}>
       {data.meta.publicationStatus !== "ready" && <p className="home-board-status" role="status">{t("leaderboard.publication." + data.meta.publicationStatus)}</p>}
       <table className="home-leaderboard"><thead><tr>

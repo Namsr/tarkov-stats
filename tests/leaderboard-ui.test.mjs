@@ -228,6 +228,22 @@ test("prestige icon URL rejects invalid levels", async () => {
   assert.match(table, /Number\.isSafeInteger\(level\)/);
 });
 
+test("leaderboard fetch fails fast and retries without a full reload", async () => {
+  const page = await read("components/LeaderboardPage.tsx");
+  // Client-side timeout well under Caddy's 20s response_header_timeout, so a
+  // stalled origin surfaces as a retryable error instead of a 504.
+  assert.match(page, /LEADERBOARD_FETCH_TIMEOUT_MS = 15_000/);
+  assert.match(page, /setTimeout\(\(\) => controller\.abort\(\), LEADERBOARD_FETCH_TIMEOUT_MS\)/);
+  // One automatic retry, then a manual retry that re-issues the API request.
+  assert.match(page, /LEADERBOARD_FETCH_RETRIES = 1/);
+  assert.match(page, /setRetryNonce\(\(nonce\) => nonce \+ 1\)/);
+  assert.match(page, /\[requestUrl, t, retryNonce\]/);
+  assert.doesNotMatch(page, /window\.location\.reload/);
+  // A failed fetch keeps the previous table instead of wiping to the panel.
+  assert.match(page, /prev\?\.data \? prev : \{ key: requestUrl, data: null/);
+  assert.match(page, /failedUrl === requestUrl/);
+});
+
 test("leaderboard mobile layout exposes one full list and sticky controls", async () => {
   const css = await read("app/globals.css");
   assert.match(css, /\.leaderboard-mode-switch \{[^}]*grid-template-columns: repeat\(4,/);
