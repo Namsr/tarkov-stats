@@ -27,6 +27,8 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
     readFile("app/api/admin/accounts/route.ts", "utf8"),
   ]);
   for (const tab of ["overview", "traffic", "accounts", "suspicious", "health", "monitoring"]) assert.match(dashboard, new RegExp(`"${tab}"`));
+  assert.match(dashboard, /"showcase"/);
+  assert.match(dashboard, /"support"/);
   assert.doesNotMatch(dashboard, /setInterval|autoRefresh/);
   assert.match(dashboard, /setRefreshKey\(\(key\) => key \+ 1\)/);
   // Source-shape assertions, not behaviour: this suite reads the component as text
