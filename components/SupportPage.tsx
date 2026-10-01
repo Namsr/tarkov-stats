@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import CopyButton from "@/components/CopyButton";
+import SupportContent from "@/components/SupportContent";
 import { useI18n } from "@/lib/i18n/context";
 import {
   BANK_CARD,
@@ -21,6 +22,8 @@ export default function SupportPage() {
         <h1 className="page-title">{t("support.title")}</h1>
         <p className="project-page__lead">{t("support.intro")}</p>
       </header>
+
+      <SupportContent />
 
       <section aria-labelledby="support-fast">
         <p className="section-kicker">{t("support.quickKicker")}</p>

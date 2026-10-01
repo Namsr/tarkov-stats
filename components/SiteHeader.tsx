@@ -8,6 +8,7 @@ import LanguageToggle from "@/components/LanguageToggle";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useI18n } from "@/lib/i18n/context";
 import { handleActiveLinkClick } from "@/lib/active-link";
+import { useUnseenSupportNotifications } from "@/components/SupportHeaderNotice";
 import { usePathname, useRouter } from "next/navigation";
 
 export default function SiteHeader() {
@@ -15,6 +16,9 @@ export default function SiteHeader() {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  // Reaching the support page dismisses the dot, so the check lives on the pathname
+  // rather than on a click handler the header navigation may intercept.
+  const unseenSupportIds = useUnseenSupportNotifications(pathname);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -68,6 +72,9 @@ export default function SiteHeader() {
                   }}
                 >
                   {item.label}
+                  {item.support && unseenSupportIds.length > 0 && (
+                    <span className="tactical-nav-link__dot" aria-label={t("nav.supportUnread")} />
+                  )}
                 </Link>
               );
             })}

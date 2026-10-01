@@ -1150,6 +1150,64 @@ a.help-card:hover { border-color: var(--foreground); }
 .help-card strong { font-family: var(--heading-font); font-size: .9rem; letter-spacing: .06em; text-transform: uppercase; }
 .help-card span { color: var(--muted); font-size: .75rem; line-height: 1.55; }
 
+/* Support page: operator notices and the donation progress bar. */
+.support-content { display: grid; gap: 12px; margin-bottom: 40px; }
+.support-content:empty { display: none; }
+
+.support-notifications { display: grid; gap: 12px; }
+
+.support-notice {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 18px 20px;
+  border: 1px solid var(--card-border);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  background: var(--card-bg);
+}
+.support-notice--warn { border-left-color: var(--accent-dim); }
+.support-notice--danger { border-left-color: var(--danger); }
+.support-notice__title { margin: 0; font-family: var(--heading-font); font-size: .95rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.support-notice__body { margin: 0; color: var(--muted-strong); font-size: .85rem; line-height: 1.6; white-space: pre-line; }
+.support-notice__link { display: inline-flex; align-items: center; gap: 8px; color: var(--foreground); font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; text-decoration: underline; text-underline-offset: 3px; }
+
+.support-fundraising { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--card-bg); }
+.support-fundraising__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.support-fundraising__title { margin: 0; font-family: var(--heading-font); font-size: .8rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.support-fundraising__figures { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; color: var(--foreground); font-size: .95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.support-fundraising__target { color: var(--muted); font-weight: 400; }
+.support-fundraising__track { height: 10px; overflow: hidden; border-radius: 999px; background: var(--input-bg); border: 1px solid var(--card-border); }
+.support-fundraising__fill { display: block; height: 100%; background: var(--foreground); }
+.support-fundraising__status { margin: 0; color: var(--muted); font-size: .72rem; }
+
+/* Unread-notice dot on the header support link. The pill is fully rounded, so
+   there is no straight right border to sit on — the corner is a half-disc of
+   radius 22 centred on (right - 22, top + 22). Equal offsets put the dot's
+   centre on that arc at 45°, where the pill's outline crosses it. */
+/* `isolation` gives the link its own stacking context, which is what lets the
+   dot sit below the border: an absolutely positioned child otherwise paints on
+   top of its parent's border, so the outline could never cross the disc. The
+   link's own background stays transparent so the inner half of the disc shows. */
+.tactical-nav-link { position: relative; isolation: isolate; }
+.tactical-nav-link__dot {
+  position: absolute;
+  z-index: -1;
+  top: -5.85px;
+  inset-inline-end: -5.85px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.admin-support-list { display: grid; gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
+.admin-support-row { display: grid; gap: 10px; border-top: 1px solid var(--card-border); padding-top: 12px; }
+.admin-support-row__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.admin-support-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-strong); font-size: .76rem; }
+.admin-support-form { display: grid; gap: 10px; margin-top: 16px; }
+.admin-support-form textarea { width: 100%; resize: vertical; }
+
 .coming-soon { max-width: 900px; padding: 26px; }
 .coming-soon__status { display: inline-flex; min-height: 32px; align-items: center; border: 1px solid var(--card-border); border-radius: 999px; padding: 6px 10px; color: var(--muted-strong); font-size: .66rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .coming-soon h2 { margin-top: 20px; }
