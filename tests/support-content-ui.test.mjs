@@ -64,6 +64,12 @@ test("the admin support form guards the mutation route and offers per-row switch
   assert.match(route, /typeof body\.href !== "string"/);
   assert.match(dashboard, /"support"/);
   assert.match(dashboard, /getJson<\{ notifications: SupportNotification\[\]; goals: FundraisingGoal\[\]; available: boolean \}>\("\/api\/admin\/support", \{ signal: request\.signal \}\)/);
+  // Mutations must refresh the dashboard state, or the list stays stale until a tab switch.
+  assert.match(panel, /onChange\(\{/);
+  assert.match(panel, /result\.notifications \?\? notifications/);
+  assert.match(panel, /result\.goals \?\? goals/);
+  assert.match(dashboard, /<AdminSupport/);
+  assert.match(dashboard, /onChange=\{\(\{ notifications, goals \}\) => setSupport\(\{ notifications, goals, available: true \}\)\}/);
   // Both languages keep the same key set; the admin form reads computed level keys.
   for (const key of ["admin.support.notifications", "admin.support.goals", "admin.support.usdRate", "nav.supportUnread", "support.fundraisingCollected", "support.fundraisingReached"]) {
     const matches = dictionary.match(new RegExp(`"${key}":`, "g")) ?? [];

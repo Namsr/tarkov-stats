@@ -30,11 +30,12 @@ async function postSupport(action: string, extra: Record<string, unknown>): Prom
   return body ?? {};
 }
 
-export default function AdminSupport({ notifications, goals, available = true, t }: {
+export default function AdminSupport({ notifications, goals, available = true, t, onChange }: {
   notifications: SupportNotification[];
   goals: FundraisingGoal[];
   available?: boolean;
   t: T;
+  onChange: (next: { notifications: SupportNotification[]; goals: FundraisingGoal[] }) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -47,7 +48,14 @@ export default function AdminSupport({ notifications, goals, available = true, t
     setBusy(true);
     setError("");
     try {
-      return await postSupport(action, extra);
+      const result = await postSupport(action, extra);
+      if (Array.isArray(result.notifications) || Array.isArray(result.goals)) {
+        onChange({
+          notifications: result.notifications ?? notifications,
+          goals: result.goals ?? goals,
+        });
+      }
+      return result;
     } catch {
       setError(t("admin.error.save"));
       return null;
@@ -87,7 +95,7 @@ export default function AdminSupport({ notifications, goals, available = true, t
           ? <p className="admin-empty">{t("admin.support.noNotifications")}</p>
           : <ul className="admin-support-list">
             {notifications.map((notification) => (
-              <NotificationRow key={notification.id} notification={notification} busy={busy} t={t} onMutate={mutate} />
+              <NotificationRow key={`${notification.id}:${notification.updatedAt}`} notification={notification} busy={busy} t={t} onMutate={mutate} />
             ))}
           </ul>}
         <div className="admin-support-form">
@@ -212,10 +220,18 @@ function GoalsSection({ goals, busy, t, onMutate, onValidationError }: {
       onValidationError("admin.support.invalidGoal");
       return;
     }
+    const collectedRaw = draftCollected.trim();
+    const rateRaw = draftRate.trim();
+    const collected = collectedRaw === "" ? 0 : Number(collectedRaw);
+    const rate = rateRaw === "" ? 1 : Number(rateRaw);
+    if (!Number.isFinite(collected) || collected < 0 || !Number.isFinite(rate) || rate <= 0) {
+      onValidationError("admin.support.invalidGoal");
+      return;
+    }
     void onMutate("create_goal", {
       goalRub: goal,
-      collectedRub: Number(draftCollected.trim()) || 0,
-      usdRate: Number(draftRate.trim()) || 1,
+      collectedRub: collected,
+      usdRate: rate,
     }).then((result) => {
       if (!result) return;
       setDraftGoal("");
@@ -231,7 +247,7 @@ function GoalsSection({ goals, busy, t, onMutate, onValidationError }: {
       {goals.length === 0
         ? <p className="admin-empty">{t("admin.support.noGoals")}</p>
         : <ul className="admin-support-list">
-            {goals.map((goal) => <GoalRow key={goal.id} goal={goal} busy={busy} t={t} onMutate={onMutate} />)}
+            {goals.map((goal) => <GoalRow key={`${goal.id}:${goal.updatedAt}`} goal={goal} busy={busy} t={t} onMutate={onMutate} />)}
           </ul>}
       <div className="admin-moderation" style={{ marginTop: 16 }}>
         <label>

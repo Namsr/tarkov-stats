@@ -247,11 +247,11 @@ export default function AdminDashboard() {
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
       {!error && !loading && tab === "support" && (
         <AdminSupport
-          key={`${support?.notifications.map((item) => `${item.id}:${item.updatedAt}`).join(",") ?? ""}|${support?.goals.map((goal) => `${goal.id}:${goal.updatedAt}`).join(",") ?? ""}`}
           notifications={support?.notifications ?? []}
           goals={support?.goals ?? []}
           available={support?.available ?? true}
           t={t}
+          onChange={({ notifications, goals }) => setSupport({ notifications, goals, available: true })}
         />
       )}
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}

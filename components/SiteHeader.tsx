@@ -73,7 +73,7 @@ export default function SiteHeader() {
                 >
                   {item.label}
                   {item.support && unseenSupportIds.length > 0 && (
-                    <span className="tactical-nav-link__dot" aria-label={t("nav.supportUnread")} />
+                    <span className="tactical-nav-link__dot" role="img" aria-label={t("nav.supportUnread")} />
                   )}
                 </Link>
               );
