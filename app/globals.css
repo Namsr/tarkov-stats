@@ -7,6 +7,10 @@
   --accent-dim: #d2d2cc;
   --success: #77cf89;
   --danger: #f07b7b;
+  --health-p50: var(--success);
+  --health-p95: #6cb0f5;
+  --health-p99: #a98bf0;
+  --health-p999: #8f3535;
   --card-bg: #111111;
   --card-border: #30302e;
   --input-bg: #171715;
@@ -14,6 +18,7 @@
   --muted-strong: #d1d1cb;
   --heading-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --body-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: dark;
 }
 
@@ -24,6 +29,12 @@ html[data-theme="light"] {
   --accent-dim: #343434;
   --success: #23813d;
   --danger: #c53d3d;
+  --health-p50: var(--success);
+  --health-p95: #1f6fd0;
+  --health-p99: #6a3fd1;
+  /* Darker than --danger below: the p99.9 and max dots sit next to each other at 10px,
+     and two similar reds read as one chip in the light theme. */
+  --health-p999: #6d1414;
   --card-bg: #ffffff;
   --card-border: #d7d7d1;
   --input-bg: #f0f0ec;
@@ -1236,7 +1247,8 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-chart-overlay { position: absolute; inset: 0; pointer-events: none; }
 .admin-chart-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 5px; }
 .admin-chart__grid { stroke: var(--card-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.admin-chart__axis { position: absolute; left: 0; width: 7%; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; line-height: 1; text-align: right; transform: translateY(-50%); white-space: nowrap; }
+.admin-chart__grid--dashed { stroke-dasharray: 3 3; }
+.admin-chart__axis { position: absolute; left: 0; width: 7%; color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; line-height: 1; text-align: right; transform: translateY(-50%); white-space: nowrap; }
 .admin-chart__line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
 .admin-chart__line--pageviews { stroke: var(--accent); }
 .admin-chart__line--visits { stroke: var(--success); stroke-dasharray: 5 3; }
@@ -1247,7 +1259,7 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-chart__value { position: absolute; color: var(--foreground); font-size: .68rem; font-variant-numeric: tabular-nums; font-weight: 800; line-height: 1; white-space: nowrap; text-shadow: 0 0 3px var(--card-bg), 0 0 3px var(--card-bg); }
 .admin-chart__value--visits { color: var(--success); }
 .admin-chart__hit-area { cursor: crosshair; }
-.admin-chart-axis { position: relative; height: 18px; color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; }
+.admin-chart-axis { position: relative; height: 18px; color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
 .admin-chart-axis span { position: absolute; top: 0; white-space: nowrap; }
 .admin-chart-date { position: absolute; bottom: 0; max-width: 100%; color: var(--muted-strong); font-size: .68rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .admin-chart-selection { min-height: 1.25rem; margin-top: 6px; color: var(--muted-strong); font-size: .78rem; font-variant-numeric: tabular-nums; }
@@ -1336,19 +1348,50 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-health-report { flex: 0 0 230px; display: grid; gap: 7px; }
 .admin-health-report span { color: var(--muted); font-size: .65rem; line-height: 1.4; text-align: center; }
 .admin-health-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.admin-health-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.admin-health-chart-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; }
 .admin-health-chart { min-width: 0; }
-.admin-health-chart-stage { position: relative; height: 190px; margin-top: 18px; }
+.admin-health-chart-stage { position: relative; height: 240px; margin-top: 18px; }
 .admin-health-chart-stage svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.admin-health-chart__line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
-.admin-health-chart__line--p50, .admin-health-chart__line--requests { stroke: var(--success); }
-.admin-health-chart__line--p95 { stroke: var(--muted-strong); stroke-dasharray: 6 4; }
-.admin-health-chart__line--p99, .admin-health-chart__line--problems { stroke: var(--danger); stroke-dasharray: 2 3; }
-.admin-health-chart-max { position: absolute; top: 0; left: 0; color: var(--muted); font-size: .63rem; font-variant-numeric: tabular-nums; }
-.admin-health-chart-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; }
-.admin-health-chart__swatch--p50, .admin-health-chart__swatch--requests { border-top-color: var(--success); }
-.admin-health-chart__swatch--p95 { border-top-color: var(--muted-strong); border-top-style: dashed; }
-.admin-health-chart__swatch--p99, .admin-health-chart__swatch--problems { border-top-color: var(--danger); border-top-style: dotted; }
+.admin-health-chart .admin-chart__axis { width: 15%; }
+.admin-health-chart__axis-x { margin: 0 1% 0 16%; }
+.admin-health-chart__head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.admin-health-chart__heading { margin: 0; }
+.admin-health-chart__title, .admin-health-chart__action { min-height: 0; border: 1px solid var(--card-border); border-radius: 10px; background: transparent; padding: 7px 12px; color: var(--foreground); cursor: pointer; font: inherit; font-size: .85rem; font-weight: 700; }
+.admin-health-chart__title { display: inline-flex; align-items: center; gap: 8px; }
+.admin-health-chart__action { white-space: nowrap; }
+.admin-health-chart__title:hover, .admin-health-chart__action:hover { border-color: var(--muted-strong); }
+.admin-health-chart__title:focus-visible, .admin-health-chart__action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.admin-health-chart__chevron { width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(45deg); }
+.admin-health-chart__title[aria-expanded="false"] .admin-health-chart__chevron { transform: translateY(2px) rotate(225deg); }
+.admin-health-chart__summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-top: 20px; }
+.admin-health-chart__chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+.admin-health-chart__chip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--card-border); border-radius: 10px; padding: 8px 13px; font-size: .82rem; }
+.admin-health-chart__dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; }
+.admin-health-chart__dot--p50 { background: var(--health-p50); box-shadow: 0 0 6px color-mix(in srgb, var(--health-p50) 55%, transparent); }
+.admin-health-chart__dot--p95 { background: var(--health-p95); box-shadow: 0 0 6px color-mix(in srgb, var(--health-p95) 55%, transparent); }
+.admin-health-chart__dot--p99 { background: var(--health-p99); box-shadow: 0 0 6px color-mix(in srgb, var(--health-p99) 55%, transparent); }
+.admin-health-chart__dot--p999 { background: var(--health-p999); }
+.admin-health-chart__dot--max { background: var(--danger); }
+.admin-health-chart__chip dt { color: var(--muted); }
+.admin-health-chart__chip dd { margin: 0; color: var(--foreground); font-family: var(--mono-font); font-variant-numeric: tabular-nums; font-weight: 700; }
+.admin-health-chart__unit { margin-left: 3px; color: var(--muted); font-size: .92em; }
+.admin-health-chart__clock { margin: 0; text-align: right; font-family: var(--mono-font); font-size: .74rem; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.admin-health-chart__clock b { color: var(--foreground); font-weight: 700; }
+.admin-health-chart__clock span, .admin-health-chart__clock small { color: var(--muted); font-weight: 400; }
+.admin-health-chart__clock small { display: block; }
+.admin-health-chart__band { stroke: none; }
+.admin-health-chart__line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.admin-health-chart__line--p50 { stroke: var(--health-p50); }
+.admin-health-chart__line--requests { stroke: var(--success); }
+.admin-health-chart__line--p95 { stroke: var(--health-p95); }
+.admin-health-chart__line--p99 { stroke: var(--health-p99); }
+.admin-health-chart__line--problems { stroke: var(--danger); stroke-dasharray: 2 3; }
+.admin-health-chart__marker { position: absolute; width: 10px; height: 10px; border: 3px solid currentColor; border-radius: 50%; background: var(--card-bg); transform: translate(-50%, -50%); }
+.admin-health-chart__marker--p50 { color: var(--health-p50); box-shadow: 0 0 0 4px color-mix(in srgb, var(--health-p50) 22%, transparent); }
+.admin-health-chart__marker--p95 { color: var(--health-p95); box-shadow: 0 0 0 4px color-mix(in srgb, var(--health-p95) 22%, transparent); }
+.admin-health-chart__marker--p99 { color: var(--health-p99); box-shadow: 0 0 0 4px color-mix(in srgb, var(--health-p99) 22%, transparent); }
+.admin-health-chart__swatch--requests { border-top-color: var(--success); }
+.admin-health-chart__swatch--problems { border-top-color: var(--danger); border-top-style: dotted; }
 .admin-health-table-wrap { margin-top: 18px; overflow-x: auto; }
 .admin-health-table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: .7rem; }
 .admin-health-table th, .admin-health-table td { border-top: 1px solid var(--card-border); padding: 10px 9px; font-variant-numeric: tabular-nums; text-align: right; vertical-align: top; white-space: nowrap; }
@@ -1516,6 +1559,15 @@ a.help-card:hover { border-color: var(--foreground); }
   .admin-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-health-chart-grid { grid-template-columns: 1fr; }
+  /* One column leaves too little room for eight clock labels, so thin them out. Plain
+     `nth-child(even)` parity would drop the newest timestamp whenever the tick count is
+     even - and it always is on the 15m view, which falls back to two labels. So thin by
+     parity, then give the last tick its slot back by dropping the one before it: what
+     survives is the first, the last, and evenly spread labels in between, which never
+     puts two labels side by side and never loses the right edge of the window. */
+  .admin-health-chart__axis-x { font-size: .62rem; }
+  .admin-health-chart__axis-x span:nth-child(even):not(:last-child) { display: none; }
+  .admin-health-chart__axis-x span:nth-last-child(2):not(:first-child) { display: none; }
   .admin-health-status { align-items: stretch; flex-direction: column; }
   .admin-health-report { flex-basis: auto; }
   .admin-monitoring-grid, .admin-audience-grid { grid-template-columns: 1fr; }
