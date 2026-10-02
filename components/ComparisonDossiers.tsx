@@ -184,19 +184,15 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
       { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
       ...arenaCounters.map(([key, label]) => ({ field: `arena_${arenaMode}_${key}`, label: `arena.counter.${label}` })),
-    ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true), "compare.activityNote")}
+    ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true))}
     {scope.mode !== "arena" && section("growth", "compare.growth", metricPairs(progressionMetrics))}
     {scope.mode !== "arena" && section("progression", "profile.section.progression", progression)}
     {section("comparison", "profile.section.comparison", <>
-      <p className="dossier-note">{t("compare.separateBenchmarks")}</p><div className="dossier-pair dossier-cohorts">{players.map((player, index) => <article className="dossier-cell" key={index}>
+      <div className="dossier-pair dossier-cohorts">{players.map((player, index) => <article className="dossier-cell" key={index}>
         <h3>{name(index)}</h3>{cohorts[index].loading && <p role="status">{t("compare.cohortLoading")}</p>}
         {cohorts[index].error && <p role="alert">{cohorts[index].error}</p>}
-        {cohorts[index].data?.quality === "sufficient" ? <>
-          <p className="dossier-note">{t(cohorts[index].data?.strategy === "population" ? "compare.cohortPopulationFallback" : "compare.cohortMatched")}</p>
-          <p>{t("compare.cohortSize")}: {number(cohorts[index].data?.n)}</p>
-          {cohorts[index].data?.strategy === "population" && <p className="dossier-note">{t("compare.cohortFallbackNote")}</p>}
-          {player && radar(player, index)}
-        </> : !cohorts[index].loading && !cohorts[index].error && <p role="status">{t("compare.cohortUnavailable")}</p>}
+        {cohorts[index].data?.quality === "sufficient" ? player && radar(player, index)
+          : !cohorts[index].loading && !cohorts[index].error && <p role="status">{t("compare.cohortUnavailable")}</p>}
       </article>)}</div>
     </>)}
     {scope.mode !== "arena" && section("risk", "profile.section.risk", <div className="dossier-pair">{players.map((player, index) => <article className="dossier-cell profile-risk" key={index}>
