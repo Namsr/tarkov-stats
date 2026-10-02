@@ -524,11 +524,6 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
           options={modeOptions}
           onChange={changeMode}
         />
-        {scope?.mode === "seasonal" && (
-          <span className="rounded-full border border-[var(--card-border)] px-3 py-1 text-sm text-[var(--muted-strong)]">
-            {t("compare.cycle", { cycle: scope.cycleId })}
-          </span>
-        )}
         {scope?.mode === "arena" && <SegmentedRadio
           className="comparison-arena-scopes"
           optionsClassName="leaderboard-sort-pills"
