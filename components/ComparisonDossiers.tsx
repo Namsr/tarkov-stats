@@ -54,9 +54,9 @@ const arenaCounters = [
   ["current_loss_streak", "currentLossStreak"], ["max_loss_streak", "maxLossStreak"],
 ] as const;
 
-export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, primaryPayload, secondaryPayload, cohorts, progression }: {
+export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, primaryPayload, secondaryPayload, loading, cohorts, progression }: {
   scope: ComparisonScope; primaryAid: number | null; secondaryAid: number | null;
-  primaryPayload: unknown; secondaryPayload: unknown; cohorts: readonly [CohortState, CohortState]; progression: ReactNode;
+  primaryPayload: unknown; secondaryPayload: unknown; loading: readonly [boolean, boolean]; cohorts: readonly [CohortState, CohortState]; progression: ReactNode;
 }) {
   const { t, lang } = useI18n();
   const sectionPrefix = useId();
@@ -96,7 +96,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
         const percentile = metric.benchmark ? percentiles?.[metric.benchmark] : null;
         return <article key={index} className={`dossier-cell${lead ? " is-ahead" : ""}`} aria-label={`${name(index)}: ${t(metric.label)}`}>
           <span className="dossier-label">{t(metric.label)}</span>
-          <strong className="dossier-value">{number(values[index], metric.digits)}{values[index] !== null ? metric.suffix : ""}</strong>
+          <strong className={`dossier-value${loading[index] ? " skeleton" : ""}`}>{loading[index] ? t("common.loading") : <>{number(values[index], metric.digits)}{values[index] !== null ? metric.suffix : ""}</>}</strong>
           {lead}{benchmark(index, metric)}
           {player && percentile && <PercentileBadge percentile={percentile.percentile} />}
         </article>;
@@ -170,8 +170,8 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     ["comparison", "profile.section.comparison"], ...(scope.mode === "arena" ? [] : [["risk", "profile.section.risk"]]),
     ...(scope.mode === "arena" ? [] : [["achievements", "profile.section.achievements"], ["skills", "profile.section.skills"], ["mastering", "profile.section.mastering"]]),
   ];
-  if (!players.some(Boolean)) return null;
-  return <div className="comparison-dossiers profile-page">
+  if (!players.some(Boolean) && !loading.some(Boolean)) return null;
+  return <div className="comparison-dossiers profile-page" aria-busy={loading.some(Boolean) || undefined}>
     <nav className="dossier-nav" aria-label={t("profile.sectionNav")}>{sectionLinks.map(([id, label]) => <a key={id} href={`#compare-${id}`}>{t(label)}</a>)}</nav>
     <div className="dossier-strip">{players.map((_, index) => <span key={index}>{name(index)}</span>)}</div>
     {scope.mode === "arena" && section("arena-overview", "profile.section.overview", <>

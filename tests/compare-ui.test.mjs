@@ -140,9 +140,9 @@ test("each profile refresh reloads its own cohort for the new revision", async (
   assert.match(source, /revision\.current = \{ scopeKey, aid, value: nextRevision \}/);
   assert.match(source, /const currentRevision = revision\.current\?\.scopeKey === scopeKey && revision\.current\.aid === aid/);
   assert.match(source, /fetch\(cohortRevisionRequestUrl\(scope, aid, nextRevision\), \{\s*cache: "no-store",\s*signal: controller\.signal,/);
-  assert.match(source, /const primary = useComparisonProfile\(scope, scopeKey, primaryAid, activeModeLabel, t, cohortController\.reload\)/);
-  assert.match(source, /const secondary = useComparisonProfile\(scope, scopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController\.reload\)/);
-  assert.match(source, /if \(active\(\)\) await onRefreshed\?\.\(next\)/);
+  assert.match(source, /const primary = useComparisonProfile\(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController\.reload\)/);
+  assert.match(source, /const secondary = useComparisonProfile\(profileScope, profileScopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController\.reload\)/);
+  assert.match(source, /if \(active\(\)\) await onRefreshedRef\.current\?\.\(next\)/);
 });
 
 test("profile and cohort generations isolate mode and player switches", async () => {

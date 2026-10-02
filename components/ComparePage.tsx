@@ -140,6 +140,8 @@ function useComparisonProfile(
   }));
   const requestGeneration = useRef(0);
   const activeController = useRef<AbortController | null>(null);
+  const onRefreshedRef = useRef(onRefreshed);
+  useEffect(() => { onRefreshedRef.current = onRefreshed; }, [onRefreshed]);
 
   useEffect(() => {
     if (!scope || aid === null) {
@@ -219,7 +221,7 @@ function useComparisonProfile(
       setState((current) => generation === requestGeneration.current && current.scopeKey === scopeKey && current.aid === aid
         ? { ...current, data: next, loading: false, error: "", missing: false }
         : current);
-      if (active()) await onRefreshed?.(next);
+      if (active()) await onRefreshedRef.current?.(next);
       return changed ? "updated" : "unchanged";
     } catch (error) {
       setState((current) => generation === requestGeneration.current && current.scopeKey === scopeKey && current.aid === aid
@@ -229,7 +231,7 @@ function useComparisonProfile(
     } finally {
       if (activeController.current === controller) activeController.current = null;
     }
-  }, [aid, modeLabel, onRefreshed, scope, scopeKey, state, t]);
+  }, [aid, modeLabel, scope, scopeKey, state, t]);
 
   return { state, refresh };
 }
@@ -352,6 +354,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   );
   const scope = resolution.status === "available" ? resolution.scope : null;
   const scopeKey = scope ? `${scope.mode}:${scope.cycleId}:${scope.arenaMode}` : "";
+  const profileMode = scope?.mode;
+  const profileCycle = scope?.cycleId;
+  // One profile response contains every Arena mode; only cohorts depend on the selected submode.
+  const profileScope = useMemo<ComparisonScope | null>(() => {
+    if (!profileMode || !profileCycle) return null;
+    if (profileMode === "arena") return { mode: "arena", cycleId: "persistent", arenaMode: "overall" };
+    if (profileMode === "seasonal") return { mode: "seasonal", cycleId: profileCycle, arenaMode: null };
+    return { mode: profileMode, cycleId: "persistent", arenaMode: null };
+  }, [profileMode, profileCycle]);
+  const profileScopeKey = profileScope ? `${profileScope.mode}:${profileScope.cycleId}` : "";
   const rawMode = searchParams.get("mode");
   const visibleMode: GameMode = GAME_MODES.includes(rawMode as GameMode) ? rawMode as GameMode : "regular";
   const modeLabel = (mode: GameMode) => {
@@ -367,12 +379,12 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   const primaryAid = parseAid(searchParams.get("aid"));
   const secondaryAid = parseAid(searchParams.get("vs"));
   const cohortController = useComparisonCohort(scope, scopeKey, primaryAid, t);
-  const primary = useComparisonProfile(scope, scopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
+  const primary = useComparisonProfile(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
   const secondaryCohortController = useComparisonCohort(scope, scopeKey, secondaryAid, t);
-  const secondary = useComparisonProfile(scope, scopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController.reload);
+  const secondary = useComparisonProfile(profileScope, profileScopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController.reload);
   const cohortState = cohortController.state;
-  const primaryCurrent = primary.state.scopeKey === scopeKey && primary.state.aid === primaryAid ? primary.state : null;
-  const secondaryCurrent = secondary.state.scopeKey === scopeKey && secondary.state.aid === secondaryAid ? secondary.state : null;
+  const primaryCurrent = primary.state.scopeKey === profileScopeKey && primary.state.aid === primaryAid ? primary.state : null;
+  const secondaryCurrent = secondary.state.scopeKey === profileScopeKey && secondary.state.aid === secondaryAid ? secondary.state : null;
   const secondaryCohortState = secondaryCohortController.state;
   const secondaryCohortCurrent = secondaryCohortState.scopeKey === scopeKey && secondaryCohortState.aid === secondaryAid ? secondaryCohortState : null;
   const cohortCurrent = cohortState.scopeKey === scopeKey && cohortState.aid === primaryAid ? cohortState : null;
@@ -461,7 +473,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
     return (
       <article className="comparison-identity" aria-busy={loading || undefined}>
         <div className="comparison-identity__person">
-          {aid !== null && <ProfilePortrait key={`${scopeKey}:${aid}`} aid={aid} mode={scope.mode} cycleId={scope.cycleId} nickname={name || `#${aid}`} />}
+          {aid !== null && <ProfilePortrait key={`${profileScopeKey}:${aid}`} aid={aid} mode={scope.mode} cycleId={scope.cycleId} nickname={name || `#${aid}`} />}
           <div className="min-w-0">
             <p className="section-kicker">{label}</p>
             <h2 className="mt-2 break-words text-xl font-bold text-[var(--foreground)]">{name || t("compare.choosePlayer")}</h2>
@@ -484,7 +496,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
         {aid !== null && (
           <div className="comparison-identity__actions">
             <RefreshButton
-              key={`${slot}:${scopeKey}:${aid}`}
+              key={`${slot}:${profileScopeKey}:${aid}`}
               aid={aid}
               mode={scope.mode}
               updatedAt={updatedAt}
@@ -554,7 +566,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
             <div className="min-w-0">
               <h2 className="section-heading">{t("compare.primaryPlayer")}</h2>
               <SearchBar
-                key={`primary:${scopeKey}`}
+                key={`primary:${profileScopeKey}`}
                 fixedMode={scope.mode}
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("primary", aid)}
@@ -564,7 +576,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
             <div className="min-w-0">
               <h2 className="section-heading">{t("compare.secondaryPlayer")}</h2>
               <SearchBar
-                key={`secondary:${scopeKey}`}
+                key={`secondary:${profileScopeKey}`}
                 fixedMode={scope.mode}
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("secondary", aid)}
@@ -582,12 +594,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
       )}
 
       {scope && <ComparisonDossiers
-        key={scopeKey}
+        key={profileScopeKey}
         scope={scope}
         primaryAid={primaryAid}
         secondaryAid={secondaryAid}
         primaryPayload={primaryCurrent?.data?.payload}
         secondaryPayload={secondaryCurrent?.data?.payload}
+        loading={[
+          primaryAid !== null && (primaryCurrent === null || primaryCurrent.loading),
+          secondaryAid !== null && (secondaryCurrent === null || secondaryCurrent.loading),
+        ]}
         cohorts={[
           { data: cohortCurrent?.data ?? null, loading: primaryAid !== null && (cohortCurrent === null || cohortCurrent.loading), error: cohortCurrent?.error ?? "" },
           { data: secondaryCohortCurrent?.data ?? null, loading: secondaryAid !== null && (secondaryCohortCurrent === null || secondaryCohortCurrent.loading), error: secondaryCohortCurrent?.error ?? "" },
