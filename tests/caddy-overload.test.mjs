@@ -31,7 +31,8 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     active++;
     peak = Math.max(peak, active);
     res.once('close', () => { active--; held.delete(res); });
-    if (req.url === '/hold' || req.url === '/stall') held.add(res);
+    if (req.url === '/reset') req.socket.destroy();
+    else if (req.url === '/hold' || req.url === '/stall') held.add(res);
     else {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ip: req.headers['x-real-ip'] }));
@@ -128,6 +129,13 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.equal(normal.headers.server, undefined);
   assert.match(normal.headers['strict-transport-security'], /max-age=31536000/);
   t.diagnostic('ordinary request and client IP handling passed');
+  assert.equal((await request('/reset')).status, 502, 'a reset upstream connection must fail only that request');
+  const afterReset = await Promise.all([
+    request('/leaderboard'),
+    request('/_next/static/fixture.js', 'tarkovstats.online'),
+  ]);
+  assert.ok(afterReset.every((r) => r.status === 200), 'one upstream reset must not block either site or static assets');
+  t.diagnostic('both sites respond immediately after one upstream connection reset');
   const pending = [];
   for (let i = 0; i < 32; i++) {
     pending.push(request('/hold', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru'));
@@ -151,5 +159,6 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   const stalled = await request('/stall');
   assert.equal(stalled.status, 504, 'an upstream withholding headers must time out');
   assert.ok(Date.now() - started >= 19_000 && Date.now() - started < 25_000);
-  assert.equal((await request()).status, 200, 'a timed-out request must release capacity');
+  const afterTimeout = await Promise.all([request(), request('/', 'tarkovstats.online')]);
+  assert.ok(afterTimeout.every((r) => r.status === 200), 'a timed-out request must release capacity without blocking either site');
 });
