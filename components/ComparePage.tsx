@@ -21,6 +21,7 @@ import { loadAverageJson } from "@/lib/client-average-request";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import { comparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
+import { useFavorites } from "@/lib/favorites/context";
 import type { ArenaComparisonScope, ComparisonCohort, ComparisonProfile, ComparisonScope, PersistentComparisonScope } from "@/types/comparison";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
@@ -331,6 +332,7 @@ function useComparisonCohort(scope: ComparisonScope | null, scopeKey: string, ai
 
 export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: string | null }) {
   const { t, lang } = useI18n();
+  const { favorites, authStatus, loading: favoritesLoading } = useFavorites();
   const router = useRouter();
   const searchParams = useSearchParams();
   const resolution = useMemo(
@@ -402,6 +404,34 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
     const params = new URLSearchParams(searchParams.toString());
     params.set("arenaMode", arenaMode);
     router.replace(`/compare?${params.toString()}`, { scroll: false });
+  }
+
+  function favoritePicker(slot: "primary" | "secondary", aid: number | null) {
+    const ready = !favoritesLoading && authStatus === "authenticated";
+    const statusKey = favoritesLoading ? "progression.compare.loadingFavorites"
+      : authStatus === "unauthenticated" ? "fav.authRequired"
+        : authStatus === "error" ? "profile.loadError"
+          : favorites.length === 0 ? "profile.empty" : null;
+    const id = `compare-${slot}-favorite`;
+    return <div className="comparison-favorite-picker">
+      <label className="profile-select" htmlFor={id}>
+        <span>{t("radar.favorite.select")}</span>
+        <select id={id} aria-label={`${t(slot === "primary" ? "compare.primaryPlayer" : "compare.secondaryPlayer")}: ${t("radar.favorite.label")}`}
+          aria-describedby={statusKey ? `${id}-status` : undefined} aria-busy={favoritesLoading || undefined}
+          disabled={!ready || favorites.length === 0}
+          value={ready && favorites.some(favorite => favorite.aid === aid) ? String(aid) : ""}
+          onChange={event => {
+            const selected = parseAid(event.target.value);
+            if (ready && selected !== null && favorites.some(favorite => favorite.aid === selected)) updateSelection(slot, selected);
+          }}>
+          <option value="" disabled>{t("compare.chooseFavorite")}</option>
+          {ready && favorites.map(favorite => <option key={favorite.aid} value={favorite.aid}>
+            {favorite.nickname?.trim() ? `${favorite.nickname.trim()} · #${favorite.aid}` : `#${favorite.aid}`}{favorite.isMain ? ` · ${t("profile.main")}` : ""}
+          </option>)}
+        </select>
+      </label>
+      {statusKey && <p id={`${id}-status`} className="dossier-note" role={authStatus === "error" ? "alert" : "status"}>{t(statusKey)}</p>}
+    </div>;
   }
 
   function profileCard(
@@ -520,6 +550,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("primary", aid)}
               />
+              {favoritePicker("primary", primaryAid)}
             </div>
             <div className="min-w-0">
               <h2 className="section-heading">{t("compare.secondaryPlayer")}</h2>
@@ -529,6 +560,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("secondary", aid)}
               />
+              {favoritePicker("secondary", secondaryAid)}
             </div>
           </section>
 

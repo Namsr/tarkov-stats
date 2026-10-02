@@ -1,6 +1,11 @@
 .comparison-page { width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
 .comparison-arena-scopes .segmented-control__options { display: flex; flex-wrap: wrap; border-radius: 14px; gap: 3px; }
 .comparison-arena-scopes .segmented-control__options label { flex: 0 1 auto; }
+.comparison-favorite-picker { margin-top: 16px; }
+.comparison-favorite-picker label > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.comparison-favorite-picker select { width: 100%; }
+.comparison-favorite-picker select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.comparison-favorite-picker select:disabled { opacity: .6; cursor: not-allowed; }
 .comparison-identities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
 .comparison-identity { min-width: 0; padding: 24px; border: 1px solid var(--card-border); border-top: 2px solid #9dcbaa; border-radius: 14px; background: var(--card-bg); }
 .comparison-identity:last-child { border-top-color: #ccba96; }
