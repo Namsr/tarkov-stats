@@ -48,16 +48,16 @@ function unavailable(matches: number | null, reason: RatingReason): ArenaModeTsR
 /** Cumulative counters from one profile period; no playtime, HS or ARP bonus. */
 export function rateArenaMode(counters: ArenaCounters, reference: ArenaTsReference["modes"][ArenaModeKey]): ArenaModeTsRating {
   const { matches, kills, deaths, wins, losses, damage } = counters;
-  if (!count(matches) || !count(kills) || !count(deaths) || !count(wins) || !nonNegative(damage)) {
-    return unavailable(count(matches) ? matches : null, "missing_counters");
-  }
-  // Zero matches is only believable when every additive counter is zero too. Any
-  // non-zero kill, assist or MVP count alongside matches === 0 is contradictory
-  // upstream data, and reporting it as no_matches would hide a played mode. The
-  // list is the parser's own additive set, so the two cannot drift apart.
+  // Unplayed modes may omit their counters; check zero matches before requiring
+  // combat statistics. Non-zero kills, assists or MVP counts with zero matches
+  // contradict the upstream data; no_matches would hide a played mode. Use the
+  // parser's additive counter list so the checks cannot drift apart.
   if (matches === 0) {
     return unavailable(0, ARENA_ADDITIVE_COUNTER_KEYS.some((key) => counters[key] != null && counters[key] !== 0)
       ? "inconsistent_results" : "no_matches");
+  }
+  if (!count(matches) || !count(kills) || !count(deaths) || !count(wins) || !nonNegative(damage)) {
+    return unavailable(count(matches) ? matches : null, "missing_counters");
   }
   if (wins > matches || (losses != null && (!count(losses) || wins + losses > matches))) {
     return unavailable(matches, "inconsistent_results");

@@ -13,7 +13,8 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { rateArenaMode, rateArena } = await import("../lib/arena/ts-rating.ts");
 const { arenaTsReference } = await import("../lib/arena/ts-rating-reference.ts");
-const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
+const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
+const { ARENA_ADDITIVE_COUNTER_KEYS, ARENA_MODE_KEYS } = await import("../types/arena.ts");
 const reference = { metrics: Object.fromEntries(Object.entries({ kd_ratio: 2, kills_per_match: 10, damage_per_match: 1000, win_rate: 50 }).map(([metric, value]) => [metric, { value, count: 200 }])) };
 const counters = { matches: 100, kills: 1000, deaths: 500, damage: 100000, wins: 50, losses: 50 };
 const references = { version: "test", modes: Object.fromEntries(ARENA_MODE_KEYS.map((mode) => [mode, reference])) };
@@ -69,6 +70,53 @@ test("overall TSR normalizes modes before weighting and does not penalize unplay
   assert.equal(mixed.overall.ratedMatches, 300);
 });
 
+test("TSR accepts zero-match modes with absent or zero counters but keeps unknown matches unavailable", () => {
+  const empty = Object.fromEntries(ARENA_ADDITIVE_COUNTER_KEYS.map((key) => [key, null]));
+  for (const modeCounters of [
+    { ...empty, matches: 0 },
+    { ...empty, matches: 0, kills: 0, wins: 0 },
+    Object.fromEntries(ARENA_ADDITIVE_COUNTER_KEYS.map((key) => [key, 0])),
+  ]) {
+    assert.equal(rateArenaMode(modeCounters, reference).reason, "no_matches");
+    const result = rateArena(makeProfile({ blastGang: counters, shootOutDuo: modeCounters }), references);
+    assert.equal(result.overall.complete, true);
+    assert.equal(result.overall.rating, result.modes.blastGang.rating);
+    assert.equal(result.overall.ratedMatches, counters.matches);
+    const unplayed = rateArena(makeProfile(Object.fromEntries(ARENA_MODE_KEYS.map((mode) => [mode, modeCounters]))), references);
+    assert.equal(unplayed.overall.reason, "no_matches");
+    assert.equal(unplayed.overall.rating, null);
+  }
+  assert.equal(rateArenaMode(empty, reference).reason, "missing_counters");
+  assert.equal(rateArenaMode({ ...empty, matches: 1 }, reference).reason, "missing_counters");
+  for (const key of ARENA_ADDITIVE_COUNTER_KEYS.filter((key) => key !== "matches")) {
+    assert.equal(rateArenaMode({ ...empty, matches: 0, [key]: 1 }, reference).reason, "inconsistent_results", key);
+  }
+});
+
+test("TSR rates profile 7978003 when its parsed ShootOutDuo mode is empty", () => {
+  const c = (GamesCount, Kills, Deaths, ArenaWins, ArenaLoses, DamageDealt) => ({ Counters: { GamesCount, Kills, Deaths, ArenaWins, ArenaLoses, DamageDealt } });
+  const profile = parseArenaProfileStats({
+    aid: 7978003,
+    updated: 1790085517204,
+    info: { nickname: "TTV-WizZ4rD_EFT", side: "Usec", experience: 0 },
+    stat: { arenaOverAllCounters: {
+      UnrankedOverall: c(76, 2861, 2328, 38, 38, 583386),
+      UnrankedTeamFight: c(8, 52, 27, 7, 1, 5358),
+      UnrankedLastHero: c(65, 2764, 2278, 29, 36, 570088),
+      UnrankedCheckPoint: c(1, 26, 7, 1, 0, 5484),
+      UnrankedBlastGang: c(2, 19, 16, 1, 1, 2456),
+    } },
+  }).arenaProfile;
+  assert.equal(profile.modes.shootOutDuo.counters.matches, 0);
+  assert.equal(profile.modes.shootOutDuo.counters.kills, null);
+  const result = rateArena(profile, arenaTsReference);
+  assert.equal(result.modes.shootOutDuo.reason, "no_matches");
+  assert.equal(result.overall.complete, true);
+  assert.equal(result.overall.displayReady, true);
+  assert.equal(result.overall.ratedMatches, 76);
+  assert.equal(result.overall.rating.toFixed(2), "1.07");
+});
+
 test("overall TSR refuses incomplete coverage, unknown counts and inconsistent totals", () => {
   const profile = makeProfile({ blastGang: counters, lastHero: { ...counters, damage: null } });
   assert.equal(rateArena(profile, references).overall.rating, null);
@@ -80,11 +128,11 @@ test("overall TSR refuses incomplete coverage, unknown counts and inconsistent t
   const empty = rateArena(makeProfile({}), references);
   assert.equal(empty.overall.rating, null);
   assert.equal(empty.overall.reason, "no_matches");
-  // An unplayed mode with unknown counters is not covered, so a zero total must
-  // not read as no_matches either.
+  // Missing kills do not make non-zero deaths, wins and damage compatible with
+  // zero matches, so this mode must still block the overall rating.
   const unknown = makeProfile({ blastGang: { ...counters, matches: 0, kills: null } });
   const unknownRating = rateArena(unknown, references);
-  assert.equal(unknownRating.modes.blastGang.reason, "missing_counters");
+  assert.equal(unknownRating.modes.blastGang.reason, "inconsistent_results");
   assert.equal(unknownRating.overall.complete, false);
   assert.equal(unknownRating.overall.reason, "incomplete_coverage");
 });
