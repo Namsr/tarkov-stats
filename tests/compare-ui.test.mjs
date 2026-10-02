@@ -84,10 +84,10 @@ test("compare renders full dossiers for the selected scope", async () => {
   for (const section of ["achievements", "skills", "mastering", "risk", "arena-overview"]) assert.ok(dossiers.includes(section));
 });
 
-test("dossiers expose percentile badges only when the cohort supplies percentiles", async () => {
+test("dossiers show player medians without percentile badges", async () => {
   const source = await readFile("components/ComparisonDossiers.tsx", "utf8");
-  assert.match(source, /cohorts\[index\]\.data\?\.percentiles/);
-  assert.match(source, /player && percentile && <PercentileBadge/);
+  assert.doesNotMatch(source, /PercentileBadge/);
+  assert.match(source, /t\("compare\.playerMedian"\)/);
   assert.match(source, /state\.data\?\.quality === "sufficient"/);
 });
 

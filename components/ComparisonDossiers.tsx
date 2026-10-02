@@ -4,11 +4,10 @@ import Image from "next/image";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import CheaterScore from "@/components/CheaterScore";
 import ProfileRadar from "@/components/ProfileRadar";
-import PercentileBadge from "@/components/PercentileBadge";
 import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
 import { comparisonAdvantage, comparisonDossier, type ComparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
-import type { ComparisonCohort, ComparisonMetricKey, ComparisonPercentile, ComparisonScope } from "@/types/comparison";
+import type { ComparisonCohort, ComparisonMetricKey, ComparisonScope } from "@/types/comparison";
 import "@/components/comparison-dossiers.css";
 import "@/components/arena-profile.css";
 
@@ -90,15 +89,12 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
   function metricPairs(metrics: readonly Metric[], neutral = false) {
     return <div className="dossier-metrics">{metrics.map(metric => {
       const values = [value(0, metric.field), value(1, metric.field)] as const;
-      return <div className="dossier-pair" key={metric.field} data-compare-metric={metric.field}>{players.map((player, index) => {
+      return <div className="dossier-pair" key={metric.field} data-compare-metric={metric.field}>{players.map((_, index) => {
         const lead = advantage(values, index, neutral || metric.neutral);
-        const percentiles = cohorts[index].data?.percentiles as Partial<Record<ComparisonMetricKey, ComparisonPercentile>> | null | undefined;
-        const percentile = metric.benchmark ? percentiles?.[metric.benchmark] : null;
         return <article key={index} className={`dossier-cell${lead ? " is-ahead" : ""}`} aria-label={`${name(index)}: ${t(metric.label)}`}>
           <span className="dossier-label">{t(metric.label)}</span>
           <strong className={`dossier-value${loading[index] ? " skeleton" : ""}`}>{loading[index] ? t("common.loading") : <>{number(values[index], metric.digits)}{values[index] !== null ? metric.suffix : ""}</>}</strong>
           {lead}{benchmark(index, metric)}
-          {player && percentile && <PercentileBadge percentile={percentile.percentile} />}
         </article>;
       })}</div>;
     })}</div>;

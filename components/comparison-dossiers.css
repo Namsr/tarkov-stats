@@ -40,7 +40,6 @@
 .is-ahead .dossier-value { color: var(--success); }
 .dossier-advantage { display: block; color: var(--success); font-size: 13px; margin-top: 6px; }
 .dossier-benchmark { display: block; color: var(--muted); font-size: 12px; margin-top: 7px; }
-.dossier-cell .percentile-badge { margin-top: 8px; }
 .dossier-radar-scroll { max-width: 100%; overflow-x: auto; }
 .dossier-radar-canvas { min-width: 240px; }
 .dossier-cell h3 { font-size: 16px; font-weight: 550; overflow-wrap: anywhere; }
