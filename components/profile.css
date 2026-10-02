@@ -210,6 +210,15 @@ html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color:
 .profile-history-key { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); }
 .profile-history-key::before { content: ""; width: 20px; border-top: 2px dotted var(--profile-other); }
 .profile-progress-details { margin-top: 20px; }
+.compare-progression.profile-page { width: 100%; margin: 0; padding: clamp(20px, 3vw, 32px); }
+.compare-progression .compare-progression__heading { margin-bottom: 20px; }
+.compare-progression .compare-progression__heading .section-heading { margin: 0; }
+.compare-progression .compare-progression__slots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 26px; }
+.compare-progression .compare-progression__slot { min-width: 0; padding: 16px 18px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--input-bg); }
+.compare-progression .compare-progression__slot.is-ready { border-color: color-mix(in srgb, var(--profile-positive) 55%, var(--card-border)); }
+.compare-progression .compare-progression__slot h3 { margin: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 550; }
+.compare-progression .compare-progression__slot p { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.compare-progression .compare-progression__chart { min-width: 0; }
 .profile-page .compact-details > summary { min-height: 44px; padding-block: 10px; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0; }
 .profile-arena-scopes { display: flex; flex-wrap: wrap; gap: 9px; margin: 26px 0; }
 .profile-arena-scopes button { min-height: 44px; padding: 10px 17px; border: 1px solid var(--card-border); border-radius: 8px; background: none; color: var(--muted); font-size: 14px; white-space: nowrap; cursor: pointer; }
@@ -299,6 +308,9 @@ html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color:
   .profile-comparison-table th:first-child { width: 32%; }
   .profile-progress-heading { margin-bottom: 22px; }
   .profile-progress-controls { margin-bottom: 22px; gap: 13px; }
+  .compare-progression.profile-page { padding: 20px; }
+  .compare-progression .compare-progression__slots { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .compare-progression .compare-progression__slot { padding: 14px 16px; }
   .profile-progress-topline { gap: 4px; }
   .profile-progress-summary strong { font-size: 40px; }
   .profile-progress-summary span { font-size: 17px; }

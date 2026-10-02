@@ -54,6 +54,8 @@ export async function GET(request: NextRequest) {
       dimension,
       statistic,
       period,
+      revision: /^[a-zA-Z0-9-]{1,64}$/.test(request.nextUrl.searchParams.get("revision") ?? "")
+        ? request.nextUrl.searchParams.get("revision")! : undefined,
     });
     const cohortMs = timing.elapsedMs(cohortStarted);
     if (!lookup.available) {
@@ -76,7 +78,7 @@ export async function GET(request: NextRequest) {
     }
     timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "success", status: 200,
       source: "stored", cache: lookup.cache, storage: "sqlite", cohortMs });
-    return NextResponse.json({ ...lookup.result, statistic, period }, {
+    return NextResponse.json({ ...lookup.result, percentiles: null, statistic, period }, {
       headers: { "Cache-Control": "private, no-store" },
     });
   } catch (error) {

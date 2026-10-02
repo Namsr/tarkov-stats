@@ -1,0 +1,95 @@
+.comparison-page { width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
+.comparison-arena-scopes .segmented-control__options { display: flex; flex-wrap: wrap; border-radius: 14px; gap: 3px; }
+.comparison-arena-scopes .segmented-control__options label { flex: 0 1 auto; }
+.comparison-identities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
+.comparison-identity { min-width: 0; padding: 24px; border: 1px solid var(--card-border); border-top: 2px solid #9dcbaa; border-radius: 14px; background: var(--card-bg); }
+.comparison-identity:last-child { border-top-color: #ccba96; }
+.comparison-identity__person { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.comparison-identity__person > div:last-child { min-width: 0; }
+.comparison-identity__person h2 { font-size: clamp(20px, 2.2vw, 30px); line-height: 1.2; font-weight: 550; letter-spacing: -.03em; overflow-wrap: anywhere; margin: 6px 0; }
+.comparison-identity .profile-portrait { width: 88px; height: 88px; }
+.comparison-identity__actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+.comparison-identity__actions .ghost-button { min-height: 44px; border-radius: 10px; text-transform: none; letter-spacing: 0; font-size: 13px; }
+.comparison-identity time { display: block; font-size: 12px; color: var(--muted); margin-top: 14px; }
+.comparison-identity__meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.comparison-dossiers.profile-page { width: 100%; padding: 0; margin: 24px 0; }
+.dossier-nav { display: flex; gap: 12px 22px; flex-wrap: wrap; padding: 16px 0; border-block: 1px solid var(--card-border); }
+.dossier-nav a { color: var(--muted); font-size: 13px; min-height: 28px; }
+.dossier-nav a:hover { color: var(--foreground); }
+.dossier-strip { position: sticky; z-index: 8; top: 72px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 14px 0; background: var(--background); border-bottom: 1px solid var(--card-border); }
+.dossier-strip span { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 550; }
+.dossier-strip span:last-child { text-align: right; }
+.dossier-section { margin-top: 48px; scroll-margin-top: 150px; }
+.dossier-section > .section-heading { margin-bottom: 20px; }
+.dossier-note { font-size: 13px; line-height: 1.6; color: var(--muted); margin: 8px 0 18px; }
+.dossier-metrics { display: grid; gap: 12px; }
+.dossier-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.dossier-cell { min-width: 0; padding: 18px 22px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; }
+.dossier-cell.is-ahead { border-left: 3px solid var(--success); padding-left: 20px; }
+.dossier-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.dossier-value { display: block; font-size: 27px; line-height: 1.2; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.is-ahead .dossier-value { color: var(--success); }
+.dossier-advantage { display: block; color: var(--success); font-size: 13px; margin-top: 6px; }
+.dossier-benchmark { display: block; color: var(--muted); font-size: 12px; margin-top: 7px; }
+.dossier-cell .percentile-badge { margin-top: 8px; }
+.dossier-radar-scroll { max-width: 100%; overflow-x: auto; }
+.dossier-radar-canvas { min-width: 240px; }
+.dossier-cell h3 { font-size: 16px; font-weight: 550; overflow-wrap: anywhere; }
+.dossier-cell .profile-risk__reading { border: 0; padding: 18px 0 0; background: none; min-height: 0; }
+.dossier-item-heading { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; min-height: 40px; }
+.dossier-item-heading img { flex-shrink: 0; object-fit: contain; }
+.dossier-achievement time { display: block; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.dossier-skill-progress { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 14px; font-size: 12px; color: var(--muted); }
+.dossier-skill-progress progress { width: 100%; height: 5px; accent-color: var(--success); border: 0; border-radius: 3px; background: var(--card-border); }
+.dossier-skill-progress progress::-webkit-progress-bar { background: var(--card-border); border-radius: 3px; }
+.dossier-skill-progress progress::-webkit-progress-value { background: var(--muted); border-radius: 3px; }
+.is-ahead .dossier-skill-progress progress::-webkit-progress-value { background: var(--success); }
+.dossier-filter { display: flex; align-items: center; gap: 10px; font-size: 13px; min-height: 44px; margin-bottom: 16px; color: var(--muted-strong); }
+.dossier-filter input { width: 17px; height: 17px; accent-color: var(--success); }
+.dossier-expand > summary, .dossier-arena-modes > details > summary { padding: 14px 0; min-height: 44px; cursor: pointer; color: var(--muted-strong); font-size: 14px; }
+.comparison-dossiers .compare-progression { margin: 0; }
+.comparison-dossiers .compare-progression__heading { display: none; }
+.dossier-arena-gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.dossier-arena-gauges__player { display: contents; }
+.dossier-arena-gauges__player:first-child > article { grid-column: 1; }
+.dossier-arena-gauges__player:last-child > article { grid-column: 2; }
+.dossier-arena-gauges [data-gauge="risk"] { grid-row: 1; }
+.dossier-arena-gauges [data-gauge="rating"] { grid-row: 2; }
+.dossier-arena-gauges [data-gauge="wins"] { grid-row: 3; }
+.dossier-arena-gauges .arena-combat-card { display: block; text-align: center; }
+.dossier-arena-gauges .arena-combat-card h2 { justify-content: center; }
+.dossier-arena-gauges .arena-combat-ring { width: min(200px, 100%); margin: 16px auto; }
+.dossier-timeline-details > div { border-bottom: 1px solid var(--card-border); padding: 14px 0; }
+.dossier-timeline-details dt { font-size: 13px; color: var(--muted); }
+.dossier-timeline-details dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) {
+  .comparison-page { width: calc(100% - 32px); }
+  .comparison-identities { gap: 12px; }
+  .comparison-identity { padding: 14px; }
+  .comparison-identity__person { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .comparison-identity .profile-portrait { width: 64px; height: 64px; }
+  .comparison-identity__person h2 { font-size: 18px; min-height: 44px; }
+  .comparison-identity__actions { display: grid; gap: 8px; }
+  .comparison-identity__actions .ghost-button { padding: 10px; font-size: 12px; overflow-wrap: anywhere; }
+  .dossier-pair, .dossier-strip { gap: 12px; }
+  .dossier-cohorts { grid-template-columns: minmax(0, 1fr); }
+  .dossier-strip { top: 68px; }
+  .dossier-strip span { font-size: 12px; }
+  .dossier-cell { padding: 14px; }
+  .dossier-cell.is-ahead { padding-left: 12px; }
+  .dossier-value { font-size: 23px; }
+  .dossier-advantage, .dossier-label { font-size: 12px; }
+  .dossier-item-heading { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .dossier-item-heading h3 { font-size: 14px; }
+  .dossier-note, .dossier-benchmark { overflow-wrap: anywhere; }
+  .dossier-cell .profile-risk__reading .home-risk-status { font-size: 17px; }
+  .dossier-cell .profile-risk__reading > p { font-size: 12px; }
+  .dossier-cell.profile-risk > h3 { min-height: 48px; }
+  .dossier-arena-gauges { gap: 12px; }
+  .dossier-arena-gauges .arena-combat-card { padding: 16px 10px; }
+  .dossier-arena-gauges .arena-combat-card h2 { min-height: 42px; }
+  .dossier-arena-gauges .arena-combat-card .arena-combat-ring__value strong { font-size: clamp(18px, 5.5vw, 36px); }
+  .dossier-arena-gauges .arena-combat-status { font-size: 12px; }
+  .dossier-arena-gauges .arena-combat-note { overflow-wrap: anywhere; font-size: 11px; }
+  .comparison-dossiers.profile-page .section-heading { font-size: 25px; }
+}

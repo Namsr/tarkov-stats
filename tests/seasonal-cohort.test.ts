@@ -126,6 +126,17 @@ const profile = db.prepare(`INSERT INTO player_profiles (
   });
   assert.equal(cachedMedian.cache, "hit");
 
+  // A manual profile refresh must not read the old five-minute cohort cache.
+  const revisedMedian = await querySeasonalComparisonCohort({
+    aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
+  });
+  assert.equal(revisedMedian.cache, "miss");
+  assert.deepEqual(revisedMedian.result, median.result);
+  const repeatedRevision = await querySeasonalComparisonCohort({
+    aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
+  });
+  assert.equal(repeatedRevision.cache, "hit");
+
   const fallback = await querySeasonalComparisonCohort({
     aid: 50,
     cycleId: "cycle-a",

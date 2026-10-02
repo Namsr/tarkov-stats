@@ -177,6 +177,7 @@ export function buildPersistentProfileViewModel(
     },
     statistics: {
       totalRaids: finiteOrNull(stats.totalRaids),
+      survivedRaids: finiteOrNull(stats.survivedRaids),
       pmcRaids: finiteOrNull(stats.pmcRaids),
       scavRaids: finiteOrNull(stats.scavRaids),
       survivalRate: finiteOrNull(stats.survivalRate),
@@ -279,6 +280,7 @@ export function buildSeasonalProfileViewModel(
     },
     statistics: {
       totalRaids: finiteOrNull(stats?.totalRaids ?? counters.pmcRaids + counters.scavRaids),
+      survivedRaids: finiteOrNull(stats?.survivedRaids),
       pmcRaids: finiteOrNull(counters.pmcRaids),
       scavRaids: finiteOrNull(counters.scavRaids),
       survivalRate: finiteOrNull(stats?.survivalRate),

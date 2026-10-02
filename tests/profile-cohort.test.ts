@@ -1,18 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
+import { createRequire } from "node:module";
+import type * as ProfileCohort from "../lib/profile-cohort";
+
+const require = createRequire(import.meta.url);
+const {
   COMPARISON_COHORT_PERCENTAGES,
   COMPARISON_COHORT_TARGET,
   RISK_COHORT_TARGET,
   comparisonCohortMetricValue,
+  comparisonCohortPercentile,
   comparisonRangeFor,
+  empiricalComparisonPercentile,
   finiteNonNegativeCount,
   finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
   makeEmptyPopulationCohortResult,
   selectComparisonPercent,
-// @ts-expect-error -- Node's strip-types test runner resolves the explicit .ts extension.
-} from "../lib/profile-cohort.ts";
+} = require("../lib/profile-cohort.ts") as typeof ProfileCohort;
 
 test("comparison cohort uses the same mandatory two-dimensional ranges", () => {
   assert.deepEqual(COMPARISON_COHORT_PERCENTAGES, [10, 15, 20, 30]);
@@ -49,6 +54,26 @@ test("cohort metric values use one finite non-negative strategy rule", () => {
   assert.equal(comparisonCohortMetricValue("population", { value: null, count: 1 }), null);
   assert.equal(comparisonCohortMetricValue("population", { value: "2", count: 1 }), null);
   assert.equal(comparisonCohortMetricValue("population", { value: Number.NaN, count: 1 }), null);
+});
+
+test("empirical cohort percentiles use midrank ties, clamping, and the confidence floor", () => {
+  assert.equal(empiricalComparisonPercentile(0, 0, 0), null);
+  assert.equal(empiricalComparisonPercentile(1, 0, 1), 50);
+  assert.equal(empiricalComparisonPercentile(20, 9, 10), (13.5 / 19) * 100);
+  assert.equal(empiricalComparisonPercentile(20, 20, 0), 100);
+  assert.equal(empiricalComparisonPercentile(20, 0, 0), 0);
+  assert.deepEqual(comparisonCohortPercentile(Number.NaN, { count: 20, below: 9, equal: 2 }), {
+    percentile: null,
+    count: 20,
+    below: 9,
+    equal: 2,
+  });
+  assert.deepEqual(comparisonCohortPercentile(10, { count: 19, below: 9, equal: 2 }), {
+    percentile: null,
+    count: 19,
+    below: 9,
+    equal: 2,
+  });
 });
 
 test("cohort selection never falls back to a one-dimensional or wider group", () => {
@@ -95,6 +120,7 @@ test("cohort selection never falls back to a one-dimensional or wider group", ()
   assert.deepEqual(result.identity, { aid: 42, mode: "seasonal", cycleId: "cycle-a" });
   assert.deepEqual(result.actualRanges.hours, { min: 71, max: 129 });
   assert.equal(result.averages.kd_ratio.value, null);
+  assert.deepEqual(result.percentiles.kd_ratio, { percentile: null, count: 0, below: 0, equal: 0 });
   const population = makeComparisonCohortResult({
     mode: "seasonal",
     cycleId: "cycle-a",

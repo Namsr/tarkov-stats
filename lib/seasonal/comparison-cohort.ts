@@ -135,6 +135,7 @@ export interface SeasonalComparisonCohortInput {
   statistic?: AverageStatistic;
   period?: AveragePeriod;
   now?: number;
+  revision?: string;
 }
 
 export interface SeasonalComparisonCohortLookup {
@@ -145,7 +146,8 @@ export interface SeasonalComparisonCohortLookup {
 
 function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
   return [input.cycleId, input.aid, input.dimension ?? "hours", input.statistic ?? "trimmed_mean",
-    input.period ?? "all", input.period === "90d" ? Math.floor(now / COHORT_CACHE_TTL_MS) : 0].join(":");
+    input.period ?? "all", input.period === "90d" ? Math.floor(now / COHORT_CACHE_TTL_MS) : 0,
+    input.revision ?? ""].join(":");
 }
 
 function cacheResult(key: string, value: SeasonalComparisonCohortValue, now: number): void {

@@ -71,7 +71,7 @@ export default function ProfileModeSwitch({
 
   function profileHref(mode: GameMode): string {
     const routeMode = appRouteMode(mode);
-    const base = page === "average" ? `/average/${routeMode}` : `/player/${routeMode}/${aid}`;
+    const base = page === "average" ? `/population/${routeMode}` : `/player/${routeMode}/${aid}`;
     if (page !== "player" || (mode !== "regular" && mode !== "seasonal")) return base;
 
     const params = new URLSearchParams(searchParams.toString());

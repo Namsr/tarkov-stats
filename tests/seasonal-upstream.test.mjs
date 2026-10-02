@@ -22,6 +22,23 @@ const baseOptions = {
   seasonEndsAt: 1_784_000_000_000,
 };
 
+test("Seasonal run-throughs include a proven zero Scav counter omitted upstream", async () => {
+  const payload = await loadFixture("seasonal-direct-profile.json");
+  payload.pmcStats.eft.overAllCounters.Items.push({ Key: ["ExitStatus", "Runner", "Pmc"], Value: 3 });
+  payload.scavStats.eft.overAllCounters.Items = [
+    { Key: ["Sessions", "Scav"], Value: 8 },
+    { Key: ["ExitStatus", "Survived", "Scav"], Value: 7 },
+    { Key: ["ExitStatus", "Killed", "Scav"], Value: 1 },
+  ];
+  const options = { ...baseOptions, confirmedContract: "direct_profile", seasonStartsAt: 1_785_800_000_000, seasonEndsAt: null };
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.runThrough, 3);
+  payload.scavStats.eft.overAllCounters.Items[1].Value = 6;
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.runThrough, null);
+  payload.scavStats.eft.overAllCounters.Items.push({ Key: ["ExitStatus", "Runner", "Scav"], Value: 0 });
+  payload.pmcStats.eft.overAllCounters.Items.find(item => item.Key.includes("Runner")).Value = 0;
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.runThrough, 0);
+});
+
 test("uses a stable fifteen-minute profile cache key when no feed version is known", () => {
   const url = "https://players.tarkov.dev/pvp-season/730003.json";
   assert.equal(new URL(seasonalProfileCacheUrl(url, undefined, 0)).searchParams.get("v"), "0");
