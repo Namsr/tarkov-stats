@@ -346,8 +346,17 @@ function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters):
   const pmcSurvivalRate = pmcSurvived == null || counters.pmcRaids <= 0
     ? null
     : 100 * pmcSurvived / counters.pmcRaids;
-  const pmcRunThrough = optionalCounterValue(pmc, "ExitStatus", "Runner", "Pmc");
-  const scavRunThrough = optionalCounterValue(scav, "ExitStatus", "Runner", "Scav");
+  const runThroughFor = (items: UnknownRecord[], mode: "Pmc" | "Scav", raids: number) => {
+    const explicit = optionalCounterValue(items, "ExitStatus", "Runner", mode);
+    if (explicit != null) return explicit;
+    const survived = optionalCounterValue(items, "ExitStatus", "Survived", mode);
+    const killed = optionalCounterValue(items, "ExitStatus", "Killed", mode);
+    // Upstream omits zero counters. Only infer zero when recorded outcomes
+    // already account for every raid; incomplete outcomes stay unavailable.
+    return survived != null && killed != null && survived + killed === raids ? 0 : null;
+  };
+  const pmcRunThrough = runThroughFor(pmc, "Pmc", counters.pmcRaids);
+  const scavRunThrough = runThroughFor(scav, "Scav", counters.scavRaids);
   const runThrough = pmcRunThrough == null || (scavRunThrough == null && counters.scavRaids > 0)
     ? null
     : pmcRunThrough + (scavRunThrough ?? 0);

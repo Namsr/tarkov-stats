@@ -36,6 +36,16 @@ export interface ComparisonCohortMetric {
 }
 
 export type ComparisonCohortAverages = Record<RadarMetric, ComparisonCohortMetric>;
+export type ComparisonCohortPlayerMetrics = Readonly<Record<RadarMetric, number | null>>;
+
+export interface ComparisonCohortPercentile {
+  percentile: number | null;
+  count: number;
+  below: number;
+  equal: number;
+}
+
+export type ComparisonCohortPercentiles = Record<RadarMetric, ComparisonCohortPercentile>;
 
 export type ComparisonCohortReason =
   | "no_activity"
@@ -67,6 +77,7 @@ export interface ComparisonCohortResult {
   reliability: "sufficient" | "insufficient";
   reason: ComparisonCohortReason | null;
   averages: ComparisonCohortAverages;
+  percentiles: ComparisonCohortPercentiles;
   ranges: {
     hours: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
     pmcRaids: ComparisonAxisBounds & { percent: ComparisonCohortPercent };
@@ -87,6 +98,15 @@ export function emptyComparisonAverages(): ComparisonCohortAverages {
   return Object.fromEntries(
     COMPARISON_RADAR_METRICS.map((metric) => [metric, { value: null, count: 0 }])
   ) as ComparisonCohortAverages;
+}
+
+export function emptyComparisonPercentiles(): ComparisonCohortPercentiles {
+  return Object.fromEntries(
+    COMPARISON_RADAR_METRICS.map((metric) => [
+      metric,
+      { percentile: null, count: 0, below: 0, equal: 0 },
+    ])
+  ) as ComparisonCohortPercentiles;
 }
 
 export function comparisonAxisBounds(center: number, percent: ComparisonCohortPercent, axis: "hours" | "pmcRaids") {
@@ -147,6 +167,32 @@ export function finiteNonNegativeMetricValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+export function empiricalComparisonPercentile(count: number, below: number, equal: number): number | null {
+  const n = finiteNonNegativeCount(count);
+  if (n === 0) return null;
+  if (n === 1) return 50;
+  const lower = finiteNonNegativeCount(below);
+  const tied = finiteNonNegativeCount(equal);
+  return Math.min(100, Math.max(0, (lower + (tied - 1) / 2) / (n - 1) * 100));
+}
+
+export function comparisonCohortPercentile(
+  playerValue: unknown,
+  distribution: { count: unknown; below: unknown; equal: unknown },
+): ComparisonCohortPercentile {
+  const count = finiteNonNegativeCount(distribution.count);
+  const below = finiteNonNegativeCount(distribution.below);
+  const equal = finiteNonNegativeCount(distribution.equal);
+  return {
+    percentile: finiteNonNegativeMetricValue(playerValue) !== null && count >= COMPARISON_COHORT_TARGET
+      ? empiricalComparisonPercentile(count, below, equal)
+      : null,
+    count,
+    below,
+    equal,
+  };
+}
+
 export function comparisonCohortMetricValue(
   strategy: ComparisonCohortStrategy,
   metric: { value: unknown; count: unknown },
@@ -167,6 +213,7 @@ export function makeComparisonCohortResult(input: {
   n: number;
   actualRanges: ComparisonActualRanges;
   averages?: ComparisonCohortAverages;
+  percentiles?: ComparisonCohortPercentiles;
   strategy?: ComparisonCohortStrategy;
   reason?: ComparisonCohortReason | null;
 }): ComparisonCohortResult {
@@ -197,6 +244,7 @@ export function makeComparisonCohortResult(input: {
     reliability: sufficient ? "sufficient" : "insufficient",
     reason: input.reason ?? (sufficient ? null : "insufficient_cohort"),
     averages: input.averages ?? emptyComparisonAverages(),
+    percentiles: input.percentiles ?? emptyComparisonPercentiles(),
     ranges: {
       hours: { ...axes.hours.bounds, percent: input.percent },
       pmcRaids: { ...axes.pmcRaids.bounds, percent: input.percent },

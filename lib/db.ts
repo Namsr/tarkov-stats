@@ -16,12 +16,16 @@ import {
   COMPARISON_COHORT_TARGET,
   COMPARISON_RADAR_METRICS,
   RISK_COHORT_TARGET,
+  comparisonCohortPercentile,
   comparisonRangeFor,
   emptyComparisonAverages,
+  emptyComparisonPercentiles,
+  finiteNonNegativeMetricValue,
   makeComparisonCohortResult,
   selectComparisonPercent,
   type ComparisonActualRanges,
   type ComparisonCohortPercent,
+  type ComparisonCohortPlayerMetrics,
   type ComparisonCohortResult,
 } from "@/lib/profile-cohort";
 import {
@@ -317,7 +321,7 @@ function eligibleMetricWhere(
     throw new Error(`invalid metric column: ${metric}`);
   }
   const populated = metric ? appendCondition(where, `${metric} IS NOT NULL`) : where;
-  return mode === "regular" && PVP_METRICS.has(metric)
+  return (mode === "regular" || mode === "pve") && PVP_METRICS.has(metric)
     ? appendCondition(populated, "pvp_stats_known = 1")
     : populated;
 }
@@ -747,7 +751,11 @@ function twoDimensionalRangeWhere(
   };
 }
 
-function persistentComparisonMetricsSql(where: string, statistic: AverageStatistic): string {
+function persistentComparisonMetricsSql(
+  mode: Extract<CrossSectionMode, "regular" | "pve">,
+  where: string,
+  statistic: AverageStatistic,
+): string {
   const selected = statistic === "median"
     ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
     : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
@@ -760,16 +768,19 @@ function persistentComparisonMetricsSql(where: string, statistic: AverageStatist
   // Ranking each metric on its own keeps the cohort at one row per player.
   const perMetric = COMPARISON_RADAR_METRICS.map((metric) =>
     `SELECT '${metric}' AS metric, MAX(n) AS n,
-      AVG(CASE WHEN ${selected} THEN v END) AS a, NULL, NULL, NULL, NULL
-      FROM (SELECT ${metric} AS v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
+      AVG(CASE WHEN ${selected} THEN v END) AS a,
+      SUM(CASE WHEN v < player_v THEN 1 ELSE 0 END) AS below,
+      SUM(CASE WHEN v = player_v THEN 1 ELSE 0 END) AS equal, NULL, NULL, NULL, NULL
+      FROM (SELECT ${metric} AS v, ? AS player_v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
         COUNT(*) OVER () AS n FROM cohort WHERE ${metric} IS NOT NULL${
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
-    })`
+    }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""})`
   ).join("\n    UNION ALL\n    ");
   return `WITH cohort AS (
-    SELECT hours, pmc_raids, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
+    SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
+    NULL AS below, NULL AS equal,
     MIN(hours) AS hours_min, MAX(hours) AS hours_max,
     MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
   FROM cohort
@@ -784,10 +795,18 @@ async function computePersistentTwoDimensionalCohort(input: {
   dimension: "hours" | "pmc_raids";
   statistic: AverageStatistic;
   period: AveragePeriod;
+  playerMetrics?: ComparisonCohortPlayerMetrics;
   readFirst: CohortFirstReader;
   readAll: CohortAllReader;
 }): Promise<ComparisonCohortResult> {
   const { center } = input;
+  const playerMetrics = Object.fromEntries(
+    COMPARISON_RADAR_METRICS.map((metric) => [
+      metric,
+      finiteNonNegativeMetricValue(input.playerMetrics?.[metric]),
+    ])
+  ) as ComparisonCohortPlayerMetrics;
+  const playerMetricParams = COMPARISON_RADAR_METRICS.map((metric) => playerMetrics[metric]);
   if (
     !Number.isFinite(center.hours) ||
     !Number.isFinite(center.pmcRaids) ||
@@ -832,8 +851,8 @@ async function computePersistentTwoDimensionalCohort(input: {
     ? twoDimensionalPopulationWhere(mode, input.excludeAid, input.period)
     : twoDimensionalRangeWhere(mode, center, selectedPercent, input.excludeAid, input.period);
   const resultRows = await input.readAll(
-    persistentComparisonMetricsSql(selected.where, input.statistic),
-    selected.params,
+    persistentComparisonMetricsSql(input.mode, selected.where, input.statistic),
+    [...selected.params, ...playerMetricParams],
   );
   const group = resultRows.find((row) => row.metric === "__group__");
   const n = Number(group?.n ?? 0);
@@ -868,9 +887,15 @@ async function computePersistentTwoDimensionalCohort(input: {
 
   const metricRows = new Map(resultRows.map((row) => [String(row.metric), row]));
   const averages = emptyComparisonAverages();
+  const percentiles = emptyComparisonPercentiles();
   for (const metric of COMPARISON_RADAR_METRICS) {
     const row = metricRows.get(metric);
     const count = Number(row?.n ?? 0);
+    percentiles[metric] = comparisonCohortPercentile(playerMetrics[metric], {
+      count: row?.n ?? 0,
+      below: row?.below ?? 0,
+      equal: row?.equal ?? 0,
+    });
     const minimumPopulatedCount = strategy === "population" || metric === "pmc_survival_rate" ? 1 : COMPARISON_COHORT_TARGET;
     if (count < minimumPopulatedCount) {
       averages[metric] = { value: null, count };
@@ -888,6 +913,7 @@ async function computePersistentTwoDimensionalCohort(input: {
     n,
     actualRanges,
     averages,
+    percentiles,
     strategy: strategy ?? "matched",
   });
 }
@@ -1113,6 +1139,7 @@ export interface PlayerStore {
     dimension?: "hours" | "pmc_raids",
     statistic?: AverageStatistic,
     period?: AveragePeriod,
+    playerMetrics?: ComparisonCohortPlayerMetrics,
   ): Promise<ComparisonCohortResult>;
   /**
    * Trimmed mean of one metric for each final display range. The range count is
@@ -1554,6 +1581,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         dimension = "hours",
         statistic = "trimmed_mean",
         period = "all",
+        playerMetrics,
       ) {
         if (mode === "arena") throw new Error("arena comparison cohort is unavailable");
         return computePersistentTwoDimensionalCohort({
@@ -1563,6 +1591,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           dimension,
           statistic,
           period,
+          playerMetrics,
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
           readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });

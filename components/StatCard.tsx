@@ -3,10 +3,11 @@ interface StatCardProps {
   value: string | number;
   benchmarkDiff?: number | null;
   suffix?: string;
+  hint?: string;
   className?: string;
 }
 
-export default function StatCard({ label, value, benchmarkDiff, suffix, className = "" }: StatCardProps) {
+export default function StatCard({ label, value, benchmarkDiff, suffix, hint, className = "" }: StatCardProps) {
   const diffColor =
     benchmarkDiff != null
       ? benchmarkDiff >= 0
@@ -22,16 +23,21 @@ export default function StatCard({ label, value, benchmarkDiff, suffix, classNam
         {label}
       </span>
       <div className="flex items-end gap-2">
-        <span className="metric-card__value">
+        <span className="metric-card__value tabular-nums">
           {value}
           {suffix && <span className="metric-card__suffix ml-1">{suffix}</span>}
         </span>
         {benchmarkDiff != null && (
-          <span className={`text-xs font-bold ${diffColor} mb-0.5`}>
+          <span className={`text-xs font-bold tabular-nums ${diffColor} mb-0.5`}>
             {diffSign}{benchmarkDiff.toFixed(1)}%
           </span>
         )}
       </div>
+      {hint && (
+        <span className="metric-card__hint">
+          {hint}
+        </span>
+      )}
     </div>
   );
 }

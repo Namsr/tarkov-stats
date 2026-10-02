@@ -5,7 +5,7 @@ import { useI18n } from "@/lib/i18n/context";
 import { ARENA_TSR_WEIGHTS, type ArenaTsRating } from "@/lib/arena/ts-rating";
 import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaProfileRisk, type ArenaStoredMode } from "@/types/arena";
 
-function Ring({ value, max, text, unit, label }: {
+export function ArenaRing({ value, max, text, unit, label }: {
   value: number | null; max: number; text: string; unit: string; label: string;
 }) {
   const radius = 72;
@@ -48,19 +48,19 @@ export default function ArenaCombatSummary({ profile, risk, rating, scope, onMod
     <div className="arena-combat-gauges">
       <article id="arena-risk" className="arena-combat-card" data-risk-tier={tier ?? "unavailable"}>
         <h2>{t("arena.combat.risk")}</h2>
-        <Ring value={score} max={100} text={number(score)} unit={t("arena.combat.outOf100")} label={t("arena.combat.risk")} />
+        <ArenaRing value={score} max={100} text={number(score)} unit={t("arena.combat.outOf100")} label={t("arena.combat.risk")} />
         <strong className="arena-combat-status">{tier ? t("arena.combat.risk." + tier) : t("arena.risk.unavailable")}</strong>
         <p className="arena-combat-note">{t("arena.combat.riskNote")}</p>
       </article>
       <article className="arena-combat-card arena-combat-card--rating" style={{ "--arena-ring-color": "var(--foreground)" } as CSSProperties}>
         <h2>{t("arena.tsr.title")} <span className="arena-combat-beta">{t("arena.tsr.beta")}</span></h2>
-        <Ring value={value} max={2} text={number(value, 2)} unit={t("arena.tsr.short")} label={t("arena.tsr.title")} />
+        <ArenaRing value={value} max={2} text={number(value, 2)} unit={t("arena.tsr.short")} label={t("arena.tsr.title")} />
         <strong className="arena-combat-status">{t(scope === "overall" ? "arena.tsr.overall" : "arena.tsr.mode")}</strong>
         <p className="arena-combat-note">{rating ? ratingNote : t("arena.tsr.unavailable")}</p>
       </article>
       <article className="arena-combat-card arena-combat-card--wins">
         <h2>{t("arena.metric.win_rate")}</h2>
-        <Ring value={winRate} max={100} text={winRate == null ? number(null) : `${number(winRate, 1)}%`} unit={t("arena.counter.wins")} label={t("arena.metric.win_rate")} />
+        <ArenaRing value={winRate} max={100} text={winRate == null ? number(null) : `${number(winRate, 1)}%`} unit={t("arena.counter.wins")} label={t("arena.metric.win_rate")} />
         <strong className="arena-combat-status">{t("arena.counter.wins")}: {number(stats.counters.wins)}</strong>
         <p className="arena-combat-note">{t("arena.counter.losses")}: {number(stats.counters.losses)} · {t("arena.counter.matches")}: {number(stats.counters.matches)}</p>
       </article>

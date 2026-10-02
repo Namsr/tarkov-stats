@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import ChartCrosshair from "@/components/ChartCrosshair";
 import { chartPointAtPointer } from "@/lib/chart-interaction";
-import { chartBounds, chartPath, levelAtExperience, populationWithinPlayerRaidRange, raidTicks, spacedLevelLabels, type LevelBand } from "@/lib/seasonal/ui";
+import { chartBounds, chartPath, levelAtExperience, populationWithinPlayerRaidRange, raidTicks, type LevelBand } from "@/lib/seasonal/ui";
 import type {
   ProgressionKind,
   ProgressionPoint,
@@ -160,15 +160,6 @@ export default function SeasonalProgressionChart({
   const markerByDate = new Map(riskMarkers.map((marker) => [marker.date, marker]));
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const xTicks = raidTicks(bounds.minDay, bounds.maxDay);
-  const relevantBands = data.kind === "cumulative"
-    ? levelBands.filter((band) => band.experience >= bounds.minValue && band.experience <= bounds.maxValue)
-    : [];
-  const labelBands = spacedLevelLabels(
-    relevantBands,
-    bounds.minValue,
-    bounds.maxValue,
-    plotHeight,
-  );
 
   return (
     <section className="data-panel seasonal-chart">
@@ -203,7 +194,9 @@ export default function SeasonalProgressionChart({
             onPointerLeave={(event) => { if (event.pointerType !== "touch" && !event.currentTarget.querySelector(":focus-visible")) setActive(null); }}>
             {ticks.map((tick) => {
               const value = bounds.minValue + (bounds.maxValue - bounds.minValue) * tick;
-              const text = fmt(value, data.kind, lang);
+              const text = data.kind === "cumulative" && levelBands.length > 0
+                ? t("seasonal.levelBand", { level: levelAtExperience(value, levelBands) })
+                : fmt(value, data.kind, lang);
               const baseY = y(value) + 4;
               return (
                 <g key={tick}>
@@ -223,16 +216,6 @@ export default function SeasonalProgressionChart({
             {data.kind !== "cumulative" && (
               <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y(50)} y2={y(50)} className="seasonal-chart__norm" />
             )}
-            {relevantBands.map((band) => (
-              <g key={band.level}>
-                <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y(band.experience)} y2={y(band.experience)} className="seasonal-chart__level" />
-              </g>
-            ))}
-            {labelBands.map((band) => (
-              <text key={`label-${band.level}`} x={WIDTH - PAD.right - 3} y={y(band.experience) - 4} textAnchor="end" className="seasonal-chart__level-label">
-                {t("seasonal.levelBand", { level: band.level })}
-              </text>
-            ))}
             {visible.nearby && displayedPointsFor("nearby").length > 0 && (
               <path d={areaPath(displayedPointsFor("nearby"), bounds)} transform={`translate(${PAD.left} ${PAD.top})`} fill={COLORS.nearby} className="seasonal-chart__corridor" />
             )}
@@ -249,19 +232,6 @@ export default function SeasonalProgressionChart({
                     vectorEffect="non-scaling-stroke"
                   />
                 ))}
-                {displayedPointsFor(key).map((point) => {
-                  const marker = key === "player" ? markerByDate.get(point.date) : undefined;
-                  const pointX = coordinate(point);
-                  return (
-                    <circle
-                      key={`${key}-${point.pointId}`}
-                      cx={x(pointX)}
-                      cy={y(point.value)}
-                      r={marker ? 5 : key === "player" ? 3 : 2}
-                      fill={marker ? "var(--danger)" : COLORS[key]}
-                    />
-                  );
-                })}
               </g>
             ))}
             <ChartCrosshair point={displayed ? { x: displayed.x, y: displayed.y, xLabel: Math.round(coordinate(displayed.point)).toLocaleString(lang), yLabel: fmt(displayed.point.value, data.kind, lang), color: COLORS[displayed.key] } : null} visible={!!activeShown} left={PAD.left} bottom={HEIGHT - PAD.bottom} labelY={HEIGHT - 18} width={WIDTH} />

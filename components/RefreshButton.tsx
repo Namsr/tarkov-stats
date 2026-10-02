@@ -19,6 +19,7 @@ export default function RefreshButton({
   updatedAt,
   missing = false,
   className = "",
+  direct = false,
   onCheck,
 }: {
   aid: number;
@@ -27,6 +28,7 @@ export default function RefreshButton({
   updatedAt?: number | null;
   missing?: boolean;
   className?: string;
+  direct?: boolean;
   onCheck?: () => Promise<RefreshCheckResult>;
 }) {
   const { t } = useI18n();
@@ -81,28 +83,43 @@ export default function RefreshButton({
 
   const statusKey = status === "idle" ? null : `player.refreshStatus.${status}`;
 
+  const buttonClassName = `ghost-button profile-refresh-button ${prominent ? "is-stale" : ""} profile-action__button !text-sm !normal-case !tracking-normal ${className}`;
+  const label = t(missing ? "player.refreshCache" : "player.refresh");
+
   return (
     <div className="profile-action">
-      <a
-        href={tarkovDevUrl(aid, mode)}
-        target="_blank"
-        rel="noopener noreferrer"
-        title={t(missing ? "player.refreshMissingHint" : isStale ? "player.refreshStaleHint" : "player.refreshHint")}
-        onClick={(event) => {
-          if (!onCheck) return;
-          // A modified or middle click keeps this tab focused, so there is no
-          // return to detect and nothing should be marked as waiting.
-          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          awaitingReturn.current = true;
-          setStatus("waiting");
-        }}
-        className={`ghost-button profile-refresh-button ${prominent ? "is-stale" : ""} profile-action__button !text-sm !normal-case !tracking-normal ${className}`}
-      >
-        {t(missing ? "player.refreshCache" : "player.refresh")}
-      </a>
+      {direct ? (
+        <button
+          type="button"
+          title={t("player.refreshDirectHint")}
+          onClick={() => void check()}
+          disabled={!onCheck || status === "checking"}
+          aria-busy={status === "checking" || undefined}
+          className={buttonClassName}
+        >
+          {label}
+        </button>
+      ) : (
+        <a
+          href={tarkovDevUrl(aid, mode)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={t(missing ? "player.refreshMissingHint" : isStale ? "player.refreshStaleHint" : "player.refreshHint")}
+          onClick={(event) => {
+            if (!onCheck) return;
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            awaitingReturn.current = true;
+            setStatus("waiting");
+          }}
+          className={buttonClassName}
+        >
+          {label}
+        </a>
+      )}
       {onCheck && statusKey && (
         <p
           className={`text-xs leading-snug ${status === "error" ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}
+          role={status === "error" ? "alert" : "status"}
           aria-live="polite"
         >
           {t(statusKey)}

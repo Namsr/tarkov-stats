@@ -96,6 +96,7 @@ export interface PlayerProfileViewModel {
   };
   statistics: {
     totalRaids: number | null;
+    survivedRaids?: number | null;
     pmcRaids: number | null;
     scavRaids: number | null;
     survivalRate: number | null;
