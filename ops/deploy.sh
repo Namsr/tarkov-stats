@@ -6,7 +6,14 @@ cd "$APP"
 compose() { docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" "$@"; }
 container() { compose ps -q web; }
 healthy() {
-  [ -n "$(container)" ] && curl -sf --max-time 20 -H 'Host: tarkovstats.ru' http://127.0.0.1/ -o /dev/null
+  health_cid=$(container)
+  [ -n "$health_cid" ] || return 1
+  health_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' "$health_cid" | awk 'NF { print; exit }')
+  [ -n "$health_ip" ] || return 1
+  health_status=$(curl --silent --show-error --noproxy '*' --connect-timeout 2 --max-time 5 \
+    --header 'Host: tarkovstats.ru' --output /dev/null --write-out '%{http_code}' \
+    "http://$health_ip:3000/healthz") || return 1
+  [ "$health_status" = 200 ]
 }
 
 # Never discard operator edits. Untracked secrets and local compose are retained.
@@ -32,11 +39,8 @@ if [ "$deployed" = "$remote" ]; then
     rm -f "$state/unhealthy"
     exit 0
   fi
-  # A rebuild cannot repair an unhealthy container that already runs the target
-  # revision. It would only restart a working image and, because the build
-  # saturates the single vCPU, take the site down for the length of the build
-  # while making the next health probe more likely to fail as well. Count
-  # consecutive misses so a genuinely wedged container is still replaced.
+  # Confirm persistent application failure independently of Caddy. Restart the
+  # existing image at most once per 15 minutes; never rebuild unchanged code.
   misses=0
   if [ -f "$state/unhealthy" ]; then
     read -r misses < "$state/unhealthy" || true
@@ -50,12 +54,32 @@ if [ "$deployed" = "$remote" ]; then
     logger -t tarkovstats-deploy "health probe failed on deployed $remote; skipping rebuild ($misses/3)"
     exit 0
   fi
-  logger -t tarkovstats-deploy "health probe failed $misses times on deployed $remote; forcing a rebuild"
+  exec 9>/run/tarkovstats-data-sync.lock
+  if ! flock -n 9; then
+    logger -t tarkovstats-deploy "web recovery deferred: profile sync or backup active"
+    exit 75
+  fi
+  last_restart=0
+  if [ -f "$state/restarted_at" ]; then
+    read -r last_restart < "$state/restarted_at" || true
+    case "${last_restart:-}" in
+      ''|*[!0-9]*) last_restart=0 ;;
+    esac
+  fi
+  now=$(date +%s)
+  if [ "$(( now - last_restart ))" -lt 900 ]; then
+    logger -t tarkovstats-deploy "web recovery deferred: restart cooldown on $remote"
+    exit 0
+  fi
+  printf '%s\n' "$now" > "$state/restarted_at"
   rm -f "$state/unhealthy"
+  logger -t tarkovstats-deploy "health probe failed $misses times on deployed $remote; restarting existing image"
+  compose restart -t 10 web
+  exit 0
 fi
 exec 9>/run/tarkovstats-data-sync.lock
 if ! flock -n 9; then
-  logger -t tarkovstats-deploy "deploy deferred: profile data sync active"
+  logger -t tarkovstats-deploy "deploy deferred: profile sync or backup active"
   exit 75
 fi
 if [ -f "$state/retry" ]; then

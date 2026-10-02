@@ -66,6 +66,8 @@ GEMINI.md
 /ops/*
 !/ops/Caddyfile
 !/ops/deploy.sh
+!/ops/backup-db.sh
+!/ops/tarkovstats-backup.cron
 !/ops/docker-compose.vps.yml
 !/ops/profile-queue.sh
 !/ops/systemd/

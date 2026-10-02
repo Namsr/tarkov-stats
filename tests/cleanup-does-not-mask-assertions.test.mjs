@@ -709,6 +709,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/arena-moderation-isolation.test.ts",
   "tests/arena-profile-sync.test.mjs",
   "tests/average-materialize-once.test.mjs",
+  "tests/backup-db.test.mjs",
+  "tests/caddy-overload.test.mjs",
   "tests/deploy-wrapper.test.mjs",
   "tests/leaderboard-publication.test.ts",
   "tests/leaderboard-warmup.test.mjs",

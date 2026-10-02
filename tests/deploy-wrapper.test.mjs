@@ -14,7 +14,7 @@ const shell = process.platform === 'win32'
 function sandboxDeployScript(source, dir, mock) {
   const target = dir.replaceAll('\\', '/');
   const script = source.replace('APP=/opt/tarkovstats-auto', () => `APP='${target}'\n${mock}`)
-    .replace('exec 9>/run/tarkovstats-data-sync.lock', 'exec 9>"$APP/data-sync.lock"')
+    .replaceAll('exec 9>/run/tarkovstats-data-sync.lock', 'exec 9>"$APP/data-sync.lock"')
     .replace('state=/var/lib/tarkovstats-deploy', 'state="$APP/state"');
   for (const [applied, rewritten] of [
     [`APP='${target}'`, 'sets APP=/opt/tarkovstats-auto'],
@@ -33,7 +33,7 @@ test('deploy uses live revision and rolls back build, signal and startup failure
   assert.doesNotMatch(compose, /NEXT_PUBLIC_TURNSTILE_SITE_KEY/);
   assert.doesNotMatch(builderUnit, /ExecStopPost/);
   assert.match(builderUnit, /# Install as \/etc\/systemd\/system\/tarkovstats-deploy\.service\.d\//);
-  for (const scenario of ['current', 'checkout-ahead', 'tag-fail', 'sync-busy', 'build-fail', 'signal', 'start-fail', 'health-fail', 'no-builder']) {
+  for (const scenario of ['current', 'current-sick', 'current-redirect', 'current-no-ip', 'current-unreachable', 'current-sync-busy', 'current-restart-fail', 'checkout-ahead', 'tag-fail', 'sync-busy', 'build-fail', 'signal', 'start-fail', 'health-fail', 'no-builder']) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
       const mock = `
@@ -50,8 +50,10 @@ test('deploy uses live revision and rolls back build, signal and startup failure
           *'ps -q web') echo web;;
           *inspect*)
             case "$*" in
+              *'.NetworkSettings.Networks'*)
+                if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
               *'.Image'*) echo old-image;;
-              *) if [ "$SCENARIO" = current ] || [ -f started ]; then echo remote; else echo old; fi;;
+              *) case "$SCENARIO" in current*) echo remote;; *) if [ -f started ]; then echo remote; else echo old; fi;; esac;;
             esac;;
           *'build --build-arg'*)
             if [ "$SCENARIO" = build-fail ]; then return 3; fi
@@ -59,13 +61,23 @@ test('deploy uses live revision and rolls back build, signal and startup failure
           *'up -d --no-build web')
             if [ "$SCENARIO" = start-fail ]; then return 4; fi
             touch started;;
+          *'restart -t 10 web')
+            if [ "$SCENARIO" = current-restart-fail ]; then return 4; fi;;
           *'image tag old-image tarkovstats-web-previous')
             if [ "$SCENARIO" = tag-fail ]; then return 1; fi;;
-          *'exec -T web node'*) [ "$SCENARIO" != health-fail ];;
+        esac
+      }
+      curl() {
+        echo "curl $*" >> calls
+        case "$SCENARIO" in
+          current-redirect) echo 308;;
+          current-unreachable) return 7;;
+          current-*|health-fail) echo 503;;
+          *) echo 200;;
         esac
       }
       logger() { echo "logger $*" >> calls; }
-      flock() { echo "flock $*" >> calls; if [ "$SCENARIO" = sync-busy ]; then return 1; fi; return 0; }
+      flock() { echo "flock $*" >> calls; if [ "$SCENARIO" = sync-busy ] || [ "$SCENARIO" = current-sync-busy ]; then return 1; fi; return 0; }
       sleep() { :; }
       `;
       const script = sandboxDeployScript(source, dir, mock);
@@ -74,13 +86,18 @@ test('deploy uses live revision and rolls back build, signal and startup failure
       const result = spawnSync(shell,[file],{env:{...process.env, SCENARIO:scenario, BUILDX_BUILDER:scenario==='no-builder'?'':'tarkovstats-limited'},encoding:'utf8',timeout:10_000});
       assert.ifError(result.error);
       const calls=await readFile(join(dir,'calls'),'utf8');
-      assert.equal(result.status === 0, ['current','checkout-ahead','tag-fail','no-builder'].includes(scenario), `${scenario}: ${result.stderr}\n${calls}`);
+      const current = scenario.startsWith('current');
+      assert.equal(result.status === 0, current || ['checkout-ahead','tag-fail','no-builder'].includes(scenario), `${scenario}: ${result.stderr}\n${calls}`);
+      assert.doesNotMatch(calls, /exec -T web node/);
+      if ((current && scenario !== 'current-no-ip') || ['checkout-ahead','tag-fail','health-fail','no-builder'].includes(scenario)) {
+        assert.match(calls, /curl .*--noproxy \* .*--max-time 5 .*http:\/\/172\.18\.0\.3:3000\/healthz/);
+      }
       if (scenario === 'sync-busy') {
         assert.equal(result.status, 75);
         assert.doesNotMatch(calls,/build --build-arg/);
         assert.doesNotMatch(calls,/git reset --hard/);
         assert.doesNotMatch(calls,/buildx stop/);
-      } else if(scenario==='current') {
+      } else if(current) {
         assert.doesNotMatch(calls,/build --build-arg/);
         assert.doesNotMatch(calls,/^flock /m);
         assert.doesNotMatch(calls,/buildx stop/);
@@ -89,7 +106,7 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         assert.doesNotMatch(calls,/buildx stop/);
         assert.match(calls,/limited builder not reclaimed/);
         assert.doesNotMatch(calls,/^git reset --hard/m);
-      } else if (!['current','sync-busy'].includes(scenario)) assert.match(calls,/buildx stop tarkovstats-limited/);
+      } else if (!current && scenario !== 'sync-busy') assert.match(calls,/buildx stop tarkovstats-limited/);
       if (scenario === 'checkout-ahead') {
         assert.match(calls,/image tag old-image tarkovstats-web-previous/);
         assert.match(calls,/image prune -f --filter until=24h/);
@@ -98,7 +115,7 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         assert.doesNotMatch(calls,/image prune -f --filter until=24h/);
       }
       else if (scenario !== 'no-builder') assert.doesNotMatch(calls,/image prune -f --filter until=24h/);
-      if(!['current','checkout-ahead','tag-fail','sync-busy','no-builder'].includes(scenario)) {
+      if(!current && !['checkout-ahead','tag-fail','sync-busy','no-builder'].includes(scenario)) {
         assert.match(calls,/git reset --hard remote/);
         assert.match(calls,/image tag old-image tarkovstats-web/);
       }
@@ -108,6 +125,23 @@ test('deploy uses live revision and rolls back build, signal and startup failure
         const retry = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario, BUILDX_BUILDER: 'tarkovstats-limited' }, encoding: 'utf8', timeout: 10_000 });
         assert.equal(retry.status, 0);
         assert.doesNotMatch(await readFile(join(dir, 'calls'), 'utf8'), /build --build-arg/);
+      }
+      if (current && scenario !== 'current') {
+        for (let probe = 2; probe <= 6; probe++) {
+          const retry = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario, BUILDX_BUILDER: 'tarkovstats-limited' }, encoding: 'utf8', timeout: 10_000 });
+          assert.ifError(retry.error);
+          const expected = scenario === 'current-sync-busy' && probe >= 3 ? 75
+            : scenario === 'current-restart-fail' && probe === 3 ? 4 : 0;
+          assert.equal(retry.status, expected, `${scenario} probe ${probe}: ${retry.stderr}`);
+        }
+        const recoveryCalls = await readFile(join(dir, 'calls'), 'utf8');
+        assert.doesNotMatch(recoveryCalls, /build --build-arg|buildx stop|git reset --hard/);
+        assert.equal((recoveryCalls.match(/restart -t 10 web/g) ?? []).length, scenario === 'current-sync-busy' ? 0 : 1);
+        if (scenario !== 'current-sync-busy') assert.match(recoveryCalls, /restart cooldown/);
+        const recovered = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: 'current' }, encoding: 'utf8', timeout: 10_000 });
+        assert.equal(recovered.status, 0, recovered.stderr);
+        const { access } = await import('node:fs/promises');
+        await assert.rejects(access(join(dir, 'state', 'unhealthy')), { code: 'ENOENT' });
       }
     } finally { await rm(dir,{recursive:true,force:true}); }
   }
