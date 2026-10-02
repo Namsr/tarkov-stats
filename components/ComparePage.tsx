@@ -21,6 +21,7 @@ import { loadAverageJson } from "@/lib/client-average-request";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import { comparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
+import { useFavorites } from "@/lib/favorites/context";
 import type { ArenaComparisonScope, ComparisonCohort, ComparisonProfile, ComparisonScope, PersistentComparisonScope } from "@/types/comparison";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
@@ -139,6 +140,8 @@ function useComparisonProfile(
   }));
   const requestGeneration = useRef(0);
   const activeController = useRef<AbortController | null>(null);
+  const onRefreshedRef = useRef(onRefreshed);
+  useEffect(() => { onRefreshedRef.current = onRefreshed; }, [onRefreshed]);
 
   useEffect(() => {
     if (!scope || aid === null) {
@@ -218,7 +221,7 @@ function useComparisonProfile(
       setState((current) => generation === requestGeneration.current && current.scopeKey === scopeKey && current.aid === aid
         ? { ...current, data: next, loading: false, error: "", missing: false }
         : current);
-      if (active()) await onRefreshed?.(next);
+      if (active()) await onRefreshedRef.current?.(next);
       return changed ? "updated" : "unchanged";
     } catch (error) {
       setState((current) => generation === requestGeneration.current && current.scopeKey === scopeKey && current.aid === aid
@@ -228,7 +231,7 @@ function useComparisonProfile(
     } finally {
       if (activeController.current === controller) activeController.current = null;
     }
-  }, [aid, modeLabel, onRefreshed, scope, scopeKey, state, t]);
+  }, [aid, modeLabel, scope, scopeKey, state, t]);
 
   return { state, refresh };
 }
@@ -331,6 +334,18 @@ function useComparisonCohort(scope: ComparisonScope | null, scopeKey: string, ai
 
 export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: string | null }) {
   const { t, lang } = useI18n();
+  const { favorites, authStatus, loading: favoritesLoading } = useFavorites();
+  const frameRef = useRef<HTMLElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const updateHeight = () => frameRef.current?.style.setProperty("--comparison-toolbar-height", `${toolbar.getBoundingClientRect().height}px`);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
   const router = useRouter();
   const searchParams = useSearchParams();
   const resolution = useMemo(
@@ -339,6 +354,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   );
   const scope = resolution.status === "available" ? resolution.scope : null;
   const scopeKey = scope ? `${scope.mode}:${scope.cycleId}:${scope.arenaMode}` : "";
+  const profileMode = scope?.mode;
+  const profileCycle = scope?.cycleId;
+  // One profile response contains every Arena mode; only cohorts depend on the selected submode.
+  const profileScope = useMemo<ComparisonScope | null>(() => {
+    if (!profileMode || !profileCycle) return null;
+    if (profileMode === "arena") return { mode: "arena", cycleId: "persistent", arenaMode: "overall" };
+    if (profileMode === "seasonal") return { mode: "seasonal", cycleId: profileCycle, arenaMode: null };
+    return { mode: profileMode, cycleId: "persistent", arenaMode: null };
+  }, [profileMode, profileCycle]);
+  const profileScopeKey = profileScope ? `${profileScope.mode}:${profileScope.cycleId}` : "";
   const rawMode = searchParams.get("mode");
   const visibleMode: GameMode = GAME_MODES.includes(rawMode as GameMode) ? rawMode as GameMode : "regular";
   const modeLabel = (mode: GameMode) => {
@@ -354,12 +379,12 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   const primaryAid = parseAid(searchParams.get("aid"));
   const secondaryAid = parseAid(searchParams.get("vs"));
   const cohortController = useComparisonCohort(scope, scopeKey, primaryAid, t);
-  const primary = useComparisonProfile(scope, scopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
+  const primary = useComparisonProfile(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
   const secondaryCohortController = useComparisonCohort(scope, scopeKey, secondaryAid, t);
-  const secondary = useComparisonProfile(scope, scopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController.reload);
+  const secondary = useComparisonProfile(profileScope, profileScopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController.reload);
   const cohortState = cohortController.state;
-  const primaryCurrent = primary.state.scopeKey === scopeKey && primary.state.aid === primaryAid ? primary.state : null;
-  const secondaryCurrent = secondary.state.scopeKey === scopeKey && secondary.state.aid === secondaryAid ? secondary.state : null;
+  const primaryCurrent = primary.state.scopeKey === profileScopeKey && primary.state.aid === primaryAid ? primary.state : null;
+  const secondaryCurrent = secondary.state.scopeKey === profileScopeKey && secondary.state.aid === secondaryAid ? secondary.state : null;
   const secondaryCohortState = secondaryCohortController.state;
   const secondaryCohortCurrent = secondaryCohortState.scopeKey === scopeKey && secondaryCohortState.aid === secondaryAid ? secondaryCohortState : null;
   const cohortCurrent = cohortState.scopeKey === scopeKey && cohortState.aid === primaryAid ? cohortState : null;
@@ -404,6 +429,34 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
     router.replace(`/compare?${params.toString()}`, { scroll: false });
   }
 
+  function favoritePicker(slot: "primary" | "secondary", aid: number | null) {
+    const ready = !favoritesLoading && authStatus === "authenticated";
+    const statusKey = favoritesLoading ? "progression.compare.loadingFavorites"
+      : authStatus === "unauthenticated" ? "fav.authRequired"
+        : authStatus === "error" ? "profile.loadError"
+          : favorites.length === 0 ? "profile.empty" : null;
+    const id = `compare-${slot}-favorite`;
+    return <div className="comparison-favorite-picker">
+      <label className="profile-select" htmlFor={id}>
+        <span>{t("radar.favorite.select")}</span>
+        <select id={id} aria-label={`${t(slot === "primary" ? "compare.primaryPlayer" : "compare.secondaryPlayer")}: ${t("radar.favorite.label")}`}
+          aria-describedby={statusKey ? `${id}-status` : undefined} aria-busy={favoritesLoading || undefined}
+          disabled={!ready || favorites.length === 0}
+          value={ready && favorites.some(favorite => favorite.aid === aid) ? String(aid) : ""}
+          onChange={event => {
+            const selected = parseAid(event.target.value);
+            if (ready && selected !== null && favorites.some(favorite => favorite.aid === selected)) updateSelection(slot, selected);
+          }}>
+          <option value="" disabled>{t("compare.chooseFavorite")}</option>
+          {ready && favorites.map(favorite => <option key={favorite.aid} value={favorite.aid}>
+            {favorite.nickname?.trim() ? `${favorite.nickname.trim()} · #${favorite.aid}` : `#${favorite.aid}`}{favorite.isMain ? ` · ${t("profile.main")}` : ""}
+          </option>)}
+        </select>
+      </label>
+      {statusKey && <p id={`${id}-status`} className="dossier-note" role={authStatus === "error" ? "alert" : "status"}>{t(statusKey)}</p>}
+    </div>;
+  }
+
   function profileCard(
     slot: "primary" | "secondary",
     label: string,
@@ -420,7 +473,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
     return (
       <article className="comparison-identity" aria-busy={loading || undefined}>
         <div className="comparison-identity__person">
-          {aid !== null && <ProfilePortrait key={`${scopeKey}:${aid}`} aid={aid} mode={scope.mode} cycleId={scope.cycleId} nickname={name || `#${aid}`} />}
+          {aid !== null && <ProfilePortrait key={`${profileScopeKey}:${aid}`} aid={aid} mode={scope.mode} cycleId={scope.cycleId} nickname={name || `#${aid}`} />}
           <div className="min-w-0">
             <p className="section-kicker">{label}</p>
             <h2 className="mt-2 break-words text-xl font-bold text-[var(--foreground)]">{name || t("compare.choosePlayer")}</h2>
@@ -443,7 +496,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
         {aid !== null && (
           <div className="comparison-identity__actions">
             <RefreshButton
-              key={`${slot}:${scopeKey}:${aid}`}
+              key={`${slot}:${profileScopeKey}:${aid}`}
               aid={aid}
               mode={scope.mode}
               updatedAt={updatedAt}
@@ -466,36 +519,34 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   const bothPlayersSelected = primaryAid !== null && secondaryAid !== null;
 
   return (
-    <main className="page-frame comparison-page">
+    <main ref={frameRef} className="page-frame comparison-page">
       <header>
         <p className="page-kicker">{t("compare.pageKicker")}</p>
         <h1 className="page-title">{t("compare.pageTitle")}</h1>
         <p className="mt-4 max-w-3xl text-[var(--muted)]">{t("compare.pageDescription")}</p>
       </header>
 
-      <div className="mt-7 flex flex-wrap items-end justify-between gap-4">
+      <div ref={toolbarRef} className="comparison-toolbar leaderboard-sticky">
         <SegmentedRadio
+          optionsClassName="leaderboard-sort-pills"
+          hideLegend
           name="compare-mode"
           legend={t("mode.selectorAria")}
           value={scope?.mode ?? visibleMode}
           options={modeOptions}
           onChange={changeMode}
         />
-        {scope?.mode === "seasonal" && (
-          <span className="rounded-full border border-[var(--card-border)] px-3 py-1 text-sm text-[var(--muted-strong)]">
-            {t("compare.cycle", { cycle: scope.cycleId })}
-          </span>
-        )}
+        {scope?.mode === "arena" && <SegmentedRadio
+          className="comparison-arena-scopes"
+          optionsClassName="leaderboard-sort-pills"
+          hideLegend
+          name="compare-arena-mode"
+          legend={t("arena.modePicker.label")}
+          value={scope.arenaMode}
+          options={(["overall", ...ARENA_MODE_KEYS] as const).map(mode => ({ value: mode, label: t(mode === "overall" ? "compare.arenaOverall" : "arena.mode." + mode) }))}
+          onChange={changeArenaMode}
+        />}
       </div>
-
-      {scope?.mode === "arena" && <SegmentedRadio
-        className="comparison-arena-scopes mt-5"
-        name="compare-arena-mode"
-        legend={t("arena.modePicker.label")}
-        value={scope.arenaMode}
-        options={(["overall", ...ARENA_MODE_KEYS] as const).map(mode => ({ value: mode, label: t(mode === "overall" ? "compare.arenaOverall" : "arena.mode." + mode) }))}
-        onChange={changeArenaMode}
-      />}
 
       {!scope && (
         <section className="surface mt-6 p-6" role="status" aria-live="polite">
@@ -515,20 +566,22 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
             <div className="min-w-0">
               <h2 className="section-heading">{t("compare.primaryPlayer")}</h2>
               <SearchBar
-                key={`primary:${scopeKey}`}
+                key={`primary:${profileScopeKey}`}
                 fixedMode={scope.mode}
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("primary", aid)}
               />
+              {favoritePicker("primary", primaryAid)}
             </div>
             <div className="min-w-0">
               <h2 className="section-heading">{t("compare.secondaryPlayer")}</h2>
               <SearchBar
-                key={`secondary:${scopeKey}`}
+                key={`secondary:${profileScopeKey}`}
                 fixedMode={scope.mode}
                 cycleId={scope.cycleId}
                 onSelect={(aid) => updateSelection("secondary", aid)}
               />
+              {favoritePicker("secondary", secondaryAid)}
             </div>
           </section>
 
@@ -541,12 +594,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
       )}
 
       {scope && <ComparisonDossiers
-        key={scopeKey}
+        key={profileScopeKey}
         scope={scope}
         primaryAid={primaryAid}
         secondaryAid={secondaryAid}
         primaryPayload={primaryCurrent?.data?.payload}
         secondaryPayload={secondaryCurrent?.data?.payload}
+        loading={[
+          primaryAid !== null && (primaryCurrent === null || primaryCurrent.loading),
+          secondaryAid !== null && (secondaryCurrent === null || secondaryCurrent.loading),
+        ]}
         cohorts={[
           { data: cohortCurrent?.data ?? null, loading: primaryAid !== null && (cohortCurrent === null || cohortCurrent.loading), error: cohortCurrent?.error ?? "" },
           { data: secondaryCohortCurrent?.data ?? null, loading: secondaryAid !== null && (secondaryCohortCurrent === null || secondaryCohortCurrent.loading), error: secondaryCohortCurrent?.error ?? "" },

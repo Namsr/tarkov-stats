@@ -12,6 +12,8 @@ export default function SegmentedRadio<T extends string>({
   options,
   onChange,
   className = "",
+  optionsClassName = "",
+  hideLegend = false,
 }: {
   name: string;
   legend: string;
@@ -19,11 +21,13 @@ export default function SegmentedRadio<T extends string>({
   options: readonly SegmentedOption<T>[];
   onChange: (value: T) => void;
   className?: string;
+  optionsClassName?: string;
+  hideLegend?: boolean;
 }) {
   return (
     <fieldset className={`segmented-control ${className}`}>
-      <legend>{legend}</legend>
-      <div className="segmented-control__options">
+      <legend className={hideLegend ? "sr-only" : undefined}>{legend}</legend>
+      <div className={`segmented-control__options ${optionsClassName}`}>
         {options.map((option) => (
           <label key={option.value}>
             <input

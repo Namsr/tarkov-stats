@@ -4,11 +4,10 @@ import Image from "next/image";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import CheaterScore from "@/components/CheaterScore";
 import ProfileRadar from "@/components/ProfileRadar";
-import PercentileBadge from "@/components/PercentileBadge";
 import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
 import { comparisonAdvantage, comparisonDossier, type ComparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
-import type { ComparisonCohort, ComparisonMetricKey, ComparisonPercentile, ComparisonScope } from "@/types/comparison";
+import type { ComparisonCohort, ComparisonMetricKey, ComparisonScope } from "@/types/comparison";
 import "@/components/comparison-dossiers.css";
 import "@/components/arena-profile.css";
 
@@ -54,9 +53,9 @@ const arenaCounters = [
   ["current_loss_streak", "currentLossStreak"], ["max_loss_streak", "maxLossStreak"],
 ] as const;
 
-export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, primaryPayload, secondaryPayload, cohorts, progression }: {
+export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, primaryPayload, secondaryPayload, loading, cohorts, progression }: {
   scope: ComparisonScope; primaryAid: number | null; secondaryAid: number | null;
-  primaryPayload: unknown; secondaryPayload: unknown; cohorts: readonly [CohortState, CohortState]; progression: ReactNode;
+  primaryPayload: unknown; secondaryPayload: unknown; loading: readonly [boolean, boolean]; cohorts: readonly [CohortState, CohortState]; progression: ReactNode;
 }) {
   const { t, lang } = useI18n();
   const sectionPrefix = useId();
@@ -90,15 +89,12 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
   function metricPairs(metrics: readonly Metric[], neutral = false) {
     return <div className="dossier-metrics">{metrics.map(metric => {
       const values = [value(0, metric.field), value(1, metric.field)] as const;
-      return <div className="dossier-pair" key={metric.field} data-compare-metric={metric.field}>{players.map((player, index) => {
+      return <div className="dossier-pair" key={metric.field} data-compare-metric={metric.field}>{players.map((_, index) => {
         const lead = advantage(values, index, neutral || metric.neutral);
-        const percentiles = cohorts[index].data?.percentiles as Partial<Record<ComparisonMetricKey, ComparisonPercentile>> | null | undefined;
-        const percentile = metric.benchmark ? percentiles?.[metric.benchmark] : null;
         return <article key={index} className={`dossier-cell${lead ? " is-ahead" : ""}`} aria-label={`${name(index)}: ${t(metric.label)}`}>
           <span className="dossier-label">{t(metric.label)}</span>
-          <strong className="dossier-value">{number(values[index], metric.digits)}{values[index] !== null ? metric.suffix : ""}</strong>
+          <strong className={`dossier-value${loading[index] ? " skeleton" : ""}`}>{loading[index] ? t("common.loading") : <>{number(values[index], metric.digits)}{values[index] !== null ? metric.suffix : ""}</>}</strong>
           {lead}{benchmark(index, metric)}
-          {player && percentile && <PercentileBadge percentile={percentile.percentile} />}
         </article>;
       })}</div>;
     })}</div>;
@@ -170,8 +166,8 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     ["comparison", "profile.section.comparison"], ...(scope.mode === "arena" ? [] : [["risk", "profile.section.risk"]]),
     ...(scope.mode === "arena" ? [] : [["achievements", "profile.section.achievements"], ["skills", "profile.section.skills"], ["mastering", "profile.section.mastering"]]),
   ];
-  if (!players.some(Boolean)) return null;
-  return <div className="comparison-dossiers profile-page">
+  if (!players.some(Boolean) && !loading.some(Boolean)) return null;
+  return <div className="comparison-dossiers profile-page" aria-busy={loading.some(Boolean) || undefined}>
     <nav className="dossier-nav" aria-label={t("profile.sectionNav")}>{sectionLinks.map(([id, label]) => <a key={id} href={`#compare-${id}`}>{t(label)}</a>)}</nav>
     <div className="dossier-strip">{players.map((_, index) => <span key={index}>{name(index)}</span>)}</div>
     {scope.mode === "arena" && section("arena-overview", "profile.section.overview", <>
@@ -188,19 +184,15 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
       { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
       ...arenaCounters.map(([key, label]) => ({ field: `arena_${arenaMode}_${key}`, label: `arena.counter.${label}` })),
-    ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true), "compare.activityNote")}
+    ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true))}
     {scope.mode !== "arena" && section("growth", "compare.growth", metricPairs(progressionMetrics))}
     {scope.mode !== "arena" && section("progression", "profile.section.progression", progression)}
     {section("comparison", "profile.section.comparison", <>
-      <p className="dossier-note">{t("compare.separateBenchmarks")}</p><div className="dossier-pair dossier-cohorts">{players.map((player, index) => <article className="dossier-cell" key={index}>
+      <div className="dossier-pair dossier-cohorts">{players.map((player, index) => <article className="dossier-cell" key={index}>
         <h3>{name(index)}</h3>{cohorts[index].loading && <p role="status">{t("compare.cohortLoading")}</p>}
         {cohorts[index].error && <p role="alert">{cohorts[index].error}</p>}
-        {cohorts[index].data?.quality === "sufficient" ? <>
-          <p className="dossier-note">{t(cohorts[index].data?.strategy === "population" ? "compare.cohortPopulationFallback" : "compare.cohortMatched")}</p>
-          <p>{t("compare.cohortSize")}: {number(cohorts[index].data?.n)}</p>
-          {cohorts[index].data?.strategy === "population" && <p className="dossier-note">{t("compare.cohortFallbackNote")}</p>}
-          {player && radar(player, index)}
-        </> : !cohorts[index].loading && !cohorts[index].error && <p role="status">{t("compare.cohortUnavailable")}</p>}
+        {cohorts[index].data?.quality === "sufficient" ? player && radar(player, index)
+          : !cohorts[index].loading && !cohorts[index].error && <p role="status">{t("compare.cohortUnavailable")}</p>}
       </article>)}</div>
     </>)}
     {scope.mode !== "arena" && section("risk", "profile.section.risk", <div className="dossier-pair">{players.map((player, index) => <article className="dossier-cell profile-risk" key={index}>
