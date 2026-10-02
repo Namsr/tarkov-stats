@@ -26,124 +26,152 @@ function sandboxDeployScript(source, dir, mock) {
   return script;
 }
 
-test('deploy uses live revision and rolls back build, signal and startup failures', async () => {
+test('deploy consumes verified CI images and preserves recovery and rollback', async () => {
   const source = await readFile('ops/deploy.sh', 'utf8');
   const compose = await readFile('ops/docker-compose.vps.yml', 'utf8');
-  const builderUnit = await readFile('ops/systemd/tarkovstats-deploy-limited-builder.conf', 'utf8');
   assert.doesNotMatch(compose, /NEXT_PUBLIC_TURNSTILE_SITE_KEY/);
-  assert.doesNotMatch(builderUnit, /ExecStopPost/);
-  assert.match(builderUnit, /# Install as \/etc\/systemd\/system\/tarkovstats-deploy\.service\.d\//);
-  for (const scenario of ['current', 'current-sick', 'current-redirect', 'current-no-ip', 'current-unreachable', 'current-sync-busy', 'current-restart-fail', 'checkout-ahead', 'tag-fail', 'sync-busy', 'build-fail', 'signal', 'start-fail', 'health-fail', 'no-builder']) {
+  assert.match(compose, /image: tarkovstats-web:latest\s+pull_policy: never/);
+  const { createHash } = await import('node:crypto');
+  const checksum = createHash('sha256').update('fixture').digest('hex');
+  const scenarios = ['current', 'current-sick', 'current-redirect', 'current-no-ip',
+    'current-unreachable', 'current-sync-busy', 'current-restart-fail', 'checkout-ahead',
+    'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
+    'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
+    'signal', 'start-fail', 'health-fail'];
+  for (const scenario of scenarios) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
     try {
       const mock = `
       git() {
-        echo "git $*" >> calls
+        echo "git $*" >> "$APP/calls"
         case "$*" in
-          'rev-parse HEAD') echo remote;;
-          'rev-parse origin/main') echo remote;;
+          'rev-parse HEAD'|'rev-parse origin/main') echo remote;;
+          'merge --ff-only origin/main') [ "$SCENARIO" != merge-fail ];;
         esac
       }
       docker() {
-        echo "docker $*" >> calls
+        echo "docker $*" >> "$APP/calls"
         case "$*" in
           *'ps -q web') echo web;;
+          'image inspect '*) if [ "$SCENARIO" = revision-mismatch ]; then echo wrong; else echo remote; fi;;
           *inspect*)
             case "$*" in
-              *'.NetworkSettings.Networks'*)
-                if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
+              *'.NetworkSettings.Networks'*) if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
               *'.Image'*) echo old-image;;
-              *) case "$SCENARIO" in current*) echo remote;; *) if [ -f started ]; then echo remote; else echo old; fi;; esac;;
+              *) case "$SCENARIO" in current*) echo remote;; *) if [ -f "$APP/started" ]; then echo remote; else echo old; fi;; esac;;
             esac;;
-          *'build --build-arg'*)
-            if [ "$SCENARIO" = build-fail ]; then return 3; fi
+          'image load '*)
+            if [ "$SCENARIO" = load-fail ]; then return 3; fi
             if [ "$SCENARIO" = signal ]; then kill -TERM $$; fi;;
+          'image tag tarkovstats-web:remote tarkovstats-web:latest') [ "$SCENARIO" != tag-target-fail ];;
           *'up -d --no-build web')
             if [ "$SCENARIO" = start-fail ]; then return 4; fi
-            touch started;;
-          *'restart -t 10 web')
-            if [ "$SCENARIO" = current-restart-fail ]; then return 4; fi;;
-          *'image tag old-image tarkovstats-web-previous')
-            if [ "$SCENARIO" = tag-fail ]; then return 1; fi;;
+            touch "$APP/started";;
+          *'restart -t 10 web') [ "$SCENARIO" != current-restart-fail ];;
+          'image tag old-image tarkovstats-web-previous') [ "$SCENARIO" != tag-fail ];;
         esac
       }
       curl() {
-        echo "curl $*" >> calls
-        case "$SCENARIO" in
-          current-redirect) echo 308;;
-          current-unreachable) return 7;;
-          current-*|health-fail) echo 503;;
-          *) echo 200;;
+        echo "curl $*" >> "$APP/calls"
+        output=
+        while [ "$#" -gt 0 ]; do
+          case "$1" in --output) output=$2; shift;; esac
+          shift
+        done
+        case "$output" in
+          *.sha256)
+            [ "$SCENARIO" != image-missing ] || return 22
+            if [ "$SCENARIO" = invalid-checksum ]; then printf 'invalid  /etc/passwd\\n' > "$output"
+            elif [ "$SCENARIO" = multiline-checksum ]; then printf '${checksum}  web.tar.gz\\n${checksum}  /etc/passwd\\n' > "$output"
+            elif [ "$SCENARIO" = checksum-fail ]; then printf '%064d  web.tar.gz\\n' 0 > "$output"
+            else printf '${checksum}  web.tar.gz\\n' > "$output"; fi;;
+          */web.tar.gz)
+            [ "$SCENARIO" != download-fail ] || return 22
+            printf fixture > "$output";;
+          /dev/null)
+            case "$SCENARIO" in
+              current-redirect) echo 308;; current-unreachable) return 7;;
+              current-*|health-fail) echo 503;; *) echo 200;;
+            esac;;
+          *) return 90;;
         esac
       }
-      logger() { echo "logger $*" >> calls; }
-      flock() { echo "flock $*" >> calls; if [ "$SCENARIO" = sync-busy ] || [ "$SCENARIO" = current-sync-busy ]; then return 1; fi; return 0; }
+      logger() { echo "logger $*" >> "$APP/calls"; }
+      flock() { echo "flock $*" >> "$APP/calls"; [ "$SCENARIO" != sync-busy ] && [ "$SCENARIO" != current-sync-busy ]; }
       sleep() { :; }
       `;
       const script = sandboxDeployScript(source, dir, mock);
-      const file = join(dir,'deploy.sh');
-      await writeFile(file, script.replaceAll('\r\n','\n'));
-      const result = spawnSync(shell,[file],{env:{...process.env, SCENARIO:scenario, BUILDX_BUILDER:scenario==='no-builder'?'':'tarkovstats-limited'},encoding:'utf8',timeout:10_000});
+      const file = join(dir, 'deploy.sh');
+      await writeFile(file, script.replaceAll('\r\n', '\n'));
+      const run = (value = scenario) => spawnSync(shell, [file], {
+        env: { ...process.env, SCENARIO: value }, encoding: 'utf8', timeout: 10_000,
+      });
+      const result = run();
       assert.ifError(result.error);
-      const calls=await readFile(join(dir,'calls'),'utf8');
+      const calls = await readFile(join(dir, 'calls'), 'utf8');
       const current = scenario.startsWith('current');
-      assert.equal(result.status === 0, current || ['checkout-ahead','tag-fail','no-builder'].includes(scenario), `${scenario}: ${result.stderr}\n${calls}`);
-      assert.doesNotMatch(calls, /exec -T web node/);
-      if ((current && scenario !== 'current-no-ip') || ['checkout-ahead','tag-fail','health-fail','no-builder'].includes(scenario)) {
+      const succeeds = current || ['checkout-ahead', 'tag-fail', 'image-missing'].includes(scenario);
+      assert.equal(result.status === 0, succeeds, `${scenario}: ${result.stderr}\n${calls}`);
+      assert.doesNotMatch(calls, /compose .*build --|buildx|docker pull|exec -T web node/);
+      if ((current && scenario !== 'current-no-ip') || ['checkout-ahead', 'tag-fail', 'health-fail'].includes(scenario)) {
         assert.match(calls, /curl .*--noproxy \* .*--max-time 5 .*http:\/\/172\.18\.0\.3:3000\/healthz/);
       }
       if (scenario === 'sync-busy') {
         assert.equal(result.status, 75);
-        assert.doesNotMatch(calls,/build --build-arg/);
-        assert.doesNotMatch(calls,/git reset --hard/);
-        assert.doesNotMatch(calls,/buildx stop/);
-      } else if(current) {
-        assert.doesNotMatch(calls,/build --build-arg/);
-        assert.doesNotMatch(calls,/^flock /m);
-        assert.doesNotMatch(calls,/buildx stop/);
-      } else assert.match(calls,/build --build-arg SOURCE_REVISION=remote/);
-      if (scenario === 'no-builder') {
-        assert.doesNotMatch(calls,/buildx stop/);
-        assert.match(calls,/limited builder not reclaimed/);
-        assert.doesNotMatch(calls,/^git reset --hard/m);
-      } else if (!current && scenario !== 'sync-busy') assert.match(calls,/buildx stop tarkovstats-limited/);
-      if (scenario === 'checkout-ahead') {
-        assert.match(calls,/image tag old-image tarkovstats-web-previous/);
-        assert.match(calls,/image prune -f --filter until=24h/);
-      } else if (scenario === 'tag-fail') {
-        assert.match(calls,/image tag old-image tarkovstats-web-previous/);
-        assert.doesNotMatch(calls,/image prune -f --filter until=24h/);
+        assert.doesNotMatch(calls, /releases\/download|git reset --hard|git merge/);
+      } else if (current) {
+        assert.doesNotMatch(calls, /releases\/download|^flock /m);
+      } else {
+        assert.match(calls, /--proto =https --proto-redir =https .*container-remote\/web.tar.gz.sha256/);
+        if (scenario === 'image-missing') {
+          assert.doesNotMatch(calls, /image load|git reset --hard|git merge|up -d|image prune/);
+          assert.match(calls, /ready image unavailable/);
+          assert.equal(run().status, 0, 'missing images must retry without the failure cooldown');
+          const repeated = await readFile(join(dir, 'calls'), 'utf8');
+          assert.equal((repeated.match(/container-remote\/web.tar.gz.sha256/g) ?? []).length, 2);
+        } else if (['download-fail', 'checksum-fail', 'invalid-checksum', 'multiline-checksum'].includes(scenario)) {
+          assert.doesNotMatch(calls, /image load|git merge|up -d/);
+        } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal'].includes(scenario)) {
+          assert.doesNotMatch(calls, /git merge|up -d/);
+        } else {
+          assert.match(calls, /image tag tarkovstats-web:remote tarkovstats-web:latest/);
+          assert.ok(calls.indexOf('image inspect') < calls.indexOf('git merge'));
+        }
       }
-      else if (scenario !== 'no-builder') assert.doesNotMatch(calls,/image prune -f --filter until=24h/);
-      if(!current && !['checkout-ahead','tag-fail','sync-busy','no-builder'].includes(scenario)) {
-        assert.match(calls,/git reset --hard remote/);
-        assert.match(calls,/image tag old-image tarkovstats-web/);
-      }
-      if(scenario==='signal') assert.equal(result.status,143, result.stderr + '\n' + calls);
-      if (scenario === 'build-fail') {
+      if (['checkout-ahead', 'tag-fail'].includes(scenario)) {
+        assert.match(calls, /image tag old-image tarkovstats-web-previous/);
+        if (scenario === 'tag-fail') assert.doesNotMatch(calls, /^docker image prune/m);
+        else assert.match(calls, /image prune -f --filter until=24h/);
+      } else assert.doesNotMatch(calls, /image prune/);
+      if (!succeeds && scenario !== 'sync-busy') {
+        assert.match(calls, /git reset --hard remote/);
+        assert.match(calls, /image tag old-image tarkovstats-web/);
         await writeFile(join(dir, 'calls'), '');
-        const retry = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario, BUILDX_BUILDER: 'tarkovstats-limited' }, encoding: 'utf8', timeout: 10_000 });
-        assert.equal(retry.status, 0);
-        assert.doesNotMatch(await readFile(join(dir, 'calls'), 'utf8'), /build --build-arg/);
+        assert.equal(run().status, 0, 'failed image/deploy must enter the retry cooldown');
+        assert.doesNotMatch(await readFile(join(dir, 'calls'), 'utf8'), /releases\/download|git merge/);
+      }
+      if (scenario === 'signal') assert.equal(result.status, 143);
+      if (!current && scenario !== 'sync-busy') {
+        const { readdir } = await import('node:fs/promises');
+        assert.deepEqual((await readdir(join(dir, 'state'))).filter((name) => name.startsWith('image.')), [], 'download staging must be cleaned');
       }
       if (current && scenario !== 'current') {
         for (let probe = 2; probe <= 6; probe++) {
-          const retry = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario, BUILDX_BUILDER: 'tarkovstats-limited' }, encoding: 'utf8', timeout: 10_000 });
+          const retry = run();
           assert.ifError(retry.error);
           const expected = scenario === 'current-sync-busy' && probe >= 3 ? 75
-            : scenario === 'current-restart-fail' && probe === 3 ? 4 : 0;
+            : scenario === 'current-restart-fail' && probe === 3 ? 1 : 0;
           assert.equal(retry.status, expected, `${scenario} probe ${probe}: ${retry.stderr}`);
         }
         const recoveryCalls = await readFile(join(dir, 'calls'), 'utf8');
-        assert.doesNotMatch(recoveryCalls, /build --build-arg|buildx stop|git reset --hard/);
+        assert.doesNotMatch(recoveryCalls, /releases\/download|git reset --hard/);
         assert.equal((recoveryCalls.match(/restart -t 10 web/g) ?? []).length, scenario === 'current-sync-busy' ? 0 : 1);
         if (scenario !== 'current-sync-busy') assert.match(recoveryCalls, /restart cooldown/);
-        const recovered = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: 'current' }, encoding: 'utf8', timeout: 10_000 });
-        assert.equal(recovered.status, 0, recovered.stderr);
+        assert.equal(run('current').status, 0);
         const { access } = await import('node:fs/promises');
         await assert.rejects(access(join(dir, 'state', 'unhealthy')), { code: 'ENOENT' });
       }
-    } finally { await rm(dir,{recursive:true,force:true}); }
+    } finally { await rm(dir, { recursive: true, force: true }); }
   }
 });
 

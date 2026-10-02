@@ -38,7 +38,7 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 
-const { getStore } = await import("../lib/db.ts");
+const { getStore, AVG_COLS } = await import("../lib/db.ts");
 const { getProgressionStore } = await import("../lib/progression-db.ts");
 const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
 const {
@@ -64,9 +64,23 @@ for (const name of [
   "idx_players_average_longest_win_streak",
   "idx_players_cohort",
   "idx_mode_players_cohort",
+  "idx_players_average_range",
+  "idx_mode_players_average_range",
 ]) {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(name));
 }
+test("range averages read every metric from covering indexes in both persistent modes", () => {
+  for (const table of ["players", "pve_players"]) {
+    for (const metric of AVG_COLS) {
+      const plans = db.prepare(`EXPLAIN QUERY PLAN SELECT AVG(${metric}) FROM ${table}
+        WHERE hours >= ? AND hours <= ? AND profile_updated_at >= ?
+          AND ${metric} IS NOT NULL ${["pmc_kd_ratio", "killed_pmc"].includes(metric) ? "AND pvp_stats_known = 1" : ""}
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = ${table}.aid)`)
+        .all(0, 1000, 0).map((row) => String(row.detail));
+      assert.ok(plans.some((plan) => /USING COVERING INDEX/.test(plan)), `${table}.${metric}: ${plans}`);
+    }
+  }
+});
 const insert = db.prepare(`INSERT INTO players
   (aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
    kills_per_raid, pmc_survival_rate, longest_win_streak, level, fetched_at)
