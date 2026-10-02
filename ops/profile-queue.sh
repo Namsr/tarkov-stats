@@ -6,7 +6,9 @@ umask 077
 cd /opt/tarkovstats-auto || exit 1
 deadline=$(( $(date +%s) + 3300 ))
 dc() { /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e "PROFILE_QUEUE_DEADLINE_MS=$((deadline * 1000))" "$@"; }
-node='node --experimental-strip-types --experimental-sqlite'
+# Apply priority inside docker exec; nicing the host Docker CLI does not carry
+# into Node. HTTP keeps nice=0; the backup remains lowest at nice=19.
+node='nice -n 10 node --experimental-strip-types --experimental-sqlite'
 log=/var/log/tarkovstats-warmup-batch.json
 # stderr is captured out of band: the state parser below reads the last line of
 # $log as JSON, and a warning landing between that line and the end of the run

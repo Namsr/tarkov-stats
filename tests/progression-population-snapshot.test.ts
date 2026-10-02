@@ -109,7 +109,7 @@ test("VPS delays and deprioritizes the isolated population worker", async () => 
   assert.match(worker, /PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS/);
   assert.match(worker, /: 300_000/);
   assert.match(worker, /if \(running\) return \{ skipped: true \}/);
-  assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("interval"\)[\s\S]*\}, intervalMs\)/);
+  assert.match(worker, /setInterval\(\(\) => \{[\s\S]*materializeAchievementBaselines\("retry-check"\)[\s\S]*\}, retryIntervalMs\)/);
   assert.match(worker, /setTimeout\(resolve, initialDelayMs\)/);
   assert.match(worker, /await materializeProgressionPopulation\("startup"\)/);
 });

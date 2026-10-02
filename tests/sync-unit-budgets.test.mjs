@@ -265,6 +265,14 @@ test("every timer-driven sync unit leaves its collector room to stop inside Time
   assert.deepEqual(problems, [], problems.join("\n"));
 });
 
+test("all standalone profile collectors lower Node priority inside the container", async () => {
+  const units = (await readSyncUnits()).filter(({ name }) => BUDGETED_UNITS.includes(name));
+  assert.equal(units.length, 4);
+  for (const { name, execStart } of units) {
+    assert.match(execStart, /exec -T .* web nice -n 10 node /, name);
+  }
+});
+
 test("a sync unit does not claim more run budget than the hourly queue gives the same mode", async () => {
   // Enabling a timer must not put a mode on a larger budget than the one that
   // already runs it every hour in production. A unit may claim a smaller one:

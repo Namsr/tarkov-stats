@@ -6,7 +6,9 @@ import {
 } from "../lib/seasonal/progression-db.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 import {
+  ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   materializeAchievementBaseline,
+  readPublishedAchievementBaseline,
 } from "../lib/achievement-baseline-publication.ts";
 
 const intervalMs = 21_600_000;
@@ -19,23 +21,42 @@ const databasePath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESS
 const playersDatabasePath = process.env.SQLITE_PATH || "/data/players.db";
 let running = false;
 
+export function materializeDueAchievementBaselines(db, { now = Date.now(), publish = materializeAchievementBaseline } = {}) {
+  db.exec(ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA);
+  const published = [];
+  const errors = [];
+  for (const mode of ["regular", "pve"]) {
+    try {
+      const current = readPublishedAchievementBaseline(db, mode);
+      const age = current ? now - current.generatedAt : Infinity;
+      if (age >= 0 && age < intervalMs) continue;
+      published.push(publish(db, mode, now));
+    } catch (error) {
+      errors.push({ mode, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { published, errors };
+}
+
 function materializeAchievementBaselines(reason) {
   const startedAt = Date.now();
-  const db = new DatabaseSync(playersDatabasePath);
+  let db;
   try {
-    const published = [
-      materializeAchievementBaseline(db, "regular"),
-      materializeAchievementBaseline(db, "pve"),
-    ].map(({ mode, generation, generatedAt, total, achievements }) => ({
+    db = new DatabaseSync(playersDatabasePath);
+    db.exec("PRAGMA busy_timeout = 5000");
+    const result = materializeDueAchievementBaselines(db);
+    const published = result.published.map(({ mode, generation, generatedAt, total, achievements }) => ({
       mode, generation, generatedAt, total, achievements: achievements.length,
     }));
-    console.log(`achievement baselines materialized (${reason}) in ${Date.now() - startedAt}ms`, published);
-    return { skipped: false, published };
+    if (reason === "startup" || published.length || result.errors.length) {
+      console.log(`achievement baselines checked (${reason}) in ${Date.now() - startedAt}ms`, { published, errors: result.errors });
+    }
+    return { skipped: published.length === 0 && result.errors.length === 0, ...result };
   } catch (error) {
     console.warn(`achievement baseline materialization failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
     return { skipped: false, error };
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -91,8 +112,8 @@ export async function materializeProgressionPopulation(reason = "manual") {
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/scripts/materialize-progression-population.mjs")) {
   void materializeAchievementBaselines("startup");
   setInterval(() => {
-    void materializeAchievementBaselines("interval");
-  }, intervalMs);
+    void materializeAchievementBaselines("retry-check");
+  }, retryIntervalMs);
   if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
   await materializeProgressionPopulation("startup");
   // Failed publications retain their old generation and remain due on each

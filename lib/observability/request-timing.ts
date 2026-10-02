@@ -181,9 +181,11 @@ export function createRequestTiming(options: Options = {}) {
         storeWriteMs: input.storeWriteMs,
         averagesMs: input.averagesMs,
       });
-      if (!sampled) return;
+      const slow = totalMs >= 1_000;
+      if (!sampled && !slow) return;
       const event = {
         event: "request_timing_v1",
+        ...(slow ? { slow: true, at: Date.now(), pid: process.pid } : {}),
         entry: "api",
         operation: input.operation,
         ...(input.mode === undefined ? {} : { mode: input.mode }),

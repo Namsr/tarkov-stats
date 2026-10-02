@@ -42,7 +42,7 @@ test("PvE systemd units use offset Moscow schedules and the shared writer lock",
     assert.match(service, /WorkingDirectory=\/opt\/tarkovstats-auto/);
     // The profile unit carries its run budget as `exec -e` flags, which sit
     // between `exec -T` and the service name; the index unit passes none.
-    assert.match(service, /docker compose -p tarkovstats -f docker-compose\.vps\.yml exec -T (?:-e \S+ )*web node/);
+    assert.match(service, /docker compose -p tarkovstats -f docker-compose\.vps\.yml exec -T (?:-e \S+ )*web (?:nice -n 10 )?node/);
     assert.match(service, /ExecCondition=\/bin\/sh -c '! \/usr\/bin\/docker container inspect tarkovstats-public-profile-importer/);
     assert.match(service, /\/run\/tarkovstats-data-sync\.lock/);
   }

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { superviseWorker } from "./supervise-worker.mjs";
 
 let stopping = false;
-const server = spawn(process.execPath, ["--experimental-sqlite", "server.js"], {
+const server = spawn(process.execPath, ["--experimental-sqlite", "--import", "./scripts/web-runtime-health.mjs", "server.js"], {
   env: process.env, stdio: "inherit",
 });
 const progressionMaterializer = superviseWorker("progression", [
