@@ -1,6 +1,9 @@
 .comparison-page { --comparison-toolbar-top: 82px; width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
-.comparison-toolbar.leaderboard-sticky { top: var(--comparison-toolbar-top); gap: 12px; margin-top: 28px; padding-block: 10px; background: var(--background); }
+.comparison-toolbar.leaderboard-sticky { top: var(--comparison-toolbar-top); gap: 6px; margin-top: 28px; padding-block: 3px; }
 .comparison-toolbar .segmented-control__options { width: 100%; }
+.comparison-toolbar .leaderboard-sort-pills { border: 0; padding: 0; background: transparent; backdrop-filter: none; }
+.comparison-toolbar .leaderboard-sort-pills input + span { min-height: 36px; padding: 6px 8px; border: 1px solid var(--card-border); background: color-mix(in srgb, var(--background) 72%, transparent); backdrop-filter: blur(8px); }
+.comparison-toolbar .leaderboard-sort-pills input:checked + span { background: color-mix(in srgb, var(--foreground) 82%, transparent); color: var(--background); border-color: transparent; }
 .comparison-arena-scopes .leaderboard-sort-pills { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .comparison-favorite-picker { margin-top: 16px; }
 .comparison-favorite-picker label > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
@@ -71,7 +74,7 @@
 @media (max-width: 760px) {
   .comparison-page { --comparison-toolbar-top: 70px; width: calc(100% - 32px); }
   .comparison-arena-scopes .leaderboard-sort-pills { grid-template-columns: repeat(3, minmax(0, 1fr)); border-radius: 24px; }
-  .comparison-toolbar .leaderboard-sort-pills input + span { padding-inline: 6px; font-size: .66rem; }
+  .comparison-toolbar .leaderboard-sort-pills input + span { min-height: 44px; padding-inline: 6px; font-size: .66rem; }
   .comparison-identities { gap: 12px; }
   .comparison-identity { padding: 14px; }
   .comparison-identity__person { flex-direction: column; align-items: flex-start; gap: 12px; }

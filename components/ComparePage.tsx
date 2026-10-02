@@ -517,6 +517,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
       <div ref={toolbarRef} className="comparison-toolbar leaderboard-sticky">
         <SegmentedRadio
           optionsClassName="leaderboard-sort-pills"
+          hideLegend
           name="compare-mode"
           legend={t("mode.selectorAria")}
           value={scope?.mode ?? visibleMode}
@@ -531,6 +532,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
         {scope?.mode === "arena" && <SegmentedRadio
           className="comparison-arena-scopes"
           optionsClassName="leaderboard-sort-pills"
+          hideLegend
           name="compare-arena-mode"
           legend={t("arena.modePicker.label")}
           value={scope.arenaMode}
