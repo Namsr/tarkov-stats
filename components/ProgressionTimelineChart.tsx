@@ -75,7 +75,7 @@ export default function ProgressionTimelineChart({
   const segments = profileProgressionSegments(source, metric, allHistory);
   const player = segments.flat();
   const current = profileProgressionSegments(source, metric, false).flat();
-  const averageSource = variant === "compare" ? [] : series?.overall.length ? series.overall : metric === "level" && fallback?.key === fallbackKey ? fallback.points : [];
+  const averageSource = series?.overall.length ? series.overall : metric === "level" && fallback?.key === fallbackKey ? fallback.points : [];
   const average = averageSource.filter((point) => Number.isFinite(point.pmcRaids) && Number.isFinite(point.value)).map((point) => ({ ...point, value: metric === "level" ? point.level ?? levelAtExperience(point.value, LEVEL_BANDS) : point.value }));
   const comparisonSource = (comparison?.timeline.metrics[key]?.player ?? []).map((point) => metric === "level" && point.level == null
     ? { ...point, level: Number.isFinite(point.value) ? levelAtExperience(point.value, LEVEL_BANDS) : null } : point);
@@ -144,7 +144,7 @@ export default function ProgressionTimelineChart({
     </div>
     <div className="profile-progress-topline">
       <div className="profile-progress-summary">{last ? <><div><strong>{format(last.value)}</strong>{change != null && <span className={change < 0 ? "is-negative" : undefined}>{change > 0 ? "+" : change < 0 ? "−" : ""}{n(Math.abs(change), metric === "level" ? 0 : metric === "kd" ? 2 : 1)}{metric === "survival" ? ` ${t("home.percentPoints")}` : ""}</span>}</div><p>{date(profileProgressionTime(player[0] ?? last))} – {date(profileProgressionTime(last))}{variant === "profile" && allHistory && hasPrevious ? ` · ${t("profile.currentSeries")}: ${date(first ? profileProgressionTime(first) : null)}` : ""}</p></> : null}</div>
-      <div className="profile-chart-legend"><span><i aria-hidden="true" />{playerLabel}</span>{variant === "profile" && <button type="button" className="profile-legend-toggle" aria-pressed={overall && axis === "raids"} disabled={!average.length} onClick={() => { if (axis === "days") { setAxis("raids"); setOverall(true); } else setOverall((value) => !value); clear(); }}><i className="is-overall" aria-hidden="true" />{overallLabel}</button>}{variant === "compare" ? <span><i className="is-other" aria-hidden="true" />{selectedLabel}</span> : comparison && <span><i className="is-other" aria-hidden="true" />{comparison.nickname}</span>}</div>
+      <div className="profile-chart-legend"><span><i aria-hidden="true" />{playerLabel}</span><button type="button" className="profile-legend-toggle" aria-pressed={overall && axis === "raids"} disabled={!average.length} onClick={() => { if (axis === "days") { setAxis("raids"); setOverall(true); } else setOverall((value) => !value); clear(); }}><i className="is-overall" aria-hidden="true" />{overallLabel}</button>{variant === "compare" ? <span><i className="is-other" aria-hidden="true" />{selectedLabel}</span> : comparison && <span><i className="is-other" aria-hidden="true" />{comparison.nickname}</span>}</div>
     </div>
     <div ref={ref} className="profile-line-chart" style={{ height }}>
       {all.length ? <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={title ?? t("progression.timeline.title")}
@@ -178,5 +178,6 @@ export default function ProgressionTimelineChart({
       </div>
       {!average.length && <p className="profile-chart-notice">{t("profile.averageUnavailable")}</p>}
     </>}
+    {variant === "compare" && !average.length && <p className="profile-chart-notice" role="status">{t("profile.averageUnavailable")}</p>}
   </section>;
 }

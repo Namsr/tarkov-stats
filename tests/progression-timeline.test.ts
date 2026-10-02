@@ -391,7 +391,7 @@ test("timeline response validation preserves identity and distinguishes player h
   assert.deepEqual(populationOnly.metrics.xp.player, []);
 });
 
-test("compare progression uses two isolated all-history player series without population controls", async () => {
+test("compare progression keeps two isolated player histories and exposes the published population line", async () => {
   const [chart, section, styles, panel] = await Promise.all([
     readFile("components/ProgressionTimelineChart.tsx", "utf8"),
     readFile("components/CompareProgressionSection.tsx", "utf8"),
@@ -405,7 +405,11 @@ test("compare progression uses two isolated all-history player series without po
   assert.match(chart, /const allHistory = variant === "compare" \|\| historySelection/);
   assert.match(chart, /const axis = variant === "compare" \? "raids" : selectedAxis/);
   assert.match(chart, /if \(variant === "compare" \|\| !needsFallback\) return/);
-  assert.match(chart, /const averageSource = variant === "compare" \? \[\]/);
+  assert.match(chart, /const averageSource = series\?\.overall\.length \? series\.overall/);
+  assert.doesNotMatch(chart, /variant === "compare" \? \[\]/);
+  assert.doesNotMatch(chart, /variant === "profile" && <button[^>]*profile-legend-toggle/);
+  assert.match(chart, /className="profile-legend-toggle"[\s\S]*disabled=\{!average\.length\}/);
+  assert.match(chart, /variant === "compare" && !average\.length[\s\S]*profile\.averageUnavailable/);
   assert.match(chart, /profileProgressionSegments\(source, metric, allHistory\)/);
   assert.match(chart, /profileProgressionSegments\(comparisonSource, metric, allHistory\)/);
   assert.match(chart, /const playerLabel = variant === "compare" && primaryLabel\?\.trim\(\)/);
