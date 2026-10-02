@@ -1,8 +1,10 @@
 # Боевой деплой на VPS: web (Next.js) за Caddy (TLS + reverse proxy).
 # Секреты НЕ инлайнятся — берутся из .env рядом с этим файлом (env_file).
-# Запуск: docker compose -f docker-compose.vps.yml up -d --build
+# Деплой загружает готовый образ из GitHub Actions; build оставлен для ручной сборки.
 services:
   web:
+    image: tarkovstats-web:latest
+    pull_policy: never
     build:
       context: .
     env_file:

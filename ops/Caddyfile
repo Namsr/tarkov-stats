@@ -23,6 +23,10 @@
 	request_body {
 		max_size 256KB
 	}
+	# These files are never public application routes. Reject scans before Next.
+	# Match path segments, including decoded escapes, without blocking .well-known.
+	@privateFiles path_regexp privateFiles (?i)(^|/)(\.env([./_-]|$)|\.(git|svn|hg|aws|ssh|terraform)(/|$)|wp-config\.php($|[./])|terraform\.tfstate($|[./])|docker-compose[^/]*\.ya?ml$)
+	respond @privateFiles 404
 	reverse_proxy web:3000 {
 		# Shared across both sites because they use the same upstream address.
 		# Reject excess requests with 503 instead of retaining an unbounded queue.

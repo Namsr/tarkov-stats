@@ -129,6 +129,23 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.equal(normal.headers.server, undefined);
   assert.match(normal.headers['strict-transport-security'], /max-age=31536000/);
   t.diagnostic('ordinary request and client IP handling passed');
+  const beforeScans = received;
+  const privatePaths = ['/.env', '/.env.production', '/config/.env.local', '/.git/HEAD',
+    '/%2egit/config', '/.GIT/config', '/.aws/credentials', '/.ssh/id_rsa',
+    '/.terraform/terraform.tfstate', '/terraform.tfstate.backup', '/wp-config.php',
+    '/docker-compose.yml', '/docker-compose.prod.yaml'];
+  for (const host of ['tarkovstats.ru', 'tarkovstats.online']) {
+    for (const path of privatePaths) {
+      assert.equal((await request(path, host)).status, 404, `${host}${path}`);
+    }
+  }
+  assert.equal(received, beforeScans, 'scans must never consume backend capacity');
+  for (const path of ['/healthz', '/api/player/search?nickname=test', '/player/regular/1',
+    '/compare', '/.well-known/security.txt', '/.well-known/acme-challenge/fixture',
+    '/_next/static/chunk.js', '/config.json', '/environment', '/.github-logo.svg']) {
+    assert.equal((await request(path)).status, 200, `public route ${path}`);
+  }
+  t.diagnostic('26 private-file scans bypassed the backend; public paths still pass');
   assert.equal((await request('/reset')).status, 502, 'a reset upstream connection must fail only that request');
   const afterReset = await Promise.all([
     request('/leaderboard'),

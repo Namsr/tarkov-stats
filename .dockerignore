@@ -13,6 +13,16 @@ Dockerfile
 .dockerignore
 docker-compose.yml
 .codex-local
+.agents
+.claude
+.codex
+.cursor
+.windsurf
+AGENTS*.md
+CLAUDE.md
+GEMINI.md
+*.instructions.md
+.github
 backups
 data
 *.bak
