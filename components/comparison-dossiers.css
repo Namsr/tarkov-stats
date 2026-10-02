@@ -25,7 +25,7 @@
 .dossier-nav { display: flex; gap: 12px 22px; flex-wrap: wrap; padding: 16px 0; border-block: 1px solid var(--card-border); }
 .dossier-nav a { color: var(--muted); font-size: 13px; min-height: 28px; }
 .dossier-nav a:hover { color: var(--foreground); }
-.dossier-strip { position: sticky; z-index: 8; top: calc(var(--comparison-toolbar-top) + var(--comparison-toolbar-height, 180px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--card-border); }
+.dossier-strip { position: sticky; z-index: 8; top: calc(var(--comparison-toolbar-top) + var(--comparison-toolbar-height, 180px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 14px 0; }
 .dossier-strip span { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 550; }
 .dossier-strip span:last-child { text-align: right; }
 .dossier-section { margin-top: 48px; scroll-margin-top: calc(var(--comparison-toolbar-top) + var(--comparison-toolbar-height, 180px) + 84px); }
