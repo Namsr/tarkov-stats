@@ -143,6 +143,7 @@ if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir
 fi
 # Reject arbitrary checksum filenames rather than letting them read host files.
 checksum=$(cat "$download_dir/web.tar.gz.sha256")
+[ "$(printf '%s\n' "$checksum" | wc -l)" -eq 1 ]
 printf '%s\n' "$checksum" | LC_ALL=C grep -Eq '^[a-f0-9]{64}  web\.tar\.gz$'
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
   --connect-timeout 10 --max-time 300 --output "$download_dir/web.tar.gz" \

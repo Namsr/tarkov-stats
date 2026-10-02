@@ -36,7 +36,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   const scenarios = ['current', 'current-sick', 'current-redirect', 'current-no-ip',
     'current-unreachable', 'current-sync-busy', 'current-restart-fail', 'checkout-ahead',
     'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
-    'invalid-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
+    'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
     'signal', 'start-fail', 'health-fail'];
   for (const scenario of scenarios) {
     const dir = await mkdtemp(join(tmpdir(), 'deploy-behavior-'));
@@ -82,6 +82,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           *.sha256)
             [ "$SCENARIO" != image-missing ] || return 22
             if [ "$SCENARIO" = invalid-checksum ]; then printf 'invalid  /etc/passwd\\n' > "$output"
+            elif [ "$SCENARIO" = multiline-checksum ]; then printf '${checksum}  web.tar.gz\\n${checksum}  /etc/passwd\\n' > "$output"
             elif [ "$SCENARIO" = checksum-fail ]; then printf '%064d  web.tar.gz\\n' 0 > "$output"
             else printf '${checksum}  web.tar.gz\\n' > "$output"; fi;;
           */web.tar.gz)
@@ -128,7 +129,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
           assert.equal(run().status, 0, 'missing images must retry without the failure cooldown');
           const repeated = await readFile(join(dir, 'calls'), 'utf8');
           assert.equal((repeated.match(/container-remote\/web.tar.gz.sha256/g) ?? []).length, 2);
-        } else if (['download-fail', 'checksum-fail', 'invalid-checksum'].includes(scenario)) {
+        } else if (['download-fail', 'checksum-fail', 'invalid-checksum', 'multiline-checksum'].includes(scenario)) {
           assert.doesNotMatch(calls, /image load|git merge|up -d/);
         } else if (['load-fail', 'revision-mismatch', 'tag-target-fail', 'signal'].includes(scenario)) {
           assert.doesNotMatch(calls, /git merge|up -d/);
