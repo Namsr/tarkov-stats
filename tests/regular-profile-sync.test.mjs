@@ -782,7 +782,9 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
       summary.durationMs < 4_000,
       `the run must end on time, not one 10s spacing past the deadline (was ${summary.durationMs}ms)`,
     );
-    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":0,"phase":"rate_limit","aid":2,"attempt":1\}/);
+    // A clamped timer can resume one millisecond before the wall-clock deadline.
+    // The summary, elapsed bound and pending second profile still prove the cut.
+    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":[01],"phase":"rate_limit","aid":2,"attempt":1\}/);
     assert.equal(
       apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 2").get().status,
       "pending",

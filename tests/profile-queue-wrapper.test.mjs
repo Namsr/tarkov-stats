@@ -20,6 +20,10 @@ test('queue retries only failures, preserves error status and runs one warmup af
       const path = dir.replaceAll('\\', '/');
       const mock = `dc() {
         case "$*" in
+          *" web nice -n 10 node "*) ;;
+          *) echo 'collector priority was not applied inside docker exec' >&2; return 89;;
+        esac
+        case "$*" in
           *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}'
             if [ "$SCENARIO" = warn ]; then echo 'unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint' >&2; fi
             if [ "$SCENARIO" = partial ]; then printf '%s' 'unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint, progress restarts from the last saved mode' >&2; fi;;

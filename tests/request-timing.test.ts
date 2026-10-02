@@ -105,6 +105,27 @@ test("unsampled requests emit no timing log", () => {
   assert.deepEqual(output, []);
 });
 
+test("slow requests bypass sampling once, retaining SQL phases and excluding private context", () => {
+  const output: string[] = [];
+  const timing = createRequestTiming({ sampleRate: 0, now: () => 0, logger: (event) => output.push(event) });
+  timing.setRequestContext({ aid: 123, nickname: "private-name", host: "private-host" });
+  timing.finish({ operation: "average", outcome: "success", status: 200, totalMs: 1_000, storeReadMs: 900 });
+  timing.finish({ operation: "average", outcome: "success", status: 200, totalMs: 2_000 });
+  assert.equal(output.length, 1);
+  const event = JSON.parse(output[0]);
+  assert.equal(event.slow, true);
+  assert.equal(event.pid, process.pid);
+  assert.ok(Number.isFinite(event.at));
+  assert.equal(event.total_ms, 1_000);
+  assert.equal(event.store_read_ms, 900);
+  assert.equal(output[0].includes("private"), false);
+  assert.equal("aid" in event, false);
+  const fast: string[] = [];
+  createRequestTiming({ sampleRate: 0, now: () => 0, logger: (event) => fast.push(event) })
+    .finish({ operation: "average", outcome: "success", status: 200, totalMs: 999 });
+  assert.deepEqual(fast, []);
+});
+
 test("average compute timing forwards averages_ms and stays absent otherwise", async () => {
   const output: string[] = [];
   const timing = createRequestTiming({
