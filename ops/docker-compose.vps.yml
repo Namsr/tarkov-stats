@@ -28,10 +28,14 @@ services:
     volumes:
       - players_data:/data
     logging:
-      driver: json-file
+      # Host journal survives container recreation; its size is capped in
+      # ops/systemd/journald-tarkovstats.conf. No environment metadata is added.
+      driver: journald
       options:
-        max-size: "10m"
-        max-file: "3"
+        tag: tarkovstats-web
+        labels: org.opencontainers.image.revision
+        mode: non-blocking
+        max-buffer-size: "1m"
 
   caddy:
     image: caddy:2-alpine
@@ -63,10 +67,11 @@ services:
     depends_on:
       - web
     logging:
-      driver: json-file
+      driver: journald
       options:
-        max-size: "10m"
-        max-file: "3"
+        tag: tarkovstats-caddy
+        mode: non-blocking
+        max-buffer-size: "1m"
 
 volumes:
   players_data:
