@@ -807,15 +807,18 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 
 .leaderboard-sticky { position: sticky; top: 82px; z-index: 20; display: grid; gap: 8px; margin-top: 14px; }
 .leaderboard-sort-pills { display: flex; flex-wrap: wrap; gap: 6px; border: 1px solid var(--card-border); border-radius: 999px; background: color-mix(in srgb, var(--background) 94%, transparent); padding: 5px; backdrop-filter: blur(10px); }
-.leaderboard-sort-pills .leaderboard-sort-pill { flex: 1 1 0; min-width: 0; }
+.leaderboard-sort-pills .leaderboard-sort-pill,
+.leaderboard-sort-pills > label { flex: 1 1 0; min-width: 0; }
 .leaderboard-sort-pills .leaderboard-jump-player { flex: 1 1 auto; white-space: nowrap; }
 button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; margin-right: 8px; border: 1px solid var(--card-border); border-radius: 50%; background: var(--input-bg); padding: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 1rem; font-weight: 900; line-height: 1; }
 .leaderboard-sort-pills button,
+.leaderboard-sort-pills input + span,
 .leaderboard-mobile-lists button { min-height: 44px; border-radius: 999px; color: var(--muted-strong); padding: 8px 12px; font-size: .72rem; font-weight: 800; letter-spacing: .04em; transition: background-color 160ms ease, color 160ms ease, transform 120ms ease; }
 .leaderboard-sort-pills button:disabled { cursor: not-allowed; opacity: .45; }
 .leaderboard-jump-toggle__arrow { font-size: 1.35rem; font-weight: 900; line-height: 1; -webkit-text-stroke: .8px currentColor; transition: opacity 160ms ease; }
 .leaderboard-jump-toggle__arrow.is-dim { opacity: .4; }
-.leaderboard-sort-pills button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
+.leaderboard-sort-pills button[aria-pressed="true"],
+.leaderboard-sort-pills input:checked + span { background: var(--foreground); color: var(--background); }
 .leaderboard-sort-pills button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .leaderboard-sort-pills__break { display: none; }
 .leaderboard-sort-pills__arrow { font-size: 1rem; font-weight: 900; line-height: 1; }

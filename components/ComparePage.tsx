@@ -333,6 +333,17 @@ function useComparisonCohort(scope: ComparisonScope | null, scopeKey: string, ai
 export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: string | null }) {
   const { t, lang } = useI18n();
   const { favorites, authStatus, loading: favoritesLoading } = useFavorites();
+  const frameRef = useRef<HTMLElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const updateHeight = () => frameRef.current?.style.setProperty("--comparison-toolbar-height", `${toolbar.getBoundingClientRect().height}px`);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
   const router = useRouter();
   const searchParams = useSearchParams();
   const resolution = useMemo(
@@ -496,15 +507,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   const bothPlayersSelected = primaryAid !== null && secondaryAid !== null;
 
   return (
-    <main className="page-frame comparison-page">
+    <main ref={frameRef} className="page-frame comparison-page">
       <header>
         <p className="page-kicker">{t("compare.pageKicker")}</p>
         <h1 className="page-title">{t("compare.pageTitle")}</h1>
         <p className="mt-4 max-w-3xl text-[var(--muted)]">{t("compare.pageDescription")}</p>
       </header>
 
-      <div className="mt-7 flex flex-wrap items-end justify-between gap-4">
+      <div ref={toolbarRef} className="comparison-toolbar leaderboard-sticky">
         <SegmentedRadio
+          optionsClassName="leaderboard-sort-pills"
           name="compare-mode"
           legend={t("mode.selectorAria")}
           value={scope?.mode ?? visibleMode}
@@ -516,16 +528,16 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
             {t("compare.cycle", { cycle: scope.cycleId })}
           </span>
         )}
+        {scope?.mode === "arena" && <SegmentedRadio
+          className="comparison-arena-scopes"
+          optionsClassName="leaderboard-sort-pills"
+          name="compare-arena-mode"
+          legend={t("arena.modePicker.label")}
+          value={scope.arenaMode}
+          options={(["overall", ...ARENA_MODE_KEYS] as const).map(mode => ({ value: mode, label: t(mode === "overall" ? "compare.arenaOverall" : "arena.mode." + mode) }))}
+          onChange={changeArenaMode}
+        />}
       </div>
-
-      {scope?.mode === "arena" && <SegmentedRadio
-        className="comparison-arena-scopes mt-5"
-        name="compare-arena-mode"
-        legend={t("arena.modePicker.label")}
-        value={scope.arenaMode}
-        options={(["overall", ...ARENA_MODE_KEYS] as const).map(mode => ({ value: mode, label: t(mode === "overall" ? "compare.arenaOverall" : "arena.mode." + mode) }))}
-        onChange={changeArenaMode}
-      />}
 
       {!scope && (
         <section className="surface mt-6 p-6" role="status" aria-live="polite">

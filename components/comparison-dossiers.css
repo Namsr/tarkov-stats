@@ -1,6 +1,7 @@
-.comparison-page { width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
-.comparison-arena-scopes .segmented-control__options { display: flex; flex-wrap: wrap; border-radius: 14px; gap: 3px; }
-.comparison-arena-scopes .segmented-control__options label { flex: 0 1 auto; }
+.comparison-page { --comparison-toolbar-top: 82px; width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
+.comparison-toolbar.leaderboard-sticky { top: var(--comparison-toolbar-top); gap: 12px; margin-top: 28px; padding-block: 10px; background: var(--background); }
+.comparison-toolbar .segmented-control__options { width: 100%; }
+.comparison-arena-scopes .leaderboard-sort-pills { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .comparison-favorite-picker { margin-top: 16px; }
 .comparison-favorite-picker label > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .comparison-favorite-picker select { width: 100%; }
@@ -21,10 +22,10 @@
 .dossier-nav { display: flex; gap: 12px 22px; flex-wrap: wrap; padding: 16px 0; border-block: 1px solid var(--card-border); }
 .dossier-nav a { color: var(--muted); font-size: 13px; min-height: 28px; }
 .dossier-nav a:hover { color: var(--foreground); }
-.dossier-strip { position: sticky; z-index: 8; top: 72px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 14px 0; background: var(--background); border-bottom: 1px solid var(--card-border); }
+.dossier-strip { position: sticky; z-index: 8; top: calc(var(--comparison-toolbar-top) + var(--comparison-toolbar-height, 180px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 14px 0; background: var(--background); border-bottom: 1px solid var(--card-border); }
 .dossier-strip span { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 550; }
 .dossier-strip span:last-child { text-align: right; }
-.dossier-section { margin-top: 48px; scroll-margin-top: 150px; }
+.dossier-section { margin-top: 48px; scroll-margin-top: calc(var(--comparison-toolbar-top) + var(--comparison-toolbar-height, 180px) + 84px); }
 .dossier-section > .section-heading { margin-bottom: 20px; }
 .dossier-note { font-size: 13px; line-height: 1.6; color: var(--muted); margin: 8px 0 18px; }
 .dossier-metrics { display: grid; gap: 12px; }
@@ -68,7 +69,9 @@
 .dossier-timeline-details dt { font-size: 13px; color: var(--muted); }
 .dossier-timeline-details dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
 @media (max-width: 760px) {
-  .comparison-page { width: calc(100% - 32px); }
+  .comparison-page { --comparison-toolbar-top: 70px; width: calc(100% - 32px); }
+  .comparison-arena-scopes .leaderboard-sort-pills { grid-template-columns: repeat(3, minmax(0, 1fr)); border-radius: 24px; }
+  .comparison-toolbar .leaderboard-sort-pills input + span { padding-inline: 6px; font-size: .66rem; }
   .comparison-identities { gap: 12px; }
   .comparison-identity { padding: 14px; }
   .comparison-identity__person { flex-direction: column; align-items: flex-start; gap: 12px; }
@@ -78,7 +81,6 @@
   .comparison-identity__actions .ghost-button { padding: 10px; font-size: 12px; overflow-wrap: anywhere; }
   .dossier-pair, .dossier-strip { gap: 12px; }
   .dossier-cohorts { grid-template-columns: minmax(0, 1fr); }
-  .dossier-strip { top: 68px; }
   .dossier-strip span { font-size: 12px; }
   .dossier-cell { padding: 14px; }
   .dossier-cell.is-ahead { padding-left: 12px; }
