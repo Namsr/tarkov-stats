@@ -1673,6 +1673,7 @@ a.help-card:hover { border-color: var(--foreground); }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+  .skeleton { animation: none; }
   .profile-collapsible__content,
   .profile-collapsible__toggle { transition-duration: .01ms; }
   .achievement-collapsible__content.is-collapsed { transition-duration: .01ms; }

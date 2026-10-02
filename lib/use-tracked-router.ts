@@ -13,8 +13,8 @@ import { markNavigationPending } from "@/lib/active-link";
  * caller without each one having to remember.
  *
  * Use it for navigation the user asked for. URL-state sync (a `replace` that
- * only rewrites the query) is not that: it fires on ordinary interaction, would
- * burn the TTL on every tweak, and commits a route the user is already on.
+ * only rewrites the query) is not that: it fires on ordinary interaction and
+ * commits a route the user is already on.
  */
 export function useTrackedRouter() {
   const router = useRouter();
