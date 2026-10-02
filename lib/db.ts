@@ -540,6 +540,16 @@ function ensureIndexDefinition(db: any, name: string, ddl: string): void {
 // average request from blocking unrelated HTTP responses.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function ensureSqliteAverageIndexes(db: any): void {
+  // Custom ranges read every portrait metric. A single covering range index
+  // avoids repeatedly fetching large profile/achievement rows for each metric.
+  // Keep the existing cohort indexes intact for already-running importers.
+  const metrics = AVG_COLS.filter((column) => column !== "hours" && column !== "pmc_raids").join(", ");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_range ON players(${COHORT_INDEX_COLS}, ${metrics}, bracket_key)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_range ON mode_players(mode, ${COHORT_INDEX_COLS}, ${metrics}, bracket_key)`);
+  // The known-PvP predicate otherwise chooses the older non-covering index.
+  const pvpColumns = "pvp_stats_known, profile_updated_at, hours, pmc_raids, aid, pmc_kd_ratio, killed_pmc";
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_pvp ON players(${pvpColumns})`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_pvp ON mode_players(mode, ${pvpColumns})`);
   for (const column of AVG_COLS) {
     if (!/^[a-z_]+$/.test(column)) throw new Error(`invalid average index column: ${column}`);
     if (column === "hours" || column === "pmc_raids") continue;

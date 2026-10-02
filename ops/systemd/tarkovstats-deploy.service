@@ -6,5 +6,6 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -n /run/lock/tarkovstats-deploy.lock /usr/local/sbin/tarkovstats-deploy
+SuccessExitStatus=75
+ExecStart=/usr/bin/flock -n -E 75 /run/lock/tarkovstats-deploy.lock /usr/local/sbin/tarkovstats-deploy
 TimeoutStartSec=45min

@@ -2,7 +2,7 @@ name: VPS image
 
 on:
   push:
-    branches: [main, 'codex/vps-load-reduction']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -46,13 +46,14 @@ jobs:
         run: |
           tag="container-$GITHUB_SHA"
           # Published assets are never overwritten. Failed draft uploads can retry.
-          if gh release view "$tag" --json isDraft --jq 'select(.isDraft == false)' | grep -q .; then
+          existing=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ "$existing" = false ]; then
             echo "Image already published for $GITHUB_SHA"
             exit 0
           fi
           docker image save "tarkovstats-web:$GITHUB_SHA" | gzip -1 > web.tar.gz
           sha256sum web.tar.gz > web.tar.gz.sha256
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          if [ -z "$existing" ]; then
             gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
               --title "VPS image $GITHUB_SHA" --notes "Production Docker image built by GitHub Actions from $GITHUB_SHA."
           fi
