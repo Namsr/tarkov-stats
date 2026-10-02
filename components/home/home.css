@@ -1,12 +1,12 @@
-.home-page { --home-veil: 9, 9, 9; line-height: 1.5; }
-html[data-theme="light"] .home-page { --home-veil: 246, 246, 242; }
+.home-page { --home-veil: 9, 9, 9; --profile-positive: #9dcbaa; --profile-other: #929591; line-height: 1.5; }
+html[data-theme="light"] .home-page { --home-veil: 246, 246, 242; --profile-positive: #2a7444; --profile-other: #7b7d76; }
 .home-wrap { width: min(1120px, calc(100% - 80px)); margin-inline: auto; }
 .home-page h1, .home-page h2, .home-page p { margin: 0; }
 .home-page h1 { font-size: clamp(38px, 4.2vw, 60px); font-weight: 620; letter-spacing: -.035em; line-height: 1.1; max-width: 900px; }
 .home-page h2 { font-size: clamp(28px, 3vw, 40px); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; }
 .home-page button { cursor: pointer; }
 .home-page button:disabled { cursor: wait; }
-.home-page a:focus-visible, .home-page button:focus-visible, .home-page svg:focus-visible { outline: 2px solid var(--foreground); outline-offset: 5px; }
+.home-page a:focus-visible, .home-page button:focus-visible, .home-page svg:focus-visible, .home-page select:focus-visible, .home-page summary:focus-visible, .home-page .disabled-control-hint:focus-visible { outline: 2px solid var(--foreground); outline-offset: 5px; }
 .home-page .search-unit__mode-option:focus-visible, .home-page .search-unit__result-mode:focus-visible, .home-page .search-unit__recent-link:focus-visible, .home-page .search-unit__recent-remove:focus-visible, .home-page .search-unit__result-hitarea:focus-visible { outline-offset: -2px; }
 .home-page .search-unit__mode-trigger:focus-visible { outline-offset: -2px; }
 .home-search-hero { position: relative; isolation: isolate; }
@@ -64,6 +64,20 @@ html[data-theme="light"] .home-hero-art { opacity: .65; }
 .home-achievement-icons { display: flex; gap: 4px; }
 .home-achievement-icons img { width: 42px; height: 42px; object-fit: contain; filter: saturate(.35); }
 .home-profile-bottom > .home-text-link { margin-left: auto; }
+.home-arena-account { display: flex; flex-wrap: wrap; gap: 10px 24px; color: var(--muted); font-size: 14px; }
+.home-page .arena-combat-card h2 { font-size: 12px; font-weight: 650; letter-spacing: .06em; line-height: 1.5; }
+.home-page .arena-combat-note { margin: 8px auto 0; }
+.home-arena-content .arena-tsr-details p { margin: 14px 0; }
+.home-arena-content .arena-combat-footnote { margin-top: 12px; }
+.home-arena-details { margin-bottom: 24px; }
+.home-arena-details .arena-detailed-statistics { margin-top: 24px; }
+.home-arena-content h2.section-heading { font-size: 28px; margin-bottom: 20px; }
+.home-arena-content .arena-detailed-statistics > .arena-combat-footnote { margin: -12px 0 24px; }
+@media (max-width: 640px) {
+  .home-page .arena-combat-card h2 { font-size: 11px; letter-spacing: 0; }
+  .home-page .arena-combat-note { margin: 4px 0 0; }
+  .home-arena-content h2.section-heading { font-size: 25px; }
+}
 .home-segments { display: inline-flex; gap: 4px; padding: 4px; background: var(--input-bg); border-radius: 12px; border: 1px solid var(--card-border); max-width: 100%; }
 .home-segments button { border: 0; border-radius: 8px; background: transparent; color: var(--muted); padding: 11px 19px; font-size: 15px; font-weight: 550; white-space: nowrap; min-height: 44px; transition: background .15s, color .15s; }
 .home-segments button[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
