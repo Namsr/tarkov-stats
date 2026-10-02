@@ -76,6 +76,23 @@ test("Arena uses its own overall and mode counters and retains missing values", 
   assert.equal(dossier.values.arena_lastHero_win_rate, 50);
   assert.equal(dossier.values.pmcRaids, null);
 });
+
+test("Arena gauges preserve native overall risk, rating readiness and zero results", () => {
+  const arena = { mode: "arena", cycleId: "persistent", arenaMode: "overall" } as const;
+  const body = { identity: { aid: 1, ...arena }, arena: { overall: { counters: { matches: 0, wins: 0, losses: 0 }, metrics: { win_rate: 0 } } },
+    risk: { score: 99, overall: { score: 0 } },
+    tsRating: { overall: { rating: 1.5, displayReady: false, reason: "incomplete_coverage", provisional: true } } };
+  const dossier = comparisonDossier(arena, 1, body)!;
+  assert.equal(dossier.values.arenaRisk, 0);
+  assert.equal(dossier.values.arena_overall_win_rate, 0);
+  assert.equal(dossier.arenaRating?.rating, null);
+  assert.equal(dossier.arenaRating?.reason, "incomplete_coverage");
+  assert.equal(dossier.arenaRating?.displayReady, false);
+  body.tsRating.overall.displayReady = true;
+  assert.equal(comparisonDossier(arena, 1, body)?.arenaRating?.rating, 1.5);
+  assert.equal(comparisonDossier(arena, 1, { ...body, tsRating: undefined, risk: { score: 99 } })?.values.arenaRisk, null);
+  assert.equal(comparisonDossier(arena, 1, { ...body, tsRating: undefined })?.arenaRating, null);
+});
 test("timeline benchmark prefers matched data at the nearest raid count and falls back without inventing values", () => {
   const point = (pmcRaids: number, value: number | null, n = 20) => ({ pmcRaids, value, n, observedAt: 100 });
   const timeline = { metrics: { pvp_kd: { player: [point(100, 2)], nearby: [point(10, 8), point(95, 3)], overall: [point(100, 4)] } } } as unknown as ProgressionTimelineResponse;

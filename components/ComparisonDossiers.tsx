@@ -5,11 +5,13 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import CheaterScore from "@/components/CheaterScore";
 import ProfileRadar from "@/components/ProfileRadar";
 import PercentileBadge from "@/components/PercentileBadge";
+import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
 import { comparisonAdvantage, comparisonDossier, type ComparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
 import { ARENA_MODE_KEYS } from "@/types/arena";
 import type { ComparisonCohort, ComparisonMetricKey, ComparisonPercentile, ComparisonScope } from "@/types/comparison";
 import "@/components/comparison-dossiers.css";
+import "@/components/arena-profile.css";
 
 interface CohortState { data: ComparisonCohort | null; loading: boolean; error: string }
 interface Metric { field: string; label: string; digits?: number; suffix?: string; benchmark?: ComparisonMetricKey; neutral?: boolean }
@@ -162,14 +164,25 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     </div></div>;
   }
   const sectionLinks = [
+    ...(scope.mode === "arena" ? [["arena-overview", "profile.section.overview"]] : []),
     ["combat", "compare.combat"], ["activity", "compare.activity"], ...(scope.mode === "arena" ? [] : [["growth", "compare.growth"], ["progression", "profile.section.progression"]]),
-    ["comparison", "profile.section.comparison"], ["risk", "profile.section.risk"],
+    ["comparison", "profile.section.comparison"], ...(scope.mode === "arena" ? [] : [["risk", "profile.section.risk"]]),
     ...(scope.mode === "arena" ? [["arena-modes", "profile.allModes"]] : [["achievements", "profile.section.achievements"], ["skills", "profile.section.skills"], ["mastering", "profile.section.mastering"]]),
   ];
   if (!players.some(Boolean)) return null;
   return <div className="comparison-dossiers profile-page">
     <nav className="dossier-nav" aria-label={t("profile.sectionNav")}>{sectionLinks.map(([id, label]) => <a key={id} href={`#compare-${id}`}>{t(label)}</a>)}</nav>
     <div className="dossier-strip">{players.map((_, index) => <span key={index}>{name(index)}</span>)}</div>
+    {scope.mode === "arena" && section("arena-overview", "profile.section.overview", <>
+      <p className="dossier-note">{t("profile.allModes")}</p>
+      <div className="dossier-arena-gauges">{players.map((player, index) => <div className="dossier-arena-gauges__player" key={index}>
+        <ArenaCombatCards scope="overall" playerName={name(index)} score={value(index, "arenaRisk")}
+          item={player?.arenaRating} hasRating={player?.arenaRating != null}
+          stats={{ metrics: { win_rate: value(index, "arena_overall_win_rate") }, counters: {
+            matches: value(index, "arena_overall_matches"), wins: value(index, "arena_overall_wins"), losses: value(index, "arena_overall_losses"),
+          } }} />
+      </div>)}</div>
+    </>)}
     {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? arenaMetrics : persistentMetrics), "compare.advantageNote")}
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
       { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
@@ -189,7 +202,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
         </> : !cohorts[index].loading && !cohorts[index].error && <p role="status">{t("compare.cohortUnavailable")}</p>}
       </article>)}</div>
     </>)}
-    {section("risk", "profile.section.risk", <div className="dossier-pair">{players.map((player, index) => <article className="dossier-cell profile-risk" key={index}>
+    {scope.mode !== "arena" && section("risk", "profile.section.risk", <div className="dossier-pair">{players.map((player, index) => <article className="dossier-cell profile-risk" key={index}>
       <h3>{name(index)}</h3><div className="profile-risk__reading"><CheaterScore compact risk={player?.risk ?? null} mode={scope.mode} cycleId={scope.cycleId} /><p>{t("cheater.disclaimer")}</p></div>
     </article>)}</div>)}
     {scope.mode === "arena" ? section("arena-modes", "profile.allModes", <div className="dossier-arena-modes">{ARENA_MODE_KEYS.map(mode => <details key={mode}>

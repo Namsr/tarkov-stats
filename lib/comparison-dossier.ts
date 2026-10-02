@@ -3,6 +3,7 @@ import { normalizeProfileSkill, type ProfileSkill } from "./profile-skills.ts";
 import type { ComparisonScope } from "../types/comparison";
 import type { PublicRiskView } from "../types/profile-view";
 import type { ProgressionMetricKey, ProgressionTimelineResponse } from "../types/seasonal";
+import type { ArenaModeTsRating } from "./arena/ts-rating";
 
 export interface ComparisonAchievement {
   id: string; name: string; nameRu: string | null; description: string | null;
@@ -14,6 +15,7 @@ export interface ComparisonDossier {
   aid: number; nickname: string; side: string | null; lastAccessAt: number | null;
   values: Record<string, number | null>; risk: PublicRiskView | null;
   achievements: ComparisonAchievement[]; skills: ProfileSkill[]; mastery: ComparisonMastery[];
+  arenaRating: Pick<ArenaModeTsRating, "rating" | "displayReady" | "reason" | "provisional"> | null;
 }
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -71,6 +73,7 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
   const source = scope.mode === "seasonal" ? seasonal : stats;
   const comparison = record(body.comparisonStats);
   const values: Record<string, number | null> = {};
+  let arenaRating: ComparisonDossier["arenaRating"] = null;
   const fields = ["totalRaids", "pmcRaids", "scavRaids", "survivalRate", "pmcSurvivalRate", "kdRatio", "pmcKdRatio", "totalKills", "deaths", "pmcDeaths", "runThrough", "longestWinStreak", "level", "prestige", "experience", "achievementsCount", "survivedRaids", "pmcSurvived", "pmcExitKilled", "pmcExitLeft", "pmcExitTransit", "pmcExitMia", "killsPerRaid"];
   for (const key of fields) values[key] = first(source[key], statistics[key], counters[key], progression[key], overview[key], comparison[key]);
   values.hours = first(stats.hoursPlayed, profile.lifetimePvpHours, overview.lifetimePvpHours, arenaOverall.hours);
@@ -93,6 +96,14 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
     values.bestArp = comparisonNumber(arenaOverall.bestArp);
     const rating = record(body.tsRating), overallRating = record(rating.overall);
     values.tsRating = overallRating.displayReady === true ? comparisonNumber(overallRating.rating) : null;
+    values.arenaRisk = comparisonNumber(record(record(body.risk).overall).score);
+    if (rating.overall != null) {
+      const reason = text(overallRating.reason);
+      arenaRating = { rating: values.tsRating, displayReady: overallRating.displayReady === true && values.tsRating !== null,
+        provisional: overallRating.provisional === true,
+        reason: reason && ["missing_counters", "inconsistent_results", "no_matches", "insufficient_reference", "incomplete_coverage"].includes(reason)
+          ? reason as ArenaModeTsRating["reason"] : null };
+    }
   }
   const achievements = rows(record(view.achievements).items).flatMap(value => {
     const item = record(value), id = text(item.id);
@@ -111,5 +122,5 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
   });
   return { aid, nickname: text(stats.nickname) ?? text(profile.nickname) ?? text(arena.nickname) ?? text(viewIdentity.nickname) ?? `#${aid}`,
     side: text(stats.side) ?? text(profile.side) ?? text(record(profile.info).side), lastAccessAt: first(profile.lastAccessAt, stats.lastPlayedAt, record(view.freshness).lastAccessAt),
-    values, risk: riskView(view.risk ?? body.risk ?? body.arenaRisk), achievements, skills, mastery };
+    values, risk: riskView(view.risk ?? body.risk ?? body.arenaRisk), achievements, skills, mastery, arenaRating };
 }

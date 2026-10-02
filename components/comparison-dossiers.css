@@ -48,6 +48,16 @@
 .comparison-dossiers .compare-progression { margin: 0; }
 .comparison-dossiers .compare-progression__heading { display: none; }
 .dossier-arena-modes > details { margin-bottom: 14px; border-bottom: 1px solid var(--card-border); padding-bottom: 14px; }
+.dossier-arena-gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.dossier-arena-gauges__player { display: contents; }
+.dossier-arena-gauges__player:first-child > article { grid-column: 1; }
+.dossier-arena-gauges__player:last-child > article { grid-column: 2; }
+.dossier-arena-gauges [data-gauge="risk"] { grid-row: 1; }
+.dossier-arena-gauges [data-gauge="rating"] { grid-row: 2; }
+.dossier-arena-gauges [data-gauge="wins"] { grid-row: 3; }
+.dossier-arena-gauges .arena-combat-card { display: block; text-align: center; }
+.dossier-arena-gauges .arena-combat-card h2 { justify-content: center; }
+.dossier-arena-gauges .arena-combat-ring { width: min(200px, 100%); margin: 16px auto; }
 .dossier-timeline-details > div { border-bottom: 1px solid var(--card-border); padding: 14px 0; }
 .dossier-timeline-details dt { font-size: 13px; color: var(--muted); }
 .dossier-timeline-details dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
@@ -74,5 +84,11 @@
   .dossier-cell .profile-risk__reading .home-risk-status { font-size: 17px; }
   .dossier-cell .profile-risk__reading > p { font-size: 12px; }
   .dossier-cell.profile-risk > h3 { min-height: 48px; }
+  .dossier-arena-gauges { gap: 12px; }
+  .dossier-arena-gauges .arena-combat-card { padding: 16px 10px; }
+  .dossier-arena-gauges .arena-combat-card h2 { min-height: 42px; }
+  .dossier-arena-gauges .arena-combat-card .arena-combat-ring__value strong { font-size: clamp(18px, 5.5vw, 36px); }
+  .dossier-arena-gauges .arena-combat-status { font-size: 12px; }
+  .dossier-arena-gauges .arena-combat-note { overflow-wrap: anywhere; font-size: 11px; }
   .comparison-dossiers.profile-page .section-heading { font-size: 25px; }
 }
