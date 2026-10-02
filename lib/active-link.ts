@@ -20,33 +20,23 @@ export interface ActiveLinkClick {
  * silently drops the destination the user asked for. The flag makes the
  * back-affordance yield to a navigation that is already in flight.
  *
- * The TTL bounds the flag for a navigation that never commits (aborted by the
- * server, a dropped connection), so a stale flag cannot disable the
- * affordance permanently.
+ * Only a committed route clears this flag. A timeout cannot tell whether the
+ * router has finished: a slow response can still be in flight after 10 seconds.
+ * The flag only suppresses the back affordance; links remain usable even if
+ * the previous navigation fails or never returns.
  */
 let navigationPending = false;
-let navigationPendingSince = 0;
 
-/** Matches `PENDING_TIMEOUT_MS` in `ProfileModeSwitch`. */
-export const NAVIGATION_PENDING_TTL_MS = 10_000;
-
-export function markNavigationPending(now: number = Date.now()): void {
+export function markNavigationPending(): void {
   navigationPending = true;
-  navigationPendingSince = now;
 }
 
 export function clearNavigationPending(): void {
   navigationPending = false;
-  navigationPendingSince = 0;
 }
 
-export function isNavigationPending(now: number = Date.now()): boolean {
-  if (!navigationPending) return false;
-  if (now - navigationPendingSince >= NAVIGATION_PENDING_TTL_MS) {
-    clearNavigationPending();
-    return false;
-  }
-  return true;
+export function isNavigationPending(): boolean {
+  return navigationPending;
 }
 
 export function resetActiveLinkStateForTests(): void {
@@ -88,7 +78,7 @@ export function handleActiveLinkClick(
 ) {
   // Only a click the router would navigate on starts a navigation. A modified
   // or middle click opens a new tab and commits nothing here, so marking one
-  // would leave the back affordance disabled until the TTL expires.
+  // would leave the back affordance disabled without a route to clear it.
   const startsNavigation = isPrimaryClick(event);
   // Read the state from before this click: the caller marks the navigation as
   // pending in the same handler, and this click must not suppress itself.
@@ -164,7 +154,7 @@ export function startsInAppNavigation(
   if (url.origin !== current.origin) return false;
   // The app router commits on a path or query change only. A link that changes
   // neither re-renders nothing, so no effect clears the flag and marking it
-  // would only burn the TTL.
+  // would leave the back affordance disabled without a route to clear it.
   if (url.pathname === current.pathname && url.search === current.search) return false;
   return true;
 }

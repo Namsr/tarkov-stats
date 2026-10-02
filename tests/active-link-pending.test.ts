@@ -9,7 +9,6 @@ import {
   handleActiveLinkClick,
   isNavigationPending,
   markNavigationPending,
-  NAVIGATION_PENDING_TTL_MS,
   resetActiveLinkStateForTests,
   startsInAppNavigation,
 } from "../lib/active-link.ts";
@@ -79,7 +78,7 @@ test("modified clicks never trigger the back affordance", () => {
 test("a modified or middle click does not mark a navigation pending", () => {
   // A ctrl/meta/shift/alt click or a middle click opens a new tab: nothing
   // navigates in this tab, so no pathname effect ever clears the flag and the
-  // back affordance would stay dead for the whole TTL.
+  // back affordance would stay disabled without a route to clear it.
   const calls: string[] = [];
   const router = { back: () => calls.push("back"), replace: (href: string) => calls.push(`replace:${href}`) };
   const noop = { preventDefault: () => {} };
@@ -108,23 +107,36 @@ test("a modified or middle click does not mark a navigation pending", () => {
 
 test("markNavigationPending blocks the affordance until the navigation commits", () => {
   assert.equal(isNavigationPending(), false);
-  markNavigationPending(1_000);
-  assert.equal(isNavigationPending(1_000), true);
-  assert.equal(isNavigationPending(1_000 + NAVIGATION_PENDING_TTL_MS - 1), true);
+  markNavigationPending();
+  assert.equal(isNavigationPending(), true);
 
   clearNavigationPending();
-  assert.equal(isNavigationPending(1_000 + NAVIGATION_PENDING_TTL_MS - 1), false);
-  assert.equal(activeLinkAction(plainClick, true, 4, isNavigationPending(1_001)), "back");
+  assert.equal(isNavigationPending(), false);
+  assert.equal(activeLinkAction(plainClick, true, 4, isNavigationPending()), "back");
 });
 
-test("a navigation that never commits expires instead of disabling the affordance forever", () => {
-  // An aborted or dropped navigation never reaches the pathname effect, so the
-  // flag has to time out on its own.
-  markNavigationPending(0);
-  assert.equal(isNavigationPending(NAVIGATION_PENDING_TTL_MS - 1), true);
-  assert.equal(isNavigationPending(NAVIGATION_PENDING_TTL_MS), false);
-  // And the expiry is self-clearing, so the affordance works again.
-  assert.equal(activeLinkAction(plainClick, true, 4, isNavigationPending(NAVIGATION_PENDING_TTL_MS)), "back");
+test("a slow or stalled navigation never turns the next tab click into a history back", () => {
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    for (const delay of [9_999, 10_000, 25_000, 60_000]) {
+      clearNavigationPending();
+      now = 1_000;
+      markNavigationPending();
+      now = 1_000 + delay;
+      const calls: string[] = [];
+      const router = { back: () => calls.push("back"), replace: (href: string) => calls.push(href) };
+      let prevented = false;
+      handleActiveLinkClick({ ...plainClick, preventDefault: () => { prevented = true; } }, true, router);
+      assert.deepEqual(calls, [], `must not go back after ${delay}ms`);
+      assert.equal(prevented, false, "the latest click must reach the router");
+    }
+    clearNavigationPending();
+    assert.equal(activeLinkAction(plainClick, true, 4, isNavigationPending()), "back");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("handleActiveLinkClick still acts as the back affordance on a settled page", () => {
@@ -336,7 +348,7 @@ test("app-initiated navigation marks the flag before it pushes", async () => {
 
   // The user-initiated callers use the wrapper; the URL-state-sync ones keep
   // the raw router, because a query-only `replace` commits a route the user is
-  // already on and marking it would burn the TTL on every tweak.
+  // already on rather than navigating to a destination the user asked for.
   const search = await readFile("components/SearchBar.tsx", "utf8");
   assert.match(search, /import \{ useTrackedRouter \} from "@\/lib\/use-tracked-router"/);
   assert.match(search, /const router = useTrackedRouter\(\)/);
