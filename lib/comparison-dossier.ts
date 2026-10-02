@@ -65,6 +65,7 @@ export function comparisonTimelineBenchmark(timeline: ProgressionTimelineRespons
 export function comparisonDossier(scope: ComparisonScope, aid: number, payload: unknown): ComparisonDossier | null {
   const body = record(payload), identity = record(body.identity);
   if (identity.aid !== aid || identity.mode !== scope.mode || identity.cycleId !== scope.cycleId) return null;
+  if (scope.mode === "arena" && identity.arenaMode !== undefined && identity.arenaMode !== scope.arenaMode) return null;
   const profile = record(body.profile), stats = record(body.stats), seasonal = record(profile.seasonalStats);
   const view = record(body.viewModel), viewIdentity = record(view.identity);
   if (body.viewModel != null && (viewIdentity.aid !== aid || viewIdentity.mode !== scope.mode || viewIdentity.cycleId !== scope.cycleId)) return null;
@@ -94,13 +95,16 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
       }
     }
     values.bestArp = comparisonNumber(arenaOverall.bestArp);
-    const rating = record(body.tsRating), overallRating = record(rating.overall);
-    values.tsRating = overallRating.displayReady === true ? comparisonNumber(overallRating.rating) : null;
-    values.arenaRisk = comparisonNumber(record(record(body.risk).overall).score);
-    if (rating.overall != null) {
-      const reason = text(overallRating.reason);
-      arenaRating = { rating: values.tsRating, displayReady: overallRating.displayReady === true && values.tsRating !== null,
-        provisional: overallRating.provisional === true,
+    const rating = record(body.tsRating);
+    const selectedRating = scope.arenaMode === "overall" ? rating.overall : record(rating.modes)[scope.arenaMode];
+    const ratingItem = record(selectedRating), risk = record(body.risk);
+    const riskItem = scope.arenaMode === "overall" ? risk.overall : rows(risk.modes).find(item => record(item).mode === scope.arenaMode);
+    values.tsRating = ratingItem.displayReady === true ? comparisonNumber(ratingItem.rating) : null;
+    values.arenaRisk = comparisonNumber(record(riskItem).score);
+    if (selectedRating != null) {
+      const reason = text(ratingItem.reason);
+      arenaRating = { rating: values.tsRating, displayReady: ratingItem.displayReady === true && values.tsRating !== null,
+        provisional: ratingItem.provisional === true,
         reason: reason && ["missing_counters", "inconsistent_results", "no_matches", "insufficient_reference", "incomplete_coverage"].includes(reason)
           ? reason as ArenaModeTsRating["reason"] : null };
     }

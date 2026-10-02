@@ -81,7 +81,7 @@ test("compare renders full dossiers for the selected scope", async () => {
   assert.match(source, /primaryPayload=\{primaryCurrent\?\.data\?\.payload\}/);
   assert.match(source, /secondaryPayload=\{secondaryCurrent\?\.data\?\.payload\}/);
   for (const metric of ["kd_ratio", "win_rate", "headshot_rate", "kills_per_match", "damage_per_match"]) assert.ok(dossiers.includes(metric));
-  for (const section of ["achievements", "skills", "mastering", "risk", "arena-modes"]) assert.ok(dossiers.includes(section));
+  for (const section of ["achievements", "skills", "mastering", "risk", "arena-overview"]) assert.ok(dossiers.includes(section));
 });
 
 test("dossiers expose percentile badges only when the cohort supplies percentiles", async () => {

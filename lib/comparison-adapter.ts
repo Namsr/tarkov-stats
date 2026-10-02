@@ -20,6 +20,7 @@ import {
   type PersistentComparisonPercentiles,
 } from "../types/comparison";
 import { normalizeCycleId } from "../types/seasonal";
+import { ARENA_MODE_KEYS, type ArenaStoredMode } from "../types/arena";
 
 const PERSISTENT_PROFILE_FIELDS = {
   kd_ratio: "kdRatio",
@@ -31,6 +32,7 @@ const PERSISTENT_PROFILE_FIELDS = {
 } as const;
 
 const COHORT_PERCENTS = new Set([10, 15, 20, 30]);
+const ARENA_SCOPES = new Set<string>(["overall", ...ARENA_MODE_KEYS]);
 const COHORT_REASONS = new Set<ComparisonCohortReason>([
   "no_activity",
   "target_unavailable",
@@ -98,8 +100,8 @@ export function parseComparisonScope(
   }
   if (mode === "arena") {
     if (rawCycle !== null && rawCycle !== "persistent") return unavailableScope();
-    if (rawArenaMode !== null && rawArenaMode !== "overall") return unavailableScope();
-    return { status: "available", scope: { mode: "arena", cycleId: "persistent", arenaMode: "overall" } };
+    if (rawArenaMode !== null && !ARENA_SCOPES.has(rawArenaMode)) return unavailableScope();
+    return { status: "available", scope: { mode: "arena", cycleId: "persistent", arenaMode: (rawArenaMode ?? "overall") as ArenaStoredMode } };
   }
   if (mode !== "seasonal" || !validPinnedCycle(seasonalCycleId)) return unavailableScope();
   if (rawCycle !== null && rawCycle !== seasonalCycleId) return unavailableScope();
@@ -111,7 +113,7 @@ function isComparisonScope(value: unknown): value is ComparisonScope {
   const scope = record(value);
   if (!scope) return false;
   if (scope.mode === "arena") {
-    return scope.cycleId === "persistent" && scope.arenaMode === "overall";
+    return scope.cycleId === "persistent" && typeof scope.arenaMode === "string" && ARENA_SCOPES.has(scope.arenaMode);
   }
   if (scope.mode !== "regular" && scope.mode !== "pve" && scope.mode !== "seasonal") return false;
   if (scope.arenaMode !== null || typeof scope.cycleId !== "string") return false;
@@ -168,7 +170,7 @@ function normalizedIdentity(
   if (scope.mode === "arena") {
     if (requireArenaMode && identity.arenaMode !== scope.arenaMode) return null;
     if (identity.arenaMode !== undefined && identity.arenaMode !== scope.arenaMode) return null;
-    return { aid, mode: "arena", cycleId: "persistent", arenaMode: "overall" };
+    return { aid, mode: "arena", cycleId: "persistent", arenaMode: scope.arenaMode };
   }
   if (identity.arenaMode !== undefined && identity.arenaMode !== null) return null;
   if (scope.mode === "seasonal") {
@@ -228,8 +230,8 @@ export function adaptComparisonProfile<T extends ComparisonScope>(
   if (scope.mode === "arena") {
     if (body.arenaStatus === "legacy_incomplete") return null;
     const arena = record(body.arena);
-    const overall = record(arena?.overall);
-    const metrics = record(overall?.metrics);
+    const selected = scope.arenaMode === "overall" ? record(arena?.overall) : record(record(arena?.modes)?.[scope.arenaMode]);
+    const metrics = record(selected?.metrics);
     if (!arena || arena.aid !== aid || !metrics) return null;
     const normalized = arenaMetrics(metrics);
     if (!normalized) return null;
@@ -387,7 +389,7 @@ export function adaptComparisonCohort<T extends ComparisonScope>(
   if (!identity) return null;
 
   if (scope.mode === "arena") {
-    if (body.gameMode !== "arena" || body.mode !== "overall" || body.aid !== aid) return null;
+    if (body.gameMode !== "arena" || body.mode !== scope.arenaMode || body.aid !== aid) return null;
     if (body.percentiles !== null) return null;
     const common = commonCohort(
       body.sampleN,

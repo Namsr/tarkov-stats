@@ -23,6 +23,7 @@ import { comparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
 import type { ArenaComparisonScope, ComparisonCohort, ComparisonProfile, ComparisonScope, PersistentComparisonScope } from "@/types/comparison";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
+import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 type AnyComparisonProfile = ComparisonProfile<PersistentComparisonScope> | ComparisonProfile<ArenaComparisonScope>;
@@ -110,6 +111,7 @@ function profileRevision(profile: StoredProfile): string {
 
 function profileHref(scope: ComparisonScope, aid: number): string {
   const base = `/player/${appRouteMode(scope.mode)}/${aid}`;
+  if (scope.mode === "arena") return `${base}?arenaMode=${scope.arenaMode}`;
   return scope.mode === "seasonal" ? `${base}?cycle=${encodeURIComponent(scope.cycleId)}` : base;
 }
 
@@ -396,6 +398,12 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
     router.replace(`/compare${query ? `?${query}` : ""}`, { scroll: false });
   }
 
+  function changeArenaMode(arenaMode: ArenaStoredMode) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("arenaMode", arenaMode);
+    router.replace(`/compare?${params.toString()}`, { scroll: false });
+  }
+
   function profileCard(
     slot: "primary" | "secondary",
     label: string,
@@ -479,6 +487,15 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
           </span>
         )}
       </div>
+
+      {scope?.mode === "arena" && <SegmentedRadio
+        className="comparison-arena-scopes mt-5"
+        name="compare-arena-mode"
+        legend={t("arena.modePicker.label")}
+        value={scope.arenaMode}
+        options={(["overall", ...ARENA_MODE_KEYS] as const).map(mode => ({ value: mode, label: t(mode === "overall" ? "compare.arenaOverall" : "arena.mode." + mode) }))}
+        onChange={changeArenaMode}
+      />}
 
       {!scope && (
         <section className="surface mt-6 p-6" role="status" aria-live="polite">

@@ -8,7 +8,6 @@ import PercentileBadge from "@/components/PercentileBadge";
 import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
 import { comparisonAdvantage, comparisonDossier, type ComparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
-import { ARENA_MODE_KEYS } from "@/types/arena";
 import type { ComparisonCohort, ComparisonMetricKey, ComparisonPercentile, ComparisonScope } from "@/types/comparison";
 import "@/components/comparison-dossiers.css";
 import "@/components/arena-profile.css";
@@ -71,6 +70,8 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
   const date = (value: number | null) => value == null ? t("achievement.dateUnavailable") : new Date(value).toLocaleDateString(lang, { timeZone: "Europe/Moscow" });
   const name = (index: number) => players[index]?.nickname ?? t(index === 0 ? "compare.primaryPlayer" : "compare.secondaryPlayer");
   const value = (index: number, field: string) => players[index]?.values[field] ?? null;
+  const arenaMode = scope.mode === "arena" ? scope.arenaMode : "overall";
+  const selectedArenaMetrics = arenaMetrics.map(metric => ({ ...metric, field: metric.field.replace("arena_overall_", `arena_${arenaMode}_`) }));
   function advantage(values: readonly [number | null, number | null], index: number, neutral = false) {
     const result = neutral ? null : comparisonAdvantage(...values);
     if (result?.winner !== index) return null;
@@ -153,7 +154,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     </article>)}</div>;
   });
   function radar(player: ComparisonDossier, index: number) {
-    const metrics = (scope.mode === "arena" ? arenaMetrics : [...persistentMetrics, progressionMetrics[0]])
+    const metrics = (scope.mode === "arena" ? selectedArenaMetrics : [...persistentMetrics, progressionMetrics[0]])
       .filter(metric => metric.benchmark).map(metric => {
         const benchmarks = cohorts[index].data?.benchmarks as Partial<Record<ComparisonMetricKey, { value: number | null; count: number }>> | undefined;
         const base = cohorts[index].data?.quality === "sufficient" ? benchmarks?.[metric.benchmark!]?.value ?? null : null;
@@ -167,26 +168,26 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     ...(scope.mode === "arena" ? [["arena-overview", "profile.section.overview"]] : []),
     ["combat", "compare.combat"], ["activity", "compare.activity"], ...(scope.mode === "arena" ? [] : [["growth", "compare.growth"], ["progression", "profile.section.progression"]]),
     ["comparison", "profile.section.comparison"], ...(scope.mode === "arena" ? [] : [["risk", "profile.section.risk"]]),
-    ...(scope.mode === "arena" ? [["arena-modes", "profile.allModes"]] : [["achievements", "profile.section.achievements"], ["skills", "profile.section.skills"], ["mastering", "profile.section.mastering"]]),
+    ...(scope.mode === "arena" ? [] : [["achievements", "profile.section.achievements"], ["skills", "profile.section.skills"], ["mastering", "profile.section.mastering"]]),
   ];
   if (!players.some(Boolean)) return null;
   return <div className="comparison-dossiers profile-page">
     <nav className="dossier-nav" aria-label={t("profile.sectionNav")}>{sectionLinks.map(([id, label]) => <a key={id} href={`#compare-${id}`}>{t(label)}</a>)}</nav>
     <div className="dossier-strip">{players.map((_, index) => <span key={index}>{name(index)}</span>)}</div>
     {scope.mode === "arena" && section("arena-overview", "profile.section.overview", <>
-      <p className="dossier-note">{t("profile.allModes")}</p>
+      <p className="dossier-note">{t(arenaMode === "overall" ? "compare.arenaOverall" : "arena.mode." + arenaMode)}</p>
       <div className="dossier-arena-gauges">{players.map((player, index) => <div className="dossier-arena-gauges__player" key={index}>
-        <ArenaCombatCards scope="overall" playerName={name(index)} score={value(index, "arenaRisk")}
+        <ArenaCombatCards scope={arenaMode} playerName={name(index)} score={value(index, "arenaRisk")}
           item={player?.arenaRating} hasRating={player?.arenaRating != null}
-          stats={{ metrics: { win_rate: value(index, "arena_overall_win_rate") }, counters: {
-            matches: value(index, "arena_overall_matches"), wins: value(index, "arena_overall_wins"), losses: value(index, "arena_overall_losses"),
+          stats={{ metrics: { win_rate: value(index, `arena_${arenaMode}_win_rate`) }, counters: {
+            matches: value(index, `arena_${arenaMode}_matches`), wins: value(index, `arena_${arenaMode}_wins`), losses: value(index, `arena_${arenaMode}_losses`),
           } }} />
       </div>)}</div>
     </>)}
-    {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? arenaMetrics : persistentMetrics), "compare.advantageNote")}
+    {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? selectedArenaMetrics : persistentMetrics), "compare.advantageNote")}
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
       { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
-      ...arenaCounters.map(([key, label]) => ({ field: `arena_overall_${key}`, label: `arena.counter.${label}` })),
+      ...arenaCounters.map(([key, label]) => ({ field: `arena_${arenaMode}_${key}`, label: `arena.counter.${label}` })),
     ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true), "compare.activityNote")}
     {scope.mode !== "arena" && section("growth", "compare.growth", metricPairs(progressionMetrics))}
     {scope.mode !== "arena" && section("progression", "profile.section.progression", progression)}
@@ -205,12 +206,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     {scope.mode !== "arena" && section("risk", "profile.section.risk", <div className="dossier-pair">{players.map((player, index) => <article className="dossier-cell profile-risk" key={index}>
       <h3>{name(index)}</h3><div className="profile-risk__reading"><CheaterScore compact risk={player?.risk ?? null} mode={scope.mode} cycleId={scope.cycleId} /><p>{t("cheater.disclaimer")}</p></div>
     </article>)}</div>)}
-    {scope.mode === "arena" ? section("arena-modes", "profile.allModes", <div className="dossier-arena-modes">{ARENA_MODE_KEYS.map(mode => <details key={mode}>
-      <summary>{t("arena.mode." + mode)}</summary>{metricPairs([
-        ...arenaMetrics.filter(metric => metric.benchmark).map(metric => ({ ...metric, field: metric.field.replace("overall", mode), benchmark: undefined })),
-        ...arenaCounters.map(([key, label]) => ({ field: `arena_${mode}_${key}`, label: `arena.counter.${label}`, neutral: true })),
-      ])}
-    </details>)}</div>) : <>
+    {scope.mode !== "arena" && <>
       {section("achievements", "profile.section.achievements", <>
         <label className="dossier-filter"><input type="checkbox" checked={differentAchievements} onChange={event => setDifferentAchievements(event.target.checked)} />{t("compare.onlyDifferentAchievements")}</label>
         {achievementRows.length ? collection("achievements", achievementRows, 5) : <p className="dossier-note">{t("common.notAvailable")}</p>}

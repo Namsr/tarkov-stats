@@ -1,4 +1,5 @@
 import type { GameMode } from "./seasonal";
+import type { ArenaStoredMode } from "./arena";
 
 export const PERSISTENT_COMPARISON_METRIC_KEYS = [
   "kd_ratio",
@@ -46,7 +47,7 @@ export type PersistentComparisonScope = RegularPveComparisonScope | SeasonalComp
 export interface ArenaComparisonScope {
   mode: "arena";
   cycleId: "persistent";
-  arenaMode: "overall";
+  arenaMode: ArenaStoredMode;
 }
 
 export type ComparisonScope = PersistentComparisonScope | ArenaComparisonScope;
@@ -72,7 +73,7 @@ export type ComparisonIdentity =
       aid: number;
       mode: "arena";
       cycleId: "persistent";
-      arenaMode: "overall";
+      arenaMode: ArenaStoredMode;
     };
 
 export type PersistentComparisonMetrics = Record<PersistentComparisonMetricKey, number | null>;

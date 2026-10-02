@@ -93,6 +93,27 @@ test("Arena gauges preserve native overall risk, rating readiness and zero resul
   assert.equal(comparisonDossier(arena, 1, { ...body, tsRating: undefined, risk: { score: 99 } })?.values.arenaRisk, null);
   assert.equal(comparisonDossier(arena, 1, { ...body, tsRating: undefined })?.arenaRating, null);
 });
+test("Arena mode gauges use selected risk and rating, preserve zeros and never use overall fallbacks", () => {
+  const arena = { mode: "arena", cycleId: "persistent", arenaMode: "teamFight" } as const;
+  const body = { identity: { aid: 1, mode: "arena", cycleId: "persistent" },
+    arena: { overall: { metrics: { win_rate: 99 } }, modes: { teamFight: { counters: { matches: 0 }, metrics: { win_rate: 0 } } } },
+    risk: { overall: { score: 99 }, modes: [{ mode: "lastHero", score: 80 }, { mode: "teamFight", score: 0 }] },
+    tsRating: { overall: { rating: 2, displayReady: true }, modes: { teamFight: { rating: 0, displayReady: true, provisional: true } } } };
+  const dossier = comparisonDossier(arena, 1, body)!;
+  assert.equal(dossier.values.arenaRisk, 0);
+  assert.equal(dossier.values.tsRating, 0);
+  assert.equal(dossier.arenaRating?.displayReady, true);
+  assert.equal(dossier.values.arena_teamFight_matches, 0);
+  assert.equal(dossier.values.arena_teamFight_win_rate, 0);
+  body.tsRating.modes.teamFight.displayReady = false;
+  assert.equal(comparisonDossier(arena, 1, body)?.values.tsRating, null);
+  const missing = comparisonDossier({ ...arena, arenaMode: "checkpoint" }, 1, body)!;
+  assert.equal(missing.values.arenaRisk, null);
+  assert.equal(missing.values.tsRating, null);
+  assert.equal(missing.arenaRating, null);
+  assert.equal(comparisonDossier(arena, 1, { ...body, identity: { ...body.identity, arenaMode: "overall" } }), null);
+});
+
 test("timeline benchmark prefers matched data at the nearest raid count and falls back without inventing values", () => {
   const point = (pmcRaids: number, value: number | null, n = 20) => ({ pmcRaids, value, n, observedAt: 100 });
   const timeline = { metrics: { pvp_kd: { player: [point(100, 2)], nearby: [point(10, 8), point(95, 3)], overall: [point(100, 4)] } } } as unknown as ProgressionTimelineResponse;

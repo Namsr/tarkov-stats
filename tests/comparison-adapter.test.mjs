@@ -12,6 +12,9 @@ registerHooks({
     if (specifier === "../types/seasonal") {
       return { shortCircuit: true, url: pathToFileURL(resolve("types/seasonal.ts")).href };
     }
+    if (specifier === "../types/arena") {
+      return { shortCircuit: true, url: pathToFileURL(resolve("types/arena.ts")).href };
+    }
     return nextResolve(specifier, context);
   },
 });
@@ -23,6 +26,32 @@ const {
   buildComparisonProfileUrl,
   parseComparisonScope,
 } = await import("../lib/comparison-adapter.ts");
+
+test("every Arena mode selects its own profile and cohort without falling back to totals", () => {
+  const modes = ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"];
+  const stats = index => ({ metrics: { kd_ratio: index, win_rate: index * 10, headshot_rate: null, kills_per_match: index, damage_per_match: index * 100 } });
+  const payload = { identity: { aid: 42, mode: "arena", cycleId: "persistent" }, arena: {
+    aid: 42, nickname: "Arena", overall: stats(0), modes: Object.fromEntries(modes.slice(1).map((mode, index) => [mode, stats(index + 1)])),
+  } };
+  for (const [index, mode] of modes.entries()) {
+    const scope = { mode: "arena", cycleId: "persistent", arenaMode: mode };
+    assert.deepEqual(parseComparisonScope(`mode=arena&arenaMode=${mode}`, null), { status: "available", scope });
+    assert.equal(new URL(buildComparisonCohortUrl(scope, 42), "http://local").searchParams.get("arenaMode"), mode);
+    const profile = adaptComparisonProfile(scope, 42, payload);
+    assert.equal(profile?.identity.arenaMode, mode);
+    assert.equal(profile?.metrics.kd_ratio, index);
+    const cohort = { identity: { aid: 42, ...scope }, aid: 42, gameMode: "arena", mode, sampleN: 20, required: 20, percent: 30,
+      strategy: "population", quality: "sufficient", reason: null, percentiles: null,
+      metrics: Object.fromEntries(Object.entries(stats(index).metrics).map(([key, value]) => [key, { value, count: value === null ? 0 : 20 }])),
+    };
+    assert.equal(adaptComparisonCohort(scope, 42, cohort)?.benchmarks.kd_ratio.value, index);
+    assert.equal(adaptComparisonCohort(scope, 42, { ...cohort, mode: "wrong" }), null);
+    assert.equal(adaptComparisonCohort(scope, 42, { ...cohort, identity: { ...cohort.identity, arenaMode: "wrong" } }), null);
+  }
+  const teamFight = { mode: "arena", cycleId: "persistent", arenaMode: "teamFight" };
+  assert.equal(adaptComparisonProfile(teamFight, 42, { ...payload, arena: { ...payload.arena, modes: {} } }), null);
+  assert.equal(adaptComparisonProfile(teamFight, 42, { ...payload, identity: { ...payload.identity, arenaMode: "overall" } }), null);
+});
 
 test("comparison scope parsing is strict and pins Seasonal to the server cycle", () => {
   const cycleId = "season-2026-09";
@@ -46,7 +75,8 @@ test("comparison scope parsing is strict and pins Seasonal to the server cycle",
     "mode=",
     "mode=regular&cycle=season-2026-09",
     "mode=regular&arenaMode=overall",
-    "mode=arena&arenaMode=teamFight",
+    "mode=arena&arenaMode=unknown",
+    "mode=arena&arenaMode=teamFight&arenaMode=lastHero",
     "mode=arena&cycle=season-2026-09",
     `mode=seasonal&cycle=other&cycle=${cycleId}`,
     "mode=seasonal",

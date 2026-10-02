@@ -1,4 +1,6 @@
 .comparison-page { width: min(1200px, calc(100% - 64px)); padding-bottom: 64px; }
+.comparison-arena-scopes .segmented-control__options { display: flex; flex-wrap: wrap; border-radius: 14px; gap: 3px; }
+.comparison-arena-scopes .segmented-control__options label { flex: 0 1 auto; }
 .comparison-identities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
 .comparison-identity { min-width: 0; padding: 24px; border: 1px solid var(--card-border); border-top: 2px solid #9dcbaa; border-radius: 14px; background: var(--card-bg); }
 .comparison-identity:last-child { border-top-color: #ccba96; }
@@ -47,7 +49,6 @@
 .dossier-expand > summary, .dossier-arena-modes > details > summary { padding: 14px 0; min-height: 44px; cursor: pointer; color: var(--muted-strong); font-size: 14px; }
 .comparison-dossiers .compare-progression { margin: 0; }
 .comparison-dossiers .compare-progression__heading { display: none; }
-.dossier-arena-modes > details { margin-bottom: 14px; border-bottom: 1px solid var(--card-border); padding-bottom: 14px; }
 .dossier-arena-gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .dossier-arena-gauges__player { display: contents; }
 .dossier-arena-gauges__player:first-child > article { grid-column: 1; }
