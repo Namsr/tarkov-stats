@@ -12,7 +12,7 @@ import {
 } from "@/lib/db";
 import { MAX_HISTOGRAM_BINS } from "@/lib/histogram";
 import { resolveY } from "@/lib/metrics";
-import { computeAverage } from "@/lib/average-compute";
+import { AverageComputeUnavailableError, computeAverageInBackground } from "@/lib/average-worker";
 import { isGameMode } from "@/types/seasonal";
 import {
   AVERAGE_CACHE_CONTROL,
@@ -61,7 +61,7 @@ const loadCachedAverage = unstable_cache(
     min: number | null,
     max: number | null,
     maxInclusive: boolean,
-  ) => computeAverage(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
+  ) => computeAverageInBackground(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
   ["average-dashboard-v2"],
   { revalidate: AVERAGE_CACHE_TTL_SECONDS },
 );
@@ -293,7 +293,7 @@ export async function GET(request: NextRequest) {
     return response;
   } catch (error) {
     console.error("average stats failed", error);
-    if (isDynamicComputeTimeout(error)) {
+    if (isDynamicComputeTimeout(error) || error instanceof AverageComputeUnavailableError) {
       timing.finish({
         operation: "average", mode: rawMode, outcome: "unavailable", status: 503,
         source: "dynamic", cache: "miss", averagesMs,
