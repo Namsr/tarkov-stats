@@ -1,0 +1,3 @@
+# Daily backup of five databases at 04:10 UTC (07:10 Moscow).
+# Start after the hourly profile queue; backup-db.sh also waits for shared locks.
+10 4 * * * root /bin/sh /opt/tarkovstats/backup-db.sh >> /var/log/tarkovstats-backup.log 2>&1
