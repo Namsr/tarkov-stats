@@ -4,10 +4,15 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
+import ArenaCombatSummary from "@/components/ArenaCombatSummary";
+import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
+import ArenaModeBars from "@/components/ArenaModeBars";
+import { toArenaProfile } from "@/components/arena-ui";
 import CheaterScore from "@/components/CheaterScore";
 import ProfilePortrait from "@/components/ProfilePortrait";
 import ProfilePrestige from "@/components/ProfilePrestige";
 import SearchBar from "@/components/SearchBar";
+import HomeArenaComparison from "@/components/home/HomeArenaComparison";
 import HomeComparison from "@/components/home/HomeComparison";
 import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
@@ -29,11 +34,14 @@ import {
   type ShowcaseConfig,
 } from "@/lib/home-showcase";
 import { rarestAchievements } from "@/lib/profile-achievements";
+import type { ArenaTsRating } from "@/lib/arena/ts-rating";
 import type { PublicIndexCoverage } from "@/lib/public-index-coverage";
+import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaProfileRisk, type ArenaStatistic, type ArenaStoredMode } from "@/types/arena";
 import type { ProfileViewAchievement } from "@/types/player-profile-view";
 import { GAME_MODES, type GameMode, type ProgressionTimelineResponse } from "@/types/seasonal";
 import "@/components/home/home.css";
 import "@/components/profile.css";
+import "@/components/arena-profile.css";
 
 /** Daily throughput is a static figure, not a live measurement: the sync runs at
  *  1 RPS per mode, so a real per-day count would swing with queue state and mean
@@ -50,9 +58,17 @@ const DAILY_SCAN_FIGURE = 2_500;
 interface ShowcaseSnapshot {
   mode: GameMode;
   profile: HomeProfile | null;
+  arena: { profile: ArenaProfile; risk: ArenaProfileRisk | null; rating: ArenaTsRating | null } | null;
   timeline: ProgressionTimelineResponse | null;
   cohort: HomeCohort | null;
 }
+
+type ShowcaseProfileResponse = HomeProfile | {
+  identity: HomeProfile["identity"];
+  arena: ArenaProfile | null;
+  risk?: ArenaProfileRisk | null;
+  tsRating?: ArenaTsRating | null;
+};
 
 /** One row of artwork on the showcase card: the five rarest unlocks. */
 const ACHIEVEMENT_ICON_COUNT = 5;
@@ -67,6 +83,8 @@ export default function HomePage() {
   const [aid, setAid] = useState<number | null>(null);
   const [seasonalCycleId, setSeasonalCycleId] = useState<string | null>(null);
   const [mode, setMode] = useState<GameMode>("regular");
+  const [arenaScope, setArenaScope] = useState<ArenaStoredMode>("overall");
+  const [arenaStatistic, setArenaStatistic] = useState<ArenaStatistic>("trimmed_mean");
   const [snapshot, setSnapshot] = useState<ShowcaseSnapshot | null>(null);
   // null until the index coverage response lands, so the rail never flashes a
   // placeholder number and then swaps it for the real one.
@@ -124,10 +142,20 @@ export default function HomePage() {
     const controller = new AbortController();
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
-    const loadProfile = async (): Promise<HomeProfile | null> => {
+    const loadProfile = async (): Promise<Pick<ShowcaseSnapshot, "profile" | "arena"> | null> => {
       try {
-        const response = await loadPlayerProfileResponse<HomeProfile>(profileUrl, { force });
-        return response.ok && response.body.identity?.aid === aid && response.body.viewModel ? response.body : null;
+        const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force });
+        const body = response.body;
+        if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode) return null;
+        if (mode === "arena") {
+          const arena = toArenaProfile(body, aid);
+          return arena?.aid === aid ? { profile: null, arena: {
+            profile: arena,
+            risk: "arena" in body && body.risk?.aid === aid ? body.risk : null,
+            rating: "arena" in body ? body.tsRating ?? null : null,
+          } } : null;
+        }
+        return "viewModel" in body && body.viewModel ? { profile: body, arena: null } : null;
       } catch { return null; }
     };
     async function load<T>(url: string): Promise<T | null> {
@@ -142,8 +170,8 @@ export default function HomePage() {
         : load<ProgressionTimelineResponse>(`/api/progression/timeline?aid=${aid}&mode=${mode}&cycle=${cycle}`),
       cohortUrl == null ? Promise.resolve(null)
         : load<unknown>(cohortUrl).then(homeCohort),
-    ]).then(([profile, timeline, cohortData]) => {
-      if (!cancelled) setSnapshot({ mode, profile, timeline, cohort: cohortData });
+    ]).then(([profileData, timeline, cohortData]) => {
+      if (!cancelled) setSnapshot({ mode, profile: profileData?.profile ?? null, arena: profileData?.arena ?? null, timeline, cohort: cohortData });
     });
     return () => { cancelled = true; controller.abort(); };
   }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
@@ -157,15 +185,22 @@ export default function HomePage() {
   const display = current ?? snapshot;
   const displayMode: GameMode = display?.mode ?? mode;
   const view = display?.profile?.viewModel;
-  const name = view?.identity.nickname ?? "";
+  const arena = display?.arena?.profile;
+  const arenaRisk = display?.arena?.risk ?? null;
+  const arenaRating = display?.arena?.rating ?? null;
+  const showingArena = displayMode === "arena";
+  const name = view?.identity.nickname ?? arena?.nickname ?? "";
   const side = homeProfileSide(display?.profile);
   const prestige = homeProfilePrestige(display?.profile, displayMode);
   const displayAid = aid ?? HOME_EXAMPLE_AIDS[0];
   const href = showcaseProfileHref(displayMode, displayAid, seasonalCycleId);
-  const unavailable = display != null && display.profile == null && !switching;
+  const unavailable = display != null && display.profile == null && display.arena == null && !switching;
   const riskScorable = display?.profile?.comparisonStats?.pvpStatsKnown !== false;
   const n = (value: number | null | undefined, digits = 0) => value == null ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits });
-  const sections = [
+  const sections = showingArena ? [
+    ["stats", "profile.section.statistics"], ["arena-risk", "home.riskTitle"],
+    ["compare", "profile.section.comparison"], ["arena-modes", "arena.byMode"], ["leaderboard", "leaderboard.title"],
+  ] : [
     ["stats", "profile.section.statistics"], ["progress", "home.progressShort"],
     ["risk", "home.riskTitle"], ["compare", "profile.section.comparison"], ["leaderboard", "leaderboard.title"],
   ];
@@ -201,35 +236,46 @@ export default function HomePage() {
       </section>
 
       <section id="stats" className="home-section home-wrap home-stats-section">
-        {heading("home.statsTitle", "overview", "home.openProfile")}
+        {heading("home.statsTitle", showingArena ? "arena-overview" : "overview", "home.openProfile")}
         <div className="home-segments home-showcase-modes" role="group" aria-label={t("home.showcaseMode")}>
           {GAME_MODES.map((gameMode) => (
             <button key={gameMode} type="button" aria-pressed={gameMode === mode} onClick={() => setMode(gameMode)}>{t("fav.mode." + gameMode)}</button>
           ))}
         </div>
-        {view ? <div className={`home-profile-preview${switching ? " home-showcase-switching" : ""}`} aria-busy={switching || undefined}>
+        {view || arena ? <div className={`home-profile-preview${switching ? " home-showcase-switching" : ""}`} aria-busy={switching || undefined}>
           <div className="home-profile-top">
             <div className="home-player-identity">
               <ProfilePortrait key={`${displayMode}:${displayAid}`} aid={displayAid} mode={displayMode} cycleId={displayMode === "seasonal" ? seasonalCycleId ?? undefined : undefined} nickname={name} />
               <div><div className="home-player-name-row"><Link prefetch={false} className="home-player-name" href={href}>{name}</Link><ProfilePrestige level={prestige} /></div><div className="home-player-mode"><span>{t("fav.mode." + displayMode)}</span>{side && <span className="home-player-side">{side}</span>}</div></div>
             </div>
-            <div className="home-level-value"><span>{t("metric.level")}</span><strong>{n(view.progression.level)}</strong></div>
+            {view && <div className="home-level-value"><span>{t("metric.level")}</span><strong>{n(view.progression.level)}</strong></div>}
           </div>
-          <dl className="home-profile-metrics">
+          {arena ? <div className="home-arena-content">
+            <div className="home-arena-account"><span>{t("arena.account.hours")}: {n(arena.overall.hours)}{arena.overall.hours != null && ` ${t("unit.h")}`}</span>{arena.overall.bestArp != null && <span>{t("arena.bestArp")}: {n(arena.overall.bestArp)}</span>}</div>
+            <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>
+              {(["overall", ...ARENA_MODE_KEYS] as const).map((scope) => <button key={scope} type="button" aria-pressed={scope === arenaScope} onClick={() => setArenaScope(scope)}>{t(scope === "overall" ? "profile.allModes" : "arena.mode." + scope)}</button>)}
+            </div>
+            <ArenaCombatSummary profile={arena} risk={arenaRisk} rating={arenaRating} scope={arenaScope} onModeChange={setArenaScope} />
+            <details className="arena-tsr-details home-arena-details">
+              <summary>{t("arena.combat.details")}</summary>
+              <ArenaDetailedStatistics profile={arena} risk={arenaRisk} rating={arenaRating} scope={arenaScope} />
+            </details>
+          </div> : view && <dl className="home-profile-metrics">
             <div><dt>{t("metric.pmc_kd_ratio")}</dt><dd>{n(view.overview.pmcKdRatio, 2)}</dd></div>
             <div><dt>{t("metric.pmc_survival_rate")}</dt><dd>{n(view.overview.pmcSurvivalRate, 1)}<span className="home-unit">%</span></dd></div>
             <div><dt>{t("metric.hours")}</dt><dd>{n(view.overview.lifetimePvpHours)}<span className="home-unit">{t("unit.h")}</span></dd></div>
             <div><dt>{t("metric.pmc_raids")}</dt><dd>{n(view.overview.pmcRaids)}</dd></div>
-          </dl>
+          </dl>}
           <div className="home-profile-bottom">
-            <div className="home-achievement-count"><strong>{n(view.progression.achievementsCount)}</strong><span>{t("metric.achv_count")}</span></div>
+            {view && <><div className="home-achievement-count"><strong>{n(view.progression.achievementsCount)}</strong><span>{t("metric.achv_count")}</span></div>
             <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
+            </>}
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>
         </div> : <div className="home-loading-panel" role="status"><p>{t(unavailable ? "home.unavailable" : "common.loading")}</p>{unavailable && profileUrl != null && <button className="home-text-link" onClick={() => { forceUrl.current = profileUrl; setAttempt((value) => value + 1); }}>{t("leaderboard.retry")}</button>}</div>}
       </section>
 
-      <section id="progress" className="home-section home-wrap">
+      {!showingArena && <><section id="progress" className="home-section home-wrap">
         {heading("home.progressTitle", "progression", "home.openHistory")}
         <HomeProgress timeline={display?.timeline} name={name} />
       </section>
@@ -242,12 +288,15 @@ export default function HomePage() {
           {name && <p className="home-risk-account">{name}<span>{t("fav.mode." + displayMode)}</span></p>}
           <p className="home-risk-note">{t("home.riskNote")}</p>
         </div>
-      </section>
+      </section></>}
 
-      <section id="compare" className="home-section home-wrap">
-        {heading("home.compareTitle", "comparison", "home.openCompare")}
-        <HomeComparison profile={display?.profile} cohort={display?.cohort} gameMode={displayMode} cycleId={display?.profile?.identity.cycleId ?? null} />
+      <section id="compare" className={`home-section home-wrap${showingArena ? " home-arena-content" : ""}`}>
+        {heading("home.compareTitle", showingArena ? "arena-comparison" : "comparison", "home.openCompare")}
+        {showingArena ? arena ? <HomeArenaComparison key={displayAid} profile={arena} scope={arenaScope} statistic={arenaStatistic} onStatisticChange={setArenaStatistic} />
+          : <p className="home-empty" role="status">{t(unavailable ? "home.unavailable" : "common.loading")}</p>
+          : <HomeComparison profile={display?.profile} cohort={display?.cohort} gameMode={displayMode} cycleId={display?.profile?.identity.cycleId ?? null} />}
       </section>
+      {showingArena && arena && <div className="home-section home-wrap home-arena-content"><ArenaModeBars profile={arena} selected={arenaScope} onSelect={setArenaScope} aid={displayAid} statistic={arenaStatistic} /></div>}
       <HomeLeaderboard />
     </main>
   );

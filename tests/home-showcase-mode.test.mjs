@@ -146,8 +146,8 @@ test("the showcase retry bypasses the profile response cache on every click", as
   // spending a rate-limit slot on a load nobody requested.
   assert.match(component, /const force = forceUrl\.current === profileUrl;/);
   assert.match(component, /if \(!force\) forceUrl\.current = null;/);
-  assert.match(component, /loadPlayerProfileResponse<HomeProfile>\(profileUrl, \{ force \}\)/);
-  assert.doesNotMatch(component, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`\)/);
+  assert.match(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(profileUrl, \{ force \}\)/);
+  assert.doesNotMatch(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(`\/api\/player\/profile\?\$\{params\}`\)/);
   // The favorite panel has no retry button, so the user action that triggers the
   // request is the only way past a cached mismatched body.
   assert.match(comparison, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`, \{ force: true \}\)/);
