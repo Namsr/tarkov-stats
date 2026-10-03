@@ -86,7 +86,7 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
   values.killedPmcPerRaid = values.pmcRaids && values.killedPmc !== null ? values.killedPmc / values.pmcRaids : null;
   if (scope.mode === "arena") {
     values.hours = comparisonNumber(arenaOverall.hours);
-    const arenas = { overall: arenaOverall, ...record(arena.modes) };
+    const arenas = { ...record(arena.modes), overall: arenaOverall };
     for (const [mode, data] of Object.entries(arenas)) {
       const row = record(data);
       for (const group of [record(row.counters), record(row.metrics)]) {
