@@ -12,7 +12,7 @@ WorkingDirectory=/opt/tarkovstats-auto
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
 # `exec -e` carries the run budget: the compose service passes no environment, so
 # a unit-level Environment= would stop at the docker CLI and never reach the collector.
-ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=720000 web nice -n 10 node --experimental-sqlite scripts/sync-regular-profiles.mjs
+ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=720000 web nice -n 10 node --experimental-strip-types --experimental-sqlite scripts/sync-regular-profiles.mjs
 # 12 min budget, 2 min short of the window: the collector has to spend its budget
 # and then unwind (lease, SQLite, SUMMARY) before systemd kills it. This unit takes
 # the shared writer lock at :05, so the part of its 12 min that runs past :15 is
