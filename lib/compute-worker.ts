@@ -125,4 +125,3 @@ export class ComputeWorker<Args extends unknown[], Result> {
     }
   }
 }
-
