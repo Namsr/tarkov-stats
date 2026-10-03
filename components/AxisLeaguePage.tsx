@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import StatCard from "@/components/StatCard";
+import AxisMatchHistory from "@/components/AxisMatchHistory";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_SORTS, AXIS_SOURCE_URL, axisProfileHref, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
@@ -14,6 +15,7 @@ export default function AxisLeaguePage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
+  const [view, setView] = useState<"standings" | "history">("standings");
   const locale = lang === "ru" ? "ru-RU" : "en-US";
 
   useEffect(() => {
@@ -66,6 +68,11 @@ export default function AxisLeaguePage() {
         <StatCard label={t("axis.linked")} value={number(data.players.filter((player) => player.profile).length)} />
         <StatCard label={t("axis.topMmr")} value={number(data.players.length ? Math.max(...data.players.map((player) => player.mmr)) : null)} />
       </div>}
+      <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
+        <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
+        <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
+      </div>
+      {view === "history" ? <AxisMatchHistory /> : <>
       <section className="leaderboard-controls data-panel axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
         <label><span>{t("leaderboard.sort.label")}</span><select value={sort} onChange={(event) => changeSort(event.target.value as AxisSort)}>
@@ -109,6 +116,7 @@ export default function AxisLeaguePage() {
           </li>)}</ol>
         </>}
       </section>}
+      </>}
     </main>
   );
 

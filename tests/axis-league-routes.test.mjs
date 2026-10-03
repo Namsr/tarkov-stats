@@ -11,11 +11,13 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin-auth") return mockModule("export async function requireAdmin() { return globalThis.axisAccess; }");
   if (specifier === "@/lib/admin/axis-league-db") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
+  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
 const { GET, POST } = await import("../app/api/admin/axis-league/route.ts");
 const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
+const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
 
 const id = "95520357670191104";
 function setup(t) {
@@ -31,6 +33,30 @@ function request(body, headers = {}) {
   return new Request("https://tarkovstats.ru/api/admin/axis-league", { method: "POST",
     headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
 }
+
+test("public history validates pages and returns saved data with current profile links", async (t) => {
+  setup(t);
+  for (const page of ["0", "-1", "1.5", "100001", "Infinity", "1x", ""]) {
+    const response = await historyGet(new Request(`https://tarkovstats.ru/api/axis-league/history?page=${page}`));
+    assert.equal(response.status, 400);
+  }
+  assert.equal((await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history"))).status, 503);
+  globalThis.axisStore.publishHistory({ page: 1, pages: 1, total: 1, matches: [{ number: 42, time: Date.now(), queue: "Arena League", maps: ["Fort"], winner: 0,
+    teams: [{ name: null, players: [{ id, name: "Player", mmr: 1000, change: 25, profile: null }] }] }] });
+  globalThis.axisStore.setProfile(id, { aid: 12345, mode: "arena" });
+  let response = await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?page=1"));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual((await response.json()).matches[0].teams[0].players[0].profile, { aid: 12345, mode: "arena" });
+  globalThis.axisStore.failHistoryRefresh(1);
+  response = await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?page=1"));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).stale, true);
+  globalThis.axisStore.setProfile(id, null);
+  assert.equal((await (await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history"))).json()).matches[0].teams[0].players[0].profile, null);
+  globalThis.axisReadError = true;
+  assert.equal((await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history"))).status, 503);
+});
 
 test("admin reads and writes require a session and admin identity", async (t) => {
   setup(t);
