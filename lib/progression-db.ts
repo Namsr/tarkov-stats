@@ -254,8 +254,10 @@ export function createSqliteProgressionStore(
       };
     },
     async latest(aid) {
+      // Persistent captures keep profile/upstream versions equal. Use the
+      // indexed version so finding a readable row does not sort all raw JSON.
       const rows = db.prepare(
-        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC"
+        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC"
       ).iterate(mode, PERSISTENT_CYCLE_ID, aid) as Iterable<SnapshotRow>;
       for (const row of rows) {
         const snapshot = toSnapshot(row);
