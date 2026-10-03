@@ -18,6 +18,7 @@ import type {
 import type { WeaponMasteryProgress } from "@/types/tarkov";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { reissueEditedTriggers, sqliteTrigger } from "../sqlite-trigger-ddl.ts";
+import { seasonalPrestige } from "./prestige.ts";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
 // the existing progression store already relies on. Keeping schema ownership in
@@ -1039,19 +1040,25 @@ export function toProfile(
     const survivedRaids = nullableNumber(snapshot.survived);
     const totalKills = nullableNumber(snapshot.total_kills);
     const deaths = nullableNumber(snapshot.deaths);
+    const prestige = seasonalPrestige(nullableNumber(snapshot.prestige), achievements?.map((achievement) => achievement.id) ?? []);
+    // Older snapshots stored omitted Runner counters as NULL. Infer zero only
+    // when the recorded total outcomes already account for every raid.
+    const runThrough = nullableNumber(snapshot.run_through) ?? (
+      totalRaids !== null && survivedRaids !== null && deaths !== null && survivedRaids + deaths === totalRaids ? 0 : null
+    );
     profile.seasonalStats = {
       totalRaids,
       survivedRaids,
       totalKills,
       deaths,
-      runThrough: nullableNumber(snapshot.run_through),
+      runThrough,
       survivalRate: percentage(survivedRaids, totalRaids),
       kdRatio: quotient(totalKills, deaths),
       pmcKdRatio: quotient(profile.counters.killedPmc, profile.counters.pmcDeaths),
       killsPerRaid: quotient(totalKills, totalRaids),
       pmcSurvivalRate: percentage(profile.counters.pmcSurvived, profile.counters.pmcRaids),
       level: nullableNumber(snapshot.level),
-      prestige: nullableNumber(snapshot.prestige),
+      prestige,
       longestWinStreak: nullableNumber(snapshot.longest_win_streak),
       achievementsCount: nullableNumber(snapshot.achv_count) ?? (achievements === null ? null : achievements.length),
     };
@@ -1059,7 +1066,7 @@ export function toProfile(
     profile.commonSkills = commonSkills;
     profile.weaponMastery = weaponMastery;
     profile.staticSignals = {
-      prestige: nullableNumber(snapshot.prestige) ?? 0,
+      prestige: prestige ?? 0,
       longestWinStreak: nullableNumber(snapshot.longest_win_streak) ?? 0,
       achievementIds: achievements?.map((achievement) => achievement.id) ?? [],
     };

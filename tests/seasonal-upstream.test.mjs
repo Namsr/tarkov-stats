@@ -22,6 +22,30 @@ const baseOptions = {
   seasonEndsAt: 1_784_000_000_000,
 };
 
+test("Seasonal prestige uses unlocked prestige achievements when the upstream level resets", async () => {
+  const payload = await loadFixture("seasonal-game-mode.json");
+  const options = { ...baseOptions, confirmedContract: "game_mode" };
+  const ids = ["676091c0f457869a94017a23", "676094451fec2f7426093be6", "6842c25bd02bc07d70054019",
+    "6842c27a38482d35ac0bd847", "68d3fe84757f8967ec09099b", "68d3ff840531ed76e808866c"];
+  for (const [index, id] of ids.entries()) {
+    payload.profile.info.prestigeLevel = 0;
+    payload.profile.achievements = { [id]: 1_783_495_000 };
+    const profile = parseSeasonalProfile(payload, options);
+    assert.equal(profile.seasonalStats.prestige, index + 1);
+    assert.equal(profile.staticSignals.prestige, index + 1);
+  }
+  payload.profile.info.prestigeLevel = 7;
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.prestige, 7);
+  delete payload.profile.info.prestigeLevel;
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.prestige, 6);
+  payload.profile.achievements = {};
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.prestige, null);
+  payload.profile.info.prestigeLevel = 0;
+  assert.equal(parseSeasonalProfile(payload, options).seasonalStats.prestige, 0);
+  payload.profile.info.prestigeLevel = -1;
+  assert.equal(validateSeasonalProfile(payload, options).code, "invalid_payload");
+});
+
 test("Seasonal run-throughs include a proven zero Scav counter omitted upstream", async () => {
   const payload = await loadFixture("seasonal-direct-profile.json");
   payload.pmcStats.eft.overAllCounters.Items.push({ Key: ["ExitStatus", "Runner", "Pmc"], Value: 3 });
