@@ -37,6 +37,7 @@ const { createSqliteSeasonalOperatorStore } = await import("../lib/seasonal/oper
 const { createSqliteSeasonalStore, initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
 const { DatabaseSync } = await import("node:sqlite");
 const { POST: postRun } = await import("../app/api/operator/seasonal/run/route.ts");
+const { POST: postBan } = await import("../app/api/operator/seasonal/ban/route.ts");
 
 const ACTIVE_CYCLE = "cycle-a";
 const RETIRED_CYCLE = "cycle-b";
@@ -87,6 +88,62 @@ const outcome = (body) => postRun(new Request("http://localhost/api/operator/sea
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ action: "outcome", owner: OWNER, ...body }),
 }));
+
+const ban = (body) => postBan(new Request("http://localhost/api/operator/seasonal/ban", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ evidence: "tarkov_dev_name_search_absence", owner: OWNER, ...body }),
+}));
+
+async function banTask(aid, at = Date.now(), withProfile = true) {
+  const cycleId = `ban-test-${aid}`;
+  if (withProfile) db.prepare(`INSERT INTO player_profiles (
+    mode, cycle_id, aid, nickname, profile_updated_at, last_access_at,
+    experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+    first_seen_at, last_seen_at
+  ) VALUES ('seasonal', ?, ?, 'Test', 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1)`).run(cycleId, aid);
+  await queue.enqueueTask({ mode: "seasonal", cycleId, aid, kind: "ban_check", priority: 1, now: at });
+  const run = operator.beginOrResumeRun(cycleId, OWNER, at);
+  const { task } = operator.claimNext(run.id, OWNER, at);
+  return { runId: run.id, taskId: task.id, aid, cycleId };
+}
+
+test("Seasonal ban confirmation rejects nonpositive IDs and blank identifiers", async () => {
+  const valid = { runId: 1, taskId: 1, aid: 1, cycleId: ACTIVE_CYCLE };
+  for (const field of ["runId", "taskId", "aid"]) {
+    for (const value of [0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      assert.equal((await ban({ ...valid, [field]: value })).status, 400);
+    }
+  }
+  for (const field of ["owner", "cycleId"]) {
+    for (const value of ["", "   "]) assert.equal((await ban({ ...valid, [field]: value })).status, 400);
+  }
+});
+
+test("Seasonal ban confirmation preserves lease and missing-profile conflicts", async () => {
+  assert.equal((await ban(await banTask(101, Date.now() - LEASE_MS - 1_000))).status, 409);
+  assert.equal((await ban({ ...await banTask(102), owner: "other" })).status, 409);
+  assert.equal((await ban(await banTask(103, Date.now(), false))).status, 409);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM upstream_ban_confirmations").get().n, 0);
+});
+
+test("Seasonal ban confirmation reports storage errors as 503 and rolls back", async (t) => {
+  const input = await banTask(104);
+  db.exec(`CREATE TRIGGER fail_ban_update BEFORE UPDATE ON player_profiles WHEN OLD.aid = 104
+    BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END`);
+  t.after(() => db.exec("DROP TRIGGER fail_ban_update"));
+  t.mock.method(console, "error", () => {});
+  const response = await ban(input);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 104").get().confirmed_banned, 0);
+});
+
+test("Seasonal ban confirmation persists a valid leased ban check", async () => {
+  assert.equal((await ban(await banTask(105))).status, 200);
+  assert.equal(db.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid = 105").get().confirmed_banned, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM upstream_ban_confirmations WHERE aid = 105").get().n, 1);
+});
 
 // The store throws before it writes anything, so a lapsed lease used to reach
 // the route's generic catch and answer a 503 outage. It is a conflict.

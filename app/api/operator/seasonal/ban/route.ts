@@ -31,6 +31,10 @@ export async function POST(request: Request) {
     });
     return Response.json({ ok: true }, { headers });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "active ban-check lease not found" || message === "Seasonal profile not found") {
+      return Response.json({ error: "Ban confirmation failed" }, { status: 409, headers });
+    }
     console.error("operator Seasonal ban confirmation failed", error);
     return Response.json({ error: "Ban confirmation failed" }, { status: 503, headers });
   }
