@@ -442,6 +442,33 @@ test("every Seasonal average branch reports request timing", () => {
   assert.match(handler, /outcome: "not_found", status: 404/);
 });
 
+test("persistent exact PMC kills average includes known zeros and skips missing counters", async () => {
+  const { getStore, getArenaBackend } = await import("../lib/db.ts");
+  const backend = await getArenaBackend();
+  assert.ok(backend);
+  const now = Date.now();
+  for (const mode of ["regular", "pve"]) {
+    const table = mode === "regular" ? "players" : "mode_players";
+    const insert = backend.db.prepare(`INSERT INTO ${table} (
+      ${mode === "pve" ? "mode, stats_json," : ""} aid, hours, pmc_raids, pvp_stats_known,
+      pvp_stats_version, pmc_killed_pmc, profile_updated_at, fetched_at
+    ) VALUES (${mode === "pve" ? "'pve', '{}'," : ""} ?, 100, 20, 1, ?, ?, ?, ?)`);
+    backend.db.exec("BEGIN");
+    try {
+      for (let i = 0; i < 22; i++) insert.run(800_000 + i, i < 20 ? 1 : 0, i < 10 ? 0 : i < 20 ? 20 : null, now, now);
+      backend.db.exec("COMMIT");
+    } catch (error) { backend.db.exec("ROLLBACK"); throw error; }
+    const store = await getStore(mode);
+    const matched = await store.cohort2d(100, 20, 999_999, "hours", "trimmed_mean", "all");
+    assert.equal(matched.strategy, "matched");
+    assert.equal(matched.n, 22);
+    assert.deepEqual(matched.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+    const population = await store.cohort2d(1000, 200, 999_999, "hours", "trimmed_mean", "all");
+    assert.equal(population.strategy, "population");
+    assert.deepEqual(population.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+  }
+});
+
 test("Arena and Seasonal cohort envelopes expose exact percentile capability", () => {
   const arenaBranch = regularRoute.slice(
     regularRoute.indexOf("async function arenaCohortResponse"),

@@ -6,6 +6,7 @@ import type { CSSProperties } from "react";
 import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { LeaderboardMeta, LeaderboardRow, LeaderboardSort } from "@/types/leaderboard";
+import { LeaderboardPreviewLink } from "@/components/LeaderboardPreview";
 
 function formatNumber(value: number | null, locale: string, digits = 0): string {
   return value == null
@@ -178,7 +179,7 @@ export default function LeaderboardTable({
                   </td>
                   <th scope="row">
                     <span className="leaderboard-player">
-                      <Link href={profileHref} prefetch={false} className="leaderboard-player__name">{row.nickname || `#${row.aid}`}</Link>
+                      <LeaderboardPreviewLink aid={row.aid} nickname={row.nickname} href={profileHref} className="leaderboard-player__name" />
                       {showPrestige && <PrestigeBadge key={prestige} level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
                     </span>
                     {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}
@@ -226,9 +227,7 @@ export default function LeaderboardTable({
             >
               <div className="leaderboard-card__top">
                 <span className="leaderboard-card__player">
-                  <Link href={profileHref} prefetch={false} className="leaderboard-card__name">
-                    {row.nickname || `#${row.aid}`}
-                  </Link>
+                  <LeaderboardPreviewLink aid={row.aid} nickname={row.nickname} href={profileHref} className="leaderboard-card__name" />
                   {showPrestige && <PrestigeBadge key={prestige} level={prestige} label={t("player.prestigeLabel", { n: prestige })} />}
                 </span>
                 {row.selected && <span className="sr-only"> {t("leaderboard.selectedPlayer")}</span>}

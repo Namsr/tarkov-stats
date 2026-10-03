@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
+import { LeaderboardPreviewProvider } from "@/components/LeaderboardPreview";
 import { useI18n } from "@/lib/i18n/context";
 import { ARENA_MODE_KEYS, type ArenaModeKey } from "@/types/arena";
 import type {
@@ -372,6 +373,7 @@ export default function LeaderboardPage() {
           {/* No key here on purpose: rows keep their DOM nodes across sorts,
               so updates swap instantly instead of flashing. The entrance
               cascade (lb-rise) plays once on first mount. */}
+          <LeaderboardPreviewProvider key={`${visible.meta.mode}:${visible.meta.cycleId}:${visible.meta.arenaMode}:${visible.meta.generation}`} meta={visible.meta}>
           <div className={`leaderboard-lists${focused ? " leaderboard-lists--focused" : ""}${visible.around ? " leaderboard-lists--has-around" : ""}`} data-mobile-list={mobileList}>
             <LeaderboardTable
               id="leaderboard-top"
@@ -395,6 +397,7 @@ export default function LeaderboardPage() {
               </section>
             )}
           </div>
+          </LeaderboardPreviewProvider>
         </div>
       )}
     </main>
