@@ -142,7 +142,8 @@ function stats(experience: number, pmcRaids: number) {
 
 for (const mode of ["regular", "pve"] as const) {
   for (const [column, corrupt] of [["stats_json", "{broken"], ["stats_json", "null"],
-    ["stats_json", "[]"], ["achievements", "null"], ["achievements", '[42]']] as const) {
+    ["stats_json", "[]"], ["stats_json", '{"experience":{}}'], ["stats_json", '{"pmcKills":"oops"}'],
+    ["achievements", "null"], ["achievements", '[42]']] as const) {
     test(`${mode} repairs corrupt ${column}=${corrupt} without admitting stale or duplicate versions`, async (t) => {
       t.mock.method(console, "warn", () => {});
       const db = new DatabaseSync(":memory:");

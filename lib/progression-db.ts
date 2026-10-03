@@ -102,6 +102,12 @@ function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
       !Array.isArray(achievementIds) || !achievementIds.every((id) => typeof id === "string")) {
       throw new Error("invalid snapshot JSON structure");
     }
+    for (const field of [...CUMULATIVE_FIELDS, "pmcSurvived", "pmcKills"]) {
+      const value = (stats as Record<string, unknown>)[field];
+      if (value != null && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+        throw new Error(`invalid snapshot counter ${field}`);
+      }
+    }
     return {
       id: Number(row.id),
       mode: String(row.mode) as PersistentProgressionMode,
