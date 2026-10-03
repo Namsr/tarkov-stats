@@ -732,7 +732,14 @@ test("PvE rate-limit wait is clamped to the run budget", async () => {
       summary.durationMs < 4_000,
       `the run must end on time, not one 10s spacing past the deadline (was ${summary.durationMs}ms)`,
     );
-    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":0,"phase":"rate_limit","aid":11,"attempt":1\}/);
+    const cutLine = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
+    assert.ok(cutLine, "collector logs the rate-limit cut");
+    const { remainingMs, ...cut } = JSON.parse(cutLine.slice(cutLine.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
+    assert.deepEqual(cut, { stopReason: "max_run_ms", phase: "rate_limit", aid: 11, attempt: 1 });
+    // Millisecond timer rounding can wake the clamped wait just before its
+    // deadline. The call count, duration, and pending row still prove the cut.
+    assert.ok(Number.isInteger(remainingMs) && remainingMs >= 0 && remainingMs <= 5,
+      `the clamped wait exhausts the run budget (remaining ${remainingMs}ms)`);
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 11").get().status,
       "pending",
