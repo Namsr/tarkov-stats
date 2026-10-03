@@ -32,7 +32,7 @@ export default function AuthButton() {
   }
 
   if (loading) {
-    return <div className="h-11 w-24 skeleton rounded-full" aria-hidden />;
+    return <><div className="h-11 w-24 skeleton rounded-full" aria-hidden /><span className="sr-only" role="status">{t("common.loading")}</span></>;
   }
 
   if (!user) {
