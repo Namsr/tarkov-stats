@@ -51,6 +51,7 @@ export default function SiteHeader() {
             <AverageNavButton onNavigate={() => setOpen(false)} />
             {[
               { href: "/leaderboard", label: t("nav.leaderboard"), prefix: true },
+              { href: "/axis-league", label: t("axis.title") },
               { href: "/about", label: t("nav.about") },
               { href: "/support", label: t("nav.support"), support: true },
               { href: "/community", label: t("nav.community") },

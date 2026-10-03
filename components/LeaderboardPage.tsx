@@ -298,6 +298,7 @@ export default function LeaderboardPage() {
       </Link>
       <p className="page-kicker mt-7">{t("leaderboard.kicker")}</p>
       <h1 className="page-title">{t("leaderboard.title")}</h1>
+      <div className="axis-leaderboard-link"><Link href="/axis-league" className="ghost-button">{t("axis.title")} <span aria-hidden>↗</span></Link></div>
 
       <section className="leaderboard-controls data-panel" aria-label={t("leaderboard.settings") }>
         <div className="leaderboard-mode-switch" role="group" aria-label={t("leaderboard.mode") }>
