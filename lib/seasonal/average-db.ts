@@ -4,7 +4,7 @@ import { loadSeasonalCycleConfig } from "./config.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { buildSeasonalAverageSeries, LIFETIME_BAND_DISTRIBUTION_SQL, lifetimeBandDistribution, progressionDailySql, SEASONAL_POPULATION_SQL, seasonalPopulationArgs, seasonalPopulationSummary, type DailyRow, type LifetimeBandCountRow, type SeasonalPopulationRow } from "./progression.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { initializeSeasonalSchema, parseSeasonalAchievementUnlocks, upsertSqliteSeasonCycle } from "./storage.ts";
+import { initializeSeasonalSchema, upsertSqliteSeasonCycle } from "./storage.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { ProgressionKind, SeasonalAverageResponse } from "../../types/seasonal.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
@@ -13,10 +13,7 @@ import { resolveY } from "../metrics.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { percentile20 } from "./analytics.ts";
+import { prepareSeasonalRiskAchievements } from "./risk-achievement-population.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -470,16 +467,22 @@ export function selectSeasonalRiskPercent(
   ) ?? 30;
 }
 
-function summary(values: number[]): { mean: number; std: number; early: number } {
-  if (values.length === 0) return { mean: 0, std: 0, early: 0 };
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  return {
-    mean,
-    std: Math.sqrt(Math.max(0, variance)),
-    early: percentile20(values) ?? mean,
-  };
-}
+// One prepared population, invalidated by either external commits or writes
+// through this handle. A worker can score distinct players without rebuilding
+// JSON and order statistics; excluding the target remains exact per owner.
+let riskAchievementPopulation: {
+  db: AverageBackend["db"];
+  cycleId: string;
+  version: number;
+  changes: number;
+  baseline: ReturnType<typeof prepareSeasonalRiskAchievements>;
+} | null = null;
+
+const LATEST_RISK_SNAPSHOT_JOIN = `JOIN progression_snapshots latest ON latest.id = (
+  SELECT current.id FROM progression_snapshots current
+  WHERE current.mode = p.mode AND current.cycle_id = p.cycle_id AND current.aid = p.aid
+  ORDER BY current.profile_updated_at DESC, current.id DESC LIMIT 1
+)`;
 
 export async function getSeasonalAchievementBaseline(
   cycleId: string,
@@ -494,80 +497,25 @@ export async function getSeasonalAchievementBaseline(
       [cycleId],
     );
     const seasonStartsAt = finiteValue(cycle?.starts_at);
-    const rows = await backendRows(backend, `WITH latest AS (
-      SELECT s.* FROM progression_snapshots s
-      JOIN (
-        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
-        FROM progression_snapshots
-        WHERE mode = 'seasonal' AND cycle_id = ?
-        GROUP BY aid, cycle_id
-      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
-        AND current.profile_updated_at = s.profile_updated_at
-      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-    ) SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.achievements,
-        cycle.starts_at
+    const version = Number(backend.db.prepare("PRAGMA data_version").get().data_version);
+    const changes = Number(backend.db.prepare("SELECT total_changes() AS n").get().n);
+    if (riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
+        riskAchievementPopulation.cycleId === cycleId &&
+        riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
+      return riskAchievementPopulation.baseline(excludeAid);
+    }
+    const rows = await backendRows(backend, `SELECT p.aid, p.lifetime_pvp_hours AS hours,
+        latest.achievements, cycle.starts_at
       FROM player_profiles p
-      JOIN latest ON latest.aid = p.aid
-        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
-      JOIN season_cycles cycle ON cycle.mode = 'seasonal' AND cycle.cycle_id = ?
+      ${LATEST_RISK_SNAPSHOT_JOIN}
+      JOIN season_cycles cycle ON cycle.mode = p.mode AND cycle.cycle_id = p.cycle_id
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
         AND latest.pmc_raids >= 1
-        ${excludeAid == null ? "" : "AND p.aid != ?"}
-        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`,
-      [cycleId, cycleId, cycleId, cycleId, ...(excludeAid == null ? [] : [excludeAid])]);
-
-    const eligible = rows.flatMap((row) => {
-      const achievements = parseSeasonalAchievementUnlocks(row.achievements);
-      if (achievements === null) return [];
-      return [{
-        aid: Number(row.aid),
-        hours: finiteValue(row.hours),
-        startsAt: finiteValue(row.starts_at),
-        achievements,
-      }];
-    });
-    const byAchievement = new Map<string, {
-      hours: number[];
-      unlockDays: number[];
-      owners: Set<number>;
-    }>();
-    for (const owner of eligible) {
-      const aid = owner.aid;
-      for (const achievement of owner.achievements) {
-        const entry = byAchievement.get(achievement.id) ?? {
-          hours: [], unlockDays: [], owners: new Set<number>(),
-        };
-        entry.owners.add(aid);
-        if (owner.hours !== null && owner.hours >= 0) entry.hours.push(owner.hours);
-        if (achievement.unlockedAt !== null && owner.startsAt !== null) {
-          const day = (achievement.unlockedAt - owner.startsAt) / 86_400_000;
-          if (Number.isFinite(day) && day >= 0) entry.unlockDays.push(day);
-        }
-        byAchievement.set(achievement.id, entry);
-      }
-    }
-    const eligibleN = eligible.length;
-    return {
-      total: eligibleN,
-      eligibleN,
-      seasonStartsAt,
-      achievements: [...byAchievement.entries()].map(([ach_id, value]) => {
-        const hours = summary(value.hours);
-        return {
-          ach_id,
-          owners: value.owners.size,
-          eligibleN,
-          prevalencePct: eligibleN > 0 ? value.owners.size / eligibleN * 100 : 0,
-          meanHours: hours.mean,
-          stdHours: hours.std,
-          earlyHours: hours.early,
-          unlockHours: achievementUnlockHours(value.hours) ?? hours.mean,
-          unlockDayP20: percentile20(value.unlockDays),
-          timestampOwners: value.unlockDays.length,
-        };
-      }).sort((left, right) => left.prevalencePct - right.prevalencePct || left.ach_id.localeCompare(right.ach_id)),
-    };
+        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`, [cycleId]);
+    const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
+    riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
+    return baseline(excludeAid);
   } catch (error) {
     console.warn("seasonal achievement baseline unavailable: " + (error as Error).message);
     return null;
@@ -592,23 +540,12 @@ export async function getSeasonalRiskBaseline(
   try {
     const backend = await openSeasonalAverageBackend();
     if (!backend) return null;
-    const population = `WITH latest AS (
-      SELECT s.* FROM progression_snapshots s
-      JOIN (
-        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
-        FROM progression_snapshots
-        WHERE mode = 'seasonal' AND cycle_id = ?
-        GROUP BY aid, cycle_id
-      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
-        AND current.profile_updated_at = s.profile_updated_at
-      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-    ), eligible AS (
+    const population = `WITH eligible AS (
       SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.pmc_raids,
         latest.pmc_survived, latest.pmc_deaths, latest.pmc_kills,
         latest.killed_pmc, latest.longest_win_streak, latest.prestige
       FROM player_profiles p
-      JOIN latest ON latest.aid = p.aid
-        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
+      ${LATEST_RISK_SNAPSHOT_JOIN}
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
         AND p.lifetime_pvp_hours > 0 AND latest.pmc_raids > 0
@@ -632,7 +569,7 @@ export async function getSeasonalRiskBaseline(
       `${population} SELECT ${SEASONAL_RISK_COHORT_PERCENTAGES.map((percent, index) =>
         `SUM(CASE WHEN ${countConditions[index].sql} THEN 1 ELSE 0 END) AS count_${percent}`
       ).join(", ")} FROM eligible ${widest.where}`,
-      [cycleId, cycleId, cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
+      [cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
     );
     const counts = Object.fromEntries(SEASONAL_RISK_COHORT_PERCENTAGES.map((percent) => [
       percent, finiteRiskCount(countRow?.[`count_${percent}`]),
@@ -646,7 +583,7 @@ export async function getSeasonalRiskBaseline(
       `${population} SELECT pmc_raids, pmc_survived, pmc_deaths,
         pmc_kills, killed_pmc, longest_win_streak, prestige
       FROM eligible ${selected.where}`,
-      [cycleId, cycleId, cycleId, ...selected.params],
+      [cycleId, ...selected.params],
     );
     const metrics: Record<string, number[]> = {
       pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [],
