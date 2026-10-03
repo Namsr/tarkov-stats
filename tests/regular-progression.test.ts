@@ -140,6 +140,72 @@ function stats(experience: number, pmcRaids: number) {
   });
 }
 
+for (const mode of ["regular", "pve"] as const) {
+  for (const [column, corrupt] of [["stats_json", "{broken"], ["stats_json", "null"],
+    ["stats_json", "[]"], ["stats_json", '{"experience":{}}'], ["stats_json", '{"pmcKills":"oops"}'],
+    ["achievements", "null"], ["achievements", '[42]']] as const) {
+    test(`${mode} repairs corrupt ${column}=${corrupt} without admitting stale or duplicate versions`, async (t) => {
+      t.mock.method(console, "warn", () => {});
+      const db = new DatabaseSync(":memory:");
+      t.after(() => db.close());
+      const store = createSqliteProgressionStore(db, mode);
+      const capture = (updatedAt) => ({ aid: 42, upstreamUpdatedAt: updatedAt, capturedAt: updatedAt + 1,
+        achievementIds: ["first"], stats: JSON.parse(stats(updatedAt / day * 100, updatedAt / day * 10)) });
+      await store.recordSnapshot(capture(day));
+      await store.recordSnapshot(capture(2 * day));
+      db.prepare(`UPDATE progression_snapshots SET ${column} = ?
+        WHERE mode = ? AND aid = 42 AND upstream_updated_at = ?`).run(corrupt, mode, 2 * day);
+      assert.equal((await store.latest(42)).upstreamUpdatedAt, day);
+      assert.deepEqual((await store.history(42)).map((row) => row.upstreamUpdatedAt), [day]);
+      const stale = await store.recordSnapshot(capture(1.5 * day));
+      assert.equal(stale.status, "stale");
+      assert.equal(stale.previousUpdatedAt, 2 * day);
+      assert.equal(stale.inserted, false);
+      assert.equal((await store.recordSnapshot(capture(2 * day))).status, "duplicate");
+      assert.equal((await store.latest(42)).upstreamUpdatedAt, 2 * day);
+      assert.equal((await store.history(42)).length, 2);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+      assert.equal((await store.recordSnapshot(capture(3 * day))).status, "progression");
+    });
+  }
+
+  test(`${mode} starts an anomaly after corrupt JSON and recovers normal capture`, async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const db = new DatabaseSync(":memory:");
+    t.after(() => db.close());
+    const store = createSqliteProgressionStore(db, mode);
+    const capture = (updatedAt) => ({ aid: 42, upstreamUpdatedAt: updatedAt, capturedAt: updatedAt + 1,
+      achievementIds: [], stats: JSON.parse(stats(updatedAt / day * 100, updatedAt / day * 10)) });
+    await store.recordSnapshot(capture(day));
+    db.exec("UPDATE progression_snapshots SET stats_json = 'null'");
+    assert.equal(await store.latest(42), null);
+    assert.deepEqual(await store.history(42), []);
+    const fresh = await store.recordSnapshot(capture(2 * day));
+    assert.equal(fresh.status, "schema_anomaly");
+    assert.equal(fresh.previousUpdatedAt, day);
+    assert.equal(fresh.delta, null);
+    assert.equal((await store.latest(42)).upstreamUpdatedAt, 2 * day);
+    assert.equal((await store.recordSnapshot(capture(3 * day))).status, "progression");
+  });
+}
+
+test("corrupt snapshot repair rolls back when interval materialization fails", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  const store = createSqliteProgressionStore(db);
+  const capture = { aid: 42, upstreamUpdatedAt: day, capturedAt: day + 1,
+    achievementIds: [], stats: JSON.parse(stats(100, 10)) };
+  await store.recordSnapshot(capture);
+  db.exec(`UPDATE progression_snapshots SET stats_json = 'null';
+    CREATE TRIGGER fail_repair BEFORE UPDATE ON player_profiles
+    BEGIN SELECT RAISE(ABORT, 'repair materialization failed'); END`);
+  await assert.rejects(store.recordSnapshot(capture), /repair materialization failed/);
+  assert.equal(db.prepare("SELECT stats_json FROM progression_snapshots").get().stats_json, "null");
+  db.exec("DROP TRIGGER fail_repair");
+  assert.equal((await store.recordSnapshot(capture)).status, "duplicate");
+});
+
 test("banned persistent accounts keep personal history without entering the average", async () => {
   for (const mode of ["regular", "pve"] as const) {
     const db = new DatabaseSync(":memory:");
