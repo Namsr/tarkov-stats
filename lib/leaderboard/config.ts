@@ -1,6 +1,5 @@
 import type { ArenaModeKey } from "@/types/arena";
 import type { LeaderboardMode, LeaderboardPrimaryMetric } from "@/types/leaderboard";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { loadSeasonalCycleConfig } from "../seasonal/config.ts";
 
 export const LEADERBOARD_ACTIVITY_CUTOFF_MS = Date.parse("2025-11-15T00:00:00+03:00");

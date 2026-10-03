@@ -1,6 +1,4 @@
-// @ts-expect-error Node's strip-types runtime requires the explicit extension.
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
-// @ts-expect-error Node's strip-types runtime requires the explicit extension.
 import { materializePersistentProgression, PERSISTENT_CYCLE_ID } from "./regular-progression.ts";
 
 export interface PveProgressionSeedResult {

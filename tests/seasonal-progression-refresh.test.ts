@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
-// @ts-expect-error -- Node's strip-types runner resolves the explicit .ts module.
 import { createSqliteSeasonalOperatorStore, normalizeProgressionRefreshCandidates } from "../lib/seasonal/operator.ts";
-// @ts-expect-error -- Node's strip-types runner resolves the explicit .ts module.
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 
 test("Seasonal refresh restart caps one synchronized batch at 500 candidates", () => {
@@ -35,7 +32,7 @@ test("Seasonal progression refresh restart replaces the active queue in upstream
   assert.equal(secondRestart.run.id, restarted.run.id);
   const replacement = store.claimNextProgressionRefresh(secondRestart.run.id, "extension-test", 1_003);
   assert.equal(replacement.candidate?.aid, 399);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?").get(restarted.run.id).n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?").get(restarted.run.id)!.n, 1);
 });
 
 test("Seasonal progression refresh freezes eligible active-cycle snapshots in oldest-latest order", () => {
@@ -88,6 +85,6 @@ test("Seasonal progression refresh freezes eligible active-cycle snapshots in ol
   const done = store.claimNextProgressionRefresh(started.run.id, "extension-test", 10_007);
   assert.equal(done.candidate, null);
   assert.equal(done.run.state, "completed");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?").get(started.run.id).n, 2);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ? AND aid = 106").get(started.run.id).n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ?").get(started.run.id)!.n, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM seasonal_progression_refresh_candidates WHERE run_id = ? AND aid = 106").get(started.run.id)!.n, 0);
 });

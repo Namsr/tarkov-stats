@@ -2,13 +2,17 @@
   "name": "tarkov-stats",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "i18n:check": "node scripts/i18n-check.mjs",
     "prebuild": "node scripts/i18n-check.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint app components lib scripts tests types next.config.ts eslint.config.mjs postcss.config.mjs",
+    "typecheck": "next typegen && tsc --noEmit",
     "test:admin-moderation": "node --experimental-strip-types --test tests/achievement-baseline-publication.test.ts tests/admin-moderation.test.ts",
     "test:average-publication": "node --experimental-strip-types --experimental-sqlite --test tests/average-publication.test.ts",
     "test:average-client": "node --experimental-strip-types --test tests/client-average-request.test.ts",
@@ -20,9 +24,6 @@
     "test:index-sync": "node --experimental-strip-types --experimental-sqlite --test tests/player-index-sync.test.mjs tests/pve-index-sync.test.mjs tests/arena-index-sync.test.mjs tests/seasonal-index-sync.test.mjs",
     "test:arena": "node --experimental-strip-types --experimental-sqlite --test tests/arena-core.test.ts tests/arena-ts-rating.test.ts tests/arena-index-sync.test.mjs tests/arena-profile-sync.test.mjs tests/arena-pve-parser.test.ts tests/arena-routes.test.ts tests/arena-moderation-isolation.test.ts tests/arena-stored-risk.test.ts tests/arena-ui.test.mjs tests/cohort-routes.test.mjs",
     "test:ops": "node --experimental-strip-types --test tests/deploy-wrapper.test.mjs tests/backup-db.test.mjs tests/profile-queue-wrapper.test.mjs tests/sync-unit-budgets.test.mjs tests/admin-risk-backfill.test.mjs tests/average-materialize-once.test.mjs tests/caddy-overload.test.mjs",
-    "build:rust": "cargo build --release --locked --manifest-path rust/Cargo.toml",
-    "test:rust": "cargo test --locked --manifest-path rust/Cargo.toml && cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings",
-    "test:feed-differential": "npm run build:rust && node rust/tarkovstats-feed/tools/differential.mjs",
     "backfill:regular-progression": "node --experimental-strip-types scripts/backfill-regular-progression.mjs",
     "backfill:progression": "node --experimental-strip-types scripts/backfill-progression.mjs",
     "backfill:seasonal-average": "node --experimental-strip-types --experimental-sqlite scripts/backfill-seasonal-average.mjs",
@@ -43,25 +44,25 @@
     "test:progression-memory": "node --experimental-strip-types --test tests/progression-memory.test.mjs"
   },
   "dependencies": {
-    "jose": "^6.2.3",
-    "next": "^16.2.12",
+    "jose": "^6.2.12",
+    "next": "^16.3.8",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "overrides": {
+    "postcss": "8.5.28",
     "next": {
-      "postcss": "8.5.25",
-      "sharp": "0.35.3"
+      "sharp": "0.35.5"
     }
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "^16.2.6",
-    "tailwindcss": "^4",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.8",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5"
   }
 }

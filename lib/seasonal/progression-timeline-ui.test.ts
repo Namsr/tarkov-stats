@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error -- Node's strip-types test runner requires the extension; Next accepts it.
 import { progressionLineSegments } from "./progression-timeline-ui.ts";
 
 const point = (pmcRaids: number, value: number, seriesId: number | null = 1) => ({

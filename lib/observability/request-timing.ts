@@ -1,5 +1,4 @@
 import type { GameMode } from "@/types/seasonal";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { recordRequestEvent } from "../admin/request-events.ts";
 
 type Mode = GameMode;

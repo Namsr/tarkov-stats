@@ -1,6 +1,4 @@
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { canonicalAdminHost } from "./types.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { getAnalyticsStore, type RequestEvent } from "./analytics-db.ts";
 import { createHmac } from "node:crypto";
 

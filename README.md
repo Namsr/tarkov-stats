@@ -6,7 +6,7 @@ historical statistics.
 
 ## Development
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.18 or newer. CI and the production image use Node.js 22.
 
 ```bash
 npm install
@@ -20,9 +20,12 @@ Useful checks before opening a pull request:
 ```bash
 npm run i18n:check
 npm run lint
+npm run typecheck
 npm test
 npm run build
 ```
+
+Pull requests run the same checks on Linux before the production image is built.
 
 Most local development works without additional configuration. If a local
 integration needs environment variables, copy `.env.example` to `.env` and use

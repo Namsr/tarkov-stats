@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// @ts-expect-error Node's strip-types runner needs explicit extensions.
 import { comparisonDossier, comparisonAdvantage, comparisonTimelineBenchmark } from "../lib/comparison-dossier.ts";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
 const scope = { mode: "seasonal", cycleId: "s1", arenaMode: null } as const;

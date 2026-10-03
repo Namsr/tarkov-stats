@@ -13,9 +13,7 @@ import type { WeaponMasteryProgress } from "@/types/tarkov";
 // explicit extension is required by Node's strip-types ESM loader; Next's
 // bundler supports it, while TypeScript's bundler resolver reports a false
 // positive for this cross-runtime import.
-// @ts-expect-error Node strip-types requires the explicit .ts extension here.
 import { expToLevel, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
-// @ts-expect-error Node strip-types requires the explicit .ts extension here.
 import { normalizeWeaponMastery } from "./profile-mastery.ts";
 
 export type SeasonalUpstreamContract = SeasonalUpstreamContractType;

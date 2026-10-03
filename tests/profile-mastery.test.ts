@@ -3,9 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-// @ts-expect-error Node's strip-types test runner resolves the explicit .ts module.
 import { buildWeaponMasteryRows, displayedWeaponMasteryProgress, normalizeWeaponMastery, parseWeaponMastery, sortWeaponMastery, weaponMasteryLevel } from "../lib/profile-mastery.ts";
-// @ts-expect-error Node's strip-types test runner resolves the explicit .ts module.
 import { getWeaponMastery, parseProfileStats } from "../lib/tarkov-api.ts";
 
 test("weapon mastery parser validates handbook rows and level boundaries", () => {

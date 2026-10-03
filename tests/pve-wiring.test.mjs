@@ -18,7 +18,8 @@ test("PvE sync scripts stay one-shot commands for systemd", async () => {
   assert.equal(packageJson.scripts["sync:player-indexes-loop"], undefined);
   assert.match(dockerfile, /COPY --from=builder --chown=nextjs:nodejs \/app\/scripts\/sync-pve-index\.mjs \.\/scripts\/sync-pve-index\.mjs/);
   assert.match(dockerfile, /COPY --from=builder --chown=nextjs:nodejs \/app\/scripts\/sync-pve-profiles\.mjs \.\/scripts\/sync-pve-profiles\.mjs/);
-  assert.match(dockerfile, /COPY --from=builder --chown=nextjs:nodejs \/app\/lib\/pve-progression-seed-core\.ts \.\/lib\/pve-progression-seed-core\.ts/);
+  assert.match(dockerfile, /COPY --from=builder --chown=nextjs:nodejs \/app\/lib \.\/lib/);
+  assert.ok((await readFile("lib/pve-progression-seed-core.ts", "utf8")).length > 0);
   assert.doesNotMatch(dockerfile, /sync-player-indexes-loop\.mjs|sync-seasonal-feed-loop\.mjs/);
   assert.doesNotMatch(startup, /sync-player-indexes-loop\.mjs|sync-seasonal-feed-loop\.mjs/);
 });

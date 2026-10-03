@@ -1,4 +1,3 @@
-// @ts-expect-error Node's strip-types runner needs explicit extensions.
 import { normalizeProfileSkill, type ProfileSkill } from "./profile-skills.ts";
 import type { ComparisonScope } from "../types/comparison";
 import type { PublicRiskView } from "../types/profile-view";

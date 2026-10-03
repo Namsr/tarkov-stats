@@ -8,7 +8,6 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import test from "node:test";
-// @ts-ignore -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
 
 registerHooks({
@@ -41,6 +40,7 @@ process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 const { getStore, AVG_COLS } = await import("../lib/db.ts");
 const { getProgressionStore } = await import("../lib/progression-db.ts");
 const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
+const { isLocalFakeAverageEnabled } = await import("../lib/local-fake-average.ts");
 const {
   ADMIN_RISK_SCORE_VERSIONS,
   evaluateAndStoreRisk,
@@ -58,6 +58,27 @@ const pveStore = await getStore("pve");
 assert.ok(store);
 assert.ok(pveStore);
 const db = new DatabaseSync(databasePath);
+test("fabricated averages are available only when explicitly enabled in development", () => {
+  const previousEnvironment = process.env.NODE_ENV;
+  const previousFlag = process.env.LOCAL_FAKE_AVERAGE;
+  try {
+    process.env.LOCAL_FAKE_AVERAGE = "1";
+    for (const environment of ["production", "test", undefined]) {
+      if (environment == null) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = environment;
+      assert.equal(isLocalFakeAverageEnabled(), false);
+    }
+    process.env.NODE_ENV = "development";
+    assert.equal(isLocalFakeAverageEnabled(), true);
+    process.env.LOCAL_FAKE_AVERAGE = "0";
+    assert.equal(isLocalFakeAverageEnabled(), false);
+  } finally {
+    if (previousEnvironment == null) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnvironment;
+    if (previousFlag == null) delete process.env.LOCAL_FAKE_AVERAGE;
+    else process.env.LOCAL_FAKE_AVERAGE = previousFlag;
+  }
+});
 for (const name of [
   "idx_players_average_kd_ratio",
   "idx_mode_players_average_kd_ratio",

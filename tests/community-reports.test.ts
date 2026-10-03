@@ -1,13 +1,10 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-ignore -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
 import {
   createSqliteCommunityReportsStore,
   getCommunityReportsStore,
   type CommunityReportsStore,
-// @ts-ignore -- Node's strip-types runner resolves the explicit .ts module.
 } from "../lib/community-reports-db.ts";
 
 const storeFactories: [string, () => CommunityReportsStore][] = [

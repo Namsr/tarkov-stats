@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 const { arpOrderKey, compareOrderKeys, kdValue, performanceScore } = await import("../lib/leaderboard/ranking.ts");
 
 const formula = {

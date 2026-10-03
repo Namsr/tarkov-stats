@@ -345,17 +345,6 @@ export async function getBanStore(): Promise<BanStore | null> {
   return db ? createSqliteBanStore(db) : null;
 }
 
-/** False when the local ban database is unavailable. */
-export async function isAidBanned(aid: number): Promise<boolean> {
-  const store = await getBanStore();
-  return store ? store.isBanned(aid) : false;
-}
-
-export async function getBanConfirmationSources(aid: number): Promise<string[]> {
-  const store = await getBanStore();
-  return store ? store.sources(aid) : [];
-}
-
 export async function confirmBanned(
   input: PlayerSnapshotInput,
   meta?: BanConfirmationMeta

@@ -1,5 +1,4 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { canonicalAdminHost, periodMilliseconds } from "./types.ts";
 
 const ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";

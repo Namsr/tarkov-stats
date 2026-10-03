@@ -1,7 +1,6 @@
 import type { ProfileComparisonStats } from "../types/profile-view.ts";
 import type { ParsedPlayerStats } from "../types/tarkov.ts";
 import type { SeasonalProfile } from "../types/seasonal.ts";
-// @ts-expect-error Node's strip-types test runner requires the explicit extension.
 import { seasonalKdRatio } from "./seasonal/ui.ts";
 
 function finiteOrNull(value: unknown): number | null {

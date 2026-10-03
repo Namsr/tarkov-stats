@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
-// @ts-expect-error Direct Node TypeScript tests require explicit extensions.
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
-// @ts-expect-error Direct Node TypeScript tests require explicit extensions.
 import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
 
 function seed(db: DatabaseSync, mode = "regular", cycleId = "persistent") {

@@ -9,22 +9,17 @@ import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-// @ts-expect-error Node's strip-types test runner requires the extension.
 import {
   buildProgressionMetricSeries,
   parseProgressionTimelineRequest,
 } from "../lib/seasonal/progression.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension.
 import {
   DAY_MS,
   buildSequentialIntervals,
   calculateKd,
 } from "../lib/seasonal/analytics.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension.
 import { PROGRESSION_METRIC_KEYS } from "../types/seasonal.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension.
 import { progressionLineSegments } from "../lib/seasonal/progression-timeline-ui.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension.
 import { initializeSeasonalSchema, createSqliteSeasonalStore } from "../lib/seasonal/storage.ts";
 import {
   timelineHasPlayerHistory,

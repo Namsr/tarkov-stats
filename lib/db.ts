@@ -298,7 +298,6 @@ function appendCondition(where: string, condition: string): string {
 }
 
 function averagePeriodWhere(
-  mode: CrossSectionMode,
   period: AveragePeriod,
   where: string,
   cutoff?: number,
@@ -733,7 +732,6 @@ function twoDimensionalPopulationWhere(
     where: cohortEligibilityWhere(
       mode,
       averagePeriodWhere(
-        mode,
         cohortSelectionPeriod(mode, period),
         "WHERE hours > 0 AND pmc_raids > 0 AND aid != ?",
         cutoff,
@@ -1431,7 +1429,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       },
       async averages(range, statistic = "trimmed_mean", period = "all") {
         const { where: rangeWhere, params } = statRangeClause(range);
-        const where = averagePeriodWhere(mode, period, rangeWhere);
+        const where = averagePeriodWhere(period, rangeWhere);
         const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
         const n = Number(cnt?.n ?? 0);
         if (n === 0) return emptyAverageRow();
@@ -1454,25 +1452,25 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         return row;
       },
       async bracketAggregate(column, period = "all") {
-        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(period, ""));
         const rows = db.prepare(aggSql(column, where)).all() as { bracket_key: string; n: number; s: number }[];
         return toBracketAggs(rows);
       },
       async bucketAggregate(dimension, column, period = "all", statistic = "trimmed_mean") {
-        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(mode, period, ""));
+        const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(period, ""));
         const rows = db.prepare(bucketAggSql(dimension, column, where, statistic)).all() as {
           lo: number; hi: number | null; n: number; s: number;
         }[];
         return toBucketAggs(rows);
       },
       async populationCount(period = "all") {
-        const where = averagePeriodWhere(mode, period, "");
+        const where = averagePeriodWhere(period, "");
         const row = db.prepare(countSql(where)).get() as { n?: unknown } | undefined;
         return Number(row?.n ?? 0) || 0;
       },
       async rangeBounds(dimension, period = "all") {
         const column = rangeColumn(dimension);
-        const where = averagePeriodWhere(mode, period, "");
+        const where = averagePeriodWhere(period, "");
         const row = db.prepare(
           `SELECT MIN(${column}) AS lo, MAX(${column}) AS hi FROM players ${where}`
         ).get() as { lo: number | null; hi: number | null } | undefined;
@@ -1493,7 +1491,6 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const ranges = uniqueCohortRanges(dimension, center);
         const countParams = ranges.flatMap(({ bounds }) => [bounds.min, bounds.max]);
         const countWhere = cohortEligibilityWhere(mode, averagePeriodWhere(
-          mode,
           cohortSelectionPeriod(mode, period),
           `WHERE ${rangeColumn(dimension)} > 0 AND aid != ?`,
           cutoff,
@@ -1533,7 +1530,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         const { where: groupWhere, params } = statRangeClause(groupRange);
         const where = cohortEligibilityWhere(
           mode,
-          averagePeriodWhere(mode, period, groupWhere, cutoff),
+          averagePeriodWhere(period, groupWhere, cutoff),
         );
         const cohortN = Number(
           (db.prepare(countSql(where)).get(...params) as { n: number } | undefined)?.n ?? 0
@@ -1612,7 +1609,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           const where = eligibleMetricWhere(
             mode,
             column,
-            averagePeriodWhere(mode, period, rangeWhere),
+            averagePeriodWhere(period, rangeWhere),
           );
           const row = db.prepare(histogramAvgSql(column, where)).get(...params) as
             | { a: number | null }

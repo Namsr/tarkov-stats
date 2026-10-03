@@ -11,7 +11,6 @@ import {
   performanceScore,
   type PerformanceFormula,
 }
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 from "./ranking.ts";
 import type { PublishedMember, PublishedOrder } from "./publication.ts";
 

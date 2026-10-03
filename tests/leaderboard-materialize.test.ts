@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { LEADERBOARD_FORMULA_VERSION, LEADERBOARD_METRIC_VERSION, materializeCandidate, median, referenceFormula } from "../lib/leaderboard/materialize.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardFullReason } from "../lib/leaderboard/config.ts";
 
 const baseConfig = {
@@ -36,7 +34,6 @@ test("raw K/D sorting follows displayed values, including zero deaths", () => {
 });
 
 test("focused requests retain the published order until an old metric generation is rebuilt", async () => {
-  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
   const { prepareLeaderboardCandidate } = await import("../lib/leaderboard/runtime.ts");
   const reader = { snapshot: () => ({ generation: 123, generatedAt: 456, params: { metricVersion: 2 } }) };
   assert.deepEqual(await prepareLeaderboardCandidate(reader as unknown as Parameters<typeof prepareLeaderboardCandidate>[0], baseConfig, 1),
@@ -44,7 +41,6 @@ test("focused requests retain the published order until an old metric generation
 });
 
 test("the public parser accepts score sorting in BlastGang and the other modes", async () => {
-  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
   const { parseLeaderboardRequest } = await import("../lib/leaderboard/runtime.ts");
   for (const mode of ["regular", "pve", "arena"]) {
     const request = parseLeaderboardRequest(new URLSearchParams({ mode, sort: "score" }));
@@ -73,7 +69,6 @@ test("ARP ranks without tie metrics and LastHero does not require deaths", () =>
 });
 
 test("prestige flows into stats without affecting order and busts the fingerprint", async () => {
-  // @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
   const { sourceFingerprint } = await import("../lib/leaderboard/materialize.ts");
   const plain = materializeCandidate(row, { config: baseConfig, formula });
   assert.equal(plain.member.stats.prestige, null);

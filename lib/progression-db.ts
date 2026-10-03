@@ -6,7 +6,6 @@ import {
   type PersistentProgressionMode,
 } from "@/lib/regular-progression";
 import { raidBucket } from "@/lib/seasonal/progression";
-// @ts-expect-error Node's strip-types runtime requires the explicit extension.
 export { seedPveProgressionBaselines, type PveProgressionSeedResult } from "./pve-progression-seed-core.ts";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
@@ -37,19 +36,10 @@ export interface ProgressionSnapshot {
   achievementIds: string[];
 }
 
-export interface ProgressionCandidate {
-  aid: number;
-  fetchedAt: number;
-  /** Null until the first historical snapshot has been recorded. */
-  latestSnapshotAt: number | null;
-  beforeUpdated: number | null;
-}
-
 export interface ProgressionStore {
   recordSnapshot(input: PlayerSnapshotInput): Promise<CaptureSnapshotResult>;
   latest(aid: number): Promise<ProgressionSnapshot | null>;
   history(aid: number): Promise<ProgressionSnapshot[]>;
-  nextCandidate(excludeAids?: readonly number[]): Promise<ProgressionCandidate | null>;
 }
 
 const INSERT_SQL = `
@@ -135,14 +125,6 @@ function compare(previous: ProgressionSnapshot, input: PlayerSnapshotInput) {
   };
 }
 
-function dbPaths() {
-  return {
-    progression:
-      process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
-    players: process.env.SQLITE_PATH || "/data/players.db",
-  };
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let sqliteDb: any = null;
 let warned = false;
@@ -152,28 +134,15 @@ let warned = false;
 async function getSqliteDb(): Promise<any | null> {
   if (sqliteDb) return sqliteDb;
   try {
-    const files = dbPaths();
+    const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
-    const db = new sqlite.DatabaseSync(files.progression);
+    const db = new sqlite.DatabaseSync(progressionPath);
     // Initialize before caching, so a failed schema init cannot leave a
     // half-initialized handle behind: the cache stays empty, every later request
     // would reopen one, and each of those would leak a descriptor.
     try {
       initializeSeasonalSchema(db);
-      db.prepare("ATTACH DATABASE ? AS players_db").run(files.players);
-      try {
-        db.prepare("SELECT aid FROM players_db.excluded_players LIMIT 0").get();
-      } catch (error) {
-        if (!/no such table/i.test((error as Error).message)) throw error;
-        db.exec(`
-          CREATE TABLE players_db.excluded_players (
-            aid INTEGER PRIMARY KEY,
-            reason TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-          )
-        `);
-      }
     } catch (error) {
       try { db.close(); } catch { /* already closed */ }
       throw error;
@@ -263,40 +232,6 @@ export function createSqliteProgressionStore(
       ).all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
       return rows.map((row) => toSnapshot(row)).filter((row): row is ProgressionSnapshot => row != null);
     },
-    async nextCandidate(excludeAids = []) {
-      if (mode !== "regular") return null;
-      const safeExcludes = [...new Set(excludeAids)].filter(
-        (aid) => Number.isSafeInteger(aid) && aid > 0
-      );
-      const exclusion = safeExcludes.length
-        ? `AND p.aid NOT IN (${safeExcludes.map(() => "?").join(", ")})`
-        : "";
-      const row = db.prepare(
-        `SELECT p.aid, p.fetched_at,
-                MAX(s.captured_at) AS latest_snapshot_at,
-                MAX(s.upstream_updated_at) AS before_updated
-           FROM players_db.players p
-           LEFT JOIN progression_snapshots s ON s.aid = p.aid
-            AND s.mode = 'regular' AND s.cycle_id = 'persistent'
-          WHERE NOT EXISTS (
-            SELECT 1 FROM players_db.excluded_players e WHERE e.aid = p.aid
-          ) ${exclusion}
-          GROUP BY p.aid, p.fetched_at
-          ORDER BY CASE WHEN MAX(s.captured_at) IS NULL THEN 0 ELSE 1 END,
-                   COALESCE(MAX(s.captured_at), p.fetched_at) ASC,
-                   p.aid ASC
-          LIMIT 1`
-      ).get(...safeExcludes) as {
-        aid: number; fetched_at: number; latest_snapshot_at: number | null; before_updated: number | null;
-      } | undefined;
-      if (!row) return null;
-      return {
-        aid: Number(row.aid),
-        fetchedAt: Number(row.fetched_at),
-        latestSnapshotAt: row.latest_snapshot_at == null ? null : Number(row.latest_snapshot_at),
-        beforeUpdated: row.before_updated == null ? null : Number(row.before_updated),
-      };
-    },
   };
 }
 
@@ -314,11 +249,4 @@ export async function captureSnapshot(
   const store = await getProgressionStore(mode);
   if (!store) throw new Error("progression store unavailable");
   return store.recordSnapshot(input);
-}
-
-export async function nextProgressionCandidate(
-  excludeAids: readonly number[] = []
-): Promise<ProgressionCandidate | null> {
-  const store = await getProgressionStore();
-  return store ? store.nextCandidate(excludeAids) : null;
 }
