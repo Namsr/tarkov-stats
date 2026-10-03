@@ -43,6 +43,35 @@ function addFavorite(
   return favoriteInsertResult(inserted.changes, Boolean(existing), count);
 }
 
+test("stored Seasonal portraits restore achievement-proven prestige and zero run-throughs without a refresh", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const store = createSqliteSeasonalStore(db);
+    const source = profile("season-a", 1700000000000, 3100);
+    source.counters = { ...source.counters, pmcRaids: 31, scavRaids: 0, pmcSurvived: 18, pmcDeaths: 13 };
+    source.seasonalAchievements = [{ id: "68d3ff840531ed76e808866c", unlockedAt: 1699999000000 }];
+    await store.upsertProfile(source);
+    await store.captureSnapshot(source);
+    db.prepare("UPDATE progression_snapshots SET prestige = 0, total_raids = 31, survived = 18, deaths = 13, run_through = NULL").run();
+    const identity = { mode: "seasonal", cycleId: "season-a", aid: 42 };
+    const restored = await store.getProfile(identity);
+    assert.equal(restored.seasonalStats.prestige, 6);
+    assert.equal(restored.staticSignals.prestige, 6);
+    assert.equal(restored.seasonalStats.runThrough, 0);
+    assert.equal(restored.snapshotCount, 1);
+    db.prepare("UPDATE progression_snapshots SET survived = 17").run();
+    assert.equal((await store.getProfile(identity)).seasonalStats.runThrough, null);
+    db.prepare("UPDATE progression_snapshots SET run_through = 0").run();
+    assert.equal((await store.getProfile(identity)).seasonalStats.runThrough, 0);
+    db.prepare("UPDATE progression_snapshots SET run_through = 2").run();
+    assert.equal((await store.getProfile(identity)).seasonalStats.runThrough, 2);
+    db.prepare("UPDATE progression_snapshots SET profile_updated_at = profile_updated_at - 1").run();
+    assert.equal((await store.getProfile(identity)).seasonalStats, undefined);
+  } finally {
+    db.close();
+  }
+});
+
 test("migrates the aid-only snapshot table to regular/persistent", () => {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE progression_snapshots (
