@@ -110,7 +110,8 @@ export function createSqliteCommunityReportsStore(db: any): CommunityReportsStor
       return { already: Number(result.changes) === 0, count: Number(db.prepare("SELECT COUNT(*) AS n FROM suspect_reports WHERE aid = ?").get(aid).n) };
     },
     async candidates(helperId, limit) {
-      return (db.prepare(CANDIDATES_SQL).all(helperId, limit) as Record<string, unknown>[]).map(candidate);
+      const n = Number.isSafeInteger(limit) ? Math.min(50, Math.max(1, limit)) : 20;
+      return (db.prepare(CANDIDATES_SQL).all(helperId, n) as Record<string, unknown>[]).map(candidate);
     },
     async vote({ helperId, aid, verdict, createdAt = Date.now() }) {
       if (!db.prepare("SELECT 1 FROM suspect_reports WHERE aid = ?").get(aid)) return { already: false, missing: true };

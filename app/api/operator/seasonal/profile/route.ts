@@ -24,7 +24,8 @@ export async function POST(request: Request) {
     | { aid?: unknown; cycleId?: unknown; runId?: unknown; taskId?: unknown; owner?: unknown; profile?: unknown }
     | null;
   const cycle = loadSeasonalCycleConfig();
-  if (!cycle || body?.cycleId !== cycle.cycleId || Number(body.aid) <= 0) {
+  const aid = Number(body?.aid);
+  if (!cycle || body?.cycleId !== cycle.cycleId || !Number.isSafeInteger(aid) || aid <= 0) {
     return Response.json({ error: "Invalid Seasonal capture" }, { status: 400, headers });
   }
   try {
