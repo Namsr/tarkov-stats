@@ -31,9 +31,9 @@ import { getProgressionStore } from "@/lib/progression-db";
 import { progressionFlightKey, singleFlight } from "@/lib/seasonal/progression-flight";
 import {
   evaluateAndStoreRisk,
-  evaluateAndStoreSeasonalRisk,
   riskScoreVersion,
 } from "@/lib/admin/risk-service";
+import { evaluateSeasonalRiskInBackground } from "@/lib/admin/risk-worker";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -580,9 +580,9 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       Date.now() - currentStoredRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (result.ok && !seasonalRiskIsFresh) {
       after(async () => {
-        // Keep a stale population-wide scan behind an immediate mode switch.
+        // Let the immediate mode switch finish before scheduling the worker.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
-        await evaluateAndStoreSeasonalRisk(result.profile).catch((error) => {
+        await evaluateSeasonalRiskInBackground(result.profile).catch((error) => {
           console.error("seasonal admin risk evaluation failed", error);
         });
       });

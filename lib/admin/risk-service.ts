@@ -125,10 +125,10 @@ export async function evaluateAndStoreRisk(input: {
   return result;
 }
 
-export async function evaluateAndStoreSeasonalRisk(
+export function seasonalRiskInput(
   profile: SeasonalProfile,
   evaluatedAt?: number
-): Promise<CheaterScoreResult> {
+): Parameters<typeof evaluateAndStoreRisk>[0] {
   const portrait = profile.seasonalStats;
   const raids = profile.counters.pmcRaids;
   const deaths = profile.counters.pmcDeaths;
@@ -172,7 +172,7 @@ export async function evaluateAndStoreSeasonalRisk(
     avgLifespan: 0,
     totalLootValue: 0,
   } satisfies ParsedPlayerStats;
-  return evaluateAndStoreRisk({
+  return {
     aid: profile.aid,
     mode: "seasonal",
     cycleId: profile.cycleId,
@@ -182,5 +182,12 @@ export async function evaluateAndStoreSeasonalRisk(
       ?? [],
     achievementUnlocks: profile.seasonalAchievements ?? undefined,
     evaluatedAt,
-  });
+  };
+}
+
+export async function evaluateAndStoreSeasonalRisk(
+  profile: SeasonalProfile,
+  evaluatedAt?: number,
+): Promise<CheaterScoreResult> {
+  return evaluateAndStoreRisk(seasonalRiskInput(profile, evaluatedAt));
 }

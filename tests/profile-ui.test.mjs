@@ -654,7 +654,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
   assert.match(backfill, /scoreVersion: riskScoreVersion\(mode, cycleId\)/);
   assert.match(backfill, /scoreVersion: riskScoreVersion\("seasonal", cycleId\)/);
-  assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreSeasonalRisk/);
+  assert.match(route, /if \(result\.ok && !seasonalRiskIsFresh\) \{[\s\S]*after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateSeasonalRiskInBackground/);
   assert.ok(route.indexOf("const storedRisk = result.ok") < route.indexOf("if (result.ok && !seasonalRiskIsFresh)"));
   assert.match(route, /const \[baseline, metadata, masteryReferences\] = await Promise\.all\(\[[\s\S]*getAchievements\("seasonal"\)\.catch/);
   assert.doesNotMatch(route, /getCachedAchievements\("seasonal"\)/);
