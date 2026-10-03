@@ -51,19 +51,22 @@ test("hit/miss/TTL behavior: dedupes in-flight work and expires after 15 minutes
   }
 });
 
-test("timeout surfaces DynamicComputeTimeoutError while the late result warms the cache", () =>
+test("timeout surfaces DynamicComputeTimeoutError while the late result warms the cache", (context) =>
   withTimeoutEnv("20", async () => {
     cache.resetDynamicAverageCacheForTests();
     let resolveGate!: (value: number) => void;
     const gate = new Promise<number>((resolve) => {
       resolveGate = resolve;
     });
-    // Never resolves within the 20ms budget.
-    await assert.rejects(cache.loadDynamicAverage("timeout-key", () => gate), (error: unknown) => {
+    // Advance the unref'd timer without relying on another server handle to keep Node alive.
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const timedOut = assert.rejects(cache.loadDynamicAverage("timeout-key", () => gate), (error: unknown) => {
       assert.ok(error instanceof DynamicComputeTimeoutError);
       assert.equal((error as InstanceType<typeof DynamicComputeTimeoutError>).timeoutMs, 20);
       return true;
     });
+    context.mock.timers.tick(20);
+    await timedOut;
 
     // Late success warms the cache: the next caller gets a hit without recomputing.
     resolveGate(42);

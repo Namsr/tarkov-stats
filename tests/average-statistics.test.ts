@@ -36,6 +36,7 @@ process.env.SQLITE_PATH = databasePath;
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
+process.env.REPORTS_SQLITE_PATH = join(directory, "community-reports.db");
 
 const { getStore, AVG_COLS } = await import("../lib/db.ts");
 const { getProgressionStore } = await import("../lib/progression-db.ts");

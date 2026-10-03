@@ -191,8 +191,8 @@ test("comparison navigation, graph state, and honest capability copy are bilingu
   assert.match(dictionary, /"compare\.benchmarkOnly": "Для этого режима доступен эталон когорты, но процентили недоступны\."/);
   assert.match(dictionary, /"compare\.progressionArenaUnavailable": "Arena progression comparison is unavailable because Arena has no progression history\."/);
   assert.match(dictionary, /"compare\.progressionArenaUnavailable": "Сравнение прогрессии в Арене недоступно: у Арены нет истории прогрессии\."/);
-  assert.match(dictionary, /"compare\.tableCaptionNoPercentile": "Exact player values and cohort benchmark"/);
-  assert.match(dictionary, /"compare\.tableCaptionNoPercentile": "Точные значения игроков и эталон когорты"/);
+  assert.match(dictionary, /"compare\.metricsTitle": "Metric comparison"/);
+  assert.match(dictionary, /"compare\.metricsTitle": "Сравнение метрик"/);
   assert.match(dictionary, /"player\.refreshDirectHint": "Check the public profile API for a newer snapshot now\."/);
   assert.match(dictionary, /"player\.refreshDirectHint": "Сразу запросить публичный API профиля и проверить, есть ли новый снимок\."/);
 });

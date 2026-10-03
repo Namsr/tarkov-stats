@@ -46,6 +46,7 @@ const { decryptSession } = await import("../lib/auth/session.ts");
 // work-async-storage.external): renaming it breaks Next wholesale rather than
 // this one test, and `next` ships no `exports` map offering a stabler route.
 const { workAsyncStorage } = await import("next/dist/server/app-render/work-async-storage.external.js");
+const { workUnitAsyncStorage } = await import("next/dist/server/app-render/work-unit-async-storage.external.js");
 const { POST: logout } = await import("../app/api/auth/logout/route.ts");
 const { GET: startGoogleLogin } = await import("../app/api/auth/google/route.ts");
 const { GET: finishGoogleLogin } = await import("../app/api/auth/google/callback/route.ts");
@@ -139,9 +140,10 @@ test("the callback's session-issuing redirect is no-store when it is actually re
   try {
     res = await workAsyncStorage.run(
       { afterContext: { after: () => {} } },
-      () => finishGoogleLogin(
+      // Next 16.3 requires both request contexts for after().
+      () => workUnitAsyncStorage.run({ type: "request", phase: "action" }, () => finishGoogleLogin(
         new NextRequest(`${callbackUrl}?code=c&state=s`, { headers: { cookie: "oauth_state=s" } })
-      )
+      ))
     );
   } finally {
     globalThis.fetch = realFetch;
