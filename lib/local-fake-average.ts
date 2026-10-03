@@ -3,7 +3,7 @@ import type { AveragePeriod, AverageStatistic, RangeDimension } from "@/lib/db";
 import type { ProgressionAverageResponse, ProgressionKind, ProgressionPoint, SeasonalAverageSeries } from "@/types/seasonal";
 
 export function isLocalFakeAverageEnabled(): boolean {
-  return process.env.LOCAL_FAKE_AVERAGE === "1";
+  return process.env.NODE_ENV === "development" && process.env.LOCAL_FAKE_AVERAGE === "1";
 }
 
 function mulberry32(seed: number): () => number {

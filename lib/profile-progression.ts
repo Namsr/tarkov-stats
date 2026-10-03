@@ -1,4 +1,3 @@
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { progressionLineSegments } from "./seasonal/progression-timeline-ui.ts";
 import type { ProgressionPoint } from "@/types/seasonal";
 

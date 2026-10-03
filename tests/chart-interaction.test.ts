@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's strip-types runner requires the extension.
 import { nearestChartPoint } from "../lib/chart-interaction.ts";
 
 test("overlapping hit areas select the nearest point rather than the last series", () => {

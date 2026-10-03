@@ -18,14 +18,6 @@ export const ARENA_COMPARISON_METRIC_KEYS = [
   "damage_per_match",
 ] as const;
 
-export const COMPARISON_METRIC_KEYS = [
-  ...PERSISTENT_COMPARISON_METRIC_KEYS,
-  "win_rate",
-  "headshot_rate",
-  "kills_per_match",
-  "damage_per_match",
-] as const;
-
 export type PersistentComparisonMetricKey = (typeof PERSISTENT_COMPARISON_METRIC_KEYS)[number];
 export type ArenaComparisonMetricKey = (typeof ARENA_COMPARISON_METRIC_KEYS)[number];
 export type ComparisonMetricKey = PersistentComparisonMetricKey | ArenaComparisonMetricKey;

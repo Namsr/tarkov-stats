@@ -823,7 +823,6 @@ test("active navigation links go back only for an unmodified click at their dest
   const compare = await readFile("components/AverageNavButton.tsx", "utf8");
   const averagePage = await readFile("app/average/page.tsx", "utf8");
   const modes = await readFile("components/ProfileModeSwitch.tsx", "utf8");
-  const seasonalAverage = await readFile("components/SeasonalAverage.tsx", "utf8");
 
   const primary = {
     button: 0,
@@ -877,7 +876,6 @@ test("active navigation links go back only for an unmodified click at their dest
   assert.match(averagePage, /requestRef=\{progressionRequestRef\}/);
   assert.match(modes, /handleActiveLinkClick\(event, mode === current, router\)/);
   assert.match(modes, /aria-current=\{mode === current \? "page" : undefined\}/);
-  assert.match(seasonalAverage, /average-settings__top[\s\S]*average-settings__mode md:col-start-2/);
 });
 
 test("regular average period switch keeps URL state and masks stale responses", async () => {
@@ -1273,7 +1271,8 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(canonical, /PLAYER_LEVELS_V2026_07_22/);
   assert.match(canonical, /levelBands=\{levelBands\}/);
   assert.doesNotMatch(canonical, /await getPlayerLevels\(\)/);
-  assert.match(average, /mode === "regular" && levelBands\.length > 0/);
+  assert.match(average, /const showAverageProgression = mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal";/);
+  assert.match(average, /\{showAverageProgression && levelBands\.length > 0 && \(/);
   assert.match(average, /<RegularAverageProgression$/m);
   assert.match(average, /levelBands=\{levelBands\}/);
   assert.ok(

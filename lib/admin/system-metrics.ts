@@ -1,5 +1,4 @@
 import type { AdminPeriod } from "./types.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { bucketMilliseconds, periodMilliseconds } from "./types.ts";
 
 export interface SystemMetricSampleInput {

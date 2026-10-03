@@ -11,7 +11,12 @@ const eslintConfig = defineConfig([
     },
   },
   globalIgnores([
+    ".agents/**",
     ".claude/**",
+    ".codex/**",
+    ".codex-local/**",
+    ".cursor/**",
+    ".windsurf/**",
     ".next/**",
     ".open-next/**",
     ".wrangler/**",

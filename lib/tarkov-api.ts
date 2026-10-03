@@ -17,9 +17,7 @@ import {
   type ArenaOverallStats,
   type ArenaProfile,
 }
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 from "../types/arena.ts";
-// @ts-expect-error Node's strip-types runner needs the extension; Next can bundle it.
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
 
 export const TARKOV_JSON_USER_AGENT = "tarkovstats.ru";

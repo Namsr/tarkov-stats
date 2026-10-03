@@ -13,8 +13,8 @@ const execFileAsync = promisify(execFile);
 const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
 const cutoff = Date.parse("2025-11-15T00:00:00+03:00");
 
-function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}, preload = null) {
-  return execFileAsync(process.execPath, [
+function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}, preload = null, onStdout = null) {
+  const run = execFileAsync(process.execPath, [
     ...(preload ? ["--import", pathToFileURL(preload).href] : []),
     "--experimental-strip-types",
     "--experimental-sqlite",
@@ -34,6 +34,8 @@ function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {
       ...extraEnv,
     },
   });
+  if (onStdout) run.child.stdout.on("data", onStdout);
+  return run;
 }
 
 function createPlayersDb(path) {
@@ -160,18 +162,21 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
     const locker = new DatabaseSync(dbPath);
     locker.exec("BEGIN IMMEDIATE");
     let released = false;
-    const release = setTimeout(() => {
-      locker.exec("COMMIT");
-      released = true;
-    }, 500);
+    let lockOutput = "";
     try {
       const { stdout } = await runCollector(dbPath, progressionDbPath, port, 0, {
         PVE_PROFILE_SYNC_DB_BUSY_TIMEOUT_MS: "50",
         PVE_PROFILE_SYNC_DB_BUSY_RETRIES: "1",
+      }, null, (chunk) => {
+        lockOutput += chunk;
+        // Hold the lock until the child actually encounters it, regardless of startup speed.
+        if (!released && lockOutput.includes("DB_BUSY_RETRY")) {
+          locker.exec("COMMIT");
+          released = true;
+        }
       });
       assert.match(stdout, /DB_BUSY_RETRY/);
     } finally {
-      clearTimeout(release);
       if (!released) locker.exec("ROLLBACK");
       locker.close();
     }

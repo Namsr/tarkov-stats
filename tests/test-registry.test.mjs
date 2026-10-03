@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
-import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const TEST_FILE = /\.(test|spec)\.(ts|mts|cts|js|mjs|cjs|tsx|jsx)$/;
-
-// Build output and vendored trees never hold source test files.
-const IGNORED_DIRS = new Set([
-  "node_modules", ".git", ".next", ".open-next", "out", "coverage", "playwright-report",
-]);
 
 // The only entry points into the gate: `npm test` runs `pretest` and then `test`, and
 // nothing else. A script outside this set never runs, so a file only it names is dead.
@@ -18,21 +14,17 @@ const ROOTS = ["pretest", "test"];
 // is exempt. This list must stay empty in practice: an entry here is a claim that the
 // file is covered some other way, and the reason has to say which way. A file only
 // earns an entry if it genuinely cannot run as an npm script; anything that can run
-// belongs in a script instead, because `npm test` is the whole gate in this repository
-// (there is no CI).
+// belongs in a script instead, because CI runs the same `npm test` gate.
 const UNREGISTERED_BY_DESIGN = new Map([
   // "path/relative/to/repo.test.ts" -> "why it cannot be registered",
 ]);
 
-async function collectTestFiles(dir) {
-  const found = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    if (IGNORED_DIRS.has(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...await collectTestFiles(full));
-    else if (TEST_FILE.test(entry.name)) found.push(full.split(path.sep).join("/"));
-  }
-  return found;
+function collectTestFiles() {
+  // Include new source tests before staging, but exclude ignored local checkouts,
+  // browser profiles and operator tools using the repository's own ignore rules.
+  return execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--deduplicate", "-z"], {
+    encoding: "utf8",
+  }).split("\0").filter((file) => TEST_FILE.test(file) && existsSync(file));
 }
 
 // Test files `npm test` would actually execute: the roots, plus every script they hand
@@ -65,7 +57,7 @@ test("every test file on disk is run by a script reachable from npm test", async
   const { scripts } = JSON.parse(await readFile("package.json", "utf8"));
   const reachable = await reachableTestFiles(scripts);
 
-  const onDisk = (await collectTestFiles(".")).sort();
+  const onDisk = collectTestFiles().sort();
 
   // A reachable script may only name files that exist. A glob token such as
   // `tests/*.test.ts` is not one of them, so a script listing only globs registers
@@ -85,7 +77,7 @@ test("every test file on disk is run by a script reachable from npm test", async
 test("the unregistered allow-list holds no entries that npm test can reach", async () => {
   const { scripts } = JSON.parse(await readFile("package.json", "utf8"));
   const reachable = await reachableTestFiles(scripts);
-  const onDisk = new Set(await collectTestFiles("."));
+  const onDisk = new Set(collectTestFiles());
 
   const stale = [...UNREGISTERED_BY_DESIGN.keys()].filter(
     (file) => reachable.has(file) || !onDisk.has(file)

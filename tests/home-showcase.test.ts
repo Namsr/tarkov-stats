@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { HOME_EXAMPLE_AIDS, homeCohort, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortRequest, showcaseMode, showcaseProfileHref, showcaseProfileRequest, showcaseTimelineCycle } from "../lib/home-showcase.ts";
 import type { HomeProfile } from "../lib/home-showcase";
 import type { ProgressionTimelineResponse } from "../types/seasonal";

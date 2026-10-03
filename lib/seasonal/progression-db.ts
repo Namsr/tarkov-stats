@@ -1,18 +1,10 @@
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildProgressionMetricSeries, PROGRESSION_KINDS, queryPersistentProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildSequentialIntervals, DAY_MS, percentile20, quantile } from "./analytics.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { loadSeasonalCycleConfig } from "./config.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { initializeSeasonalSchema, upsertSqliteSeasonCycle, parseSeasonalAchievementUnlocks } from "./storage.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { scoreCheater, type Baseline, type CheaterScoreResult } from "../cheater-score.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
-// @ts-expect-error Node's strip-types worker requires explicit extensions; Next resolves them too.
 import { achievementUnlockHours, firstFiniteHours } from "../achievement-unlock-hours.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
@@ -1005,19 +997,6 @@ export async function getProgressionTimelineRevisions(
     console.warn("progression timeline revisions unavailable: " + (error as Error).message);
     return { personalRevision: 0, populationGeneration: 0 };
   }
-}
-
-export async function getProgressionQuery(): Promise<((input: ProgressionRequest) => Promise<ProgressionQueryResult>) | null> {
-  const queryBundle = await getProgressionBundleQuery();
-  if (!queryBundle) return null;
-  return async (input) => {
-    const bundle = await queryBundle({
-      mode: input.mode,
-      cycleId: input.cycleId,
-      aid: input.aid,
-    });
-    return bundle?.[input.kind] ?? null;
-  };
 }
 
 export async function getRegularProgressionAverage(): Promise<ProgressionAverageResponse | null> {

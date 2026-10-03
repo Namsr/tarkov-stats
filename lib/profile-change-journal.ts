@@ -1,4 +1,3 @@
-// @ts-expect-error Node's strip-types test runner requires the explicit extension.
 import { reissueEditedTriggers, sqliteTrigger } from "./sqlite-trigger-ddl.ts";
 
 const PLAYERS_UPDATE_TRIGGER = sqliteTrigger("trg_players_leaderboard_change_update", `AFTER UPDATE ON players WHEN

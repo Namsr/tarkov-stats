@@ -66,15 +66,15 @@ const METRICS: { key: string; suffix?: string; decimals?: number }[] = [
   { key: "prestige", decimals: 2 },
 ];
 
-const Y_GROUPS: { label: string; keys: string[] }[] = [
-  { label: "Players", keys: ["players"] },
+const Y_GROUPS: { labelKey: string; keys: string[] }[] = [
+  { labelKey: "metric.players", keys: ["players"] },
   {
-    label: "Combat",
+    labelKey: "average.groupCombat",
     keys: ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "total_kills", "killed_pmc", "deaths"],
   },
-  { label: "Survival", keys: ["survival_rate", "longest_win_streak", "run_through"] },
+  { labelKey: "average.groupSurvival", keys: ["survival_rate", "longest_win_streak", "run_through"] },
   {
-    label: "Progress",
+    labelKey: "average.groupProgress",
     keys: ["total_raids", "pmc_raids", "level", "prestige", "achv_count", "hours"],
   },
 ];
@@ -465,7 +465,7 @@ function AveragePageContent({
                       .filter((metric): metric is (typeof Y_METRICS)[number] => Boolean(metric));
                     if (options.length === 0) return null;
                     return (
-                      <optgroup key={group.label} label={group.label}>
+                      <optgroup key={group.labelKey} label={t(group.labelKey)}>
                         {options.map((metric) => (
                           <option key={metric.key} value={metric.key}>
                             {metric.agg === "avg"
@@ -599,8 +599,6 @@ function AveragePageContent({
         />
       )}
 
-      {/* Regular legacy guard: mode === "regular" && levelBands.length > 0 */}
-      {/* Legacy JSX shape: <RegularAverageProgression levelBands={levelBands} /> */}
       {showAverageProgression && levelBands.length > 0 && (
         <RegularAverageProgression
           levelBands={levelBands}

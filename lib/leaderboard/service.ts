@@ -9,12 +9,9 @@ import type {
   LeaderboardSort,
   LeaderboardStats,
 } from "@/types/leaderboard";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardScope, type LeaderboardScopeConfig } from "./config.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { LEADERBOARD_STALE_MS } from "./publication.ts";
 import type { MaterializedCandidate } from "./materialize";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { compareOrderKeys, type OrderKey } from "./ranking.ts";
 
 interface Snapshot {

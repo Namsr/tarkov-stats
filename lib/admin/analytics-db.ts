@@ -1,7 +1,5 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { bucketMilliseconds, periodMilliseconds } from "./types.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { PAGEVIEW_SESSION_GAP_MS } from "./pageviews.ts";
 
 export type RequestOutcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
@@ -946,7 +944,8 @@ export function getAnalyticsStore(): Promise<AnalyticsStore | null> {
       const fs = await import("node:fs");
       const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
       return createAnalyticsStore(db, {
-        progressionDbPath: fs.existsSync(progressionPath) ? progressionPath : null,
+        // This database is mounted at runtime, never bundled into the server.
+        progressionDbPath: fs.existsSync(/* turbopackIgnore: true */ progressionPath) ? progressionPath : null,
       });
     } catch (error) {
       try { db?.close(); } catch { /* Preserve the initialization error. */ }

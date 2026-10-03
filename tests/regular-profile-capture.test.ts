@@ -8,7 +8,6 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import test from "node:test";
-// @ts-ignore -- Node 24 exposes node:sqlite at runtime; project types target Node 20.
 import { DatabaseSync } from "node:sqlite";
 
 registerHooks({

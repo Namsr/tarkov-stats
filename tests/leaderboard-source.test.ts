@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error node:sqlite types require a newer @types/node than the app uses.
 const { DatabaseSync } = await import("node:sqlite");
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 const { arenaTabCounts, leaderboardChangeWindow, leaderboardSourceRows } = await import("../lib/leaderboard/source.ts");
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 const { parseLeaderboardRequest } = await import("../lib/leaderboard/runtime.ts");
 
 test("leaderboard requests validate kills sorting and its direction", () => {

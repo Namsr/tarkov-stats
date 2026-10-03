@@ -1,4 +1,3 @@
-// @ts-expect-error Node's strip-types test runner requires the explicit extension.
 import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE, firstFiniteHours } from "./achievement-unlock-hours.ts";
 
 export type PublishedAchievementMode = "regular" | "pve";

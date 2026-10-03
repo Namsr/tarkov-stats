@@ -571,14 +571,6 @@ export async function getSuspiciousSummary(): Promise<SuspiciousSummary> {
   return (await getModerationStore()).suspiciousSummary();
 }
 
-export async function getAutomaticSuspiciousAids(): Promise<number[]> {
-  return (await getModerationStore()).automaticSuspiciousAids();
-}
-
-export async function getSuspiciousAids(): Promise<number[]> {
-  return (await getModerationStore()).suspiciousAids();
-}
-
 export async function saveRiskEvaluation(
   input: Omit<StoredRiskEvaluation, "evaluatedAt"> & { evaluatedAt?: number }
 ): Promise<void> {

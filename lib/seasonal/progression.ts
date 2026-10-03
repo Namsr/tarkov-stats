@@ -1,4 +1,3 @@
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { expandNearbyCohort, quantile, SCORE_PRELIMINARY_SAMPLE_N, trimmedMean } from "./analytics.ts";
 import type {
   ProgressionKind,

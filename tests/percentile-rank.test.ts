@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Direct Node execution needs the extension.
 import { createPercentileRank } from "../lib/seasonal/analytics.ts";
 
 test("reused binary percentile ranks match the original definition, including ties and gaps", () => {

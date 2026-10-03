@@ -10,7 +10,6 @@ import {
   type AnomalyPercentiles,
   type IntervalAnomalyResult,
   type IntervalMetrics,
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 } from "./analytics.ts";
 
 export type ProgressionRiskReason =

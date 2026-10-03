@@ -1,10 +1,6 @@
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { ANALYTICS_SCORE_VERSION, formScore, isRaidProgressionInterval, createPercentileRank, pvpKillsFor, quantile, tempoScore, trimmedMean } from "./analytics.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { initializeSeasonalSchema } from "./storage.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { type DailyAggregateRecord, type ProgressionKind, type ProgressionMode } from "../../types/seasonal.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { raidBucket } from "./progression.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

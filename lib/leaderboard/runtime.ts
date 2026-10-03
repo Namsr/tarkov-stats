@@ -1,16 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically because the project's Node types predate it. */
 import type { LeaderboardSort } from "@/types/leaderboard";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardScope, type LeaderboardScopeConfig } from "./config.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { materializeCandidate, type MaterializedCandidate } from "./materialize.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardPublicationsEnabled, openLeaderboardDatabase } from "./publication.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { createLeaderboardReader } from "./service.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { leaderboardSourceRows } from "./source.ts";
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 import { LEADERBOARD_METRIC_VERSION } from "./ranking.ts";
 
 const sourceDatabases = new Map<string, any>();

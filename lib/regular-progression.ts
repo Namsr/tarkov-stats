@@ -1,8 +1,5 @@
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { refreshSqliteProgressionAggregates } from "./seasonal/daily-aggregates.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { initializeSeasonalSchema } from "./seasonal/storage.ts";
-// @ts-expect-error Node's strip-types test runner requires the extension; Next accepts it.
 import { isRaidProgressionInterval } from "./seasonal/analytics.ts";
 import type { PersistentProgressionMode } from "../types/seasonal";
 

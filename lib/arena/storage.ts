@@ -7,7 +7,6 @@ import {
   type ArenaProfileRisk,
   type ArenaStoredMode,
 }
-// @ts-expect-error Node's direct TypeScript runner needs the explicit extension.
 from "../../types/arena.ts";
 
 export const ARENA_PARSER_VERSION = 4;

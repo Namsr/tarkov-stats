@@ -395,10 +395,11 @@ test("Docker runtime contains the Seasonal collectors and their source imports",
     "scripts/sync-seasonal-index.mjs",
     "scripts/seasonal-profile-sync-core.mjs",
     "scripts/regular-profile-sync-core.mjs",
-    "lib/tarkov-api.ts",
-    "lib/seasonal/config.ts",
-    "lib/seasonal/storage.ts",
   ]) assert.match(dockerfile, new RegExp(path.replaceAll("/", "\\/")), path);
+  assert.match(dockerfile, /COPY --from=builder --chown=nextjs:nodejs \/app\/lib \.\/lib/);
+  for (const path of ["lib/tarkov-api.ts", "lib/seasonal/config.ts", "lib/seasonal/storage.ts"]) {
+    assert.ok((await readFile(path, "utf8")).length > 0, path);
+  }
   assert.doesNotMatch(startup, /sync-seasonal-feed-loop\.mjs|sync-player-indexes-loop\.mjs/);
 });
 
