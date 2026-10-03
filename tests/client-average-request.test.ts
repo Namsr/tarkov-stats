@@ -70,6 +70,27 @@ test("failed requests are not retained", async () => {
   assert.equal(fetches, 2);
 });
 
+test("malformed successful JSON produces a bounded error and is not cached", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return fetches === 1
+      ? new Response("<html>proxy response</html>", { status: 200 })
+      : new Response(JSON.stringify({ total: 1 }), { status: 200 });
+  };
+  await assert.rejects(requests.loadAverageJson("/malformed"), {
+    name: "Error", message: "Average request failed (200)",
+  });
+  assert.deepEqual(await requests.loadAverageJson("/malformed"), { total: 1 });
+  assert.equal(fetches, 2);
+});
+
+test("aborting while reading the response body preserves AbortError", async () => {
+  const error = new DOMException("Aborted", "AbortError");
+  globalThis.fetch = async () => ({ json: async () => { throw error; }, status: 200 });
+  await assert.rejects(requests.loadAverageJson("/aborted-body"), (caught) => caught === error);
+});
+
 test("a 503 retry wait does not leave an abort listener on the caller's signal", async () => {
   let fetches = 0;
   globalThis.fetch = async () => {

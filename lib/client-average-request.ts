@@ -34,7 +34,8 @@ function fetchJson(url: string, signal?: AbortSignal): Promise<CachedJson> {
     let body: unknown;
     try {
       body = await response.json() as unknown;
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
       throw new Error(`Average request failed (${response.status})`);
     }
     const result = {
