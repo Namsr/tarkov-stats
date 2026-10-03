@@ -224,7 +224,7 @@ function AveragePageContent({
       })
       .catch((fetchError: unknown) => {
         if (fetchError instanceof Error && fetchError.name === "AbortError") return;
-        setError(fetchError instanceof Error ? fetchError.message : t("common.loadFailed"));
+        setError(t("common.loadFailed"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
