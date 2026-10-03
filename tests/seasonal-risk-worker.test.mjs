@@ -22,6 +22,7 @@ process.env.SQLITE_PATH = join(directory, "players.db");
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin.db");
+process.env.REPORTS_SQLITE_PATH = join(directory, "reports.db");
 process.env.RISK_WORKER_TEST_MARKER = join(directory, "busy");
 const { SeasonalRiskWorker } = await import("../lib/admin/risk-worker.ts");
 const { seasonalRiskInput, evaluateAndStoreSeasonalRisk } = await import("../lib/admin/risk-service.ts");
@@ -90,6 +91,7 @@ test("HTTP remains responsive during risk SQL; the queue is bounded and reuses o
 });
 
 test("errors, crash and timeout preserve the last risk and permit a fresh worker", async (t) => {
+  await evaluateAndStoreSeasonalRisk(profile(), 789);
   const worker = new SeasonalRiskWorker({ entry, timeoutMs: 3000 });
   t.after(() => worker.stop());
   const initial = await worker.compute(input("normal"));
@@ -101,7 +103,7 @@ test("errors, crash and timeout preserve the last risk and permit a fresh worker
   assert.notEqual(recovered.pid, initial.pid);
   await assert.rejects(worker.compute(input("stall")), /worker timed out/);
   assert.notEqual((await worker.compute(input("normal"))).pid, recovered.pid);
-  assert.equal((await getRiskEvaluation({ aid: 42, mode: "seasonal", cycleId: "s1" })).evaluatedAt, 456);
+  assert.equal((await getRiskEvaluation({ aid: 42, mode: "seasonal", cycleId: "s1" })).evaluatedAt, 789);
 });
 
 test("the production image includes the risk worker entry point", () => {
