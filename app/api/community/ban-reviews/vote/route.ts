@@ -28,7 +28,12 @@ export async function POST(request: NextRequest) {
   if (!input) return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: { ...noStore, ...headers } });
   const store = await getCommunityReportsStore();
   if (!store) return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: { ...noStore, ...headers } });
-  const result = await store.vote({ ...input, helperId });
-  if (result.missing) return NextResponse.json({ error: "Candidate not found" }, { status: 404, headers: { ...noStore, ...headers } });
-  return NextResponse.json({ already: result.already, candidates: await store.candidates(helperId, 3) }, { headers: { ...noStore, ...headers } });
+  try {
+    const result = await store.vote({ ...input, helperId });
+    if (result.missing) return NextResponse.json({ error: "Candidate not found" }, { status: 404, headers: { ...noStore, ...headers } });
+    return NextResponse.json({ already: result.already, candidates: await store.candidates(helperId, 3) }, { headers: { ...noStore, ...headers } });
+  } catch (error) {
+    console.error("ban-review vote failed", error);
+    return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: { ...noStore, ...headers } });
+  }
 }
