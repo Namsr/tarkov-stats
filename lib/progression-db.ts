@@ -95,16 +95,21 @@ interface SnapshotRow {
 
 function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
   if (!row) return null;
-  return {
-    id: Number(row.id),
-    mode: String(row.mode) as PersistentProgressionMode,
-    aid: Number(row.aid),
-    upstreamUpdatedAt: Number(row.upstream_updated_at),
-    capturedAt: Number(row.captured_at),
-    seriesId: Number(row.series_id),
-    stats: JSON.parse(row.stats_json) as PlayerSnapshotInput["stats"],
-    achievementIds: JSON.parse(row.achievements) as string[],
-  };
+  try {
+    return {
+      id: Number(row.id),
+      mode: String(row.mode) as PersistentProgressionMode,
+      aid: Number(row.aid),
+      upstreamUpdatedAt: Number(row.upstream_updated_at),
+      capturedAt: Number(row.captured_at),
+      seriesId: Number(row.series_id),
+      stats: JSON.parse(row.stats_json) as PlayerSnapshotInput["stats"],
+      achievementIds: JSON.parse(row.achievements) as string[],
+    };
+  } catch (error) {
+    console.warn(`progression store: skipping corrupt snapshot id=${row.id} aid=${row.aid}`, error);
+    return null;
+  }
 }
 
 function compare(previous: ProgressionSnapshot, input: PlayerSnapshotInput) {
