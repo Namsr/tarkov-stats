@@ -1,6 +1,97 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
+
+async function riskPollingHarness({ score = 16, responseIdentity, existingRisk, mode = "seasonal", withView = true } = {}) {
+  const source = await readFile("components/ComparePage.tsx", "utf8");
+  const start = source.indexOf("  useEffect(() => {\n    const data = state.data;");
+  const end = source.indexOf("  const refresh = useCallback", start);
+  assert.ok(start > 0 && end > start);
+  const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const scope = { mode, cycleId: "s1", arenaMode: null }, scopeKey = `${mode}:s1:null`, aid = 42;
+  const identity = { aid, mode, cycleId: "s1" };
+  const payload = { identity, risk: existingRisk ?? null, ...(withView ? { viewModel: { identity, risk: existingRisk ?? null } } : {}) };
+  let current = { aid, scopeKey, data: { profile: {}, payload } };
+  const state = current, generation = { current: 1 }, timers = [], requests = [];
+  let cleanup;
+  const run = new Function("useEffect", "state", "scope", "scopeKey", "aid", "requestGeneration", "record", "comparisonDossier", "storedProfile", "setState", "fetch", "setTimeout", "clearTimeout", compiled);
+  run(callback => { cleanup = callback(); }, state, scope, scopeKey, aid, generation,
+    value => value && typeof value === "object" ? value : null,
+    (_, __, body) => ({ risk: body.viewModel?.risk ?? body.risk }),
+    (profile, body) => ({ profile, payload: body }),
+    update => { current = update(current); },
+    async (url, init) => {
+      requests.push({ url, init });
+      return { ok: true, json: async () => ({ identity: responseIdentity ?? identity, risk: requests.length === 1 ? null : { score } }) };
+    },
+    callback => { timers.push(callback); return callback; },
+    timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); });
+  return { requests, generation, state: () => current, cleanup: () => cleanup?.(),
+    tick: async () => { timers.shift()?.(); await new Promise(setImmediate); } };
+}
+
+test("deferred comparison risk replaces both payload risk fields and preserves a zero score", async () => {
+  for (const score of [16, 0]) {
+    const poll = await riskPollingHarness({ score });
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk, null);
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk.score, score);
+    assert.equal(poll.state().data.payload.viewModel.risk.score, score);
+    assert.equal(poll.requests.length, 2);
+    assert.equal(poll.requests[0].url, "/api/player/risk?aid=42&mode=seasonal&cycle=s1");
+    poll.cleanup();
+  }
+});
+
+test("comparison risk polling rejects another account, mode or cycle and cancels superseded loads", async () => {
+  for (const change of [{ aid: 99 }, { mode: "pve" }, { cycleId: "s2" }]) {
+    const poll = await riskPollingHarness({ responseIdentity: { aid: 42, mode: "seasonal", cycleId: "s1", ...change } });
+    await poll.tick();
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk, null);
+    poll.cleanup();
+  }
+  const superseded = await riskPollingHarness();
+  await superseded.tick();
+  superseded.generation.current++;
+  await superseded.tick();
+  assert.equal(superseded.requests.length, 1);
+  assert.equal(superseded.state().data.payload.risk, null);
+  superseded.cleanup();
+  assert.equal(superseded.requests[0].init.signal.aborted, true);
+  const cancelled = await riskPollingHarness();
+  cancelled.cleanup();
+  await cancelled.tick();
+  assert.equal(cancelled.requests.length, 0);
+});
+
+test("comparison risk polling skips available zero risk and Arena and supports regular payloads", async () => {
+  for (const options of [{ existingRisk: { score: 0 } }, { mode: "arena" }]) {
+    const poll = await riskPollingHarness(options);
+    await poll.tick();
+    assert.equal(poll.requests.length, 0);
+    poll.cleanup();
+  }
+  const regular = await riskPollingHarness({ mode: "regular", withView: false });
+  await regular.tick();
+  await regular.tick();
+  assert.equal(regular.state().data.payload.risk.score, 16);
+  assert.equal(regular.state().data.payload.viewModel, undefined);
+  regular.cleanup();
+});
+
+test("comparison polls deferred risk for each persistent profile and cancels obsolete requests", async () => {
+  const source = await readFile("components/ComparePage.tsx", "utf8");
+  assert.match(source, /scope.mode === "arena"/);
+  assert.match(source, /comparisonDossier\(scope, aid, data.payload\)\?\.risk/);
+  assert.match(source, /fetch\(`\/api\/player\/risk\?\$\{params\}`, \{ cache: "no-store", signal: controller.signal \}/);
+  assert.match(source, /identity\?\.aid !== aid \|\| identity.mode !== scope.mode \|\| identity.cycleId !== scope.cycleId/);
+  assert.match(source, /current.data === data && current.scopeKey === scopeKey && current.aid === aid/);
+  assert.match(source, /viewModel: \{ \.\.\.viewModel, risk: body.risk \}/);
+  assert.match(source, /clearTimeout\(timer\); controller.abort\(\)/);
+});
 
 test("global navigation points to compare and only marks its root active", async () => {
   const source = await readFile("components/AverageNavButton.tsx", "utf8");
