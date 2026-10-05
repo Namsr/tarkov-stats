@@ -95,6 +95,19 @@ test("shared client always sends the project JSON headers", async () => {
   assert.equal(TARKOV_JSON_USER_AGENT, "tarkovstats.ru");
 });
 
+test("ban archive scanner keeps the site identity in its identifying User-Agent", async () => {
+  const originalFetch = globalThis.fetch;
+  let headers;
+  globalThis.fetch = async (_input, init) => {
+    headers = new Headers(init?.headers);
+    return new Response("{}");
+  };
+  try {
+    await fetchTarkovJson("https://players.tarkov.dev/profile/1.json", {}, "ban-archive");
+    assert.equal(headers.get("User-Agent"), "tarkovstats.ru ban-archive-scanner");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("server sources contain no GraphQL calls and use the shared project identity", async () => {
   const [api, seasonal, index, seasonalProfiles, seasonalIndex, banImport] = await Promise.all([
     readFile("lib/tarkov-api.ts", "utf8"),

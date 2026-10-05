@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { evaluateBanCandidate, initializeBanImportDb, importBanCandidate, readArchivedBanProfile,
   waveCutoff, characterStatisticsJson, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
-import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive } from "../scripts/import-ban-list.mjs";
+import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive, checkArchiveSpace } from "../scripts/import-ban-list.mjs";
 
 const candidate: BanCandidate = { aid: 42, nickname: "Player", waves: [
   { date: "2025-12-19", source: "https://example.com/bans", nicknames: ["Player"] },
@@ -173,4 +173,11 @@ test("rate limiter retries 429/5xx, honors Retry-After, and bounds responses", a
   assert.equal(await (await request("https://example.com")).text(), "ok");
   assert.ok(delays.includes(2000));
   await assert.rejects(boundedText(new Response("12345"), 4), /too large/);
+});
+
+test("disk reserve and archive limits stop writes while an archive below both limits can resume", () => {
+  const disk = () => ({ bavail: 5, bsize: 100 });
+  assert.throws(() => checkArchiveSpace("package.json", 501, 1000, disk, () => ({ size: 1 })), /disk reserve/);
+  assert.throws(() => checkArchiveSpace("package.json", 100, 1000, disk, () => ({ size: 1000 })), /archive size limit/);
+  assert.doesNotThrow(() => checkArchiveSpace("package.json", 100, 1000, disk, () => ({ size: 999 })));
 });

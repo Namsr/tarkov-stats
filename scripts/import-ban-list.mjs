@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, statfsSync, statSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -26,7 +26,7 @@ export async function boundedText(response, maxBytes = MAX_BYTES) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export function createRateLimitedRequest(rps, request = fetchTarkovJson, sleep = ms => new Promise(r => setTimeout(r, ms))) {
+export function createRateLimitedRequest(rps, request = (url, init) => fetchTarkovJson(url, init, "ban-archive"), sleep = ms => new Promise(r => setTimeout(r, ms))) {
   if (!Number.isFinite(rps) || rps <= 0 || rps > 5) throw new Error("rps must be >0 and <=5");
   let nextStart = 0;
   return async url => {
@@ -49,6 +49,17 @@ export function createRateLimitedRequest(rps, request = fetchTarkovJson, sleep =
     }
     throw new Error("request retries exhausted");
   };
+}
+
+/**
+ * @param {(path: string) => {bavail: number | bigint, bsize: number | bigint}} disk
+ * @param {(path: string) => {size: number}} file
+ */
+export function checkArchiveSpace(dbPath, minFreeBytes, maxDbBytes, disk = statfsSync, file = statSync) {
+  const space = disk(dirname(resolve(dbPath)));
+  const free = Number(space.bavail) * Number(space.bsize);
+  if (free < minFreeBytes) throw new Error(`disk reserve reached: ${free} free bytes; require ${minFreeBytes}`);
+  if (existsSync(dbPath) && file(dbPath).size >= maxDbBytes) throw new Error(`archive size limit reached: ${maxDbBytes} bytes`);
 }
 
 export function parseNicknameCsv(text) {
@@ -120,11 +131,12 @@ export async function collectBanProfiles(candidate, request, seasonalCycle) {
   return profiles;
 }
 
-export function publishBanArchive(stage, targetPath, playersPath, progressionPath) {
+export function publishBanArchive(stage, targetPath, playersPath, progressionPath, minFreeBytes = 8 * 1024 ** 3, maxDbBytes = 2 * 1024 ** 3) {
   const stagePath = String(stage.prepare("PRAGMA database_list").get().file);
   if (new Set([targetPath, playersPath, progressionPath, ...(stagePath ? [stagePath] : [])].map(p => resolve(p))).size !== (stagePath ? 4 : 3)) throw new Error("database paths must be distinct");
   const target = new DatabaseSync(targetPath);
   try {
+    checkArchiveSpace(targetPath, minFreeBytes, maxDbBytes);
     initializeBanImportDb(target);
     target.exec("PRAGMA busy_timeout=5000");
     target.prepare("ATTACH DATABASE ? AS players_db").run(playersPath);
@@ -133,6 +145,7 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
     for (const account of stage.prepare(`SELECT DISTINCT e.aid FROM banned_wave_evidence e
       WHERE (SELECT r.decision FROM ban_import_results r WHERE r.aid=e.aid ORDER BY r.checked_at DESC,r.rowid DESC LIMIT 1)='accepted'
       ORDER BY e.aid`).all()) {
+      checkArchiveSpace(targetPath, minFreeBytes, maxDbBytes);
       const evidence = stage.prepare("SELECT listed_date,nickname,source FROM banned_wave_evidence WHERE aid=?").all(account.aid);
       const profiles = stage.prepare(`SELECT mode,cycle_id,raw_json_gzip,raw_sha256 FROM banned_mode_snapshots s WHERE aid=?
         AND profile_updated_at=(SELECT MAX(t.profile_updated_at) FROM banned_mode_snapshots t
@@ -153,27 +166,39 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
 
 async function main() {
   if (hasArg(process.argv, "--help")) {
-    console.log("Usage: node scripts/import-ban-list.mjs --manifest waves.json --db stage.db --seasonal-cycle cycle-id [--rps 2] [--limit 1000] [--retry]\nPublish a reviewed stage: add --publish-to bans.db --players-db players.db --progression-db progression.db. Run under the shared writer locks; take a verified backup first.");
+    console.log("Usage: node scripts/import-ban-list.mjs --manifest waves.json --db stage.db --seasonal-cycle cycle-id [--rps 2] [--limit 1000] [--retry] [--min-free-gb 8] [--max-db-gb 2]\nPublish a reviewed stage without network: --db stage.db --publish-only --publish-to bans.db --players-db players.db --progression-db progression.db. Run under the shared writer locks; take a verified backup first.");
     return;
   }
   const dbPath = argValue(process.argv, "--db", ""); const manifestPath = argValue(process.argv, "--manifest", "");
   const seasonalCycle = argValue(process.argv, "--seasonal-cycle", "");
-  if (!dbPath || !manifestPath || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(seasonalCycle)) throw new Error("explicit --db, --manifest and --seasonal-cycle required");
+  const publishOnly = hasArg(process.argv, "--publish-only");
+  if (!dbPath || (!publishOnly && (!manifestPath || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(seasonalCycle)))) throw new Error("explicit --db, --manifest and --seasonal-cycle required for collection");
   const limit = Number(argValue(process.argv, "--limit", "0"));
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid limit");
   const publishPath = argValue(process.argv, "--publish-to", "");
   const playersPath = argValue(process.argv, "--players-db", ""); const progressionPath = argValue(process.argv, "--progression-db", "");
   if (publishPath && (!playersPath || !progressionPath || new Set([dbPath, publishPath, playersPath, progressionPath].map(p => resolve(p))).size !== 4)) throw new Error("publishing requires four distinct explicit database paths");
+  if (publishOnly && (!publishPath || !existsSync(dbPath))) throw new Error("publish-only requires an existing stage and an explicit target");
+  const minFreeGb = Number(argValue(process.argv, "--min-free-gb", "8"));
+  const maxDbGb = Number(argValue(process.argv, "--max-db-gb", "2"));
+  if (!Number.isFinite(minFreeGb) || minFreeGb < 0 || !Number.isFinite(maxDbGb) || maxDbGb <= 0) throw new Error("invalid disk limits");
   mkdirSync(dirname(resolve(dbPath)), { recursive: true });
+  const checkSpace = () => checkArchiveSpace(dbPath, minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3);
+  checkSpace();
   const db = new DatabaseSync(resolve(dbPath));
   try {
     initializeBanImportDb(db);
+    if (publishOnly) {
+      console.log(JSON.stringify({ published: publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3) }));
+      return;
+    }
     const request = createRateLimitedRequest(Number(argValue(process.argv, "--rps", "2")));
     const waves = await loadWaves(JSON.parse(readFileSync(manifestPath, "utf8")), request);
     const candidates = await discoverBanCandidates(waves, request);
     const totals = { waves: waves.length, matched: candidates.length, checked: 0, resumed: 0, errors: 0, decisions: {} };
     for (const candidate of limit ? candidates.slice(0, limit) : candidates) {
       if (!hasArg(process.argv, "--retry") && db.prepare("SELECT 1 FROM ban_import_results WHERE aid=? AND evidence_hash=?").get(candidate.aid, candidateEvidenceHash(candidate))) { totals.resumed++; continue; }
+      checkSpace();
       try {
         const profiles = await collectBanProfiles(candidate, request, seasonalCycle);
         const decision = importBanCandidate(db, candidate, profiles);
@@ -184,7 +209,8 @@ async function main() {
     }
     if (publishPath) {
       if (totals.errors) throw new Error("profile errors remain; refusing automatic publication");
-      totals.published = publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath));
+      checkSpace();
+      totals.published = publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3);
     }
     console.log(JSON.stringify(totals));
     if (totals.errors) process.exitCode = 1;
