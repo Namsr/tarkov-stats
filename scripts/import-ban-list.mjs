@@ -7,7 +7,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { createStringObjectParser, argValue, hasArg } from "./seasonal-profile-sync-core.mjs";
 import { fetchTarkovJson, lastSkillAccessSeconds } from "../lib/tarkov-api.ts";
-import { BAN_PROFILE_PATHS, validateWave, parseBanProfile, initializeBanImportDb,
+import { BAN_PROFILE_PATHS, validateWave, isBanNickname, parseBanProfile, initializeBanImportDb,
   importBanCandidate, candidateEvidenceHash } from "../lib/ban-import.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -67,9 +67,9 @@ export function parseNicknameCsv(text) {
   // unsupported cells remain counted in the report rather than becoming names.
   if (/^\s*</.test(text)) throw new Error("CSV response returned HTML");
   const cells = text.replace(/^\uFEFF/, "").split(/[,\r\n]+/).map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  const nicknames = [...new Set(cells.filter(s => /^[a-zA-Z0-9_-]{1,15}$/.test(s)))];
+  const nicknames = [...new Set(cells.filter(isBanNickname))];
   if (!nicknames.length) throw new Error("CSV has no valid nicknames");
-  return { nicknames, ignoredCells: cells.length - cells.filter(s => /^[a-zA-Z0-9_-]{1,15}$/.test(s)).length };
+  return { nicknames, ignoredCells: cells.length - cells.filter(isBanNickname).length };
 }
 
 export async function loadWaves(manifest, request) {
