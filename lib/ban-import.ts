@@ -13,6 +13,10 @@ export interface BanProfile { mode: BanProfileMode; raw: string; cycleId?: strin
 export type BanImportDecision = "accepted" | "missing_pvp" | "missing_skill_date" | "active_after_wave";
 const MAX_PROFILE_BYTES = 8 * 1024 * 1024;
 
+export function isBanNickname(value: unknown): value is string {
+  return typeof value === "string" && /^[\p{L}\p{N}_-]{1,64}$/u.test(value);
+}
+
 export function waveCutoff(date: string): number {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("wave date must be YYYY-MM-DD");
   const start = Date.parse(`${date}T00:00:00Z`);
@@ -26,7 +30,7 @@ export function validateWave(wave: BanWave): BanWave {
     new Date(wave.publishedAt).toISOString().slice(0, 10) !== wave.date)) throw new Error("publication timestamp must match wave date");
   const source = new URL(wave.source);
   if (source.protocol !== "https:" || source.username || source.password) throw new Error("invalid wave source");
-  if (!Array.isArray(wave.nicknames) || !wave.nicknames.length || wave.nicknames.some(n => typeof n !== "string" || !/^[a-zA-Z0-9_-]{1,15}$/.test(n))) {
+  if (!Array.isArray(wave.nicknames) || !wave.nicknames.length || wave.nicknames.some(n => !isBanNickname(n))) {
     throw new Error("invalid wave nicknames");
   }
   return wave;

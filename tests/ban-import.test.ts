@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { evaluateBanCandidate, initializeBanImportDb, importBanCandidate, readArchivedBanProfile,
   waveCutoff, characterStatisticsJson, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
-import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive, checkArchiveSpace } from "../scripts/import-ban-list.mjs";
+import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive, checkArchiveSpace, parseNicknameCsv } from "../scripts/import-ban-list.mjs";
 
 const candidate: BanCandidate = { aid: 42, nickname: "Player", waves: [
   { date: "2025-12-19", source: "https://example.com/bans", nicknames: ["Player"] },
@@ -165,6 +165,14 @@ test("streamed discovery uses exact case-insensitive names and keeps duplicate I
   const found = await discoverBanCandidates(candidate.waves, async () => new Response('{"42":"PLAYER","43":"PlayerExtra","44":"Player"}'));
   assert.deepEqual(found.map(c => c.aid), [42, 44]);
   assert.equal(found[0].waves[0].nicknames.length, 1);
+});
+
+test("real published lists retain generated TarkovCitizen names and Unicode nicknames", async () => {
+  const names = parseNicknameCsv('TarkovCitizen11492870,PIMPnubz01А,"PROMOCODE ↓"');
+  assert.deepEqual(names, { nicknames: ["TarkovCitizen11492870", "PIMPnubz01А"], ignoredCells: 1 });
+  const waves = [{ ...candidate.waves[0], nicknames: names.nicknames }];
+  const found = await discoverBanCandidates(waves, async () => new Response('{"11492870":"TarkovCitizen11492870","43":"PIMPnubz01А"}'));
+  assert.deepEqual(found.map(c => c.aid), [43, 11492870]);
 });
 
 test("collector fetches every mode, accepts 404 but never mistakes server errors for absence", async () => {
