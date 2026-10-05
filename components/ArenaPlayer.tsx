@@ -8,6 +8,7 @@ import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import ProfileHeader from "@/components/ProfileHeader";
+import { ProfileErrorNotice } from "@/components/ProfileShell";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import StatCard from "@/components/StatCard";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
@@ -100,18 +101,20 @@ function ArenaProfileActions({
   aid,
   nickname,
   stale,
+  missing = false,
   onCheck,
 }: {
   aid: number;
-  nickname: string;
+  nickname?: string;
   stale: boolean;
+  missing?: boolean;
   onCheck: () => Promise<RefreshCheckResult>;
 }) {
   const { t } = useI18n();
   return (
     <div className="profile-actions-grid">
       <div className="profile-action-stack">
-        <RefreshButton aid={aid} mode="arena" stale={stale} onCheck={onCheck} className="whitespace-nowrap" />
+        <RefreshButton aid={aid} mode="arena" stale={stale} missing={missing} onCheck={onCheck} className="whitespace-nowrap" />
         {stale && <p className="max-w-56 text-xs font-medium leading-snug text-[var(--danger)]">{t("player.refreshStaleMessage")}</p>}
       </div>
       <FavoriteButton aid={aid} nickname={nickname} identity={{ mode: "arena", cycleId: "persistent" }} />
@@ -142,10 +145,12 @@ export function ArenaProfileLoading() {
 function ArenaLegacyIncomplete({
   aid,
   body,
+  error,
   onCheck,
 }: {
   aid: number;
   body: ArenaResponse;
+  error: string;
   onCheck: () => Promise<RefreshCheckResult>;
 }) {
   const { t } = useI18n();
@@ -182,6 +187,7 @@ function ArenaLegacyIncomplete({
           </div>
         </div>
       </ProfileHeader>
+      {error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
       <section className="mt-5 space-y-5" aria-label={t("arena.section.modes")}>
         {ARENA_MODE_KEYS.map((mode) => {
           const stats = legacyProfile?.modes[mode] ?? null;
@@ -256,13 +262,13 @@ export default function ArenaPlayer({ aid }: Props) {
     setError("");
     setUnavailable(false);
     loadPlayerProfileResponse<ArenaResponse>(`/api/player/profile?${params}`, { force })
-      .then(({ ok, body }) => {
+      .then(({ ok, status, body }) => {
         if (!ok) {
           if (body.code === "mode_profile_unavailable") {
             if (!cancelled) setUnavailable(true);
             return null;
           }
-          throw new Error(body.error ?? t("arena.profile.error"));
+          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("arena.profile.error"));
         }
         if (isLegacyArenaResponse(body)) return { body, profile: null, legacy: true };
         const nextProfile = toArenaProfile(body, numericAid);
@@ -310,13 +316,14 @@ export default function ArenaPlayer({ aid }: Props) {
     // showing «Проверяем свежие данные…», so the answer has to be the real one.
     const params = new URLSearchParams({ aid, mode: "arena", refresh: "1", wait: "1" });
     const request = loadPlayerProfileResponse<ArenaResponse>(`/api/player/profile?${params}`, { force: true })
-      .then(({ ok, body }): RefreshCheckResult => {
+      .then(({ ok, status, body }): RefreshCheckResult => {
         if (!ok) {
           if (body.code === "mode_profile_unavailable") {
             setUnavailable(true);
+            setError("");
             return "unchanged";
           }
-          throw new Error(body.error ?? t("arena.profile.error"));
+          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("arena.profile.error"));
         }
         if (body.capture?.status === "refresh_failed") {
           throw new Error(t("player.refreshStatus.error"));
@@ -327,6 +334,7 @@ export default function ArenaPlayer({ aid }: Props) {
           setRisk(null);
           setTsRating(null);
           setUnavailable(false);
+          setError("");
           return "unchanged";
         }
         const nextProfile = toArenaProfile(body, numericAid);
@@ -340,7 +348,9 @@ export default function ArenaPlayer({ aid }: Props) {
         return previous?.profileUpdatedAt !== nextProfile.profileUpdatedAt ? "updated" : "unchanged";
       })
       .catch((caught: unknown) => {
-        throw caught instanceof PlayerProfileResponseError ? new Error(t("arena.profile.error")) : caught;
+        const failure = caught instanceof PlayerProfileResponseError ? new Error(t("arena.profile.error")) : caught;
+        setError(failure instanceof Error ? failure.message : t("arena.profile.error"));
+        throw failure;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;
@@ -399,19 +409,31 @@ export default function ArenaPlayer({ aid }: Props) {
   }, [authStatus, effectiveFavoriteAid, showFavorite]);
 
   if (loading && !profile && !legacyBody) return <ArenaProfileLoading />;
-  if (legacyBody) return <ArenaLegacyIncomplete aid={numericAid} body={legacyBody} onCheck={refreshProfile} />;
+  if (legacyBody) return <ArenaLegacyIncomplete aid={numericAid} body={legacyBody} error={error} onCheck={refreshProfile} />;
   if (unavailable || !profile) {
     // Only a mode_profile_unavailable response means "no Arena data". Any other
     // failure (including an aborted request) must not be reported as missing
     // data, so the real error wins over the generic notice.
-    const notice = unavailable ? t("arena.profile.unavailable") : error || t("arena.profile.error");
+    const notice = error || t(unavailable ? "player.modeUnavailable" : "arena.profile.error");
     return (
       <main className="page-frame profile-page">
-        <Link href="/" className="mb-8 inline-block text-sm text-[var(--muted)] hover:text-[var(--foreground)]">{t("common.back")}</Link>
-        <section className="data-panel p-6 text-center" role="status">
-          <p className="text-[var(--danger)]">{notice}</p>
-          <RefreshButton aid={numericAid} mode="arena" missing onCheck={refreshProfile} />
-        </section>
+        <Link href="/" className="profile-back">{t("common.back")}</Link>
+        <ProfileHeader
+          aid={numericAid}
+          mode="arena"
+          kicker={`#${aid}`}
+          actions={<ArenaProfileActions aid={numericAid} stale={false} missing={unavailable} onCheck={refreshProfile} />}
+        >
+          <div className="profile-metrics">
+            {["arena.account.hours", "arena.counter.kills", "arena.counter.deaths", "arena.metric.kd_ratio"].map((key) => (
+              <dl key={key} className="profile-metric">
+                <dt>{t(key)}</dt>
+                <dd>{t("common.unknown")}</dd>
+              </dl>
+            ))}
+          </div>
+        </ProfileHeader>
+        <ProfileErrorNotice>{notice}</ProfileErrorNotice>
       </main>
     );
   }
@@ -441,6 +463,7 @@ export default function ArenaPlayer({ aid }: Props) {
       <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "arena-overview", label: t("profile.section.overview") }, { id: "arena-comparison", label: t("profile.section.statistics") }, { id: "statistics", label: t("arena.combat.details") }, { id: "arena-modes", label: t("arena.byMode") }]} />
       <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>{(["overall", ...ARENA_MODE_KEYS] as const).map((mode) => <button key={mode} type="button" aria-pressed={selectedMode === mode} onClick={() => changeMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}</div>
     </ProfileHeader>
+    {error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
     <div className="profile-content">
       <ArenaCombatSummary profile={profile} risk={risk} rating={tsRating} scope={selectedMode} onModeChange={changeMode} />
         <section id="arena-comparison" tabIndex={-1} className="profile-anchor-section profile-comparison">
@@ -467,6 +490,5 @@ export default function ArenaPlayer({ aid }: Props) {
       <ArenaDetailedStatistics profile={profile} scope={selectedMode} risk={risk} rating={tsRating} />
       <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} aid={numericAid} statistic={statistic} />
     </div>
-    {error && <p className="profile-chart-notice" role="status">{error}</p>}
   </main>;
 }

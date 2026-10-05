@@ -18,7 +18,7 @@ import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
-import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
+import ProfileShell, { ProfileErrorNotice, ProfileShellLoading } from "@/components/ProfileShell";
 import type { CrossSectionMode } from "@/lib/db";
 import { isProfileStale } from "@/lib/profile-refresh-policy";
 import type { PublicRiskView } from "@/types/profile-view";
@@ -183,7 +183,7 @@ function LegacyPlayer({
     loadPlayerProfileResponse<RegularProfileResponse>(`/api/player/profile?${requestParams}`, {
       force: forceRefresh,
     })
-      .then(({ ok, body: data }) => {
+      .then(({ ok, status, body: data }) => {
         if (!ok || !data.stats) {
           const unavailable = data.code === "mode_profile_unavailable";
           if (unavailable) {
@@ -193,7 +193,7 @@ function LegacyPlayer({
             }
             return null;
           }
-          throw new Error(data.error ?? translate.current("player.loadError"));
+          throw new Error(status === 429 ? translate.current("player.rateLimited") : data.error ?? translate.current("player.loadError"));
         }
         if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
@@ -249,15 +249,16 @@ function LegacyPlayer({
       `/api/player/profile?${requestParams}`,
       { force: true },
     )
-      .then(({ ok, body: data }): Promise<RefreshCheckResult> | RefreshCheckResult => {
+      .then(({ ok, status, body: data }): Promise<RefreshCheckResult> | RefreshCheckResult => {
         if (generation !== requestGeneration.current) return "unchanged";
         if (!ok || !data.stats) {
           if (data.code === "mode_profile_unavailable") {
             setModeUnavailable(true);
             setProfileSummary(data.profileSummary ?? null);
+            setError("");
             return "unchanged";
           }
-          throw new Error(data.error ?? t("player.loadError"));
+          throw new Error(status === 429 ? t("player.rateLimited") : data.error ?? t("player.loadError"));
         }
 
         if ((mode === "regular" || mode === "pve") && (
@@ -291,8 +292,9 @@ function LegacyPlayer({
         return changed ? "updated" : "unchanged";
       })
       .catch((error: unknown) => {
-        if (error instanceof PlayerProfileResponseError) throw new Error(t("player.loadError"));
-        throw error;
+        const failure = error instanceof PlayerProfileResponseError ? new Error(t("player.loadError")) : error;
+        if (generation === requestGeneration.current) setError(failure instanceof Error ? failure.message : t("player.loadError"));
+        throw failure;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;
@@ -337,7 +339,7 @@ function LegacyPlayer({
           risk={undefined}
           comparison={undefined}
           statistics={undefined}
-          statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{t("player.modeUnavailable")}</div>}
+          statusNotice={<ProfileErrorNotice>{error || t("player.modeUnavailable")}</ProfileErrorNotice>}
         />
       );
     }
@@ -393,7 +395,7 @@ function LegacyPlayer({
     );
   }
 
-  if (error || !stats) {
+  if (!stats) {
     if (mode === "regular" || mode === "pve") {
       return (
         <ProfileShell
@@ -414,7 +416,7 @@ function LegacyPlayer({
           risk={undefined}
           comparison={undefined}
           statistics={undefined}
-          statusNotice={<div className="data-panel mt-5 p-5 text-center">{error || t("player.unknownError")}</div>}
+          statusNotice={<ProfileErrorNotice>{error || t("player.unknownError")}</ProfileErrorNotice>}
         />
       );
     }
@@ -575,6 +577,7 @@ function LegacyPlayer({
         actions={<ProfilePrimaryActions aid={Number(aid)} mode={mode} cycleId="persistent" nickname={stats.nickname} />}
         activity={<ProfileActivity aid={Number(aid)} mode={mode} updatedAt={profileUpdatedAt} lastPlayedAt={lastPlayedAt} onCheck={refreshProfile} />}
         overviewCards={regularOverviewCards}
+        statusNotice={error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
         progression={<ProgressionPanel
           aid={Number(aid)}
           hours={stats.hoursPlayed}
