@@ -194,6 +194,18 @@ test("rate limiter retries 429/5xx, honors Retry-After, and bounds responses", a
   await assert.rejects(boundedText(new Response("12345"), 4), /too large/);
 });
 
+test("large public index has a longer deadline while individual profiles remain bounded", async t => {
+  const deadlines: number[] = [];
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    deadlines.push(ms);
+    return new AbortController().signal;
+  });
+  const request = createRateLimitedRequest(2, async () => new Response("ok"), async () => {});
+  await request("https://players.tarkov.dev/profile/index.json");
+  await request("https://players.tarkov.dev/profile/42.json");
+  assert.deepEqual(deadlines, [120000, 10000]);
+});
+
 test("disk reserve and archive limits stop writes while an archive below both limits can resume", () => {
   const disk = () => ({ bavail: 5, bsize: 100 });
   assert.throws(() => checkArchiveSpace("package.json", 501, 1000, disk, () => ({ size: 1 })), /disk reserve/);
