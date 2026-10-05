@@ -44,6 +44,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-profiles.mjs ./scripts/sync-seasonal-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs ./scripts/sync-seasonal-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/import-ban-list.mjs ./scripts/import-ban-list.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-progression.mjs ./scripts/backfill-progression.mjs

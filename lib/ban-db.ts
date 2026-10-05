@@ -54,7 +54,7 @@ export function makePlayerSnapshot(
   return { aid, stats, achievementIds, upstreamUpdatedAt, capturedAt };
 }
 
-const BAN_SCHEMA = `
+export const BAN_SCHEMA = `
 CREATE TABLE IF NOT EXISTS banned_accounts (
   aid INTEGER PRIMARY KEY,
   first_banned_at INTEGER NOT NULL,
