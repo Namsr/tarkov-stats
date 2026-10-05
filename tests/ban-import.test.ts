@@ -45,6 +45,17 @@ test("last listed wave governs activity and invalid calendar dates fail", () => 
   assert.throws(() => evaluateBanCandidate({ ...candidate, nickname: "SomeoneElse" }, [input()]));
 });
 
+test("an exact publication timestamp excludes later activity on that same day and survives archiving", () => {
+  const dated = { ...candidate, waves: [{ ...candidate.waves[0], publishedAt: "2025-12-19T12:00:00Z" }] };
+  assert.equal(evaluateBanCandidate(dated, [input("regular", Date.parse("2025-12-19T11:59:00Z") / 1000)]), "accepted");
+  assert.equal(evaluateBanCandidate(dated, [input("regular", Date.parse("2025-12-19T12:01:00Z") / 1000)]), "active_after_wave");
+  const store = db();
+  try {
+    importBanCandidate(store, dated, [input()]);
+    assert.equal(store.prepare("SELECT published_at FROM banned_wave_evidence").get()!.published_at, dated.waves[0].publishedAt);
+  } finally { store.close(); }
+});
+
 test("all modes and seasons coexist; original statistics round-trip without inventory or hideout", () => {
   const store = db();
   try {

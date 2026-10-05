@@ -86,7 +86,7 @@ export async function loadWaves(manifest, request) {
       const parsed = parseNicknameCsv(await boundedText(response)); nicknames = parsed.nicknames;
       console.log(JSON.stringify({ wave: input.date, nicknames: nicknames.length, ignoredCells: parsed.ignoredCells }));
     }
-    waves.push(validateWave({ date: input.date, source: input.source, nicknames }));
+    waves.push(validateWave({ date: input.date, source: input.source, nicknames, ...(input.publishedAt ? { publishedAt: input.publishedAt } : {}) }));
   }
   return waves;
 }
@@ -146,7 +146,7 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
       WHERE (SELECT r.decision FROM ban_import_results r WHERE r.aid=e.aid ORDER BY r.checked_at DESC,r.rowid DESC LIMIT 1)='accepted'
       ORDER BY e.aid`).all()) {
       checkArchiveSpace(targetPath, minFreeBytes, maxDbBytes);
-      const evidence = stage.prepare("SELECT listed_date,nickname,source FROM banned_wave_evidence WHERE aid=?").all(account.aid);
+      const evidence = stage.prepare("SELECT listed_date,nickname,source,published_at FROM banned_wave_evidence WHERE aid=?").all(account.aid);
       const profiles = stage.prepare(`SELECT mode,cycle_id,raw_json_gzip,raw_sha256 FROM banned_mode_snapshots s WHERE aid=?
         AND profile_updated_at=(SELECT MAX(t.profile_updated_at) FROM banned_mode_snapshots t
           WHERE t.aid=s.aid AND t.mode=s.mode AND t.cycle_id=s.cycle_id)`).all(account.aid)
@@ -156,7 +156,7 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
           return { mode: r.mode, cycleId: r.cycle_id, raw };
         });
       const candidate = { aid: account.aid, nickname: evidence[0].nickname,
-        waves: evidence.map(e => ({ date: e.listed_date, source: e.source, nicknames: [e.nickname] })) };
+        waves: evidence.map(e => ({ date: e.listed_date, source: e.source, nicknames: [e.nickname], ...(e.published_at ? { publishedAt: e.published_at } : {}) })) };
       if (importBanCandidate(target, candidate, profiles) !== "accepted") throw new Error(`stage eligibility changed: ${account.aid}`);
       applied++;
     }

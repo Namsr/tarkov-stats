@@ -7,7 +7,7 @@ import type { PlayerProfile } from "../types/tarkov.ts";
 
 export const BAN_PROFILE_PATHS = { regular: "profile", pve: "pve", arena: "arena", seasonal: "pvp-season" } as const;
 export type BanProfileMode = keyof typeof BAN_PROFILE_PATHS;
-export interface BanWave { date: string; source: string; nicknames: string[] }
+export interface BanWave { date: string; source: string; nicknames: string[]; publishedAt?: string }
 export interface BanCandidate { aid: number; nickname: string; waves: BanWave[] }
 export interface BanProfile { mode: BanProfileMode; raw: string; cycleId?: string }
 export type BanImportDecision = "accepted" | "missing_pvp" | "missing_skill_date" | "active_after_wave";
@@ -22,12 +22,18 @@ export function waveCutoff(date: string): number {
 
 export function validateWave(wave: BanWave): BanWave {
   waveCutoff(wave.date);
+  if (wave.publishedAt !== undefined && (!Number.isFinite(Date.parse(wave.publishedAt)) ||
+    new Date(wave.publishedAt).toISOString().slice(0, 10) !== wave.date)) throw new Error("publication timestamp must match wave date");
   const source = new URL(wave.source);
   if (source.protocol !== "https:" || source.username || source.password) throw new Error("invalid wave source");
   if (!Array.isArray(wave.nicknames) || !wave.nicknames.length || wave.nicknames.some(n => typeof n !== "string" || !/^[a-zA-Z0-9_-]{1,15}$/.test(n))) {
     throw new Error("invalid wave nicknames");
   }
   return wave;
+}
+
+export function banWaveCutoff(wave: BanWave): number {
+  return wave.publishedAt === undefined ? waveCutoff(wave.date) : Date.parse(wave.publishedAt);
 }
 
 export function parseBanProfile(input: BanProfile, aid: number): PlayerProfile {
@@ -52,7 +58,7 @@ export function characterStatisticsJson(profile: PlayerProfile): string {
 export function evaluateBanCandidate(candidate: BanCandidate, profiles: BanProfile[]): BanImportDecision {
   if (!Number.isSafeInteger(candidate.aid) || candidate.aid <= 0 || !candidate.waves.length || typeof candidate.nickname !== "string" ||
     candidate.waves.some(w => !w.nicknames.some(n => n.toLowerCase() === candidate.nickname.toLowerCase()))) throw new Error("invalid ban candidate");
-  const cutoff = Math.max(...candidate.waves.map(w => waveCutoff(validateWave(w).date)));
+  const cutoff = Math.max(...candidate.waves.map(w => banWaveCutoff(validateWave(w))));
   const parsed = profiles.map(input => ({ input, profile: parseBanProfile(input, candidate.aid) }));
   const pvp = parsed.find(p => p.input.mode === "regular");
   if (!pvp) return "missing_pvp";
@@ -72,7 +78,7 @@ CREATE TABLE IF NOT EXISTS banned_mode_snapshots (
 );
 CREATE TABLE IF NOT EXISTS banned_wave_evidence (
   aid INTEGER NOT NULL REFERENCES banned_accounts(aid) ON DELETE CASCADE,
-  listed_date TEXT NOT NULL, nickname TEXT NOT NULL, source TEXT NOT NULL,
+  listed_date TEXT NOT NULL, nickname TEXT NOT NULL, source TEXT NOT NULL, published_at TEXT,
   PRIMARY KEY(aid, listed_date, nickname, source)
 );
 CREATE TABLE IF NOT EXISTS banned_stored_rows (
@@ -88,11 +94,14 @@ CREATE TABLE IF NOT EXISTS ban_import_results (
 export function initializeBanImportDb(db: DatabaseSync) {
   db.exec("PRAGMA foreign_keys=ON");
   db.exec(BAN_SCHEMA + BAN_IMPORT_SCHEMA);
+  if (!db.prepare("PRAGMA table_info(banned_wave_evidence)").all().some(row => row.name === "published_at")) {
+    db.exec("ALTER TABLE banned_wave_evidence ADD COLUMN published_at TEXT");
+  }
 }
 
 export function candidateEvidenceHash(candidate: BanCandidate): string {
   return createHash("sha256").update(JSON.stringify({ aid: candidate.aid, nickname: candidate.nickname,
-    waves: candidate.waves.map(w => [w.date, w.source]).sort() })).digest("hex");
+    waves: candidate.waves.map(w => [w.date, w.source, w.publishedAt ?? null]).sort() })).digest("hex");
 }
 
 /** Caller owns the transaction; copy complete rows without deleting live history. */
@@ -128,15 +137,17 @@ export function importBanCandidate(db: DatabaseSync, candidate: BanCandidate, pr
   db.exec("BEGIN IMMEDIATE");
   try {
     if (decision === "accepted") {
-      const latestWave = candidate.waves.toSorted((a, b) => b.date.localeCompare(a.date))[0];
+      const latestWave = candidate.waves.toSorted((a, b) => banWaveCutoff(b) - banWaveCutoff(a))[0];
       const updated = Math.max(...profiles.map(p => Number(parseBanProfile(p, candidate.aid).updated)));
       db.prepare(`INSERT INTO banned_accounts VALUES(?,?,?,'published_ban_list_nickname_match','listed',NULL,?)
         ON CONFLICT(aid) DO UPDATE SET last_confirmed_at=MAX(last_confirmed_at,excluded.last_confirmed_at),
         profile_updated_at=MAX(profile_updated_at,excluded.profile_updated_at)`)
-        .run(candidate.aid, waveCutoff(latestWave.date), now, updated);
+        .run(candidate.aid, banWaveCutoff(latestWave), now, updated);
       for (const wave of candidate.waves) {
-        const inserted = db.prepare("INSERT OR IGNORE INTO banned_wave_evidence VALUES(?,?,?,?)")
-          .run(candidate.aid, wave.date, candidate.nickname, wave.source);
+        const inserted = db.prepare("INSERT OR IGNORE INTO banned_wave_evidence(aid,listed_date,nickname,source,published_at) VALUES(?,?,?,?,?)")
+          .run(candidate.aid, wave.date, candidate.nickname, wave.source, wave.publishedAt ?? null);
+        if (!inserted.changes && wave.publishedAt) db.prepare("UPDATE banned_wave_evidence SET published_at=? WHERE aid=? AND listed_date=? AND nickname=? AND source=?")
+          .run(wave.publishedAt, candidate.aid, wave.date, candidate.nickname, wave.source);
         if (inserted.changes) db.prepare("INSERT INTO ban_confirmations(aid,confirmed_at,source,raw_status,reason) VALUES(?,?,'published_ban_list_nickname_match','listed',?)")
           .run(candidate.aid, now, `${wave.date} ${wave.source}`);
       }
