@@ -18,6 +18,26 @@ function sliceDeclaration(source, start, end) {
   return source.slice(from, to);
 }
 
+test("cached persistent profiles must match the requested account, mode, and cycle", async () => {
+  const source = await readFile("components/RegularPlayer.tsx", "utf8");
+  const declaration = sliceDeclaration(source, "function matchesCachedProfileIdentity(", "function viewModelAchievementItems(");
+  const ts = createRequire(import.meta.url)("typescript");
+  const compiled = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const matches = new Function(`${compiled}; return matchesCachedProfileIdentity;`)();
+
+  for (const mode of ["regular", "pve"]) {
+    const response = { identity: { aid: 1265971, mode, cycleId: "persistent" } };
+    assert.equal(matches(response, "1265971", mode), true);
+    assert.equal(matches({ identity: { ...response.identity, aid: 1265972 } }, "1265971", mode), false);
+    assert.equal(matches({ identity: { ...response.identity, mode: mode === "pve" ? "regular" : "pve" } }, "1265971", mode), false);
+    assert.equal(matches({ identity: { ...response.identity, cycleId: "another-cycle" } }, "1265971", mode), false);
+    assert.equal(matches({}, "1265971", mode), false);
+    assert.equal(matches(undefined, "1265971", mode), false);
+  }
+  assert.match(source, /const initialResponse = matchesCachedProfileIdentity\(cachedResponse, aid, mode\)/);
+  assert.match(source, /const cached = matchesCachedProfileIdentity\(cachedResponse, aid, mode\)/);
+});
+
 test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
   const context = await readFile("lib/favorites/context.tsx", "utf8");
   const route = await readFile("app/api/favorites/route.ts", "utf8");
@@ -173,7 +193,7 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
 test("missing mode keeps the profile shell without mounting data sections", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   const unavailableStart = source.indexOf("if (modeUnavailable)");
-  const genericErrorStart = source.indexOf("if (error || !stats)");
+  const genericErrorStart = source.indexOf("if (!stats)");
   assert.ok(unavailableStart > 0 && genericErrorStart > unavailableStart);
 
   const unavailableUi = source.slice(unavailableStart, genericErrorStart);
@@ -207,9 +227,9 @@ test("ordinary profile failures retain the generic error UI", async () => {
   // the same shape, so an unanchored match would pass against either code path.
   assert.match(
     source,
-    /const unavailable = data\.code === "mode_profile_unavailable"[\s\S]*?throw new Error\(data\.error \?\? translate\.current\("player\.loadError"\)\)/,
+    /const unavailable = data\.code === "mode_profile_unavailable"[\s\S]*?throw new Error\(status === 429 \? translate\.current\("player\.rateLimited"\) : data\.error \?\? translate\.current\("player\.loadError"\)\)/,
   );
-  assert.match(source, /if \(error \|\| !stats\)[\s\S]*?\{error \|\| t\("player\.unknownError"\)\}/);
+  assert.match(source, /if \(!stats\)[\s\S]*?<ProfileErrorNotice>\{error \|\| t\("player\.unknownError"\)\}/);
 });
 
 test("a language switch does not re-request the profile or discard a refresh", async () => {
@@ -232,7 +252,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.equal((regular.match(/translate\.current\("player\.loadError"\)/g) ?? []).length, 4);
   // Only the load effect changes. `refreshProfile` is a useCallback, so a new `t`
   // just gives the button a new callback and re-runs nothing.
-  assert.equal((regular.match(/\bt\("player\.loadError"\)/g) ?? []).length, 3);
+  assert.equal((regular.match(/\bt\("player\.loadError"\)/g) ?? []).length, 4);
 
   // Same defect on a seasonal profile, where the array also carried a `lang` the body
   // never read. `refreshProfile` keeps its own generation check, so the callback here
@@ -242,7 +262,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(seasonal, /const translate = useRef\(t\);/);
   assert.match(seasonal, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
   assert.equal((seasonal.match(/translate\.current\("seasonal\.profileUnavailable"\)/g) ?? []).length, 4);
-  assert.match(seasonal, /if \(error instanceof PlayerProfileResponseError\) throw new Error\(t\("seasonal\.profileUnavailable"\)\)/);
+  assert.match(seasonal, /error instanceof PlayerProfileResponseError \? new Error\(t\("seasonal\.profileUnavailable"\)\) : error/);
 
   // The timeline parameters carry no language, so the fetch must not re-run for one.
   assert.doesNotMatch(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);

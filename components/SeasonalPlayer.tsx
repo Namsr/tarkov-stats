@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
+import ProfileShell, { ProfileErrorNotice, ProfileShellLoading } from "@/components/ProfileShell";
 import PlayerRadarComparison from "@/components/PlayerRadarComparison";
 import ProfileAchievements from "@/components/ProfileAchievements";
 import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
@@ -286,13 +286,13 @@ export default function SeasonalPlayer({
     }
 
     loadPlayerProfileResponse<SeasonalProfileResponse>(profileRequestUrl)
-      .then(({ ok, body }) => {
+      .then(({ ok, status, body }) => {
         if (!ok || !body.profile) {
           if (body.code === "mode_profile_unavailable") {
             if (!cancelled && generation === requestGeneration.current) setModeUnavailable(true);
             return null;
           }
-          throw new Error(body.error ?? translate.current("seasonal.profileUnavailable"));
+          throw new Error(status === 429 ? translate.current("player.rateLimited") : body.error ?? translate.current("seasonal.profileUnavailable"));
         }
         if (
           body.identity?.aid !== aid ||
@@ -355,7 +355,7 @@ export default function SeasonalPlayer({
       `/api/player/profile?${params}`,
       { force: true },
     )
-      .then(({ ok, body }): Promise<RefreshCheckResult> | RefreshCheckResult => {
+      .then(({ ok, status, body }): Promise<RefreshCheckResult> | RefreshCheckResult => {
         if (generation !== requestGeneration.current) return "unchanged";
         if (!ok || !body.profile) {
           if (body.code === "mode_profile_unavailable") {
@@ -363,7 +363,7 @@ export default function SeasonalPlayer({
             setError("");
             return "unchanged";
           }
-          throw new Error(body.error ?? t("seasonal.profileUnavailable"));
+          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("seasonal.profileUnavailable"));
         }
         if (
           body.identity?.aid !== aid ||
@@ -403,8 +403,9 @@ export default function SeasonalPlayer({
         return changed ? "updated" : "unchanged";
       })
       .catch((error: unknown) => {
-        if (error instanceof PlayerProfileResponseError) throw new Error(t("seasonal.profileUnavailable"));
-        throw error;
+        const failure = error instanceof PlayerProfileResponseError ? new Error(t("seasonal.profileUnavailable")) : error;
+        if (generation === requestGeneration.current) setError(failure instanceof Error ? failure.message : t("seasonal.profileUnavailable"));
+        throw failure;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;
@@ -418,7 +419,7 @@ export default function SeasonalPlayer({
   const unknownValue = t("common.unknown");
   const overviewLabels = [t("player.hoursPlayed"), t("player.pmcKd"), t("seasonal.pmcSurvival"), t("player.pmcRaids")];
 
-  if (modeUnavailable || error || !profile) {
+  if (modeUnavailable || !profile) {
     return (
       <ProfileShell
         aid={aid}
@@ -433,7 +434,7 @@ export default function SeasonalPlayer({
         risk={undefined}
         comparison={undefined}
         statistics={undefined}
-        statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{error || t("seasonal.profileUnavailable")}</div>}
+        statusNotice={<ProfileErrorNotice>{error || t(modeUnavailable ? "player.modeUnavailable" : "seasonal.profileUnavailable")}</ProfileErrorNotice>}
       />
     );
   }
@@ -496,6 +497,7 @@ export default function SeasonalPlayer({
       }
       actions={<ProfilePrimaryActions aid={aid} mode="seasonal" cycleId={cycleId} nickname={profile.nickname} />}
       activity={<ProfileActivity aid={aid} mode="seasonal" updatedAt={profile.profileUpdatedAt} lastPlayedAt={profile.lastAccessAt} onCheck={refreshProfile} />}
+      statusNotice={error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
       overviewCards={[
         { label: t("player.pmcKd"), value: displayNumber(stats.pmcKdRatio, 2, unknownValue) },
         { label: t("seasonal.pmcSurvival"), value: displayNumber(stats.pmcSurvivalRate, 1, unknownValue), suffix: stats.pmcSurvivalRate == null ? undefined : "%" },
