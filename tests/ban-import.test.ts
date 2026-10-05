@@ -133,7 +133,10 @@ test("publication preserves full live history before excluding all modes", () =>
     } finally { target.close(); live.close(); }
     importBanCandidate(stage, candidate, [input("regular", null)], Date.now() + 1000);
     assert.equal(publishBanArchive(stage, targetPath, playersPath, progressionPath), 0);
-  } finally { stage.close(); rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    stage.close();
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* Preserve the original failure if a fixture handle remains open. */ }
+  }
 });
 
 test("failed history preservation rolls back both ban and cross-database exclusion", () => {
