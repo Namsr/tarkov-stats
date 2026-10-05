@@ -33,7 +33,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 # Immutable live image avoids mixing a new collector with the old HTTP revision.
 docker compose -p tarkovstats -f "$APP/docker-compose.vps.yml" run \
-  --rm --no-deps --no-build --pull never -T --name "$job" "$@" &
+  --rm --no-deps --pull never -T --name "$job" "$@" &
 cli=$!
 status=0
 wait "$cli" || status=$?

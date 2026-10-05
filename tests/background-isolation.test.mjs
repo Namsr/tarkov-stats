@@ -116,7 +116,11 @@ docker() {
   case "$*" in
     *"ps -q web") [ "$SCENARIO" = no-web ] || echo live-container;;
     "inspect --format {{.Image}} live-container") echo sha256:live-image;;
-    *" run "*) printf '%s\\n' "$TARKOVSTATS_WORKER_IMAGE $*" >> calls
+    *" run "*)
+      for argument in "$@"; do
+        case "$argument" in --no-build) echo "unknown flag: --no-build" >&2; return 125;; esac
+      done
+      printf '%s\\n' "$TARKOVSTATS_WORKER_IMAGE $*" >> calls
       if [ "$SCENARIO" = interrupted ]; then kill -TERM "$$"; fi
       [ "$SCENARIO" != job-failed ] || return 9;;
     "stop -t 30 tarkovstats-background-job") echo stop >> calls;;
@@ -138,7 +142,7 @@ docker() {
       if (scenario === "ok" || scenario === "job-failed" || scenario === "interrupted") {
         assert.equal(result.status, scenario === "ok" ? 0 : scenario === "interrupted" ? 143 : 9, result.stderr);
         assert.match(calls, /^sha256:live-image /);
-        assert.match(calls, /run --rm --no-deps --no-build --pull never -T --name tarkovstats-background-job -e BUDGET=123 worker nice -n 19 node job.mjs/);
+        assert.match(calls, /run --rm --no-deps --pull never -T --name tarkovstats-background-job -e BUDGET=123 worker nice -n 19 node job.mjs/);
         if (scenario === "interrupted") assert.match(calls, /\nstop\n/);
       } else {
         assert.notEqual(result.status, 0, scenario);
