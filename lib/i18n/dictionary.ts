@@ -13,6 +13,12 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "metric.killed_pmc_per_raid": "PMC kills per raid",
+  "common.atAverage": "At the average",
+  "common.aboveAverage": "Above average",
+  "common.belowAverage": "Below average",
+  "common.aboveAverageTimes": "{n}× above average",
+  "common.belowAverageTimes": "{n}× below average",
   "leaderboard.preview.level": "Lvl {n}",
   "leaderboard.preview.updated": "Updated {date}",
   "leaderboard.preview.raids": "{n} PMC raids",
@@ -1610,6 +1616,12 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "metric.killed_pmc_per_raid": "Убитые ЧВК за рейд",
+  "common.atAverage": "На уровне среднего",
+  "common.aboveAverage": "Выше среднего",
+  "common.belowAverage": "Ниже среднего",
+  "common.aboveAverageTimes": "Выше среднего в {n}×",
+  "common.belowAverageTimes": "Ниже среднего в {n}×",
   "leaderboard.preview.level": "Ур. {n}",
   "leaderboard.preview.updated": "Обновлён {date}",
   "leaderboard.preview.raids": "{n} рейдов ЧВК",

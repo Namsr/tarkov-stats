@@ -52,6 +52,7 @@ export interface ProfileComparisonStats {
   kdRatio: number | null;
   pmcKdRatio: number | null;
   killsPerRaid: number | null;
+  killedPmcPerRaid: number | null;
   pmcSurvivalRate: number | null;
   longestWinStreak: number | null;
   level: number | null;

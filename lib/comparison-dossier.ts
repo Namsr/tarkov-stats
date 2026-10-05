@@ -1,4 +1,5 @@
 import { normalizeProfileSkill, type ProfileSkill } from "./profile-skills.ts";
+import { killedPmcPerRaid } from "./killed-pmc-per-raid.ts";
 import type { ComparisonScope } from "../types/comparison";
 import type { PublicRiskView } from "../types/profile-view";
 import type { ProgressionMetricKey, ProgressionTimelineResponse } from "../types/seasonal";
@@ -83,7 +84,9 @@ export function comparisonDossier(scope: ComparisonScope, aid: number, payload: 
   // The missing exact PMC-kill counter does not make survival unknown.
   values.pmcSurvivalRate = first(source.pmcSurvivalRate, overview.pmcSurvivalRate, statistics.pmcSurvivalRate,
     values.pmcRaids && values.pmcSurvived !== null ? 100 * values.pmcSurvived / values.pmcRaids : null);
-  values.killedPmcPerRaid = values.pmcRaids && values.killedPmc !== null ? values.killedPmc / values.pmcRaids : null;
+  values.killedPmcPerRaid = scope.mode === "seasonal"
+    ? killedPmcPerRaid({ ...counters, pvpStatsVersion: profile.pvpStatsVersion })
+    : killedPmcPerRaid(stats);
   if (scope.mode === "arena") {
     values.hours = comparisonNumber(arenaOverall.hours);
     const arenas = { ...record(arena.modes), overall: arenaOverall };
