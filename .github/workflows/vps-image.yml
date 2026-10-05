@@ -31,6 +31,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm audit --omit=dev
+      - run: systemd-analyze verify ops/systemd/tarkovstats-background.slice
   build:
     needs: checks
     runs-on: ubuntu-24.04
@@ -44,11 +45,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build the production image
         run: docker build --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag "tarkovstats-web:$GITHUB_SHA" .
+      - name: Validate the VPS worker configuration
+        run: |
+          touch ops/.env ops/.env.private
+          docker compose --profile background -p image-config -f ops/docker-compose.vps.yml config --format json > /tmp/vps-compose.json
+          node -e '
+            const assert = require("node:assert/strict");
+            const { services } = require("/tmp/vps-compose.json");
+            assert.equal(services.web.environment.WEB_BACKGROUND_WORKERS, "false");
+            assert.equal(services.web.mem_limit, 896 * 1024 ** 2);
+            assert.equal(services.worker.mem_limit, 512 * 1024 ** 2);
+            assert.equal(services.worker.memswap_limit, 768 * 1024 ** 2);
+            assert.equal(services.worker.cgroup_parent, "tarkovstats-background.slice");
+            assert.equal(services.worker.ports, undefined);
+          '
       - name: Verify the runtime image
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('node:fs').accessSync('/app/server.js')"
-          docker run --detach --network none --name image-smoke "tarkovstats-web:$GITHUB_SHA"
+          docker run --detach --network none --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
           trap 'docker logs image-smoke; docker rm --force image-smoke' EXIT
           docker exec image-smoke node -e '
             (async () => {
@@ -58,6 +73,15 @@ jobs:
               }
               process.exit(1);
             })()'
+          if docker top image-smoke -eo args | grep -E 'materialize-(average|progression)'; then
+            echo "HTTP-only container launched an offline materializer"
+            exit 1
+          fi
+          # The same image also supports sequential one-shot jobs under the worker cap.
+          docker run --rm --network none --memory 512m --memory-swap 768m --cpus 0.5 --env AVERAGE_MATERIALIZE_ONCE=true --env PROGRESSION_MATERIALIZE_ONCE=true --entrypoint sh "tarkovstats-web:$GITHUB_SHA" -c '
+              nice -n 19 node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs scripts/materialize-average-publications.mjs &&
+              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs
+            '
       - name: Publish a revision-specific image
         if: github.event_name != 'pull_request'
         run: |

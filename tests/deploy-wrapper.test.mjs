@@ -34,7 +34,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
   const { createHash } = await import('node:crypto');
   const checksum = createHash('sha256').update('fixture').digest('hex');
   const scenarios = ['current', 'current-sick', 'current-redirect', 'current-no-ip',
-    'current-unreachable', 'current-sync-busy', 'current-restart-fail', 'checkout-ahead',
+    'current-unreachable', 'current-sync-busy', 'current-isolated-sync-busy', 'current-restart-fail', 'checkout-ahead',
     'tag-fail', 'sync-busy', 'image-missing', 'download-fail', 'checksum-fail',
     'invalid-checksum', 'multiline-checksum', 'load-fail', 'revision-mismatch', 'tag-target-fail', 'merge-fail',
     'signal', 'start-fail', 'health-fail'];
@@ -58,6 +58,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
             case "$*" in
               *'.NetworkSettings.Networks'*) if [ "$SCENARIO" != current-no-ip ]; then echo 172.18.0.3; fi;;
               *'.Image'*) echo old-image;;
+              *'.Config.Env'*) if [ "$SCENARIO" = current-isolated-sync-busy ]; then echo WEB_BACKGROUND_WORKERS=false; fi;;
               *) case "$SCENARIO" in current*) echo remote;; *) if [ -f "$APP/started" ]; then echo remote; else echo old; fi;; esac;;
             esac;;
           'image load '*)
@@ -97,7 +98,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         esac
       }
       logger() { echo "logger $*" >> "$APP/calls"; }
-      flock() { echo "flock $*" >> "$APP/calls"; [ "$SCENARIO" != sync-busy ] && [ "$SCENARIO" != current-sync-busy ]; }
+      flock() { echo "flock $*" >> "$APP/calls"; [ "$SCENARIO" != sync-busy ] && [ "$SCENARIO" != current-sync-busy ] && [ "$SCENARIO" != current-isolated-sync-busy ]; }
       sleep() { :; }
       `;
       const script = sandboxDeployScript(source, dir, mock);
@@ -166,6 +167,7 @@ test('deploy consumes verified CI images and preserves recovery and rollback', a
         const recoveryCalls = await readFile(join(dir, 'calls'), 'utf8');
         assert.doesNotMatch(recoveryCalls, /releases\/download|git reset --hard/);
         assert.equal((recoveryCalls.match(/restart -t 10 web/g) ?? []).length, scenario === 'current-sync-busy' ? 0 : 1);
+        if (scenario === 'current-isolated-sync-busy') assert.doesNotMatch(recoveryCalls, /^flock /m);
         if (scenario !== 'current-sync-busy') assert.match(recoveryCalls, /restart cooldown/);
         assert.equal(run('current').status, 0);
         const { access } = await import('node:fs/promises');

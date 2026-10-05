@@ -5,10 +5,10 @@ set -u
 umask 077
 cd /opt/tarkovstats-auto || exit 1
 deadline=$(( $(date +%s) + 3300 ))
-dc() { /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e "PROFILE_QUEUE_DEADLINE_MS=$((deadline * 1000))" "$@"; }
-# Apply priority inside docker exec; nicing the host Docker CLI does not carry
+dc() { /usr/local/sbin/tarkovstats-run-background -e "PROFILE_QUEUE_DEADLINE_MS=$((deadline * 1000))" "$@"; }
+# Apply priority inside the worker; nicing the host Docker CLI does not carry
 # into Node. HTTP keeps nice=0; the backup remains lowest at nice=19.
-node='nice -n 10 node --experimental-strip-types --experimental-sqlite'
+node='nice -n 19 node --experimental-strip-types --experimental-sqlite'
 log=/var/log/tarkovstats-warmup-batch.json
 # stderr is captured out of band: the state parser below reads the last line of
 # $log as JSON, and a warning landing between that line and the end of the run
@@ -72,10 +72,10 @@ run_mode() {
   return 0
 }
 
-run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-arena-profiles.mjs
-run_mode regular dc -e REGULAR_PROFILE_SYNC_RPS=1 -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=1500000 web $node scripts/sync-regular-profiles.mjs
-run_mode pve dc -e PVE_PROFILE_SYNC_RPS=1 -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 web $node scripts/sync-pve-profiles.mjs
-run_mode seasonal dc -e SEASONAL_FEED_RPS=1 -e SEASONAL_FEED_MAX_RUN_MS=480000 web $node scripts/sync-seasonal-profiles.mjs
+run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000 worker $node scripts/sync-arena-profiles.mjs
+run_mode regular dc -e REGULAR_PROFILE_SYNC_RPS=1 -e REGULAR_PROFILE_SYNC_MAX_RUN_MS=1500000 worker $node scripts/sync-regular-profiles.mjs
+run_mode pve dc -e PVE_PROFILE_SYNC_RPS=1 -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 worker $node scripts/sync-pve-profiles.mjs
+run_mode seasonal dc -e SEASONAL_FEED_RPS=1 -e SEASONAL_FEED_MAX_RUN_MS=480000 worker $node scripts/sync-seasonal-profiles.mjs
 
 # Emptied here, not only by the redirect below: the four mode budgets above
 # already outrun the window, so a run can reach the deadline without ever
@@ -88,7 +88,7 @@ printf '' 2>/dev/null > "$warn" || log_line WARN_TRUNCATE "could not empty $warn
 
 if [ "$(date +%s)" -lt "$deadline" ]; then
 # One batch only; bounded=true means resume next scheduled run.
-dc -e LEADERBOARD_WARMUP_MAX_PROFILES=100 -e LEADERBOARD_WARMUP_MAX_RUN_MS=180000 web $node scripts/warmup-leaderboard-profiles.mjs > "$log" 2> "$warn"
+dc -e LEADERBOARD_WARMUP_MAX_PROFILES=100 -e LEADERBOARD_WARMUP_MAX_RUN_MS=180000 worker $node scripts/warmup-leaderboard-profiles.mjs > "$log" 2> "$warn"
 _warmup_status=$?
 cat "$log"
 # Replay stderr through log_line so a warmup warning reaches the journal in the

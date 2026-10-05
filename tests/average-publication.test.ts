@@ -98,3 +98,18 @@ test("dirty scheduling debounces writes and enforces the minimum and forced inte
     generatedAt: now - publication.AVERAGE_PUBLICATION_FORCE_INTERVAL_MS,
   }, now), true);
 });
+
+test("yesterday's publication remains readable in every mode during a failed daily refresh", async () => {
+  const now = Date.now();
+  const yesterday = now - 26 * 60 * 60_000;
+  for (const scope of ["regular", "pve", "arena", "seasonal:stale-fixture"]) {
+    const variant = "last-good";
+    await publication.publishAverageScope(scope, new Map([[variant, { total: 123 }]]), yesterday, yesterday);
+    await publication.beginAveragePublication(scope, now);
+    await publication.failAveragePublication(scope, new Error("worker memory limit"));
+    const stored = await publication.readAveragePublication(scope, variant, now);
+    assert.deepEqual(stored?.payload, { total: 123 });
+    assert.equal(stored?.generation, yesterday);
+    assert.equal(stored?.stale, true);
+  }
+});

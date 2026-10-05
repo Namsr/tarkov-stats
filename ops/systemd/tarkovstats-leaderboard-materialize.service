@@ -1,0 +1,12 @@
+[Unit]
+Description=TarkovStats daily leaderboard materialization
+After=docker.service tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
+ConditionPathExists=/usr/local/sbin/tarkovstats-run-background
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/flock -n /run/tarkovstats-leaderboard.lock /usr/local/sbin/tarkovstats-run-background worker nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-leaderboards.mjs
+TimeoutStartSec=3h
+TimeoutStopSec=90s

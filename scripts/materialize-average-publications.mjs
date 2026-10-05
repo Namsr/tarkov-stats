@@ -151,7 +151,7 @@ process.once("SIGINT", () => { stopping = true; });
 
 const initialStates = await getAveragePublicationStates();
 const missing = scopes().some((scope) => !initialStates.some((state) => state.scope === scope && state.generation !== null));
-if (!missing) await sleep(30_000);
+if (!missing && process.env.AVERAGE_MATERIALIZE_ONCE !== "true") await sleep(30_000);
 await runDue("startup");
 // A one-shot run exists to be observed by an operator or CI: a scope that never
 // published must fail the run instead of reporting success. The exit code is only

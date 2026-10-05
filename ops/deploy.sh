@@ -54,10 +54,15 @@ if [ "$deployed" = "$remote" ]; then
     logger -t tarkovstats-deploy "health probe failed on deployed $remote; skipping rebuild ($misses/3)"
     exit 0
   fi
-  exec 9>/run/tarkovstats-data-sync.lock
-  if ! flock -n 9; then
-    logger -t tarkovstats-deploy "web recovery deferred: profile sync or backup active"
-    exit 75
+  # Restarting HTTP-only web cannot interrupt collectors in separate containers.
+  # Keep the old guard until the operator installs the isolation configuration.
+  if ! docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid" |
+      grep -qx 'WEB_BACKGROUND_WORKERS=false'; then
+    exec 9>/run/tarkovstats-data-sync.lock
+    if ! flock -n 9; then
+      logger -t tarkovstats-deploy "web recovery deferred: profile sync or backup active"
+      exit 75
+    fi
   fi
   last_restart=0
   if [ -f "$state/restarted_at" ]; then

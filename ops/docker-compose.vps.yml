@@ -10,6 +10,8 @@ services:
     env_file:
       - .env
       - .env.private
+    environment:
+      WEB_BACKGROUND_WORKERS: "false"
     restart: unless-stopped
     expose:
       - "3000"
@@ -24,7 +26,11 @@ services:
     tmpfs:
       - /tmp
       - /app/.next/cache:uid=1001,gid=1001,mode=0700
-    mem_limit: 1024m
+    # 896 + 512 (all background containers) + 256 (Caddy) = 1664 MiB.
+    # The remaining ~303 MiB on this 1967 MiB VPS belongs to the host.
+    mem_limit: 896m
+    mem_reservation: 384m
+    memswap_limit: 1152m
     oom_score_adj: -500
     pids_limit: 256
     volumes:
@@ -35,6 +41,43 @@ services:
       driver: journald
       options:
         tag: tarkovstats-web
+        labels: org.opencontainers.image.revision
+        mode: non-blocking
+        max-buffer-size: "1m"
+
+  # One-shot jobs share the deployed image and data, never HTTP's cgroup.
+  # Install/start ops/systemd/tarkovstats-background.slice before enabling jobs.
+  worker:
+    image: ${TARKOVSTATS_WORKER_IMAGE:-tarkovstats-web:latest}
+    pull_policy: never
+    profiles: ["background"]
+    env_file:
+      - .env
+      - .env.private
+    environment:
+      WEB_BACKGROUND_WORKERS: "false"
+    command: ["node", "--version"]
+    restart: "no"
+    cgroup_parent: tarkovstats-background.slice
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /app/.next/cache:uid=1001,gid=1001,mode=0700,size=16m
+    mem_limit: 512m
+    memswap_limit: 768m
+    cpus: 0.5
+    cpu_shares: 128
+    pids_limit: 128
+    volumes:
+      - players_data:/data
+    logging:
+      driver: journald
+      options:
+        tag: tarkovstats-background
         labels: org.opencontainers.image.revision
         mode: non-blocking
         max-buffer-size: "1m"
