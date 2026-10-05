@@ -710,6 +710,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/arena-profile-sync.test.mjs",
   "tests/average-materialize-once.test.mjs",
   "tests/backup-db.test.mjs",
+  // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
+  "tests/background-isolation.test.mjs",
   "tests/caddy-overload.test.mjs",
   "tests/deploy-wrapper.test.mjs",
   "tests/leaderboard-publication.test.ts",

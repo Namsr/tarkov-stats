@@ -1088,7 +1088,7 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.ok((await readFile("lib/arena/storage.ts", "utf8")).length > 0);
   assert.ok((await readFile("types/arena.ts", "utf8")).length > 0);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
-  assert.match(service, /exec -T -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 web/);
+  assert.match(service, /tarkovstats-run-background -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 worker nice -n 19 node/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);
