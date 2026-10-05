@@ -34,7 +34,10 @@ export function createRateLimitedRequest(rps, request = (url, init) => fetchTark
       await sleep(Math.max(0, nextStart - Date.now()));
       nextStart = Date.now() + 1000 / rps;
       let response;
-      try { response = await request(url, { signal: AbortSignal.timeout(10000), cache: "no-store" }); }
+      // The full public index contains millions of IDs; its streamed download
+      // takes longer than one profile on the resource-limited archive worker.
+      const timeoutMs = url === "https://players.tarkov.dev/profile/index.json" ? 120000 : 10000;
+      try { response = await request(url, { signal: AbortSignal.timeout(timeoutMs), cache: "no-store" }); }
       catch (error) { if (attempt === 2) throw error; await sleep(1000 * 2 ** attempt); continue; }
       if (response.status === 429 || response.status >= 500) {
         const retry = response.headers.get("Retry-After");
