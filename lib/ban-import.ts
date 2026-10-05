@@ -6,6 +6,7 @@ import { lastSkillAccessSeconds, parseArenaProfileStats, parseProfileStats, PLAY
 import type { PlayerProfile } from "../types/tarkov.ts";
 
 export const BAN_PROFILE_PATHS = { regular: "profile", pve: "pve", arena: "arena", seasonal: "pvp-season" } as const;
+export const BAN_IMPORT_MODES = ["regular", "pve", "arena"] as const;
 export type BanProfileMode = keyof typeof BAN_PROFILE_PATHS;
 export interface BanWave { date: string; source: string; nicknames: string[]; publishedAt?: string }
 export interface BanCandidate { aid: number; nickname: string; waves: BanWave[] }
@@ -105,6 +106,7 @@ export function initializeBanImportDb(db: DatabaseSync) {
 
 export function candidateEvidenceHash(candidate: BanCandidate): string {
   return createHash("sha256").update(JSON.stringify({ aid: candidate.aid, nickname: candidate.nickname,
+    modes: BAN_IMPORT_MODES,
     waves: candidate.waves.map(w => [w.date, w.source, w.publishedAt ?? null]).sort() })).digest("hex");
 }
 
