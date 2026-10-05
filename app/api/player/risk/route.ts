@@ -7,6 +7,7 @@ import { parsePlayerId } from "@/lib/player-id";
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { toPublicRiskView } from "@/lib/player-profile-view";
+import { getArenaProfile, getStoredArenaProfileRisk, isArenaProfileRiskFresh } from "@/lib/arena/service";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,15 @@ export async function GET(request: NextRequest) {
     if (cycleId !== cycle.cycleId) {
       return NextResponse.json({ error: "Invalid or missing cycle" }, { status: 400, headers: noStore });
     }
+  }
+
+  if (mode === "arena") {
+    const [profile, stored] = await Promise.all([
+      getArenaProfile(aid).catch(() => null),
+      getStoredArenaProfileRisk(aid).catch(() => null),
+    ]);
+    const risk = profile && isArenaProfileRiskFresh(stored, profile.profileUpdatedAt) ? stored : null;
+    return NextResponse.json({ identity: { aid, mode, cycleId }, risk }, { headers: noStore });
   }
 
   const stored = await getRiskEvaluation({ aid, mode, cycleId }).catch(() => null);

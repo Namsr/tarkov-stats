@@ -31,12 +31,13 @@ process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
 
 const { getFavoritesStore, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
-const { getArenaAverage } = await import("../lib/arena/service.ts");
+const { getArenaAverage, getArenaProfileRisk } = await import("../lib/arena/service.ts");
 const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { GET: getBaselinesBatch } = await import("../app/api/average/cohort/batch/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
+const { GET: getRisk } = await import("../app/api/player/risk/route.ts");
 const { GET: getFavoriteStats } = await import("../app/api/favorites/stats/route.ts");
 const { ARENA_METRIC_KEYS, toArenaPopulationCohort } = await import("../components/arena-ui.ts");
 const { NextRequest } = await import("next/server");
@@ -135,6 +136,49 @@ function profileRequest(aid, refresh = false, wait = false) {
     headers: { "x-forwarded-for": "198.51.100.90" },
   });
 }
+
+test("Arena risk polling reads the background result and rejects stale evaluations without fetching upstream", async (t) => {
+  const aid = 1265971;
+  t.after(() => {
+    for (const table of ["arena_mode_stats", "arena_mode_stats_history", "arena_risk_evaluations"]) {
+      db.prepare(`DELETE FROM ${table} WHERE aid = ?`).run(aid);
+    }
+  });
+  const updated = 1790132374435;
+  await storeArenaProfile(upstreamArenaProfile(aid, updated, "walker-BD1"));
+  const request = () => new NextRequest(`http://local/api/player/risk?aid=${aid}&mode=arena`, {
+    headers: { "x-forwarded-for": "198.51.100.91" },
+  });
+  await withFetch(() => { throw new Error("risk polling must not fetch upstream"); }, async () => {
+    const initial = await getProfile(profileRequest(aid));
+    assert.equal((await initial.json()).risk, null);
+    const pending = await getRisk(request());
+    assert.equal(pending.headers.get("cache-control"), "no-store");
+    assert.equal((await pending.json()).risk, null);
+
+    const computed = await getArenaProfileRisk(aid);
+    assert.ok(computed);
+    const ready = await getRisk(request());
+    assert.deepEqual(await ready.json(), {
+      identity: { aid, mode: "arena", cycleId: "persistent" },
+      risk: computed,
+    });
+
+    const stale = structuredClone(computed);
+    stale.freshness.evaluatedAt = Date.now() - 6 * 60 * 60 * 1000;
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(stale), aid);
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+
+    const wrongVersion = structuredClone(computed);
+    wrongVersion.version.calculation = 0;
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(wrongVersion), aid);
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(computed), aid);
+    await storeArenaProfile(upstreamArenaProfile(aid, updated + 1, "walker-BD1"));
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+  });
+});
 
 test("Arena average validates its isolated query contract and defaults to matches", async () => {
   const response = await getAverage(new NextRequest(
