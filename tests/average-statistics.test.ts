@@ -328,6 +328,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
       assert.equal(cohort.n, 20);
       assert.equal(cohort.averages.kd_ratio.value, 10.5);
       assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+      assert.deepEqual(cohort.averages.killed_pmc_per_raid, { value: null, count: 0 });
       assert.deepEqual(cohort.percentiles.kd_ratio, { percentile: null, count: 20, below: 0, equal: 0 });
       assert.deepEqual(cohort.percentiles.pmc_survival_rate, { percentile: null, count: 2, below: 0, equal: 0 });
       assert.ok(Object.values(cohort.percentiles).every((metric) => metric.percentile === null));
@@ -339,7 +340,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
     }
     assert.equal(projections.length, 2);
     for (const projection of projections) {
-      assert.doesNotMatch(projection, /\*|achievements_json|stats_json/);
+      assert.doesNotMatch(projection, /SELECT\s+(?:\w+\.)?\*|,\s*(?:\w+\.)?\*|achievements_json|stats_json/i);
       assert.match(projection, /hours, pmc_raids/);
     }
   } finally {
@@ -352,10 +353,12 @@ test("persistent two-axis cohort ranks verified metrics with midrank ties and th
   const values = [...Array(9).fill(1), ...Array(10).fill(2), 3];
   values.forEach((value, index) => add(index + 1, { hours: 100, raids: 100, value }));
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  db.exec("UPDATE players SET pvp_stats_version = 1, pmc_killed_pmc = kd_ratio * pmc_raids");
   const playerMetrics = {
     kd_ratio: 2,
     pmc_kd_ratio: 2,
     kills_per_raid: 2,
+    killed_pmc_per_raid: 2,
     pmc_survival_rate: 2,
     longest_win_streak: 2,
     level: 2,
@@ -384,6 +387,7 @@ test("persistent cohort route propagates stored profile metrics into percentiles
     add(aid, { hours: 100, raids: 100, value: aid <= 10 ? 1 : 2 });
   }
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  db.exec("UPDATE players SET pvp_stats_version = 1, pmc_killed_pmc = kd_ratio * pmc_raids");
   const progressionStore = await getProgressionStore("regular");
   assert.ok(progressionStore);
   const targetAid = 909;
@@ -392,6 +396,7 @@ test("persistent cohort route propagates stored profile metrics into percentiles
     stats: pveStats({
       hoursPlayed: 100,
       pmcRaids: 100,
+      pmcKilledPmc: 200,
       kdRatio: 2,
       pmcKdRatio: 2,
       killsPerRaid: 2,
