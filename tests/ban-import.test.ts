@@ -5,8 +5,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { evaluateBanCandidate, initializeBanImportDb, importBanCandidate, readArchivedBanProfile,
-  waveCutoff, characterStatisticsJson, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
+  waveCutoff, characterStatisticsJson, candidateEvidenceHash, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
 import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive, checkArchiveSpace, parseNicknameCsv } from "../scripts/import-ban-list.mjs";
 
 const candidate: BanCandidate = { aid: 42, nickname: "Player", waves: [
@@ -131,13 +132,15 @@ test("publication preserves full live history before excluding all modes", () =>
     players.exec("CREATE TABLE players(aid INTEGER PRIMARY KEY, nickname TEXT); INSERT INTO players VALUES(42,'Player'); CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY, reason TEXT, created_at INTEGER);");
     progression.exec("CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY,reason TEXT,created_at INTEGER); CREATE TABLE player_profiles(aid INTEGER PRIMARY KEY,confirmed_banned INTEGER); INSERT INTO player_profiles VALUES(42,0); CREATE TABLE progression_snapshots(aid INTEGER,mode TEXT,cycle_id TEXT,updated INTEGER,opaque TEXT,PRIMARY KEY(aid,mode,cycle_id,updated)); INSERT INTO progression_snapshots VALUES(42,'regular','persistent',1,'keep-pvp'),(42,'pve','persistent',1,'keep-pve');");
     players.close(); progression.close();
-    importBanCandidate(stage, candidate, [input()]);
+    importBanCandidate(stage, candidate, [input(), input("seasonal")]);
     const targetPath = join(directory, "bans.db");
     assert.equal(publishBanArchive(stage, targetPath, playersPath, progressionPath), 1);
     assert.equal(publishBanArchive(stage, targetPath, playersPath, progressionPath), 1);
     const target = new DatabaseSync(targetPath); const live = new DatabaseSync(progressionPath);
     try {
       assert.equal(target.prepare("SELECT COUNT(*) n FROM banned_stored_rows").get()!.n, 4);
+      assert.equal(target.prepare("SELECT COUNT(*) n FROM banned_mode_snapshots WHERE mode='seasonal'").get()!.n, 0);
+      assert.equal(stage.prepare("SELECT COUNT(*) n FROM banned_mode_snapshots WHERE mode='seasonal'").get()!.n, 1);
       assert.equal(live.prepare("SELECT COUNT(*) n FROM progression_snapshots").get()!.n, 2);
       assert.equal(live.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid=42").get()!.confirmed_banned, 1);
       assert.equal(live.prepare("SELECT COUNT(*) n FROM excluded_players").get()!.n, 1);
@@ -175,15 +178,29 @@ test("real published lists retain generated TarkovCitizen names and Unicode nick
   assert.deepEqual(found.map(c => c.aid), [43, 11492870]);
 });
 
-test("collector fetches every mode, accepts 404 but never mistakes server errors for absence", async () => {
+test("collector requests only PvP, PvE and Arena, accepts 404 but never mistakes server errors for absence", async () => {
   const seen: string[] = [];
   const request = async (url: string) => {
     seen.push(url); const mode = url.includes("/arena/") ? "arena" : url.includes("/pve/") ? "pve" : url.includes("/pvp-season/") ? "seasonal" : "regular";
     return new Response(input(mode, mode === "arena" ? null : 1766000000).raw);
   };
-  assert.equal((await collectBanProfiles(candidate, request, "s1")).length, 4);
-  assert.equal(seen.length, 4);
-  await assert.rejects(collectBanProfiles(candidate, async () => new Response("error", { status: 503 }), "s1"), /503/);
+  assert.equal((await collectBanProfiles(candidate, request)).length, 3);
+  assert.deepEqual(seen, ["profile", "pve", "arena"].map(path => `https://players.tarkov.dev/${path}/42.json`));
+  await assert.rejects(collectBanProfiles(candidate, async () => new Response("error", { status: 503 })), /503/);
+});
+
+test("three-mode collection rechecks decisions from the old four-mode scope without deleting them", () => {
+  const store = db();
+  try {
+    const legacyHash = createHash("sha256").update(JSON.stringify({ aid: candidate.aid, nickname: candidate.nickname,
+      waves: candidate.waves.map(w => [w.date, w.source, w.publishedAt ?? null]).sort() })).digest("hex");
+    store.prepare("INSERT INTO ban_import_results VALUES(?,?,?,?)").run(candidate.aid, legacyHash, "active_after_wave", 1);
+    const hash = candidateEvidenceHash(candidate);
+    assert.notEqual(hash, legacyHash);
+    assert.equal(store.prepare("SELECT 1 FROM ban_import_results WHERE aid=? AND evidence_hash=?").get(candidate.aid, hash), undefined);
+    assert.equal(importBanCandidate(store, candidate, [input(), input("pve"), input("arena")]), "accepted");
+    assert.equal(store.prepare("SELECT COUNT(*) n FROM ban_import_results WHERE aid=?").get(candidate.aid)!.n, 2);
+  } finally { store.close(); }
 });
 
 test("rate limiter retries 429/5xx, honors Retry-After, and bounds responses", async () => {

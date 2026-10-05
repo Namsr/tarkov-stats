@@ -7,7 +7,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { createStringObjectParser, argValue, hasArg } from "./seasonal-profile-sync-core.mjs";
 import { fetchTarkovJson, lastSkillAccessSeconds } from "../lib/tarkov-api.ts";
-import { BAN_PROFILE_PATHS, validateWave, isBanNickname, parseBanProfile, initializeBanImportDb,
+import { BAN_PROFILE_PATHS, BAN_IMPORT_MODES, validateWave, isBanNickname, parseBanProfile, initializeBanImportDb,
   importBanCandidate, candidateEvidenceHash } from "../lib/ban-import.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -120,13 +120,14 @@ export async function discoverBanCandidates(waves, request) {
   return candidates.sort((a, b) => a.aid - b.aid);
 }
 
-export async function collectBanProfiles(candidate, request, seasonalCycle) {
+export async function collectBanProfiles(candidate, request) {
   const profiles = [];
-  for (const [mode, path] of Object.entries(BAN_PROFILE_PATHS)) {
+  for (const mode of BAN_IMPORT_MODES) {
+    const path = BAN_PROFILE_PATHS[mode];
     const response = await request(`https://players.tarkov.dev/${path}/${candidate.aid}.json`);
     if (response.status === 404) { if (mode === "regular") break; continue; }
     if (!response.ok) throw new Error(`${mode} profile ${response.status}`);
-    const input = { mode, raw: await boundedText(response), ...(mode === "seasonal" ? { cycleId: seasonalCycle } : {}) };
+    const input = { mode, raw: await boundedText(response) };
     const profile = parseBanProfile(input, candidate.aid);
     profiles.push(input);
     if (mode === "regular" && lastSkillAccessSeconds(profile) === null) break;
@@ -153,6 +154,7 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
       const profiles = stage.prepare(`SELECT mode,cycle_id,raw_json_gzip,raw_sha256 FROM banned_mode_snapshots s WHERE aid=?
         AND profile_updated_at=(SELECT MAX(t.profile_updated_at) FROM banned_mode_snapshots t
           WHERE t.aid=s.aid AND t.mode=s.mode AND t.cycle_id=s.cycle_id)`).all(account.aid)
+        .filter(r => BAN_IMPORT_MODES.includes(r.mode))
         .map(r => {
           const raw = gunzipSync(r.raw_json_gzip, { maxOutputLength: MAX_BYTES }).toString("utf8");
           if (createHash("sha256").update(raw).digest("hex") !== r.raw_sha256) throw new Error("stage profile checksum mismatch");
@@ -169,13 +171,12 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
 
 async function main() {
   if (hasArg(process.argv, "--help")) {
-    console.log("Usage: node scripts/import-ban-list.mjs --manifest waves.json --db stage.db --seasonal-cycle cycle-id [--rps 2] [--limit 1000] [--retry] [--min-free-gb 8] [--max-db-gb 2]\nPublish a reviewed stage without network: --db stage.db --publish-only --publish-to bans.db --players-db players.db --progression-db progression.db. Run under the shared writer locks; take a verified backup first.");
+    console.log("Usage: node scripts/import-ban-list.mjs --manifest waves.json --db stage.db [--rps 2] [--limit 1000] [--retry] [--min-free-gb 8] [--max-db-gb 2]\nCollect PvP, PvE and Arena only. Publish a reviewed stage without network: --db stage.db --publish-only --publish-to bans.db --players-db players.db --progression-db progression.db. Run under the shared writer locks; take a verified backup first.");
     return;
   }
   const dbPath = argValue(process.argv, "--db", ""); const manifestPath = argValue(process.argv, "--manifest", "");
-  const seasonalCycle = argValue(process.argv, "--seasonal-cycle", "");
   const publishOnly = hasArg(process.argv, "--publish-only");
-  if (!dbPath || (!publishOnly && (!manifestPath || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(seasonalCycle)))) throw new Error("explicit --db, --manifest and --seasonal-cycle required for collection");
+  if (!dbPath || (!publishOnly && !manifestPath)) throw new Error("explicit --db and --manifest required for collection");
   const limit = Number(argValue(process.argv, "--limit", "0"));
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid limit");
   const publishPath = argValue(process.argv, "--publish-to", "");
@@ -203,7 +204,7 @@ async function main() {
       if (!hasArg(process.argv, "--retry") && db.prepare("SELECT 1 FROM ban_import_results WHERE aid=? AND evidence_hash=?").get(candidate.aid, candidateEvidenceHash(candidate))) { totals.resumed++; continue; }
       checkSpace();
       try {
-        const profiles = await collectBanProfiles(candidate, request, seasonalCycle);
+        const profiles = await collectBanProfiles(candidate, request);
         const decision = importBanCandidate(db, candidate, profiles);
         totals.decisions[decision] = (totals.decisions[decision] ?? 0) + 1;
       } catch (error) { totals.errors++; console.error(JSON.stringify({ aid: candidate.aid, error: error.message })); }
