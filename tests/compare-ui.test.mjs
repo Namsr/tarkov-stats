@@ -2,9 +2,40 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { createRequire } from "node:module";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { dict } from "../lib/i18n/dictionary.ts";
+import { previewRatio } from "../lib/leaderboard-preview.ts";
+
+test("average captions render both languages, both directions, equality and zero baselines", async () => {
+  const require = createRequire(import.meta.url);
+  const source = await readFile("components/AverageComparison.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  for (const lang of ["ru", "en"]) {
+    const exports = {};
+    const mockedRequire = id => id === "@/lib/i18n/context" ? { useI18n: () => ({ lang,
+      t: (key, vars) => dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name]),
+    }) } : id === "@/lib/leaderboard-preview" ? { previewRatio } : require(id);
+    new Function("require", "exports", compiled)(mockedRequire, exports);
+    const render = (value, average) => renderToStaticMarkup(createElement(exports.default, { value, average }));
+    assert.match(render(2, 1), /data-direction="above"/);
+    assert.match(render(1, 2), /data-direction="below"/);
+    assert.ok(render(2, 1).includes(lang === "ru" ? "Выше среднего в 2×" : "2× above average"));
+    assert.ok(render(1, 2).includes(lang === "ru" ? "Ниже среднего в 2×" : "2× below average"));
+    assert.ok(render(0, 0).includes(dict[lang]["common.atAverage"]));
+    for (const [value, average, key] of [[2, 0, "common.aboveAverage"], [0, 2, "common.belowAverage"]]) {
+      const html = render(value, average);
+      assert.ok(html.includes(dict[lang][key]));
+      assert.doesNotMatch(html, /Infinity|NaN|×/);
+    }
+    assert.equal(render(null, 2), "");
+    assert.equal(render(2, null), "");
+  }
+});
 
 async function riskPollingHarness({ score = 16, responseIdentity, existingRisk, mode = "seasonal", withView = true } = {}) {
-  const source = await readFile("components/ComparePage.tsx", "utf8");
+  const source = (await readFile("components/ComparePage.tsx", "utf8")).replace(/\r\n/g, "\n");
   const start = source.indexOf("  useEffect(() => {\n    const data = state.data;");
   const end = source.indexOf("  const refresh = useCallback", start);
   assert.ok(start > 0 && end > start);

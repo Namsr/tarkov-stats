@@ -39,7 +39,7 @@ WITH normalized AS (
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
     CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate,
-    CASE WHEN pvp_stats_version >= 1 AND pmc_raids > 0
+    CASE WHEN pvp_stats_version = 1 AND pmc_raids > 0
       THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid
   FROM player_profiles
   WHERE mode = 'seasonal' AND cycle_id = ? AND confirmed_banned = 0
