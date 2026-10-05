@@ -455,7 +455,7 @@ test("persistent exact PMC kills average includes known zeros and skips missing 
     ) VALUES (${mode === "pve" ? "'pve', '{}'," : ""} ?, 100, 20, 1, ?, ?, ?, ?)`);
     backend.db.exec("BEGIN");
     try {
-      for (let i = 0; i < 22; i++) insert.run(800_000 + i, i < 20 ? 1 : 0, i < 10 ? 0 : i < 20 ? 20 : null, now, now);
+      for (let i = 0; i < 22; i++) insert.run(800_000 + i, i < 20 ? 1 : i === 20 ? 0 : 2, i < 10 ? 0 : i < 20 ? 20 : 999, now, now);
       backend.db.exec("COMMIT");
     } catch (error) { backend.db.exec("ROLLBACK"); throw error; }
     const store = await getStore(mode);
@@ -466,6 +466,12 @@ test("persistent exact PMC kills average includes known zeros and skips missing 
     const population = await store.cohort2d(1000, 200, 999_999, "hours", "trimmed_mean", "all");
     assert.equal(population.strategy, "population");
     assert.deepEqual(population.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+    backend.db.prepare(`UPDATE ${table} SET pmc_killed_pmc = 0 WHERE aid BETWEEN 800000 AND 800019`).run();
+    const zeros = await store.cohort2d(100, 20, 999_999, "hours", "median", "all");
+    assert.deepEqual(zeros.averages.killed_pmc_per_raid, { value: 0, count: 20 });
+    backend.db.prepare(`UPDATE ${table} SET pmc_killed_pmc = NULL WHERE aid BETWEEN 800000 AND 800019`).run();
+    const missing = await store.cohort2d(100, 20, 999_999, "hours", "trimmed_mean", "all");
+    assert.deepEqual(missing.averages.killed_pmc_per_raid, { value: null, count: 0 });
   }
 });
 

@@ -8,6 +8,7 @@ import ProfileSkills, { hasVisibleSkills } from "@/components/ProfileSkills";
 import ProfileMastering, { hasVisibleMastery } from "@/components/ProfileMastering";
 import ProgressionPanel, { type ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import StatCard from "@/components/StatCard";
+import { killedPmcPerRaid } from "@/lib/killed-pmc-per-raid";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import RefreshButton, { type RefreshCheckResult } from "@/components/RefreshButton";
@@ -440,6 +441,7 @@ export default function SeasonalPlayer({
 
   const stats = seasonalStatsFor(profile, levelBands);
   const comparisonStats = {
+    killedPmcPerRaid: killedPmcPerRaid({ ...profile.counters, pvpStatsVersion: profile.pvpStatsVersion }),
     hoursPlayed: profile.lifetimePvpHours,
     pmcRaids: profile.counters.pmcRaids,
     kdRatio: stats.kdRatio,

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { findProfileSummary, type ProfileSummaryMode } from "../lib/profile-summary.ts";
 import {
+  buildPersistentComparisonStats,
   buildRegularComparisonStats,
   buildSeasonalComparisonStats,
 } from "../lib/profile-comparison.ts";
@@ -52,13 +53,15 @@ test("profile summary is absent when no other mode snapshot exists", async () =>
   assert.equal(summary, null);
 });
 
-test("radar comparison projection keeps all six regular metrics", () => {
+test("radar comparison projection keeps regular metrics and the exact PMC kills rate", () => {
   const comparison = buildRegularComparisonStats({
     hoursPlayed: 1200,
     pmcRaids: 400,
     kdRatio: 5.5,
     pmcKdRatio: 1.75,
     killsPerRaid: 3.25,
+    pmcKilledPmc: 200,
+    pvpStatsVersion: 1,
     pmcSurvivalRate: 54,
     longestWinStreak: 11,
     level: 48,
@@ -71,6 +74,7 @@ test("radar comparison projection keeps all six regular metrics", () => {
     kdRatio: 5.5,
     pmcKdRatio: 1.75,
     killsPerRaid: 3.25,
+    killedPmcPerRaid: 0.5,
     pmcSurvivalRate: 54,
     longestWinStreak: 11,
     level: 48,
@@ -105,10 +109,27 @@ test("radar comparison projection derives missing Seasonal metrics", () => {
     kdRatio: 7.5,
     pmcKdRatio: 2,
     killsPerRaid: 3,
+    killedPmcPerRaid: null,
     pmcSurvivalRate: 60,
     longestWinStreak: 9,
     level: null,
   });
+});
+
+test("exact PMC kills per raid rejects legacy counters, bad versions and zero raids in both projections", () => {
+  const counters = { pmcRaids: 10, pmcKilledPmc: 5, killedPmc: 900, pmcKills: 900 };
+  for (const [patch, expected] of [
+    [{}, 0.5], [{ pmcKilledPmc: 0 }, 0], [{ pmcKilledPmc: null }, null],
+    [{ pmcKilledPmc: undefined }, null], [{ pmcRaids: 0 }, null],
+    [{ pvpStatsVersion: 0 }, null], [{ pvpStatsVersion: undefined }, null],
+    [{ pvpStatsVersion: 2 }, null], [{ pmcKilledPmc: -1 }, null],
+    [{ pmcKilledPmc: Infinity }, null], [{ pmcRaids: NaN }, null],
+  ]) {
+    const data = { ...counters, pvpStatsVersion: 1, ...patch };
+    assert.equal(buildPersistentComparisonStats({ ...data, pmcKillsPerRaid: 90 }).killedPmcPerRaid, expected);
+    assert.equal(buildSeasonalComparisonStats({ counters: data, pvpStatsVersion: data.pvpStatsVersion }).killedPmcPerRaid, expected);
+  }
+  assert.equal(buildPersistentComparisonStats({ ...counters, pvpStatsVersion: 1, pvpStatsKnown: false }).killedPmcPerRaid, null);
 });
 
 test("seasonal comparison never divides a total kill count by PMC-only deaths", () => {

@@ -786,7 +786,7 @@ function persistentComparisonMetricsSql(
   ).join("\n    UNION ALL\n    ");
   return `WITH cohort AS (
     SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.filter((metric) => metric !== "killed_pmc_per_raid").join(", ")},
-      CASE WHEN pvp_stats_known = 1 AND pvp_stats_version >= 1 AND pmc_raids > 0
+      CASE WHEN pvp_stats_known = 1 AND pvp_stats_version = 1 AND pmc_raids > 0
         THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid FROM players ${where}
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,

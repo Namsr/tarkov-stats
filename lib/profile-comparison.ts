@@ -2,6 +2,7 @@ import type { ProfileComparisonStats } from "../types/profile-view.ts";
 import type { ParsedPlayerStats } from "../types/tarkov.ts";
 import type { SeasonalProfile } from "../types/seasonal.ts";
 import { seasonalKdRatio } from "./seasonal/ui.ts";
+import { killedPmcPerRaid } from "./killed-pmc-per-raid.ts";
 
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -14,6 +15,7 @@ export function buildPersistentComparisonStats(stats: ParsedPlayerStats): Profil
     kdRatio: finiteOrNull(stats.kdRatio),
     pmcKdRatio: stats.pvpStatsKnown === false ? null : finiteOrNull(stats.pmcKdRatio),
     killsPerRaid: finiteOrNull(stats.killsPerRaid),
+    killedPmcPerRaid: killedPmcPerRaid(stats),
     pmcSurvivalRate: finiteOrNull(stats.pmcSurvivalRate),
     longestWinStreak: finiteOrNull(stats.longestWinStreak),
     level: finiteOrNull(stats.level),
@@ -31,6 +33,7 @@ export function buildSeasonalComparisonStats(profile: SeasonalProfile): ProfileC
   const counters = profile.counters;
   return {
     hoursPlayed: finiteOrNull(profile.lifetimePvpHours),
+    killedPmcPerRaid: killedPmcPerRaid({ ...counters, pvpStatsVersion: profile.pvpStatsVersion }),
     pmcRaids: finiteOrNull(counters.pmcRaids),
     // One rule with the client view, in seasonalKdRatio. The overview
     // projection in lib/player-profile-view.ts reads stats.kdRatio directly.
