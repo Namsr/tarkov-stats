@@ -13,6 +13,19 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "leaderboard.preview.level": "Lvl {n}",
+  "leaderboard.preview.updated": "Updated {date}",
+  "leaderboard.preview.raids": "{n} PMC raids",
+  "leaderboard.preview.matches": "{n} matches",
+  "leaderboard.preview.survived": "Survived",
+  "leaderboard.preview.unavailable": "Profile preview is unavailable",
+  "leaderboard.preview.noComparison": "No comparison",
+  "leaderboard.preview.ratingBaseline": "Mode rating · baseline 1.00",
+  "leaderboard.preview.equal": "At the average",
+  "leaderboard.preview.above": "Above average",
+  "leaderboard.preview.below": "Below average",
+  "leaderboard.preview.aboveTimes": "{n}× above average",
+  "leaderboard.preview.belowTimes": "{n}× below average",
   "compare.timelineBenchmarkNote": "Player values cover the observed period. The benchmark is the published median at the nearest recorded PMC raid count; the matched group is preferred, with population data as fallback.",
   "compare.combat": "Combat & survival",
   "compare.activity": "Activity & experience",
@@ -1597,6 +1610,19 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "leaderboard.preview.level": "Ур. {n}",
+  "leaderboard.preview.updated": "Обновлён {date}",
+  "leaderboard.preview.raids": "{n} рейдов ЧВК",
+  "leaderboard.preview.matches": "{n} матчей",
+  "leaderboard.preview.survived": "Выжил",
+  "leaderboard.preview.unavailable": "Данные профиля недоступны",
+  "leaderboard.preview.noComparison": "Без сравнения",
+  "leaderboard.preview.ratingBaseline": "Рейтинг режима · база 1,00",
+  "leaderboard.preview.equal": "На уровне среднего",
+  "leaderboard.preview.above": "Выше среднего",
+  "leaderboard.preview.below": "Ниже среднего",
+  "leaderboard.preview.aboveTimes": "Выше среднего в {n}×",
+  "leaderboard.preview.belowTimes": "Ниже среднего в {n}×",
   "compare.timelineBenchmarkNote": "Показатели игрока — за период наблюдения. Ориентир — опубликованная медиана при ближайшем записанном числе рейдов ЧВК: похожая группа, а при её отсутствии — вся база.",
   "compare.combat": "Бой и выживание",
   "compare.activity": "Активность и опыт",
