@@ -18,6 +18,26 @@ function sliceDeclaration(source, start, end) {
   return source.slice(from, to);
 }
 
+test("cached persistent profiles must match the requested account, mode, and cycle", async () => {
+  const source = await readFile("components/RegularPlayer.tsx", "utf8");
+  const declaration = sliceDeclaration(source, "function matchesCachedProfileIdentity(", "function viewModelAchievementItems(");
+  const ts = createRequire(import.meta.url)("typescript");
+  const compiled = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const matches = new Function(`${compiled}; return matchesCachedProfileIdentity;`)();
+
+  for (const mode of ["regular", "pve"]) {
+    const response = { identity: { aid: 1265971, mode, cycleId: "persistent" } };
+    assert.equal(matches(response, "1265971", mode), true);
+    assert.equal(matches({ identity: { ...response.identity, aid: 1265972 } }, "1265971", mode), false);
+    assert.equal(matches({ identity: { ...response.identity, mode: mode === "pve" ? "regular" : "pve" } }, "1265971", mode), false);
+    assert.equal(matches({ identity: { ...response.identity, cycleId: "another-cycle" } }, "1265971", mode), false);
+    assert.equal(matches({}, "1265971", mode), false);
+    assert.equal(matches(undefined, "1265971", mode), false);
+  }
+  assert.match(source, /const initialResponse = matchesCachedProfileIdentity\(cachedResponse, aid, mode\)/);
+  assert.match(source, /const cached = matchesCachedProfileIdentity\(cachedResponse, aid, mode\)/);
+});
+
 test("favorites are global by AID while mode widgets project the preferred link into their current identity", async () => {
   const context = await readFile("lib/favorites/context.tsx", "utf8");
   const route = await readFile("app/api/favorites/route.ts", "utf8");

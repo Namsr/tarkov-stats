@@ -62,6 +62,12 @@ interface RegularProfileResponse {
   viewModel?: ProfileCollectionsViewModel;
 }
 
+function matchesCachedProfileIdentity(response: RegularProfileResponse | undefined, aid: string, mode: CrossSectionMode): boolean {
+  return response?.identity?.aid === Number(aid) &&
+    response.identity.mode === mode &&
+    response.identity.cycleId === "persistent";
+}
+
 function viewModelAchievementItems(viewModel: ProfileCollectionsViewModel | null | undefined): unknown[] | null {
   if (Array.isArray(viewModel?.achievements?.items)) return viewModel.achievements.items;
   if (Array.isArray(viewModel?.skills?.achievements)) return viewModel.skills.achievements;
@@ -121,7 +127,8 @@ function LegacyPlayer({
   const radarDemoParam = Array.isArray(radarDemoValue) ? radarDemoValue[0] : radarDemoValue;
   const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode })}`;
-  const initialResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+  const cachedResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+  const initialResponse = matchesCachedProfileIdentity(cachedResponse, aid, mode) ? cachedResponse : null;
   const initialUpdatedAt = initialResponse?.profileUpdatedAt ?? null;
   const [profile, setProfile] = useState<PlayerProfile | null>(initialResponse?.profile ?? null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(initialResponse?.stats ?? null);
@@ -158,7 +165,8 @@ function LegacyPlayer({
     let cancelled = false;
     requestGeneration.current += 1;
     refreshPromise.current = null;
-    const cached = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+    const cachedResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+    const cached = matchesCachedProfileIdentity(cachedResponse, aid, mode) ? cachedResponse : null;
     setLoading(!cached?.stats);
     setError("");
     setModeUnavailable(false);
