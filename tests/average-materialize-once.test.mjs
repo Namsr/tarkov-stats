@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 const materialize = (directory) => spawnSync(process.execPath, [
   '--experimental-strip-types', '--experimental-sqlite', '--experimental-loader',
@@ -17,6 +18,31 @@ const materialize = (directory) => spawnSync(process.execPath, [
     SQLITE_PATH: join(directory, 'players.db'),
     AVERAGE_PUBLICATION_SQLITE_PATH: join(directory, 'publications.db'),
   },
+});
+
+test('a one-shot average publication reports an active Arena lease so the daily service retries', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'average-once-deferred-'));
+  try {
+    const db = new DatabaseSync(join(directory, 'players.db'));
+    db.exec('CREATE TABLE arena_profile_sync_lease (id INTEGER PRIMARY KEY, heartbeat_at INTEGER);');
+    db.prepare('INSERT INTO arena_profile_sync_lease VALUES (1, ?)').run(Date.now());
+    db.close();
+    const deferred = materialize(directory);
+    assert.ifError(deferred.error);
+    assert.equal(deferred.status, 75, deferred.stdout + deferred.stderr);
+    assert.match(deferred.stderr, /publication deferred.*lease is active/);
+    assert.doesNotMatch(deferred.stdout, /average publication completed/);
+
+    const source = new DatabaseSync(join(directory, 'players.db'));
+    source.exec('DELETE FROM arena_profile_sync_lease');
+    source.close();
+    const retried = materialize(directory);
+    assert.ifError(retried.error);
+    assert.equal(retried.status, 0, retried.stdout + retried.stderr);
+    assert.match(retried.stdout, /average publication completed/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('a one-shot average publication reports failure and still succeeds when every scope publishes', () => {

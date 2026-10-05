@@ -27,6 +27,7 @@ let stopping = false;
 // Scopes that failed to publish. Counted instead of thrown so the long-running
 // mode can keep retrying on its schedule, while the one-shot mode can report it.
 let failedScopes = 0;
+let deferred = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,12 +131,20 @@ async function materialize(scope, reason) {
 }
 
 async function runDue(reason, force = false) {
-  if (running || stopping || arenaProfileSyncActive()) return;
+  if (running || stopping) return;
+  if (arenaProfileSyncActive()) {
+    deferred = true;
+    return;
+  }
   running = true;
   try {
     const states = new Map((await getAveragePublicationStates()).map((state) => [state.scope, state]));
     for (const scope of scopes()) {
-      if (stopping || arenaProfileSyncActive()) break;
+      if (stopping) break;
+      if (arenaProfileSyncActive()) {
+        deferred = true;
+        break;
+      }
       if (force || averagePublicationDue(states.get(scope))) {
         await materialize(scope, reason);
         if (!stopping) await sleep(scopePauseMs);
@@ -158,6 +167,10 @@ await runDue("startup");
 // ever raised, never forced, so a nonzero code set by a failure path survives.
 if (process.env.AVERAGE_MATERIALIZE_ONCE === "true") {
   if (failedScopes > 0) process.exitCode = 1;
+  else if (deferred) {
+    console.warn("average publication deferred: Arena profile sync lease is active");
+    process.exitCode = 75;
+  }
 } else {
   // The long-running mode stays lenient on purpose: runDue retries every failed
   // scope on the next scheduled pass, so a failure must not end the process.
