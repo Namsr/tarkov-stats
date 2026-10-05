@@ -52,8 +52,8 @@ for NAME in $DATABASES; do
     echo "insufficient free space for $NAME backup; retaining previous set" >&2
     exit 1
   fi
-  # Docker-exec children do not inherit the host CLI's scheduling priority.
-  docker exec tarkovstats-web-1 nice -n 19 ionice -c 3 node --experimental-sqlite -e '
+  # SQLite snapshots use the same bounded offline service, independently of HTTP.
+  /usr/local/sbin/tarkovstats-run-background worker nice -n 19 ionice -c 3 node --experimental-sqlite -e '
     const fs = require("node:fs");
     const { DatabaseSync } = require("node:sqlite");
     const name = process.argv[1];

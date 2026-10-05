@@ -134,7 +134,7 @@ function unitDirective(unit, name) {
   return matches[0][1].trim();
 }
 
-// Only `docker compose exec -e` carries a run budget from a unit: the compose
+// The worker runner passes `-e` from a unit into the collector: the compose
 // service declares no environment block, so a unit-level Environment= stops at
 // the docker CLI and never reaches the collector.
 function execEnvironment(execStart) {
@@ -269,7 +269,7 @@ test("all standalone profile collectors lower Node priority inside the container
   const units = (await readSyncUnits()).filter(({ name }) => BUDGETED_UNITS.includes(name));
   assert.equal(units.length, 4);
   for (const { name, execStart } of units) {
-    assert.match(execStart, /exec -T .* web nice -n 10 node /, name);
+    assert.match(execStart, /tarkovstats-run-background .* worker nice -n 19 node /, name);
   }
 });
 

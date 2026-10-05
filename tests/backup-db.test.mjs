@@ -72,13 +72,18 @@ async function fixture(scenario) {
         *) return 99;;
       esac
     }
+    runner() {
+      echo "runner $*" >> calls
+      docker exec "$@"
+    }
   `;
   const script = source.replace('DIR=/opt/tarkovstats/backups', `DIR='${backups.replaceAll('\\', '/')}'\n${mock}`)
+    .replace('/usr/local/sbin/tarkovstats-run-background', 'runner')
     .replace('exec 8>/run/tarkovstats-data-sync.lock', 'exec 8>"$DIR/../data-sync.lock"')
     .replace('exec 7>/run/tarkovstats-leaderboard.lock', 'exec 7>"$DIR/../leaderboard.lock"')
     .replace('const source = `/data/${name}.db`;', 'const source = `${process.env.TEST_VOLUME}/${name}.db`;')
     .replace('const target = "/data/.tarkovstats-backup.db";', 'const target = `${process.env.TEST_VOLUME}/.tarkovstats-backup.db`;');
-  for (const path of ['/opt/tarkovstats/backups', '/run/tarkovstats-data-sync.lock', '/run/tarkovstats-leaderboard.lock', '/data/']) {
+  for (const path of ['/opt/tarkovstats/backups', '/run/tarkovstats-data-sync.lock', '/run/tarkovstats-leaderboard.lock', '/usr/local/sbin/tarkovstats-run-background', '/data/']) {
     assert.ok(!script.includes(path), `backup sandbox left production path ${path}`);
   }
   const file = join(dir, 'backup.sh');
@@ -105,7 +110,7 @@ test('backup publishes exactly one restorable set and retains the last good set 
       assert.equal(await readFile(join(f.backups, 'source-before.tar.gz'), 'utf8'), 'unrelated operator archive');
       if (scenario === 'success') {
         assert.equal(sets.length, 1);
-        assert.match(calls, /docker exec tarkovstats-web-1 nice -n 19 ionice -c 3 node/);
+        assert.match(calls, /runner worker nice -n 19 ionice -c 3 node/);
         assert.doesNotMatch(sets[0], /old/);
         assert.equal((await readdir(join(f.backups, sets[0]))).length, databases.length + 1);
         for (const name of databases) {

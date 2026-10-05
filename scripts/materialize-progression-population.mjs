@@ -110,13 +110,17 @@ export async function materializeProgressionPopulation(reason = "manual") {
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/scripts/materialize-progression-population.mjs")) {
-  void materializeAchievementBaselines("startup");
-  setInterval(() => {
-    void materializeAchievementBaselines("retry-check");
-  }, retryIntervalMs);
-  if (initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
-  await materializeProgressionPopulation("startup");
-  // Failed publications retain their old generation and remain due on each
-  // check. Successful scopes are left alone for their normal six-hour cycle.
-  setInterval(() => { void materializeProgressionPopulation("retry-check"); }, retryIntervalMs);
+  const once = process.env.PROGRESSION_MATERIALIZE_ONCE === "true";
+  const baselines = materializeAchievementBaselines("startup");
+  if (!once && initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
+  const populations = await materializeProgressionPopulation("startup");
+  if (once) {
+    if (baselines.error || baselines.errors?.length || populations.error || populations.errors?.length) {
+      process.exitCode = 1;
+    }
+  } else {
+    // Failed publications retain their old generation and remain due.
+    setInterval(() => { void materializeAchievementBaselines("retry-check"); }, retryIntervalMs);
+    setInterval(() => { void materializeProgressionPopulation("retry-check"); }, retryIntervalMs);
+  }
 }

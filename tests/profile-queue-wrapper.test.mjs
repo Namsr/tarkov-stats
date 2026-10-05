@@ -20,8 +20,8 @@ test('queue retries only failures, preserves error status and runs one warmup af
       const path = dir.replaceAll('\\', '/');
       const mock = `dc() {
         case "$*" in
-          *" web nice -n 10 node "*) ;;
-          *) echo 'collector priority was not applied inside docker exec' >&2; return 89;;
+          *" worker nice -n 19 node "*) ;;
+          *) echo 'collector priority was not applied inside the worker' >&2; return 89;;
         esac
         case "$*" in
           *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}'

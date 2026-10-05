@@ -1,0 +1,16 @@
+[Unit]
+Description=TarkovStats daily average and progression publications
+After=docker.service tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
+ConditionPathExists=/usr/local/sbin/tarkovstats-run-background
+ConditionPathExists=/usr/local/sbin/tarkovstats-materialize-publications
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecStart=/usr/bin/flock -n -E 75 /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-materialize-publications
+TimeoutStartSec=3h
+TimeoutStopSec=90s
+# Retry failed/deferred scopes hourly, preserving published data in the meantime.
+Restart=on-failure
+RestartSec=1h

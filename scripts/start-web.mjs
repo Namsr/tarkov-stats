@@ -5,18 +5,19 @@ let stopping = false;
 const server = spawn(process.execPath, ["--experimental-sqlite", "--import", "./scripts/web-runtime-health.mjs", "server.js"], {
   env: process.env, stdio: "inherit",
 });
-const progressionMaterializer = superviseWorker("progression", [
+const backgroundEnabled = process.env.WEB_BACKGROUND_WORKERS !== "false";
+const progressionMaterializer = backgroundEnabled ? superviseWorker("progression", [
   "--experimental-strip-types", "--experimental-sqlite", "scripts/materialize-progression-population.mjs",
-], { restartDelayMs: 15 * 60_000, restartEnv: { PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS: "0" } });
-const averageMaterializer = superviseWorker("average", [
+], { restartDelayMs: 15 * 60_000, restartEnv: { PROGRESSION_MATERIALIZE_INITIAL_DELAY_MS: "0" } }) : undefined;
+const averageMaterializer = backgroundEnabled ? superviseWorker("average", [
   "--experimental-strip-types", "--experimental-sqlite", "--experimental-loader",
   "./scripts/ts-alias-loader.mjs", "scripts/materialize-average-publications.mjs",
-]);
+]) : undefined;
 function stop(signal) {
   if (stopping) return;
   stopping = true;
-  progressionMaterializer.stop(signal);
-  averageMaterializer.stop(signal);
+  progressionMaterializer?.stop(signal);
+  averageMaterializer?.stop(signal);
   server.kill(signal);
 }
 process.on("SIGTERM", () => stop("SIGTERM"));
