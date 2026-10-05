@@ -35,8 +35,9 @@ export interface ComparisonCohortMetric {
   count: number;
 }
 
-export type ComparisonCohortAverages = Record<RadarMetric, ComparisonCohortMetric>;
-export type ComparisonCohortPlayerMetrics = Readonly<Record<RadarMetric, number | null>>;
+export type ComparisonCohortMetricKey = RadarMetric | "killed_pmc_per_raid";
+export type ComparisonCohortAverages = Record<ComparisonCohortMetricKey, ComparisonCohortMetric>;
+export type ComparisonCohortPlayerMetrics = Readonly<Partial<Record<ComparisonCohortMetricKey, number | null>>>;
 
 export interface ComparisonCohortPercentile {
   percentile: number | null;
@@ -45,7 +46,7 @@ export interface ComparisonCohortPercentile {
   equal: number;
 }
 
-export type ComparisonCohortPercentiles = Record<RadarMetric, ComparisonCohortPercentile>;
+export type ComparisonCohortPercentiles = Record<ComparisonCohortMetricKey, ComparisonCohortPercentile>;
 
 export type ComparisonCohortReason =
   | "no_activity"
@@ -85,10 +86,11 @@ export interface ComparisonCohortResult {
   };
 }
 
-export const COMPARISON_RADAR_METRICS: readonly RadarMetric[] = [
+export const COMPARISON_RADAR_METRICS: readonly ComparisonCohortMetricKey[] = [
   "kd_ratio",
   "pmc_kd_ratio",
   "kills_per_raid",
+  "killed_pmc_per_raid",
   "pmc_survival_rate",
   "longest_win_streak",
   "level",

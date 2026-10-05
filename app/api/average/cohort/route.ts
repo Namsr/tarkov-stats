@@ -228,6 +228,8 @@ export async function GET(request: NextRequest) {
         kd_ratio: stats.kdRatio,
         pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
         kills_per_raid: stats.killsPerRaid,
+        killed_pmc_per_raid: stats.pvpStatsVersion === 1 && stats.pmcRaids > 0 && stats.pmcKilledPmc != null
+          ? stats.pmcKilledPmc / stats.pmcRaids : null,
         pmc_survival_rate: stats.pmcSurvivalRate,
         longest_win_streak: stats.longestWinStreak,
         level: stats.level,
