@@ -53,9 +53,9 @@ jobs:
             const assert = require("node:assert/strict");
             const { services } = require("/tmp/vps-compose.json");
             assert.equal(services.web.environment.WEB_BACKGROUND_WORKERS, "false");
-            assert.equal(services.web.mem_limit, 896 * 1024 ** 2);
-            assert.equal(services.worker.mem_limit, 512 * 1024 ** 2);
-            assert.equal(services.worker.memswap_limit, 768 * 1024 ** 2);
+            assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
+            assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);
+            assert.equal(Number(services.worker.memswap_limit), 768 * 1024 ** 2);
             assert.equal(services.worker.cgroup_parent, "tarkovstats-background.slice");
             assert.equal(services.worker.ports, undefined);
           '
