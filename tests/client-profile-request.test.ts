@@ -2,12 +2,104 @@
 // @ts-nocheck -- Node's direct TypeScript test runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { scheduleArenaRiskPoll } from "../lib/arena/client-risk.ts";
 import {
   getCachedPlayerProfileResponse,
   loadPlayerProfileResponse,
   PlayerProfileResponseError,
   playerProfileRequestKey,
 } from "../lib/client-profile-request.ts";
+
+const flushPoll = () => new Promise<void>((resolve) => setImmediate(resolve));
+const arenaRiskResponse = (risk = { aid: 1265971, score: 0, version: { upstream: 100 } }, identity = { aid: 1265971, mode: "arena", cycleId: "persistent" }) => Response.json({ identity, risk });
+
+test("Arena polling gets a zero score after a pending response and stops after success", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const received = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "/api/player/risk?aid=1265971&mode=arena");
+    assert.equal(options.cache, "no-store");
+    calls++;
+    return calls === 1 ? arenaRiskResponse(null) : arenaRiskResponse();
+  });
+  const stop = scheduleArenaRiskPoll(1265971, 100, (risk) => received.push(risk));
+  t.after(stop);
+  t.mock.timers.tick(1_500);
+  await flushPoll();
+  assert.equal(calls, 1);
+  assert.equal(received.length, 0);
+  t.mock.timers.tick(3_000);
+  await flushPoll();
+  assert.equal(received[0].score, 0);
+  t.mock.timers.tick(30_000);
+  await flushPoll();
+  assert.equal(calls, 2);
+  assert.equal(received.length, 1);
+});
+
+test("Arena polling bounds retries across network, HTTP and stale-result failures", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    if (calls === 1) throw new Error("network");
+    if (calls === 2) return new Response(null, { status: 503 });
+    return arenaRiskResponse({ aid: 1265971, score: 20, version: { upstream: 99 } });
+  });
+  const received = [];
+  const stop = scheduleArenaRiskPoll(1265971, 100, (risk) => received.push(risk));
+  t.after(stop);
+  for (const delay of [1_500, 3_000, 5_000, 30_000]) {
+    t.mock.timers.tick(delay);
+    await flushPoll();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(received, []);
+});
+
+test("Arena polling never applies another account, mode or cycle", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const identity of [
+    { aid: 1, mode: "arena", cycleId: "persistent" },
+    { aid: 1265971, mode: "regular", cycleId: "persistent" },
+    { aid: 1265971, mode: "arena", cycleId: "other" },
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => arenaRiskResponse(undefined, identity));
+    const stop = scheduleArenaRiskPoll(1265971, 100, () => assert.fail("wrong identity applied"));
+    t.mock.timers.tick(1_500);
+    await flushPoll();
+    stop();
+  }
+});
+
+test("leaving Arena cancels its timer and ignores an in-flight response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let release;
+  let signal;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", (_url, options) => {
+    calls++;
+    signal = options.signal;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const onRisk = () => assert.fail("unmounted page updated");
+  const cancelBeforeFetch = scheduleArenaRiskPoll(1265971, 100, onRisk);
+  cancelBeforeFetch();
+  t.mock.timers.tick(1_500);
+  await flushPoll();
+  assert.equal(calls, 0);
+
+  const cancelInFlight = scheduleArenaRiskPoll(1265971, 100, onRisk);
+  t.mock.timers.tick(1_500);
+  cancelInFlight();
+  assert.equal(signal.aborted, true);
+  release(arenaRiskResponse());
+  await flushPoll();
+  t.mock.timers.tick(30_000);
+  await flushPoll();
+  assert.equal(calls, 1);
+});
 
 test("twelve rapid mode returns share one automatic profile request", async () => {
   const plainUrl = "/api/player/profile?aid=9000001&mode=regular";

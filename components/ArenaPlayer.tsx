@@ -30,6 +30,7 @@ import "@/components/profile.css";
 import "@/components/arena-profile.css";
 import { upsertRecentPlayer } from "@/lib/recent-players";
 import { isReload } from "@/lib/is-reload";
+import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 
 interface Props {
   aid: string;
@@ -296,6 +297,11 @@ export default function ArenaPlayer({ aid }: Props) {
       cancelled = true;
     };
   }, [aid, initialProfile, numericAid, t]);
+
+  useEffect(() => {
+    if (loading || !profile || profile.aid !== numericAid || risk) return;
+    return scheduleArenaRiskPoll(numericAid, profile.profileUpdatedAt, setRisk);
+  }, [loading, profile, numericAid, risk]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
