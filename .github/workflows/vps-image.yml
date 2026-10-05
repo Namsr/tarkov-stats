@@ -73,7 +73,8 @@ jobs:
               }
               process.exit(1);
             })()'
-          if docker top image-smoke -eo args | grep -E 'materialize-(average|progression)'; then
+          processes=$(docker top image-smoke -eo pid,args)
+          if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression)'; then
             echo "HTTP-only container launched an offline materializer"
             exit 1
           fi
