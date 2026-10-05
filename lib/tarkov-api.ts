@@ -30,10 +30,10 @@ export function needsPvpStatsParserRefresh(
 }
 
 /** Server-side JSON request with the identity required by tarkov.dev. */
-export function fetchTarkovJson(url: string | URL, init: RequestInit = {}): Promise<Response> {
+export function fetchTarkovJson(url: string | URL, init: RequestInit = {}, scanner?: "ban-archive"): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
-  headers.set("User-Agent", TARKOV_JSON_USER_AGENT);
+  headers.set("User-Agent", scanner === "ban-archive" ? `${TARKOV_JSON_USER_AGENT} ban-archive-scanner` : TARKOV_JSON_USER_AGENT);
   return fetch(url, { ...init, headers });
 }
 

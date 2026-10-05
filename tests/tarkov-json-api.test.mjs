@@ -95,21 +95,37 @@ test("shared client always sends the project JSON headers", async () => {
   assert.equal(TARKOV_JSON_USER_AGENT, "tarkovstats.ru");
 });
 
+test("ban archive scanner keeps the site identity in its identifying User-Agent", async () => {
+  const originalFetch = globalThis.fetch;
+  let headers;
+  globalThis.fetch = async (_input, init) => {
+    headers = new Headers(init?.headers);
+    return new Response("{}");
+  };
+  try {
+    await fetchTarkovJson("https://players.tarkov.dev/profile/1.json", {}, "ban-archive");
+    assert.equal(headers.get("User-Agent"), "tarkovstats.ru ban-archive-scanner");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("server sources contain no GraphQL calls and use the shared project identity", async () => {
-  const [api, seasonal, index, seasonalProfiles, seasonalIndex] = await Promise.all([
+  const [api, seasonal, index, seasonalProfiles, seasonalIndex, banImport] = await Promise.all([
     readFile("lib/tarkov-api.ts", "utf8"),
     readFile("lib/seasonal/fetch.ts", "utf8"),
     readFile("scripts/sync-player-index.mjs", "utf8"),
     readFile("scripts/sync-seasonal-profiles.mjs", "utf8"),
     readFile("scripts/sync-seasonal-index.mjs", "utf8"),
+    readFile("scripts/import-ban-list.mjs", "utf8"),
   ]);
-  assert.doesNotMatch(api + seasonal + seasonalProfiles + seasonalIndex, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
+  assert.doesNotMatch(api + seasonal + seasonalProfiles + seasonalIndex + banImport, /api\.tarkov\.dev\/graphql|\bgraphql\b/i);
   assert.equal((api.match(/\bfetch\s*\(/g) ?? []).length, 1);
   assert.doesNotMatch(seasonal, /\bfetch\s*\(/);
   assert.match(api, /TARKOV_JSON_USER_AGENT = "tarkovstats\.ru"/);
   assert.match(index, /fetchTarkovJson/);
   assert.match(seasonalProfiles, /fetchTarkovJson/);
   assert.match(seasonalIndex, /fetchTarkovJson/);
+  assert.match(banImport, /fetchTarkovJson/);
+  assert.doesNotMatch(banImport, /\bfetch\s*\(/);
 });
 
 test("achievement metadata translates descriptions and accepts only official HTTPS images", () => {
