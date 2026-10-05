@@ -20,7 +20,7 @@ const stubs = {
 };
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (stubs[specifier]) return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(stubs[specifier])}` };
-  if (specifier === "@/lib/profile-cohort") return { shortCircuit: true, url: new URL("../lib/profile-cohort.ts", import.meta.url).href };
+  if (specifier.startsWith("@/")) return { shortCircuit: true, url: new URL(`../${specifier.slice(2)}.ts`, import.meta.url).href };
   return nextResolve(specifier, context);
 } });
 const { loadLeaderboardPreview } = await import("../lib/leaderboard/preview.ts");
@@ -62,4 +62,30 @@ test("Arena preview uses its own counters and population fallback", async () => 
   assert.equal(card.metrics[0].average, 2);
   assert.equal(card.raids, 25);
   assert.equal(card.totals[0].value, 75);
+});
+
+test("Arena preview uses the profile's best ARP and the same neutral mode TSR as the full profile", async () => {
+  const { rateArenaMode } = await import("../lib/arena/ts-rating.ts");
+  const { arenaTsReference } = await import("../lib/arena/ts-rating-reference.ts");
+  const counters = { matches: 250, kills: 3750, deaths: 2500, wins: 150, losses: 100, damage: 750000 };
+  state.arena = { nickname: "arena", overall: { hours: 100, bestArp: 2380 }, modes: {
+    blastGang: { counters, metrics: { kd_ratio: 1.5, kills_per_match: 15, damage_per_match: 3000, headshot_rate: 40, win_rate: 60 } },
+  } };
+  state.cohort = { quality: "sufficient", metrics: { kd_ratio: { value: 1.2, count: 20 } } };
+  const card = await loadLeaderboardPreview(42, { mode: "arena", cycleId: null, arenaMode: "blastGang" });
+  assert.equal(card.bestArp, 2380);
+  assert.equal(card.metrics.length, 6);
+  assert.deepEqual(card.metrics.map(metric => metric.label), ["arena.metric.kd_ratio", "arena.metric.win_rate", "arena.metric.kills_per_match", "arena.metric.damage_per_match", "arena.metric.headshot_rate", "arena.tsr.title"]);
+  const rating = card.metrics.at(-1);
+  assert.equal(rating.value, rateArenaMode(counters, arenaTsReference.modes.blastGang).rating);
+  assert.equal(rating.average, null);
+  assert.equal(rating.note, "leaderboard.preview.ratingBaseline");
+  assert.deepEqual(card.totals.map(total => total.value), [3750,2500,150,100]);
+  counters.matches = 25; counters.wins = 15; counters.losses = 10;
+  assert.equal((await loadLeaderboardPreview(42, { mode: "arena", cycleId: null, arenaMode: "blastGang" })).metrics.at(-1).note, "arena.tsr.provisional");
+  counters.damage = null; state.arena.overall.bestArp = null;
+  const missing = await loadLeaderboardPreview(42, { mode: "arena", cycleId: null, arenaMode: "blastGang" });
+  assert.equal(missing.bestArp, null);
+  assert.equal(missing.metrics.at(-1).value, null);
+  assert.equal(missing.metrics.at(-1).note, "arena.tsr.reason.missing_counters");
 });

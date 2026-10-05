@@ -13,6 +13,7 @@ export interface LeaderboardPreviewMetric {
   average: number | null;
   digits: number;
   percent?: boolean;
+  note?: string;
 }
 
 export interface LeaderboardPreview extends LeaderboardPreviewScope {
@@ -24,6 +25,7 @@ export interface LeaderboardPreview extends LeaderboardPreviewScope {
   updatedAt: number | null;
   hours: number | null;
   raids: number | null;
+  bestArp?: number | null;
   metrics: LeaderboardPreviewMetric[];
   totals: { label: string; value: number | null }[];
 }

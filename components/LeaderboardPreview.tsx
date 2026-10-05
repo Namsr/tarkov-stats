@@ -200,16 +200,21 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Leaderboa
           <div><div className="leaderboard-preview__name"><h2 id={`${id}-name`} title={data?.nickname ?? target.nickname}>{data?.nickname ?? target.nickname}</h2>
             {data?.prestige != null && Number.isSafeInteger(data.prestige) && data.prestige > 0 && <Image src={`https://assets.tarkov.dev/prestige-${data.prestige}-icon.webp`} width={24} height={24} unoptimized referrerPolicy="no-referrer" alt={t("player.prestigeLabel", { n: data.prestige })} onError={(event) => { event.currentTarget.style.display = "none"; }} />}
           </div><div className="leaderboard-preview__meta">
+            {meta.mode === "arena" && meta.arenaMode && <span className="leaderboard-preview__mode">{t("fav.mode.arena")} · {t("arena.mode." + meta.arenaMode)}</span>}
             {data?.side && <span>{data.side}</span>}
             {data?.level != null && <span>{t("leaderboard.preview.level", { n: data.level })}</span>}
             {data?.updatedAt != null && data.updatedAt > 0 && <span>{t("leaderboard.preview.updated", { date: new Date(data.updatedAt).toLocaleDateString(lang, { day: "numeric", month: "short" }) })}</span>}
           </div></div>
         </div>
         {!data ? <p className="leaderboard-preview__status" role="status">{t(error ? "leaderboard.preview.unavailable" : "common.loading")}</p> : <>
-          <div className="leaderboard-preview__activity"><span>{t("leaderboard.hoursValue", { v: format(data.hours, 1) })}</span><span>{t(meta.mode === "arena" ? "leaderboard.preview.matches" : "leaderboard.preview.raids", { n: format(data.raids) })}</span></div>
+          {meta.mode === "arena" ? <div className="leaderboard-preview__activity leaderboard-preview__activity--arena">
+            <span>{t("leaderboard.hoursValue", { v: format(data.hours, 1) })}<small>{t("arena.account.hours")}</small></span>
+            <span>{format(data.raids)}<small>{t("arena.counter.matches")}</small></span>
+            <span title={t("arena.combat.bestArp")}>{format(data.bestArp ?? null)}<small>{t("arena.bestArp")}</small></span>
+          </div> : <div className="leaderboard-preview__activity"><span>{t("leaderboard.hoursValue", { v: format(data.hours, 1) })}</span><span>{t("leaderboard.preview.raids", { n: format(data.raids) })}</span></div>}
           <dl className="leaderboard-preview__metrics">{data.metrics.map((metric) => {
             const comparison = previewRatio(metric.value, metric.average);
-            const label = !comparison ? t("leaderboard.preview.noComparison") : comparison.direction === "equal" ? t("leaderboard.preview.equal")
+            const label = metric.note ? t(metric.note) : !comparison ? t("leaderboard.preview.noComparison") : comparison.direction === "equal" ? t("leaderboard.preview.equal")
               : comparison.ratio === null ? t(comparison.direction === "above" ? "leaderboard.preview.above" : "leaderboard.preview.below")
                 : t(comparison.direction === "above" ? "leaderboard.preview.aboveTimes" : "leaderboard.preview.belowTimes", { n: format(comparison.ratio, 2) });
             return <div key={metric.label} data-direction={comparison?.direction ?? "neutral"}><dt>{t(metric.label)}</dt><dd>{format(metric.value, metric.digits)}{metric.percent && metric.value !== null ? "%" : ""}<small>{label}</small></dd></div>;

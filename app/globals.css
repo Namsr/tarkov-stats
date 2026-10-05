@@ -849,6 +849,10 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
 .leaderboard-preview__name img { flex: none; object-fit: contain; }
 .leaderboard-preview__meta { display: flex; flex-wrap: wrap; column-gap: 7px; row-gap: 2px; margin-top: 4px; color: var(--muted); font-size: 9px; }
 .leaderboard-preview__activity { display: flex; gap: 14px; margin-top: 12px; border-bottom: 1px solid var(--card-border); padding-bottom: 10px; color: var(--muted-strong); font-size: 10px; font-variant-numeric: tabular-nums; }
+.leaderboard-preview__mode { color: var(--muted-strong); font-weight: 700; text-transform: uppercase; }
+.leaderboard-preview__activity--arena { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; }
+.leaderboard-preview__activity--arena > span:last-child { text-align: right; }
+.leaderboard-preview__activity--arena small { display: block; margin-top: 2px; color: var(--muted); font-size: 8px; }
 .leaderboard-preview__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .leaderboard-preview__metrics > div { min-width: 0; border-bottom: 1px solid var(--card-border); padding: 10px 8px 10px 0; }
 .leaderboard-preview__metrics > div:nth-child(even) { border-left: 1px solid var(--card-border); padding-right: 0; padding-left: 11px; }

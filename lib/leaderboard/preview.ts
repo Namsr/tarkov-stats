@@ -5,6 +5,8 @@ import { querySeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort"
 import { getArenaProfile, getArenaCohort, getArenaAverage } from "@/lib/arena/service";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 import { arenaAverageCacheVersion } from "@/lib/arena-average-cache";
+import { rateArenaMode } from "@/lib/arena/ts-rating";
+import { arenaTsReference } from "@/lib/arena/ts-rating-reference";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { LeaderboardPreview, LeaderboardPreviewMetric, LeaderboardPreviewScope } from "@/types/leaderboard-preview";
 import type { ComparisonCohortResult } from "@/lib/profile-cohort";
@@ -43,17 +45,20 @@ export async function loadLeaderboardPreview(aid: number, scope: LeaderboardPrev
     });
     const stats = profile.modes[mode];
     const cohort = loaded.value;
-    const labels = { kd_ratio: "arena.metric.kd_ratio", win_rate: "arena.metric.win_rate", headshot_rate: "arena.metric.headshot_rate", kills_per_match: "arena.metric.kills_per_match", damage_per_match: "arena.metric.damage_per_match" } as const;
+    const labels = { kd_ratio: "arena.metric.kd_ratio", win_rate: "arena.metric.win_rate", kills_per_match: "arena.metric.kills_per_match", damage_per_match: "arena.metric.damage_per_match", headshot_rate: "arena.metric.headshot_rate" } as const;
+    const rating = rateArenaMode(stats.counters, arenaTsReference.modes[mode]);
     return { ...scope, aid, nickname: profile.nickname, side: null, level: null, prestige: null,
       updatedAt: finite(profile.profileUpdatedAt), hours: finite(profile.overall.hours), raids: finite(stats.counters.matches),
-      metrics: Object.entries(labels).map(([key, label]) => {
+      bestArp: finite(profile.overall.bestArp),
+      metrics: [...Object.entries(labels).map(([key, label]) => {
         const metric = key as keyof typeof labels;
         const baseline = cohort?.quality === "sufficient" ? cohort.metrics[metric] : null;
         return { label, value: finite(stats.metrics[metric]), average: baseline && baseline.count >= 20 ? finite(baseline.value) : null,
-          digits: metric === "damage_per_match" ? 0 : metric === "win_rate" || metric === "headshot_rate" ? 1 : 2,
+          digits: metric === "damage_per_match" ? 0 : metric === "kd_ratio" ? 2 : 1,
           percent: metric === "win_rate" || metric === "headshot_rate" };
-      }),
-      totals: (["kills", "wins", "losses", "deaths"] as const).map((key) => ({ label: `arena.counter.${key}`, value: finite(stats.counters[key]) })),
+      }), { label: "arena.tsr.title", value: rating.displayReady ? finite(rating.rating) : null, average: null, digits: 2,
+        note: rating.reason ? `arena.tsr.reason.${rating.reason}` : rating.provisional ? "arena.tsr.provisional" : "leaderboard.preview.ratingBaseline" }],
+      totals: (["kills", "deaths", "wins", "losses"] as const).map((key) => ({ label: `arena.counter.${key}`, value: finite(stats.counters[key]) })),
     };
   }
 
