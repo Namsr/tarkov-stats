@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { evaluateBanCandidate, initializeBanImportDb, importBanCandidate, readArchivedBanProfile,
-  waveCutoff, characterStatisticsJson, candidateEvidenceHash, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
+  waveCutoff, characterStatisticsJson, candidateEvidenceHash, prepareBanLocalArchive, type BanProfile, type BanCandidate } from "../lib/ban-import.ts";
 import { collectBanProfiles, discoverBanCandidates, createRateLimitedRequest, boundedText, publishBanArchive, checkArchiveSpace, parseNicknameCsv } from "../scripts/import-ban-list.mjs";
 
 const candidate: BanCandidate = { aid: 42, nickname: "Player", waves: [
@@ -161,6 +161,92 @@ test("failed history preservation rolls back both ban and cross-database exclusi
     assert.equal(store.prepare("SELECT COUNT(*) n FROM banned_accounts").get()!.n, 0);
     assert.equal(store.prepare("SELECT COUNT(*) n FROM players_db.excluded_players").get()!.n, 0);
     assert.equal(store.prepare("SELECT COUNT(*) n FROM players_db.players").get()!.n, 1);
+  } finally { store.close(); }
+});
+
+test("bulk publication scans covering keys once, reads only matches and marks profiles by their full primary key", t => {
+  const directory = mkdtempSync(join(tmpdir(), "ban-intersection-")); const stage = db();
+  const queries: string[] = []; let fullRowsRead = 0;
+  const prepare = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
+    const statement = prepare.call(this, sql);
+    if (/^(SELECT .* FROM|UPDATE) (players_db|progression_db)\./.test(sql) && !sql.includes("sqlite_master")) {
+      queries.push(sql);
+      const plan = prepare.call(this, `EXPLAIN QUERY PLAN ${sql}`).all(...Array((sql.match(/\?/g) ?? []).length).fill(42));
+      if (sql.startsWith("SELECT *") || sql.startsWith("UPDATE")) {
+        assert.ok(plan.some(row => String(row.detail).includes("SEARCH")), sql);
+        assert.ok(plan.every(row => !String(row.detail).includes("SCAN")), sql);
+      } else {
+        assert.ok(plan.some(row => String(row.detail).includes("COVERING INDEX")), sql);
+      }
+      if (sql.startsWith("SELECT *")) {
+        const get = statement.get.bind(statement);
+        t.mock.method(statement, "get", (...args: Parameters<typeof get>) => { fullRowsRead++; return get(...args); });
+      }
+    }
+    return statement;
+  });
+  try {
+    const playersPath = join(directory, "players.db"), progressionPath = join(directory, "progression.db");
+    const players = new DatabaseSync(playersPath); const progression = new DatabaseSync(progressionPath);
+    try {
+      players.exec(`CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY,reason TEXT,created_at INTEGER);
+        CREATE TABLE mode_players(mode TEXT,aid INTEGER,opaque TEXT,PRIMARY KEY(mode,aid));
+        INSERT INTO mode_players VALUES('pve',42,'keep-pve'),('seasonal',42,'keep-season'),('regular',999,'leave');`);
+      progression.exec(`CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY,reason TEXT,created_at INTEGER);
+        CREATE TABLE player_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,confirmed_banned INTEGER,opaque TEXT,PRIMARY KEY(mode,cycle_id,aid));
+        INSERT INTO player_profiles VALUES('regular','persistent',42,0,'keep-profile'),('seasonal','s1',42,0,'keep-old-cycle'),('regular','persistent',999,0,'leave');
+        CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY,aid INTEGER,mode TEXT,cycle_id TEXT,opaque TEXT);
+        CREATE INDEX snapshot_identity ON progression_snapshots(mode,cycle_id,aid);
+        INSERT INTO progression_snapshots VALUES(1,42,'regular','persistent','keep-first'),(2,42,'regular','persistent','keep-second'),(3,42,'seasonal','s1','keep-season'),(4,999,'regular','persistent','leave');
+        CREATE TABLE progression_intervals(mode TEXT,cycle_id TEXT,aid INTEGER,start INTEGER,opaque TEXT,PRIMARY KEY(mode,cycle_id,aid,start));
+        INSERT INTO progression_intervals VALUES('regular','persistent',42,1,'keep-interval'),('regular','persistent',999,1,'leave');`);
+    } finally { players.close(); progression.close(); }
+    for (let aid = 42; aid < 92; aid++) {
+      const profile = JSON.parse(input().raw); profile.aid = aid;
+      importBanCandidate(stage, { ...candidate, aid }, [{ mode: "regular", raw: JSON.stringify(profile) }]);
+    }
+    const progress: { phase: string; table?: string; matchedRows?: number; aid?: number; applied?: number }[] = [];
+    const targetPath = join(directory, "bans.db");
+    assert.equal(publishBanArchive(stage, targetPath, playersPath, progressionPath, 0, 2 * 1024 ** 3, event => progress.push(event)), 50);
+    assert.equal(fullRowsRead, 8); // No live row read for the other 49 accepted IDs.
+    assert.equal(queries.filter(sql => sql.startsWith("SELECT") && !sql.startsWith("SELECT *")).length, 4);
+    assert.equal(progress.filter(event => event.phase === "intersection").length, 4);
+    assert.equal(progress.filter(event => event.phase === "intersection").reduce((sum, event) => sum + event.matchedRows!, 0), 8);
+    assert.deepEqual(progress.at(-1), { phase: "publishing", total: 50, applied: 50, aid: 91 });
+    const target = new DatabaseSync(targetPath); const live = new DatabaseSync(progressionPath); const playerLive = new DatabaseSync(playersPath);
+    try {
+      const archived = target.prepare("SELECT aid,row_json_gzip FROM banned_stored_rows").all();
+      assert.equal(archived.length, 8);
+      assert.ok(archived.every(row => row.aid === 42));
+      assert.deepEqual(archived.map(row => JSON.parse(gunzipSync(row.row_json_gzip as Uint8Array).toString()).opaque).sort(),
+        ["keep-pve", "keep-season", "keep-profile", "keep-old-cycle", "keep-first", "keep-second", "keep-season", "keep-interval"].sort());
+      assert.equal(live.prepare("SELECT COUNT(*) n FROM player_profiles WHERE aid=42 AND confirmed_banned=1").get()!.n, 2);
+      assert.equal(live.prepare("SELECT confirmed_banned FROM player_profiles WHERE aid=999").get()!.confirmed_banned, 0);
+      assert.equal(live.prepare("SELECT COUNT(*) n FROM progression_snapshots").get()!.n, 4);
+      assert.equal(live.prepare("SELECT COUNT(*) n FROM excluded_players").get()!.n, 50);
+      assert.equal(playerLive.prepare("SELECT COUNT(*) n FROM excluded_players").get()!.n, 50);
+    } finally { target.close(); live.close(); playerLive.close(); }
+  } finally {
+    stage.close();
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* Preserve the original failure if a fixture handle remains open. */ }
+  }
+});
+
+test("a stale intersection fails without publishing a ban or exclusions", () => {
+  const store = db();
+  try {
+    store.exec(`ATTACH DATABASE ':memory:' AS players_db;
+      CREATE TABLE players_db.players(aid INTEGER PRIMARY KEY,nickname TEXT); INSERT INTO players_db.players VALUES(42,'Player');
+      CREATE TABLE players_db.excluded_players(aid INTEGER PRIMARY KEY,reason TEXT,created_at INTEGER);`);
+    const archive = prepareBanLocalArchive(store, new Set([42]));
+    assert.throws(() => archive(43), /absent from archive plan/);
+    store.exec("DELETE FROM players_db.players WHERE aid=42");
+    assert.throws(() => importBanCandidate(store, candidate, [input()], Date.now(), archive), /archive source changed/);
+    assert.equal(store.prepare("SELECT COUNT(*) n FROM banned_accounts").get()!.n, 0);
+    assert.equal(store.prepare("SELECT COUNT(*) n FROM banned_mode_snapshots").get()!.n, 0);
+    assert.equal(store.prepare("SELECT COUNT(*) n FROM ban_import_results").get()!.n, 0);
+    assert.equal(store.prepare("SELECT COUNT(*) n FROM players_db.excluded_players").get()!.n, 0);
   } finally { store.close(); }
 });
 

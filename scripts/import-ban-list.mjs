@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createStringObjectParser, argValue, hasArg } from "./seasonal-profile-sync-core.mjs";
 import { fetchTarkovJson, lastSkillAccessSeconds } from "../lib/tarkov-api.ts";
 import { BAN_PROFILE_PATHS, BAN_IMPORT_MODES, validateWave, isBanNickname, parseBanProfile, initializeBanImportDb,
-  importBanCandidate, candidateEvidenceHash } from "../lib/ban-import.ts";
+  importBanCandidate, candidateEvidenceHash, prepareBanLocalArchive } from "../lib/ban-import.ts";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
@@ -135,7 +135,8 @@ export async function collectBanProfiles(candidate, request) {
   return profiles;
 }
 
-export function publishBanArchive(stage, targetPath, playersPath, progressionPath, minFreeBytes = 8 * 1024 ** 3, maxDbBytes = 2 * 1024 ** 3) {
+/** @param {(event: {phase: string, total?: number, table?: string, rows?: number, matchedRows?: number, matchedAccounts?: number, applied?: number, aid?: number}) => void} onProgress */
+export function publishBanArchive(stage, targetPath, playersPath, progressionPath, minFreeBytes = 8 * 1024 ** 3, maxDbBytes = 2 * 1024 ** 3, onProgress = () => {}) {
   const stagePath = String(stage.prepare("PRAGMA database_list").get().file);
   if (new Set([targetPath, playersPath, progressionPath, ...(stagePath ? [stagePath] : [])].map(p => resolve(p))).size !== (stagePath ? 4 : 3)) throw new Error("database paths must be distinct");
   const target = new DatabaseSync(targetPath);
@@ -145,10 +146,16 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
     target.exec("PRAGMA busy_timeout=5000");
     target.prepare("ATTACH DATABASE ? AS players_db").run(playersPath);
     target.prepare("ATTACH DATABASE ? AS progression_db").run(progressionPath);
-    let applied = 0;
-    for (const account of stage.prepare(`SELECT DISTINCT e.aid FROM banned_wave_evidence e
+    const accounts = stage.prepare(`SELECT DISTINCT e.aid FROM banned_wave_evidence e
       WHERE (SELECT r.decision FROM ban_import_results r WHERE r.aid=e.aid ORDER BY r.checked_at DESC,r.rowid DESC LIMIT 1)='accepted'
-      ORDER BY e.aid`).all()) {
+      ORDER BY e.aid`).all();
+    onProgress({ phase: "planning", total: accounts.length });
+    if (!accounts.length) return 0;
+    const archive = prepareBanLocalArchive(target, new Set(accounts.map(account => Number(account.aid))),
+      (table, rows, matchedRows, matchedAccounts) => onProgress({ phase: "intersection", table, rows, matchedRows, matchedAccounts }));
+    let applied = 0;
+    onProgress({ phase: "publishing", total: accounts.length, applied });
+    for (const account of accounts) {
       checkArchiveSpace(targetPath, minFreeBytes, maxDbBytes);
       const evidence = stage.prepare("SELECT listed_date,nickname,source,published_at FROM banned_wave_evidence WHERE aid=?").all(account.aid);
       const profiles = stage.prepare(`SELECT mode,cycle_id,raw_json_gzip,raw_sha256 FROM banned_mode_snapshots s WHERE aid=?
@@ -162,8 +169,9 @@ export function publishBanArchive(stage, targetPath, playersPath, progressionPat
         });
       const candidate = { aid: account.aid, nickname: evidence[0].nickname,
         waves: evidence.map(e => ({ date: e.listed_date, source: e.source, nicknames: [e.nickname], ...(e.published_at ? { publishedAt: e.published_at } : {}) })) };
-      if (importBanCandidate(target, candidate, profiles) !== "accepted") throw new Error(`stage eligibility changed: ${account.aid}`);
+      if (importBanCandidate(target, candidate, profiles, Date.now(), archive) !== "accepted") throw new Error(`stage eligibility changed: ${account.aid}`);
       applied++;
+      if (applied % 100 === 0 || applied === accounts.length) onProgress({ phase: "publishing", total: accounts.length, applied, aid: account.aid });
     }
     return applied;
   } finally { target.close(); }
@@ -192,8 +200,9 @@ async function main() {
   const db = new DatabaseSync(resolve(dbPath));
   try {
     initializeBanImportDb(db);
+    const progress = event => console.log(JSON.stringify({ publication: event }));
     if (publishOnly) {
-      console.log(JSON.stringify({ published: publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3) }));
+      console.log(JSON.stringify({ published: publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3, progress) }));
       return;
     }
     const request = createRateLimitedRequest(Number(argValue(process.argv, "--rps", "2")));
@@ -214,7 +223,7 @@ async function main() {
     if (publishPath) {
       if (totals.errors) throw new Error("profile errors remain; refusing automatic publication");
       checkSpace();
-      totals.published = publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3);
+      totals.published = publishBanArchive(db, resolve(publishPath), resolve(playersPath), resolve(progressionPath), minFreeGb * 1024 ** 3, maxDbGb * 1024 ** 3, progress);
     }
     console.log(JSON.stringify(totals));
     if (totals.errors) process.exitCode = 1;

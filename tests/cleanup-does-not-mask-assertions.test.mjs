@@ -682,6 +682,7 @@ test("a body the scan cannot see into is still guarded when it guards itself", (
 const suitesWhoseDeleteNeedsAGuard = [
   "tests/arena-index-sync.test.mjs",
   "tests/average-publication.test.ts",
+  "tests/ban-import.test.ts",
   "tests/home-showcase-config-api.test.mjs",
   "tests/leaderboard-cli.test.mjs",
   "tests/operator-seasonal-run-outcome.test.mjs",
