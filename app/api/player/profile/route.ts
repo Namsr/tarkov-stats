@@ -475,12 +475,17 @@ export async function GET(request: NextRequest) {
 
 async function handleGet(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
   const ip = getClientIp(request);
-  const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "");
+  const requestedAid = request.nextUrl.searchParams.get("aid");
+  const aid = parsePlayerId(requestedAid ?? "");
   const mode = request.nextUrl.searchParams.get("mode") || "regular";
   timing.setRequestContext({
     aid: aid ?? undefined,
+    aidState: requestedAid === null ? "missing" : requestedAid.trim() === "" ? "empty" : aid === null ? "invalid" : "valid",
+    requestId: request.headers.get("x-request-id"),
+    cycleId: isGameMode(mode) ? normalizeCycleId(request.nextUrl.searchParams.get("cycle"), mode) : null,
     host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"),
   });
+  timing.startProfileRequest(isGameMode(mode) ? mode : undefined);
 
   // Строгий лимит: роут делает upstream-fetch к tarkov.dev и пишет строку в БД
   // (датасет /average), поэтому жёстче общего лимита.

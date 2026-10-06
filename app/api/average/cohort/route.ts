@@ -10,7 +10,8 @@ import {
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
-import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_PARSER_VERSION, type getArenaCohort } from "@/lib/arena/service";
+import { computeCohortInBackground } from "@/lib/cohort-worker";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
@@ -91,7 +92,7 @@ async function arenaCohortResponse(
     try {
       loaded = await loadDynamicAverage(
         arenaCohortCacheKey(aid, arenaMode, statistic, cacheVersion),
-        () => getArenaCohort(aid, arenaMode, statistic),
+        () => computeCohortInBackground({ kind: "arena", args: [aid, arenaMode, statistic] }),
       );
     } finally {
       cohortMs = timing.elapsedMs(cohortStarted);
@@ -133,7 +134,7 @@ async function arenaCohortResponse(
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
-  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"), requestId: request.headers.get("x-request-id") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (rawMode === "arena") return arenaCohortResponse(request, timing);
@@ -238,7 +239,10 @@ export async function GET(request: NextRequest) {
       const cohortStarted = timing.now();
       const loaded = await loadDynamicAverage(
         ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics),
+        () => computeCohortInBackground({
+          kind: "persistent", mode,
+          args: [centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics],
+        }),
       );
       cohortMs = timing.elapsedMs(cohortStarted);
       cache = loaded.cache;

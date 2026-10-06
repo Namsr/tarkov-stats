@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     mode: "seasonal" as const,
     cycleId: cycleId ?? params.get("cycle") ?? "",
   };
-  timing.setRequestContext({ aid: aid ?? undefined, cycleId: cycleId ?? undefined });
+  timing.setRequestContext({ aid: aid ?? undefined, cycleId: cycleId ?? undefined, requestId: request.headers.get("x-request-id") });
 
   if ((params.has("mode") && params.get("mode") !== "seasonal") || aid === null || cycleId === null) {
     timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "invalid", status: 400 });

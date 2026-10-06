@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAverageStatistic } from "@/lib/db";
 import { createRequestTiming } from "@/lib/observability/request-timing";
-import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_PARSER_VERSION } from "@/lib/arena/service";
+import { computeCohortInBackground } from "@/lib/cohort-worker";
 import {
   ARENA_MODE_KEYS,
   type ArenaCohortResult,
@@ -102,7 +103,7 @@ async function comparisonCohort(
   // Same LRU key as GET /api/average/cohort, so batch and single requests share entries.
   const loaded = await loadDynamicAverage(
     arenaCohortCacheKey(aid, mode, statistic, cacheVersion),
-    () => getArenaCohort(aid, mode, statistic),
+    () => computeCohortInBackground({ kind: "arena", args: [aid, mode, statistic] }),
   );
   const cohort = loaded.value;
   if (!cohort) return null;
@@ -188,7 +189,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
-  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"), requestId: request.headers.get("x-request-id") });
   const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
   if (rawMode !== "arena") {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });

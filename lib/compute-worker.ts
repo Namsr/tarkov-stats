@@ -8,6 +8,8 @@ export type ComputeWorkerOptions = {
   entry: string;
   timeoutMs?: number;
   maxPending?: number;
+  /** Optional end-to-end budget, including time waiting in the FIFO. */
+  totalTimeoutMs?: number;
   unavailableError?: (message: string) => Error;
 };
 
@@ -16,6 +18,7 @@ type Job<Args extends unknown[], Result> = {
   args: Args;
   resolve: (result: Result) => void;
   reject: (error: Error) => void;
+  deadline?: ReturnType<typeof setTimeout>;
 };
 type Reply<Result> = { id: number } & ({ result: Result } | { error: string });
 
@@ -44,7 +47,20 @@ export class ComputeWorker<Args extends unknown[], Result> {
       return Promise.reject(this.unavailable(`${this.options.name} queue is full`));
     }
     return new Promise((resolve, reject) => {
-      this.jobs.push({ id: ++this.nextId, args, resolve, reject });
+      const job: Job<Args, Result> = { id: ++this.nextId, args, resolve, reject };
+      if (this.options.totalTimeoutMs !== undefined) {
+        job.deadline = setTimeout(() => {
+          const error = this.unavailable(`${this.options.name} request timed out`);
+          if (this.jobs[0] === job) this.fail(error);
+          else {
+            const index = this.jobs.indexOf(job);
+            if (index !== -1) this.jobs.splice(index, 1);
+            job.reject(error);
+          }
+        }, this.options.totalTimeoutMs);
+        job.deadline.unref();
+      }
+      this.jobs.push(job);
       this.dispatch();
     });
   }
@@ -63,7 +79,10 @@ export class ComputeWorker<Args extends unknown[], Result> {
     const child = this.child;
     this.child = undefined;
     child?.kill("SIGKILL");
-    for (const job of this.jobs.splice(0)) job.reject(error);
+    for (const job of this.jobs.splice(0)) {
+      if (job.deadline) clearTimeout(job.deadline);
+      job.reject(error);
+    }
   }
 
   private dispatch(): void {
@@ -89,6 +108,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
           if (this.timer) clearTimeout(this.timer);
           this.timer = undefined;
           const job = this.jobs.shift()!;
+          if (job.deadline) clearTimeout(job.deadline);
           if ("error" in message) job.reject(new Error(message.error));
           else job.resolve(message.result);
           if (this.jobs.length) this.dispatch();

@@ -54,6 +54,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/s
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/web-runtime-health.mjs ./scripts/web-runtime-health.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-average-worker.mjs ./scripts/compute-average-worker.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-cohort-worker.mjs ./scripts/compute-cohort-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-risk-worker.mjs ./scripts/compute-risk-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
