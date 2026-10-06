@@ -36,7 +36,9 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.match(persistentBranch, /getPublicProfile\(aid, \{ mode \}\)/);
   assert.match(persistentBranch, /source = "stored"/);
   assert.match(persistentBranch, /getStore\(mode\)/);
-  assert.match(persistentBranch, /store\.cohort2d\(/);
+  assert.match(persistentBranch, /computeCohortInBackground\(\{\s*kind: "persistent", mode,/);
+  assert.match(persistentBranch, /args: \[centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\]/);
+  assert.doesNotMatch(persistentBranch, /store\.cohort2d\(/);
   assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
