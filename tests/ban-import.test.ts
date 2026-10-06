@@ -227,7 +227,10 @@ test("bulk publication scans covering keys once, reads only matches and marks pr
       assert.equal(live.prepare("SELECT COUNT(*) n FROM excluded_players").get()!.n, 50);
       assert.equal(playerLive.prepare("SELECT COUNT(*) n FROM excluded_players").get()!.n, 50);
     } finally { target.close(); live.close(); playerLive.close(); }
-  } finally { stage.close(); rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    stage.close();
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* Preserve the original failure if a fixture handle remains open. */ }
+  }
 });
 
 test("a stale intersection fails without publishing a ban or exclusions", () => {
