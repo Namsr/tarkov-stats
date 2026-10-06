@@ -52,6 +52,8 @@ type Options = {
 
 type RequestContext = {
   aid?: number;
+  aidState?: "missing" | "empty" | "invalid" | "valid";
+  requestId?: string | null;
   nickname?: string | null;
   host?: string | null;
   cycleId?: string | null;
@@ -123,11 +125,29 @@ export function createRequestTiming(options: Options = {}) {
   let finished = false;
   let context: RequestContext = {};
   let lastInput: RequestTimingInput | null = null;
+  let profileStarted = false;
+  const profileIdentity = () => ({
+    aid: Number.isSafeInteger(context.aid) && context.aid! > 0 ? context.aid : null,
+    aid_state: context.aidState ?? (context.aid == null ? "missing" : "valid"),
+    ...(context.cycleId == null ? {} : { cycle: context.cycleId }),
+    ...(context.requestId && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(context.requestId)
+      ? { request_id: context.requestId } : {}),
+  });
 
   return {
     now,
     setRequestContext(input: RequestContext) {
       context = { ...context, ...input };
+    },
+    startProfileRequest(mode?: Mode) {
+      if (profileStarted) return;
+      profileStarted = true;
+      try {
+        (options.logger ?? console.log)(JSON.stringify({
+          event: "profile_request_v1", at: Date.now(), pid: process.pid,
+          ...profileIdentity(), ...(mode === undefined ? {} : { mode }),
+        }));
+      } catch { /* Logging must never prevent a profile request. */ }
     },
     elapsedMs(started: number) {
       return roundedMs(now() - started);
@@ -181,10 +201,15 @@ export function createRequestTiming(options: Options = {}) {
         averagesMs: input.averagesMs,
       });
       const slow = totalMs >= 1_000;
-      if (!sampled && !slow) return;
+      // Account lookups must be checkable even for fast cache hits or throttles.
+      // Population averages/search timing retain their existing sampling.
+      const accountRequest = input.operation === "player_profile" || input.operation === "average_cohort";
+      if (!sampled && !slow && !accountRequest) return;
       const event = {
         event: "request_timing_v1",
-        ...(slow ? { slow: true, at: Date.now(), pid: process.pid } : {}),
+        ...(slow ? { slow: true } : {}),
+        ...(slow || accountRequest ? { at: Date.now(), pid: process.pid } : {}),
+        ...(accountRequest ? profileIdentity() : {}),
         entry: "api",
         operation: input.operation,
         ...(input.mode === undefined ? {} : { mode: input.mode }),

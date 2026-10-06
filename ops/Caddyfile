@@ -15,6 +15,70 @@
 }
 
 (hardening) {
+	# Profile access logs include proxy failures and early rejections. Keep only
+	# allowlisted identity fields; never log cookies, arbitrary queries or URLs.
+	log {
+		output stderr
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri delete
+				resp_headers delete
+			}
+		}
+	}
+	@notProfile not path /api/player/profile
+	log_skip @notProfile
+	# Query placeholders JOIN repeated values. Capture the first raw value for
+	# rejection, so aid=123&aid= stays valid and aid=&aid=123 is rejected.
+	map {http.request.uri.query} {profile_first_aid} {
+		~(^|&)(a|%61)(i|%69)(d|%64)(=([^&]*))?(&|$) "${6}"
+		default ""
+	}
+	map {query.aid} {profile_aid} {profile_aid_state} {
+		"" none empty_or_missing
+		~^[[:space:]]*([0-9]{1,15})[[:space:]]*$ "${1}" numeric
+		~(?i)^[^,]*players/(regular|pve|arena|pvp-season)/([0-9]{1,15})([/?#][^,]*)?$ "${2}" profile_url
+		default none unparsed
+	}
+	# An unescaped numeric first value remains checkable even with duplicates.
+	map {profile_first_aid} {profile_logged_aid} {
+		~^([0-9]{1,15})$ "${1}"
+		"" none
+		default {profile_aid}
+	}
+	map {query.mode} {profile_mode} {
+		"" regular
+		regular regular
+		pve pve
+		arena arena
+		seasonal seasonal
+		default invalid
+	}
+	map {query.cycle} {profile_cycle} {
+		~^[a-zA-Z0-9-]{1,64}$ "${0}"
+		default none
+	}
+	@profile path /api/player/profile
+	log_append @profile event profile_access_v1
+	log_append @profile request_id {http.request.uuid}
+	log_append @profile aid {profile_logged_aid}
+	log_append @profile aid_state {profile_aid_state}
+	log_append @profile mode {profile_mode}
+	log_append @profile cycle {profile_cycle}
+	# Only obviously empty/absent input is rejected here; Next retains complete
+	# account validation, including encoded values and supported profile URLs.
+	@emptyProfile {
+		method GET HEAD
+		path /api/player/profile
+		expression {profile_first_aid} == ""
+	}
+	header @emptyProfile {
+		Content-Type application/json
+		Cache-Control no-store
+	}
+	respond @emptyProfile `{"error":"Invalid account ID. Paste a numeric id or a tarkov.dev profile link."}` 400
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		-Server
@@ -39,6 +103,7 @@
 		}
 		# Only trusted proxies may supply the original client address.
 		header_up X-Real-IP {client_ip}
+		header_up X-Request-ID {http.request.uuid}
 	}
 }
 

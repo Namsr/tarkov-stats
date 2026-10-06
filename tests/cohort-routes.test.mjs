@@ -51,7 +51,8 @@ test("persistent cohort route derives both centers from a stored snapshot before
   assert.match(regularBranch, /const centerHours = Number\(stats\.hoursPlayed\)/);
   assert.match(regularBranch, /const centerPmcRaids = Number\(stats\.pmcRaids\)/);
   assert.match(regularBranch, /const playerMetrics = \{[\s\S]*?kd_ratio: stats\.kdRatio[\s\S]*?pmc_kd_ratio: stats\.pvpStatsKnown === true \? stats\.pmcKdRatio : null[\s\S]*?kills_per_raid: stats\.killsPerRaid[\s\S]*?pmc_survival_rate: stats\.pmcSurvivalRate[\s\S]*?longest_win_streak: stats\.longestWinStreak[\s\S]*?level: stats\.level[\s\S]*?\};/);
-  assert.match(regularBranch, /store\.cohort2d\(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\)/);
+  assert.match(regularBranch, /computeCohortInBackground\(\{\s*kind: "persistent", mode,\s*args: \[centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\]/);
+  assert.doesNotMatch(regularBranch, /store\.cohort2d\(/);
   assert.match(regularBranch, /loadDynamicAverage\(/);
   assert.match(regularBranch, /\["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period\]\.join\(":"\)/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);
@@ -256,7 +257,7 @@ test("both Arena cohort routes pass the same key arguments to the shared builder
 
     // The key is a function of exactly what the loader computes, in the same
     // order, so swapping mode and statistic cannot quietly fork the key.
-    assert.deepEqual(keyCall(source), /getArenaCohort\(([^)]*)\)/.exec(source)[1]
+    assert.deepEqual(keyCall(source), /kind: "arena", args: \[([^\]]*)\]/.exec(source)[1]
       .split(",").map((argument) => argument.trim()).concat("cacheVersion"),
     `the ${name} route must key the cohort on the same values it loads`);
 

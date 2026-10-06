@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore Node's strip-types test runner requires explicit extensions.
 import { initializeSeasonalSchema } from "./storage.ts";
+// @ts-ignore Node's strip-types runtime requires the explicit extension.
+import { computeCohortInBackground } from "../cohort-worker.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 import {
   COMPARISON_COHORT_PERCENTAGES,
@@ -164,7 +166,7 @@ function cacheResult(key: string, value: SeasonalComparisonCohortValue, now: num
   cohortCache.set(key, { expiresAt: now + COHORT_CACHE_TTL_MS, value });
 }
 
-async function computeSeasonalComparisonCohort(
+export async function computeSeasonalComparisonCohort(
   input: SeasonalComparisonCohortInput,
   now: number,
 ): Promise<SeasonalComparisonCohortValue> {
@@ -266,8 +268,8 @@ export async function querySeasonalComparisonCohort(
   }
   const existing = cohortLoads.get(key);
   if (existing) return { ...await existing, cache: "hit" };
-  const load = computeSeasonalComparisonCohort(input, now).then((value) => {
-    cacheResult(key, value, now);
+  const load = computeCohortInBackground({ kind: "seasonal", args: [input, now] }).then((value) => {
+    if (value.available) cacheResult(key, value, now);
     return value;
   }).finally(() => {
     if (cohortLoads.get(key) === load) cohortLoads.delete(key);
