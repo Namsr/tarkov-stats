@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { BAN_SCHEMA } from "./ban-db.ts";
 import { lastSkillAccessSeconds, parseArenaProfileStats, parseProfileStats, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
 import type { PlayerProfile } from "../types/tarkov.ts";
@@ -110,33 +110,64 @@ export function candidateEvidenceHash(candidate: BanCandidate): string {
     waves: candidate.waves.map(w => [w.date, w.source, w.publishedAt ?? null]).sort() })).digest("hex");
 }
 
-/** Caller owns the transaction; copy complete rows without deleting live history. */
-function archiveLocalRows(db: DatabaseSync, aid: number) {
+/** Build once under the shared writer locks; retain keys, never entire live profiles. */
+export function prepareBanLocalArchive(db: DatabaseSync, aids: ReadonlySet<number>,
+  onTable: (table: string, rows: number, matchedRows: number, matchedAccounts: number) => void = () => {}) {
   const attached = new Set(db.prepare("PRAGMA database_list").all().map(r => String(r.name)));
   const tables = { players_db: ["players", "mode_players", "arena_mode_stats", "arena_mode_stats_history"],
     progression_db: ["player_profiles", "progression_snapshots", "progression_intervals"] };
+  const copies: ((aid: number) => void)[] = [];
+  const exclusions: ((aid: number) => void)[] = [];
+  const insert = db.prepare("INSERT OR IGNORE INTO banned_stored_rows VALUES(?,?,?,?)");
   for (const [schema, names] of Object.entries(tables)) {
     if (!attached.has(schema)) continue;
+    if (!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type='table' AND name='excluded_players'`).get()) throw new Error(`${schema} exclusion schema missing`);
+    const exclude = db.prepare(`INSERT INTO ${schema}.excluded_players(aid,reason,created_at) VALUES(?,'confirmed_ban',?) ON CONFLICT(aid) DO NOTHING`);
+    exclusions.push(aid => { exclude.run(aid, Date.now()); });
     for (const name of names) {
       if (!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type='table' AND name=?`).get(name)) continue;
       const keys = db.prepare(`PRAGMA ${schema}.table_info(${name})`).all().filter(r => Number(r.pk) > 0)
         .sort((a, b) => Number(a.pk) - Number(b.pk)).map(r => String(r.name));
       if (!keys.length) throw new Error(`archive source has no primary key: ${schema}.${name}`);
-      for (const row of db.prepare(`SELECT * FROM ${schema}.${name} WHERE aid=?`).all(aid)) {
-        const identity = [...new Set([...keys, "profile_updated_at", "upstream_version", "parser_version"].filter(k => Object.hasOwn(row, k)))];
-        db.prepare("INSERT OR IGNORE INTO banned_stored_rows VALUES(?,?,?,?)")
-          .run(aid, `${schema}.${name}`, JSON.stringify(identity.map(k => row[k])), gzipSync(Buffer.from(JSON.stringify(row))));
+      const quote = (key: string) => `"${key.replaceAll('"', '""')}"`;
+      const source = `${schema}.${name}`;
+      const matches = new Map<number, SQLInputValue[][]>();
+      let rows = 0, matchedRows = 0;
+      // Composite primary-key indexes cover this scan even when aid is not their leading column.
+      for (const row of db.prepare(`SELECT ${[...new Set([...keys, "aid"])].map(quote).join(",")} FROM ${source}`).iterate()) {
+        rows++;
+        const aid = Number(row.aid);
+        if (!aids.has(aid)) continue;
+        const values = matches.get(aid) ?? [];
+        values.push(keys.map(key => row[key]));
+        matches.set(aid, values);
+        matchedRows++;
       }
+      onTable(source, rows, matchedRows, matches.size);
+      const where = keys.map(key => `${quote(key)}=?`).join(" AND ");
+      const read = db.prepare(`SELECT * FROM ${source} WHERE ${where}`);
+      const mark = source === "progression_db.player_profiles" ? db.prepare(`UPDATE ${source} SET confirmed_banned=1 WHERE ${where}`) : null;
+      copies.push(aid => {
+        for (const values of matches.get(aid) ?? []) {
+          const row = read.get(...values);
+          if (!row || Number(row.aid) !== aid) throw new Error(`archive source changed: ${source} aid=${aid}; shared writer locks required`);
+          const identity = [...new Set([...keys, "profile_updated_at", "upstream_version", "parser_version"].filter(k => Object.hasOwn(row, k)))];
+          insert.run(aid, source, JSON.stringify(identity.map(k => row[k])), gzipSync(Buffer.from(JSON.stringify(row))));
+          mark?.run(...values);
+        }
+      });
     }
-    if (!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type='table' AND name='excluded_players'`).get()) throw new Error(`${schema} exclusion schema missing`);
-    db.prepare(`INSERT INTO ${schema}.excluded_players(aid,reason,created_at) VALUES(?,'confirmed_ban',?) ON CONFLICT(aid) DO NOTHING`).run(aid, Date.now());
   }
-  if (attached.has("progression_db") && db.prepare("SELECT 1 FROM progression_db.sqlite_master WHERE type='table' AND name='player_profiles'").get()) {
-    db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned=1 WHERE aid=?").run(aid);
-  }
+  // Caller owns the transaction; preserve history before excluding even absent IDs.
+  return (aid: number) => {
+    if (!aids.has(aid)) throw new Error(`account absent from archive plan: ${aid}`);
+    for (const copy of copies) copy(aid);
+    for (const exclude of exclusions) exclude(aid);
+  };
 }
 
-export function importBanCandidate(db: DatabaseSync, candidate: BanCandidate, profiles: BanProfile[], now = Date.now()): BanImportDecision {
+export function importBanCandidate(db: DatabaseSync, candidate: BanCandidate, profiles: BanProfile[], now = Date.now(),
+  archiveLocalRows = (aid: number) => prepareBanLocalArchive(db, new Set([aid]))(aid)): BanImportDecision {
   const decision = evaluateBanCandidate(candidate, profiles);
   if (!Number.isSafeInteger(now) || now <= 0) throw new Error("invalid capture time");
   const evidenceHash = candidateEvidenceHash(candidate);
@@ -171,7 +202,7 @@ export function importBanCandidate(db: DatabaseSync, candidate: BanCandidate, pr
             (lastSkillAccessSeconds(profile) ?? 0) * 1000 || null, profile.info.nickname,
             gzipSync(Buffer.from(raw)), hash, JSON.stringify(stats));
       }
-      archiveLocalRows(db, candidate.aid);
+      archiveLocalRows(candidate.aid);
     }
     db.prepare("INSERT INTO ban_import_results VALUES(?,?,?,?) ON CONFLICT(aid,evidence_hash) DO UPDATE SET decision=excluded.decision,checked_at=excluded.checked_at")
       .run(candidate.aid, evidenceHash, decision, now);
