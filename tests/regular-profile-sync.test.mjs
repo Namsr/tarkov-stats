@@ -817,7 +817,7 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
         PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 1_200),
       },
     });
-    assert.deepEqual(syncCalls, [1], "the second profile waits for a spacing that no longer fits");
+    assert.deepEqual(syncCalls, [2], "the newest profile is saved before the older profile's spacing no longer fits");
     const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
     assert.ok(line, "collector writes a summary");
     const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
@@ -831,9 +831,9 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
     );
     // A clamped timer can resume one millisecond before the wall-clock deadline.
     // The summary, elapsed bound and pending second profile still prove the cut.
-    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":[01],"phase":"rate_limit","aid":2,"attempt":1\}/);
+    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":[01],"phase":"rate_limit","aid":1,"attempt":1\}/);
     assert.equal(
-      apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 2").get().status,
+      apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 1").get().status,
       "pending",
       "the unclaimed profile stays queued for the next run",
     );

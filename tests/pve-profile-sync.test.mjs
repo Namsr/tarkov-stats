@@ -723,7 +723,7 @@ test("PvE rate-limit wait is clamped to the run budget", async () => {
       PVE_PROFILE_SYNC_RPS: "0.1",
       PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 1_200),
     });
-    assert.deepEqual(syncCalls, [10], "the second profile waits for a spacing that no longer fits");
+    assert.deepEqual(syncCalls, [11], "the newest profile is saved before the older profile's spacing no longer fits");
     const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
     assert.ok(line, "collector writes a summary");
     const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
@@ -738,13 +738,13 @@ test("PvE rate-limit wait is clamped to the run budget", async () => {
     const cutLine = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cutLine, "collector logs the rate-limit cut");
     const { remainingMs, ...cut } = JSON.parse(cutLine.slice(cutLine.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
-    assert.deepEqual(cut, { stopReason: "max_run_ms", phase: "rate_limit", aid: 11, attempt: 1 });
+    assert.deepEqual(cut, { stopReason: "max_run_ms", phase: "rate_limit", aid: 10, attempt: 1 });
     // Millisecond timer rounding can wake the clamped wait just before its
     // deadline. The call count, duration, and pending row still prove the cut.
     assert.ok(Number.isInteger(remainingMs) && remainingMs >= 0 && remainingMs <= 5,
       `the clamped wait exhausts the run budget (remaining ${remainingMs}ms)`);
     assert.equal(
-      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 11").get().status,
+      players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 10").get().status,
       "pending",
       "the unclaimed profile stays queued for the next run",
     );
