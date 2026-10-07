@@ -16,6 +16,8 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(web, /WEB_BACKGROUND_WORKERS: "false"/);
   assert.match(web, /mem_limit: 896m/);
   assert.match(web, /memswap_limit: 1152m/);
+  assert.match(web, /^\s+- \/tmp:size=64m$/m);
+  assert.match(web, /^\s+- \/app\/\.next\/cache:uid=1001,gid=1001,mode=0700,size=256m$/m);
   assert.match(worker, /cgroup_parent: tarkovstats-background.slice/);
   assert.match(worker, /mem_limit: 512m/);
   assert.match(worker, /memswap_limit: 768m/);
