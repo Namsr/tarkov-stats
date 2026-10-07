@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStore, parseNonNegative } from "@/lib/db";
+import { getClientIp } from "@/lib/client-ip";
+import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { isGameMode } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 
@@ -10,6 +12,26 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  // Анонимный, без кэша в процессе (в отличие от /api/average с unstable_cache):
+  // каждый запрос считает полный агрегат по players и блокирует event loop. Лимит
+  // стоит ДО открытия стора, иначе ограничивать уже нечего.
+  //
+  // max 30 — легитимный UI делает ровно один такой запрос на просмотр профиля
+  // (components/CheaterScore.tsx, параметры из rangeForHours, то есть один из
+  // 8 дискретных коридоров), а просмотров профиля у одного IP не больше 10/мин —
+  // этот потолок уже стоит на /api/player/profile. Обычный пользователь упирается
+  // в ~10 запросов, 30 даёт трёхкратный запас; столько же у player-risk, который
+  // читает ту же базу.
+  const { allowed } = getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 });
+  if (!allowed) {
+    timing.finish({ operation: "baseline", outcome: "rate_limited", status: 429 });
+    // no-store обязателен: успех отдаётся как public, max-age=60, и без явной
+    // метки кэш на краю раздал бы 429 всем подряд (см. #219).
+    return NextResponse.json(
+      { error: "Rate limit exceeded" },
+      { status: 429, headers: { "Cache-Control": "no-store" } }
+    );
+  }
   const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
   if (!isGameMode(rawMode) || rawMode === "seasonal") {
     timing.finish({ operation: "baseline", outcome: "invalid", status: 400 });
