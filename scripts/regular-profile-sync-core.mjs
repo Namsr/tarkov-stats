@@ -120,12 +120,36 @@ export function normalizeUpdatedAt(value) {
   return number < 1_000_000_000_000 ? number * 1000 : number;
 }
 
-export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, watermark, overlapMs) {
-  if (savedUpdatedAt !== undefined) {
-    return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
-  }
-  if (watermark === null) return null;
-  return feedUpdatedAt >= Math.max(0, watermark - overlapMs) ? "new" : null;
+export const PROFILE_FEED_WINDOW_MS = 24 * 60 * 60_000;
+export const PROFILE_FEED_POLICY = "recent-24h-v1";
+
+export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, now = Date.now(), minimumUpdatedAt = 0) {
+  if (feedUpdatedAt < Math.max(now - PROFILE_FEED_WINDOW_MS, minimumUpdatedAt) || feedUpdatedAt > now) return null;
+  if (savedUpdatedAt === undefined) return "new";
+  return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
+}
+
+/** Fresh versions get four turns, then debt gets one; either lane can use idle turns. */
+export function profileQueueSelector(db, query) {
+  const table = /FROM ([a-z_]+) q\b/.exec(query)?.[1];
+  if (!table || !/ORDER BY/.test(query)) throw new Error("invalid profile queue query");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_fresh ON ${table}(feed_updated_at DESC, aid) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_${table}_debt ON ${table}(updated_at, aid) WHERE status IN ('pending', 'error')`);
+  const base = query.slice(0, query.lastIndexOf("ORDER BY"));
+  const freshPredicate = "q.status = 'pending' AND q.feed_updated_at >= ?";
+  const fresh = db.prepare(`${base} AND (${freshPredicate}) ORDER BY q.feed_updated_at DESC, q.aid LIMIT 1`);
+  const debt = db.prepare(`${base} AND NOT (${freshPredicate}) ORDER BY q.updated_at, q.aid LIMIT 1`);
+  let selected = 0;
+  return {
+    get(...args) {
+      const cutoff = Date.now() - PROFILE_FEED_WINDOW_MS;
+      const first = selected % 5 === 4 ? debt : fresh;
+      const second = first === fresh ? debt : fresh;
+      const row = first.get(...args, cutoff) ?? second.get(...args, cutoff);
+      if (row) selected += 1;
+      return row;
+    },
+  };
 }
 
 export function feedCacheSlot(now = Date.now()) {
