@@ -63,8 +63,9 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('node:fs').accessSync('/app/server.js')"
-          docker run --detach --network none --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
-          trap 'docker logs image-smoke; docker rm --force image-smoke' EXIT
+          docker network create image-smoke
+          trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
+          docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
           docker exec image-smoke node -e '
             (async () => {
               for (let attempt = 0; attempt < 30; attempt++) {
@@ -73,6 +74,23 @@ jobs:
               }
               process.exit(1);
             })()'
+          # Use the effective Compose URLs, including its environment precedence.
+          node -e '
+            const { services } = require("/tmp/vps-compose.json");
+            for (const key of ["REGULAR_PROFILE_SYNC_BASE_URL", "PVE_PROFILE_SYNC_BASE_URL", "ARENA_PROFILE_SYNC_BASE_URL", "SEASONAL_PROFILE_SYNC_BASE_URL", "LEADERBOARD_WARMUP_BASE_URL"]) {
+              const value = services.worker.environment[key];
+              if (!value) throw new Error(`Missing worker endpoint: ${key}`);
+              console.log(`${key}=${value}`);
+            }
+          ' > /tmp/worker-endpoints.env
+          docker run --rm --network image-smoke --memory 512m --memory-swap 768m --cpus 0.5 --env-file /tmp/worker-endpoints.env --entrypoint node "tarkovstats-web:$GITHUB_SHA" -e '
+            (async () => {
+              for (const [key, base] of Object.entries(process.env).filter(([key]) => key.endsWith("_BASE_URL"))) {
+                const response = await fetch(new URL("/healthz", base), { signal: AbortSignal.timeout(5000) });
+                if (response.status !== 200) throw new Error(`${key}: HTTP ${response.status}`);
+                await response.body?.cancel();
+              }
+            })().catch(error => { console.error(error); process.exitCode = 1; })'
           processes=$(docker top image-smoke -eo pid,args)
           if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression)'; then
             echo "HTTP-only container launched an offline materializer"
