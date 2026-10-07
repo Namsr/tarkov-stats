@@ -3,118 +3,156 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { runProfileQueue, runCollector, summaryComplete, PROFILE_QUEUE_MODES } from '../scripts/run-profile-queue.mjs';
+
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
-const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+const done = () => ({ code: 0, summary: { feedHttpStatus: 200, backlog: 0, attempted: 1, errors: 0 } });
+function harness(handler, totalMs = 3_600_000, controller) {
+  let clock = 1_000_000;
+  const calls = [], events = [];
+  return { calls, events, start: clock, now: () => clock,
+    run: () => runProfileQueue({ deadline: clock + totalMs, signal: controller?.signal, now: () => clock,
+      wait: async ms => { clock += ms; }, emit: (event, fields) => events.push({ event, ...fields }),
+      run: async (mode, budget) => {
+        calls.push(mode.name);
+        const result = await handler(mode, budget, calls);
+        clock += result.elapsed ?? 1000;
+        return result;
+      } }) };
+}
 
-test('queue retries only failures, preserves error status and runs one warmup after freshness', async () => {
-  const source = await readFile('ops/profile-queue.sh', 'utf8');
-  assert.ok(source.indexOf('run_mode arena') < source.indexOf('run_mode regular'));
-  assert.ok(source.indexOf('run_mode regular') < source.indexOf('run_mode pve'));
-  assert.ok(source.indexOf('run_mode pve') < source.indexOf('run_mode seasonal'));
-  assert.match(source, /run_mode arena dc -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_CONCURRENCY=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=1500000/);
-  for (const scenario of ['success', 'retry', 'persistent', 'starved', 'stopped', 'invalid', 'budget', 'warn', 'partial']) {
-    const dir = await mkdtemp(join(tmpdir(), 'queue-behavior-'));
-    try {
-      const path = dir.replaceAll('\\', '/');
-      const mock = `dc() {
-        case "$*" in
-          *" worker nice -n 19 node "*) ;;
-          *) echo 'collector priority was not applied inside the worker' >&2; return 89;;
-        esac
-        case "$*" in
-          *warmup-leaderboard-profiles*) echo warmup >> calls; echo '{"bounded":true,"stopped":false,"processed":100}'
-            if [ "$SCENARIO" = warn ]; then echo 'unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint' >&2; fi
-            if [ "$SCENARIO" = partial ]; then printf '%s' 'unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint, progress restarts from the last saved mode' >&2; fi;;
-          *sync-regular-profiles*) echo regular >> calls
-            if [ "$SCENARIO" = persistent ]; then return 7; fi
-            if [ "$SCENARIO" = retry ] && [ ! -f retried ]; then touch retried; return 7; fi;;
-          *sync-pve-profiles*) echo pve >> calls;;
-          *sync-arena-profiles*) echo arena >> calls
-            if [ "$SCENARIO" = starved ] && [ ! -f retried ]; then touch retried; return 5; fi;;
-          *sync-seasonal-profiles*) echo seasonal >> calls;;
-          *) return 88;;
-        esac
-      }
-      sleep() { :; }
-      date() {
-        if [ "$SCENARIO" = starved ] && [ "$*" = +%s ]; then
-          if [ -f started ]; then echo $(( \$(command date +%s) + 3255 )); else touch started; command date +%s; fi
-          return 0
-        fi
-        if [ "$SCENARIO" = budget ] && [ "$*" = +%s ] && [ -f calls ]; then echo 4102444800; else command date "$@"; fi
-      }
-      python3() { cat >/dev/null; case "$SCENARIO" in stopped) echo stopped;; invalid) return 1;; *) echo done;; esac; }
-      `;
-      // Both rewrites below are literal needles. If either line is renamed or
-      // reformatted the replace silently does nothing and the script writes to the
-      // real /var/log on a Linux runner, so the assertion fails here instead.
-      assert.match(source, /^log=/m);
-      assert.match(source, /^warn=/m);
-      const script = source.replace('cd /opt/tarkovstats-auto || exit 1', `cd ${quote(path)} || exit 1`)
-        .replace(/^dc\(\).*$/m, () => mock)
-        .replace('log=/var/log/tarkovstats-warmup-batch.json', `log=${quote(path + '/warmup.json')}`)
-        .replace('warn=/var/log/tarkovstats-warmup-batch.warn', `warn=${quote(path + '/warmup.warn')}`);
-      const file = join(dir, 'queue.sh');
-      await writeFile(file, script.replaceAll('\r\n','\n'));
-      // Seeded for `warn` and for `budget`. `2> "$warn"` truncates, so the last
-      // run's warnings must not survive into this one's log; the run that never
-      // reaches the warmup needs the empty-at-the-top truncation, because the
-      // redirect that would have truncated for it never runs.
-      if (scenario === 'warn' || scenario === 'budget') await writeFile(join(dir, 'warmup.warn'), 'stale line from an earlier run\n');
-      const result = spawnSync(shell, [file], { env: { ...process.env, SCENARIO: scenario }, encoding: 'utf8', timeout: 10_000 });
-      assert.ifError(result.error);
-      assert.equal(result.status, scenario === 'persistent' || scenario === 'invalid' || scenario === 'starved' ? 1 : scenario === 'stopped' ? 143 : 0, `${scenario}: ${result.stderr}\n${result.stdout}`);
-      assert.deepEqual((await readFile(join(dir, 'calls'),'utf8')).trim().split(/\r?\n/),
-        scenario === 'budget' ? ['arena'] : ['arena', ...Array(scenario === 'retry' || scenario === 'persistent' ? 2 : 1).fill('regular'), 'pve','seasonal','warmup']);
-      if (scenario === 'budget') {
-        assert.match(result.stdout, /status=deferred-budget/);
-        // The warmup never ran, so the file an operator reads for an unfinished run
-        // must be empty rather than still holding the last run that did run it.
-        assert.equal(await readFile(join(dir, 'warmup.warn'), 'utf8'), '', 'a run that skipped the warmup still empties the warn file');
-        assert.doesNotMatch(result.stdout, /WARMUP_WARN/);
-      }
-      if (scenario === 'warn') {
-        // The operator sees the warning in the journal, framed like every other queue line.
-        assert.match(result.stdout, /WARMUP_WARN unreadable leaderboard warmup checkpoint at/);
-        assert.doesNotMatch(result.stdout, /state-parse-failed/);
-        // ...and the JSON log stays pure stdout, so the last line the state parser
-        // reads is still the summary and a healthy batch is not reported as a parse failure.
-        assert.deepEqual((await readFile(join(dir, 'warmup.json'), 'utf8')).trim().split(/\r?\n/),
-          ['{"bounded":true,"stopped":false,"processed":100}']);
-        assert.deepEqual((await readFile(join(dir, 'warmup.warn'), 'utf8')).trim().split(/\r?\n/),
-          ['unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint']);
-      }
-      if (scenario === 'partial') {
-        // A container killed mid-write leaves stderr without its last newline, and
-        // `read` alone exits there and drops the line. The warn file holds the same
-        // bytes either way, so the assertion is on the replayed journal line: it is
-        // red with the `|| [ -n "$warn_line" ]` fallback deleted.
-        const replayed = result.stdout.split(/\r?\n/).filter((line) => line.includes(' WARMUP_WARN '));
-        assert.equal(replayed.length, 1, result.stdout);
-        assert.ok(replayed[0].endsWith(' WARMUP_WARN unreadable leaderboard warmup checkpoint at /data/leaderboard-warmup-state.json; starting from a fresh checkpoint, progress restarts from the last saved mode'), replayed.join('\n'));
-        assert.doesNotMatch(result.stdout, /state-parse-failed/);
-      }
-      if (scenario === 'starved') {
-        // A retry that cannot get a real run window must not turn the failure into
-        // a success: the bounded run aborts on its first checkpoint and exits 0.
-        assert.match(result.stdout, /MODE_RETRY mode=arena attempt=skipped .*reason=insufficient-budget/);
-        assert.match(result.stdout, /MODE_RESULT mode=arena status=5/);
-        assert.match(result.stdout, /QUEUE_SUMMARY ok=false failures="arena:5"/);
-        assert.doesNotMatch(result.stdout, /ok=true/);
-      }
-    } finally { await rm(dir, { recursive: true, force: true }); }
+test('rounds continue incomplete and failed modes while completed modes are skipped', async () => {
+  const counts = new Map();
+  const h = harness(mode => {
+    const count = (counts.get(mode.name) ?? 0) + 1; counts.set(mode.name, count);
+    if (mode.name === 'warmup') return { code: 0, summary: { bounded: true, stopped: false, processed: 100 } };
+    if (mode.name === 'arena' && count === 1) return { code: 1, summary: null };
+    if (mode.name === 'regular' && count === 1) return { ...done(), summary: { feedHttpStatus: 304, backlog: 3, attempted: 2, errors: 0 } };
+    return done();
+  });
+  const result = await h.run();
+  assert.equal(result.ok, true);
+  assert.deepEqual(h.calls, ['arena','regular','pve','seasonal','regular','arena','warmup']);
+  assert.equal(h.events.filter(x => x.event === 'MODE_RESULT' && x.mode === 'regular')[0].complete, false);
+  assert.ok(h.now() - h.start >= 60_000, 'the failed mode waits before its next attempt');
+});
+
+test('one shared hour bounds every slice and unfinished modes remain reported', async () => {
+  const h = harness((_mode, budget) => ({ code: 0, elapsed: budget,
+    summary: { feedHttpStatus: 200, backlog: 10, attempted: 100, errors: 0 } }));
+  const result = await h.run();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'deadline');
+  assert.deepEqual(h.calls.slice(0,4), ['arena','regular','pve','seasonal']);
+  assert.ok(h.calls.filter(x => x === 'arena').length > 1);
+  assert.ok(h.now() - h.start <= 3_600_000);
+  assert.ok(h.events.filter(x => x.event === 'MODE_START').every(x => x.budgetMs <= 300_000));
+  assert.ok(Object.values(result.modes).every(x => !x.complete && x.backlog === 10));
+  assert.ok(!h.calls.includes('warmup'));
+});
+
+test('failed feeds, empty reports and profile errors cannot masquerade as completion', async () => {
+  assert.equal(summaryComplete({ ...done(), killed: true }), false);
+  assert.equal(summaryComplete({ code: 0, summary: null }), false);
+  assert.equal(summaryComplete({ code: 0, summary: { backlog: 0, feedHttpStatus: 0 } }), false);
+  assert.equal(summaryComplete({ code: 0, summary: { backlog: 0, feedHttpStatus: 200, feedError: 'offline' } }), false);
+  const h = harness(mode => mode.name === 'arena'
+    ? { code: 0, summary: { feedHttpStatus: 200, backlog: 1, attempted: 1, errors: 1 } } : done());
+  const result = await h.run();
+  assert.equal(result.ok, false);
+  assert.equal(result.modes.arena.complete, false);
+  assert.ok(h.calls.filter(x => x === 'arena').length < 20, 'persistent errors back off instead of spinning');
+  assert.equal(h.calls.filter(x => x === 'pve').length, 1);
+});
+
+test('an exception or shutdown preserves unfinished modes and never blocks the next mode', async () => {
+  let failed = false;
+  const h = harness(mode => {
+    if (mode.name === 'arena' && !failed) { failed = true; throw new Error('spawn failure'); }
+    if (mode.name === 'warmup') return { code: 0, summary: { bounded: true, stopped: false, processed: 0 } };
+    return done();
+  });
+  assert.equal((await h.run()).ok, true);
+  assert.deepEqual(h.calls.slice(0,4), ['arena','regular','pve','seasonal']);
+  const controller = new AbortController();
+  const stopped = harness(() => { controller.abort(); return done(); }, 3_600_000, controller);
+  assert.equal((await stopped.run()).reason, 'signal');
+  assert.deepEqual(stopped.calls, ['arena']);
+});
+
+test('warmup accepts successful capped, fully completed and empty batches', async () => {
+  for (const summary of [
+    { bounded: true, stopped: false, processed: 100 },
+    { bounded: false, stopped: false, processed: 3 },
+    { bounded: false, stopped: false, processed: 0 },
+  ]) {
+    const h = harness(mode => mode.name === 'warmup' ? { code: 0, summary } : done());
+    const result = await h.run();
+    assert.equal(result.ok, true, JSON.stringify(summary));
+    assert.equal(result.reason, 'complete');
+    assert.deepEqual(h.calls, ['arena', 'regular', 'pve', 'seasonal', 'warmup']);
   }
-  const [dropIn, service, timer] = await Promise.all([
-    readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf', 'utf8'),
-    readFile('ops/systemd/tarkovstats-profile-queue.service', 'utf8'),
-    readFile('ops/systemd/tarkovstats-profile-queue.timer', 'utf8'),
-  ]);
-  assert.match(dropIn, /^Restart=no$/m);
-  assert.match(service, /ExecCondition=.*tarkovstats-public-profile-importer/);
-  assert.match(service, /ConditionPathExists=\/usr\/local\/sbin\/tarkovstats-profile-queue/);
-  assert.match(service, /flock \/run\/tarkovstats-data-sync\.lock/);
-  assert.match(service, /\/usr\/local\/sbin\/tarkovstats-profile-queue/);
-  assert.match(timer, /OnCalendar=hourly/);
+});
+
+test('warmup retains validation and reports an interrupted or malformed result', async () => {
+  for (const summary of [null,
+    { bounded: true, stopped: true, processed: 1 },
+    { bounded: false, stopped: true, processed: 0 },
+    { bounded: true, stopped: false, processed: -1 },
+    { stopped: false, processed: 0 },
+    { bounded: 'false', stopped: false, processed: 0 },
+    { bounded: null, stopped: false, processed: 0 },
+  ]) {
+    const h = harness(mode => mode.name === 'warmup' ? { code: 0, summary } : done());
+    const result = await h.run();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'warmup_failed');
+  }
+  const failed = harness(mode => { if (mode.name === 'warmup') throw new Error('warmup spawn failure'); return done(); });
+  assert.equal((await failed.run()).reason, 'warmup_failed');
+});
+
+test('real child reports are parsed and a child that ignores termination is reaped', async () => {
+  const script = `.queue-test-${randomUUID()}.mjs`;
+  const file = resolve('scripts',script);
+  try {
+    await writeFile(file, `console.log(new Date().toISOString()+' SUMMARY '+JSON.stringify({feedHttpStatus:200,backlog:1,attempted:1,errors:0}));`);
+    const result = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 10_000, Date.now()+20_000);
+    assert.equal(result.code, 0);
+    assert.equal(result.summary.backlog, 1);
+    assert.equal(summaryComplete(result), false);
+    await writeFile(file, `process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 500);
+    const stopped = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 10_000, Date.now()+20_000, controller.signal);
+    clearTimeout(timeout);
+    assert.equal(stopped.killed, true);
+    assert.notEqual(stopped.code, 0);
+  } finally { await rm(file, {force:true}); }
+});
+
+test('the host wrapper keeps one-hour deadline, isolation, nice priority and writer lock', async () => {
+  const source = await readFile('ops/profile-queue.sh','utf8');
+  const dir = await mkdtemp(join(tmpdir(),'round-queue-wrapper-'));
+  try {
+    const path = dir.replaceAll('\\','/');
+    const script = source.replace('cd /opt/tarkovstats-auto || exit 1',`cd '${path}' || exit 1`)
+      .replace('exec /usr/local/sbin/tarkovstats-run-background','printf \'%s\\n\'');
+    const file = join(dir,'queue.sh'); await writeFile(file,script);
+    const before = Date.now();
+    const result = spawnSync(shell,[file],{encoding:'utf8',timeout:10_000});
+    assert.ifError(result.error); assert.equal(result.status,0,result.stderr);
+    const deadline = Number(/PROFILE_QUEUE_DEADLINE_MS=(\d+)/.exec(result.stdout)[1]);
+    assert.ok(deadline >= before+3_600_000-2000 && deadline <= Date.now()+3_600_000);
+    assert.match(result.stdout,/worker\nnice\n-n\n19\nnode/);
+    assert.match(result.stdout,/scripts\/run-profile-queue.mjs/);
+  } finally { await rm(dir,{recursive:true,force:true}); }
+  const service = await readFile('ops/systemd/tarkovstats-profile-queue.service','utf8');
+  assert.match(service,/flock \/run\/tarkovstats-data-sync\.lock/);
+  assert.match(service,/ExecCondition=.*tarkovstats-public-profile-importer/);
+  assert.match(await readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf','utf8'),/^Restart=no$/m);
+  assert.match(await readFile('Dockerfile','utf8'),/COPY.*scripts\/run-profile-queue\.mjs/);
 });
