@@ -248,6 +248,7 @@ export function createSqliteBanStore(db: any): BanStore {
         )
       `);
 
+      const databases = db.prepare("PRAGMA database_list").all() as { name: string }[];
       db.exec("BEGIN IMMEDIATE");
       try {
         db.prepare(
@@ -268,7 +269,6 @@ export function createSqliteBanStore(db: any): BanStore {
            VALUES (?, ?, ?, ?, ?)`
         ).run(input.aid, confirmedAt, source, rawStatus, reason);
 
-        const databases = db.prepare("PRAGMA database_list").all() as { name: string }[];
         if (databases.some((row) => row.name === "progression_db")) {
           const hasSnapshots = db.prepare(
             "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
@@ -306,7 +306,21 @@ export function createSqliteBanStore(db: any): BanStore {
           "SELECT series_id FROM banned_snapshots WHERE aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
         ).get(input.aid) as { series_id: number } | undefined;
         db.prepare(INSERT_SNAPSHOT_SQL).run(...snapshotArgs(input, Number(latest?.series_id ?? 1)));
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
 
+      // The confirmation and the whole archive above live in bans.db, so that
+      // commit is atomic on its own. players_db and progression_db are WAL, and
+      // SQLite's super-journal does not cover WAL participants, so keeping the
+      // exclusions and the row deletions in the same transaction would let a
+      // hard kill commit them while the archive rolled back. As a second commit
+      // the failure runs the other way: the ban stands and the history is safe,
+      // and the next upstream confirmation repeats the exclusions.
+      db.exec("BEGIN IMMEDIATE");
+      try {
         db.prepare(
           `INSERT INTO players_db.excluded_players (aid, reason, created_at)
            VALUES (?, 'confirmed_ban', ?)
