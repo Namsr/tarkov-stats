@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -130,6 +130,33 @@ test("a stuck job is killed and releases the queue for a fresh worker", async (t
   assert.notEqual((await worker.compute(...args("normal"))).pid, initial.pid);
 });
 
+test("the end-to-end deadline kills a stuck job and frees its queued slot", async (t) => {
+  const worker = new AverageComputeWorker({ entry: fixtureEntry, maxPending: 2, totalTimeoutMs: 2_000 });
+  t.after(() => worker.stop());
+  const initial = await worker.compute(...args("normal"));
+  const stuck = worker.compute(...args("stall"));
+  const queued = worker.compute(...args("normal"));
+  const failed = await Promise.allSettled([stuck, queued]);
+  for (const result of failed) {
+    assert.equal(result.status, "rejected");
+    assert.ok(result.reason instanceof AverageComputeUnavailableError);
+  }
+  assert.notEqual((await worker.compute(...args("normal"))).pid, initial.pid);
+});
+
+test("the default end-to-end budget matches the deadline the route gives its client", () => {
+  // The behavioural test above passes its own 2 s budget, so pin the shipped
+  // default separately: a job must not outlive the client that asked for it.
+  const number = (source, pattern) => Number(source.match(pattern)[1].replace(/_/g, ""));
+  const budget = number(readFileSync(resolve("lib/average-worker.ts"), "utf8"), /totalTimeoutMs: ([\d_]+)/);
+  const clientDeadline = number(
+    readFileSync(resolve("lib/average-dynamic-cache.ts"), "utf8"),
+    /DEFAULT_DYNAMIC_COMPUTE_TIMEOUT_MS = ([\d_]+)/,
+  );
+  assert.equal(budget, 25_000);
+  assert.equal(budget, clientDeadline);
+});
+
 test("an idle worker does not keep its parent process alive", () => {
   const workerUrl = pathToFileURL(resolve("lib/average-worker.ts")).href;
   const probe = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
@@ -161,4 +188,39 @@ test("the average API returns a retryable 503 when background compute is unavail
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("Retry-After"), "5");
   assert.deepEqual(await response.json(), { error: "Average statistics are warming" });
+});
+
+test("the average API limits regular and Arena requests under one per-IP bucket", async (t) => {
+  // Same bare-specifier rewrites the 503 test above needs: `next/server` and
+  // `next/cache` only resolve through the framework loader inside Next.
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === "next/server") return nextResolve("next/server.js", context);
+      if (specifier === "next/cache") {
+        return { shortCircuit: true, url: pathToFileURL(resolve("tests/fixtures/next-cache-shim.mjs")).href };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+  t.after(() => hooks.deregister());
+  const { GET } = await import("../app/api/average/route.ts");
+  const { NextRequest } = await import("next/server");
+  const { checkRateLimit } = await import("../lib/rate-limiter.ts");
+  const regular = "http://localhost/api/average?mode=invalid";
+  const arena = "http://localhost/api/average?mode=arena&arenaMode=invalid";
+  const request = (url, ip) => new NextRequest(url, { headers: { "x-real-ip": ip } });
+  // 300 real requests would take longer than the 60 s window and expire their
+  // own budget, so fill the shared store directly and spend the last two slots
+  // over HTTP. That still pins the exact max: a route capped lower would answer
+  // 429 on the first call, a route capped higher would answer 400 on the second.
+  for (let i = 0; i < 299; i++) checkRateLimit("192.0.2.180", { bucket: "average", max: 300 });
+  assert.equal((await GET(request(regular, "192.0.2.180"))).status, 400);
+  const limited = await GET(request(regular, "192.0.2.180"));
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await limited.json(), { error: "Rate limit exceeded" });
+  // The Arena branch runs inside GET, so it spends the same budget: switching
+  // mode must not be a way around the limiter.
+  assert.equal((await GET(request(arena, "192.0.2.180"))).status, 429);
+  assert.equal((await GET(request(regular, "192.0.2.181"))).status, 400);
 });
