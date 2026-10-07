@@ -83,8 +83,29 @@ test('an exception or shutdown preserves unfinished modes and never blocks the n
   assert.deepEqual(stopped.calls, ['arena']);
 });
 
+test('warmup accepts successful capped, fully completed and empty batches', async () => {
+  for (const summary of [
+    { bounded: true, stopped: false, processed: 100 },
+    { bounded: false, stopped: false, processed: 3 },
+    { bounded: false, stopped: false, processed: 0 },
+  ]) {
+    const h = harness(mode => mode.name === 'warmup' ? { code: 0, summary } : done());
+    const result = await h.run();
+    assert.equal(result.ok, true, JSON.stringify(summary));
+    assert.equal(result.reason, 'complete');
+    assert.deepEqual(h.calls, ['arena', 'regular', 'pve', 'seasonal', 'warmup']);
+  }
+});
+
 test('warmup retains validation and reports an interrupted or malformed result', async () => {
-  for (const summary of [null, { bounded: true, stopped: true, processed: 1 }, { bounded: true, stopped: false, processed: -1 }]) {
+  for (const summary of [null,
+    { bounded: true, stopped: true, processed: 1 },
+    { bounded: false, stopped: true, processed: 0 },
+    { bounded: true, stopped: false, processed: -1 },
+    { stopped: false, processed: 0 },
+    { bounded: 'false', stopped: false, processed: 0 },
+    { bounded: null, stopped: false, processed: 0 },
+  ]) {
     const h = harness(mode => mode.name === 'warmup' ? { code: 0, summary } : done());
     const result = await h.run();
     assert.equal(result.ok, false);

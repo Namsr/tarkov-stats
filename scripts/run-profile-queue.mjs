@@ -115,7 +115,7 @@ export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MA
       emit("COLLECTOR_ERROR", { mode: "warmup", error: error.message });
       warmup = { code: 1, summary: null };
     }
-    warmupOk = warmup.code === 0 && !warmup.killed && warmup.summary?.bounded === true && warmup.summary?.stopped === false
+    warmupOk = warmup.code === 0 && !warmup.killed && typeof warmup.summary?.bounded === "boolean" && warmup.summary?.stopped === false
       && Number.isInteger(warmup.summary?.processed) && warmup.summary.processed >= 0;
     emit("MODE_RESULT", { mode: "warmup", code: warmup.code });
   }
