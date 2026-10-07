@@ -440,8 +440,8 @@ test("Seasonal profile queue purges and skips moderation-excluded accounts", asy
   const preloadPath = join(directory, "feed-host-preload.cjs");
   await writeFile(preloadPath, FEED_HOST_PRELOAD);
   const cycleId = "excluded-test";
-  const startsAt = Date.parse("2026-01-01T00:00:00Z");
-  const feedUpdatedAt = startsAt + 1_000;
+  const startsAt = Date.now() - 30 * 86_400_000;
+  const feedUpdatedAt = Date.now() - 60_000;
 
   // Both accounts are queued while they are still allowed, then aid 22 is
   // banned: confirmManualBan writes only the tombstone, so the queue row and
@@ -474,7 +474,7 @@ test("Seasonal profile queue purges and skips moderation-excluded accounts", asy
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/pvp-season/updated.json")) {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ 21: feedUpdatedAt }));
+      response.end(JSON.stringify({ 21: feedUpdatedAt, 23: startsAt + 1000, 24: Date.now() + 3_600_000 }));
       return;
     }
     if (request.url !== "/api/operator/seasonal/profile-sync") {
@@ -551,7 +551,7 @@ test("Seasonal profile queue stops claiming an account banned mid-run", async ()
   const preloadPath = join(directory, "feed-host-preload.cjs");
   await writeFile(preloadPath, FEED_HOST_PRELOAD);
   const cycleId = "midrun-ban-test";
-  const startsAt = Date.parse("2026-01-01T00:00:00Z");
+  const startsAt = Date.now() - 60_000;
   const feedUpdatedAt = startsAt + 1_000;
 
   const db = new DatabaseSync(dbPath);

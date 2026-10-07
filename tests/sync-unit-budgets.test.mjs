@@ -273,31 +273,16 @@ test("all standalone profile collectors lower Node priority inside the container
   }
 });
 
-test("a sync unit does not claim more run budget than the hourly queue gives the same mode", async () => {
-  // Enabling a timer must not put a mode on a larger budget than the one that
-  // already runs it every hour in production. A unit may claim a smaller one:
-  // its window is 14m, while the queue runs four modes inside one shared 3300s
-  // deadline. This pins the run budget the two paths share, not their whole
-  // configuration - the queue also pins concurrency and RPS that units do not.
-  const queue = await readFile("ops/profile-queue.sh", "utf8");
-  const queueBudgets = new Map();
-  for (const [, line] of queue.matchAll(/^(run_mode \w+ .*)$/gm)) {
-    for (const [, name, value] of line.matchAll(/-e ([A-Z0-9_]+)=(\d+)/g)) queueBudgets.set(name, Number(value));
+test("sync units and the hourly coordinator cover the same modes within their available budgets", async () => {
+  const { PROFILE_QUEUE_MODES, PROFILE_QUEUE_MAX_RUN_MS, PROFILE_QUEUE_SLICE_MS } = await import("../scripts/run-profile-queue.mjs");
+  assert.equal(PROFILE_QUEUE_MAX_RUN_MS, 3_600_000);
+  assert.equal(PROFILE_QUEUE_SLICE_MS, 300_000);
+  for (const { name, script, budget, budgetMs } of (await readSyncUnits()).filter(unit => unit.budget)) {
+    const mode = PROFILE_QUEUE_MODES.find(mode => script.endsWith(mode.script));
+    assert.ok(mode, name + " is missing from the circular queue");
+    assert.equal(mode.budget, budget.name, name);
+    assert.ok(budgetMs <= PROFILE_QUEUE_MAX_RUN_MS, name + " exceeds the shared hour");
   }
-  assert.ok(queueBudgets.size > 0, "ops/profile-queue.sh no longer passes a run budget with `run_mode ... -e`");
-
-  const problems = [];
-  for (const { name, script, budget, budgetMs } of (await readSyncUnits()).filter((unit) => unit.budget)) {
-    const queued = queueBudgets.get(budget.name);
-    if (queued === undefined) {
-      problems.push(`${name} runs ${script} with ${budget.name}, which ops/profile-queue.sh no longer passes to the same mode: the two paths drift apart without a test noticing`);
-      continue;
-    }
-    if (budgetMs > queued) {
-      problems.push(`${name} runs ${script} with ${budget.name}=${budgetMs} while ops/profile-queue.sh gives the same mode ${queued}`);
-    }
-  }
-  assert.deepEqual(problems, [], problems.join("\n"));
 });
 
 test("lock contention at boot or behind the queue leaves time for a complete run", async () => {

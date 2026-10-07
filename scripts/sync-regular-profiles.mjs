@@ -8,6 +8,9 @@ import process from "node:process";
 import {
   backoff,
   classifyFeedEntry,
+  profileQueueSelector,
+  PROFILE_FEED_POLICY,
+  PROFILE_FEED_WINDOW_MS,
   createTimestampObjectParser,
   delay,
   envInteger,
@@ -36,7 +39,6 @@ const config = {
   maxRetries: envInteger("REGULAR_PROFILE_SYNC_MAX_RETRIES", 3, 0, 10),
   requestTimeoutMs: envInteger("REGULAR_PROFILE_SYNC_TIMEOUT_MS", 30_000, 1_000, 300_000),
   leaseMs: envInteger("REGULAR_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
-  overlapMs: envInteger("REGULAR_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
   // Graceful queue budget (PvE/Seasonal/Arena already have one). The default
   // covers the observed worst hourly catch-up (~15.5 min for 861 attempts at
   // 1 RPS) with margin, so a manual run gets room to drain what it started; it
@@ -88,7 +90,7 @@ async function main() {
     progressionDb: config.progressionDbPath,
     updatedUrl: config.updatedUrl,
     requestsPerSecond: config.requestsPerSecond,
-    overlapMs: config.overlapMs,
+    feedWindowMs: PROFILE_FEED_WINDOW_MS,
     maxRunMs: config.maxRunMs,
   });
 
@@ -316,22 +318,20 @@ async function loadFeed(startedAt) {
       if (trackedProfile !== undefined) counters.trackedExcluded += 1;
       return;
     }
-    if (trackedProfile !== undefined) {
+    if (trackedProfile !== undefined && feedUpdatedAt <= startedAt) {
       trackedProfile.feedUpdatedAt = Math.max(trackedProfile.feedUpdatedAt ?? 0, feedUpdatedAt);
     }
     const kind = classifyFeedEntry(
       trackedProfile === undefined ? undefined : (trackedProfile.snapshotUpdatedAt ?? 0),
       feedUpdatedAt,
-      savedWatermark,
-      config.overlapMs
+      startedAt
     );
     if (kind === null && trackedProfile !== undefined) {
       counters.upToDate += 1;
       return;
     }
     if (kind === null) {
-      if (bootstrapping) counters.bootstrapUnknownIgnored += 1;
-      else counters.oldUnknownIgnored += 1;
+      counters.oldUnknownIgnored += 1;
       return;
     }
     counters.eligible += 1;
@@ -417,6 +417,7 @@ async function loadFeed(startedAt) {
     // above: a truncated body, a failed commit or an interruption leaves the
     // previous validators (or none) in place so the next run refetches.
     setMeta("feed_source_url", config.updatedUrl);
+    setMeta("feed_policy", PROFILE_FEED_POLICY);
     if (feed.notModified) {
       // Keep the accepted validators; only the 304 poll itself is recorded.
     } else if (feed.etag) {
@@ -467,7 +468,7 @@ async function loadFeed(startedAt) {
 
 async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, errors: 0 };
-  const next = db.prepare(`
+  const next = profileQueueSelector(db, `
     SELECT q.aid, q.feed_updated_at FROM regular_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
@@ -522,6 +523,7 @@ async function processQueue(startedAt) {
     );
     heartbeat();
     if (counters.attempted % 100 === 0) log("PROGRESS", counters);
+    log("PROFILE_RESULT", { mode: "regular", aid, expectedUpdatedAt, outcome: result.kind, httpStatus: result.status });
   }
   return counters;
 }
@@ -539,6 +541,7 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
+      log("PROFILE_REQUEST", { mode: "regular", runId, aid, expectedUpdatedAt, attempt });
       const response = await fetch(config.endpoint, {
         method: "POST",
         headers: {
@@ -605,7 +608,7 @@ function latestSnapshotVersion(aid) {
 function feedValidators() {
   // Validators belong to the configured source. A changed feed URL resets
   // them so a new source is always fetched unconditionally once.
-  if (getMeta("feed_source_url") !== config.updatedUrl) return {};
+  if (getMeta("feed_source_url") !== config.updatedUrl || getMeta("feed_policy") !== PROFILE_FEED_POLICY) return {};
   const etag = getMeta("feed_etag");
   const lastModified = getMeta("feed_last_modified");
   return { ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) };

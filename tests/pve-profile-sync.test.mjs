@@ -11,6 +11,7 @@ import test from "node:test";
 
 const execFileAsync = promisify(execFile);
 const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+const recent = Math.floor(Date.now() / 1000) * 1000 - 60_000;
 const cutoff = Date.parse("2025-11-15T00:00:00+03:00");
 
 function runCollector(dbPath, progressionDbPath, port, retries = 0, extraEnv = {}, preload = null, onStdout = null) {
@@ -73,18 +74,19 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
   const seedStats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
   players.prepare(`INSERT INTO mode_players
     (mode, aid, profile_updated_at, fetched_at, stats_json, achievements) VALUES ('pve', ?, ?, ?, ?, '[]')`)
-    .run(90, cutoff, cutoff + 1, seedStats);
+    .run(90, recent, recent + 1, seedStats);
   players.prepare("INSERT INTO excluded_players (aid) VALUES (?)").run(16);
   let feed = {
-    10: cutoff,
-    11: String((cutoff + 1_000) / 1_000),
-    12: cutoff + 2_000,
-    13: cutoff + 3_000,
-    14: cutoff + 4_000,
-    15: cutoff + 5_000,
-    16: cutoff + 6_000,
+    10: recent,
+    11: String((recent + 1_000) / 1_000),
+    12: recent + 2_000,
+    13: recent + 3_000,
+    14: recent + 4_000,
+    15: recent + 5_000,
+    16: recent + 6_000,
     17: cutoff - 1,
-    90: cutoff + 7_000,
+    19: recent - 25 * 3_600_000,
+    90: recent + 7_000,
   };
   const calls = new Map();
   let failOnce = true;
@@ -128,7 +130,7 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
 
   try {
     await runCollector(dbPath, progressionDbPath, port, 1);
-    assert.equal(players.prepare("SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'").get().value, String(cutoff + 7_000));
+    assert.equal(players.prepare("SELECT value FROM pve_profile_sync_meta WHERE key = 'feed_watermark'").get().value, String(recent + 7_000));
     assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE mode = 'pve'").get().n, 5);
     assert.deepEqual(players.prepare("SELECT aid, status, error FROM pve_profile_sync_queue ORDER BY aid").all()
       .map((row) => ({ ...row })), [
@@ -142,10 +144,11 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
       ]);
     assert.equal(calls.has(16), false);
     assert.equal(calls.has(17), false);
+    assert.equal(calls.has(19), false, "a feed-only unknown profile outside the rolling day is not added");
     assert.equal(calls.get(15), 2);
 
     const firstCalls = new Map(calls);
-    feed = { 11: String((cutoff + 1_000) / 1_000) };
+    feed = { 11: String((recent + 1_000) / 1_000) };
     const { stdout: noAttemptStdout } = await runCollector(dbPath, progressionDbPath, port);
     assert.deepEqual(calls, firstCalls, "same terminal versions and disappearing AIDs are never reprocessed or deleted");
     assert.equal(players.prepare("SELECT COUNT(*) AS n FROM mode_players WHERE mode = 'pve' AND aid = 10").get().n, 1);
@@ -158,7 +161,7 @@ test("PvE feed imports post-cutoff updated-only AIDs and keeps terminal outcomes
     assert.equal(noAttemptSummary.coverageTotal, 4);
     assert.equal(noAttemptSummary.snapshotCurrent, 4);
 
-    feed = { 18: cutoff + 8_000 };
+    feed = { 18: recent + 8_000 };
     const locker = new DatabaseSync(dbPath);
     locker.exec("BEGIN IMMEDIATE");
     let released = false;
@@ -197,7 +200,7 @@ test("PvE collector retries a terminated updated feed without retaining its part
   const progression = new DatabaseSync(progressionDbPath);
   initializeSeasonalSchema(progression);
   const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
-  const feed = JSON.stringify({ 20: cutoff });
+  const feed = JSON.stringify({ 20: recent });
   let feedRequests = 0;
   let syncRequests = 0;
   const server = createServer(async (request, response) => {
@@ -287,7 +290,7 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
   // aid 10: the snapshot equals the stored profile, but the queue already knows
   // upstream moved 5000 ms on and the fetch never happens.
   // aid 11: caught up, and must stay counted as current.
-  for (const [aid, version] of [[10, cutoff + 1_000], [11, cutoff + 6_000]]) {
+  for (const [aid, version] of [[10, recent + 1_000], [11, recent + 6_000]]) {
     players.prepare(`INSERT INTO mode_players (mode, aid, profile_updated_at, fetched_at, stats_json, achievements)
       VALUES ('pve', ?, ?, ?, ?, '[]')`).run(aid, version, version, stats);
     progression.prepare(`INSERT INTO progression_snapshots
@@ -300,10 +303,10 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
     http_status INTEGER, error TEXT, last_run_id TEXT, updated_at INTEGER NOT NULL);
     CREATE TABLE pve_profile_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   const queue = players.prepare("INSERT INTO pve_profile_sync_queue (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, ?)");
-  queue.run(10, cutoff + 6_000, "pending", 1);
-  players.prepare("INSERT INTO pve_profile_sync_meta (key, value) VALUES ('feed_watermark', ?)").run(String(cutoff + 7_000));
+  queue.run(10, recent + 6_000, "pending", 1);
+  players.prepare("INSERT INTO pve_profile_sync_meta (key, value) VALUES ('feed_watermark', ?)").run(String(recent + 7_000));
 
-  const feed = { 10: cutoff + 6_000, 11: cutoff + 6_000 };
+  const feed = { 10: recent + 6_000, 11: recent + 6_000 };
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/pve/updated.json")) {
       response.setHeader("content-type", "application/json");
@@ -350,8 +353,8 @@ test("PvE coverage counts a queued version ahead of the snapshot as lagging", as
     // no snapshot at all and is queued oldest, so it is fetched first (404 ->
     // not_found) and the advanced clock ends the run before aid 10 is reached.
     players.prepare(`INSERT INTO mode_players (mode, aid, profile_updated_at, fetched_at, stats_json, achievements)
-      VALUES ('pve', 12, ?, ?, ?, '[]')`).run(cutoff + 7_000, cutoff + 7_000, stats);
-    queue.run(12, cutoff + 7_000, "pending", 0);
+      VALUES ('pve', 12, ?, ?, ?, '[]')`).run(recent + 7_000, recent + 7_000, stats);
+    queue.run(12, recent + 7_000, "pending", 0);
     const preload = join(directory, "advance-clock.mjs");
     await writeFile(preload, `const originalFetch = globalThis.fetch;
       const realNow = Date.now; let offset = 0; Date.now = () => realNow() + offset;
@@ -392,7 +395,7 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
   const progression = new DatabaseSync(progressionDbPath);
   initializeSeasonalSchema(progression);
   const stats = JSON.stringify({ experience: 100, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 });
-  const feed = { 10: cutoff + 1_000 };
+  const feed = { 10: recent + 1_000 };
   const ETAG = '"test-pve-etag-1"';
   const seen = { hits: 0, conditional: 0, bodies: 0 };
   const syncCalls = [];
@@ -455,7 +458,7 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     assert.equal(second.feedNotModified, true);
     assert.equal(second.feedHttpStatus, 304);
     assert.equal(second.attempted, 0);
-    assert.equal(second.maxFeedUpdatedAt, cutoff + 1_000);
+    assert.equal(second.maxFeedUpdatedAt, recent + 1_000);
     assert.equal(
       players.prepare("SELECT updated_at FROM pve_profile_sync_queue WHERE aid = 10").get().updated_at,
       completedAt,
@@ -471,21 +474,21 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     progression.prepare("DELETE FROM progression_snapshots WHERE mode = 'pve' AND aid = 10").run();
     for (const [aid, status] of [[20, "skipped"], [21, "stale"], [22, "not_found"]]) {
       players.prepare(`INSERT INTO mode_players VALUES ('pve', ?, ?, ?, ?, '[]')`)
-        .run(aid, cutoff + 1_000, cutoff + 1_001, stats);
+        .run(aid, recent + 1_000, recent + 1_001, stats);
       players.prepare(`INSERT INTO pve_profile_sync_queue
         (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, 1)`)
-        .run(aid, cutoff + 1_000, status);
+        .run(aid, recent + 1_000, status);
     }
     players.prepare(`INSERT INTO mode_players VALUES ('pve', 23, ?, ?, ?, '[]')`)
-      .run(cutoff - 1, cutoff, stats);
+      .run(cutoff - 1, recent, stats);
     players.prepare(`INSERT INTO pve_profile_sync_queue
       (aid, feed_updated_at, status, attempts, http_status, error, last_run_id, updated_at)
       VALUES (?, ?, 'pending', 0, NULL, NULL, NULL, ?)`)
-      .run(99, cutoff + 2_000, Date.now());
+      .run(99, recent + 2_000, Date.now());
     syncCalls.length = 0;
     const third = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
     assert.equal(third.feedNotModified, true);
-    assert.deepEqual(syncCalls, [99, 10], "older pending work precedes a newly reopened lower AID");
+    assert.deepEqual(syncCalls, [99, 10], "the newest pending version precedes the reopened snapshot gap");
     assert.equal(third.attempted, 2);
     assert.equal(third.completed, 2);
     assert.equal(seen.bodies, 1);
@@ -511,7 +514,7 @@ test("PvE collector cuts the retry ladder when the run budget is spent", async (
   const players = createPlayersDb(dbPath);
   const progression = new DatabaseSync(progressionDbPath);
   initializeSeasonalSchema(progression);
-  const version = cutoff + 1_000;
+  const version = recent + 1_000;
   // One failing attempt spends the whole remaining budget, so the ladder must be
   // cut instead of sleeping 1s+2s+4s past `maxRunMs`. The clock is faked so the
   // regression costs no wall-clock seconds.
@@ -690,7 +693,7 @@ test("PvE rate-limit wait is clamped to the run budget", async () => {
   // 10s, which no longer fits in the ~1.2s left of the run budget. The wait has
   // to be clamped, otherwise the collector keeps sleeping a full spacing after
   // the deadline and the unfixed run ends ~10s past it.
-  const feed = { 10: cutoff + 1_000, 11: cutoff + 2_000 };
+  const feed = { 10: recent + 1_000, 11: recent + 2_000 };
   const syncCalls = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/pve/updated.json")) {

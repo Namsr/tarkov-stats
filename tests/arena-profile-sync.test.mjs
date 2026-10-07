@@ -50,7 +50,7 @@ function migrationSummaryFrom(stdout) {
 test("Arena profile sync queues index gaps and updated-feed accounts without a total cap", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-"));
   const dbPath = join(directory, "players.db");
-  const initial = 1_800_000_000_000;
+  const initial = Date.now() - 60_000;
   const players = new DatabaseSync(dbPath);
   players.exec(`
     CREATE TABLE mode_players (
@@ -89,7 +89,7 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     insertIndex.run(aid, nickname, nickname.toLowerCase(), Date.now());
   }
 
-  let feed = { 2: initial + 100, 3: initial + 200, 5: initial + 300 };
+  let feed = { 2: initial + 100, 3: initial + 200, 5: initial + 300, 99: initial - 25 * 3_600_000 };
   const calls = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/arena/updated.json")) {
@@ -155,8 +155,8 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     feed = { ...feed, 6: initial + 400 };
     const secondRun = await launch(dbPath, baseUrl, feedUrl);
     const secondSummary = summaryFrom(secondRun.stdout);
-    assert.deepEqual(calls.slice(callsAfterFirstRun), [6]);
-    assert.equal(secondSummary.deferredOldParser, 2);
+    assert.deepEqual(calls.slice(callsAfterFirstRun), [6, 2]);
+    assert.equal(secondSummary.deferredOldParser, 1);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = 3"
     ).get().status, "not_found");
@@ -407,7 +407,7 @@ test("Arena profile sync caps successful completions, not errors, and resumes", 
     const resumedSummary = summaryFrom(resumedRun.stdout);
     assert.equal(resumedSummary.completed, 2);
     assert.equal(resumedSummary.stopReason, "max_completed");
-    assert.deepEqual(calls.slice(3), [1, 4]);
+    assert.deepEqual(calls.slice(3), [4, 1]);
     assert.deepEqual(players.prepare(
       "SELECT aid, status FROM arena_profile_sync_queue ORDER BY aid"
     ).all().map((row) => ({ aid: Number(row.aid), status: row.status })), [
@@ -659,7 +659,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       }
     }
   };
-  const timestamp = 1_800_000_000_000;
+  const timestamp = Date.now() - 60_000;
   const equivalent = parseArenaProfileStats(profile(1, timestamp, zeroGroups())).arenaProfile;
   const changed = parseArenaProfileStats(profile(2, timestamp, {
     UnrankedOverall: group(10, false),
@@ -860,7 +860,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     );
   `);
 
-  const timestamp = 1_800_000_000_000;
+  const timestamp = Date.now() - 60_000;
   const fetchedAt = timestamp - 1000;
   const group = (counters) => ({ Counters: counters });
   const groups = {
@@ -1137,7 +1137,7 @@ test("Arena publication failures and deadline writes remain retryable", async ()
 test("Arena conditional feed requests skip the body on 304 but keep index backfill", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-304-"));
   const dbPath = join(directory, "players.db");
-  const initial = 1_800_000_000_000;
+  const initial = Date.now() - 60_000;
   const players = new DatabaseSync(dbPath);
   players.exec(`
     CREATE TABLE mode_players (

@@ -40,6 +40,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./s
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-index.mjs ./scripts/sync-arena-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-profiles.mjs ./scripts/sync-arena-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/regular-profile-sync-core.mjs ./scripts/regular-profile-sync-core.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-profile-queue.mjs ./scripts/run-profile-queue.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs ./scripts/sync-regular-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-profiles.mjs ./scripts/sync-seasonal-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs ./scripts/sync-seasonal-index.mjs
