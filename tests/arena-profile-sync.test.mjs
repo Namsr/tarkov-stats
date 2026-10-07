@@ -582,7 +582,7 @@ test("Arena collector waits for every worker after a fatal error", async () => {
   }
 });
 
-test("Arena collector migrates recoverable v3 profiles offline and networks only unrecoverable rows", async () => {
+test("Arena collector migrates recoverable v3 profiles offline and resumes legacy capture tasks", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v3-migration-"));
   const dbPath = join(directory, "players.db");
   const players = new DatabaseSync(dbPath);
@@ -698,7 +698,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     INSERT INTO arena_profile_sync_queue
       (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
     VALUES (8, ?, 3, 'pending', 0, NULL, NULL, NULL, ?)
-  `).run(timestamp, Date.now());
+  `).run(timestamp - 30 * 86_400_000, Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -738,9 +738,10 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       stale: 0,
       network: 2,
     });
-    assert.deepEqual(calls, [4, 5]);
-    assert.equal(summary.attempted, 2);
-    assert.equal(summary.completed, 2);
+    assert.deepEqual(calls, [4, 5, 8]);
+    assert.equal(summary.attempted, 3);
+    assert.equal(summary.completed, 3);
+    assert.equal(summary.upgradedLegacyTasks, 1);
     assert.equal(summary.deferredOldParser, 1);
     assert.equal(summary.indexCurrent, 1);
     assert.equal(players.prepare(
@@ -748,7 +749,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     ).get().n, 6);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = 8"
-    ).get().status, "pending");
+    ).get().status, "completed");
     for (const aid of [1, 2, 3, 4, 5]) {
       assert.equal(players.prepare(
         "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
@@ -780,7 +781,8 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     const second = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
     assert.equal(second.migration.status, "already_complete");
     assert.equal(second.attempted, 0);
-    assert.deepEqual(calls, [4, 5]);
+    assert.equal(second.upgradedLegacyTasks, 0);
+    assert.deepEqual(calls, [4, 5, 8]);
 
     const lateChanged = parseArenaProfileStats(profile(7, timestamp, {
       UnrankedOverall: group(10, false),
@@ -834,7 +836,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
   }
 });
 
-test("Arena collector migrates v2 profiles offline, targets only invalid rows, and keeps legacy queues isolated", async () => {
+test("Arena collector migrates v2 profiles offline and finishes old queued captures without rewriting history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v2-migration-"));
   const dbPath = join(directory, "players.db");
   const players = new DatabaseSync(dbPath);
@@ -925,8 +927,8 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
   players.prepare(`
     INSERT INTO arena_profile_sync_queue
       (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
-    VALUES (?, ?, 3, 'pending', 0, NULL, NULL, NULL, ?)
-  `).run(oldQueueAid, timestamp, Date.now());
+    VALUES (?, ?, 3, 'error', 2, 503, 'old attempt', 'old-run', ?)
+  `).run(oldQueueAid, timestamp - 30 * 86_400_000, Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -960,9 +962,10 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(first.migrations.v2.invalid, 1);
     assert.equal(first.migrations.v2.network, 1);
     assert.equal(first.migrations.v3.status, "complete");
-    assert.deepEqual(calls, [invalidAid]);
-    assert.equal(first.attempted, 1);
-    assert.equal(first.completed, 1);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
+    assert.equal(first.attempted, 2);
+    assert.equal(first.completed, 2);
+    assert.equal(first.upgradedLegacyTasks, 1);
     assert.equal(first.deferredOldParser, 2);
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
@@ -989,7 +992,11 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     ).get(invalidAid).schema_version, 4);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = ?"
-    ).get(oldQueueAid).status, "pending");
+    ).get(oldQueueAid).status, "completed");
+    assert.equal(players.prepare("SELECT schema_version FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).schema_version, ARENA_PARSER_VERSION);
+    assert.equal(players.prepare("SELECT attempts, feed_updated_at FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).attempts, 3,
+      "an old error keeps its attempt history when its parser target is upgraded");
+    assert.equal(players.prepare("SELECT feed_updated_at FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).feed_updated_at, timestamp - 30 * 86_400_000);
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 1"
     ).get(legacyAid).n, 6);
@@ -998,7 +1005,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(second.migrations.v2.status, "already_complete");
     assert.equal(second.migrations.v3.status, "already_complete");
     assert.equal(second.attempted, 0);
-    assert.deepEqual(calls, [invalidAid]);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
 
     players.prepare("INSERT INTO excluded_players (aid) VALUES (?)").run(invalidAid);
     players.prepare("DELETE FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v4_complete'").run();
@@ -1033,7 +1040,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v4_publication_pending'"
     ).get().n, 0);
-    assert.deepEqual(calls, [invalidAid]);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     players.close();

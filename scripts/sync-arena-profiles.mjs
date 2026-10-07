@@ -637,6 +637,12 @@ async function loadFeed(startedAt) {
   if (runBudgetExpired(startedAt)) throw runBudgetError();
   await writeTransaction(() => {
     const queuedAt = Date.now();
+    // Legacy jobs still represent unfinished captures. Fetch their available
+    // payload with the current parser without changing stored profile history.
+    counters.upgradedLegacyTasks = Number(db.prepare(`UPDATE arena_profile_sync_queue
+      SET schema_version = ?, last_run_id = NULL
+      WHERE status IN ('pending', 'error') AND schema_version < ?`)
+      .run(config.schemaVersion, config.schemaVersion).changes);
     if (getMeta("verified_not_found_v1") !== "1") {
       counters.requeuedUnverifiedNotFound = Number(db.prepare(`UPDATE arena_profile_sync_queue
         SET status = 'pending', attempts = 0, http_status = NULL, error = NULL,
