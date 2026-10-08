@@ -357,18 +357,29 @@ export async function getSeasonalAveragePublicationPayloads(
   };
 }
 
+export interface SeasonalAverageCrossSectionInput {
+  cycleId: string;
+  period: AveragePeriod;
+  statistic: AverageStatistic;
+  dimension: SeasonalAverageDimension;
+  metric: string;
+  min: number | null;
+  max: number | null;
+  now?: number;
+}
+
+/**
+ * `available: false` mirrors the query adapter being absent (no readable
+ * backend), which the route answers 503; `result: null` keeps the
+ * not-found answer the adapter could already produce.
+ */
+export type SeasonalAverageCrossSectionLookup =
+  | { available: false; result: null }
+  | { available: true; result: SeasonalAverageCrossSectionResponse | null };
+
 /** Query adapter for the Seasonal cross-section; it never opens the regular player store. */
 export async function getSeasonalAverageCrossSectionQuery(): Promise<
-  ((input: {
-    cycleId: string;
-    period: AveragePeriod;
-    statistic: AverageStatistic;
-    dimension: SeasonalAverageDimension;
-    metric: string;
-    min: number | null;
-    max: number | null;
-    now?: number;
-  }) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
+  ((input: SeasonalAverageCrossSectionInput) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
 > {
   try {
     const backend = await openSeasonalAverageBackend();
@@ -402,6 +413,20 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
     console.warn("seasonal cross-section query unavailable: " + (error as Error).message);
     return null;
   }
+}
+
+/**
+ * Worker entry point for the cross-section. The SQL is synchronous
+ * `node:sqlite`, so it has to run in the cohort child: on the HTTP process one
+ * request blocked the event loop for the whole scan and the 25 s route timer
+ * could not interrupt it.
+ */
+export async function computeSeasonalAverageCrossSection(
+  input: SeasonalAverageCrossSectionInput,
+): Promise<SeasonalAverageCrossSectionLookup> {
+  const query = await getSeasonalAverageCrossSectionQuery();
+  if (!query) return { available: false, result: null };
+  return { available: true, result: await query(input) };
 }
 
 export interface SeasonalAchievementBaselineEntry {

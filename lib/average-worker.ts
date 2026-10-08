@@ -14,8 +14,11 @@ export class AverageComputeUnavailableError extends ComputeUnavailableError {
 }
 
 export class AverageComputeWorker extends ComputeWorker<Arguments, Result> {
-  constructor(options: { entry?: string; timeoutMs?: number; maxPending?: number } = {}) {
+  constructor(options: { entry?: string; timeoutMs?: number; maxPending?: number; totalTimeoutMs?: number } = {}) {
     super({
+      // HTTP stops waiting after 25 s by default. Keep a bounded 5 s grace period for
+      // late results to warm the cache; FIFO wait still counts toward 30 s.
+      totalTimeoutMs: 30_000,
       ...options,
       name: "Average compute",
       entry: options.entry ?? "scripts/compute-average-worker.mjs",

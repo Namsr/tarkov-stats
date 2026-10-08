@@ -38,6 +38,8 @@ registerHooks({
 // any real database.
 const sqliteDirectory = mkdtempSync(join(tmpdir(), "tarkov-cohort-routes-"));
 process.env.SQLITE_PATH = join(sqliteDirectory, "players.db");
+process.env.PROGRESSION_SQLITE_PATH = join(sqliteDirectory, "seasonal.db");
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = ":memory:";
 
 test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
   const regularBranch = regularRoute.slice(
@@ -426,6 +428,197 @@ test("regular and arena cohort successes carry private max-age while errors stay
   // 4xx/5xx paths keep no-store.
   assert.match(arenaBranch, /"Cache-Control":\s*"no-store"/);
   assert.match(persistentBranch, /"Cache-Control":\s*"no-store"/);
+});
+
+test("the Seasonal average route answers from the worker and throttles one client", async (t) => {
+  // Driven for real. The route used to run PORTRAIT_CTE on the HTTP process, where
+  // the 25s budget could not interrupt a synchronous scan and every other request
+  // waited behind it; it now runs in the cohort child.
+  const { DatabaseSync } = await import("node:sqlite");
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const { GET } = await import("../app/api/seasonal/average/route.ts");
+  const { NextRequest } = await import("next/server");
+  const seasonalEnv = {
+    SEASONAL_ENABLED: "true",
+    SEASONAL_CYCLE_ID: "s1",
+    SEASONAL_STARTS_AT: new Date(Date.now() - 200 * 86_400_000).toISOString(),
+    SEASONAL_UPSTREAM_CONTRACT: "game_mode",
+    SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/{mode}/{aid}.json",
+  };
+  const previousEnv = Object.fromEntries(
+    Object.keys(process.env).filter((key) => key.startsWith("SEASONAL_")).map((key) => [key, process.env[key]]),
+  );
+  const previousPublications = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  // This disposable fixture checks route behavior, not crash durability.
+  db.exec("PRAGMA synchronous = OFF");
+  initializeSeasonalSchema(db);
+  const now = Date.now();
+  db.prepare("INSERT INTO season_cycles (mode,cycle_id,starts_at,enabled) VALUES ('seasonal','s1',?,1)")
+    .run(now - 200 * 86_400_000);
+  const profile = db.prepare(`INSERT INTO player_profiles (mode,cycle_id,aid,nickname,profile_updated_at,last_access_at,
+    lifetime_pvp_hours,experience,pmc_raids,scav_raids,pmc_survived,pmc_deaths,pmc_kills,killed_pmc,first_seen_at,last_seen_at)
+    VALUES ('seasonal','s1',?,'p',?,1,?,1000,?,0,50,50,100,20,1,1)`);
+  const snapshot = db.prepare(`INSERT INTO progression_snapshots (mode,cycle_id,aid,profile_updated_at,upstream_updated_at,
+    captured_at,local_date,experience,total_raids,pmc_raids,scav_raids,survived,pmc_survived,deaths,pmc_deaths,pmc_kills,
+    total_kills,killed_pmc,run_through,level,prestige,longest_win_streak,achv_count,achievements)
+    VALUES ('seasonal','s1',?,?,?,?,'2026-01-01',1000,100,100,0,50,50,50,50,100,200,20,1,10,0,1,0,'[]')`);
+  for (let aid = 1; aid <= 30; aid++) {
+    const updated = now - 1_000;
+    profile.run(aid, updated, aid * 10, aid * 2);
+    snapshot.run(aid, updated, updated, updated);
+  }
+  db.close();
+  Object.assign(process.env, seasonalEnv);
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  const url = "http://local/api/seasonal/average?cycle=s1&dimension=hours&metric=players&statistic=trimmed_mean&period=all";
+  const drive = (ip) => GET(new NextRequest(url, { headers: { "x-real-ip": ip } }));
+  t.after(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("SEASONAL_")) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+    if (previousPublications === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousPublications;
+  });
+
+  // A cold range answers exactly what the in-process adapter produced.
+  const first = await drive("198.51.100.7");
+  assert.equal(first.status, 200);
+  const body = await first.json();
+  assert.equal(body.mode, "seasonal");
+  assert.equal(body.total, 30);
+  assert.equal(body.averages.n, 30);
+  assert.equal(body.buckets.reduce((sum, bucket) => sum + bucket.n, 0), 30);
+  assert.equal(first.headers.get("x-average-source"), "dynamic");
+
+  // The limiter is per client, so one client's budget cannot throttle another.
+  const other = await drive("198.51.100.8");
+  assert.equal(other.status, 200);
+
+  // The budget must cover steady 5 s retries and a full minute of 250 ms
+  // slider updates, not just the initial page load.
+  const limit = /bucket: "seasonal-average", max: (\d+)/.exec(seasonalAverageRoute);
+  assert.ok(limit, "the Seasonal average route must declare its own limiter bucket");
+  const max = Number(limit[1]);
+  assert.ok(max >= 337, `page retries plus slider updates must fit, got max=${max}`);
+  assert.equal(/getRateLimitHeaders\(getClientIp\(request\), RATE_LIMIT\)/.test(seasonalAverageRoute), true);
+
+  // Spend the rest of one client's budget and confirm the next request is
+  // refused. Filling the bucket directly keeps this to one more driven request
+  // instead of sixty.
+  const { checkRateLimit } = await import("../lib/rate-limiter.ts");
+  for (let spent = 0; spent < max; spent += 1) {
+    checkRateLimit("198.51.100.20", { bucket: "seasonal-average", max });
+  }
+  const throttled = await drive("198.51.100.20");
+  assert.equal(throttled.status, 429);
+  assert.deepEqual(await throttled.json(), { error: "Rate limit exceeded" });
+  // The published answer is `public, max-age=...`, so a 429 without no-store can
+  // be stored by a shared cache and replayed to every other client (#219).
+  assert.equal(throttled.headers.get("cache-control"), "no-store");
+  // Another client is unaffected: the budget is per bucket and IP.
+  assert.equal((await drive("198.51.100.21")).status, 200);
+
+  await t.test("a page survives repeated 503s and slider updates, then recovers", async (t) => {
+    const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
+    const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
+    const client = await import("../lib/client-average-request.ts");
+    const realCompute = CohortComputeWorker.prototype.compute;
+    let unavailable = true;
+    t.mock.method(CohortComputeWorker.prototype, "compute", function (job) {
+      return unavailable
+        ? Promise.reject(new ComputeUnavailableError("Comparison cohort queue is full"))
+        : realCompute.call(this, job);
+    });
+
+    // Only the browser retry waits use fake timers; worker deadlines keep their
+    // real clock. Advance Date.now for the real rolling-window rate limiter.
+    let clock = now;
+    let nextTimer = 0;
+    const timers = new Map();
+    const browser = {
+      setTimeout(callback, delay) {
+        const id = ++nextTimer;
+        timers.set(id, { callback, due: clock + delay });
+        return id;
+      },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: browser });
+    t.mock.method(Date, "now", () => clock);
+    client.resetAverageResponseCacheForTests();
+    t.after(() => {
+      client.resetAverageResponseCacheForTests();
+      if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+      else delete globalThis.window;
+    });
+    const ip = "198.51.100.22";
+    const statuses = [];
+    t.mock.method(globalThis, "fetch", async (requestUrl) => {
+      const response = await GET(new NextRequest(new URL(requestUrl, "http://local"), {
+        headers: { "x-real-ip": ip },
+      }));
+      statuses.push(response.status);
+      return response;
+    });
+    const requestUrl = (metric, dimension = "pmc_raids", range = "") =>
+      `/api/seasonal/average?cycle=s1&dimension=${dimension}&metric=${metric}&statistic=median&period=all${range}`;
+    const overlayMetrics = ["kd_ratio", "survival_rate", "kills_per_raid", "total_kills", "deaths", "total_raids"];
+    // Distinct baseline and selected-range URLs avoid relying on client dedup.
+    const urls = [
+      ...overlayMetrics.map((metric) => requestUrl(metric)),
+      requestUrl("kd_ratio", "hours"),
+      requestUrl("kd_ratio", "hours", "&min=10&max=300"),
+    ];
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    const failures = [];
+    const pending = urls.map((url) => client.loadAverageJson(url, {
+      retryUnavailable: true, signal: controller.signal,
+    }).catch((error) => { failures.push(error); return null; }));
+    // Header prefetch is best effort and does not retry failed responses.
+    assert.equal((await fetch(requestUrl("players", "hours"))).status, 503);
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const fireDueTimers = () => {
+      for (const [id, timer] of timers) {
+        if (timer.due <= clock) { timers.delete(id); timer.callback(); }
+      }
+    };
+    await flush();
+    let sliderController;
+    for (let elapsed = 250; elapsed <= 120_000; elapsed += 250) {
+      clock = now + elapsed;
+      fireDueTimers();
+      sliderController?.abort();
+      sliderController = new AbortController();
+      // Each debounce tick replaces the prior range, including its retry wait.
+      void client.loadAverageJson(requestUrl("players", "hours", `&min=${elapsed / 250}&max=1000`), {
+        retryUnavailable: true, signal: sliderController.signal,
+      }).catch((error) => {
+        if (error.name !== "AbortError") failures.push(error);
+      });
+      await flush();
+      assert.deepEqual(failures, [], `page failed after ${elapsed} ms`);
+    }
+    sliderController.abort();
+    assert.ok(statuses.length >= 670, "two minutes exercise retries and slider load across window expiry");
+    assert.ok(statuses.every((status) => status === 503), "warm-up must never turn into terminal 429");
+
+    unavailable = false;
+    clock += 5_000;
+    fireDueTimers();
+    const recovered = await Promise.all(pending);
+    assert.deepEqual(failures, []);
+    assert.equal(recovered.length, 8);
+    for (const body of recovered) {
+      assert.equal(body.mode, "seasonal");
+      assert.equal(body.total, 30);
+      assert.ok(body.buckets.length > 0);
+    }
+    assert.equal(statuses.filter((status) => status === 200).length, 8);
+  });
 });
 
 test("every Seasonal average branch reports request timing", () => {

@@ -1373,8 +1373,13 @@ test("Seasonal average invalidation keeps the server cache tagged and the JSON r
 
   assert.match(cache, /export const SEASONAL_AVERAGE_CACHE_TAG = "average-seasonal-dashboard-v2"/);
   assert.match(seasonal, /revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: \[SEASONAL_AVERAGE_CACHE_TAG\]/);
-  assert.match(seasonal, /if \(!query\) throw new SeasonalAverageUnavailableError\(\)/);
+  assert.match(seasonal, /if \(!lookup\.available\) throw new SeasonalAverageUnavailableError\(\)/);
   assert.doesNotMatch(seasonal, /return \{ status: "unavailable" as const \}/);
+  // The cross-section SQL is synchronous node:sqlite, so it has to leave the
+  // HTTP process: a DatabaseSync scan cannot be interrupted by the route's
+  // timeout, it only stalls the event loop for its whole duration.
+  assert.match(seasonal, /computeCohortInBackground\(\{\s*kind: "seasonal_average"/);
+  assert.doesNotMatch(seasonal, /getSeasonalAverageCrossSectionQuery/);
   assert.match(seasonal, /"Cache-Control": "no-store"/);
   assert.match(sync, /import \{ revalidateTag \} from "next\/cache"/);
   assert.match(sync, /if \(result\.capture\.inserted === true\) \{\s*revalidateTag\(SEASONAL_AVERAGE_CACHE_TAG, "max"\);\s*await markAveragePublicationDirty\(seasonalPublicationScope\(cycle\.cycleId\)\);\s*\}/s);
