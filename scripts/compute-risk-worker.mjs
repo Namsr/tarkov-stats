@@ -4,7 +4,7 @@ import { evaluateAndStoreRisk } from "../lib/admin/risk-service.ts";
 // cannot block HTTP; errors leave the last stored evaluation available.
 process.on("message", async ({ id, args: [input] }) => {
   try {
-    if (input.mode !== "seasonal") throw new TypeError("Seasonal risk requires seasonal mode");
+    if (input.mode !== "seasonal" && input.mode !== "regular") throw new TypeError("Risk worker requires seasonal or regular mode");
     const result = await evaluateAndStoreRisk(input);
     if (process.connected) process.send({ id, result });
   } catch (error) {

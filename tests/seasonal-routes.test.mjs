@@ -112,17 +112,17 @@ test("the player risk route gates Seasonal on the active cycle, not just on synt
   // that the two cases are answered differently, not how the source is spelled.
   assert.match(
     risk,
-    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle\) \{\s*return NextResponse\.json\(\{ error: "Seasonal risk unavailable" \}, \{ status: 404, headers: noStore \}\);/,
+    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle\) \{\s*return respond\(\{ error: "Seasonal risk unavailable" \}, 404\);/,
   );
   assert.match(
     risk,
-    /if \(cycleId !== cycle\.cycleId\) \{\s*return NextResponse\.json\(\{ error: "Invalid or missing cycle" \}, \{ status: 400, headers: noStore \}\);/,
+    /if \(cycleId !== cycle\.cycleId\) \{\s*return respond\(\{ error: "Invalid or missing cycle" \}, 400\);/,
   );
   // Do not fold the mismatch back onto the gate line: that is the original defect.
   assert.doesNotMatch(risk, /!isSeasonalRolloutReady\(\) \|\| !cycle \|\|/);
   // The gate has to run before storage is opened.
   assert.ok(
-    risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("getRiskEvaluation("),
+    risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("readRiskEvaluation("),
     "the rollout gate must precede the risk read",
   );
 });
