@@ -12,6 +12,18 @@ test("one catch-all route serves both legacy and canonical player URLs", async (
   assert.equal(await exists("app/player/[mode]/[aid]/page.tsx"), false);
 });
 
+test("the unthrottled general progression route stays removed", async () => {
+  // `/api/progression` answered `?mode=regular|pve|seasonal&aid=` with no rate limiter.
+  // `progressionDailySql` ranks the whole `(mode, cycle_id)` population before the
+  // outer `WHERE ... OR r.aid = ?` narrows anything, so each distinct `aid` pays a
+  // full synchronous `DatabaseSync` scan and blocks the event loop. Nothing in the
+  // first-party UI, the warm-up scripts or the ops layer called it: the UI reads
+  // `/api/progression/timeline` and `/api/progression/average`, and the legacy
+  // Seasonal surface stays on `/api/seasonal/progression`. Deleting it is the fix;
+  // a limiter would only cap one of the two remaining paths to the same SQL.
+  assert.equal(await exists("app/api/progression/route.ts"), false);
+});
+
 test("every direct Seasonal page and API entry point uses the full rollout gate", async () => {
   const populationAverage = await readFile("app/population/[mode]/page.tsx", "utf8");
   assert.match(populationAverage, /@\/app\/average\/\[mode\]\/page/);
@@ -228,7 +240,6 @@ test("every SQLite-backed API route declares the nodejs runtime", async () => {
   // Guard the guard: a scan that resolves nothing would otherwise pass vacuously.
   for (const known of [
     "app/api/seasonal/progression/route.ts",
-    "app/api/progression/route.ts",
     "app/api/progression/timeline/route.ts",
     "app/api/progression/average/route.ts",
     "app/api/player/profile/route.ts",

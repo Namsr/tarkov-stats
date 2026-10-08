@@ -1212,10 +1212,12 @@ test("regular PvP progression precedes the single risk card and radar", async ()
 });
 
 test("progression APIs keep Seasonal queries on the configured active cycle", async () => {
-  const general = await readFile("app/api/progression/route.ts", "utf8");
   const legacy = await readFile("app/api/seasonal/progression/route.ts", "utf8");
-  assert.match(general, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
   assert.match(legacy, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
+  // `/api/progression` used to be the third gate; `/api/progression/timeline` is the
+  // route the profile UI actually calls, so it has to hold the same line.
+  const timeline = await readFile("app/api/progression/timeline/route.ts", "utf8");
+  assert.match(timeline, /loadSeasonalCycleConfig\(\)\?\.cycleId !== input\.cycleId/);
 });
 
 test("profile charts reserve space and keep point inspection accessible", async () => {
@@ -1236,7 +1238,6 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   const cache = await readFile("lib/seasonal/progression-cache.ts", "utf8");
   const flight = await readFile("lib/seasonal/progression-flight.ts", "utf8");
   const database = await readFile("lib/seasonal/progression-db.ts", "utf8");
-  const general = await readFile("app/api/progression/route.ts", "utf8");
   const legacy = await readFile("app/api/seasonal/progression/route.ts", "utf8");
 
   assert.match(cache, /unstable_cache\(/);
@@ -1268,16 +1269,13 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
     2,
     "shared details should run once for the bundle and once for the timeline",
   );
-  for (const route of [general, legacy]) {
-    assert.match(route, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);
-    assert.match(route, /result\.bundle\[input\.kind\]/);
-    assert.match(route, /function errorResponse\(error: string, status: number\)/);
-    assert.match(route, /\{ status, headers: \{ "Cache-Control": "no-store" \} \}/);
-    assert.doesNotMatch(route, /NextResponse\.json\(\{ error:/);
-  }
-  assert.match(general, /input\.mode === "regular"[\s\S]*?"private, no-store"[\s\S]*?: PROGRESSION_CACHE_CONTROL/);
+  assert.match(legacy, /getCachedProgressionBundle\(input\.mode, input\.cycleId, input\.aid\)/);
+  assert.match(legacy, /result\.bundle\[input\.kind\]/);
+  assert.match(legacy, /function errorResponse\(error: string, status: number\)/);
+  assert.match(legacy, /\{ status, headers: \{ "Cache-Control": "no-store" \} \}/);
+  assert.doesNotMatch(legacy, /NextResponse\.json\(\{ error:/);
   assert.match(legacy, /"Cache-Control": PROGRESSION_CACHE_CONTROL/);
-  assert.doesNotMatch(general, /searchParams[\s\S]*?revision/);
+  assert.doesNotMatch(legacy, /searchParams[\s\S]*?revision/);
 });
 
 test("regular average mounts median raid progression and cumulative tooltips include XP level", async () => {
