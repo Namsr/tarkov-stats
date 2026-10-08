@@ -24,7 +24,7 @@ process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin.db");
 process.env.REPORTS_SQLITE_PATH = join(directory, "reports.db");
 process.env.RISK_WORKER_TEST_MARKER = join(directory, "busy");
-const { SeasonalRiskWorker } = await import("../lib/admin/risk-worker.ts");
+const { SeasonalRiskWorker, RegularRiskWorker } = await import("../lib/admin/risk-worker.ts");
 const { seasonalRiskInput, evaluateAndStoreSeasonalRisk } = await import("../lib/admin/risk-service.ts");
 const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
 const { createSqliteSeasonalStore, upsertSqliteSeasonCycle } = await import("../lib/seasonal/storage.ts");
@@ -67,17 +67,18 @@ test("worker risk matches direct calculation, preserves hidden achievements and 
   assert.notEqual(result.pid, process.pid);
 });
 
-test("HTTP remains responsive during risk SQL; the queue is bounded and reuses one child", async (t) => {
-  const worker = new SeasonalRiskWorker({ entry, maxPending: 2 });
+test("HTTP remains responsive during regular risk SQL; the queue is bounded and reuses one child", async (t) => {
+  const worker = new RegularRiskWorker({ entry, maxPending: 2 });
+  const regularInput = (action) => ({ ...input(action), mode: "regular", cycleId: "persistent" });
   t.after(() => worker.stop());
   const server = createServer((_request, response) => response.end("ok"));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   let completed = false;
-  const first = worker.compute(input("hold")).then((result) => { completed = true; return result; });
-  const jobs = Promise.all([first, worker.compute(input("normal"))]);
+  const first = worker.compute(regularInput("hold")).then((result) => { completed = true; return result; });
+  const jobs = Promise.all([first, worker.compute(regularInput("normal"))]);
   jobs.catch(() => {});
-  await assert.rejects(worker.compute(input("overflow")), ComputeUnavailableError);
+  await assert.rejects(worker.compute(regularInput("overflow")), ComputeUnavailableError);
   const marker = process.env.RISK_WORKER_TEST_MARKER;
   const deadline = Date.now() + 10_000;
   while (!existsSync(marker) && Date.now() < deadline) await delay(10);

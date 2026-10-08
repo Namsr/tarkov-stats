@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+
+const directory = mkdtempSync(join(tmpdir(), "player-risk-rollout-"));
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin.db");
+process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 
 registerHooks({
   resolve(specifier, context, nextResolve) {

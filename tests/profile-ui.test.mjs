@@ -44,6 +44,37 @@ test("regular risk polling skips stale scores, verifies identity, and stops afte
   }
 });
 
+test("regular polling starts immediately, waits for slower jobs and skips only fresh matching risk", async () => {
+  const source = await readFile("components/RegularPlayer.tsx", "utf8");
+  const ts = createRequire(import.meta.url)("typescript");
+  const compiled = ts.transpileModule(sliceDeclaration(source, "async function pollRegularRisk(", "interface Props"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const delays = [];
+  let requests = 0;
+  const poll = new Function("fetch", "setTimeout", `${compiled}; return pollRegularRisk;`)(
+    async () => ({ ok: true, json: async () => {
+      requests++;
+      return { identity: { aid: 42, mode: "regular", cycleId: "persistent" }, risk: requests === 6 ? { score: 50, profileUpdatedAt: 100 } : null };
+    } }),
+    (fn, delay) => { delays.push(delay); fn(); },
+  );
+  const scores = [];
+  await poll({ aid: 42, profileUpdatedAt: 100, isCurrent: () => true, onRisk: (risk) => scores.push(risk.score) });
+  assert.deepEqual(delays, [0, 500, 1000, 2000, 4000, 8000]);
+  assert.deepEqual(scores, [50]);
+  const start = source.indexOf('    if (mode !== "regular" || !stats) return;');
+  const end = source.indexOf("  const refreshProfile =", start);
+  assert.ok(start > 0 && end > start);
+  const effect = ts.transpileModule(`function effect() { ${source.slice(start, end).split("  }, [aid, mode, stats, serverRisk]);")[0]} }`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const fresh = { aid: 42, mode: "regular", cycleId: "persistent", profileUpdatedAt: 100, freshnessAt: Date.now() };
+  for (const [risk, expected] of [[fresh, 0], [{ ...fresh, aid: undefined }, 0], [null, 1], [{ ...fresh, aid: 43 }, 1], [{ ...fresh, profileUpdatedAt: 99 }, 1], [{ ...fresh, freshnessAt: Date.now() - 6 * 60 * 60 * 1000 }, 1]]) {
+    let calls = 0;
+    const run = new Function("mode", "stats", "serverRisk", "aid", "pollRegularRisk", "setServerRisk", `${effect}; return effect;`)("regular", { profileUpdatedAt: 100 }, risk, "42", () => { calls++; }, () => {});
+    const cleanup = run();
+    cleanup?.();
+    assert.equal(calls, expected);
+  }
+});
+
 test("regular gauge keeps the statistical server score and exposes its evidence", async () => {
   const [source, profile] = await Promise.all([
     readFile("components/CheaterScore.tsx", "utf8"),
@@ -245,9 +276,9 @@ test("seasonal profiles poll the risk-only endpoint after background evaluation"
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /if \(!body\.risk\) continue;/);
   assert.match(route, /getRateLimitHeaders\(getClientIp\(request\), \{ bucket: "player-risk", max: 30 \}\)/);
-  assert.match(route, /status: 429/);
-  assert.match(route, /getRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
-  assert.match(route, /scoreVersion === riskScoreVersion\(mode, cycleId\)/);
+  assert.match(route, /respond\(\{ error: "Rate limit exceeded" \}, 429\)/);
+  assert.match(route, /readRiskEvaluation\(\{ aid, mode, cycleId \}\)/);
+  assert.match(route, /scoreVersion !== riskScoreVersion\(mode, cycleId\)/);
 });
 
 test("missing mode keeps the profile shell without mounting data sections", async () => {
@@ -709,13 +740,13 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
   assert.ok((route.match(/\{ headers: profileHeaders \}/g) ?? []).length >= 2);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
-  assert.match(route, /after\(\(\) => persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\) \}\)/);
+  assert.match(route, /after\(async \(\) => \{\s*await persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\), strict: true \}\)/);
   const regularRoute = sliceDeclaration(
     route,
     "    const regularSnapshot = makePlayerSnapshot",
     "  } catch {",
   );
-  assert.doesNotMatch(regularRoute, /await persistRegularProfileSnapshot/);
+  assert.match(regularRoute, /after\(async \(\) => \{\s*await persistRegularProfileSnapshot/);
   const pveBranch = route.slice(route.indexOf('if (mode === "pve") {'));
   assert.match(pveBranch, /after\(\(\) => persistRegularProfileSnapshot\(pveSnapshot, \{/);
   assert.match(pveBranch, /mode: "pve"/);
@@ -723,7 +754,8 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(pveBranch, /\{ inserted: false, status: "queued" \}/);
   assert.doesNotMatch(pveBranch, /await persistRegularProfileSnapshot\(pveSnapshot/);
   assert.match(route, /const riskIsFresh = storedRisk &&[\s\S]*Date\.now\(\) - storedRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
-  assert.match(route, /after\(async \(\) => \{[\s\S]*setTimeout\(resolve, 1_000\)[\s\S]*await evaluateAndStoreRisk/);
+  assert.match(regularRoute, /await persistRegularProfileSnapshot[\s\S]*if \(!riskIsFresh\) \{\s*await evaluateRegularRiskInBackground/);
+  assert.doesNotMatch(regularRoute, /setTimeout/);
   assert.match(route, /const currentStoredRisk = seasonalRiskMatchesIdentity\(storedRisk, \{ aid, cycleId \}\)[\s\S]*seasonalRiskIsCurrent = result\.ok && currentStoredRisk !== null/);
   assert.match(route, /const seasonalRiskIsFresh = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)[\s\S]*currentStoredRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - currentStoredRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)/);

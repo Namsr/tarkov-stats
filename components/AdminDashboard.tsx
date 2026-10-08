@@ -642,7 +642,7 @@ function healthLatency(value: number | null, t: T): string {
 }
 
 function healthOperationLabel(operation: string, t: T): string {
-  const known = ["player_profile", "player_search", "average", "average_cohort", "baseline", "average_achievements"];
+  const known = ["player_profile", "player_search", "average", "average_cohort", "baseline", "average_achievements", "risk_evaluation"];
   return known.includes(operation) ? t("admin.health.operation." + operation) : t("admin.health.operation.other");
 }
 
