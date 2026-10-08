@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { materializeRegularProgression } from "../lib/regular-progression.ts";
 import { refreshSqliteProgressionAggregates } from "../lib/seasonal/daily-aggregates.ts";
 import {
@@ -52,9 +53,12 @@ function materializeAchievementBaselines(reason) {
   try {
     db = new DatabaseSync(playersDatabasePath);
     db.exec("PRAGMA busy_timeout = 5000");
-    snapshots = new DatabaseSync(databasePath, { readOnly: true });
-    const riskRows = backfillRegularRiskReferences(db, snapshots);
-    if (riskRows) console.log("regular risk references backfilled", { updated: riskRows });
+    // On first startup the population step below creates the snapshot database.
+    if (existsSync(databasePath)) {
+      snapshots = new DatabaseSync(databasePath, { readOnly: true });
+      const riskRows = backfillRegularRiskReferences(db, snapshots);
+      if (riskRows) console.log("regular risk references backfilled", { updated: riskRows });
+    }
     const result = materializeDueAchievementBaselines(db);
     const published = result.published.map(({ mode, generation, generatedAt, total, achievements }) => ({
       mode, generation, generatedAt, total, achievements: achievements.length,
