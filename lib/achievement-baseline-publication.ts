@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS regular_risk_achievement_owners (
 );
 CREATE INDEX IF NOT EXISTS idx_regular_risk_achievement_hours
   ON regular_risk_achievement_owners(ach_id, hours, aid);
+CREATE TABLE IF NOT EXISTS regular_risk_reference_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1), generated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS achievement_baseline_publications (
   mode TEXT PRIMARY KEY CHECK (mode IN ('regular', 'pve')),
   generation INTEGER NOT NULL,
@@ -191,6 +194,8 @@ export function materializeAchievementBaseline(
         SELECT DISTINCT p.aid, je.value, p.hours FROM players p, json_each(p.achievements) je
         WHERE p.hours > 0 AND p.hours < 1e100 AND p.achievements IS NOT NULL AND p.achievements != ''
           AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`);
+      db.prepare(`INSERT INTO regular_risk_reference_state(id, generated_at) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET generated_at = excluded.generated_at`).run(now);
     }
     db.prepare(`INSERT INTO achievement_baseline_publications
       (mode, generation, generated_at, total, achievements_json) VALUES (?, ?, ?, ?, ?)

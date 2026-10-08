@@ -8,7 +8,9 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registerHooks } from "node:module";
 import { DatabaseSync } from "node:sqlite";
-import { buildRegularRiskBaseline, scoreRegularCheater, regularHoursMultiplier, validatedRegularRiskInputs } from "../lib/regular-risk-score.ts";
+import { buildRegularRiskBaseline, scoreRegularCheater, regularHoursMultiplier, validatedRegularRiskInputs, storedRegularRiskInputs } from "../lib/regular-risk-score.ts";
+import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-backfill.ts";
+import { materializeDueAchievementBaselines } from "../scripts/materialize-progression-population.mjs";
 import { materializeAchievementBaseline, readRegularRiskAchievementBaseline } from "../lib/achievement-baseline-publication.ts";
 import { ADMIN_RISK_SCORE_VERSIONS } from "../lib/admin/risk-version.ts";
 
@@ -27,6 +29,73 @@ const stats = (overrides = {}, hours = 100) => ({ hoursPlayed: hours, pmcRaids: 
 const peers = (overrides = {}, hours = 100, n = 40) => Array.from({ length: n }, (_, i) => ({ aid: i + 1, hours, raw: raw(overrides) }));
 const base = (rows = peers()) => buildRegularRiskBaseline(rows, { hours: 100, pmcRaids: 1000 }, 999);
 const factor = (result, key) => result.factors.find((f) => f.key === key);
+
+test("saved legacy counters recover evidence without inventing missing zeroes or total PMC kills", () => {
+  const legacy = { pmcRaids: 1000, pmcDeaths: 0, pmcSurvived: 0, pmcKills: 900, killedPmc: 600,
+    pmcKilledPmc: 0, longestWinStreak: 0, prestige: 0 };
+  assert.deepEqual(storedRegularRiskInputs(legacy), {
+    raids: 1000, deaths: null, survived: null, kills: 900, killedPmc: null, streak: null, prestige: null,
+  });
+  const exact = storedRegularRiskInputs({ ...legacy, pvpStatsVersion: 1, pvpStatsKnown: true });
+  assert.equal(exact.deaths, 0);
+  assert.equal(exact.killedPmc, 0);
+  assert.equal(exact.survived, null);
+  assert.equal(storedRegularRiskInputs({ ...legacy, pvpStatsKnown: false, pmcKilledPmc: 600 }).killedPmc, null);
+  assert.equal(storedRegularRiskInputs({ ...legacy, regularRiskInputs: raw({ kills: null }) }).kills, null);
+});
+
+test("existing profile population supplies matched risk without upstream refresh or overwriting newer inputs", () => {
+  const players = new DatabaseSync(":memory:");
+  const snapshots = new DatabaseSync(":memory:");
+  try {
+    players.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, hours REAL, pmc_raids INTEGER,
+      profile_updated_at INTEGER, risk_raids INTEGER, risk_deaths INTEGER, risk_survived INTEGER,
+      risk_kills INTEGER, risk_killed_pmc INTEGER, risk_streak INTEGER, risk_prestige INTEGER, risk_parser_version INTEGER);
+      CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);`);
+    snapshots.exec(`CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY, mode TEXT, cycle_id TEXT,
+      aid INTEGER, upstream_updated_at INTEGER, captured_at INTEGER, stats_json TEXT);`);
+    const player = players.prepare("INSERT INTO players(aid, hours, pmc_raids, profile_updated_at) VALUES (?, 6482.4, 2817, 1000)");
+    const snapshot = snapshots.prepare("INSERT INTO progression_snapshots(mode, cycle_id, aid, upstream_updated_at, captured_at, stats_json) VALUES (?, 'persistent', ?, 1000, 1000, ?)");
+    for (let aid = 1; aid <= 45; aid++) {
+      player.run(aid);
+      snapshot.run("regular", aid, JSON.stringify({ profileUpdatedAt: 1000, pmcRaids: 2817, pmcDeaths: 1414,
+        pmcSurvived: 922, pmcKills: 11195, pmcKilledPmc: 2214, longestWinStreak: 14, prestige: 6,
+        pvpStatsVersion: 1, pvpStatsKnown: true, pvpStatsParserVersion: 1 }));
+    }
+    players.exec("INSERT INTO excluded_players VALUES (1); UPDATE players SET risk_parser_version=2, risk_raids=2817, risk_kills=10 WHERE aid=2; UPDATE players SET risk_parser_version=1 WHERE aid=6");
+    snapshots.exec("UPDATE progression_snapshots SET mode='pve' WHERE aid=3; UPDATE progression_snapshots SET upstream_updated_at=999 WHERE aid=4; UPDATE progression_snapshots SET stats_json='broken' WHERE aid=5");
+    assert.equal(backfillRegularRiskReferences(players, snapshots), 40);
+    assert.equal(backfillRegularRiskReferences(players, snapshots), 0);
+    assert.equal(players.prepare("SELECT risk_kills FROM players WHERE aid=2").get().risk_kills, 10);
+    assert.equal(players.prepare("SELECT risk_raids FROM players WHERE aid=4").get().risk_raids, null);
+    const recovered = players.prepare("SELECT * FROM players WHERE risk_parser_version=1").all().map((row) => ({ aid: row.aid, hours: row.hours,
+      raw: { raids: row.risk_raids, deaths: row.risk_deaths, survived: row.risk_survived, kills: row.risk_kills,
+        killedPmc: row.risk_killed_pmc, streak: row.risk_streak, prestige: row.risk_prestige } }));
+    const baseline = buildRegularRiskBaseline(recovered, { hours: 6482.4, pmcRaids: 2817 }, 5869253);
+    const result = scoreRegularCheater(stats({ raids: 2817, deaths: 1414, survived: 922, kills: 11195, killedPmc: 2214 }, 6482.4), baseline);
+    assert.equal(result.availability, "available");
+    assert.equal(factor(result, "pmc_kd_ratio").cohortN, 40);
+  } finally { players.close(); snapshots.close(); }
+});
+
+test("a recent legacy publication still initializes all achievement owner references", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE mode_players(mode TEXT, aid INTEGER, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);`);
+    const insert = db.prepare("INSERT INTO players VALUES (?, 1000, ?)");
+    for (let aid = 1; aid <= 40; aid++) insert.run(aid, JSON.stringify([ultra]));
+    materializeAchievementBaseline(db, "regular", 1000);
+    materializeAchievementBaseline(db, "pve", 1000);
+    db.exec("DELETE FROM regular_risk_reference_state; DELETE FROM regular_risk_achievement_owners");
+    const restored = materializeDueAchievementBaselines(db, { now: 1001 });
+    assert.deepEqual(restored.errors, []);
+    assert.deepEqual(restored.published.map((p) => p.mode), ["regular"]);
+    assert.equal(readRegularRiskAchievementBaseline(db, [ultra], 999).achievements[0].hoursOwners, 40);
+    assert.equal(materializeDueAchievementBaselines(db, { now: 1002 }).published.length, 0);
+  } finally { db.close(); }
+});
 
 test("the same exact K/D changes risk when nearby hours AND raid peers change", () => {
   const target = stats();

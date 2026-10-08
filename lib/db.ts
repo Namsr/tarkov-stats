@@ -37,7 +37,7 @@ import {
   readPublishedAchievementBaseline,
   readRegularRiskAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
-import { buildRegularRiskBaseline, validatedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
+import { buildRegularRiskBaseline, storedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
 // The cohort and population scans filter on these five columns and read the
@@ -189,6 +189,7 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
   "arena_player_index", "idx_arena_player_index_nickname_lower", "arena_player_index_meta",
   "achievement_baseline_publications", "regular_risk_achievement_owners", "idx_regular_risk_achievement_hours",
+  "regular_risk_reference_state",
   "idx_players_regular_risk",
 ] as const;
 
@@ -986,7 +987,7 @@ async function computePersistentRiskBaseline(input: {
 }
 
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
-  const raw = validatedRegularRiskInputs(s.regularRiskInputs);
+  const raw = storedRegularRiskInputs(s);
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
     bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
