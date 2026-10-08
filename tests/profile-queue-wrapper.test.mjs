@@ -156,3 +156,100 @@ test('the host wrapper keeps one-hour deadline, isolation, nice priority and wri
   assert.match(await readFile('ops/systemd/tarkovstats-profile-queue-no-restart.conf','utf8'),/^Restart=no$/m);
   assert.match(await readFile('Dockerfile','utf8'),/COPY.*scripts\/run-profile-queue\.mjs/);
 });
+
+async function dailyCycle({ indexSeconds = 300, profileSeconds = 3600, failures = [] } = {}) {
+  const source = await readFile('ops/daily-cycle.sh', 'utf8');
+  const directory = await mkdtemp(join(tmpdir(), 'daily-cycle-'));
+  const midnight = Date.UTC(2026, 9, 7, 21) / 1000;
+  try {
+    const mock = `
+clock=${midnight}
+date() {
+  if [ "$*" = +%s ]; then
+    printf '%s\\n' "$clock"
+  else
+    [ "$TZ" = Europe/Moscow ] || return 92
+    # Git Bash lacks IANA zoneinfo; Moscow is UTC+3 throughout these fixtures.
+    TZ=UTC-3 command date "$@"
+  fi
+}
+sleep() { clock=$((clock + $1)); }
+systemctl() {
+  [ "$1" = start ] || return 90
+  started=$clock
+  case "$2" in
+    tarkovstats-*-index-sync.service) clock=$((clock + ${indexSeconds}));;
+    tarkovstats-profile-queue.service) clock=$((clock + ${profileSeconds}));;
+    tarkovstats-leaderboard-materialize.service|tarkovstats-publications.service) clock=$((clock + 120));;
+    *) return 91;;
+  esac
+  printf 'CALL %s %s %s\\n' "$2" "$started" "$clock"
+  case ' ${failures.join(' ')} ' in *" $2 "*) return 1;; esac
+}
+`;
+    const file = join(directory, 'cycle.sh');
+    await writeFile(file, source.replace('cycle_day=$(TZ=Europe/Moscow date +%F)',
+      `${mock}\ncycle_day=2026-10-08`));
+    const result = spawnSync(shell, [file], { encoding: 'utf8', timeout: 10_000 });
+    assert.ifError(result.error);
+    const calls = [...result.stdout.matchAll(/^CALL (\S+) (\d+) (\d+)$/gm)].map(([, unit, start, end]) =>
+      ({ unit, start: Number(start) - midnight, end: Number(end) - midnight }));
+    return { ...result, calls };
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+const dailyUnits = ['player-index-sync', 'seasonal-index-sync', 'pve-index-sync', 'arena-index-sync',
+  'profile-queue', 'leaderboard-materialize', 'publications'].map(name => `tarkovstats-${name}.service`);
+
+test('one daily cycle completes all indexes before the 02:00 shared scan and publications', async () => {
+  const result = await dailyCycle();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
+  assert.equal(result.calls[4].start, 2 * 3600);
+  assert.equal(result.calls[4].end, 3 * 3600);
+  assert.equal(result.calls[5].start, 4 * 3600 + 20 * 60);
+  assert.equal(result.calls[6].start, 5 * 3600 + 30 * 60);
+  assert.match(result.stdout, /CYCLE_SUMMARY status=0/);
+});
+
+test('late indexes move one full profile hour and publications forward without overlapping or waiting until tomorrow', async () => {
+  for (const indexSeconds of [3150, 5400]) {
+    const result = await dailyCycle({ indexSeconds });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
+    assert.equal(result.calls[4].start, indexSeconds * 4);
+    assert.equal(result.calls[4].end - result.calls[4].start, 3600);
+    for (let index = 1; index < result.calls.length; index++) {
+      assert.ok(result.calls[index].start >= result.calls[index - 1].end, result.calls[index].unit);
+    }
+    assert.equal(result.calls[5].start, result.calls[4].end);
+    assert.ok(result.calls[6].end < 24 * 3600, 'missed clock times are not deferred until the next day');
+  }
+});
+
+test('failed indexes, an unfinished profile hour and a failed leaderboard do not replay the scan or skip later publications', async () => {
+  const result = await dailyCycle({ failures: [dailyUnits[0], dailyUnits[4], dailyUnits[5]] });
+  assert.equal(result.status, 1);
+  assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
+  for (const unit of [dailyUnits[0], dailyUnits[4], dailyUnits[5]]) assert.match(result.stderr,
+    new RegExp(`CYCLE_FAILED ${unit.slice('tarkovstats-'.length, -'.service'.length)}`));
+  assert.match(result.stdout, /CYCLE_DONE publications/);
+  assert.match(result.stdout, /CYCLE_SUMMARY status=1/);
+});
+
+test('daily cycle units retain importer protection, one daily activation and child-owned locks', async () => {
+  const service = await readFile('ops/systemd/tarkovstats-daily-cycle.service', 'utf8');
+  const timer = await readFile('ops/systemd/tarkovstats-daily-cycle.timer', 'utf8');
+  assert.match(service, /^ExecStart=\/usr\/local\/sbin\/tarkovstats-daily-cycle$/m);
+  assert.match(service, /ExecCondition=.*tarkovstats-public-profile-importer/);
+  assert.match(service, /^Restart=no$/m);
+  assert.doesNotMatch(service, /^ExecStart=.*flock/m, 'a parent writer lock would deadlock every child');
+  assert.match(timer, /^OnCalendar=\*-\*-\* 00:00:00 Europe\/Moscow$/m);
+  assert.match(timer, /^Persistent=true$/m);
+  const standalone = await readFile('ops/systemd/tarkovstats-profile-queue.timer', 'utf8');
+  assert.match(standalone, /^OnCalendar=\*-\*-\* 02:00:00 Europe\/Moscow$/m);
+  assert.doesNotMatch(standalone, /OnCalendar=hourly/);
+  const leaderboard = await readFile('ops/systemd/tarkovstats-leaderboard-materialize.service', 'utf8');
+  assert.match(leaderboard, /flock \/run\/tarkovstats-data-sync.lock .*flock \/run\/tarkovstats-leaderboard.lock/);
+  assert.doesNotMatch(leaderboard, /flock -n/);
+});

@@ -70,6 +70,7 @@ GEMINI.md
 !/ops/tarkovstats-backup.cron
 !/ops/docker-compose.vps.yml
 !/ops/profile-queue.sh
+!/ops/daily-cycle.sh
 !/ops/run-background.sh
 !/ops/materialize-publications.sh
 !/ops/systemd/
@@ -81,6 +82,8 @@ GEMINI.md
 !/ops/systemd/tarkovstats-profile-queue.service
 !/ops/systemd/tarkovstats-profile-queue.timer
 !/ops/systemd/tarkovstats-profile-queue-no-restart.conf
+!/ops/systemd/tarkovstats-daily-cycle.service
+!/ops/systemd/tarkovstats-daily-cycle.timer
 !/ops/systemd/tarkovstats-background.slice
 !/ops/systemd/tarkovstats-publications.service
 !/ops/systemd/tarkovstats-publications.timer
