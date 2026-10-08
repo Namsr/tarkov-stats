@@ -112,7 +112,7 @@ test("home showcase shows the faction beside the mode instead of the empty squar
   assert.match(css, /\.home-player-side::before \{ content: "·"/);
 });
 
-test("home risk renders the stored showcase risk immediately", async () => {
+test("home risk renders current Regular risk and preserves PvE's stored-risk fallback", async () => {
   const [component, route] = await Promise.all([
     read("components/HomePage.tsx"),
     read("app/api/player/profile/route.ts"),
@@ -120,7 +120,12 @@ test("home risk renders the stored showcase risk immediately", async () => {
   assert.match(component, /<CheaterScore compact risk=\{display\?\.profile\?\.risk \?\? null\}[\s\S]*?mode=\{displayMode\}/);
   assert.match(route, /allowStaleRisk = request\.nextUrl\.searchParams\.get\("allowStaleRisk"\) === "1"/);
   assert.match(route, /scoreVersion === riskScoreVersion\("pve", cycleId\) \|\| allowStaleRisk/);
-  assert.match(route, /scoreVersion === riskScoreVersion\("regular", cycleId\) \|\| allowStaleRisk/);
+  const regularStart = route.indexOf("const storedStarted = timing.now();");
+  assert.ok(regularStart >= 0, "Regular stored-profile branch exists");
+  const regularRoute = route.slice(regularStart);
+  assert.match(regularRoute, /const publicRisk = riskIsFresh/);
+  assert.match(regularRoute, /const publicRiskView = riskIsFresh/);
+  assert.doesNotMatch(regularRoute, /allowStaleRisk/);
 });
 
 test("the showcase retry bypasses the profile response cache on every click", async () => {
