@@ -91,7 +91,7 @@ test("a recent legacy publication still initializes all achievement owner refere
     db.exec("DELETE FROM regular_risk_reference_state; DELETE FROM regular_risk_achievement_owners");
     const restored = materializeDueAchievementBaselines(db, { now: 1001 });
     assert.deepEqual(restored.errors, []);
-    assert.deepEqual(restored.published.map((p) => p.mode), ["regular"]);
+    assert.deepEqual(restored.published, []);
     assert.equal(readRegularRiskAchievementBaseline(db, [ultra], 999).achievements[0].hoursOwners, 40);
     assert.equal(materializeDueAchievementBaselines(db, { now: 1002 }).published.length, 0);
   } finally { db.close(); }

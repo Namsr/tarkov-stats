@@ -10,6 +10,7 @@ import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-bac
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   materializeAchievementBaseline,
+  materializeRegularRiskAchievementOwners,
   readPublishedAchievementBaseline,
 } from "../lib/achievement-baseline-publication.ts";
 
@@ -34,7 +35,8 @@ export function materializeDueAchievementBaselines(db, { now = Date.now(), publi
       const riskReferencesReady = mode !== "regular" || db.prepare(
         "SELECT 1 FROM regular_risk_reference_state WHERE id = 1"
       ).get();
-      if (riskReferencesReady && age >= 0 && age < intervalMs) continue;
+      if (!riskReferencesReady) materializeRegularRiskAchievementOwners(db, now);
+      if (age >= 0 && age < intervalMs) continue;
       published.push(publish(db, mode, now));
     } catch (error) {
       errors.push({ mode, error: error instanceof Error ? error.message : String(error) });
