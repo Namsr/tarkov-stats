@@ -1,18 +1,21 @@
 import { getStore, type PlayerStore } from "@/lib/db";
 import { getArenaAverage, getArenaCohort } from "@/lib/arena/service";
 import { computeSeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort";
+import { computeSeasonalAverageCrossSection } from "@/lib/seasonal/average-db";
 
 export type CohortJob =
   | { kind: "persistent"; mode: "regular" | "pve"; args: Parameters<PlayerStore["cohort2d"]> }
   | { kind: "arena"; args: Parameters<typeof getArenaCohort> }
   | { kind: "arena_population"; args: Parameters<typeof getArenaAverage> }
-  | { kind: "seasonal"; args: Parameters<typeof computeSeasonalComparisonCohort> };
+  | { kind: "seasonal"; args: Parameters<typeof computeSeasonalComparisonCohort> }
+  | { kind: "seasonal_average"; args: Parameters<typeof computeSeasonalAverageCrossSection> };
 
 export type CohortResults = {
   persistent: Awaited<ReturnType<PlayerStore["cohort2d"]>>;
   arena: Awaited<ReturnType<typeof getArenaCohort>>;
   arena_population: Awaited<ReturnType<typeof getArenaAverage>>;
   seasonal: Awaited<ReturnType<typeof computeSeasonalComparisonCohort>>;
+  seasonal_average: Awaited<ReturnType<typeof computeSeasonalAverageCrossSection>>;
 };
 
 // Only the child calls these existing calculations. Keep SQL and cohort
@@ -27,5 +30,6 @@ export async function computeCohort(job: CohortJob): Promise<CohortResults[keyof
     case "arena": return getArenaCohort(...job.args);
     case "arena_population": return getArenaAverage(...job.args);
     case "seasonal": return computeSeasonalComparisonCohort(...job.args);
+    case "seasonal_average": return computeSeasonalAverageCrossSection(...job.args);
   }
 }
