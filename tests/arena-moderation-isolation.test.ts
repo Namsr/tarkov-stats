@@ -182,7 +182,7 @@ test("regular risk backfill uses the matched two-dimensional baseline", () => {
     try {
       const saved = admin.prepare(`SELECT factors_json, score_version
         FROM risk_evaluations WHERE aid = 1 AND mode = 'regular' AND cycle_id = 'persistent'`).get();
-      assert.equal(saved.score_version, 3);
+      assert.equal(saved.score_version, 4);
       const factors = JSON.parse(saved.factors_json);
       assert.ok(factors.length > 0);
       assert.equal(factors.every((factor) => factor.z === null), true);
