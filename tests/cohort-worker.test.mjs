@@ -74,6 +74,47 @@ test("cohort IPC preserves Seasonal cycle, latest profiles, explicit time and po
   }
 });
 
+test("the Seasonal cross-section averages cross the IPC boundary byte for byte", async (t) => {
+  // PORTRAIT_CTE is synchronous node:sqlite, so the route cannot run it on the
+  // HTTP process. The child has to return exactly what the in-process adapter
+  // returns, otherwise every range and bucket in the dashboard would change.
+  // The cross-section joins the latest snapshot per profile, so the cohort
+  // fixture above (profiles only) has to gain snapshots for it to answer at all.
+  const seasonalDb = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  const snapshot = seasonalDb.prepare(`INSERT INTO progression_snapshots (mode,cycle_id,aid,profile_updated_at,
+    upstream_updated_at,captured_at,local_date,experience,total_raids,pmc_raids,scav_raids,survived,pmc_survived,
+    deaths,pmc_deaths,pmc_kills,total_kills,killed_pmc,run_through,level,prestige,longest_win_streak,achv_count,achievements)
+    VALUES ('seasonal','s1',?,?,?,?,'2026-01-01',1000,100,100,0,50,50,50,50,100,200,20,1,10,0,1,0,'[]')`);
+  for (let aid = 1; aid <= 30; aid++) {
+    const updated = Date.now() - (aid % 2 ? 10 : 120) * 86400_000;
+    snapshot.run(aid, updated, updated, updated);
+  }
+  seasonalDb.close();
+  const worker = new CohortComputeWorker();
+  t.after(() => worker.stop());
+  for (const statistic of ["median", "trimmed_mean"]) for (const period of ["all", "90d"]) {
+    const input = { kind: "seasonal_average", args: [{
+      cycleId: "s1", period, statistic, dimension: "hours", metric: "players", min: null, max: null,
+    }] };
+    const expected = await computeCohort(input);
+    assert.ok(expected.available);
+    assert.ok(expected.result);
+    assert.deepEqual(await worker.compute(input), expected);
+  }
+  // A range narrows the averages while the histogram still spans the period.
+  // The cohort fixture above puts every profile at 100 hours except aid 30 at
+  // 1000, so this selects exactly one row.
+  const scoped = { kind: "seasonal_average", args: [{
+    cycleId: "s1", period: "all", statistic: "trimmed_mean", dimension: "hours",
+    metric: "total_kills", min: 500, max: 1_000,
+  }] };
+  const scopedExpected = await computeCohort(scoped);
+  assert.ok(scopedExpected.result);
+  assert.equal(scopedExpected.result.averages.n, 1);
+  assert.ok(scopedExpected.result.total > scopedExpected.result.averages.n);
+  assert.deepEqual(await worker.compute(scoped), scopedExpected);
+});
+
 test("Arena cohort and population fallback match existing calculations in the same child", async (t) => {
   const { db } = await getArenaBackend();
   const insert = db.prepare(`INSERT INTO arena_mode_stats (aid,arena_mode,hours,games_count,kd_ratio,win_rate,

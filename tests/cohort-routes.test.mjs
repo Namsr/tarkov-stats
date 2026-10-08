@@ -38,6 +38,7 @@ registerHooks({
 // any real database.
 const sqliteDirectory = mkdtempSync(join(tmpdir(), "tarkov-cohort-routes-"));
 process.env.SQLITE_PATH = join(sqliteDirectory, "players.db");
+process.env.PROGRESSION_SQLITE_PATH = join(sqliteDirectory, "seasonal.db");
 
 test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
   const regularBranch = regularRoute.slice(
@@ -426,6 +427,97 @@ test("regular and arena cohort successes carry private max-age while errors stay
   // 4xx/5xx paths keep no-store.
   assert.match(arenaBranch, /"Cache-Control":\s*"no-store"/);
   assert.match(persistentBranch, /"Cache-Control":\s*"no-store"/);
+});
+
+test("the Seasonal average route answers from the worker and throttles one client", async (t) => {
+  // Driven for real. The route used to run PORTRAIT_CTE on the HTTP process, where
+  // the 25s budget could not interrupt a synchronous scan and every other request
+  // waited behind it; it now runs in the cohort child.
+  const { DatabaseSync } = await import("node:sqlite");
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const { GET } = await import("../app/api/seasonal/average/route.ts");
+  const { NextRequest } = await import("next/server");
+  const seasonalEnv = {
+    SEASONAL_ENABLED: "true",
+    SEASONAL_CYCLE_ID: "s1",
+    SEASONAL_STARTS_AT: new Date(Date.now() - 200 * 86_400_000).toISOString(),
+    SEASONAL_UPSTREAM_CONTRACT: "game_mode",
+    SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/{mode}/{aid}.json",
+  };
+  const previousEnv = Object.fromEntries(
+    Object.keys(process.env).filter((key) => key.startsWith("SEASONAL_")).map((key) => [key, process.env[key]]),
+  );
+  const previousPublications = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  initializeSeasonalSchema(db);
+  const now = Date.now();
+  db.prepare("INSERT INTO season_cycles (mode,cycle_id,starts_at,enabled) VALUES ('seasonal','s1',?,1)")
+    .run(now - 200 * 86_400_000);
+  const profile = db.prepare(`INSERT INTO player_profiles (mode,cycle_id,aid,nickname,profile_updated_at,last_access_at,
+    lifetime_pvp_hours,experience,pmc_raids,scav_raids,pmc_survived,pmc_deaths,pmc_kills,killed_pmc,first_seen_at,last_seen_at)
+    VALUES ('seasonal','s1',?,'p',?,1,?,1000,?,0,50,50,100,20,1,1)`);
+  const snapshot = db.prepare(`INSERT INTO progression_snapshots (mode,cycle_id,aid,profile_updated_at,upstream_updated_at,
+    captured_at,local_date,experience,total_raids,pmc_raids,scav_raids,survived,pmc_survived,deaths,pmc_deaths,pmc_kills,
+    total_kills,killed_pmc,run_through,level,prestige,longest_win_streak,achv_count,achievements)
+    VALUES ('seasonal','s1',?,?,?,?,'2026-01-01',1000,100,100,0,50,50,50,50,100,200,20,1,10,0,1,0,'[]')`);
+  for (let aid = 1; aid <= 30; aid++) {
+    const updated = now - 1_000;
+    profile.run(aid, updated, aid * 10, aid * 2);
+    snapshot.run(aid, updated, updated, updated);
+  }
+  db.close();
+  Object.assign(process.env, seasonalEnv);
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  const url = "http://local/api/seasonal/average?cycle=s1&dimension=hours&metric=players&statistic=trimmed_mean&period=all";
+  const drive = (ip) => GET(new NextRequest(url, { headers: { "x-real-ip": ip } }));
+  t.after(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("SEASONAL_")) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+    if (previousPublications === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousPublications;
+  });
+
+  // A cold range answers exactly what the in-process adapter produced.
+  const first = await drive("198.51.100.7");
+  assert.equal(first.status, 200);
+  const body = await first.json();
+  assert.equal(body.mode, "seasonal");
+  assert.equal(body.total, 30);
+  assert.equal(body.averages.n, 30);
+  assert.equal(body.buckets.reduce((sum, bucket) => sum + bucket.n, 0), 30);
+  assert.equal(first.headers.get("x-average-source"), "dynamic");
+
+  // The limiter is per client, so one client's budget cannot throttle another.
+  const other = await drive("198.51.100.8");
+  assert.equal(other.status, 200);
+
+  // A page view spends under ten of the budget (one dashboard request, six
+  // overlay metrics, a prefetch), and a range-slider drag adds one per 250 ms
+  // debounce tick, so the limit has to clear several times that per minute or
+  // ordinary use starts seeing 429s.
+  const limit = /bucket: "seasonal-average", max: (\d+)/.exec(seasonalAverageRoute);
+  assert.ok(limit, "the Seasonal average route must declare its own limiter bucket");
+  const max = Number(limit[1]);
+  assert.ok(max >= 60, `a page view plus a slider drag must fit in one window, got max=${max}`);
+  assert.equal(/getRateLimitHeaders\(getClientIp\(request\), RATE_LIMIT\)/.test(seasonalAverageRoute), true);
+
+  // Spend the rest of one client's budget and confirm the next request is
+  // refused. Filling the bucket directly keeps this to one more driven request
+  // instead of sixty.
+  const { checkRateLimit } = await import("../lib/rate-limiter.ts");
+  for (let spent = 0; spent < max; spent += 1) {
+    checkRateLimit("198.51.100.20", { bucket: "seasonal-average", max });
+  }
+  const throttled = await drive("198.51.100.20");
+  assert.equal(throttled.status, 429);
+  assert.deepEqual(await throttled.json(), { error: "Rate limit exceeded" });
+  // The published answer is `public, max-age=...`, so a 429 without no-store can
+  // be stored by a shared cache and replayed to every other client (#219).
+  assert.equal(throttled.headers.get("cache-control"), "no-store");
+  // Another client is unaffected: the budget is per bucket and IP.
+  assert.equal((await drive("198.51.100.21")).status, 200);
 });
 
 test("every Seasonal average branch reports request timing", () => {
