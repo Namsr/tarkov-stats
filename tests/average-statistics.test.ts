@@ -1263,6 +1263,53 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
   );
 });
 
+test("baseline caps anonymous bursts per IP and keeps the 429 out of shared caches", async () => {
+  reset();
+  add(1, { hours: 100, value: 2 });
+
+  // getClientIp reads only the header our own proxy sets, so the test has to send
+  // that name. A hardcoded "x-real-ip" would collapse into the shared "unknown"
+  // bucket whenever TRUSTED_IP_HEADER is overridden, and the burst below would
+  // silently start from another test's spend.
+  const trustedHeader = (process.env.TRUSTED_IP_HEADER || "x-real-ip").trim().toLowerCase();
+  const burst = async (ip, count) => {
+    const responses = [];
+    for (let index = 0; index < count; index += 1) {
+      responses.push(await getBaseline(new NextRequest(
+        "http://local/api/baseline?mode=regular",
+        { headers: { [trustedHeader]: ip } },
+      )));
+    }
+    return responses;
+  };
+
+  // The route is unauthenticated and recomputes the aggregate per request, so
+  // before the fix all 31 of these answered 200 and ran the SQL.
+  const MAX = 30;
+  const limited = await burst("203.0.113.51", MAX + 1);
+  assert.deepEqual(limited.slice(0, MAX).map((r) => r.status), Array(MAX).fill(200));
+  const rejected = limited[MAX];
+  assert.equal(rejected.status, 429);
+  assert.deepEqual(await rejected.json(), { error: "Rate limit exceeded" });
+  // The 200 path is `public, max-age=60`, so an uncached 429 would be replayed
+  // to every other visitor by the edge cache (#219).
+  assert.equal(rejected.headers.get("cache-control"), "no-store");
+
+  // The bucket key is the resolved IP, not a process-wide counter.
+  assert.equal((await burst("203.0.113.52", 1))[0].status, 200);
+
+  // The limiter has to precede the store open. After it, the request would only
+  // be rejected once the aggregate had already run.
+  const route = await readFile(
+    new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })') >= 0
+      && route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })')
+        < route.indexOf("const store = await getStore("),
+    "the rate limiter must precede the store open",
+  );
+});
+
 test("the average route rejects the legacy minHours/maxHours pair instead of dropping it", async () => {
   reset();
   add(1, { hours: 100, totalRaids: 1 });

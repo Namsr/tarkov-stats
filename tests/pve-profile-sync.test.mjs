@@ -575,54 +575,50 @@ test("PvE feed ladder stops at the run budget instead of sleeping past it", asyn
   const players = createPlayersDb(dbPath);
   const progression = new DatabaseSync(progressionDbPath);
   initializeSeasonalSchema(progression);
-  // The feed ladder is charged against the same budget as the capture ladder.
-  // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
-  // catch block has to refuse the wait and let the loop-top guard end the run
-  // on the first attempt. The budget is a real one, so the regression costs
-  // real seconds only when the clamp is missing.
-  let feedRequests = 0;
-  const server = createServer((request, response) => {
-    if (!request.url?.startsWith("/pve/updated.json")) return response.writeHead(404).end();
-    feedRequests += 1;
-    response.writeHead(503).end("stuck");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-
-  const startedAt = Date.now();
+  // Start the clock inside the child so process startup cannot spend the
+  // budget. The first failed fetch leaves exactly 700 ms; a 1s retry must
+  // never be scheduled. Record that delay and advance the clock if it is,
+  // rather than relying on the host to finish the test within 900 ms.
+  const tracePath = join(directory, "feed-budget.log");
+  const preload = join(directory, "feed-budget-clock.mjs");
+  await writeFile(preload, `import { appendFileSync } from "node:fs";
+    const startedAt = Date.now(); let elapsed = 0;
+    Date.now = () => startedAt + elapsed;
+    process.env.PROFILE_QUEUE_DEADLINE_MS = String(startedAt + 10_000);
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, ms, ...args) => {
+      if (ms === 1_000) {
+        appendFileSync(process.env.PVE_TEST_FEED_TRACE, "retry\\n");
+        elapsed += ms;
+        return originalSetTimeout(callback, 0, ...args);
+      }
+      return originalSetTimeout(callback, ms, ...args);
+    };
+    globalThis.fetch = async () => {
+      appendFileSync(process.env.PVE_TEST_FEED_TRACE, "feed\\n");
+      elapsed += 9_300;
+      return new Response("stuck", { status: 503 });
+    };`);
   try {
-    const { stdout, code } = await runCollectorReportingExit(dbPath, progressionDbPath, port, 3, {
-      PROFILE_QUEUE_DEADLINE_MS: String(startedAt + 700),
-    });
-    const elapsedMs = Date.now() - startedAt;
-    assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
+    const { stdout, code } = await runCollectorReportingExit(dbPath, progressionDbPath, 9, 3, {
+      PVE_TEST_FEED_TRACE: tracePath,
+    }, preload);
+    const trace = (await readFile(tracePath, "utf8")).trim().split("\n");
+    assert.deepEqual(trace, ["feed"], "one request runs and no unaffordable retry is scheduled");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
-    // The request count alone cannot see the regression: `await delay(backoff(1))`
-    // is the sleep that outlives the deadline, and the loop-top guard only runs
-    // once that sleep returns, so an unclamped collector still opens exactly one
-    // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms sits above the worst clean run measured here (253ms over
-    // 20 runs, 14 of them under 12 CPU burners) and below the 1000 ms the first
-    // backoff must cost plus process start (1158-1181ms unclamped), so it cannot
-    // flake on a loaded worker and cannot miss the overshoot either.
-    assert.ok(
-      elapsedMs < 900,
-      `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
-    );
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
     const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
     assert.equal(fields.stopReason, "max_run_ms");
     assert.equal(fields.phase, "feed");
-    assert.ok(fields.remainingMs < 1_000, "the log reports the budget the ladder gave up on");
+    assert.equal(fields.remainingMs, 700, "the log reports the budget the ladder gave up on");
     assert.equal(
       players.prepare("SELECT COUNT(*) AS n FROM pve_profile_sync_queue").get().n,
       0,
       "a feed that was never admitted queues nothing",
     );
   } finally {
-    await new Promise((resolve) => server.close(resolve));
     players.close();
     progression.close();
     await rm(directory, { recursive: true, force: true });
