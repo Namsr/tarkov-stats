@@ -23,9 +23,12 @@ services:
     read_only: true
     # FS только для чтения, кроме явных точек записи:
     #   /data (volume) — players.db; /tmp и /app/.next/cache (ISR) — tmpfs.
+    # Страницы tmpfs входят в mem_limit cgroup, поэтому размер ограничен: при
+    # переполнении запись в кэш Next падает с ошибкой, её ловит IncrementalCache.set
+    # (console.warn), и запрос становится cache miss, а не OOM-kill контейнера.
     tmpfs:
-      - /tmp
-      - /app/.next/cache:uid=1001,gid=1001,mode=0700
+      - /tmp:size=64m
+      - /app/.next/cache:uid=1001,gid=1001,mode=0700,size=256m
     # 896 + 512 (all background containers) + 256 (Caddy) = 1664 MiB.
     # The remaining ~303 MiB on this 1967 MiB VPS belongs to the host.
     mem_limit: 896m
