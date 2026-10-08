@@ -14,8 +14,14 @@ export class AverageComputeUnavailableError extends ComputeUnavailableError {
 }
 
 export class AverageComputeWorker extends ComputeWorker<Arguments, Result> {
-  constructor(options: { entry?: string; timeoutMs?: number; maxPending?: number } = {}) {
+  constructor(options: { entry?: string; timeoutMs?: number; maxPending?: number; totalTimeoutMs?: number } = {}) {
     super({
+      // End-to-end budget, FIFO wait included: the route gives the client up
+      // after the same 25 s, so a job that is still queued (or still running)
+      // then serves nobody. Without it a stuck head holds its slot for the
+      // whole 60 s child timeout and the FIFO behind it waits unbounded.
+      // Same value as CohortComputeWorker, which ties its two deadlines too.
+      totalTimeoutMs: 25_000,
       ...options,
       name: "Average compute",
       entry: options.entry ?? "scripts/compute-average-worker.mjs",
