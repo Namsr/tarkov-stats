@@ -35,6 +35,8 @@ import {
 } from "@/lib/average-publication";
 import { fakeAverageDashboard, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { getClientIp } from "@/lib/client-ip";
+import { getRateLimitHeaders } from "@/lib/rate-limiter";
 
 export const runtime = "nodejs";
 
@@ -180,6 +182,20 @@ function publicationHeaders(publication: { generation: number; generatedAt: numb
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  // One browser minute here is never quiet: `AveragePageHeader` prefetches three
+  // standard variants, the page draws a chart plus a baseline, `AverageMetricOverlay`
+  // fires six metric requests, and every 503 is retried after `Retry-After`. That
+  // retry loop alone (~10 URLs x 12 retries) is ~120 requests a minute for a page
+  // parked on a warming cache, before any metric, range or mode switch. 300/minute
+  // covers that plus a full browsing session — `warm-average-cache.mjs`, 18 requests
+  // per sweep, fits many times over — and still caps one IP at 5 rps. The queue
+  // (16 slots, 25 s per job end-to-end) is the real ceiling; the limiter only stops
+  // one caller from spending it alone.
+  const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "average", max: 300 });
+  if (!allowed) {
+    timing.finish({ operation: "average", outcome: "rate_limited", status: 429 });
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { ...headers, "Cache-Control": "no-store" } });
+  }
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (rawMode === "arena") return arenaAverageResponse(request, timing);
