@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS regular_risk_achievement_owners (
 );
 CREATE INDEX IF NOT EXISTS idx_regular_risk_achievement_hours
   ON regular_risk_achievement_owners(ach_id, hours, aid);
+CREATE TABLE IF NOT EXISTS regular_risk_reference_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1), generated_at INTEGER NOT NULL, total INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS achievement_baseline_publications (
   mode TEXT PRIMARY KEY CHECK (mode IN ('regular', 'pve')),
   generation INTEGER NOT NULL,
@@ -37,6 +40,34 @@ CREATE TABLE IF NOT EXISTS achievement_baseline_publications (
 );
 `;
 
+/** Build the risk index independently of the much larger display-percentile sort. */
+export function materializeRegularRiskAchievementOwners(
+  db: { exec(sql: string): void; prepare(sql: string): {
+    get(...params: unknown[]): Record<string, unknown> | undefined;
+    run(...params: unknown[]): unknown;
+  } },
+  now = Date.now(),
+): void {
+  db.exec(ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA);
+  db.exec("SAVEPOINT publish_regular_risk_owners");
+  try {
+    db.exec(`DELETE FROM regular_risk_achievement_owners;
+      INSERT OR IGNORE INTO regular_risk_achievement_owners(aid, ach_id, hours)
+      SELECT p.aid, je.value, p.hours FROM players p,
+        json_each(CASE WHEN json_valid(p.achievements) THEN p.achievements ELSE '[]' END) je
+      WHERE p.hours > 0 AND p.hours < 1e100 AND je.type = 'text' AND length(je.value) > 0
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`);
+    const total = Number(db.prepare(`SELECT COUNT(*) AS n FROM players p
+      WHERE NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`).get()?.n ?? 0);
+    db.prepare(`INSERT INTO regular_risk_reference_state(id, generated_at, total) VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET generated_at = excluded.generated_at, total = excluded.total`).run(now, total);
+    db.exec("RELEASE publish_regular_risk_owners");
+  } catch (error) {
+    db.exec("ROLLBACK TO publish_regular_risk_owners; RELEASE publish_regular_risk_owners");
+    throw error;
+  }
+}
+
 /** Indexed owner samples; no per-profile expansion of players.achievements. */
 export function readRegularRiskAchievementBaseline(
   db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined } },
@@ -44,6 +75,8 @@ export function readRegularRiskAchievementBaseline(
   excludeAid: number,
 ): { total: number; achievements: PublishedAchievementStat[] } {
   const publication = readPublishedAchievementBaseline(db, "regular");
+  const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'regular_risk_reference_state'").get();
+  const state = hasState ? db.prepare("SELECT total FROM regular_risk_reference_state WHERE id = 1").get() : undefined;
   const achievements: PublishedAchievementStat[] = [];
   for (const id of new Set(ownedIds)) {
     const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
@@ -59,7 +92,7 @@ export function readRegularRiskAchievementBaseline(
       stdHours: Math.sqrt(Math.max(0, Number(row?.square ?? 0) - mean * mean)),
       earlyHours: Number(p20?.hours ?? 0), unlockHours: Number(p20?.hours ?? 0) });
   }
-  return { total: Math.max(0, (publication?.total ?? 0) - 1), achievements };
+  return { total: Math.max(0, Number(state?.total ?? publication?.total ?? 0) - 1), achievements };
 }
 
 const BASELINE_SELECT_SQL = `WITH expanded AS (
@@ -186,11 +219,7 @@ export function materializeAchievementBaseline(
   db.exec("SAVEPOINT publish_achievement_baseline");
   try {
     if (mode === "regular") {
-      db.exec(`DELETE FROM regular_risk_achievement_owners;
-        INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours)
-        SELECT DISTINCT p.aid, je.value, p.hours FROM players p, json_each(p.achievements) je
-        WHERE p.hours > 0 AND p.hours < 1e100 AND p.achievements IS NOT NULL AND p.achievements != ''
-          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`);
+      materializeRegularRiskAchievementOwners(db, now);
     }
     db.prepare(`INSERT INTO achievement_baseline_publications
       (mode, generation, generated_at, total, achievements_json) VALUES (?, ?, ?, ?, ?)

@@ -30,6 +30,23 @@ export function validatedRegularRiskInputs(raw?: RegularRiskInputs): RegularRisk
   return result;
 }
 
+/** Legacy parsed snapshots preserve positive counters, but most zeroes were defaults. */
+export function storedRegularRiskInputs(stats: Partial<ParsedPlayerStats>): RegularRiskInputs {
+  if (stats.regularRiskInputs !== undefined) return validatedRegularRiskInputs(stats.regularRiskInputs);
+  const positive = (value: unknown) => count(value) && value > 0 ? value : null;
+  const exact = (value: unknown) => count(value) ? value : null;
+  const exactPvp = stats.pvpStatsVersion === 1 && stats.pvpStatsKnown !== false;
+  return validatedRegularRiskInputs({
+    raids: exactPvp ? exact(stats.pmcRaids) : positive(stats.pmcRaids),
+    deaths: exactPvp ? exact(stats.pmcDeaths) : positive(stats.pmcDeaths),
+    survived: positive(stats.pmcSurvived),
+    kills: positive(stats.pmcKills),
+    killedPmc: stats.pvpStatsKnown === false ? null : exactPvp ? exact(stats.pmcKilledPmc) : positive(stats.pmcKilledPmc),
+    streak: positive(stats.longestWinStreak),
+    prestige: positive(stats.prestige),
+  });
+}
+
 type Prior = NonNullable<MetricBaseline["prior"]>;
 const EMPTY_PRIOR: Prior = { survival: 0, deaths: 0, kills: 0, killedPmc: 0 };
 function values(raw: RegularRiskInputs, prior: Prior): Record<string, number | null> {
@@ -101,7 +118,7 @@ const KAPPA = new Set(["664f1f8768508d74604bf556", "6a60f75f1a1222ee000baf0d"]);
 export function scoreRegularCheater(stats: ParsedPlayerStats, baseline: Baseline | null, achievements?: AchievementInput | null): CheaterScoreResult {
   const validHours = Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0;
   const multiplier = regularHoursMultiplier(validHours ? stats.hoursPlayed : 1000);
-  const raw = validatedRegularRiskInputs(stats.regularRiskInputs);
+  const raw = storedRegularRiskInputs(stats);
   const factors: ScoreFactor[] = DEFS.map(([key, group, weight]) => {
     const b = baseline?.strategy === "matched" ? baseline.metrics[key] : null;
     const value = values(raw, b?.prior ?? EMPTY_PRIOR)[key];

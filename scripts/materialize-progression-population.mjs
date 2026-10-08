@@ -1,13 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
+import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { materializeRegularProgression } from "../lib/regular-progression.ts";
 import { refreshSqliteProgressionAggregates } from "../lib/seasonal/daily-aggregates.ts";
 import {
   materializeSqlitePopulationSnapshot,
 } from "../lib/seasonal/progression-db.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-backfill.ts";
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   materializeAchievementBaseline,
+  materializeRegularRiskAchievementOwners,
   readPublishedAchievementBaseline,
 } from "../lib/achievement-baseline-publication.ts";
 
@@ -29,6 +33,10 @@ export function materializeDueAchievementBaselines(db, { now = Date.now(), publi
     try {
       const current = readPublishedAchievementBaseline(db, mode);
       const age = current ? now - current.generatedAt : Infinity;
+      const riskReferencesReady = mode !== "regular" || db.prepare(
+        "SELECT 1 FROM regular_risk_reference_state WHERE id = 1"
+      ).get();
+      if (!riskReferencesReady) materializeRegularRiskAchievementOwners(db, now);
       if (age >= 0 && age < intervalMs) continue;
       published.push(publish(db, mode, now));
     } catch (error) {
@@ -41,9 +49,16 @@ export function materializeDueAchievementBaselines(db, { now = Date.now(), publi
 function materializeAchievementBaselines(reason) {
   const startedAt = Date.now();
   let db;
+  let snapshots;
   try {
     db = new DatabaseSync(playersDatabasePath);
     db.exec("PRAGMA busy_timeout = 5000");
+    // On first startup the population step below creates the snapshot database.
+    if (existsSync(databasePath)) {
+      snapshots = new DatabaseSync(databasePath, { readOnly: true });
+      const riskRows = backfillRegularRiskReferences(db, snapshots);
+      if (riskRows) console.log("regular risk references backfilled", { updated: riskRows });
+    }
     const result = materializeDueAchievementBaselines(db);
     const published = result.published.map(({ mode, generation, generatedAt, total, achievements }) => ({
       mode, generation, generatedAt, total, achievements: achievements.length,
@@ -56,6 +71,7 @@ function materializeAchievementBaselines(reason) {
     console.warn(`achievement baseline materialization failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
     return { skipped: false, error };
   } finally {
+    snapshots?.close();
     db?.close();
   }
 }
@@ -110,6 +126,8 @@ export async function materializeProgressionPopulation(reason = "manual") {
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/scripts/materialize-progression-population.mjs")) {
+  // Population sorts can exceed the worker's /tmp tmpfs; use the writable data volume.
+  process.env.SQLITE_TMPDIR ||= dirname(playersDatabasePath);
   const once = process.env.PROGRESSION_MATERIALIZE_ONCE === "true";
   const baselines = materializeAchievementBaselines("startup");
   if (!once && initialDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
