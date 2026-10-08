@@ -9,6 +9,7 @@ process.on("message", ({ id, args }) => {
   const action = args[2];
   if (action === "crash") process.exit(17);
   if (action === "stall") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
+  if (action === "late") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 26_000);
   if (action === "delay") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   if (action === "hold") {
     const marker = process.env.AVERAGE_WORKER_TEST_MARKER;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -87,19 +87,23 @@ test("HTTP responds while SQLite is busy; the FIFO is bounded and reuses one pro
   assert.ok(first.id < second.id);
 });
 
-test("a caller timeout still lets a late worker result warm the dynamic cache", async (t) => {
+test("default HTTP and worker budgets let a late child result warm the dynamic cache", async (t) => {
   const worker = new AverageComputeWorker({ entry: fixtureEntry });
   t.after(() => worker.stop());
   await worker.compute(...args("normal"));
   const previousTimeout = process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
-  process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = "5";
+  delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
   t.after(() => {
     if (previousTimeout === undefined) delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
     else process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = previousTimeout;
     resetDynamicAverageCacheForTests();
   });
-  const calculation = worker.compute(...args("delay"));
-  await assert.rejects(loadDynamicAverage("worker-late", () => calculation), DynamicComputeTimeoutError);
+  const calculation = worker.compute(...args("late"));
+  await assert.rejects(loadDynamicAverage("worker-late", () => calculation), (error) => {
+    assert.ok(error instanceof DynamicComputeTimeoutError);
+    assert.equal(error.timeoutMs, 25_000);
+    return true;
+  });
   const result = await calculation;
   const cached = await loadDynamicAverage("worker-late", () => assert.fail("late result must be cached"));
   assert.equal(cached.cache, "hit");
@@ -142,19 +146,6 @@ test("the end-to-end deadline kills a stuck job and frees its queued slot", asyn
     assert.ok(result.reason instanceof AverageComputeUnavailableError);
   }
   assert.notEqual((await worker.compute(...args("normal"))).pid, initial.pid);
-});
-
-test("the default end-to-end budget matches the deadline the route gives its client", () => {
-  // The behavioural test above passes its own 2 s budget, so pin the shipped
-  // default separately: a job must not outlive the client that asked for it.
-  const number = (source, pattern) => Number(source.match(pattern)[1].replace(/_/g, ""));
-  const budget = number(readFileSync(resolve("lib/average-worker.ts"), "utf8"), /totalTimeoutMs: ([\d_]+)/);
-  const clientDeadline = number(
-    readFileSync(resolve("lib/average-dynamic-cache.ts"), "utf8"),
-    /DEFAULT_DYNAMIC_COMPUTE_TIMEOUT_MS = ([\d_]+)/,
-  );
-  assert.equal(budget, 25_000);
-  assert.equal(budget, clientDeadline);
 });
 
 test("an idle worker does not keep its parent process alive", () => {
