@@ -89,16 +89,18 @@ test("public risk read still rejects an invalid account id", async () => {
   );
 });
 
-function fixture() {
+function fixture(options: { walExclusions?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "admin-moderation-"));
   process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
   process.env.SQLITE_PATH = join(directory, "players.db");
   process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
   process.env.REPORTS_SQLITE_PATH = join(directory, "reports.db");
   const players = new DatabaseSync(process.env.SQLITE_PATH);
+  if (options.walExclusions) players.exec("PRAGMA journal_mode = WAL");
   players.exec("CREATE TABLE players (aid INTEGER PRIMARY KEY, nickname TEXT); INSERT INTO players VALUES (42, 'Kept');");
   players.close();
   const progression = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  if (options.walExclusions) progression.exec("PRAGMA journal_mode = WAL");
   progression.exec(`CREATE TABLE player_profiles (
     mode TEXT, cycle_id TEXT, aid INTEGER, confirmed_banned INTEGER DEFAULT 0,
     PRIMARY KEY (mode, cycle_id, aid));
@@ -289,6 +291,118 @@ test("manual ban rolls all attached databases back when audit fails", () => {
   } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("manual ban and restore work with the exclusion databases left in WAL", () => {
+  // The sync and publication scripts put players.db and progression.db into WAL
+  // on every run, and the mode persists in the file header. WAL participants are
+  // not covered by SQLite's super-journal, so the ban cannot be one transaction
+  // across them — but the mode must be left exactly as the writers set it.
+  const { directory, db, store } = fixture({ walExclusions: true });
+  try {
+    assert.equal(db.prepare("PRAGMA players_db.journal_mode").get().journal_mode, "wal");
+    assert.equal(db.prepare("PRAGMA progression_db.journal_mode").get().journal_mode, "wal");
+    assert.equal(db.prepare("PRAGMA bans_db.journal_mode").get().journal_mode, "delete");
+
+    store.confirmManualBan({ aid: 42, reason: "Manual evidence", now: 40 });
+    assert.ok(db.prepare("SELECT 1 FROM bans_db.banned_accounts WHERE aid = 42").get());
+    assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get());
+    assert.ok(db.prepare("SELECT 1 FROM progression_db.excluded_players WHERE aid = 42").get());
+    assert.equal(db.prepare("SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid = 42").get().confirmed_banned, 1);
+    assert.equal(store.forAids([42])[0].canRestoreManualBan, true);
+
+    store.restoreManualBan({ aid: 42, now: 50 });
+    assert.equal(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get(), undefined);
+    assert.equal(db.prepare("SELECT 1 FROM progression_db.excluded_players WHERE aid = 42").get(), undefined);
+    assert.equal(db.prepare("SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid = 42").get().confirmed_banned, 0);
+    assert.equal(db.prepare("PRAGMA players_db.journal_mode").get().journal_mode, "wal");
+    assert.equal(db.prepare("PRAGMA progression_db.journal_mode").get().journal_mode, "wal");
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a ban killed between its record commit and its exclusions is completed on the next init", () => {
+  // confirmManualBan commits the ban record, the review and the audit entry
+  // first, then the tombstones the public queries read. The second commit is not
+  // atomic with the first, so a hard kill in between leaves exactly the state
+  // reproduced here: the ban is on record with an audit trail, the exclusions
+  // are not applied yet.
+  const { directory, db, store } = fixture({ walExclusions: true });
+  try {
+    store.confirmManualBan({ aid: 42, reason: "Manual evidence", now: 40 });
+    db.prepare("DELETE FROM players_db.excluded_players WHERE aid = 42").run();
+    db.prepare("DELETE FROM progression_db.excluded_players WHERE aid = 42").run();
+    db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 0 WHERE aid = 42").run();
+
+    assert.ok(db.prepare("SELECT 1 FROM bans_db.banned_accounts WHERE aid = 42").get(), "the record survived");
+    assert.deepEqual(db.prepare("SELECT action FROM admin_audit_log ORDER BY id").all().map((row) => row.action), ["ban"]);
+    assert.equal(store.forAids([42])[0].canRestoreManualBan, true);
+    assert.equal(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get(), undefined);
+
+    createSqliteModerationStore(db);
+    assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get(), "the exclusion is applied");
+    assert.ok(db.prepare("SELECT 1 FROM progression_db.excluded_players WHERE aid = 42").get());
+    assert.equal(db.prepare("SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid = 42").get().confirmed_banned, 1);
+    // Derived state only: the repair adds no second ban, review or audit entry.
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM bans_db.ban_confirmations").get().n, 1);
+    assert.deepEqual(db.prepare("SELECT action, previous_status, next_status FROM admin_audit_log ORDER BY id").all()
+      .map((row) => ({ ...row })), [{ action: "ban", previous_status: "new", next_status: "confirmed" }]);
+    // A banned account must never be backfilled as unknown upstream provenance,
+    // which would make it unrestorable.
+    assert.equal(db.prepare("SELECT 1 FROM progression_db.upstream_ban_confirmations WHERE aid = 42").get(), undefined);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a restore killed after the record is deleted drops the leftover exclusion", () => {
+  // restoreManualBan drops the ban record first, so a hard kill in between leaves
+  // the reverse tear: an admin_manual tombstone with no ban. That state used to
+  // hide the account from every statistic with nothing left to restore.
+  const { directory, db, store } = fixture({ walExclusions: true });
+  try {
+    store.confirmManualBan({ aid: 42, reason: "Manual evidence", now: 40 });
+    db.prepare("DELETE FROM bans_db.banned_accounts WHERE aid = 42").run();
+    db.prepare("DELETE FROM bans_db.ban_confirmations WHERE aid = 42").run();
+
+    createSqliteModerationStore(db);
+    assert.equal(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get(), undefined);
+    assert.equal(db.prepare("SELECT 1 FROM progression_db.excluded_players WHERE aid = 42").get(), undefined);
+    assert.equal(db.prepare("SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid = 42").get().confirmed_banned, 0);
+    assert.equal(store.forAids([42])[0].sources.confirmedBan, false);
+    assert.equal(store.forAids([42])[0].canRestoreManualBan, false);
+    // The admin_manual tombstone is the only thing removed, and only with no ban
+    // record left anywhere to justify it.
+    store.confirmManualBan({ aid: 42, reason: "Manual evidence", now: 60 });
+    db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 0 WHERE aid = 42").run();
+    createSqliteModerationStore(db);
+    assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get());
+    assert.equal(db.prepare("SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid = 42").get().confirmed_banned, 1);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("an upstream ban keeps the exclusion the reconciliation would otherwise call orphaned", () => {
+  // The tombstone is derived from the ban record, so a ban whose provenance lives
+  // only in progression_db still has to keep the account out of the leaderboards.
+  const { directory, db, store } = fixture({ walExclusions: true });
+  try {
+    db.prepare(`INSERT INTO progression_db.upstream_ban_confirmations
+      (aid, mode, cycle_id, source, confirmed_at) VALUES (42, 'seasonal', 's1', 'seasonal_upstream', 10)`).run();
+    db.prepare("INSERT INTO progression_db.excluded_players VALUES (42, 'admin_manual', 10)").run();
+    db.prepare("INSERT INTO players_db.excluded_players VALUES (42, 'admin_manual', 10)").run();
+    createSqliteModerationStore(db);
+    assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 42").get());
+    assert.ok(db.prepare("SELECT 1 FROM progression_db.excluded_players WHERE aid = 42").get());
+    assert.equal(store.forAids([42])[0].banSource, "seasonal_upstream");
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("a bans database left in WAL is refused instead of silently losing the audit trail", () => {
+  const { directory, db } = fixture();
+  try {
+    db.exec("DETACH DATABASE bans_db");
+    const bans = new DatabaseSync(process.env.BANS_SQLITE_PATH);
+    bans.exec("PRAGMA journal_mode = WAL");
+    bans.close();
+    assert.throws(() => createSqliteModerationStore(db), /bans_db database must use a rollback journal/);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("Seasonal banned profiles retain personal snapshots and their exclusion flag", async () => {
   const db = new DatabaseSync(":memory:");
   const store = createSqliteSeasonalStore(db);
@@ -456,6 +570,35 @@ test("ban confirmation refuses to delete history the archive key cannot hold", a
     assert.equal(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = 44").get(), undefined);
     assert.equal(
       progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 44").get().n, 3);
+  } finally { db.close(); cleanup(); }
+});
+
+test("ban confirmation keeps the archive when the WAL exclusion phase fails", async () => {
+  // confirmBanned commits the confirmation and the whole archive in bans.db
+  // first, then the exclusions and row deletions in the two WAL databases. A
+  // kill or a failure between them must leave the archive and the ban record
+  // standing and the source rows untouched, never the reverse.
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 46, at: 1_000, nickname: "Old" });
+  progression.exec("PRAGMA journal_mode = WAL");
+  progression.exec(`CREATE TRIGGER fail_exclusions BEFORE DELETE ON progression_snapshots
+    BEGIN SELECT RAISE(ABORT, 'exclusion phase failed'); END`);
+  const db = openBans();
+  try {
+    const store = createSqliteBanStore(db);
+    await assert.rejects(
+      store.confirmBanned(confirmationInput(46, 2_000, "New"), { source: "upstream", confirmedAt: 9_000 }),
+      /exclusion phase failed/);
+    assert.ok(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = 46").get());
+    assert.ok(db.prepare("SELECT 1 FROM banned_snapshots WHERE aid = 46 AND upstream_updated_at = 1000").get());
+    assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 46").get().n, 1);
+    assert.equal(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 46").get(), undefined);
+
+    // The next upstream confirmation of the same banned profile finishes the job.
+    progression.exec("DROP TRIGGER fail_exclusions");
+    await store.confirmBanned(confirmationInput(46, 2_000, "New"), { source: "upstream", confirmedAt: 10_000 });
+    assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 46").get());
+    assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 46").get().n, 0);
   } finally { db.close(); cleanup(); }
 });
 
