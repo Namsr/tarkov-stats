@@ -26,10 +26,12 @@ type TimingInput = {
   baselineMs?: number;
   metadataMs?: number;
   masteryMs?: number;
+  queueMs?: number;
+  achievementsMs?: number;
 };
 
 export type RequestTimingInput = TimingInput & {
-  operation: "player_profile" | "player_search" | "average" | "average_cohort" | "baseline" | "average_achievements";
+  operation: "player_profile" | "player_search" | "player_risk" | "risk_evaluation" | "average" | "average_cohort" | "baseline" | "average_achievements";
   mode?: Mode;
   outcome: Outcome;
   status: number;
@@ -40,6 +42,7 @@ export type RequestTimingInput = TimingInput & {
   memo?: Memo;
   failureStage?: FailureStage;
   errorCode?: string;
+  riskStatus?: "ready" | "missing" | "read_error" | "snapshot_read_error" | "expired" | "profile_stale" | "parser_stale" | "version_stale";
 };
 
 type Options = {
@@ -48,6 +51,8 @@ type Options = {
   now?: () => number;
   sampleRate?: number;
   nodeEnv?: string;
+  /** Read-only poll endpoints must not introduce synchronous analytics writes. */
+  recordAnalytics?: boolean;
 };
 
 type RequestContext = {
@@ -78,6 +83,8 @@ const SERVER_TIMING_PHASES: [keyof TimingInput, string][] = [
   ["masteryMs", "mastery"],
   ["averagesMs", "averages"],
   ["cohortMs", "cohort"],
+  ["queueMs", "queue"],
+  ["achievementsMs", "achievements"],
 ];
 
 const defaultNow = () => performance.now();
@@ -174,7 +181,7 @@ export function createRequestTiming(options: Options = {}) {
       lastInput = input;
       const totalMs = roundedMs(input.totalMs ?? now() - startedAt);
       const diagnostic = failureDiagnostic(input);
-      void recordRequestEvent({
+      if (options.recordAnalytics !== false) void recordRequestEvent({
         operation: input.operation,
         aid: context.aid,
         nickname: context.nickname,
@@ -204,11 +211,12 @@ export function createRequestTiming(options: Options = {}) {
       // Account lookups must be checkable even for fast cache hits or throttles.
       // Population averages/search timing retain their existing sampling.
       const accountRequest = input.operation === "player_profile" || input.operation === "average_cohort";
-      if (!sampled && !slow && !accountRequest) return;
+      const riskRequest = input.operation === "player_risk" || input.operation === "risk_evaluation";
+      if (!sampled && !slow && !accountRequest && !riskRequest) return;
       const event = {
         event: "request_timing_v1",
         ...(slow ? { slow: true } : {}),
-        ...(slow || accountRequest ? { at: Date.now(), pid: process.pid } : {}),
+        ...(slow || accountRequest || riskRequest ? { at: Date.now(), pid: process.pid } : {}),
         ...(accountRequest ? profileIdentity() : {}),
         entry: "api",
         operation: input.operation,
@@ -238,6 +246,9 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.baselineMs === undefined ? {} : { baseline_ms: roundedMs(input.baselineMs) }),
         ...(input.metadataMs === undefined ? {} : { metadata_ms: roundedMs(input.metadataMs) }),
         ...(input.masteryMs === undefined ? {} : { mastery_ms: roundedMs(input.masteryMs) }),
+        ...(input.queueMs === undefined ? {} : { queue_ms: roundedMs(input.queueMs) }),
+        ...(input.achievementsMs === undefined ? {} : { achievements_ms: roundedMs(input.achievementsMs) }),
+        ...(input.riskStatus === undefined ? {} : { risk_status: input.riskStatus }),
       };
       try {
         (options.logger ?? console.log)(JSON.stringify(event));

@@ -10,7 +10,7 @@ const regularRoot = route.indexOf("const storedStarted = timing.now();");
 const start = route.indexOf("const riskIsFresh = storedRisk &&", regularRoot);
 const end = route.indexOf("const publicRisk = riskIsFresh", start);
 assert.ok(regularRoot >= 0 && start > regularRoot && end > start);
-const schedule = new Function("snapshot", "storedRisk", "after", "evaluateAndStoreRisk", "setTimeout", "aid", "cycleId", "riskScoreVersion", route.slice(start, end));
+const schedule = new Function("snapshot", "storedRisk", "after", "evaluateRegularRiskInBackground", "setTimeout", "aid", "cycleId", "riskScoreVersion", route.slice(start, end));
 
 test("stored PvP profiles schedule only missing or stale risk after the response", async () => {
   const updatedAt = Date.now() - 60_000;

@@ -74,25 +74,30 @@ export function readRegularRiskAchievementBaseline(
   ownedIds: readonly string[],
   excludeAid: number,
 ): { total: number; achievements: PublishedAchievementStat[] } {
-  const publication = readPublishedAchievementBaseline(db, "regular");
   const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'regular_risk_reference_state'").get();
   const state = hasState ? db.prepare("SELECT total FROM regular_risk_reference_state WHERE id = 1").get() : undefined;
+  // The owner state already contains the total; avoid parsing the display publication.
+  const total = state?.total ?? readPublishedAchievementBaseline(db, "regular")?.total ?? 0;
   const achievements: PublishedAchievementStat[] = [];
-  for (const id of new Set(ownedIds)) {
-    const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
+  const ids = new Set(ownedIds);
+  if (!ids.size) return { total: Math.max(0, Number(total) - 1), achievements };
+  const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
       AND EXISTS (SELECT 1 FROM players p WHERE p.aid = regular_risk_achievement_owners.aid)
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_risk_achievement_owners.aid)`;
-    const row = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
-      FROM regular_risk_achievement_owners ${where}`).get(id, excludeAid);
+  const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
+      FROM regular_risk_achievement_owners ${where}`);
+  const percentile = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}
+      ORDER BY hours, aid LIMIT 1 OFFSET ?`);
+  for (const id of ids) {
+    const row = aggregate.get(id, excludeAid);
     const n = Number(row?.n ?? 0);
     const mean = Number(row?.mean ?? 0);
-    const p20 = n ? db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}
-      ORDER BY hours, aid LIMIT 1 OFFSET ?`).get(id, excludeAid, Math.ceil(n * 0.2) - 1) : undefined;
+    const p20 = n ? percentile.get(id, excludeAid, Math.ceil(n * 0.2) - 1) : undefined;
     achievements.push({ ach_id: id, owners: n, hoursOwners: n, meanHours: mean,
       stdHours: Math.sqrt(Math.max(0, Number(row?.square ?? 0) - mean * mean)),
       earlyHours: Number(p20?.hours ?? 0), unlockHours: Number(p20?.hours ?? 0) });
   }
-  return { total: Math.max(0, Number(state?.total ?? publication?.total ?? 0) - 1), achievements };
+  return { total: Math.max(0, Number(total) - 1), achievements };
 }
 
 const BASELINE_SELECT_SQL = `WITH expanded AS (

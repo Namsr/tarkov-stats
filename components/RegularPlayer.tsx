@@ -37,7 +37,7 @@ async function pollRegularRisk(input: {
   isCurrent: () => boolean;
   onRisk: (risk: PublicRiskView) => void;
 }) {
-  for (const delay of [1_500, 3_000, 5_000]) {
+  for (const delay of [0, 500, 1_000, 2_000, 4_000, 8_000]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
     if (!input.isCurrent()) return;
     try {
@@ -270,6 +270,10 @@ function LegacyPlayer({
 
   useEffect(() => {
     if (mode !== "regular" || !stats) return;
+    // The profile/poll envelope validates AID; its public risk may omit that field.
+    if (serverRisk && (serverRisk.aid == null || serverRisk.aid === Number(aid)) && serverRisk.mode === "regular" && serverRisk.cycleId === "persistent" &&
+      (serverRisk.profileUpdatedAt ?? 0) >= (Number(stats.profileUpdatedAt) || 0) &&
+      Date.now() - (serverRisk.freshnessAt ?? 0) < 5 * 60 * 60 * 1000) return;
     let cancelled = false;
     void pollRegularRisk({
       aid: Number(aid),
@@ -278,7 +282,7 @@ function LegacyPlayer({
       onRisk: setServerRisk,
     });
     return () => { cancelled = true; };
-  }, [aid, mode, stats]);
+  }, [aid, mode, stats, serverRisk]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;

@@ -117,16 +117,18 @@ function normalizeText(value: string | null | undefined, maximum: number, requir
   return text || null;
 }
 
-function parseFactors(value: unknown): CheaterScoreResult["factors"] {
+function parseFactors(value: unknown, strict = false): CheaterScoreResult["factors"] {
   try {
     const parsed = JSON.parse(String(value));
+    if (strict && !Array.isArray(parsed)) throw new TypeError("invalid risk factors");
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
 
-function riskFromRow(row: Record<string, unknown> | undefined): StoredRiskEvaluation | null {
+function riskFromRow(row: Record<string, unknown> | undefined, strict = false): StoredRiskEvaluation | null {
   if (!row) return null;
   return {
     aid: Number(row.aid),
@@ -134,7 +136,7 @@ function riskFromRow(row: Record<string, unknown> | undefined): StoredRiskEvalua
     cycleId: String(row.cycle_id),
     score: Number(row.score),
     tier: String(row.tier) as RiskTier,
-    factors: parseFactors(row.factors_json),
+    factors: parseFactors(row.factors_json, strict),
     scoreVersion: Number(row.score_version),
     profileUpdatedAt: Number(row.profile_updated_at),
     evaluatedAt: Number(row.evaluated_at),
@@ -695,6 +697,15 @@ export async function getRiskEvaluation(input: {
   mode: GameMode;
   cycleId: string;
 }): Promise<StoredRiskEvaluation | null> {
+  return (await readRiskEvaluation(input)).risk;
+}
+
+/** Distinguish an absent evaluation from a failed read without exposing SQL errors. */
+export async function readRiskEvaluation(input: {
+  aid: number;
+  mode: GameMode;
+  cycleId: string;
+}): Promise<{ risk: StoredRiskEvaluation | null; status: "ready" | "missing" | "read_error" }> {
   validateAid(input.aid);
   try {
     const file = adminPath();
@@ -714,10 +725,12 @@ export async function getRiskEvaluation(input: {
       sqliteRiskReadFile = file;
       sqliteRiskReadIdentity = identity;
     }
-    return riskFromRow(sqliteRiskReadDb.prepare(`SELECT * FROM risk_evaluations
-      WHERE aid = ? AND mode = ? AND cycle_id = ?`).get(input.aid, input.mode, input.cycleId));
-  } catch {
+    const row = sqliteRiskReadDb.prepare(`SELECT * FROM risk_evaluations
+      WHERE aid = ? AND mode = ? AND cycle_id = ?`).get(input.aid, input.mode, input.cycleId);
+    const risk = riskFromRow(row, true);
+    return { risk, status: risk ? "ready" : row ? "read_error" : "missing" };
+  } catch (error) {
     closeRiskReadDb();
-    return null;
+    return { risk: null, status: (error as { code?: string }).code === "ENOENT" ? "missing" : "read_error" };
   }
 }

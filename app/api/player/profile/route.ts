@@ -33,7 +33,7 @@ import {
   evaluateAndStoreRisk,
   riskScoreVersion,
 } from "@/lib/admin/risk-service";
-import { evaluateSeasonalRiskInBackground } from "@/lib/admin/risk-worker";
+import { evaluateRegularRiskInBackground, evaluateSeasonalRiskInBackground } from "@/lib/admin/risk-worker";
 import { getRiskEvaluation } from "@/lib/admin/moderation-db";
 import { buildWeaponMasteryRows } from "@/lib/profile-mastery";
 import {
@@ -90,6 +90,13 @@ async function refreshStoredRegularProfile(aid: number): Promise<void> {
         makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
         { upsertPlayer: !(result.fromCache || result.fromEdgeCache), strict: true },
       );
+      const risk = await getRiskEvaluation({ aid, mode: "regular", cycleId: "persistent" });
+      if (!risk || risk.scoreVersion !== riskScoreVersion("regular", "persistent") ||
+        risk.profileUpdatedAt < Number(stats.profileUpdatedAt) ||
+        Number(risk.profileParserVersion ?? 0) < Number(stats.pvpStatsParserVersion ?? 0) ||
+        Date.now() - risk.evaluatedAt >= 5 * 60 * 60 * 1000) {
+        await evaluateRegularRiskInBackground({ aid, mode: "regular", cycleId: "persistent", stats, achievementIds });
+      }
     } catch (error) {
       console.error("regular stored profile background refresh failed", error);
     }
@@ -891,9 +898,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     if (!riskIsFresh) {
       after(async () => {
-        // Match the upstream path: let the personal timeline load first.
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        await evaluateAndStoreRisk({
+        await evaluateRegularRiskInBackground({
           aid, mode: "regular", cycleId,
           stats: snapshot.stats, achievementIds: snapshot.achievementIds,
         }).catch((error) => {
@@ -1018,26 +1023,22 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       achievementIds,
       Number(stats.profileUpdatedAt),
     );
-    after(() => persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !(fromCache || fromEdgeCache) }).catch((error) => {
-      console.error("regular profile capture after response failed", error);
-    }));
-
     const storedRisk = await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
     const riskIsFresh = storedRisk &&
       storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
       Number(storedRisk.profileParserVersion ?? 0) >= Number(stats.pvpStatsParserVersion ?? 0) &&
       storedRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-    if (!riskIsFresh) {
-      after(async () => {
-        // Let the browser's personal-timeline request finish before the
-        // population-wide achievement/risk baseline scan occupies node:sqlite.
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        await evaluateAndStoreRisk({ aid, mode, cycleId, stats, achievementIds }).catch((error) => {
+    after(async () => {
+      await persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !(fromCache || fromEdgeCache), strict: true }).catch((error) => {
+        console.error("regular profile capture after response failed", error);
+      });
+      if (!riskIsFresh) {
+        await evaluateRegularRiskInBackground({ aid, mode: "regular", cycleId, stats, achievementIds }).catch((error) => {
           console.error("regular admin risk evaluation failed", error);
         });
-      });
-    }
+      }
+    });
     const publicRiskView = riskIsFresh
       ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
       : null;
