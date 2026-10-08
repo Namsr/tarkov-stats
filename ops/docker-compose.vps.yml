@@ -59,6 +59,12 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+      # Collectors and warmup call HTTP in the separate web container.
+      REGULAR_PROFILE_SYNC_BASE_URL: "http://web:3000"
+      PVE_PROFILE_SYNC_BASE_URL: "http://web:3000"
+      ARENA_PROFILE_SYNC_BASE_URL: "http://web:3000"
+      SEASONAL_PROFILE_SYNC_BASE_URL: "http://web:3000"
+      LEADERBOARD_WARMUP_BASE_URL: "http://web:3000"
     command: ["node", "--version"]
     restart: "no"
     cgroup_parent: tarkovstats-background.slice
