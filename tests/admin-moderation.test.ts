@@ -479,6 +479,14 @@ function insertProgressionRow(db, { mode, cycleId, aid, at, nickname }) {
     .run(mode, cycleId, aid, at, at, at, nickname);
 }
 
+function insertProgressionProfile(db, mode, cycleId, aid, at) {
+  db.prepare(`INSERT INTO player_profiles
+    (mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+      experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+      first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, 'Player', ?, ?, 100, 100, 5, 0, 3, 2, 2, 1, ?, ?)`).run(mode, cycleId, aid, at, at, at, at);
+}
+
 // A complete confirmation. Every value the archive binds is present, so a
 // rejected ban can only come from the archive step or from a field a test
 // deliberately drops.
@@ -491,7 +499,7 @@ function confirmationInput(aid, at, nickname) {
     achievementIds: [] };
 }
 
-test("ban confirmation archives the full progression history before deleting it", async () => {
+test("ban confirmation archives and retains the full progression history", async () => {
   // progression_snapshots keeps prestige/level/hours/total_raids/... nullable
   // while banned_snapshots declares them NOT NULL. With INSERT OR IGNORE the
   // violation was swallowed, so the archive stayed empty and the source rows
@@ -523,9 +531,9 @@ test("ban confirmation archives the full progression history before deleting it"
       ).get() }, { total_raids: 0, prestige: 0, achievements: "[]" });
     } finally { db.close(); }
 
-    // The source history is only deleted because the archive now holds it.
+    // Personal history remains available independently of the archive.
     assert.equal(
-      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 0);
+      progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 42").get().n, 2);
   } finally { cleanup(); }
 });
 
@@ -581,7 +589,8 @@ test("ban confirmation keeps the archive when the WAL exclusion phase fails", as
   const { progression, openBans, cleanup } = banArchiveFixture();
   insertProgressionRow(progression, { mode: "seasonal", cycleId: "s1", aid: 46, at: 1_000, nickname: "Old" });
   progression.exec("PRAGMA journal_mode = WAL");
-  progression.exec(`CREATE TRIGGER fail_exclusions BEFORE DELETE ON progression_snapshots
+  insertProgressionProfile(progression, "seasonal", "s1", 46, 1000);
+  progression.exec(`CREATE TRIGGER fail_exclusions BEFORE UPDATE ON player_profiles
     BEGIN SELECT RAISE(ABORT, 'exclusion phase failed'); END`);
   const db = openBans();
   try {
@@ -594,11 +603,11 @@ test("ban confirmation keeps the archive when the WAL exclusion phase fails", as
     assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 46").get().n, 1);
     assert.equal(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 46").get(), undefined);
 
-    // The next upstream confirmation of the same banned profile finishes the job.
+    // The next upstream confirmation of the same banned profile finishes the exclusions.
     progression.exec("DROP TRIGGER fail_exclusions");
     await store.confirmBanned(confirmationInput(46, 2_000, "New"), { source: "upstream", confirmedAt: 10_000 });
     assert.ok(db.prepare("SELECT 1 FROM players_db.excluded_players WHERE aid = 46").get());
-    assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 46").get().n, 0);
+    assert.equal(progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 46").get().n, 1);
   } finally { db.close(); cleanup(); }
 });
 
@@ -619,4 +628,125 @@ test("ban confirmation rolls back instead of archiving an empty achievement list
     assert.equal(
       progression.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 45").get().n, 1);
   } finally { db.close(); cleanup(); }
+});
+for (const action of ['restore', 'confirm']) {
+  test(`manual ${action} checks upstream authority after acquiring the transaction lock`, () => {
+    const { directory, db, store } = fixture({ walExclusions: true });
+    const writer = new DatabaseSync(process.env.BANS_SQLITE_PATH);
+    try {
+      store.confirmManualBan({ aid: 42, reason: 'Evidence', now: 40 });
+      const exec = db.exec.bind(db);
+      let injected = false;
+      let begins = 0;
+      db.exec = sql => {
+        if (sql === 'BEGIN IMMEDIATE' && ++begins === 2) {
+          injected = true;
+          writer.exec("BEGIN IMMEDIATE; UPDATE banned_accounts SET source='upstream' WHERE aid=42; INSERT INTO ban_confirmations(aid,confirmed_at,source) VALUES(42,45,'upstream'); COMMIT");
+        }
+        return exec(sql);
+      };
+      assert.throws(() => action === 'restore'
+        ? store.restoreManualBan({ aid: 42, now: 50 })
+        : store.confirmManualBan({ aid: 42, reason: 'Again', now: 50 }), ModerationConflictError);
+      assert.ok(injected);
+      assert.equal(writer.prepare('SELECT source FROM banned_accounts WHERE aid=42').get().source, 'upstream');
+      assert.ok(db.prepare('SELECT 1 FROM players_db.excluded_players WHERE aid=42').get());
+      assert.deepEqual(db.prepare('SELECT action FROM admin_audit_log ORDER BY id').all().map(row => row.action), ['ban']);
+    } finally { writer.close(); db.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
+test('restore preserves an upstream ban added between authority and exclusion commits', () => {
+  const { directory, db, store } = fixture({ walExclusions: true });
+  const writer = new DatabaseSync(process.env.BANS_SQLITE_PATH);
+  try {
+    store.confirmManualBan({ aid: 42, reason: 'Evidence', now: 40 });
+    const exec = db.exec.bind(db);
+    let authorityCommitted = false;
+    let injected = false;
+    db.exec = sql => {
+      if (sql === 'BEGIN IMMEDIATE' && authorityCommitted && !injected) {
+        injected = true;
+        writer.exec("INSERT INTO banned_accounts VALUES(42,45,45,'upstream',NULL,NULL,0); INSERT INTO ban_confirmations(aid,confirmed_at,source) VALUES(42,45,'upstream')");
+      }
+      const result = exec(sql);
+      if (sql === 'COMMIT' && db.prepare("SELECT 1 FROM admin_audit_log WHERE action='restore'").get()) authorityCommitted = true;
+      return result;
+    };
+    store.restoreManualBan({ aid: 42, now: 50 });
+    assert.ok(injected);
+    assert.ok(db.prepare('SELECT 1 FROM players_db.excluded_players WHERE aid=42').get());
+    assert.ok(db.prepare('SELECT 1 FROM progression_db.excluded_players WHERE aid=42').get());
+    assert.equal(db.prepare('SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid=42').get().confirmed_banned, 1);
+    assert.equal(store.forAids([42])[0].canRestoreManualBan, false);
+  } finally { writer.close(); db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('ban confirmation retains a concurrent capture from a second WAL writer', async () => {
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  progression.exec('PRAGMA journal_mode=WAL');
+  insertProgressionRow(progression, { mode: 'regular', cycleId: 'persistent', aid: 42, at: 1000, nickname: 'Old' });
+  const writer = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  const db = openBans();
+  try {
+    const store = createSqliteBanStore(db);
+    const exec = db.exec.bind(db);
+    let begins = 0;
+    db.exec = sql => {
+      if (sql === 'BEGIN IMMEDIATE' && ++begins === 2) {
+        insertProgressionRow(writer, { mode: 'pve', cycleId: 'persistent', aid: 42, at: 2500, nickname: 'Concurrent' });
+      }
+      return exec(sql);
+    };
+    await store.confirmBanned(confirmationInput(42, 2000, 'Banned'), { source: 'upstream', confirmedAt: 3000 });
+    assert.equal(begins, 2);
+    assert.equal(writer.prepare('SELECT nickname FROM progression_snapshots WHERE aid=42 AND upstream_updated_at=2500').get()?.nickname, 'Concurrent');
+    assert.equal(writer.prepare('SELECT COUNT(*) n FROM progression_snapshots WHERE aid=42').get().n, 2);
+    assert.ok(db.prepare('SELECT 1 FROM banned_snapshots WHERE aid=42 AND upstream_updated_at=1000').get());
+    assert.ok(db.prepare('SELECT 1 FROM players_db.excluded_players WHERE aid=42').get());
+  } finally { writer.close(); db.close(); cleanup(); }
+});
+import { refreshSqliteProgressionAggregates } from '../lib/seasonal/daily-aggregates.ts';
+
+test('retained banned history stays out of public progression populations in every mode', async () => {
+  const { progression, openBans, cleanup } = banArchiveFixture();
+  const db = openBans();
+  try {
+    const modes = [['regular', 'persistent'], ['pve', 'persistent'], ['seasonal', 's1']];
+    let at = 1000;
+    for (const [mode, cycleId] of modes) {
+      for (const aid of [42, 43]) {
+        insertProgressionProfile(progression, mode, cycleId, aid, at);
+        insertProgressionRow(progression, { mode, cycleId, aid, at, nickname: 'Player' });
+        progression.prepare('UPDATE progression_snapshots SET experience=100, pmc_raids=5 WHERE mode=? AND cycle_id=? AND aid=?').run(mode, cycleId, aid);
+        at += 1000;
+      }
+      refreshSqliteProgressionAggregates(progression, mode, cycleId);
+      assert.equal(progression.prepare("SELECT n FROM daily_aggregates WHERE mode=? AND cycle_id=? AND kind='cumulative' LIMIT 1").get(mode, cycleId)?.n, 2);
+    }
+    const before = progression.prepare('SELECT COUNT(*) n FROM progression_snapshots WHERE aid=42').get().n;
+    await createSqliteBanStore(db).confirmBanned(confirmationInput(42, at, 'Banned'), { source: 'upstream' });
+    assert.equal(progression.prepare('SELECT COUNT(*) n FROM progression_snapshots WHERE aid=42').get().n, before);
+    assert.ok(progression.prepare('SELECT 1 FROM excluded_players WHERE aid=42').get());
+    for (const [mode, cycleId] of modes) {
+      assert.equal(progression.prepare('SELECT confirmed_banned FROM player_profiles WHERE mode=? AND cycle_id=? AND aid=42').get(mode, cycleId).confirmed_banned, 1);
+      refreshSqliteProgressionAggregates(progression, mode, cycleId);
+      assert.equal(progression.prepare("SELECT n FROM daily_aggregates WHERE mode=? AND cycle_id=? AND kind='cumulative' LIMIT 1").get(mode, cycleId)?.n, 1);
+    }
+  } finally { db.close(); cleanup(); }
+});
+
+test('startup reconciles known manual provenance before legacy backfill', () => {
+  const { directory, db, store } = fixture({ walExclusions: true });
+  try {
+    store.confirmManualBan({ aid: 42, reason: 'Evidence', now: 40 });
+    // Existing inconsistent derived state still has explicit manual authority.
+    db.exec('DELETE FROM progression_db.excluded_players WHERE aid=42');
+    createSqliteModerationStore(db);
+    assert.ok(db.prepare('SELECT 1 FROM progression_db.excluded_players WHERE aid=42').get());
+    assert.equal(db.prepare('SELECT 1 FROM progression_db.upstream_ban_confirmations WHERE aid=42').get(), undefined);
+    assert.equal(store.forAids([42])[0].canRestoreManualBan, true);
+    store.restoreManualBan({ aid: 42, now: 50 });
+    assert.equal(db.prepare('SELECT confirmed_banned FROM progression_db.player_profiles WHERE aid=42').get().confirmed_banned, 0);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });

@@ -275,6 +275,8 @@ function initializeAttachedSchemas(db: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS progression_db.idx_upstream_ban_confirmations_aid
       ON upstream_ban_confirmations(aid);
   `);
+  // Repair known manual state before deriving unknown upstream provenance.
+  reconcileBanExclusions(db);
   if (tableExists(db, "progression_db", "player_profiles")) {
     db.prepare(`INSERT OR IGNORE INTO progression_db.upstream_ban_confirmations
       (aid, mode, cycle_id, source, confirmed_at)
@@ -351,25 +353,14 @@ function reconcileBanExclusions(db: SqliteDatabase, aids?: readonly number[]): v
       "SELECT aid, last_confirmed_at FROM bans_db.banned_accounts WHERE source = 'admin_manual'"
     ).all() as { aid: number; last_confirmed_at: number }[]) enqueue(row.aid, row.last_confirmed_at);
   }
-  const missing: Array<{ aid: number; now: number }> = [];
-  const orphaned: number[] = [];
-  const hasProfiles = tableExists(db, "progression_db", "player_profiles");
-  for (const [aid, now] of candidates) {
-    if (!banSources(db, aid).length) { orphaned.push(aid); continue; }
-    // player_profiles.confirmed_banned is derived from the tombstone too: the
-    // Seasonal leaderboard filters on it, so a stored profile left at 0 would put
-    // the banned account back in front.
-    const present = schemas.every((schema) => db.prepare(
-      `SELECT 1 FROM ${schema}.excluded_players WHERE aid = ? AND reason = 'admin_manual'`).get(aid))
-      && (!hasProfiles || !db.prepare(
-        "SELECT 1 FROM progression_db.player_profiles WHERE aid = ? AND COALESCE(confirmed_banned, 0) <> 1"
-      ).get(aid));
-    if (!present) missing.push({ aid, now });
-  }
-  if (!missing.length && !orphaned.length) return;
+  if (!candidates.size) return;
   inTransaction(db, () => {
-    for (const { aid, now } of missing) applyBanExclusions(db, aid, now);
-    for (const aid of orphaned) clearBanExclusions(db, aid);
+    // Read authority under the same lock as the derived writes: another writer
+    // can confirm or restore the account before BEGIN, or between operation phases.
+    for (const [aid, now] of candidates) {
+      if (banSources(db, aid).length) applyBanExclusions(db, aid, now);
+      else clearBanExclusions(db, aid);
+    }
   });
 }
 
@@ -423,11 +414,6 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
   db.prepare("UPDATE admin_audit_log SET detail = NULL WHERE detail IS NOT NULL").run();
   if (options.attachExternal !== false) {
     initializeAttachedSchemas(db);
-    // Nothing else reconciles a torn ban commit: the tombstone write and the
-    // ban record live in databases SQLite cannot commit together. Sweep once per
-    // process start so a kill between the phases is repaired without an admin
-    // having to notice it.
-    reconcileBanExclusions(db);
   }
 
   return {
@@ -559,17 +545,18 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       validateAid(aid);
       const normalizedReason = normalizeText(reason, MAX_REASON_LENGTH, true)!;
       reconcileBanExclusions(db, [aid]);
-      const existingSources = banSources(db, aid);
-      if (existingSources.some((source) => source !== "admin_manual")) {
-        throw new ModerationConflictError("account has an upstream ban confirmation");
-      }
-      const previous = db.prepare("SELECT status FROM admin_reviews WHERE aid = ?").get(aid) as
-        | { status: string }
-        | undefined;
       // Phase 1 — the authority: the ban record, the review and the audit entry.
       // main and bans_db both keep a rollback journal, so SQLite's super-journal
       // covers these two and makes this commit atomic on its own.
       inTransaction(db, () => {
+        const existingSources = banSources(db, aid);
+        if (existingSources.some((source) => source !== "admin_manual")) {
+          throw new ModerationConflictError("account has an upstream ban confirmation");
+        }
+        const previous = db.prepare("SELECT status FROM admin_reviews WHERE aid = ?").get(aid) as
+          | { status: string }
+          | undefined;
+
         db.prepare(`INSERT INTO bans_db.banned_accounts
           (aid, first_banned_at, last_confirmed_at, source, raw_status, reason, profile_updated_at)
           VALUES (?, ?, ?, 'admin_manual', 'confirmed_by_admin', ?, 0)
@@ -595,22 +582,23 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       // restorable with the exclusion not yet applied, and reconcileBanExclusions
       // finishes it. The reverse order would leave the player hidden from every
       // leaderboard with no ban and no audit trail to explain it.
-      inTransaction(db, () => applyBanExclusions(db, aid, now));
+      reconcileBanExclusions(db, [aid]);
     },
 
     restoreManualBan({ aid, now = Date.now() }) {
       validateAid(aid);
       reconcileBanExclusions(db, [aid]);
-      const sources = banSources(db, aid);
-      if (sources.length === 0) throw new ModerationNotFoundError("ban not found");
-      if (sources.some((source) => source !== "admin_manual")) {
-        throw new ModerationConflictError("upstream bans cannot be restored by an administrator");
-      }
       // Same authority-first order as the ban. A kill between the phases leaves
       // an admin_manual tombstone with no ban record, which
       // reconcileBanExclusions removes, so the restore completes rather than
       // leaving the account excluded with nothing left to restore.
       inTransaction(db, () => {
+        const sources = banSources(db, aid);
+        if (sources.length === 0) throw new ModerationNotFoundError("ban not found");
+        if (sources.some((source) => source !== "admin_manual")) {
+          throw new ModerationConflictError("upstream bans cannot be restored by an administrator");
+        }
+
         db.prepare("DELETE FROM bans_db.banned_accounts WHERE aid = ?").run(aid);
         db.prepare(`INSERT INTO admin_reviews (aid, status, note, updated_at)
           VALUES (?, 'reviewed', NULL, ?)
@@ -621,7 +609,7 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
           VALUES (?, 'restore', 'confirmed', 'reviewed', NULL, ?)`)
           .run(aid, now);
       });
-      inTransaction(db, () => clearBanExclusions(db, aid));
+      reconcileBanExclusions(db, [aid]);
     },
   };
 }
