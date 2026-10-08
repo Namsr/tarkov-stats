@@ -209,6 +209,16 @@ function attach(db: SqliteDatabase, schema: string, file: string): void {
   }
 }
 
+// SQLite's super-journal only spans rollback-journal databases: a transaction
+// that also writes a WAL database commits in two steps and a hard kill in
+// between tears it (vdbeaux.c aMJNeeded[WAL] = 0). A manual ban therefore
+// cannot be one transaction across all four attached databases. main and
+// bans_db must keep a rollback journal, because the ban record and its audit
+// entry are committed together across them; players_db and progression_db are
+// WAL on purpose (the sync and publication scripts re-assert WAL on every run)
+// and are covered by reconciliation instead. Switching them to DELETE would
+// serialise every public read behind the scan writers, so the mode is only
+// asserted here, never changed.
 function ensureRollbackJournal(db: SqliteDatabase): void {
   const row = db.prepare("PRAGMA main.journal_mode = DELETE").get() as
     | { journal_mode?: unknown }
@@ -218,12 +228,28 @@ function ensureRollbackJournal(db: SqliteDatabase): void {
   }
 }
 
+// Read-only: bans.db is opened by the sync and queue paths too, so a WAL mode
+// there must fail the ban loudly instead of being converted under them.
+function assertRollbackJournal(db: SqliteDatabase, schema: string): void {
+  const row = db.prepare(`PRAGMA ${schema}.journal_mode`).get() as
+    | { journal_mode?: unknown }
+    | undefined;
+  if (String(row?.journal_mode ?? "").toLowerCase() === "wal") {
+    throw new Error(`${schema} database must use a rollback journal for attached-database atomicity`);
+  }
+}
+
 function initializeAttachedSchemas(db: SqliteDatabase): void {
   const paths = databasePaths();
   attach(db, "bans_db", paths.bans);
   attach(db, "players_db", paths.players);
   attach(db, "progression_db", paths.progression);
   attach(db, "reports_db", paths.reports);
+  // bans_db is the authority for a manual ban, so its record has to commit
+  // atomically with the admin database's audit entry. Nothing in the sync,
+  // import or queue paths opens it in WAL, so this only fires if an operator
+  // changed the file by hand — and a loud failure beats a ban without a trail.
+  assertRollbackJournal(db, "bans_db");
   db.exec(`
     CREATE TABLE IF NOT EXISTS bans_db.banned_accounts (
       aid INTEGER PRIMARY KEY, first_banned_at INTEGER NOT NULL,
@@ -249,6 +275,8 @@ function initializeAttachedSchemas(db: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS progression_db.idx_upstream_ban_confirmations_aid
       ON upstream_ban_confirmations(aid);
   `);
+  // Repair known manual state before deriving unknown upstream provenance.
+  reconcileBanExclusions(db);
   if (tableExists(db, "progression_db", "player_profiles")) {
     db.prepare(`INSERT OR IGNORE INTO progression_db.upstream_ban_confirmations
       (aid, mode, cycle_id, source, confirmed_at)
@@ -260,6 +288,80 @@ function initializeAttachedSchemas(db: SqliteDatabase): void {
           WHERE e.aid = p.aid AND e.reason = 'admin_manual'
         )`).run(UNKNOWN_BAN_SOURCE);
   }
+}
+
+function inTransaction(db: SqliteDatabase, work: () => void): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    work();
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+// The exclusion tombstones are derived state: bans_db plus the admin audit
+// log say what happened, the two WAL databases only mirror it for the public
+// queries. Every statement is idempotent so a repair can run again.
+function applyBanExclusions(db: SqliteDatabase, aid: number, now: number): void {
+  db.prepare(`INSERT INTO players_db.excluded_players (aid, reason, created_at)
+    VALUES (?, 'admin_manual', ?) ON CONFLICT(aid) DO NOTHING`).run(aid, now);
+  db.prepare(`INSERT INTO progression_db.excluded_players (aid, reason, created_at)
+    VALUES (?, 'admin_manual', ?) ON CONFLICT(aid) DO NOTHING`).run(aid, now);
+  if (tableExists(db, "progression_db", "player_profiles")) {
+    db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 1 WHERE aid = ?").run(aid);
+  }
+}
+
+function clearBanExclusions(db: SqliteDatabase, aid: number): void {
+  db.prepare("DELETE FROM players_db.excluded_players WHERE aid = ? AND reason = 'admin_manual'").run(aid);
+  db.prepare("DELETE FROM progression_db.excluded_players WHERE aid = ? AND reason = 'admin_manual'").run(aid);
+  if (tableExists(db, "progression_db", "player_profiles")) {
+    db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 0 WHERE aid = ?").run(aid);
+  }
+}
+
+const EXCLUSION_SCHEMAS = ["players_db", "progression_db"];
+
+// Reconcile the derived tombstones with the ban records. A tombstone with no
+// ban record is the residue of a commit that tore (the WAL side committed, the
+// rollback-journal side did not) and would hide the account from every public
+// statistic with nothing left to restore; a ban record without a tombstone is
+// the same tear in the other order. `aids` narrows the sweep to one account,
+// which is how a retry of the endpoint heals itself without a restart.
+function reconcileBanExclusions(db: SqliteDatabase, aids?: readonly number[]): void {
+  if (!tableExists(db, "bans_db", "banned_accounts")) return;
+  const schemas = EXCLUSION_SCHEMAS.filter((schema) => tableExists(db, schema, "excluded_players"));
+  if (!schemas.length) return;
+  const candidates = new Map<number, number>();
+  const enqueue = (aid: unknown, now: unknown) => {
+    const id = Number(aid);
+    if (!Number.isSafeInteger(id) || id <= 0) return;
+    const at = Number(now);
+    candidates.set(id, Number.isSafeInteger(at) && at > 0 ? at : Date.now());
+  };
+  if (aids) {
+    for (const aid of aids) enqueue(aid, Date.now());
+  } else {
+    for (const schema of schemas) {
+      for (const row of db.prepare(
+        `SELECT aid, created_at FROM ${schema}.excluded_players WHERE reason = 'admin_manual'`
+      ).all() as { aid: number; created_at: number }[]) enqueue(row.aid, row.created_at);
+    }
+    for (const row of db.prepare(
+      "SELECT aid, last_confirmed_at FROM bans_db.banned_accounts WHERE source = 'admin_manual'"
+    ).all() as { aid: number; last_confirmed_at: number }[]) enqueue(row.aid, row.last_confirmed_at);
+  }
+  if (!candidates.size) return;
+  inTransaction(db, () => {
+    // Read authority under the same lock as the derived writes: another writer
+    // can confirm or restore the account before BEGIN, or between operation phases.
+    for (const [aid, now] of candidates) {
+      if (banSources(db, aid).length) applyBanExclusions(db, aid, now);
+      else clearBanExclusions(db, aid);
+    }
+  });
 }
 
 function banSources(db: SqliteDatabase, aid: number): string[] {
@@ -310,7 +412,9 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
   if (!riskColumns.has("confidence")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN confidence REAL");
   if (!riskColumns.has("freshness_at")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN freshness_at INTEGER");
   db.prepare("UPDATE admin_audit_log SET detail = NULL WHERE detail IS NOT NULL").run();
-  if (options.attachExternal !== false) initializeAttachedSchemas(db);
+  if (options.attachExternal !== false) {
+    initializeAttachedSchemas(db);
+  }
 
   return {
     saveRisk(input) {
@@ -440,8 +544,11 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
     confirmManualBan({ aid, reason, now = Date.now() }) {
       validateAid(aid);
       const normalizedReason = normalizeText(reason, MAX_REASON_LENGTH, true)!;
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      reconcileBanExclusions(db, [aid]);
+      // Phase 1 — the authority: the ban record, the review and the audit entry.
+      // main and bans_db both keep a rollback journal, so SQLite's super-journal
+      // covers these two and makes this commit atomic on its own.
+      inTransaction(db, () => {
         const existingSources = banSources(db, aid);
         if (existingSources.some((source) => source !== "admin_manual")) {
           throw new ModerationConflictError("account has an upstream ban confirmation");
@@ -449,6 +556,7 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
         const previous = db.prepare("SELECT status FROM admin_reviews WHERE aid = ?").get(aid) as
           | { status: string }
           | undefined;
+
         db.prepare(`INSERT INTO bans_db.banned_accounts
           (aid, first_banned_at, last_confirmed_at, source, raw_status, reason, profile_updated_at)
           VALUES (?, ?, ?, 'admin_manual', 'confirmed_by_admin', ?, 0)
@@ -459,13 +567,6 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
           (aid, confirmed_at, source, raw_status, reason)
           VALUES (?, ?, 'admin_manual', 'confirmed_by_admin', ?)`)
           .run(aid, now, normalizedReason);
-        db.prepare(`INSERT INTO players_db.excluded_players (aid, reason, created_at)
-          VALUES (?, 'admin_manual', ?) ON CONFLICT(aid) DO NOTHING`).run(aid, now);
-        db.prepare(`INSERT INTO progression_db.excluded_players (aid, reason, created_at)
-          VALUES (?, 'admin_manual', ?) ON CONFLICT(aid) DO NOTHING`).run(aid, now);
-        if (tableExists(db, "progression_db", "player_profiles")) {
-          db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 1 WHERE aid = ?").run(aid);
-        }
         db.prepare(`INSERT INTO admin_reviews (aid, status, note, updated_at)
           VALUES (?, 'confirmed', NULL, ?)
           ON CONFLICT(aid) DO UPDATE SET status = 'confirmed', updated_at = excluded.updated_at`)
@@ -474,28 +575,31 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
           (aid, action, previous_status, next_status, detail, created_at)
           VALUES (?, 'ban', ?, 'confirmed', NULL, ?)`)
           .run(aid, previous?.status ?? "new", now);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
+      // Phase 2 — the derived state the public queries read. players_db and
+      // progression_db are WAL, so this commit is deliberately not atomic with
+      // phase 1. A kill between the two leaves the ban recorded, audited and
+      // restorable with the exclusion not yet applied, and reconcileBanExclusions
+      // finishes it. The reverse order would leave the player hidden from every
+      // leaderboard with no ban and no audit trail to explain it.
+      reconcileBanExclusions(db, [aid]);
     },
 
     restoreManualBan({ aid, now = Date.now() }) {
       validateAid(aid);
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      reconcileBanExclusions(db, [aid]);
+      // Same authority-first order as the ban. A kill between the phases leaves
+      // an admin_manual tombstone with no ban record, which
+      // reconcileBanExclusions removes, so the restore completes rather than
+      // leaving the account excluded with nothing left to restore.
+      inTransaction(db, () => {
         const sources = banSources(db, aid);
         if (sources.length === 0) throw new ModerationNotFoundError("ban not found");
         if (sources.some((source) => source !== "admin_manual")) {
           throw new ModerationConflictError("upstream bans cannot be restored by an administrator");
         }
+
         db.prepare("DELETE FROM bans_db.banned_accounts WHERE aid = ?").run(aid);
-        db.prepare("DELETE FROM players_db.excluded_players WHERE aid = ? AND reason = 'admin_manual'").run(aid);
-        db.prepare("DELETE FROM progression_db.excluded_players WHERE aid = ? AND reason = 'admin_manual'").run(aid);
-        if (tableExists(db, "progression_db", "player_profiles")) {
-          db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 0 WHERE aid = ?").run(aid);
-        }
         db.prepare(`INSERT INTO admin_reviews (aid, status, note, updated_at)
           VALUES (?, 'reviewed', NULL, ?)
           ON CONFLICT(aid) DO UPDATE SET status = 'reviewed', updated_at = excluded.updated_at`)
@@ -504,11 +608,8 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
           (aid, action, previous_status, next_status, detail, created_at)
           VALUES (?, 'restore', 'confirmed', 'reviewed', NULL, ?)`)
           .run(aid, now);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
+      reconcileBanExclusions(db, [aid]);
     },
   };
 }

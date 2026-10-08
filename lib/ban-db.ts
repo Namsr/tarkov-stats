@@ -119,7 +119,7 @@ const INSERT_SNAPSHOT_SQL =
 // progression_snapshots leaves these nullable (lib/seasonal/storage.ts:134-151)
 // while banned_snapshots declares them NOT NULL, so INSERT OR IGNORE would
 // swallow the violation and silently drop the whole row. Normalise on the way
-// across, otherwise the archive keeps nothing and the DELETE below still runs.
+// across, otherwise the confirmation would commit with an incomplete archive.
 const ARCHIVE_COALESCE: Record<string, string> = {
   prestige: "0", level: "0", hours: "0", total_raids: "0", survived: "0",
   deaths: "0", total_kills: "0", run_through: "0", longest_win_streak: "0",
@@ -248,6 +248,7 @@ export function createSqliteBanStore(db: any): BanStore {
         )
       `);
 
+      const databases = db.prepare("PRAGMA database_list").all() as { name: string }[];
       db.exec("BEGIN IMMEDIATE");
       try {
         db.prepare(
@@ -268,7 +269,6 @@ export function createSqliteBanStore(db: any): BanStore {
            VALUES (?, ?, ?, ?, ?)`
         ).run(input.aid, confirmedAt, source, rawStatus, reason);
 
-        const databases = db.prepare("PRAGMA database_list").all() as { name: string }[];
         if (databases.some((row) => row.name === "progression_db")) {
           const hasSnapshots = db.prepare(
             "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
@@ -283,8 +283,8 @@ export function createSqliteBanStore(db: any): BanStore {
             // profile.updated, or the same account in two Seasonal cycles —
             // collide on the copy, and INSERT OR IGNORE drops all but the first
             // in silence. Count the source before the copy and fail the ban when
-            // the archive ends up short, so the DELETE below can never drop
-            // history the archive does not hold.
+            // the archive ends up short, so a successful confirmation guarantees
+            // that its archive contains every historical row.
             const sourceCount = db.prepare(
               "SELECT COUNT(*) AS n FROM progression_db.progression_snapshots WHERE aid = ?"
             ).get(Number(input.aid)) as { n: number };
@@ -306,7 +306,21 @@ export function createSqliteBanStore(db: any): BanStore {
           "SELECT series_id FROM banned_snapshots WHERE aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
         ).get(input.aid) as { series_id: number } | undefined;
         db.prepare(INSERT_SNAPSHOT_SQL).run(...snapshotArgs(input, Number(latest?.series_id ?? 1)));
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
 
+      // The confirmation and the whole archive above live in bans.db, so that
+      // commit is atomic on its own. players_db and progression_db are WAL, and
+      // SQLite's super-journal does not cover WAL participants, so keeping the
+      // exclusions and the player deletion in the same transaction would let a
+      // hard kill commit them while the archive rolled back. As a second commit
+      // the failure runs the other way: the ban stands and the history is safe,
+      // and the next upstream confirmation repeats the exclusions.
+      db.exec("BEGIN IMMEDIATE");
+      try {
         db.prepare(
           `INSERT INTO players_db.excluded_players (aid, reason, created_at)
            VALUES (?, 'confirmed_ban', ?)
@@ -318,17 +332,19 @@ export function createSqliteBanStore(db: any): BanStore {
         if (hasPlayers) db.prepare("DELETE FROM players_db.players WHERE aid = ?").run(input.aid);
 
         if (databases.some((row) => row.name === "progression_db")) {
-          const hasIntervals = db.prepare(
-            "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_intervals'"
+          // Preserve personal history, including captures made after the archive
+          // commit. Public population queries use these exclusions and profile
+          // flags, so deletion is neither necessary nor safe across WAL commits.
+          db.exec(`CREATE TABLE IF NOT EXISTS progression_db.excluded_players (
+            aid INTEGER PRIMARY KEY, reason TEXT NOT NULL, created_at INTEGER NOT NULL
+          )`);
+          db.prepare(`INSERT INTO progression_db.excluded_players (aid, reason, created_at)
+            VALUES (?, 'confirmed_ban', ?) ON CONFLICT(aid) DO NOTHING`).run(input.aid, confirmedAt);
+          const hasProfiles = db.prepare(
+            "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'player_profiles'"
           ).get();
-          if (hasIntervals) {
-            db.prepare("DELETE FROM progression_db.progression_intervals WHERE aid = ?").run(input.aid);
-          }
-          const hasSnapshots = db.prepare(
-            "SELECT 1 FROM progression_db.sqlite_master WHERE type = 'table' AND name = 'progression_snapshots'"
-          ).get();
-          if (hasSnapshots) {
-            db.prepare("DELETE FROM progression_db.progression_snapshots WHERE aid = ?").run(input.aid);
+          if (hasProfiles) {
+            db.prepare("UPDATE progression_db.player_profiles SET confirmed_banned = 1 WHERE aid = ?").run(input.aid);
           }
         }
         db.exec("COMMIT");
