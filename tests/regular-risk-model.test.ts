@@ -121,6 +121,45 @@ test("each metric expands through its own populated window and valid zeros count
   assert.equal(result.score, 0);
 });
 
+test("combat evidence keeps increasing beyond the old tail cap up to 100 at high playtime", () => {
+  const baseline = { n: 40, strategy: "matched", metrics: {
+    pmc_kd_ratio: { n: 40, mean: 1, std: 1, p90: 2, p99: 4 },
+  } };
+  const results = [200, 420, 500, 700, 1000, 2000].map((killedPmc) =>
+    scoreRegularCheater(stats({ killedPmc, kills: killedPmc }, 4000), baseline));
+  const evidence = results.map((result) => factor(result, "pmc_kd_ratio").evidencePoints);
+  assert.deepEqual(evidence.map(Math.round), [0, 39, 53, 88, 100, 100]);
+  for (let i = 1; i < 5; i++) {
+    assert.ok(evidence[i] > evidence[i - 1]);
+    assert.ok(results[i].score > results[i - 1].score);
+  }
+  for (const result of results) {
+    assert.ok(result.score >= 0 && result.score <= 100);
+    assert.equal(result.factors.reduce((sum, entry) => sum + entry.points, 0), result.score);
+    assert.equal(factor(result, "compound_anomaly").points, 0);
+  }
+});
+
+test("LiXxay recorded PvP counters and matched reference produce 100 without achievements", () => {
+  // Public profile/risk snapshot for aid 10493246 on 2026-10-08.
+  const target = stats({ raids: 199, deaths: 30, survived: 139, kills: 1674,
+    killedPmc: 565, streak: 26, prestige: 0 }, 703.2);
+  // Recover the smoothing prior from the public smoothed per-raid and K/D values.
+  const smoothedKills = 2.6113851562578834 * (199 + 20);
+  const baseline = { n: 98, strategy: "matched", metrics: {
+    pmc_kd_ratio: { n: 98, mean: 0.6997056439942148, std: 1,
+      p90: 1.4015003673218154, p99: 4.450881459479894, percent: 10,
+      prior: { survival: 0, kills: 0, killedPmc: (smoothedKills - 565) / 20,
+        deaths: (smoothedKills / 14.30873900569795 - 30) / 20 } },
+  } };
+  const result = scoreRegularCheater(target, baseline);
+  assert.ok(Math.abs(factor(result, "pmc_kd_ratio").value - 14.30873900569795) < 1e-10);
+  assert.equal(factor(result, "pmc_kd_ratio").evidencePoints, 100);
+  assert.equal(result.score, 100);
+  assert.equal(result.tier, "severe");
+  assert.equal(result.factors.reduce((sum, entry) => sum + entry.points, 0), 100);
+});
+
 test("missing exact PvP counters keep survival and general PMC combat available", () => {
   const baseline = base(peers({ killedPmc: null, kills: 100 }));
   const result = scoreRegularCheater(stats({ killedPmc: null }), baseline);
@@ -208,7 +247,7 @@ test("Kappa aliases never get duplicate credit; events are excluded; capped acco
   assert.equal(result.factors.reduce((sum, f) => sum + f.points, 0), result.score);
   assert.ok(factor(result, "compound_anomaly").points <= 15);
   assert.ok(result.factors.filter((f) => f.group === "combat" && f.points > 0).length <= 1);
-  assert.deepEqual(ADMIN_RISK_SCORE_VERSIONS, { regular: 3, pve: 2, seasonal: 2, arena: 1 });
+  assert.deepEqual(ADMIN_RISK_SCORE_VERSIONS, { regular: 4, pve: 2, seasonal: 2, arena: 1 });
 });
 
 test("survival and KD cannot corroborate the same low-death evidence", () => {
@@ -261,7 +300,7 @@ test("parser and persistent store retain independent raw availability through ev
   const persisted = await getRiskEvaluation({ aid: 999, mode: "regular", cycleId: "persistent" });
   assert.equal(persisted.availability, "partial");
   assert.equal(persisted.profileParserVersion, 2);
-  assert.equal(persisted.scoreVersion, 3);
+  assert.equal(persisted.scoreVersion, 4);
   await saveRiskEvaluation({ ...persisted, score: 0, profileParserVersion: 0 });
   assert.equal((await getRiskEvaluation({ aid: 999, mode: "regular", cycleId: "persistent" })).profileParserVersion, 2);
   const db = new DatabaseSync(process.env.SQLITE_PATH);

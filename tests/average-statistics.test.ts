@@ -710,7 +710,7 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   adminDb.close();
   assert.equal(storedVersion, ADMIN_RISK_SCORE_VERSIONS.pve);
   assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("regular", "persistent"), 3);
+  assert.equal(riskScoreVersion("regular", "persistent"), 4);
   assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });

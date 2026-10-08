@@ -128,14 +128,15 @@ export function scoreRegularCheater(stats: ParsedPlayerStats, baseline: Baseline
       // A flat sample gives no tail shape. Use a proportional extension above
       // its observed top; never turn one tiny positive count into full risk.
       const spread = Math.max(b!.p99! - b!.p90!, Math.abs(b!.mean) * 0.5, 1);
-      strength = clamp((value! - b!.p90!) / spread);
+      // Keep growing beyond the observed tail; only the evidence scale caps at 100.
+      strength = (value! - b!.p90!) / spread;
     }
     return { key, group, value: value ?? 0, z: null, available,
       reason: !validHours || value === null ? "missing_metric" : !available ? "insufficient_cohort" : undefined,
       cohortMean: b?.mean ?? null, cohortN: b?.n ?? 0, p90: b?.p90 ?? null, p99: b?.p99 ?? null,
       cohortPercent: b?.percent,
       ratio: available && b!.mean > 0 ? value! / b!.mean : null,
-      hoursMultiplier: multiplier, evidencePoints: available ? weight * strength * multiplier : 0, points: 0 };
+      hoursMultiplier: multiplier, evidencePoints: available ? Math.min(100, weight * strength * multiplier) : 0, points: 0 };
   });
   const owned = new Set(achievements?.ownedIds ?? []);
   const familyBest = new Map<string, ScoreFactor>();
