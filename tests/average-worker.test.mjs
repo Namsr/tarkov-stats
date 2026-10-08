@@ -87,19 +87,23 @@ test("HTTP responds while SQLite is busy; the FIFO is bounded and reuses one pro
   assert.ok(first.id < second.id);
 });
 
-test("a caller timeout still lets a late worker result warm the dynamic cache", async (t) => {
+test("default HTTP and worker budgets let a late child result warm the dynamic cache", async (t) => {
   const worker = new AverageComputeWorker({ entry: fixtureEntry });
   t.after(() => worker.stop());
   await worker.compute(...args("normal"));
   const previousTimeout = process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
-  process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = "5";
+  delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
   t.after(() => {
     if (previousTimeout === undefined) delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
     else process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = previousTimeout;
     resetDynamicAverageCacheForTests();
   });
-  const calculation = worker.compute(...args("delay"));
-  await assert.rejects(loadDynamicAverage("worker-late", () => calculation), DynamicComputeTimeoutError);
+  const calculation = worker.compute(...args("late"));
+  await assert.rejects(loadDynamicAverage("worker-late", () => calculation), (error) => {
+    assert.ok(error instanceof DynamicComputeTimeoutError);
+    assert.equal(error.timeoutMs, 25_000);
+    return true;
+  });
   const result = await calculation;
   const cached = await loadDynamicAverage("worker-late", () => assert.fail("late result must be cached"));
   assert.equal(cached.cache, "hit");
@@ -127,6 +131,20 @@ test("a stuck job is killed and releases the queue for a fresh worker", async (t
   t.after(() => worker.stop());
   const initial = await worker.compute(...args("normal"));
   await assert.rejects(worker.compute(...args("stall")), /worker timed out/);
+  assert.notEqual((await worker.compute(...args("normal"))).pid, initial.pid);
+});
+
+test("the end-to-end deadline kills a stuck job and frees its queued slot", async (t) => {
+  const worker = new AverageComputeWorker({ entry: fixtureEntry, maxPending: 2, totalTimeoutMs: 2_000 });
+  t.after(() => worker.stop());
+  const initial = await worker.compute(...args("normal"));
+  const stuck = worker.compute(...args("stall"));
+  const queued = worker.compute(...args("normal"));
+  const failed = await Promise.allSettled([stuck, queued]);
+  for (const result of failed) {
+    assert.equal(result.status, "rejected");
+    assert.ok(result.reason instanceof AverageComputeUnavailableError);
+  }
   assert.notEqual((await worker.compute(...args("normal"))).pid, initial.pid);
 });
 
@@ -161,4 +179,39 @@ test("the average API returns a retryable 503 when background compute is unavail
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("Retry-After"), "5");
   assert.deepEqual(await response.json(), { error: "Average statistics are warming" });
+});
+
+test("the average API limits regular and Arena requests under one per-IP bucket", async (t) => {
+  // Same bare-specifier rewrites the 503 test above needs: `next/server` and
+  // `next/cache` only resolve through the framework loader inside Next.
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === "next/server") return nextResolve("next/server.js", context);
+      if (specifier === "next/cache") {
+        return { shortCircuit: true, url: pathToFileURL(resolve("tests/fixtures/next-cache-shim.mjs")).href };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+  t.after(() => hooks.deregister());
+  const { GET } = await import("../app/api/average/route.ts");
+  const { NextRequest } = await import("next/server");
+  const { checkRateLimit } = await import("../lib/rate-limiter.ts");
+  const regular = "http://localhost/api/average?mode=invalid";
+  const arena = "http://localhost/api/average?mode=arena&arenaMode=invalid";
+  const request = (url, ip) => new NextRequest(url, { headers: { "x-real-ip": ip } });
+  // 300 real requests would take longer than the 60 s window and expire their
+  // own budget, so fill the shared store directly and spend the last two slots
+  // over HTTP. That still pins the exact max: a route capped lower would answer
+  // 429 on the first call, a route capped higher would answer 400 on the second.
+  for (let i = 0; i < 299; i++) checkRateLimit("192.0.2.180", { bucket: "average", max: 300 });
+  assert.equal((await GET(request(regular, "192.0.2.180"))).status, 400);
+  const limited = await GET(request(regular, "192.0.2.180"));
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await limited.json(), { error: "Rate limit exceeded" });
+  // The Arena branch runs inside GET, so it spends the same budget: switching
+  // mode must not be a way around the limiter.
+  assert.equal((await GET(request(arena, "192.0.2.180"))).status, 429);
+  assert.equal((await GET(request(regular, "192.0.2.181"))).status, 400);
 });
