@@ -39,6 +39,7 @@ registerHooks({
 const sqliteDirectory = mkdtempSync(join(tmpdir(), "tarkov-cohort-routes-"));
 process.env.SQLITE_PATH = join(sqliteDirectory, "players.db");
 process.env.PROGRESSION_SQLITE_PATH = join(sqliteDirectory, "seasonal.db");
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = ":memory:";
 
 test("persistent cohort route derives both centers from a stored snapshot before upstream fallback", () => {
   const regularBranch = regularRoute.slice(
@@ -449,6 +450,8 @@ test("the Seasonal average route answers from the worker and throttles one clien
   );
   const previousPublications = process.env.AVERAGE_PUBLICATIONS_ENABLED;
   const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  // This disposable fixture checks route behavior, not crash durability.
+  db.exec("PRAGMA synchronous = OFF");
   initializeSeasonalSchema(db);
   const now = Date.now();
   db.prepare("INSERT INTO season_cycles (mode,cycle_id,starts_at,enabled) VALUES ('seasonal','s1',?,1)")
@@ -493,14 +496,12 @@ test("the Seasonal average route answers from the worker and throttles one clien
   const other = await drive("198.51.100.8");
   assert.equal(other.status, 200);
 
-  // A page view spends under ten of the budget (one dashboard request, six
-  // overlay metrics, a prefetch), and a range-slider drag adds one per 250 ms
-  // debounce tick, so the limit has to clear several times that per minute or
-  // ordinary use starts seeing 429s.
+  // The budget must cover steady 5 s retries and a full minute of 250 ms
+  // slider updates, not just the initial page load.
   const limit = /bucket: "seasonal-average", max: (\d+)/.exec(seasonalAverageRoute);
   assert.ok(limit, "the Seasonal average route must declare its own limiter bucket");
   const max = Number(limit[1]);
-  assert.ok(max >= 60, `a page view plus a slider drag must fit in one window, got max=${max}`);
+  assert.ok(max >= 337, `page retries plus slider updates must fit, got max=${max}`);
   assert.equal(/getRateLimitHeaders\(getClientIp\(request\), RATE_LIMIT\)/.test(seasonalAverageRoute), true);
 
   // Spend the rest of one client's budget and confirm the next request is
@@ -518,6 +519,106 @@ test("the Seasonal average route answers from the worker and throttles one clien
   assert.equal(throttled.headers.get("cache-control"), "no-store");
   // Another client is unaffected: the budget is per bucket and IP.
   assert.equal((await drive("198.51.100.21")).status, 200);
+
+  await t.test("a page survives repeated 503s and slider updates, then recovers", async (t) => {
+    const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
+    const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
+    const client = await import("../lib/client-average-request.ts");
+    const realCompute = CohortComputeWorker.prototype.compute;
+    let unavailable = true;
+    t.mock.method(CohortComputeWorker.prototype, "compute", function (job) {
+      return unavailable
+        ? Promise.reject(new ComputeUnavailableError("Comparison cohort queue is full"))
+        : realCompute.call(this, job);
+    });
+
+    // Only the browser retry waits use fake timers; worker deadlines keep their
+    // real clock. Advance Date.now for the real rolling-window rate limiter.
+    let clock = now;
+    let nextTimer = 0;
+    const timers = new Map();
+    const browser = {
+      setTimeout(callback, delay) {
+        const id = ++nextTimer;
+        timers.set(id, { callback, due: clock + delay });
+        return id;
+      },
+      clearTimeout(id) { timers.delete(id); },
+    };
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: browser });
+    t.mock.method(Date, "now", () => clock);
+    client.resetAverageResponseCacheForTests();
+    t.after(() => {
+      client.resetAverageResponseCacheForTests();
+      if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+      else delete globalThis.window;
+    });
+    const ip = "198.51.100.22";
+    const statuses = [];
+    t.mock.method(globalThis, "fetch", async (requestUrl) => {
+      const response = await GET(new NextRequest(new URL(requestUrl, "http://local"), {
+        headers: { "x-real-ip": ip },
+      }));
+      statuses.push(response.status);
+      return response;
+    });
+    const requestUrl = (metric, dimension = "pmc_raids", range = "") =>
+      `/api/seasonal/average?cycle=s1&dimension=${dimension}&metric=${metric}&statistic=median&period=all${range}`;
+    const overlayMetrics = ["kd_ratio", "survival_rate", "kills_per_raid", "total_kills", "deaths", "total_raids"];
+    // Distinct baseline and selected-range URLs avoid relying on client dedup.
+    const urls = [
+      ...overlayMetrics.map((metric) => requestUrl(metric)),
+      requestUrl("kd_ratio", "hours"),
+      requestUrl("kd_ratio", "hours", "&min=10&max=300"),
+    ];
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    const failures = [];
+    const pending = urls.map((url) => client.loadAverageJson(url, {
+      retryUnavailable: true, signal: controller.signal,
+    }).catch((error) => { failures.push(error); return null; }));
+    // Header prefetch is best effort and does not retry failed responses.
+    assert.equal((await fetch(requestUrl("players", "hours"))).status, 503);
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const fireDueTimers = () => {
+      for (const [id, timer] of timers) {
+        if (timer.due <= clock) { timers.delete(id); timer.callback(); }
+      }
+    };
+    await flush();
+    let sliderController;
+    for (let elapsed = 250; elapsed <= 120_000; elapsed += 250) {
+      clock = now + elapsed;
+      fireDueTimers();
+      sliderController?.abort();
+      sliderController = new AbortController();
+      // Each debounce tick replaces the prior range, including its retry wait.
+      void client.loadAverageJson(requestUrl("players", "hours", `&min=${elapsed / 250}&max=1000`), {
+        retryUnavailable: true, signal: sliderController.signal,
+      }).catch((error) => {
+        if (error.name !== "AbortError") failures.push(error);
+      });
+      await flush();
+      assert.deepEqual(failures, [], `page failed after ${elapsed} ms`);
+    }
+    sliderController.abort();
+    assert.ok(statuses.length >= 670, "two minutes exercise retries and slider load across window expiry");
+    assert.ok(statuses.every((status) => status === 503), "warm-up must never turn into terminal 429");
+
+    unavailable = false;
+    clock += 5_000;
+    fireDueTimers();
+    const recovered = await Promise.all(pending);
+    assert.deepEqual(failures, []);
+    assert.equal(recovered.length, 8);
+    for (const body of recovered) {
+      assert.equal(body.mode, "seasonal");
+      assert.equal(body.total, 30);
+      assert.ok(body.buckets.length > 0);
+    }
+    assert.equal(statuses.filter((status) => status === 200).length, 8);
+  });
 });
 
 test("every Seasonal average branch reports request timing", () => {

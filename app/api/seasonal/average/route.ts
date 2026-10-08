@@ -15,12 +15,12 @@ import { getRateLimitHeaders } from "@/lib/rate-limiter";
 
 export const runtime = "nodejs";
 
-// A published dashboard view costs one request, the metric overlay six, and a
-// range-slider drag one per 250 ms debounce tick, so a page view stays under
-// ten and 60/min leaves several times that for interaction inside one window.
-// The bound that actually protects the process is the worker queue below; this
-// only stops one client from spending it.
-const RATE_LIMIT = { bucket: "seasonal-average", max: 60 } as const;
+// Budget one page at 250 ms slider updates (240/min), plus eight independent
+// 5 s retry loops (six overlay metrics, baseline and current range: 96/min),
+// and a header prefetch. 480/min leaves room above that 337-request workload.
+// The cohort worker still runs jobs serially and accepts at most eight;
+// this per-IP budget also bounds fast unavailable requests before storage work.
+const RATE_LIMIT = { bucket: "seasonal-average", max: 480 } as const;
 
 function numberParam(value: string | null): number | null {
   if (value == null || value === "") return null;
