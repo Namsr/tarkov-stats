@@ -1,4 +1,5 @@
 import type { GameMode, ProfileIdentity } from "@/types/seasonal";
+import type { PublicRiskFactor } from "@/types/profile-view";
 
 export const PROFILE_SECTION_ORDER = [
   "overview",
@@ -69,7 +70,10 @@ export interface ProfileViewRisk {
   confidence: number | null;
   sampleN: number | null;
   freshnessAt: number | null;
-  factors: Array<{ key: string; points: number | null; available?: boolean }>;
+  profileUpdatedAt?: number | null;
+  availability?: "available" | "partial" | "unavailable";
+  available?: boolean;
+  factors: PublicRiskFactor[];
   mode: ProfileViewMode;
   cycleId: string;
 }

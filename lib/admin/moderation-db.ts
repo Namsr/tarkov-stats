@@ -17,6 +17,8 @@ export interface StoredRiskEvaluation {
   sampleN?: number | null;
   confidence?: number | null;
   freshnessAt?: number | null;
+  availability?: CheaterScoreResult["availability"] | null;
+  profileParserVersion?: number | null;
 }
 
 export interface AccountModeration {
@@ -55,6 +57,8 @@ CREATE TABLE IF NOT EXISTS risk_evaluations (
   sample_n INTEGER,
   confidence REAL,
   freshness_at INTEGER,
+  availability TEXT,
+  profile_parser_version INTEGER,
   PRIMARY KEY (aid, mode, cycle_id)
 );
 CREATE INDEX IF NOT EXISTS idx_risk_evaluations_score_time
@@ -137,6 +141,8 @@ function riskFromRow(row: Record<string, unknown> | undefined): StoredRiskEvalua
     sampleN: row.sample_n == null ? null : Number(row.sample_n),
     confidence: row.confidence == null ? null : Number(row.confidence),
     freshnessAt: row.freshness_at == null ? null : Number(row.freshness_at),
+    availability: row.availability === "available" || row.availability === "partial" || row.availability === "unavailable" ? row.availability : null,
+    profileParserVersion: row.profile_parser_version == null ? null : Number(row.profile_parser_version),
   };
 }
 
@@ -411,6 +417,8 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
   if (!riskColumns.has("sample_n")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN sample_n INTEGER");
   if (!riskColumns.has("confidence")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN confidence REAL");
   if (!riskColumns.has("freshness_at")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN freshness_at INTEGER");
+  if (!riskColumns.has("availability")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN availability TEXT");
+  if (!riskColumns.has("profile_parser_version")) db.exec("ALTER TABLE risk_evaluations ADD COLUMN profile_parser_version INTEGER");
   db.prepare("UPDATE admin_audit_log SET detail = NULL WHERE detail IS NOT NULL").run();
   if (options.attachExternal !== false) {
     initializeAttachedSchemas(db);
@@ -422,17 +430,21 @@ export function createSqliteModerationStore(db: SqliteDatabase, options: { attac
       const evaluatedAt = input.evaluatedAt ?? Date.now();
       db.prepare(`INSERT INTO risk_evaluations
         (aid, mode, cycle_id, score, tier, factors_json, score_version, profile_updated_at, evaluated_at,
-         sample_n, confidence, freshness_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         sample_n, confidence, freshness_at, availability, profile_parser_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(aid, mode, cycle_id) DO UPDATE SET
           score = excluded.score, tier = excluded.tier, factors_json = excluded.factors_json,
           score_version = excluded.score_version, profile_updated_at = excluded.profile_updated_at,
           evaluated_at = excluded.evaluated_at, sample_n = excluded.sample_n,
-          confidence = excluded.confidence, freshness_at = excluded.freshness_at
-        WHERE excluded.profile_updated_at >= risk_evaluations.profile_updated_at`)
+          confidence = excluded.confidence, freshness_at = excluded.freshness_at, availability = excluded.availability,
+          profile_parser_version = excluded.profile_parser_version
+        WHERE excluded.profile_updated_at > risk_evaluations.profile_updated_at OR
+          (excluded.profile_updated_at = risk_evaluations.profile_updated_at AND
+           (excluded.mode != 'regular' OR (excluded.score_version >= risk_evaluations.score_version AND
+            COALESCE(excluded.profile_parser_version, 0) >= COALESCE(risk_evaluations.profile_parser_version, 0))))`)
         .run(input.aid, input.mode, input.cycleId, input.score, input.tier,
           JSON.stringify(input.factors), input.scoreVersion, input.profileUpdatedAt, evaluatedAt,
-          input.sampleN ?? null, input.confidence ?? null, input.freshnessAt ?? evaluatedAt);
+          input.sampleN ?? null, input.confidence ?? null, input.freshnessAt ?? evaluatedAt, input.availability ?? null, input.profileParserVersion ?? null);
     },
 
     riskFor({ aid, mode, cycleId }) {

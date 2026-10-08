@@ -91,7 +91,7 @@ test("Regular persistence is resilient publicly, strict operationally, and captu
   const refreshed = JSON.parse(progression.prepare(`SELECT stats_json FROM progression_snapshots
     WHERE aid = ? AND upstream_updated_at = ?`).get(cached.aid, cached.upstreamUpdatedAt).stats_json);
   assert.equal(refreshed.pvpStatsVersion, 0);
-  assert.equal(refreshed.pvpStatsParserVersion, 1);
+  assert.equal(refreshed.pvpStatsParserVersion, 2);
   assert.equal(progression.prepare(`SELECT captured_at FROM progression_snapshots
     WHERE aid = ? AND upstream_updated_at = ?`).get(cached.aid, cached.upstreamUpdatedAt).captured_at, cached.capturedAt);
   const storedAfterUpgrade = await (await getProgressionStore("regular"))?.latest(cached.aid);

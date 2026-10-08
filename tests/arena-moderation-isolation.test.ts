@@ -182,7 +182,7 @@ test("regular risk backfill uses the matched two-dimensional baseline", () => {
     try {
       const saved = admin.prepare(`SELECT factors_json, score_version
         FROM risk_evaluations WHERE aid = 1 AND mode = 'regular' AND cycle_id = 'persistent'`).get();
-      assert.equal(saved.score_version, 2);
+      assert.equal(saved.score_version, 3);
       const factors = JSON.parse(saved.factors_json);
       assert.ok(factors.length > 0);
       assert.equal(factors.every((factor) => factor.z === null), true);
@@ -235,7 +235,7 @@ test("PvE backfill uses the runtime invalid-input guard before achievements", as
   const source = await readFile("scripts/backfill-admin-risk.mjs", "utf8");
   assert.match(source, /const canScore =[\s\S]*hasValidRiskInputs\(stats\)/);
   assert.match(source, /if \(canScore && !baselines\.has\(baselineKey\)\)/);
-  assert.match(source, /if \(canScore && !achievementBaselines\.has\(mode\)\)/);
+  assert.match(source, /if \(mode !== "regular" && canScore && !achievementBaselines\.has\(mode\)\)/);
 });
 
 test("executed PvE backfill stores zero for unknown combat metrics with achievements", () => {

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import type { GameMode } from "@/types/seasonal";
-import type { PublicRiskTier, PublicRiskView } from "@/types/profile-view";
+import type { PublicRiskFactor, PublicRiskTier, PublicRiskView } from "@/types/profile-view";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import { rangeForHours } from "@/lib/playtime-brackets";
 import { scoreCheater, type Baseline, type CheaterScoreResult } from "@/lib/cheater-score";
@@ -61,8 +61,9 @@ interface NormalizedRisk {
   confidenceTier: "low" | "medium" | "high" | null;
   sampleSize: number | null;
   freshnessAt: number | null;
-  factors: Array<{ key: string; points: number | null; label: string | null; available?: boolean }>;
+  factors: PublicRiskFactor[];
   available: boolean;
+  partial?: boolean;
 }
 
 function isPublicRisk(value: RiskInput): value is PublicRiskView {
@@ -85,12 +86,14 @@ function normalizeRisk(value: RiskInput | null | undefined): NormalizedRisk | nu
       factors: (value.factors ?? []).map((factor) => typeof factor === "string"
         ? { key: factor, points: null, label: null }
         : {
+            ...factor,
             key: factor.key,
             points: factor.points == null ? null : factor.points,
             label: factor.label ?? null,
             available: factor.available,
           }),
-      available: value.available !== false && value.score != null,
+      available: value.available !== false && value.availability !== "unavailable" && value.score != null,
+      partial: value.availability === "partial",
     };
   }
 
@@ -137,12 +140,7 @@ export default function CheaterScore({
   const ownedKey = ownedAchievementIds.join(",");
 
   useEffect(() => {
-    if (!stats) {
-      setLegacyResult(null);
-      setLegacyLoading(false);
-      return;
-    }
-    if (mode === "regular" && stats.pvpStatsKnown === false) {
+    if (!stats || mode === "regular") {
       setLegacyResult(null);
       setLegacyLoading(false);
       return;
@@ -197,7 +195,7 @@ export default function CheaterScore({
     return <div className="data-panel min-h-[280px] skeleton rounded-xl" role="status" aria-label={t("common.loading")} />;
   }
 
-  if (statsKnown === false) {
+  if (statsKnown === false && !normalized?.available) {
     return (
       <div className="data-panel min-h-[280px] p-5">
         <p className="text-sm text-[var(--muted)]">{t("cheater.incompletePvp")}</p>
@@ -258,7 +256,7 @@ export default function CheaterScore({
       <div className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-xs text-[var(--muted)]">
         <span>{t("cheater.context", { mode: modeLabel, cycle: cycleId })}</span>
         {normalized.sampleSize != null && normalized.sampleSize > 0 && <span>{t("cheater.sample", { n: normalized.sampleSize.toLocaleString(lang) })}</span>}
-        {normalized.sampleSize != null && normalized.sampleSize > 0 && confidencePercent != null && <span>{t("seasonal.confidenceValue", { n: confidencePercent })}</span>}
+        {normalized.sampleSize != null && normalized.sampleSize > 0 && confidencePercent != null && <span>{t(mode === "regular" ? "cheater.evidenceCoverage" : "seasonal.confidenceValue", { n: confidencePercent })}</span>}
         {freshness && <span>{t("cheater.freshness", { date: freshness })}</span>}
       </div>
 
@@ -276,6 +274,33 @@ export default function CheaterScore({
 
       <p className="mt-3 text-[10px] text-gray-600 text-center">{t("cheater.disclaimer")}</p>
       </>}
+      {mode === "regular" && normalized.partial && <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">{t("cheater.partial")}</p>}
+      {mode === "regular" && <details className="mt-4 text-left text-xs leading-relaxed text-[var(--muted)]">
+        <summary className="cursor-pointer rounded px-1 py-2 font-medium text-[var(--foreground)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">{t("cheater.whatMoved")}</summary>
+        <p className="mt-2">{t("cheater.statisticalScale")}</p>
+        {confidencePercent != null && <p className="mt-2">{t("cheater.evidenceCoverage", { n: confidencePercent })}</p>}
+        {normalized.factors[0]?.hoursMultiplier != null && <p className="mt-2">{t("cheater.hoursBoost", { n: normalized.factors[0].hoursMultiplier.toFixed(2) })}</p>}
+        <ul className="mt-3 space-y-3">
+          {normalized.factors.map((factor, index) => {
+            const name = factor.achievementId === "6514143d59647d2cb3213c93" ? t("cheater.ultra")
+              : factor.achievementId === "664f1f8768508d74604bf556" || factor.achievementId === "6a60f75f1a1222ee000baf0d" ? t("cheater.kappa")
+              : factor.label ?? t("metric." + factor.key);
+            return <li key={`${factor.key}-${index}`}>
+              <p className="font-medium text-[var(--foreground)]">{name}{factor.available !== false && factor.points != null ? ` +${factor.points.toLocaleString(lang, { maximumFractionDigits: 1 })}` : ""}</p>
+              {factor.available === false ? <p>{t(factor.reason === "missing_metric" ? "cheater.missingMetric" : factor.reason === "insufficient_owners" ? "cheater.fewOwners" : "cheater.fewPeers")}</p> : <>
+                {factor.cohortMean != null && <p>{t(factor.achievementId ? "cheater.ownerComparison" : "cheater.reference", { value: (factor.value ?? 0).toLocaleString(lang, { maximumFractionDigits: 2 }), mean: factor.cohortMean.toLocaleString(lang, { maximumFractionDigits: 2 }), n: factor.cohortN ?? 0 })}</p>}
+                {factor.ratio != null && !factor.achievementId && <p>{t("cheater.ratio", { n: factor.ratio.toFixed(2) })}</p>}
+                {factor.p90 != null && factor.p99 != null && <p>{t("cheater.tail", { p90: factor.p90.toLocaleString(lang, { maximumFractionDigits: 2 }), p99: factor.p99.toLocaleString(lang, { maximumFractionDigits: 2 }) })}</p>}
+                {factor.cohortPercent != null && <p>{t("cheater.window", { n: factor.cohortPercent })}</p>}
+                {factor.ownerHoursP20 != null && <p>{t("cheater.ownerP20", { n: factor.ownerHoursP20.toLocaleString(lang, { maximumFractionDigits: 1 }) })}</p>}
+                {factor.achievementId && <p>{t("cheater.ownerReference")}</p>}
+                {factor.evidencePoints != null && factor.evidencePoints > 0 && factor.points === 0 && <p>{t("cheater.correlated")}</p>}
+                {factor.key === "compound_anomaly" && <p>{t("cheater.corroboration")}</p>}
+              </>}
+            </li>;
+          })}
+        </ul>
+      </details>}
     </div>
   );
 }

@@ -31,6 +31,30 @@ import {
 import ArenaPlayer from "@/components/ArenaPlayer";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
 
+async function pollRegularRisk(input: {
+  aid: number;
+  profileUpdatedAt: number;
+  isCurrent: () => boolean;
+  onRisk: (risk: PublicRiskView) => void;
+}) {
+  for (const delay of [1_500, 3_000, 5_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!input.isCurrent()) return;
+    try {
+      const response = await fetch(`/api/player/risk?aid=${input.aid}&mode=regular&cycle=persistent`, { cache: "no-store" });
+      if (!response.ok) continue;
+      const body = await response.json() as { identity?: { aid?: number; mode?: string; cycleId?: string }; risk?: PublicRiskView | null };
+      if (!input.isCurrent()) return;
+      if (body.identity?.aid !== input.aid || body.identity.mode !== "regular" || body.identity.cycleId !== "persistent") return;
+      if (!body.risk || (body.risk.profileUpdatedAt ?? 0) < input.profileUpdatedAt) continue;
+      input.onRisk(body.risk);
+      return;
+    } catch {
+      continue;
+    }
+  }
+}
+
 interface Props {
   aid: string;
   radarDemo?: string | string[];
@@ -243,6 +267,18 @@ function LegacyPlayer({
     };
     // `t` is read through `translate` so a language switch cannot re-run this effect.
   }, [aid, mode, profileRequestUrl]);
+
+  useEffect(() => {
+    if (mode !== "regular" || !stats) return;
+    let cancelled = false;
+    void pollRegularRisk({
+      aid: Number(aid),
+      profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
+      isCurrent: () => !cancelled,
+      onRisk: setServerRisk,
+    });
+    return () => { cancelled = true; };
+  }, [aid, mode, stats]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
@@ -537,7 +573,7 @@ function LegacyPlayer({
         ]
       : [
           { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
-          { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: pvpStatsKnown ? "%" : undefined },
+          { label: t("player.survivalRate"), value: stats.regularRiskInputs?.survived === null ? t("common.notAvailable") : stats.pmcSurvivalRate, suffix: stats.regularRiskInputs?.survived === null ? undefined : "%" },
           { label: t("player.pmcRaids"), value: stats.pmcRaids },
           { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ];
@@ -597,7 +633,7 @@ function LegacyPlayer({
           forceRefresh={forceProgressionRefresh}
           onRiskChange={setProgressionRisk}
         />}
-        risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" statsKnown={mode === "regular" ? pvpStatsKnown : true} /><p>{t("cheater.disclaimer")}</p></div></div>}
+        risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={mode === "regular" ? serverRisk : serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" /><p>{t("cheater.disclaimer")}</p></div></div>}
         comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} cycleId="persistent" demo={radarDemo} />}
         statistics={regularStatistics}
         achievements={

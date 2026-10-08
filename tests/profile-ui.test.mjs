@@ -18,6 +18,66 @@ function sliceDeclaration(source, start, end) {
   return source.slice(from, to);
 }
 
+test("regular risk polling skips stale scores, verifies identity, and stops after unmount", async () => {
+  const source = await readFile("components/RegularPlayer.tsx", "utf8");
+  const ts = createRequire(import.meta.url)("typescript");
+  const declaration = sliceDeclaration(source, "async function pollRegularRisk(", "interface Props");
+  const compiled = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const identity = { aid: 42, mode: "regular", cycleId: "persistent" };
+  for (const [responses, current, expected, calls] of [
+    [[{ identity, risk: null }, { identity, risk: { score: 80, profileUpdatedAt: 99 } }, { identity, risk: { score: 70, profileUpdatedAt: 100 } }], true, [70], 3],
+    [[{ identity: { ...identity, aid: 43 }, risk: { score: 90, profileUpdatedAt: 100 } }], true, [], 1],
+    [[{ identity, risk: { score: 90, profileUpdatedAt: 100 } }], false, [], 0],
+  ]) {
+    let fetched = 0;
+    const poll = new Function("fetch", "setTimeout", `${compiled}; return pollRegularRisk;`)(
+      async (_url, options) => {
+        assert.equal(options.cache, "no-store");
+        return { ok: true, json: async () => responses[fetched++] };
+      },
+      (fn) => fn(),
+    );
+    const scores = [];
+    await poll({ aid: 42, profileUpdatedAt: 100, isCurrent: () => current, onRisk: (risk) => scores.push(risk.score) });
+    assert.deepEqual(scores, expected);
+    assert.equal(fetched, calls);
+  }
+});
+
+test("regular gauge keeps the statistical server score and exposes its evidence", async () => {
+  const [source, profile] = await Promise.all([
+    readFile("components/CheaterScore.tsx", "utf8"),
+    readFile("components/RegularPlayer.tsx", "utf8"),
+  ]);
+  assert.match(source, /if \(!stats \|\| mode === "regular"\)/);
+  assert.match(source, /value\.availability === "partial"/);
+  assert.match(source, /<details[\s\S]*?<summary[\s\S]*?focus-visible:outline/);
+  assert.match(source, /cheater\.ownerP20/);
+  assert.match(source, /cheater\.window/);
+  assert.match(profile, /mode === "regular" \? serverRisk : serverRisk \?\? progressionRisk/);
+});
+
+test("public risk preserves evidence and represents unavailable internal zero as no score", async () => {
+  const source = await readFile("lib/player-profile-view.ts", "utf8");
+  const ts = createRequire(import.meta.url)("typescript");
+  const declaration = sliceDeclaration(source, "export function toPublicRiskView(", "export function buildSeasonalProfileViewModel(");
+  const compiled = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  const exports = {};
+  new Function("exports", compiled)(exports);
+  const input = { score: 0, tier: "low", availability: "unavailable", profileUpdatedAt: 100, evaluatedAt: 200, factors: [] };
+  const empty = exports.toPublicRiskView(input, { aid: 42, mode: "regular", cycleId: "persistent" });
+  assert.equal(empty.score, null);
+  assert.equal(empty.tier, null);
+  assert.equal(empty.available, false);
+  const factor = { key: "ach_early", achievementId: "kappa", points: 85, value: 100, cohortMean: 2000, cohortN: 40, ownerHoursP20: 1000, hoursMultiplier: 2.8 };
+  const partial = exports.toPublicRiskView({ ...input, score: 85, tier: "severe", availability: "partial", factors: [factor] }, { aid: 42, mode: "regular", cycleId: "persistent" });
+  assert.equal(partial.score, 85);
+  assert.equal(partial.available, true);
+  assert.equal(partial.availability, "partial");
+  for (const [key, value] of Object.entries(factor)) assert.equal(partial.factors[0][key], value);
+  assert.equal(partial.profileUpdatedAt, 100);
+});
+
 test("cached persistent profiles must match the requested account, mode, and cycle", async () => {
   const source = await readFile("components/RegularPlayer.tsx", "utf8");
   const declaration = sliceDeclaration(source, "function matchesCachedProfileIdentity(", "function viewModelAchievementItems(");
@@ -631,7 +691,8 @@ test("profile mode switching is available during loading and capture is post-res
     "loadPlayerProfileResponse<SeasonalProfileResponse>",
     ".then((nextProfile)",
   );
-  assert.doesNotMatch(regular, /(?:res|response)\.json\(\)/);
+  const regularLoader = sliceDeclaration(regular, "    loadPlayerProfileResponse<RegularProfileResponse>", "      .catch((err)");
+  assert.doesNotMatch(regularLoader, /(?:res|response)\.json\(\)/);
   assert.doesNotMatch(initialSeasonalLoad, /(?:res|response)\.json\(\)/);
   assert.doesNotMatch(seasonal, /new AbortController\(\)/);
   assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
@@ -667,8 +728,9 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /const seasonalRiskIsFresh = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)[\s\S]*currentStoredRisk\.profileUpdatedAt >= result\.profile\.profileUpdatedAt[\s\S]*Date\.now\(\) - currentStoredRisk\.evaluatedAt < 5 \* 60 \* 60 \* 1000/);
   assert.match(route, /const publicRisk = seasonalRiskIsCurrent && currentStoredRisk !== null &&[\s\S]*currentStoredRisk\.scoreVersion === riskScoreVersion\("seasonal", cycleId\)/);
   assert.match(route, /const publicRisk = storedRisk\?\.scoreVersion === riskScoreVersion\("pve", cycleId\)/);
-  assert.match(route, /const publicRisk = storedRisk\?\.scoreVersion === riskScoreVersion\("regular", cycleId\)/);
-  assert.match(route, /const publicRiskView = storedRisk\?\.scoreVersion === riskScoreVersion\("regular", cycleId\)/);
+  assert.match(route, /const riskIsFresh = storedRisk &&[\s\S]*?storedRisk\.scoreVersion === riskScoreVersion\("regular", cycleId\)/);
+  assert.match(route, /const publicRisk = riskIsFresh\s*\? toPublicRiskView\(storedRisk, \{ aid, mode: "regular", cycleId \}\)/);
+  assert.match(route, /const publicRiskView = riskIsFresh\s*\? toPublicRiskView\(storedRisk, \{ aid, mode: "regular", cycleId \}\)/);
   assert.match(route, /risk = null;\s*scheduleArenaRiskRefresh\(\)/);
   assert.match(radar, /strategy: input\.strategy === "population" \? "population" : "matched"/);
   assert.match(radar, /comparisonCohortMetricValue\(cohort\.strategy, average \?\? \{ value: null, count: 0 \}\)/);
@@ -1062,7 +1124,7 @@ test("unknown regular PvP stats are not rendered or scored as zero", async () =>
   // "Н/Д%" / "N/A%", i.e. a percentage on a value that does not exist.
   assert.match(
     profile,
-    /\{ label: t\("player\.survivalRate"\), value: pvpStatsKnown \? stats\.pmcSurvivalRate : t\("common\.notAvailable"\), suffix: pvpStatsKnown \? "%" : undefined \}/,
+    /\{ label: t\("player\.survivalRate"\), value: stats\.regularRiskInputs\?\.survived === null \? t\("common\.notAvailable"\) : stats\.pmcSurvivalRate, suffix: stats\.regularRiskInputs\?\.survived === null \? undefined : "%" \}/,
   );
   assert.doesNotMatch(
     profile,
@@ -1134,7 +1196,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(profile, /<ProgressionPanel[\s\S]*?profileUpdatedAt=\{profileUpdatedAt\}/);
   assert.match(profile, /refreshRevision=\{progressionRefreshRevision\}/);
   assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
-  assert.match(profile, /risk=\{serverRisk \?\? progressionRisk\}/);
+  assert.match(profile, /risk=\{mode === "regular" \? serverRisk : serverRisk \?\? progressionRisk\}/);
 
   assert.match(panel, /fetch\(`\/api\/progression\/timeline\?\$\{params\}`/);
   for (const parameter of [
@@ -1421,7 +1483,7 @@ test("PvE profiles use the persistent shell and mode-scoped UI data", async () =
   assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)/);
   assert.match(regular, /<ProfileShell[\s\S]*?mode=\{mode\}[\s\S]*?overviewCards=\{regularOverviewCards\}/);
   assert.match(regular, /<ProgressionPanel[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
-  assert.match(regular, /<CheaterScore compact risk=\{serverRisk \?\? progressionRisk\}[\s\S]*?mode=\{mode\}[\s\S]*?statsKnown=\{mode === "regular" \? pvpStatsKnown : true\}/);
+  assert.match(regular, /<CheaterScore compact risk=\{mode === "regular" \? serverRisk : serverRisk \?\? progressionRisk\} mode=\{mode\}/);
   assert.match(regular, /<PlayerRadarComparison[\s\S]*?stats=\{stats\} mode=\{mode\} cycleId="persistent"/);
   assert.match(regular, /<ProfileAchievements[\s\S]*?mode=\{mode\}[\s\S]*?cycleId="persistent"/);
   assert.match(regular, /hasVisibleSkills\(regularSkillItems\)/);

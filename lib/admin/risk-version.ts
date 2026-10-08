@@ -1,7 +1,7 @@
 import type { GameMode } from "../../types/seasonal.ts";
 
 export const ADMIN_RISK_SCORE_VERSIONS: Record<GameMode, number> = {
-  regular: 2,
+  regular: 3,
   pve: 2,
   arena: 1,
   seasonal: 2,

@@ -47,7 +47,7 @@ const {
   evaluateAndStoreRisk,
   riskScoreVersion,
 } = await import("../lib/admin/risk-service.ts");
-const { scoreCheater } = await import("../lib/cheater-score.ts");
+const { scoreRegularCheater } = await import("../lib/regular-risk-score.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
@@ -710,7 +710,7 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   adminDb.close();
   assert.equal(storedVersion, ADMIN_RISK_SCORE_VERSIONS.pve);
   assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.equal(riskScoreVersion("regular", "persistent"), 3);
   assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
@@ -816,7 +816,7 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   assert.equal(emptyPopulation.required, 20);
 });
 
-test("risk uses the two-dimensional population fallback for five raids, while zero raids score zero", async () => {
+test("Regular risk keeps sparse nearby references unavailable instead of using a population fallback", async () => {
   reset();
   for (let aid = 1; aid <= 9; aid += 1) add(aid, { hours: 100, raids: 100, value: aid });
   for (let aid = 20; aid <= 34; aid += 1) add(aid, { hours: 200, raids: 200, value: aid + 81 });
@@ -831,7 +831,8 @@ test("risk uses the two-dimensional population fallback for five raids, while ze
   db.prepare("INSERT OR IGNORE INTO excluded_players (aid, reason, created_at) VALUES (1000, 'test', ?)").run(now);
 
   const baseline = await store.riskBaseline(100, 5, 999);
-  assert.equal(baseline.n, 24);
+  assert.equal(baseline.n, 0);
+  assert.equal(baseline.strategy, "matched");
   const target = {
     hoursPlayed: 100,
     pmcRaids: 5,
@@ -840,9 +841,10 @@ test("risk uses the two-dimensional population fallback for five raids, while ze
     pmcSurvivalRate: 50,
     pmcKillsPerRaid: 1,
     longestWinStreak: 0,
+    regularRiskInputs: { raids: 5, deaths: 2, survived: 2, kills: 5, killedPmc: 4, streak: 0, prestige: 0 },
   };
-  assert.ok(scoreCheater(target, baseline).score > 0);
-  assert.equal(scoreCheater({ ...target, pmcRaids: 0 }, baseline).score, 0);
+  assert.equal(scoreRegularCheater(target, baseline).availability, "unavailable");
+  assert.equal(scoreRegularCheater({ ...target, regularRiskInputs: { ...target.regularRiskInputs, raids: 0 } }, baseline).availability, "unavailable");
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {

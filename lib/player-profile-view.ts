@@ -159,7 +159,8 @@ export function buildPersistentProfileViewModel(
     overview: {
       lifetimePvpHours: finiteOrNull(stats.hoursPlayed),
       pmcKdRatio: stats.pvpStatsKnown === false ? null : finiteOrNull(stats.pmcKdRatio),
-      pmcSurvivalRate: stats.pvpStatsKnown === false ? null : finiteOrNull(stats.pmcSurvivalRate),
+      pmcSurvivalRate: (input.mode === "regular" ? stats.regularRiskInputs?.survived === null : stats.pvpStatsKnown === false)
+        ? null : finiteOrNull(stats.pmcSurvivalRate),
       pmcRaids: finiteOrNull(stats.pmcRaids),
     },
     progression: {
@@ -221,15 +222,31 @@ export function toPublicRiskView(
 ): ProfileViewRisk | null {
   if (!risk) return null;
   return {
-    score: Number.isFinite(risk.score) ? risk.score : null,
-    tier: risk.tier,
+    score: risk.availability !== "unavailable" && Number.isFinite(risk.score) ? risk.score : null,
+    tier: risk.availability === "unavailable" ? null : risk.tier,
     confidence: risk.confidence == null ? null : risk.confidence,
     sampleN: risk.sampleN == null ? null : risk.sampleN,
     freshnessAt: risk.freshnessAt ?? risk.evaluatedAt ?? null,
+    profileUpdatedAt: risk.profileUpdatedAt,
+    availability: risk.availability ?? undefined,
+    available: risk.availability !== "unavailable",
     factors: risk.factors.map((factor) => ({
       key: factor.key,
       points: factor.points,
       available: factor.available,
+      value: factor.value,
+      cohortMean: factor.cohortMean,
+      cohortN: factor.cohortN,
+      p90: factor.p90,
+      p99: factor.p99,
+      ratio: factor.ratio,
+      hoursMultiplier: factor.hoursMultiplier,
+      evidencePoints: factor.evidencePoints,
+      group: factor.group,
+      reason: factor.reason,
+      achievementId: factor.achievementId,
+      ownerHoursP20: factor.ownerHoursP20,
+      cohortPercent: factor.cohortPercent,
     })),
     mode: identityValue.mode as ProfileViewRisk["mode"],
     cycleId: identityValue.cycleId,

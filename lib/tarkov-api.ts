@@ -19,9 +19,10 @@ import {
 }
 from "../types/arena.ts";
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
+import { validatedRegularRiskInputs } from "./regular-risk-score.ts";
 
 export const TARKOV_JSON_USER_AGENT = "tarkovstats.ru";
-export const PVP_STATS_PARSER_VERSION = 1;
+export const PVP_STATS_PARSER_VERSION = 2;
 
 export function needsPvpStatsParserRefresh(
   stats: Pick<ParsedPlayerStats, "pvpStatsParserVersion"> | null | undefined,
@@ -1262,6 +1263,18 @@ export function parseProfileStats(
 
   return {
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
+    regularRiskInputs: validatedRegularRiskInputs({
+      raids: exactPmcRaids,
+      deaths: exactPmcRaids !== null && exactPmcDeaths !== null && exactPmcDeaths <= exactPmcRaids ? exactPmcDeaths : null,
+      survived: (() => {
+        const value = exactCount(pmcCounters, "ExitStatus", "Survived", "Pmc");
+        return exactPmcRaids !== null && value !== null && value <= exactPmcRaids ? value : null;
+      })(),
+      kills: exactCount(pmcCounters, "Kills"),
+      killedPmc: exactCount(pmcCounters, "KilledPmc"),
+      streak: exactCount(pmcCounters, "LongestWinStreak", "Pmc"),
+      prestige: Number.isSafeInteger(profile.info?.prestigeLevel) && Number(profile.info?.prestigeLevel) >= 0 ? Number(profile.info?.prestigeLevel) : null,
+    }),
     level,
     prestige: profile.info?.prestigeLevel ?? 0,
     experience,
