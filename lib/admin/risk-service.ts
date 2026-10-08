@@ -6,6 +6,7 @@ import { riskScoreVersion } from "@/lib/admin/risk-version";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { GameMode, SeasonalAchievementUnlock, SeasonalProfile } from "@/types/seasonal";
 import type { AchievementBaseline } from "@/lib/db";
+import { scoreRegularCheater } from "@/lib/regular-risk-score";
 
 export { ADMIN_RISK_SCORE_VERSIONS, riskScoreVersion } from "@/lib/admin/risk-version";
 
@@ -36,8 +37,7 @@ export async function evaluateAndStoreRisk(input: {
   if (input.mode === "arena") throw new ArenaRiskUnsupportedError();
   const canScore = Number.isFinite(input.stats.hoursPlayed) && input.stats.hoursPlayed > 0 &&
     Number.isFinite(input.stats.pmcRaids) && input.stats.pmcRaids > 0 &&
-    hasValidRiskInputs(input.stats) &&
-    (input.mode !== "regular" || input.stats.pvpStatsKnown !== false);
+    (input.mode === "regular" || hasValidRiskInputs(input.stats));
   let baseline: Baseline | null = null;
   let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;
   if (canScore && input.mode === "seasonal") {
@@ -49,14 +49,14 @@ export async function evaluateAndStoreRisk(input: {
       }, input.aid),
       getSeasonalAchievementBaseline(input.cycleId, input.aid),
     ]);
-  } else if (canScore) {
+  } else if (canScore || input.mode === "regular") {
     const baselineMode: CrossSectionMode = input.mode === "pve" ? "pve" : "regular";
     const store = input.playerStore === undefined ? await getStore(baselineMode) : input.playerStore;
     if (store) {
       if (input.mode === "regular") {
         [baseline, achievementBaseline] = await Promise.all([
-          store.riskBaseline(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid),
-          store.achievementBaseline(),
+          canScore ? store.riskBaseline(input.stats.hoursPlayed, input.stats.pmcRaids, input.aid) : Promise.resolve(null),
+          store.achievementRiskBaseline(input.achievementIds, input.aid),
         ]);
       } else {
         [baseline, achievementBaseline] = await Promise.all([
@@ -80,9 +80,10 @@ export async function evaluateAndStoreRisk(input: {
           ? achievement.prevalencePct
           : achievementBaseline.total > 0
             ? achievement.owners / achievementBaseline.total * 100
-            : 0,
+            : input.mode === "regular" ? Number.NaN : 0,
         meanHours: achievement.meanHours,
         earlyHours: achievement.earlyHours,
+        hoursOwners: "hoursOwners" in achievement ? Number(achievement.hoursOwners) : undefined,
       };
       if (seasonalBaseline && "prevalencePct" in achievement) {
         stat.eligibleN = achievement.eligibleN;
@@ -102,7 +103,9 @@ export async function evaluateAndStoreRisk(input: {
       stats,
     };
   }
-  const result = input.mode === "seasonal"
+  const result = input.mode === "regular"
+    ? scoreRegularCheater(input.stats, baseline, achievementInput)
+    : input.mode === "seasonal"
     ? scoreSeasonalCheater(input.stats, baseline, achievementInput)
     : canScore && hasUsableRiskMetrics(baseline)
       ? scoreCheater(input.stats, baseline, achievementInput)
@@ -119,7 +122,9 @@ export async function evaluateAndStoreRisk(input: {
     profileUpdatedAt: Number(input.stats.profileUpdatedAt) || 0,
     evaluatedAt: evaluationTime,
     sampleN: result.sampleN,
-    confidence: Math.min(1, result.sampleN / 30),
+    confidence: result.confidence ?? Math.min(1, result.sampleN / 30),
+    availability: result.availability,
+    profileParserVersion: input.mode === "regular" ? input.stats.pvpStatsParserVersion ?? 0 : undefined,
     freshnessAt: evaluationTime,
   });
   return result;

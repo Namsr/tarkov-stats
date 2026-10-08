@@ -883,14 +883,13 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   // pve already degrade to their stored row instead of claiming absence.
   const storedResponse = async (snapshot: NonNullable<typeof stored>) => {
     const storedEnrichmentPhases: ProfileEnrichmentPhases = {};
-    const storedRisk = snapshot.stats.pvpStatsKnown === false
-      ? null
-      : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+    const storedRisk = await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
     const riskIsFresh = storedRisk &&
       storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
+      Number(storedRisk.profileParserVersion ?? 0) >= Number(snapshot.stats.pvpStatsParserVersion ?? 0) &&
       storedRisk.profileUpdatedAt >= Number(snapshot.stats.profileUpdatedAt) &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-    if (snapshot.stats.pvpStatsKnown !== false && !riskIsFresh) {
+    if (!riskIsFresh) {
       after(async () => {
         // Match the upstream path: let the personal timeline load first.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -902,7 +901,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
         });
       });
     }
-    const publicRisk = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
+    const publicRisk = riskIsFresh
       ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
       : null;
     const viewModel = await enrichPersistentViewModel("regular", buildPersistentProfileViewModel({
@@ -1023,14 +1022,13 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       console.error("regular profile capture after response failed", error);
     }));
 
-    const storedRisk = stats.pvpStatsKnown === false
-      ? null
-      : await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
+    const storedRisk = await getRiskEvaluation({ aid, mode: "regular", cycleId }).catch(() => null);
     const riskIsFresh = storedRisk &&
       storedRisk.scoreVersion === riskScoreVersion("regular", cycleId) &&
+      Number(storedRisk.profileParserVersion ?? 0) >= Number(stats.pvpStatsParserVersion ?? 0) &&
       storedRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
-    if (stats.pvpStatsKnown !== false && !riskIsFresh) {
+    if (!riskIsFresh) {
       after(async () => {
         // Let the browser's personal-timeline request finish before the
         // population-wide achievement/risk baseline scan occupies node:sqlite.
@@ -1040,7 +1038,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
         });
       });
     }
-    const publicRiskView = storedRisk?.scoreVersion === riskScoreVersion("regular", cycleId) || allowStaleRisk
+    const publicRiskView = riskIsFresh
       ? toPublicRiskView(storedRisk, { aid, mode: "regular", cycleId })
       : null;
     const regularViewModel = await enrichRegularViewModel(

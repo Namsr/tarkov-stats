@@ -63,6 +63,7 @@ GEMINI.md
 # so list the directory contents instead of the directory itself.
 /docs/*
 !/docs/leaderboard-score-hours.md
+!/docs/regular-ban-risk.md
 /ops/*
 !/ops/Caddyfile
 !/ops/deploy.sh

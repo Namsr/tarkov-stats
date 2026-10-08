@@ -228,7 +228,7 @@ test("explicit zero PMC kills is known while a missing counter remains unknown",
   const freshMissing = parseProfileStats(profile([]));
   assert.equal(freshMissing.pvpStatsKnown, false);
   assert.equal(freshMissing.pvpStatsVersion, 0);
-  assert.equal(freshMissing.pvpStatsParserVersion, 1);
+  assert.equal(freshMissing.pvpStatsParserVersion, 2);
   assert.equal(needsPvpStatsParserRefresh({}), true);
   assert.equal(needsPvpStatsParserRefresh(freshMissing), false);
   assert.equal(needsPvpStatsParserRefresh(freshMissing), false);

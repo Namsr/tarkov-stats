@@ -199,7 +199,7 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     CREATE TABLE arena_mode_stats(aid INTEGER,arena_mode TEXT,upstream_version INTEGER,parser_version INTEGER);
     INSERT INTO players VALUES (1,100),(2,200),(10,1000);
     INSERT INTO mode_players VALUES ('pve',3,0,'{"pvpStatsParserVersion":0}'),
-      ('pve',4,400,'{"pvpStatsParserVersion":1}'),('arena',5,500,'{}'),
+      ('pve',4,400,'{"pvpStatsParserVersion":2}'),('pve',11,1100,'{"pvpStatsParserVersion":1}'),('arena',5,500,'{}'),
       ('arena',6,600,'{}'),('arena',9,900,'{}');
     INSERT INTO arena_mode_stats VALUES
       (5,'overall',500,1),(5,'blastGang',500,1),(5,'teamFight',500,1),
@@ -214,16 +214,16 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     CREATE TABLE player_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,profile_updated_at INTEGER,
       pvp_stats_parser_version INTEGER,confirmed_banned INTEGER);
     CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
-    INSERT INTO progression_snapshots VALUES (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":0}'),
-      (2,'regular','persistent',2,200,'{"pvpStatsParserVersion":1}'),
-      (3,'regular','persistent',10,900,'{"pvpStatsParserVersion":1}');
+    INSERT INTO progression_snapshots VALUES (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":1}'),
+      (2,'regular','persistent',2,200,'{"pvpStatsParserVersion":2}'),
+      (3,'regular','persistent',10,900,'{"pvpStatsParserVersion":2}');
     INSERT INTO player_profiles VALUES ('seasonal','s1',7,700,0,0),('seasonal','s1',8,800,1,0);
   `);
   progression.close();
   players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
   const candidates = selectWarmupCandidates(players, "s1", new Map([[3, 300]]));
   assert.deepEqual(candidates.map(({ mode, aid }) => [mode, aid]), [
-    ["regular", 1], ["regular", 10], ["pve", 3], ["arena", 5], ["arena", 6], ["arena", 9], ["pvp-season", 7],
+    ["regular", 1], ["regular", 10], ["pve", 3], ["pve", 11], ["arena", 5], ["arena", 6], ["arena", 9], ["pvp-season", 7],
   ]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["arena"])
     .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 6], ["arena", 9]]);
@@ -246,7 +246,7 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     request: async (candidate) => { requested.push(candidate.mode); return { kind: "completed", outcome: "ok" }; },
   });
   assert.equal(second.bounded, false);
-  assert.deepEqual(requested, ["regular", "regular", "pve", "arena", "arena", "arena", "pvp-season"]);
+  assert.deepEqual(requested, ["regular", "regular", "pve", "pve", "arena", "arena", "arena", "pvp-season"]);
 
   let stop = false;
   const stoppedRequests = [];
@@ -261,6 +261,27 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   assert.equal(stopped.stopped, true);
   assert.deepEqual(stoppedRequests, ["regular"]);
   players.close();
+});
+
+test("skip checkpoints invalidate Regular and PvE parser 1 while retaining Seasonal parser 1", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-parser-modes-"));
+  const checkpointPath = join(dir, "state.json");
+  const candidates = [
+    { mode: "regular", aid: 1, sourceVersion: 100 },
+    { mode: "pve", aid: 2, sourceVersion: 200 },
+    { mode: "pvp-season", cycleId: "s1", aid: 3, sourceVersion: 300 },
+  ];
+  writeFileSync(checkpointPath, JSON.stringify({ version: 1, modes: {}, skipped: {
+    "regular:persistent:1:100:parser-1": { outcome: "not_found" },
+    "pve:persistent:2:200:parser-1": { outcome: "not_found" },
+    "pvp-season:s1:3:300:parser-1": { outcome: "not_found" },
+  } }));
+  const requested = [];
+  const result = await runWarmup({ candidates, checkpointPath, maxProfiles: 10,
+    request: async (candidate) => { requested.push(candidate.mode); return { kind: "completed", outcome: "ok" }; },
+  });
+  assert.deepEqual(requested, ["regular", "pve"]);
+  assert.equal(result.processed, 2);
 });
 
 test("one pacer allows at most two request starts per second", async () => {

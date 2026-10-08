@@ -18,12 +18,18 @@ export interface MetricBaseline {
   n: number;
   mean: number;
   std: number;
+  p90?: number;
+  p99?: number;
+  percent?: number;
+  prior?: { survival: number; deaths: number; kills: number; killedPmc: number };
 }
 
 /** Mean + std of each scored metric over a playtime bracket (from /api/baseline). */
 export interface Baseline {
   n: number;
   metrics: Record<string, MetricBaseline>;
+  strategy?: "matched";
+  percent?: number;
 }
 
 /** Per-achievement baseline row used by the rare/early-achievement signal. */
@@ -41,6 +47,8 @@ export interface AchievementStat {
   eligibleN?: number;
   /** Seasonal 20th-percentile unlock day from the current cycle start. */
   unlockDayP20?: number | null;
+  /** Number of owners with valid observed hours in a validated publication. */
+  hoursOwners?: number;
 }
 
 export interface AchievementInput {
@@ -66,6 +74,18 @@ export interface ScoreFactor {
   z: number | null;
   /** False means the factor was intentionally unavailable, not a measured zero. */
   available?: boolean;
+  reason?: string;
+  cohortMean?: number | null;
+  cohortN?: number;
+  p90?: number | null;
+  p99?: number | null;
+  ratio?: number | null;
+  hoursMultiplier?: number;
+  evidencePoints?: number;
+  group?: "survival" | "combat" | "progression" | "corroboration";
+  achievementId?: string;
+  ownerHoursP20?: number | null;
+  cohortPercent?: number;
 }
 
 export interface CheaterScoreResult {
@@ -74,6 +94,9 @@ export interface CheaterScoreResult {
   factors: ScoreFactor[];
   sampleN: number;
   basedOnSample: boolean;
+  availability?: "available" | "partial" | "unavailable";
+  confidence?: number;
+  hoursMultiplier?: number;
 }
 
 interface SignalDef {

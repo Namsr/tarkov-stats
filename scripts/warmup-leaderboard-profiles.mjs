@@ -28,6 +28,8 @@ export function warmupModesFromArgs(argv = process.argv.slice(2)) {
   return parseWarmupModes(value ?? process.env.LEADERBOARD_WARMUP_MODES);
 }
 const { PVP_STATS_PARSER_VERSION: CURRENT_PVP_PARSER, fetchTarkovJson } = await import("../lib/tarkov-api.ts");
+// The independent Seasonal adapter in lib/seasonal-upstream.ts emits generation 1.
+const CURRENT_SEASONAL_PARSER = 1;
 const { ARENA_PARSER_VERSION: CURRENT_ARENA_PARSER } = await import("../lib/arena/storage.ts");
 const { createTimestampObjectParser, feedCacheSlot, normalizeUpdatedAt } = await import("./regular-profile-sync-core.mjs");
 
@@ -171,7 +173,8 @@ function removeOrphanedCheckpointTemps(path) {
 
 function skippedKey(candidate) {
   const scope = candidate.mode === "pvp-season" ? candidate.cycleId : "persistent";
-  const parserVersion = candidate.mode === "arena" ? CURRENT_ARENA_PARSER : CURRENT_PVP_PARSER;
+  const parserVersion = candidate.mode === "arena" ? CURRENT_ARENA_PARSER
+    : candidate.mode === "pvp-season" ? CURRENT_SEASONAL_PARSER : CURRENT_PVP_PARSER;
   return `${candidate.mode}:${scope}:${candidate.aid}:${candidate.sourceVersion}:parser-${parserVersion}`;
 }
 
@@ -320,7 +323,7 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
         AND p.confirmed_banned=0
         AND NOT EXISTS (SELECT 1 FROM progression_scan.excluded_players e WHERE e.aid=p.aid)
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      ORDER BY (p.aid <= ?), p.aid`).iterate(cycleId, CURRENT_PVP_PARSER, cursor("pvp-season"))) {
+      ORDER BY (p.aid <= ?), p.aid`).iterate(cycleId, CURRENT_SEASONAL_PARSER, cursor("pvp-season"))) {
       if (add({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId })) break;
     }
   }

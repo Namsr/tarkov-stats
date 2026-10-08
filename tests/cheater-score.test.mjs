@@ -74,8 +74,8 @@ test("extreme combat and progression profile saturates at 100", () => {
 });
 
 test("stored risk version invalidates the previous seasonal population", () => {
-  assert.deepEqual(ADMIN_RISK_SCORE_VERSIONS, { regular: 2, pve: 2, arena: 1, seasonal: 2 });
-  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.deepEqual(ADMIN_RISK_SCORE_VERSIONS, { regular: 3, pve: 2, arena: 1, seasonal: 2 });
+  assert.equal(riskScoreVersion("regular", "persistent"), 3);
   assert.equal(riskScoreVersion("pve", "persistent"), 2);
   assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.equal(riskScoreVersion("seasonal", "cycle-b"), 2);

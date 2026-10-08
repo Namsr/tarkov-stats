@@ -8,6 +8,7 @@ import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { toPublicRiskView } from "@/lib/player-profile-view";
 import { getArenaProfile, getStoredArenaProfileRisk, isArenaProfileRiskFresh } from "@/lib/arena/service";
+import { getProgressionStore } from "@/lib/progression-db";
 
 export const runtime = "nodejs";
 
@@ -56,6 +57,16 @@ export async function GET(request: NextRequest) {
   }
 
   const stored = await getRiskEvaluation({ aid, mode, cycleId }).catch(() => null);
+  if (mode === "regular" && stored) {
+    const snapshot = await getProgressionStore("regular")
+      .then((store) => store?.latest(aid)).catch(() => null);
+    if (Date.now() - stored.evaluatedAt >= 5 * 60 * 60 * 1000 || snapshot && (
+      stored.profileUpdatedAt < Number(snapshot.stats.profileUpdatedAt) ||
+      Number(stored.profileParserVersion ?? 0) < Number(snapshot.stats.pvpStatsParserVersion ?? 0)
+    )) {
+      return NextResponse.json({ identity: { aid, mode, cycleId }, risk: null }, { headers: noStore });
+    }
+  }
   const risk = stored?.scoreVersion === riskScoreVersion(mode, cycleId)
     ? toPublicRiskView(stored, { aid, mode, cycleId })
     : null;

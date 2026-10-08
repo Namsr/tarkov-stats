@@ -35,7 +35,9 @@ import {
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   readPublishedAchievementBaseline,
+  readRegularRiskAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
+import { buildRegularRiskBaseline, validatedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
 // The cohort and population scans filter on these five columns and read the
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS players (
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
   achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  risk_raids INTEGER, risk_deaths INTEGER, risk_survived INTEGER, risk_kills INTEGER, risk_killed_pmc INTEGER, risk_streak INTEGER, risk_prestige INTEGER, risk_parser_version INTEGER,
   pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
@@ -89,6 +92,7 @@ CREATE TABLE IF NOT EXISTS mode_players (
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
   achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  risk_raids INTEGER, risk_deaths INTEGER, risk_survived INTEGER, risk_kills INTEGER, risk_killed_pmc INTEGER, risk_streak INTEGER, risk_prestige INTEGER, risk_parser_version INTEGER,
   pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
   PRIMARY KEY (mode, aid)
 );
@@ -184,7 +188,8 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
   "arena_player_index", "idx_arena_player_index_nickname_lower", "arena_player_index_meta",
-  "achievement_baseline_publications",
+  "achievement_baseline_publications", "regular_risk_achievement_owners", "idx_regular_risk_achievement_hours",
+  "idx_players_regular_risk",
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -196,7 +201,7 @@ export function currentSqlitePlayerSchema(db: any): boolean {
   for (const table of ["players", "mode_players"]) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
       .map((column) => column.name));
-    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "last_played_at"]
+    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "last_played_at", "risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version"]
       .every((name) => columns.has(name))) return false;
   }
   const favorites = db.prepare("PRAGMA table_info(favorites)").all() as { name: string; pk: number }[];
@@ -212,6 +217,7 @@ const COLS = [
   "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
   "pmc_survival_rate", "pmc_kills_per_raid",
   "achv_count", "achievements", "profile_updated_at", "last_played_at", "pvp_stats_known", "pvp_stats_version", "fetched_at",
+  "risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version",
 ];
 const SQLITE_UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) ` +
@@ -934,7 +940,22 @@ async function computePersistentRiskBaseline(input: {
   excludeAid: number;
   period: AveragePeriod;
   readFirst: CohortFirstReader;
+  readAll: CohortAllReader;
 }): Promise<BaselineResult> {
+  if (input.mode === "regular") {
+    const range = comparisonRangeFor(input.center, 30);
+    const rows = await input.readAll(`SELECT aid, hours, risk_raids, risk_deaths, risk_survived, risk_kills, risk_killed_pmc, risk_streak, risk_prestige
+      FROM players WHERE hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?
+      AND aid != ? AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = players.aid)
+      AND risk_raids > 0
+      ORDER BY ABS(hours - ?) / ? + ABS(pmc_raids - ?) / ?, aid LIMIT ?`,
+      [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max, input.excludeAid,
+        input.center.hours, Math.max(1, input.center.hours), input.center.pmcRaids, Math.max(1, input.center.pmcRaids), REGULAR_RISK_MAX_COHORT]);
+    return buildRegularRiskBaseline(rows.map((r) => ({ aid: Number(r.aid), hours: Number(r.hours), raw: {
+      raids: r.risk_raids as number | null, deaths: r.risk_deaths as number | null, survived: r.risk_survived as number | null,
+      kills: r.risk_kills as number | null, killedPmc: r.risk_killed_pmc as number | null, streak: r.risk_streak as number | null, prestige: r.risk_prestige as number | null,
+    } })), input.center, input.excludeAid);
+  }
   const widest = twoDimensionalRangeWhere(input.mode, input.center, 30, input.excludeAid, input.period);
   const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(input.center, percent));
   const countRow = await input.readFirst(
@@ -965,6 +986,7 @@ async function computePersistentRiskBaseline(input: {
 }
 
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
+  const raw = validatedRegularRiskInputs(s.regularRiskInputs);
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
     bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
@@ -977,7 +999,7 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
       : null,
     s.pvpStatsKnown === true ? 1 : 0,
     Number.isSafeInteger(s.pvpStatsVersion) && Number(s.pvpStatsVersion) >= 0 ? Number(s.pvpStatsVersion) : 0,
-    now,
+    now, raw.raids, raw.deaths, raw.survived, raw.kills, raw.killedPmc, raw.streak, raw.prestige, s.pvpStatsParserVersion ?? 0,
   ];
 }
 
@@ -1055,6 +1077,7 @@ export interface HistogramRange {
 
 /** Playtime baseline for a single achievement across the whole sample. */
 export interface AchievementStat {
+  hoursOwners?: number;
   /** Achievement id (matches tarkov.dev achievement ids). */
   ach_id: string;
   /** Players in the sample who own it. */
@@ -1077,6 +1100,10 @@ export interface AchievementBaseline {
 }
 
 export interface MetricBaseline {
+  p90?: number;
+  p99?: number;
+  percent?: number;
+  prior?: { survival: number; deaths: number; kills: number; killedPmc: number };
   /** Players in the range that actually have this metric populated (value > 0). */
   n: number;
   mean: number;
@@ -1085,6 +1112,8 @@ export interface MetricBaseline {
 
 /** Mean + std of each scored metric within a playtime range (cheating-risk z-scores). */
 export interface BaselineResult {
+  strategy?: "matched";
+  percent?: number;
   /** Players in the range the baseline was computed over. */
   n: number;
   metrics: Record<string, MetricBaseline>;
@@ -1166,6 +1195,7 @@ export interface PlayerStore {
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
    */
   achievementBaseline(): Promise<AchievementBaseline | null>;
+  achievementRiskBaseline(ownedIds: readonly string[], excludeAid: number): Promise<AchievementBaseline | null>;
   /**
    * Mean + std of each scored metric over a playtime range, for the within-bracket
    * z-scores behind the cheating-risk score.
@@ -1301,6 +1331,12 @@ function initializeSqliteSchema(opened: any): void {
     // Lightweight migration for DBs created before the PMC score columns existed.
     // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
     // them here; a duplicate-column error on already-migrated DBs is expected.
+    for (const table of ["players", "mode_players"]) {
+      for (const col of ["risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version"]) {
+        const columns = opened.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        if (!columns.some((entry) => entry.name === col)) opened.exec(`ALTER TABLE ${table} ADD COLUMN ${col} INTEGER`);
+      }
+    }
     for (const [table, col, type] of [
       ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
       ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
@@ -1327,6 +1363,9 @@ function initializeSqliteSchema(opened: any): void {
     opened.exec(
       "CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids)"
     );
+    opened.exec(`CREATE INDEX IF NOT EXISTS idx_players_regular_risk ON players(
+      hours, pmc_raids, aid, risk_raids, risk_deaths, risk_survived, risk_kills, risk_killed_pmc, risk_streak, risk_prestige
+    ) WHERE risk_raids > 0`);
     opened.exec(`UPDATE players SET pvp_stats_known = 1
       WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
     opened.exec(`UPDATE mode_players SET pvp_stats_known = 1
@@ -1370,7 +1409,14 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           rawDb.exec("BEGIN IMMEDIATE");
           try {
             const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
-            db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+            const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+            if (Number(saved.changes) > 0) {
+              rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
+              if (Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0) {
+                const insertOwner = rawDb.prepare("INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours) VALUES (?, ?, ?)");
+                for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
+              }
+            }
             if (hasPlayerIndex) {
               rawDb.prepare(`INSERT INTO player_index
                 (aid, nickname, nickname_lower, synced_at)
@@ -1619,6 +1665,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           return row?.a == null ? null : Number(row.a);
         });
       },
+      async achievementRiskBaseline(ownedIds, excludeAid) {
+        return mode === "regular" ? readRegularRiskAchievementBaseline(rawDb, ownedIds, excludeAid) : null;
+      },
       async achievementBaseline() {
         return mode === "arena" ? null : readPublishedAchievementBaseline(rawDb, mode);
       },
@@ -1635,6 +1684,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           excludeAid,
           period,
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+          readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });
       },
       async riskBaseline(centerHours, centerPmcRaids, excludeAid) {
@@ -1645,6 +1695,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           excludeAid,
           period: "all",
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+          readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });
       },
     };

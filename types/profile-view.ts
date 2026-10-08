@@ -11,6 +11,26 @@ export interface ProfileViewMetric {
 
 export type PublicRiskTier = "low" | "medium" | "high" | "severe";
 
+export interface PublicRiskFactor {
+  key: string;
+  points?: number | null;
+  label?: string | null;
+  available?: boolean;
+  value?: number;
+  cohortMean?: number | null;
+  cohortN?: number | null;
+  p90?: number | null;
+  p99?: number | null;
+  ratio?: number | null;
+  hoursMultiplier?: number;
+  evidencePoints?: number;
+  group?: string;
+  reason?: string;
+  achievementId?: string;
+  ownerHoursP20?: number | null;
+  cohortPercent?: number;
+}
+
 /**
  * Public, server-derived risk data.  The client may render this DTO, but it
  * must never calculate a score from raw stats or a client supplied baseline.
@@ -26,12 +46,9 @@ export interface PublicRiskView {
   confidenceTier?: "low" | "medium" | "high" | null;
   sampleSize?: number | null;
   freshnessAt?: number | null;
-  factors?: string[] | Array<{
-    key: string;
-    points?: number | null;
-    label?: string | null;
-    available?: boolean;
-  }>;
+  profileUpdatedAt?: number | null;
+  factors?: string[] | PublicRiskFactor[];
+  availability?: "available" | "partial" | "unavailable";
   available?: boolean;
 }
 
