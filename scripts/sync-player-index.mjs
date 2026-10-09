@@ -367,6 +367,8 @@ async function main() {
 
   const resolved = path.resolve(file);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  // Index replacement can exceed the worker's /tmp tmpfs; use the writable data volume.
+  process.env.SQLITE_TMPDIR ||= path.dirname(resolved);
   const db = new DatabaseSync(resolved);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA journal_mode = WAL");
