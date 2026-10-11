@@ -23,6 +23,7 @@ registerHooks({
 
 const directory = mkdtempSync(join(tmpdir(), "tarkov-player-search-"));
 process.env.SQLITE_PATH = join(directory, "players.db");
+process.env.PROGRESSION_SQLITE_PATH = join(directory, "progression.db");
 // The route records a request event on every branch. Point the analytics store
 // at the temp directory so it does not reach for the container's /data path.
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "admin-analytics.db");
@@ -54,7 +55,7 @@ test("multi-mode search groups one AID and ranks exact matches before prefixes",
   assert.equal(results[1].aid, 8);
 });
 
-test("whole-row profile selection prefers exact nicknames, recent modes, freshness, then order", () => {
+test("whole-row profile selection prefers the newest profile even under a different nickname", () => {
   const profiles = [
     { mode: "regular", cycleId: "persistent", name: "Other", updatedAt: 500 },
     { mode: "pve", cycleId: "persistent", name: "Nick", updatedAt: 100 },
@@ -62,31 +63,27 @@ test("whole-row profile selection prefers exact nicknames, recent modes, freshne
   ] as const;
 
   assert.equal(
-    selectPlayerSearchProfile(42, profiles, "nick", [{ aid: "42", mode: "pve" }])?.mode,
-    "pve",
-  );
-  assert.equal(
-    selectPlayerSearchProfile(42, profiles, "nick", [])?.mode,
-    "arena",
-  );
-  assert.equal(
-    selectPlayerSearchProfile(42, profiles, "missing", [{ aid: "42", mode: "pve" }])?.mode,
-    "pve",
-  );
-  assert.equal(
-    selectPlayerSearchProfile(42, profiles, "missing", [])?.mode,
+    selectPlayerSearchProfile(profiles, "nick")?.mode,
     "regular",
   );
   assert.equal(
-    selectPlayerSearchProfile(42, [
+    selectPlayerSearchProfile(profiles.slice(1), "nick")?.mode,
+    "arena",
+  );
+  assert.equal(
+    selectPlayerSearchProfile(profiles, "missing")?.mode,
+    "regular",
+  );
+  assert.equal(
+    selectPlayerSearchProfile([
       { mode: "regular", cycleId: "persistent", name: "Same", updatedAt: null },
       { mode: "pve", cycleId: "persistent", name: "Same", updatedAt: null },
-    ], "same", [])?.mode,
+    ], "same")?.mode,
     "regular",
   );
 });
 
-test("search API reads all four indexes and tolerates unavailable modes", async () => {
+test("search API reads all four indexes and rejects incomplete searches", async () => {
   const [route, db, seasonal, component] = await Promise.all([
     readFile("app/api/player/search/route.ts", "utf8"),
     readFile("lib/db.ts", "utf8"),
@@ -110,7 +107,7 @@ test("search API reads all four indexes and tolerates unavailable modes", async 
   assert.doesNotMatch(component, /role="link"/);
 });
 
-test("every player search response is no-store, so a shared cache cannot replay a 429 or 503", async () => {
+test("every player search response is no-store, so a shared cache cannot replay a 429 or 503", async (context) => {
   // The index tables exist but carry no `synced_at`, so the store reports
   // itself unavailable and the route takes its 503 branch.
   const unavailable = await search("Alpha", "198.51.100.11");
@@ -136,15 +133,17 @@ test("every player search response is no-store, so a shared cache cannot replay 
     [{ aid: 7, name: "Alpha" }],
   );
 
-  // The default search bucket allows 30 requests a minute, so the 31st is the
+  // The search bucket allows 120 requests a minute, so the 121st is the
   // rate-limited one. It used to ship the empty limiter header bag, leaving a
   // shared cache free to store and replay that 429 for every other visitor.
+  context.mock.method(Date, "now", () => 1_800_000_000_000);
   let rateLimited = null;
-  for (let attempt = 0; attempt <= 30; attempt += 1) {
-    const response = await search("Alpha", "198.51.100.14");
+  for (let attempt = 0; attempt <= 120; attempt += 1) {
+    const response = await search("invalid nickname", "198.51.100.14");
+    assert.equal(response.status, attempt < 120 ? 400 : 429);
     if (response.status === 429) rateLimited = response;
   }
-  assert.ok(rateLimited, "the 31st request from one IP must be rate limited");
+  assert.ok(rateLimited, "the 121st request from one IP must be rate limited");
   assert.deepEqual(await rateLimited.json(), { error: "Rate limit exceeded" });
   assert.equal(rateLimited.headers.get("cache-control"), "no-store");
 
@@ -165,7 +164,7 @@ test("saved nickname results hide on blur and reopen before recent history", asy
   assert.match(component, /const \[resultsOpen, setResultsOpen\] = useState\(false\)/);
   assert.match(component, /setResults\(found\);\s*setResultsOpen\(false\);\s*setRecentOpen\(false\);/);
   assert.match(component, /const found = \(await response\.json\(\)\)[\s\S]*searchRequestRef\.current !== controller/);
-  assert.match(component, /pendingResultsOpenRef\.current = true/);
+  assert.match(component, /pendingResultsOpenRef\.current = !searchDismissedRef\.current/);
   assert.match(component, /requestAnimationFrame\([\s\S]*setResultsOpen\(true\)/);
   assert.match(component, /cancelAnimationFrame/);
   assert.match(component, /if \(results\.length > 0 && searchedNickname === query\.trim\(\)\) \{[\s\S]*setRecentOpen\(false\);[\s\S]*setResultsOpen\(true\);/);
@@ -176,7 +175,7 @@ test("saved nickname results hide on blur and reopen before recent history", asy
   // `aria-controls` points at this element while results are shown, so it has to
   // carry the popup role the input advertises with `aria-haspopup="dialog"`.
   assert.match(component, /id=\{resultListId\}[\s\S]*inert=\{!showResults\}[\s\S]*role="dialog"\s*\n\s*aria-label=\{t\("search\.resultsHeading"\)\}/);
-  assert.match(component, /if \(!recentOpen && !modeMenuOpen && !resultsOpen && !pendingResultsOpenRef\.current\) return/);
+  assert.match(component, /if \(!loading && !recentOpen && !modeMenuOpen && !resultsOpen && !pendingResultsOpenRef\.current\) return/);
   assert.match(component, /searchFormRef\.current\?\.contains\(target\) \|\| resultsRef\.current\?\.contains\(target\)/);
   assert.match(component, /function closeOnFocusOut\(event: FocusEvent\) \{\s*if \(!isSearchTarget\(event\.relatedTarget\)\) closePanels\(\);/);
   assert.match(component, /document\.addEventListener\("focusout", closeOnFocusOut, true\)/);
@@ -230,7 +229,7 @@ test("fixed search mode scopes numeric, nickname, and recent selections without 
 test("fixed search filters recent and nickname profiles by the selected mode and cycle", async () => {
   const source = await readFile("components/SearchBar.tsx", "utf8");
 
-  assert.match(source, /filterRecentPlayers\(recentPlayers, query\)\.filter\(\(entry\) => \{[\s\S]*recentEntryMode\(entry\) !== fixedMode[\s\S]*entry\.cycle === cycleId/);
+  assert.match(source, /filterRecentPlayers\(recentPlayers, query\)\.filter\(\(entry\) => \{[\s\S]*const mode = fixedMode \?\? effectiveSearchMode[\s\S]*recentEntryMode\(entry\) !== mode[\s\S]*entry\.cycle === cycleId/);
   assert.match(source, /player\.profiles\.filter\(\(profile\) => profile\.mode === fixedMode/);
   assert.match(source, /profile\.cycleId === cycleId/);
   assert.match(source, /function scopedProfile\([\s\S]*if \(!fixedMode\) return profile[\s\S]*mode: fixedMode[\s\S]*cycleId: fixedMode === "seasonal"/);
@@ -245,4 +244,191 @@ test("search selection action is localized separately from profile navigation", 
   assert.match(component, /loading \? t\("common\.loading"\) : t\(onSelect \? "search\.select" : landing \? "home\.search" : "search\.view"\)/);
   assert.match(dictionary, /"search\.select": "Select"/);
   assert.match(dictionary, /"search\.select": "Выбрать"/);
+});
+
+test("saving profiles makes every persistent mode searchable without a completed index sync", async () => {
+  const { getStore, getPlayerIndexStore } = await import("../lib/db.ts");
+  const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+  for (const [index, mode] of ["regular", "pve", "arena"].entries()) {
+    const aid = 500 + index;
+    const makeStats = (nickname, updated) => parseProfileStats({
+      aid, updated, info: { nickname, side: "Usec", experience: 0 },
+      pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [] } } },
+    });
+    const store = await getStore(mode);
+    await store.upsert(aid, makeStats(`Saved_${mode}`, 1_800_000_000_000), []);
+    // An older response must not roll the nickname back in either table.
+    await store.upsert(aid, makeStats(`Old_${mode}`, 1_700_000_000_000), []);
+    const playerIndex = await getPlayerIndexStore(mode);
+    assert.equal(await playerIndex.isReady(), true);
+    assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [aid]);
+    assert.deepEqual(await playerIndex.search(`Old_${mode}`, 12), []);
+  }
+});
+
+test("all-mode search includes a newer profile whose nickname differs from the query", async () => {
+  const { getStore } = await import("../lib/db.ts");
+  const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+  const aid = 600;
+  for (const [mode, nickname, updated] of [
+    ["regular", "Original", 1_700_000_000_000],
+    ["pve", "Changed", 1_800_000_000_000],
+  ]) {
+    await (await getStore(mode)).upsert(aid, parseProfileStats({
+      aid, updated, info: { nickname, side: "Usec", experience: 0 },
+      pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [] } } },
+    }), []);
+  }
+  const response = await GET(new NextRequest("http://local/api/player/search?name=Original&mode=all", {
+    headers: { "x-real-ip": "198.51.100.30" },
+  }));
+  assert.equal(response.status, 200);
+  const [player] = await response.json();
+  assert.equal(player.aid, aid);
+  assert.deepEqual(player.profiles.map((profile) => profile.mode), ["regular", "pve"]);
+  assert.equal(selectPlayerSearchProfile(player.profiles, "Original").mode, "pve");
+});
+
+test("persistent searches fall back to the previous directory without reviving excluded players", async () => {
+  const { getPlayerIndexStore } = await import("../lib/db.ts");
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    for (const [index, mode] of ["regular", "pve", "arena"].entries()) {
+      const table = mode === "regular" ? "player_index" : `${mode}_player_index`;
+      const playerIndex = await getPlayerIndexStore(mode);
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_audit_original`);
+      try {
+        db.exec(`CREATE TABLE ${table}_previous AS SELECT * FROM ${table}_audit_original`);
+        db.exec(`CREATE TABLE ${table} AS SELECT * FROM ${table}_audit_original`);
+        db.exec(`ALTER TABLE ${table} RENAME COLUMN nickname_lower TO broken_column`);
+        db.prepare(`DELETE FROM ${table} WHERE aid = ?`).run(500 + index);
+        assert.equal(await playerIndex.isReady(), true);
+        assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        assert.deepEqual((await playerIndex.byIds([500 + index])).map((row) => row.aid), [500 + index]);
+        db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'test', 1)").run(500 + index);
+        assert.deepEqual(await playerIndex.search(`Saved_${mode}`, 12), []);
+        // A missing primary table also uses the persisted fallback.
+        db.exec(`DROP TABLE ${table}`);
+        assert.equal(await playerIndex.isReady(), true);
+        assert.deepEqual(await playerIndex.byIds([500 + index]), []);
+      } finally {
+        db.exec(`DROP TABLE IF EXISTS ${table}; DROP TABLE IF EXISTS ${table}_previous;
+          ALTER TABLE ${table}_audit_original RENAME TO ${table}`);
+        db.prepare("DELETE FROM excluded_players WHERE aid = ?").run(500 + index);
+      }
+    }
+    db.exec("ALTER TABLE arena_player_index RENAME TO arena_player_index_audit_original");
+    try {
+      const incomplete = await GET(new NextRequest("http://local/api/player/search?name=Missing&mode=all", {
+        headers: { "x-real-ip": "198.51.100.31" },
+      }));
+      assert.equal(incomplete.status, 503, "without any snapshot we must not claim a complete negative result");
+    } finally { db.exec("ALTER TABLE arena_player_index_audit_original RENAME TO arena_player_index"); }
+  } finally { db.close(); }
+});
+
+test("Seasonal profiles enter the directory and fallback stays within the requested cycle", async () => {
+  const { createSqliteSeasonalStore } = await import("../lib/seasonal/storage.ts");
+  const { getSeasonalPlayerIndexStore } = await import("../lib/seasonal/search-index.ts");
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  try {
+    const store = createSqliteSeasonalStore(db);
+    const profile = {
+      mode: "seasonal", cycleId: "search-test", aid: 700, nickname: "SeasonNick",
+      profileUpdatedAt: 1_800_000_000_000, lastAccessAt: 1_800_000_000_000,
+      lifetimePvpHours: null,
+      counters: { experience: 0, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 },
+    };
+    await store.upsertProfile(profile);
+    await store.upsertProfile({ ...profile, nickname: "OldSeasonNick", profileUpdatedAt: 1_700_000_000_000 });
+    const index = await getSeasonalPlayerIndexStore(profile.cycleId);
+    assert.equal(await index.isReady(), true);
+    assert.deepEqual((await index.search("SeasonNick", 12)).map((row) => row.aid), [700]);
+    assert.deepEqual(await index.search("OldSeasonNick", 12), []);
+    db.exec("ALTER TABLE seasonal_player_index RENAME TO seasonal_player_index_audit_original");
+    try {
+      db.exec("CREATE TABLE seasonal_player_index_previous AS SELECT * FROM seasonal_player_index_audit_original");
+      db.exec("CREATE TABLE seasonal_player_index AS SELECT * FROM seasonal_player_index_audit_original");
+      db.exec("ALTER TABLE seasonal_player_index RENAME COLUMN nickname_lower TO broken_column");
+      db.exec("DELETE FROM seasonal_player_index WHERE aid = 700");
+      db.exec("INSERT INTO seasonal_player_index (cycle_id, aid, nickname, broken_column, synced_at) VALUES ('search-test', 701, 'Other', 'other', 1)");
+      assert.deepEqual((await index.search("SeasonNick", 12)).map((row) => row.aid), [700]);
+      assert.deepEqual((await index.byIds([700])).map((row) => row.aid), [700]);
+      const otherCycle = await getSeasonalPlayerIndexStore("other-cycle");
+      assert.equal(await otherCycle.isReady(), false);
+      db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'test', 1)").run(700);
+      assert.deepEqual(await index.search("SeasonNick", 12), []);
+    } finally {
+      db.exec(`DROP TABLE seasonal_player_index; DROP TABLE seasonal_player_index_previous;
+        ALTER TABLE seasonal_player_index_audit_original RENAME TO seasonal_player_index`);
+      db.prepare("DELETE FROM excluded_players WHERE aid = ?").run(700);
+    }
+  } finally { db.close(); }
+});
+
+test("saving a direct-link profile restores the empty persistent directory before adding or renaming accounts", async () => {
+  const { getStore, getPlayerIndexStore } = await import("../lib/db.ts");
+  const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    for (const [index, mode] of ["regular", "pve", "arena"].entries()) {
+      const table = mode === "regular" ? "player_index" : `${mode}_player_index`;
+      const store = await getStore(mode);
+      const playerIndex = await getPlayerIndexStore(mode);
+      db.exec(`CREATE TABLE ${table}_previous AS SELECT * FROM ${table}`);
+      try {
+        db.exec(`DELETE FROM ${table}`);
+        assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        const stats = (aid, nickname) => parseProfileStats({
+          aid, updated: 1_900_000_000_000, info: { nickname, side: "Usec", experience: 0 },
+          pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [] } } },
+        });
+        await store.upsert(800 + index, stats(800 + index, `New_${mode}`), []);
+        assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        assert.deepEqual((await playerIndex.byIds([500 + index, 800 + index])).map((row) => row.aid).sort((a, b) => a - b), [500 + index, 800 + index]);
+        await store.upsert(500 + index, stats(500 + index, `Renamed_${mode}`), []);
+        assert.deepEqual(await playerIndex.search(`Saved_${mode}`, 12), [], "the reserve must not resurrect an old nickname");
+        assert.deepEqual((await playerIndex.search(`Renamed_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'test', 1)").run(500 + index);
+        assert.deepEqual(await playerIndex.byIds([500 + index]), []);
+      } finally {
+        db.exec(`DELETE FROM ${table}; INSERT INTO ${table} SELECT * FROM ${table}_previous; DROP TABLE ${table}_previous`);
+        db.prepare("DELETE FROM excluded_players WHERE aid = ?").run(500 + index);
+      }
+    }
+  } finally { db.close(); }
+});
+
+test("saving a Seasonal profile restores only its cycle from the reserve", async () => {
+  const { createSqliteSeasonalStore } = await import("../lib/seasonal/storage.ts");
+  const { getSeasonalPlayerIndexStore } = await import("../lib/seasonal/search-index.ts");
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  try {
+    const store = createSqliteSeasonalStore(db);
+    const profile = {
+      mode: "seasonal", cycleId: "recovery-test", aid: 900, nickname: "ReserveNick",
+      profileUpdatedAt: 1_800_000_000_000, lastAccessAt: 1_800_000_000_000,
+      lifetimePvpHours: null,
+      counters: { experience: 0, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 },
+    };
+    await store.upsertProfile(profile);
+    await store.upsertProfile({ ...profile, cycleId: "another-cycle", aid: 902, nickname: "AnotherNick" });
+    db.exec("CREATE TABLE seasonal_player_index_previous AS SELECT * FROM seasonal_player_index");
+    try {
+      db.exec("DELETE FROM seasonal_player_index");
+      const index = await getSeasonalPlayerIndexStore(profile.cycleId);
+      assert.deepEqual((await index.search("ReserveNick", 12)).map((row) => row.aid), [900]);
+      await store.upsertProfile({ ...profile, aid: 901, nickname: "NewNick" });
+      assert.deepEqual((await index.search("ReserveNick", 12)).map((row) => row.aid), [900]);
+      assert.deepEqual((await index.byIds([900, 901])).map((row) => row.aid).sort((a, b) => a - b), [900, 901]);
+      assert.equal(db.prepare("SELECT 1 FROM seasonal_player_index WHERE cycle_id = 'another-cycle'").get(), undefined);
+      await store.upsertProfile({ ...profile, nickname: "RenamedNick", profileUpdatedAt: 1_900_000_000_000 });
+      assert.deepEqual(await index.search("ReserveNick", 12), []);
+      assert.deepEqual((await index.search("RenamedNick", 12)).map((row) => row.aid), [900]);
+      db.exec("INSERT INTO excluded_players (aid, reason, created_at) VALUES (900, 'test', 1)");
+      assert.deepEqual(await index.byIds([900]), []);
+    } finally {
+      db.exec("DELETE FROM seasonal_player_index; INSERT INTO seasonal_player_index SELECT * FROM seasonal_player_index_previous; DROP TABLE seasonal_player_index_previous; DELETE FROM excluded_players WHERE aid = 900");
+    }
+  } finally { db.close(); }
 });

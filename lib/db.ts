@@ -1221,6 +1221,7 @@ export interface PlayerIndexResult {
 export interface PlayerIndexStore {
   isReady(): Promise<boolean>;
   search(nickname: string, limit: number): Promise<PlayerIndexResult[]>;
+  byIds(aids: readonly number[]): Promise<PlayerIndexResult[]>;
 }
 
 function parseStoredPlayer(
@@ -1391,9 +1392,33 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
   if (!rawDb) return null;
   try {
     const table = tableFor(mode);
-    const hasPlayerIndex = mode === "regular" && Boolean(rawDb.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
-    ).get());
+    const indexTable = mode === "regular" ? "player_index" : `${mode}_player_index`;
+    const hasPlayerIndex = Boolean(rawDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+    ).get(indexTable));
+    function updateSearchIndex(aid: number, stats: ParsedPlayerStats, now: number) {
+      if (!hasPlayerIndex) return;
+      const modeColumn = mode === "regular" ? "" : "mode, ";
+      const modeSelect = mode === "regular" ? "" : `'${mode}', `;
+      const modeWhere = mode === "regular" ? "" : `mode = '${mode}' AND `;
+      const conflict = mode === "regular" ? "aid" : "mode, aid";
+      // Recover the complete reserve before a direct-link save makes the
+      // empty primary look usable. This runs inside the profile transaction.
+      if (!rawDb.prepare(`SELECT 1 FROM ${indexTable} WHERE ${modeWhere}1 = 1 LIMIT 1`).get() &&
+        rawDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(`${indexTable}_previous`)) {
+        const columns = `${modeColumn}aid, nickname, nickname_lower, synced_at`;
+        rawDb.exec(`INSERT INTO ${indexTable} (${columns})
+          SELECT ${columns} FROM ${indexTable}_previous WHERE ${modeWhere}1 = 1`);
+      }
+      rawDb.prepare(`INSERT INTO ${indexTable} (${modeColumn}aid, nickname, nickname_lower, synced_at)
+        SELECT ${modeSelect}?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM ${table} WHERE ${modeWhere}aid = ? AND profile_updated_at = ?
+        ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
+        ON CONFLICT(${conflict}) DO UPDATE SET nickname = excluded.nickname,
+          nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
+        .run(aid, stats.nickname, normalizeNickname(stats.nickname), now,
+          aid, Number(stats.profileUpdatedAt) || 0, aid);
+    }
     const q = (sql: string) => scopePlayerSql(sql, table);
     const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
@@ -1409,7 +1434,6 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
         if (mode === "regular") {
           rawDb.exec("BEGIN IMMEDIATE");
           try {
-            const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
             const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
             if (Number(saved.changes) > 0) {
               rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
@@ -1418,17 +1442,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
                 for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
               }
             }
-            if (hasPlayerIndex) {
-              rawDb.prepare(`INSERT INTO player_index
-                (aid, nickname, nickname_lower, synced_at)
-                SELECT ?, ?, ?, ? WHERE EXISTS (
-                  SELECT 1 FROM players WHERE aid = ? AND profile_updated_at = ?
-                ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
-                ON CONFLICT(aid) DO UPDATE SET nickname = excluded.nickname,
-                  nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
-                .run(aid, stats.nickname, normalizeNickname(stats.nickname), now,
-                  aid, profileUpdatedAt, aid);
-            }
+            updateSearchIndex(aid, stats, now);
             rawDb.exec("COMMIT");
           } catch (error) {
             rawDb.exec("ROLLBACK");
@@ -1452,14 +1466,23 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
               rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
                 .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
               upsertArenaSqlite(rawDb, stats.arenaProfile, now);
+              updateSearchIndex(aid, stats, now);
               rawDb.exec("COMMIT");
             } catch (error) {
               rawDb.exec("ROLLBACK");
               throw error;
             }
           } else {
-            rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-              .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+            rawDb.exec("BEGIN IMMEDIATE");
+            try {
+              rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+              updateSearchIndex(aid, stats, now);
+              rawDb.exec("COMMIT");
+            } catch (error) {
+              rawDb.exec("ROLLBACK");
+              throw error;
+            }
           }
         }
       },
@@ -1754,8 +1777,9 @@ const PLAYER_INDEX_SPECS: Record<PersistentPlayerIndexMode, {
   arena: { table: "arena_player_index", meta: "arena_player_index_meta", modeWhere: "i.mode = 'arena' AND " },
 };
 
-function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean) {
-  const { table, meta, modeWhere } = PLAYER_INDEX_SPECS[mode];
+function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean, previous = false) {
+  const { table: currentTable, meta, modeWhere } = PLAYER_INDEX_SPECS[mode];
+  const table = previous ? `${currentTable}_previous` : currentTable;
   const profileTable = mode === "regular" ? "players" : "mode_players";
   const profileMode = mode === "regular" ? "" : ` AND p.mode = '${mode}'`;
   const profileSelect = includeProfileMetadata ? "p.profile_updated_at" : "NULL";
@@ -1764,6 +1788,10 @@ function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata:
     : "";
   return {
     ready: `SELECT value FROM ${meta} WHERE key = 'synced_at'`,
+    populated: `SELECT i.nickname_lower FROM ${table} AS i WHERE ${modeWhere}1 = 1 LIMIT 1`,
+    byIds: (placeholders: string) => `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
+      `WHERE ${modeWhere}i.aid IN (${placeholders}) ` +
+      "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)",
     exact: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
       `WHERE ${modeWhere}i.nickname_lower = ? ` +
       "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid) " +
@@ -1790,27 +1818,42 @@ function sqliteProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqlitePlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean): PlayerIndexStore {
   const sql = playerIndexSql(mode, includeProfileMetadata);
+  const previousSql = playerIndexSql(mode, includeProfileMetadata, true);
+  function populated(source: typeof sql): boolean {
+    try { return Boolean(db.prepare(source.populated).get()); } catch { return false; }
+  }
+  function ready(): boolean {
+    try { db.prepare(sql.populated).get(); return Boolean(db.prepare(sql.ready).get()); } catch { return false; }
+  }
+  function read(readRows: (source: typeof sql) => PlayerIndexResult[]): PlayerIndexResult[] {
+    let failure: unknown;
+    for (const source of [sql, previousSql]) {
+      if (!populated(source) && !(source === sql && ready() && !populated(previousSql))) continue;
+      try { return readRows(source); } catch (error) { failure = error; }
+    }
+    throw failure ?? new Error("Player nickname index is not available");
+  }
   return {
     async isReady() {
-      return Boolean(db.prepare(sql.ready).get());
+      // A failed sync keeps the last table. A missing readiness marker must
+      // not hide an intact directory or profiles added through a direct link.
+      return populated(sql) || populated(previousSql) || ready();
     },
     async search(nickname, limit) {
       const q = normalizeNickname(nickname);
-      const exact = toIndexResults(
-        db.prepare(sql.exact).all(q, limit) as { aid: number; name: string; updated_at?: unknown }[]
-      );
-      const prefix = toIndexResults(
-        db.prepare(sql.prefix).all(q, `${q}\uffff`, limit * 2) as {
-          aid: number;
-          name: string;
-          updated_at?: unknown;
-        }[]
-      );
-      const out: PlayerIndexResult[] = [];
-      const seen = new Set<number>();
-      pushUniqueIndexResults(out, seen, exact, limit);
-      pushUniqueIndexResults(out, seen, prefix, limit);
-      return out;
+      return read((source) => {
+        const exact = toIndexResults(db.prepare(source.exact).all(q, limit));
+        const prefix = toIndexResults(db.prepare(source.prefix).all(q, `${q}\uffff`, limit * 2));
+        const out: PlayerIndexResult[] = [];
+        const seen = new Set<number>();
+        pushUniqueIndexResults(out, seen, exact, limit);
+        pushUniqueIndexResults(out, seen, prefix, limit);
+        return out;
+      });
+    },
+    async byIds(aids) {
+      if (aids.length === 0) return [];
+      return read((source) => toIndexResults(db.prepare(source.byIds(aids.map(() => "?").join(","))).all(...aids)));
     },
   };
 }

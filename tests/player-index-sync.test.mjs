@@ -96,6 +96,7 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
     await assert.rejects(launch(dbPath, url, "--force"), /appears truncated/);
     const afterRejected = new DatabaseSync(dbPath);
     assert.equal(afterRejected.prepare("SELECT COUNT(*) AS n FROM player_index").get().n, 4);
+    afterRejected.exec("CREATE TABLE players (aid INTEGER PRIMARY KEY); INSERT INTO players VALUES (1)");
     afterRejected.close();
 
     body = JSON.stringify({ "5": "Replacement", "6": "Next" });
@@ -103,8 +104,10 @@ test("regular index streams, keeps validators and rejects a truncated replacemen
     terminateOnce = true;
     await launch(dbPath, url, "--force");
     const replaced = new DatabaseSync(dbPath);
+    assert.equal(replaced.prepare("SELECT COUNT(*) AS n FROM player_index_previous").get().n, 4);
     assert.deepEqual(replaced.prepare("SELECT aid, nickname FROM player_index ORDER BY aid").all()
       .map((row) => ({ ...row })), [
+      { aid: 1, nickname: "Alpha" },
       { aid: 5, nickname: "Replacement" },
       { aid: 6, nickname: "Next" },
     ]);

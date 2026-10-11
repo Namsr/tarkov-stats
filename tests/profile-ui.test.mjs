@@ -740,7 +740,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(route, /"Cache-Control": "public, max-age=60, stale-while-revalidate=300"/);
   assert.ok((route.match(/\{ headers: profileHeaders \}/g) ?? []).length >= 2);
   assert.match(route, /const regularSnapshot = makePlayerSnapshot/);
-  assert.match(route, /after\(async \(\) => \{\s*await persistRegularProfileSnapshot\(regularSnapshot, \{ upsertPlayer: !\(fromCache \|\| fromEdgeCache\), strict: true \}\)/);
+  assert.match(route, /after\(async \(\) => \{\s*await persistRegularProfileSnapshot\(regularSnapshot, \{ strict: true \}\)/);
   const regularRoute = sliceDeclaration(
     route,
     "    const regularSnapshot = makePlayerSnapshot",
