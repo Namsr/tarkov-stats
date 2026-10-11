@@ -15,6 +15,7 @@ import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchProfileResult, PlayerSearchResult } from "@/types/tarkov";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
+import { fetchPlayerSearch } from "@/lib/client-search-request";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
 type SearchMode = GameMode | "all";
@@ -129,10 +130,13 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     setSearchedNickname(clean);
     try {
       const params = new URLSearchParams({ name: clean, mode });
-      const response = await fetch(`/api/player/search?${params}`, { signal: controller.signal });
-      if (response.status === 429) throw new Error(t("search.tooManyRequests"));
-      if (response.status === 503) throw new Error(t("search.indexUnavailable"));
-      if (!response.ok) throw new Error(t("search.searchFailed"));
+      const response = await fetchPlayerSearch(`/api/player/search?${params}`, controller.signal);
+      if (!response.ok) {
+        if (searchRequestRef.current !== controller || controller.signal.aborted) return;
+        setError(t(response.status === 429 ? "search.tooManyRequests"
+          : response.status === 503 ? "search.indexUnavailable" : "search.searchFailed"));
+        return;
+      }
 
       const found = (await response.json()) as PlayerSearchResult[];
       if (searchRequestRef.current !== controller || controller.signal.aborted) return;
@@ -152,8 +156,8 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
       pendingResultsOpenRef.current = !searchDismissedRef.current;
     } catch (caught) {
       if (searchRequestRef.current !== controller || controller.signal.aborted) return;
-      if (caught instanceof Error && caught.name === "AbortError") return;
-      setError(caught instanceof Error ? caught.message : t("search.searchFailed"));
+      setError(t(caught instanceof TypeError || caught instanceof Error && ["TimeoutError", "AbortError"].includes(caught.name)
+        ? "search.networkError" : "search.searchFailed"));
       setNotFound(false);
     } finally {
       if (searchRequestRef.current === controller) {

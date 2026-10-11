@@ -10,6 +10,104 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { groupPlayerSearchResults, selectPlayerSearchProfile } from "../lib/player-search.ts";
+import { fetchPlayerSearch } from "../lib/client-search-request.ts";
+
+test("nickname search retries one network failure and returns the recovered response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const result = Response.json([{ aid: 1080203, name: "Ratanyahu", profiles: [] }]);
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "/api/player/search?name=RATANYAHU&mode=all");
+    assert.equal(options.cache, "no-store");
+    calls++;
+    if (calls === 1) throw new TypeError("Failed to fetch");
+    return result;
+  });
+  const pending = fetchPlayerSearch("/api/player/search?name=RATANYAHU&mode=all", new AbortController().signal);
+  await new Promise(setImmediate);
+  assert.equal(calls, 1);
+  t.mock.timers.tick(300);
+  assert.equal(await pending, result);
+  assert.equal(calls, 2);
+});
+
+test("nickname search bounds network retries and preserves HTTP errors", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    throw new TypeError("Failed to fetch");
+  });
+  const pending = fetchPlayerSearch("/api/player/search?name=Alpha", new AbortController().signal);
+  const rejected = assert.rejects(pending, TypeError);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(300);
+  await rejected;
+  assert.equal(calls, 2);
+
+  for (const status of [400, 429, 502, 503, 504]) {
+    let attempts = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      attempts++;
+      return new Response(null, { status });
+    });
+    assert.equal((await fetchPlayerSearch("/api/player/search?name=Alpha", new AbortController().signal)).status, status);
+    assert.equal(attempts, 1);
+  }
+});
+
+test("cancelling nickname search cancels the retry and an in-flight request", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    throw new TypeError("Failed to fetch");
+  });
+  const controller = new AbortController();
+  const pending = fetchPlayerSearch("/api/player/search?name=Alpha", controller.signal);
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  await new Promise(setImmediate);
+  controller.abort();
+  await rejected;
+  t.mock.timers.tick(300);
+  assert.equal(calls, 1);
+
+  t.mock.method(globalThis, "fetch", (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }));
+  const active = new AbortController();
+  const activeRejected = assert.rejects(fetchPlayerSearch("/api/player/search?name=Alpha", active.signal), { name: "AbortError" });
+  active.abort();
+  await activeRejected;
+
+  t.mock.method(globalThis, "fetch", () => assert.fail("cancelled search sent a request"));
+  await assert.rejects(fetchPlayerSearch("/api/player/search?name=Alpha", active.signal), { name: "AbortError" });
+});
+
+test("nickname search applies one deadline to both attempts", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const deadline = new AbortController();
+  let deadlines = 0;
+  let calls = 0;
+  t.mock.method(AbortSignal, "timeout", (ms) => {
+    assert.equal(ms, 10_000);
+    deadlines++;
+    return deadline.signal;
+  });
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    calls++;
+    if (calls === 1) throw new TypeError("Failed to fetch");
+    return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  });
+  const rejected = assert.rejects(fetchPlayerSearch("/api/player/search?name=Alpha", new AbortController().signal), { name: "TimeoutError" });
+  await new Promise(setImmediate);
+  t.mock.timers.tick(300);
+  await new Promise(setImmediate);
+  deadline.abort(new DOMException("Timed out", "TimeoutError"));
+  await rejected;
+  assert.equal(calls, 2);
+  assert.equal(deadlines, 1);
+});
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
