@@ -85,7 +85,14 @@ export function materializeDuePopulations(db, scopes, { now = Date.now(), refres
     if (current && now - Number(current.generated_at) < intervalMs) continue;
     try {
       if (refresh) refresh(db, mode, cycleId);
-      else if (mode === "regular") materializeRegularProgression(db);
+      else if (mode === "regular") {
+        // Captures need the same writer. Commit one complete player's repair at
+        // a time; a failed publication continues serving its previous generation.
+        const aids = db.prepare(`SELECT DISTINCT aid FROM progression_snapshots
+          WHERE mode = 'regular' AND cycle_id = 'persistent' ORDER BY aid`).all();
+        for (const { aid } of aids) materializeRegularProgression(db, Number(aid), { refreshAggregates: false });
+        refreshSqliteProgressionAggregates(db, mode, cycleId);
+      }
       else refreshSqliteProgressionAggregates(db, mode, cycleId);
       published.push({ mode, cycleId, ...publish(db, mode, cycleId, now) });
     } catch (error) {

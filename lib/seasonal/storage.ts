@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+import { retrySqliteStore } from "../sqlite-busy-retry.ts";
 import type {
   CaptureSnapshotResult,
   PlayerProfileRecord,
@@ -505,7 +506,9 @@ export function initializeSeasonalLeaderboardChangeJournal(db: SqliteDatabase): 
 }
 
 export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean } {
-  db.exec("PRAGMA busy_timeout = 30000");
+  // Opening a foreground store sets a short wait. Reusing the schema must not
+  // turn that wait back into a 30-second synchronous pause of the HTTP process.
+  if (!Number(db.prepare("PRAGMA busy_timeout").get()?.timeout)) db.exec("PRAGMA busy_timeout = 30000");
   if (currentSeasonalSchema(db)) {
     // A current database already has every object in SEASONAL_LEADERBOARD_CHANGE_SCHEMA
     // — all of them are in CURRENT_SCHEMA_OBJECTS — so exec'ing that schema here would
@@ -1117,9 +1120,10 @@ export function validateTaskPriority(priority: ScanTaskPriority): void {
 }
 
 export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
+  db.exec("PRAGMA busy_timeout = 250");
   initializeSeasonalSchema(db);
   const identityWhere = "mode = ? AND cycle_id = ? AND aid = ?";
-  return {
+  return retrySqliteStore<SeasonalStore>({
     async getCycle(cycleId) {
       const row = db.prepare("SELECT * FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) as Record<string, unknown> | undefined;
       return row ? {
@@ -1394,7 +1398,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         throw error;
       }
     },
-  };
+  });
 }
 
 export function identityObject(profile: SeasonalProfile): ProfileIdentity {

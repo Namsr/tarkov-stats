@@ -105,7 +105,10 @@ test("current progression schema initialization performs no migration writes", (
       db.exec(sql);
     },
   });
-  assert.deepEqual(writes, ["PRAGMA busy_timeout = 30000"]);
+  assert.deepEqual(writes, []);
+  db.exec("PRAGMA busy_timeout = 250");
+  initializeSeasonalSchema(db);
+  assert.equal(db.prepare("PRAGMA busy_timeout").get()!.timeout, 250);
 });
 
 test("an unchanged Seasonal cycle stays read-only under a concurrent writer", () => {

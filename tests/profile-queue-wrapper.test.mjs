@@ -5,7 +5,35 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { runProfileQueue, runCollector, summaryComplete, PROFILE_QUEUE_MODES } from '../scripts/run-profile-queue.mjs';
+import { runProfileQueue, runCollector, releaseArenaLease, summaryComplete, PROFILE_QUEUE_MODES } from '../scripts/run-profile-queue.mjs';
+import { DatabaseSync } from 'node:sqlite';
+
+test('the parent releases only its dead Arena child lease, including a forced stop', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'arena-dead-child-'));
+  const file = join(directory, 'players.db');
+  const script = `.arena-lease-${randomUUID()}.mjs`;
+  const scriptPath = resolve('scripts', script);
+  const previous = process.env.SQLITE_PATH;
+  const db = new DatabaseSync(file);
+  try {
+    db.exec('CREATE TABLE arena_profile_sync_lease (id INTEGER PRIMARY KEY, owner TEXT, heartbeat_at INTEGER)');
+    db.prepare('INSERT INTO arena_profile_sync_lease VALUES (1,?,0)').run('other-live-owner');
+    await releaseArenaLease('dead-owner', file);
+    assert.equal(db.prepare('SELECT owner FROM arena_profile_sync_lease').get().owner, 'other-live-owner');
+    db.exec('DELETE FROM arena_profile_sync_lease');
+    process.env.SQLITE_PATH = file;
+    await writeFile(scriptPath, `import {DatabaseSync} from 'node:sqlite';
+      const db=new DatabaseSync(process.env.SQLITE_PATH);
+      db.prepare('INSERT INTO arena_profile_sync_lease VALUES (1,?,0)').run(process.env.ARENA_PROFILE_SYNC_RUN_ID);
+      process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);`);
+    const stopped = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 700, Date.now() + 10_000);
+    assert.equal(stopped.killed, true);
+    assert.equal(db.prepare('SELECT count(*) n FROM arena_profile_sync_lease').get().n, 0);
+  } finally {
+    if (previous === undefined) delete process.env.SQLITE_PATH; else process.env.SQLITE_PATH = previous;
+    db.close(); await rm(scriptPath, { force: true }); await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
@@ -52,6 +80,17 @@ test('one shared hour bounds every slice and unfinished modes remain reported', 
   assert.ok(h.events.filter(x => x.event === 'MODE_START').every(x => x.budgetMs <= 300_000));
   assert.ok(Object.values(result.modes).every(x => !x.complete && x.backlog === 10));
   assert.ok(!h.calls.includes('warmup'));
+});
+
+test('obsolete upstream targets stay visible as deferred in the completed queue', async () => {
+  const h = harness(mode => mode.name === 'regular' ? { ...done(), summary: { ...done().summary, deferred: 3 } }
+    : mode.name === 'warmup' ? { code: 0, summary: { bounded: false, stopped: false, processed: 0 } } : done());
+  const result = await h.run();
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'complete_with_deferred');
+  assert.equal(result.deferred, 3);
+  assert.equal(result.modes.regular.deferred, 3);
+  assert.equal(h.events.find(x => x.event === 'MODE_RESULT' && x.mode === 'regular').deferred, 3);
 });
 
 test('failed feeds, empty reports and profile errors cannot masquerade as completion', async () => {

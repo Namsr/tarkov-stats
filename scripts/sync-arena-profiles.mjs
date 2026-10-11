@@ -39,7 +39,7 @@ const ARENA_DYNAMIC_CACHE_VERSION_KEY = "dynamic_cache_version";
 const ARENA_MIGRATION_BATCH_SIZE = 500;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
-const runId = randomUUID();
+const runId = process.env.ARENA_PROFILE_SYNC_RUN_ID || randomUUID();
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
   updatedUrl: process.env.ARENA_PROFILE_UPDATED_URL || "https://players.tarkov.dev/arena/updated.json",

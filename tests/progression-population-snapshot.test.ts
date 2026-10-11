@@ -3,6 +3,35 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
+import { buildProgressionMetricSeries, buildProgressionPopulationMetric, type DailyRow } from "../lib/seasonal/progression.ts";
+import { PLAYTIME_RANGES } from "../lib/playtime-brackets.ts";
+
+test("streamed population matches adaptive windows, repeated players, ties and every playtime band", () => {
+  const rows: DailyRow[] = [];
+  for (let bucket = 10; bucket <= 1210; bucket += 10) {
+    if (bucket > 250 && bucket < 710) continue;
+    for (let aid = 1; aid <= (bucket <= 30 ? 250 : 25); aid++) {
+      for (let version = 1; version <= 2; version++) rows.push({
+        aid, point_id: aid * 100 + version, raid_bucket: bucket, pmc_raids: bucket - 1,
+        value: aid * version, local_date: "2026-10-11", freshness_at: bucket + version,
+        observed_at: bucket + version, lifetime_hours: aid % 9 === 0 ? null : aid * 37,
+        confidence: version / 2, series_id: 1, level: aid % 60,
+      });
+    }
+  }
+  const identity = { mode: "regular" as const, cycleId: "persistent", aid: -1 };
+  for (const metric of ["xp", "xp_per_day"] as const) {
+    const actual = buildProgressionPopulationMetric(rows.values(), metric, PLAYTIME_RANGES);
+    const expected = buildProgressionMetricSeries(rows, identity, metric);
+    assert.deepEqual(actual.overall, expected.overall);
+    assert.equal(actual.freshnessAt, expected.freshnessAt);
+    for (const [i, range] of PLAYTIME_RANGES.entries()) {
+      const scoped = rows.filter(row => row.lifetime_hours != null && row.lifetime_hours >= range.min &&
+        (range.max == null || row.lifetime_hours < range.max));
+      assert.deepEqual(actual.byHours[i].points, buildProgressionMetricSeries(scoped, identity, metric).overall);
+    }
+  }
+});
 
 function seed(db: DatabaseSync, mode = "regular", cycleId = "persistent") {
   const profile = db.prepare(`INSERT INTO player_profiles (

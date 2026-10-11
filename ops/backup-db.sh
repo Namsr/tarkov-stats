@@ -25,7 +25,7 @@ STAGE="$DIR/.tarkovstats-backup-pending"
 FINAL="$DIR/backup-$(date +%Y%m%d-%H%M%S)-$$"
 
 cleanup() {
-  rm -f -- "$SNAPSHOT" "$SNAPSHOT-journal" "$SNAPSHOT-wal" "$SNAPSHOT-shm"
+  rm -f -- "$SNAPSHOT" "$SNAPSHOT.gz" "$SNAPSHOT-journal" "$SNAPSHOT-wal" "$SNAPSHOT-shm"
   if [ -d "$STAGE" ] && [ ! -L "$STAGE" ]; then
     for name in $DATABASES; do rm -f -- "$STAGE/$name.db.gz"; done
     rm -f -- "$STAGE/.complete"
@@ -46,8 +46,9 @@ for NAME in $DATABASES; do
     source_bytes=$(( source_bytes + $(stat -c %s "$VOL/$NAME.db-wal") ))
   fi
   available_kb=$(df -Pk "$VOL" | awk 'NR == 2 { print $4 }')
-  # Allow for the snapshot, a worst-case compressed copy, and 256 MiB headroom.
-  required_kb=$(( (source_bytes * 2 + 1023) / 1024 + 262144 ))
+  # Reserve the snapshot first. Compression checks actual free space on every
+  # output chunk rather than rejecting a small archive as another full database.
+  required_kb=$(( (source_bytes + 1023) / 1024 + 262144 ))
   if [ "$available_kb" -lt "$required_kb" ]; then
     echo "insufficient free space for $NAME backup; retaining previous set" >&2
     exit 1
@@ -72,8 +73,26 @@ for NAME in $DATABASES; do
         throw new Error(`Invalid backup database: ${name}`);
       }
     } finally { snapshot.close(); }
+    const { createGzip } = require("node:zlib");
+    const output = fs.openSync(target + ".gz", "wx", 0o600);
+    (async () => {
+      const source = fs.createReadStream(target);
+      const input = createGzip();
+      source.on("error", error => input.destroy(error));
+      source.pipe(input);
+      try {
+        for await (const chunk of input) {
+          const space = fs.statfsSync(target);
+          if (space.bavail * space.bsize < 256 * 1024 * 1024 + chunk.length) {
+            throw new Error("insufficient free space during backup compression; retaining previous set");
+          }
+          let offset = 0;
+          while (offset < chunk.length) offset += fs.writeSync(output, chunk, offset, chunk.length - offset);
+        }
+      } finally { source.destroy(); input.destroy(); fs.closeSync(output); }
+    })().catch(error => { console.error(error.message); process.exitCode = 1; });
   ' "$NAME"
-  gzip -c "$SNAPSHOT" > "$STAGE/$NAME.db.gz"
+  mv -- "$SNAPSHOT.gz" "$STAGE/$NAME.db.gz"
   gzip -t "$STAGE/$NAME.db.gz"
   rm -f -- "$SNAPSHOT"
 done

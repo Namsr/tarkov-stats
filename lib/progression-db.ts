@@ -6,6 +6,7 @@ import {
   type PersistentProgressionMode,
 } from "@/lib/regular-progression";
 import { raidBucket } from "@/lib/seasonal/progression";
+import { retrySqliteStore } from "./sqlite-busy-retry.ts";
 export { seedPveProgressionBaselines, type PveProgressionSeedResult } from "./pve-progression-seed-core.ts";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
@@ -155,6 +156,7 @@ async function getSqliteDb(): Promise<any | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(progressionPath);
+    db.exec("PRAGMA busy_timeout = 250");
     // Initialize before caching, so a failed schema init cannot leave a
     // half-initialized handle behind: the cache stays empty, every later request
     // would reopen one, and each of those would leak a descriptor.
@@ -180,8 +182,9 @@ export function createSqliteProgressionStore(
   db: any,
   mode: PersistentProgressionMode = "regular",
 ): ProgressionStore {
+  db.exec("PRAGMA busy_timeout = 250");
   initializeSeasonalSchema(db);
-  return {
+  return retrySqliteStore<ProgressionStore>({
     async recordSnapshot(input) {
       validate(input);
       const previousRow = db.prepare(
@@ -277,7 +280,7 @@ export function createSqliteProgressionStore(
       ).all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
       return rows.map((row) => toSnapshot(row)).filter((row): row is ProgressionSnapshot => row != null);
     },
-  };
+  });
 }
 
 export async function getProgressionStore(
