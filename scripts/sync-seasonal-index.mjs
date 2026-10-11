@@ -85,6 +85,16 @@ function initSchema() {
       synced_at INTEGER NOT NULL,
       PRIMARY KEY (cycle_id, aid)
     );
+    CREATE TABLE IF NOT EXISTS seasonal_player_index_previous (
+      cycle_id TEXT NOT NULL,
+      aid INTEGER NOT NULL,
+      nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL,
+      synced_at INTEGER NOT NULL,
+      PRIMARY KEY (cycle_id, aid)
+    );
+    CREATE INDEX IF NOT EXISTS idx_seasonal_player_index_previous_name
+      ON seasonal_player_index_previous(cycle_id, nickname_lower, aid);
     CREATE TABLE IF NOT EXISTS seasonal_player_index_meta (
       cycle_id TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -161,6 +171,16 @@ async function consumeIndex(response, syncedAt, previousRows, signal) {
 function replaceIndex(metadata) {
   db.exec("BEGIN IMMEDIATE");
   try {
+    db.prepare(`INSERT OR IGNORE INTO seasonal_player_index_next (cycle_id, aid, nickname, nickname_lower, synced_at)
+      SELECT i.cycle_id, i.aid, i.nickname, i.nickname_lower, i.synced_at FROM seasonal_player_index i
+      WHERE i.cycle_id = ? AND EXISTS (SELECT 1 FROM player_profiles p
+        WHERE p.mode = 'seasonal' AND p.cycle_id = i.cycle_id AND p.aid = i.aid)`).run(cycle.cycleId);
+    if (currentRowCount() > 0) {
+      db.prepare("DELETE FROM seasonal_player_index_previous WHERE cycle_id = ?").run(cycle.cycleId);
+      db.prepare(`INSERT INTO seasonal_player_index_previous (cycle_id, aid, nickname, nickname_lower, synced_at)
+        SELECT cycle_id, aid, nickname, nickname_lower, synced_at
+        FROM seasonal_player_index WHERE cycle_id = ?`).run(cycle.cycleId);
+    }
     db.prepare("DELETE FROM seasonal_player_index WHERE cycle_id = ?").run(cycle.cycleId);
     db.prepare(`INSERT INTO seasonal_player_index (cycle_id, aid, nickname, nickname_lower, synced_at)
       SELECT cycle_id, aid, nickname, nickname_lower, synced_at
@@ -169,7 +189,7 @@ function replaceIndex(metadata) {
       ON CONFLICT(cycle_id, key) DO UPDATE SET value = excluded.value`).run(cycle.cycleId, "synced_at", metadata.syncedAt);
     for (const [key, value] of Object.entries({
       source_url: sourceUrl,
-      row_count: metadata.inserted,
+      row_count: currentRowCount(),
       source_rows: metadata.sourceRows,
       skipped: metadata.skipped,
       bytes: metadata.bytes,

@@ -88,7 +88,7 @@ async function refreshStoredRegularProfile(aid: number): Promise<void> {
       const achievementIds = Object.keys(result.profile.achievements ?? {});
       await persistRegularProfileSnapshot(
         makePlayerSnapshot(aid, stats, achievementIds, Number(stats.profileUpdatedAt)),
-        { upsertPlayer: !(result.fromCache || result.fromEdgeCache), strict: true },
+        { strict: true },
       );
       const risk = await getRiskEvaluation({ aid, mode: "regular", cycleId: "persistent" });
       if (!risk || risk.scoreVersion !== riskScoreVersion("regular", "persistent") ||
@@ -882,8 +882,6 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   let source: "upstream" | "cache" = "upstream";
   let cache: "hit" | "miss" | "bypass" = force ? "bypass" : "miss";
   let fetchedUpstream = false;
-  let fromCache = false;
-  let fromEdgeCache = false;
 
   // Built as a closure so the forced path can fall back to the stored snapshot
   // when upstream is unreachable or reports the profile as missing. Arena and
@@ -968,8 +966,6 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
     fetchedUpstream = true;
     const result = await getPublicProfile(aid, { force });
     profile = result.profile;
-    fromCache = result.fromCache === true;
-    fromEdgeCache = result.fromEdgeCache === true;
     source = result.fromCache || result.fromEdgeCache ? "cache" : "upstream";
     cache = force ? "bypass" : result.fromCache || result.fromEdgeCache ? "hit" : "miss";
   } catch (error) {
@@ -1030,7 +1026,7 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
       storedRisk.profileUpdatedAt >= Number(stats.profileUpdatedAt) &&
       Date.now() - storedRisk.evaluatedAt < 5 * 60 * 60 * 1000;
     after(async () => {
-      await persistRegularProfileSnapshot(regularSnapshot, { upsertPlayer: !(fromCache || fromEdgeCache), strict: true }).catch((error) => {
+      await persistRegularProfileSnapshot(regularSnapshot, { strict: true }).catch((error) => {
         console.error("regular profile capture after response failed", error);
       });
       if (!riskIsFresh) {

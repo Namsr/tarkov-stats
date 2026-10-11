@@ -68,14 +68,17 @@ test("Arena index downloads the full object and replaces its table atomically", 
     await assert.rejects(launch(dbPath, url, "--force"), /appears truncated/);
     const afterRejected = new DatabaseSync(dbPath);
     assert.equal(afterRejected.prepare("SELECT COUNT(*) AS n FROM arena_player_index").get().n, 4);
+    afterRejected.exec("CREATE TABLE mode_players (mode TEXT, aid INTEGER); INSERT INTO mode_players VALUES ('arena', 41)");
     afterRejected.close();
 
     body = JSON.stringify({ "43": "Replacement", "44": "New" });
     etag = '"arena-v3"';
     await launch(dbPath, url, "--force");
     const replaced = new DatabaseSync(dbPath);
-    assert.deepEqual(replaced.prepare("SELECT aid, nickname FROM arena_player_index").all()
+    assert.equal(replaced.prepare("SELECT COUNT(*) AS n FROM arena_player_index_previous").get().n, 4);
+    assert.deepEqual(replaced.prepare("SELECT aid, nickname FROM arena_player_index ORDER BY aid").all()
       .map((row) => ({ ...row })), [
+        { aid: 41, nickname: "ArenaOne" },
         { aid: 43, nickname: "Replacement" },
         { aid: 44, nickname: "New" },
       ]);
