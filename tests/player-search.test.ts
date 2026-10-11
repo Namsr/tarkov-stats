@@ -301,6 +301,7 @@ test("persistent searches fall back to the previous directory without reviving e
         db.exec(`CREATE TABLE ${table}_previous AS SELECT * FROM ${table}_audit_original`);
         db.exec(`CREATE TABLE ${table} AS SELECT * FROM ${table}_audit_original`);
         db.exec(`ALTER TABLE ${table} RENAME COLUMN nickname_lower TO broken_column`);
+        db.prepare(`DELETE FROM ${table} WHERE aid = ?`).run(500 + index);
         assert.equal(await playerIndex.isReady(), true);
         assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
         assert.deepEqual((await playerIndex.byIds([500 + index])).map((row) => row.aid), [500 + index]);
@@ -349,6 +350,8 @@ test("Seasonal profiles enter the directory and fallback stays within the reques
       db.exec("CREATE TABLE seasonal_player_index_previous AS SELECT * FROM seasonal_player_index_audit_original");
       db.exec("CREATE TABLE seasonal_player_index AS SELECT * FROM seasonal_player_index_audit_original");
       db.exec("ALTER TABLE seasonal_player_index RENAME COLUMN nickname_lower TO broken_column");
+      db.exec("DELETE FROM seasonal_player_index WHERE aid = 700");
+      db.exec("INSERT INTO seasonal_player_index (cycle_id, aid, nickname, broken_column, synced_at) VALUES ('search-test', 701, 'Other', 'other', 1)");
       assert.deepEqual((await index.search("SeasonNick", 12)).map((row) => row.aid), [700]);
       assert.deepEqual((await index.byIds([700])).map((row) => row.aid), [700]);
       const otherCycle = await getSeasonalPlayerIndexStore("other-cycle");
@@ -359,6 +362,73 @@ test("Seasonal profiles enter the directory and fallback stays within the reques
       db.exec(`DROP TABLE seasonal_player_index; DROP TABLE seasonal_player_index_previous;
         ALTER TABLE seasonal_player_index_audit_original RENAME TO seasonal_player_index`);
       db.prepare("DELETE FROM excluded_players WHERE aid = ?").run(700);
+    }
+  } finally { db.close(); }
+});
+
+test("saving a direct-link profile restores the empty persistent directory before adding or renaming accounts", async () => {
+  const { getStore, getPlayerIndexStore } = await import("../lib/db.ts");
+  const { parseProfileStats } = await import("../lib/tarkov-api.ts");
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  try {
+    for (const [index, mode] of ["regular", "pve", "arena"].entries()) {
+      const table = mode === "regular" ? "player_index" : `${mode}_player_index`;
+      const store = await getStore(mode);
+      const playerIndex = await getPlayerIndexStore(mode);
+      db.exec(`CREATE TABLE ${table}_previous AS SELECT * FROM ${table}`);
+      try {
+        db.exec(`DELETE FROM ${table}`);
+        assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        const stats = (aid, nickname) => parseProfileStats({
+          aid, updated: 1_900_000_000_000, info: { nickname, side: "Usec", experience: 0 },
+          pmcStats: { eft: { totalInGameTime: 3600, overAllCounters: { Items: [] } } },
+        });
+        await store.upsert(800 + index, stats(800 + index, `New_${mode}`), []);
+        assert.deepEqual((await playerIndex.search(`Saved_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        assert.deepEqual((await playerIndex.byIds([500 + index, 800 + index])).map((row) => row.aid).sort((a, b) => a - b), [500 + index, 800 + index]);
+        await store.upsert(500 + index, stats(500 + index, `Renamed_${mode}`), []);
+        assert.deepEqual(await playerIndex.search(`Saved_${mode}`, 12), [], "the reserve must not resurrect an old nickname");
+        assert.deepEqual((await playerIndex.search(`Renamed_${mode}`, 12)).map((row) => row.aid), [500 + index]);
+        db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (?, 'test', 1)").run(500 + index);
+        assert.deepEqual(await playerIndex.byIds([500 + index]), []);
+      } finally {
+        db.exec(`DELETE FROM ${table}; INSERT INTO ${table} SELECT * FROM ${table}_previous; DROP TABLE ${table}_previous`);
+        db.prepare("DELETE FROM excluded_players WHERE aid = ?").run(500 + index);
+      }
+    }
+  } finally { db.close(); }
+});
+
+test("saving a Seasonal profile restores only its cycle from the reserve", async () => {
+  const { createSqliteSeasonalStore } = await import("../lib/seasonal/storage.ts");
+  const { getSeasonalPlayerIndexStore } = await import("../lib/seasonal/search-index.ts");
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  try {
+    const store = createSqliteSeasonalStore(db);
+    const profile = {
+      mode: "seasonal", cycleId: "recovery-test", aid: 900, nickname: "ReserveNick",
+      profileUpdatedAt: 1_800_000_000_000, lastAccessAt: 1_800_000_000_000,
+      lifetimePvpHours: null,
+      counters: { experience: 0, pmcRaids: 1, scavRaids: 0, pmcSurvived: 1, pmcDeaths: 0, pmcKills: 1, killedPmc: 0 },
+    };
+    await store.upsertProfile(profile);
+    await store.upsertProfile({ ...profile, cycleId: "another-cycle", aid: 902, nickname: "AnotherNick" });
+    db.exec("CREATE TABLE seasonal_player_index_previous AS SELECT * FROM seasonal_player_index");
+    try {
+      db.exec("DELETE FROM seasonal_player_index");
+      const index = await getSeasonalPlayerIndexStore(profile.cycleId);
+      assert.deepEqual((await index.search("ReserveNick", 12)).map((row) => row.aid), [900]);
+      await store.upsertProfile({ ...profile, aid: 901, nickname: "NewNick" });
+      assert.deepEqual((await index.search("ReserveNick", 12)).map((row) => row.aid), [900]);
+      assert.deepEqual((await index.byIds([900, 901])).map((row) => row.aid).sort((a, b) => a - b), [900, 901]);
+      assert.equal(db.prepare("SELECT 1 FROM seasonal_player_index WHERE cycle_id = 'another-cycle'").get(), undefined);
+      await store.upsertProfile({ ...profile, nickname: "RenamedNick", profileUpdatedAt: 1_900_000_000_000 });
+      assert.deepEqual(await index.search("ReserveNick", 12), []);
+      assert.deepEqual((await index.search("RenamedNick", 12)).map((row) => row.aid), [900]);
+      db.exec("INSERT INTO excluded_players (aid, reason, created_at) VALUES (900, 'test', 1)");
+      assert.deepEqual(await index.byIds([900]), []);
+    } finally {
+      db.exec("DELETE FROM seasonal_player_index; INSERT INTO seasonal_player_index SELECT * FROM seasonal_player_index_previous; DROP TABLE seasonal_player_index_previous; DELETE FROM excluded_players WHERE aid = 900");
     }
   } finally { db.close(); }
 });

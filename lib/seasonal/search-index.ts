@@ -26,7 +26,7 @@ function queries(includeProfileMetadata: boolean, previous = false) {
     : "";
   return {
     ready: "SELECT value FROM seasonal_player_index_meta WHERE cycle_id = ? AND key = 'synced_at'",
-    populated: `SELECT 1 FROM ${table} WHERE cycle_id = ? LIMIT 1`,
+    populated: `SELECT nickname_lower FROM ${table} WHERE cycle_id = ? LIMIT 1`,
     byIds: (placeholders: string) => `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin}
       WHERE i.cycle_id = ? AND i.aid IN (${placeholders})
       AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)`,

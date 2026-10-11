@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -610,48 +609,41 @@ test("the progression backfill leaves a published restore point at a taken name 
   }
 });
 
-test("the progression backfill keeps a sound backup when a writer moves the source", async () => {
+test("the progression backfill keeps a sound backup when a writer moves the source", () => {
   // The counts are only decidable against a source `data_version` proves unchanged, because
   // a commit landing after the copy can shrink the source below the copy -- `daily_aggregates`
   // is rewritten on this same database by the population materializer -- and a sound restore
-  // point then holds more rows than the source. The writer below commits the moment the copy
-  // appears, which `VACUUM INTO` does only after it has fixed its snapshot, so the run really
-  // does read a source that moved and must publish the copy rather than delete it.
+  // point then holds more rows than the source. The preload commits on a separate
+  // connection after VACUUM completes, before the script reads the source again.
   const directory = mkdtempSync(join(tmpdir(), "backfill-writer-"));
   const path = join(directory, "progression.db");
   const target = join(directory, stampedBackupName);
-  const writer = new Worker(`
-    const { parentPort, workerData } = require("node:worker_threads");
-    const { existsSync } = require("node:fs");
-    const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync(workerData.path);
-    while (!existsSync(workerData.target)) {}
-    db.exec("BEGIN IMMEDIATE");
-    db.exec("DELETE FROM t WHERE x > 195");
-    db.exec("COMMIT");
-    db.close();
-    parentPort.postMessage("committed");
-  `, { eval: true, workerData: { path, target } });
   try {
     const seed = new DatabaseSync(path);
     seed.exec("PRAGMA journal_mode = WAL");
     seed.exec("CREATE TABLE t (x INTEGER)");
-    seed.exec("CREATE TABLE bulk (x INTEGER)");
-    // A large table keeps the run busy between the copy and the read of the source, so the
-    // writer's single commit lands inside that window on a loaded machine too.
-    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM series WHERE x < 49999)
-      INSERT INTO bulk (x) SELECT x FROM series`);
     seed.exec(`WITH RECURSIVE series(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM series WHERE x < 200)
       INSERT INTO t (x) SELECT x FROM series`);
     seed.close();
 
-    // The status is asserted before the worker's message is awaited: a run that aborts before
-    // the copy leaves the `.bak` the writer waits for unwritten, and `node --test` has no
-    // default per-test timeout, so awaiting first would hang the suite instead of failing it.
-    const committed = new Promise((resolve) => writer.once("message", resolve));
-    const result = runBackfill(path, writeFrozenClock(directory));
+    const preload = writeFrozenClock(directory);
+    writeFileSync(preload, `
+      import { DatabaseSync } from "node:sqlite";
+      const prepare = DatabaseSync.prototype.prepare;
+      DatabaseSync.prototype.prepare = function(sql, ...args) {
+        const statement = prepare.call(this, sql, ...args);
+        if (sql !== "VACUUM INTO ?") return statement;
+        return { run(...params) {
+          const result = statement.run(...params);
+          const writer = new DatabaseSync(process.argv[2]);
+          try { writer.exec("DELETE FROM t WHERE x > 195"); }
+          finally { writer.close(); }
+          return result;
+        } };
+      };
+    `, { flag: "a" });
+    const result = runBackfill(path, preload);
     assert.equal(result.status, 0, `the run must succeed while a writer commits: ${result.stderr}`);
-    assert.deepEqual(await committed, "committed");
 
     const summary = JSON.parse(result.stdout);
     assert.equal(summary.backupSourceUnchanged, false, "the writer must have moved the source");
@@ -675,7 +667,6 @@ test("the progression backfill keeps a sound backup when a writer moves the sour
       source.close();
     }
   } finally {
-    await writer.terminate();
     rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
   }
 });

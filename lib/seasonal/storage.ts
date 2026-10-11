@@ -1209,6 +1209,13 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
           profile.aid);
         const saved = toProfile(db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(profile.mode, profile.cycleId, profile.aid));
         if (saved.mode === "seasonal") {
+          // A single captured profile must not displace the complete reserve.
+          if (!db.prepare("SELECT 1 FROM seasonal_player_index WHERE cycle_id = ? LIMIT 1").get(saved.cycleId) &&
+            db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seasonal_player_index_previous'").get()) {
+            db.prepare(`INSERT INTO seasonal_player_index (cycle_id, aid, nickname, nickname_lower, synced_at)
+              SELECT cycle_id, aid, nickname, nickname_lower, synced_at
+              FROM seasonal_player_index_previous WHERE cycle_id = ?`).run(saved.cycleId);
+          }
           db.prepare(`INSERT INTO seasonal_player_index (cycle_id, aid, nickname, nickname_lower, synced_at)
             SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
             ON CONFLICT(cycle_id, aid) DO UPDATE SET nickname = excluded.nickname,

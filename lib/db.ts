@@ -1402,6 +1402,14 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       const modeSelect = mode === "regular" ? "" : `'${mode}', `;
       const modeWhere = mode === "regular" ? "" : `mode = '${mode}' AND `;
       const conflict = mode === "regular" ? "aid" : "mode, aid";
+      // Recover the complete reserve before a direct-link save makes the
+      // empty primary look usable. This runs inside the profile transaction.
+      if (!rawDb.prepare(`SELECT 1 FROM ${indexTable} WHERE ${modeWhere}1 = 1 LIMIT 1`).get() &&
+        rawDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(`${indexTable}_previous`)) {
+        const columns = `${modeColumn}aid, nickname, nickname_lower, synced_at`;
+        rawDb.exec(`INSERT INTO ${indexTable} (${columns})
+          SELECT ${columns} FROM ${indexTable}_previous WHERE ${modeWhere}1 = 1`);
+      }
       rawDb.prepare(`INSERT INTO ${indexTable} (${modeColumn}aid, nickname, nickname_lower, synced_at)
         SELECT ${modeSelect}?, ?, ?, ? WHERE EXISTS (
           SELECT 1 FROM ${table} WHERE ${modeWhere}aid = ? AND profile_updated_at = ?
@@ -1780,7 +1788,7 @@ function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata:
     : "";
   return {
     ready: `SELECT value FROM ${meta} WHERE key = 'synced_at'`,
-    populated: `SELECT 1 FROM ${table} AS i WHERE ${modeWhere}1 = 1 LIMIT 1`,
+    populated: `SELECT i.nickname_lower FROM ${table} AS i WHERE ${modeWhere}1 = 1 LIMIT 1`,
     byIds: (placeholders: string) => `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
       `WHERE ${modeWhere}i.aid IN (${placeholders}) ` +
       "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)",
