@@ -140,6 +140,47 @@ function stats(experience: number, pmcRaids: number) {
   });
 }
 
+test("foreground capture yields while SQLite is locked, then persists exactly once", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "progression-busy-"));
+  const file = join(directory, "progression.db");
+  const db = new DatabaseSync(file);
+  const store = createSqliteProgressionStore(db);
+  const locker = new DatabaseSync(file);
+  let ticks = 0;
+  const heartbeat = setInterval(() => { ticks += 1; }, 50);
+  let unlock;
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    locker.exec("BEGIN IMMEDIATE");
+    unlock = setTimeout(() => locker.exec("ROLLBACK"), 800);
+    const input = { aid: 42, upstreamUpdatedAt: day, capturedAt: day + 1,
+      achievementIds: [], stats: JSON.parse(stats(100, 10)) };
+    const result = await store.recordSnapshot(input);
+    assert.equal(result.inserted, true);
+    assert.ok(ticks >= 2, "HTTP timers must run before the database lock is released");
+    assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 250);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM player_profiles").get().n, 1);
+  } finally {
+    clearTimeout(unlock); clearInterval(heartbeat);
+    if (locker.isTransaction) locker.exec("ROLLBACK");
+    locker.close(); db.close(); rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rechecking already-normalized history performs no database writes", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const store = createSqliteProgressionStore(db);
+    for (const n of [1, 2, 3]) await store.recordSnapshot({ aid: 42, upstreamUpdatedAt: n * day,
+      capturedAt: n * day + 1, achievementIds: [], stats: JSON.parse(stats(n * 100, n * 10)) });
+    const changes = Number(db.prepare("SELECT total_changes() n").get().n);
+    materializeRegularProgression(db, 42, { refreshAggregates: false });
+    assert.equal(Number(db.prepare("SELECT total_changes() n").get().n), changes,
+      "daily rechecks must not rewrite unchanged snapshots, intervals or profiles");
+  } finally { db.close(); }
+});
+
 for (const mode of ["regular", "pve"] as const) {
   for (const [column, corrupt] of [["stats_json", "{broken"], ["stats_json", "null"],
     ["stats_json", "[]"], ["stats_json", '{"experience":{}}'], ["stats_json", '{"pmcKills":"oops"}'],
@@ -198,7 +239,7 @@ test("corrupt snapshot repair rolls back when interval materialization fails", a
     achievementIds: [], stats: JSON.parse(stats(100, 10)) };
   await store.recordSnapshot(capture);
   db.exec(`UPDATE progression_snapshots SET stats_json = 'null';
-    CREATE TRIGGER fail_repair BEFORE UPDATE ON player_profiles
+    CREATE TRIGGER fail_repair BEFORE INSERT ON player_profiles
     BEGIN SELECT RAISE(ABORT, 'repair materialization failed'); END`);
   await assert.rejects(store.recordSnapshot(capture), /repair materialization failed/);
   assert.equal(db.prepare("SELECT stats_json FROM progression_snapshots").get().stats_json, "null");

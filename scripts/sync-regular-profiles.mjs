@@ -136,11 +136,13 @@ async function main() {
   const snapshotCurrent = Number(coverage.current) || 0;
   const coverageSummary = summarizeCoverage(coverage.total, snapshotCurrent);
   const trackedNonExcludedInFeed = feed.trackedInFeed - feed.trackedExcluded;
-  const backlog = Number(statuses.pending ?? 0) + Number(statuses.error ?? 0);
+  const deferred = Number(db.prepare("SELECT COUNT(*) AS n FROM regular_profile_sync_queue WHERE stale_version IS NOT NULL").get().n);
+  const backlog = Number(statuses.pending ?? 0) + Number(statuses.error ?? 0) - deferred;
   const summary = {
     ...feed,
     ...processed,
     backlog,
+    deferred,
     missingFromFeed: feed.feedNotModified ? null : Math.max(0, coverageSummary.coverageTotal - trackedNonExcludedInFeed),
     snapshotMissing,
     snapshotLagging,
@@ -194,6 +196,7 @@ function initSchema() {
       attempts INTEGER NOT NULL DEFAULT 0,
       http_status INTEGER,
       error TEXT,
+      stale_version INTEGER,
       last_run_id TEXT,
       updated_at INTEGER NOT NULL
     );
@@ -209,6 +212,9 @@ function initSchema() {
       value TEXT NOT NULL
     );
   `);
+  if (!db.prepare("PRAGMA table_info(regular_profile_sync_queue)").all().some(row => row.name === "stale_version")) {
+    db.exec("ALTER TABLE regular_profile_sync_queue ADD COLUMN stale_version INTEGER");
+  }
 }
 
 function acquireLease() {
@@ -290,11 +296,11 @@ async function loadFeed(startedAt) {
   `);
   const replaceQueueTarget = db.prepare(`
     UPDATE regular_profile_sync_queue SET feed_updated_at = ?, status = 'pending', attempts = 0,
-      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ?
+      http_status = NULL, error = NULL, stale_version = NULL, last_run_id = NULL, updated_at = ? WHERE aid = ?
   `);
   const reopenCompleted = db.prepare(`
     UPDATE regular_profile_sync_queue SET status = 'pending', attempts = 0,
-      http_status = NULL, error = NULL, last_run_id = NULL, updated_at = ?
+      http_status = NULL, error = NULL, stale_version = NULL, last_run_id = NULL, updated_at = ?
     WHERE aid = ? AND status = 'completed'
   `);
 
@@ -441,7 +447,7 @@ async function loadFeed(startedAt) {
     WHERE EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_profile_sync_queue.aid)
   `).run();
   db.prepare(`
-    UPDATE regular_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL,
+    UPDATE regular_profile_sync_queue SET status = 'completed', error = NULL, http_status = NULL, stale_version = NULL,
       updated_at = ?
     WHERE (regular_profile_sync_queue.status <> 'completed'
       OR regular_profile_sync_queue.error IS NOT NULL)
@@ -467,10 +473,11 @@ async function loadFeed(startedAt) {
 }
 
 async function processQueue(startedAt) {
-  const counters = { attempted: 0, completed: 0, notFound: 0, errors: 0 };
+  const counters = { attempted: 0, completed: 0, notFound: 0, errors: 0, stale: 0 };
   const next = profileQueueSelector(db, `
     SELECT q.aid, q.feed_updated_at FROM regular_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
+      AND q.stale_version IS NULL
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
       AND NOT EXISTS (
         SELECT 1 FROM progression_sync.progression_snapshots s
@@ -482,7 +489,7 @@ async function processQueue(startedAt) {
   `);
   const update = db.prepare(`
     UPDATE regular_profile_sync_queue
-    SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, last_run_id = ?, updated_at = ?
+    SET status = ?, attempts = attempts + ?, http_status = ?, error = ?, stale_version = ?, last_run_id = ?, updated_at = ?
     WHERE aid = ? AND feed_updated_at = ?
   `);
 
@@ -510,12 +517,14 @@ async function processQueue(startedAt) {
 
     if (result.kind === "completed") counters.completed += 1;
     else if (result.kind === "not_found") counters.notFound += 1;
+    else if (result.kind === "stale") counters.stale += 1;
     else counters.errors += 1;
     update.run(
-      result.kind,
+      result.kind === "stale" ? "error" : result.kind,
       result.attempts,
       result.status,
       result.error ?? null,
+      result.staleVersion ?? null,
       runId,
       Date.now(),
       aid,
@@ -572,6 +581,18 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
         return { kind: "completed", attempts: attempt, status: response.status };
       }
       const detail = (await response.text().catch(() => "")).slice(0, 300);
+      // An old feed target cannot be reconstructed from a regressed upstream
+      // profile. Keep its evidence, but retry it only after a newer feed target
+      // or a qualifying local snapshot clears the deferral.
+      if (response.status === 409 && expectedUpdatedAt < startedAt - PROFILE_FEED_WINDOW_MS) {
+        let body;
+        try { body = JSON.parse(detail); } catch { /* Other conflicts still retry. */ }
+        const actualUpdatedAt = normalizeUpdatedAt(body?.actualUpdatedAt);
+        if (body?.state === "stale" && actualUpdatedAt != null && actualUpdatedAt < expectedUpdatedAt) {
+          return { kind: "stale", attempts: attempt, status: 409, staleVersion: actualUpdatedAt,
+            error: `upstream profile version ${actualUpdatedAt} is older than expired target ${expectedUpdatedAt}` };
+        }
+      }
       const error = new Error(`sync endpoint HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
       error.status = response.status;
       error.retryable = response.status === 409 || response.status === 425 || response.status === 429 || response.status >= 500;

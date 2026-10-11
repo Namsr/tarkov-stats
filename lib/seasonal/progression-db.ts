@@ -1,5 +1,5 @@
-import { buildProgressionMetricSeries, PROGRESSION_KINDS, queryPersistentProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
-import { buildSequentialIntervals, DAY_MS, percentile20, quantile } from "./analytics.ts";
+import { buildProgressionMetricSeries, buildProgressionPopulationMetric, PROGRESSION_KINDS, queryPersistentProgressionAverage, queryProgressionSeriesBundle, type DailyRow, type ProgressionRequest } from "./progression.ts";
+import { buildSequentialIntervals, DAY_MS, percentile20 } from "./analytics.ts";
 import { loadSeasonalCycleConfig } from "./config.ts";
 import { initializeSeasonalSchema, upsertSqliteSeasonCycle, parseSeasonalAchievementUnlocks } from "./storage.ts";
 import { scoreCheater, type Baseline, type CheaterScoreResult } from "../cheater-score.ts";
@@ -481,11 +481,13 @@ const POPULATION_ACHIEVEMENT_SQL = `SELECT p.aid, p.lifetime_pvp_hours, s.achiev
     AND s.achievements IS NOT NULL AND json_valid(s.achievements)
     AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)`;
 
-function buildRiskBaseline(rows: readonly Record<string, unknown>[]): Baseline {
+function buildRiskBaseline(rows: Iterable<Record<string, unknown>>): Baseline {
   const values: Record<string, number[]> = {
     pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [], longest_win_streak: [], prestige: [],
   };
+  let n = 0;
   for (const row of rows) {
+    n += 1;
     const raids = finiteNumber(row.pmc_raids);
     const survived = finiteNumber(row.pmc_survived);
     const deaths = finiteNumber(row.pmc_deaths);
@@ -501,7 +503,7 @@ function buildRiskBaseline(rows: readonly Record<string, unknown>[]): Baseline {
     if (prestige != null) values.prestige.push(prestige);
   }
   return {
-    n: rows.length,
+    n,
     metrics: Object.fromEntries(Object.entries(values).flatMap(([key, entries]) => {
       if (!entries.length) return [];
       const mean = entries.reduce((sum, value) => sum + value, 0) / entries.length;
@@ -512,16 +514,16 @@ function buildRiskBaseline(rows: readonly Record<string, unknown>[]): Baseline {
 }
 
 function buildAchievementBaseline(
-  rows: readonly Record<string, unknown>[],
+  rows: Iterable<Record<string, unknown>>,
   seasonStartsAt: number | null,
 ): PopulationSnapshotPayload["achievementBaseline"] {
-  const eligible = rows.flatMap((row) => {
-    const achievements = parseSeasonalAchievementUnlocks(row.achievements);
-    return achievements == null ? [] : [{ aid: Number(row.aid), hours: finiteNumber(row.lifetime_pvp_hours), achievements }];
-  });
-  if (!eligible.length) return null;
+  let eligibleN = 0;
   const byAchievement = new Map<string, { owners: Set<number>; hours: number[]; unlockDays: number[] }>();
-  for (const owner of eligible) {
+  for (const row of rows) {
+    const achievements = parseSeasonalAchievementUnlocks(row.achievements);
+    if (achievements == null) continue;
+    eligibleN += 1;
+    const owner = { aid: Number(row.aid), hours: finiteNumber(row.lifetime_pvp_hours), achievements };
     for (const achievement of owner.achievements) {
       const entry = byAchievement.get(achievement.id) ?? { owners: new Set<number>(), hours: [], unlockDays: [] };
       entry.owners.add(owner.aid);
@@ -533,8 +535,9 @@ function buildAchievementBaseline(
       byAchievement.set(achievement.id, entry);
     }
   }
+  if (!eligibleN) return null;
   return {
-    eligibleN: eligible.length,
+    eligibleN,
     seasonStartsAt,
     achievements: [...byAchievement.entries()].map(([id, value]) => {
       const meanHours = value.hours.length ? value.hours.reduce((sum, hours) => sum + hours, 0) / value.hours.length : 0;
@@ -542,8 +545,8 @@ function buildAchievementBaseline(
         ? value.hours.reduce((sum, hours) => sum + (hours - meanHours) ** 2, 0) / value.hours.length
         : 0;
       return {
-        id, owners: value.owners.size, eligibleN: eligible.length,
-        samplePct: value.owners.size / eligible.length * 100,
+        id, owners: value.owners.size, eligibleN,
+        samplePct: value.owners.size / eligibleN * 100,
         meanHours, stdHours: Math.sqrt(Math.max(0, variance)), earlyHours: percentile20(value.hours) ?? meanHours,
         unlockHours: achievementUnlockHours(value.hours) ?? meanHours,
         unlockDayP20: percentile20(value.unlockDays), timestampOwners: value.unlockDays.length,
@@ -557,15 +560,20 @@ function percentileGrid(
 ): ProgressionPercentileDistributions {
   return Object.fromEntries(Object.entries(distributions).map(([date, metrics]) => [
     date,
-    Object.fromEntries(Object.entries(metrics).map(([metric, values]) => [
-      metric,
-      Array.from({ length: 101 }, (_, percentile) => quantile(values, percentile / 100) ?? 0),
-    ])),
+    Object.fromEntries(Object.entries(metrics).map(([metric, values]) => {
+      const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+      return [metric, Array.from({ length: 101 }, (_, percentile) => {
+        if (!sorted.length) return 0;
+        const position = (sorted.length - 1) * (percentile / 100);
+        const lower = Math.floor(position);
+        return sorted[lower] + (sorted[lower + 1] - sorted[lower] || 0) * (position - lower);
+      })];
+    })),
   ]));
 }
 
-type PopulationRows<T> = readonly T[] | (() => readonly T[]);
-function populationRows<T>(source: PopulationRows<T>): readonly T[] {
+type PopulationRows<T> = Iterable<T> | (() => Iterable<T>);
+function populationRows<T>(source: PopulationRows<T>): Iterable<T> {
   return typeof source === "function" ? source() : source;
 }
 
@@ -582,36 +590,34 @@ function buildPopulationSnapshotPayload(
   const identity = { mode, cycleId, aid: -1 };
   const metricKeys: ProgressionMetricKey[] = ["xp", ...TIMELINE_CUMULATIVE_METRICS, ...TIMELINE_LEGACY_METRICS];
   const metrics = Object.fromEntries(metricKeys.map((metric) => {
-    // Release each metric's input before constructing the next metric.
-    const rows = metric === "xp" ? timelineSnapshotRows(populationRows(snapshotRows))
-      : metric === "survival" || metric === "pvp_kd" || metric === "ai_kd"
-        ? timelineCumulativeMetricRows(populationRows(snapshotRows), metric)
-        : timelineLegacyMetricRows(populationRows(intervalRows), metric);
-    const overall = buildProgressionMetricSeries(rows, identity, metric);
-    const byHours = PLAYTIME_RANGES.map((range) => {
-      const scoped = rows.filter((row) => row.lifetime_hours != null && Number(row.lifetime_hours) >= range.min &&
-        (range.max == null || Number(row.lifetime_hours) < range.max));
-      const series = buildProgressionMetricSeries(scoped, identity, metric);
-      return { min: range.min, max: range.max, points: series.overall, n: series.overall.at(-1)?.n ?? 0,
-        confidence: series.overall.at(-1)?.confidence ?? 0 };
-    });
-    return [metric, { overall: overall.overall, byHours, freshnessAt: overall.freshnessAt }];
+    function* normalizedRows() {
+      const cumulative = metric === "xp" || metric === "survival" || metric === "pvp_kd" || metric === "ai_kd";
+      for (const raw of populationRows(cumulative ? snapshotRows : intervalRows)) {
+        yield* metric === "xp" ? timelineSnapshotRows([raw])
+          : metric === "survival" || metric === "pvp_kd" || metric === "ai_kd"
+            ? timelineCumulativeMetricRows([raw], metric) : timelineLegacyMetricRows([raw], metric);
+      }
+    }
+    return [metric, buildProgressionPopulationMetric(normalizedRows(), metric, PLAYTIME_RANGES)];
   })) as PopulationSnapshotPayload["metrics"];
-  const risks = populationRows(riskRows);
   const riskBaselines = PLAYTIME_RANGES.map((range) => ({
     min: range.min,
     max: range.max,
-    baseline: buildRiskBaseline(risks.filter((row) => {
-      const hours = finiteNumber(row.lifetime_pvp_hours);
-      return hours != null && hours >= range.min && (range.max == null || hours < range.max);
-    })),
+    baseline: buildRiskBaseline((function* () {
+      for (const row of populationRows(riskRows)) {
+        const hours = finiteNumber(row.lifetime_pvp_hours);
+        if (hours != null && hours >= range.min && (range.max == null || hours < range.max)) yield row;
+      }
+    })()),
   }));
   return {
     metrics,
     riskBaselines,
     achievementBaseline: buildAchievementBaseline(populationRows(achievementRows), seasonStartsAt),
     progressionPercentiles: percentileGrid(buildProgressionPercentileDistributions(
-      detailRows(populationRows(detailIntervalRows), { ...identity, kind: "cumulative" }),
+      (function* () {
+        for (const row of populationRows(detailIntervalRows)) yield* detailRows([row], { ...identity, kind: "cumulative" });
+      })(),
     )),
   };
 }
@@ -628,17 +634,17 @@ function parsePublishedPopulationSnapshot(row: Record<string, unknown> | null | 
 }
 
 export function materializeSqlitePopulationSnapshot(
-  db: { prepare(sql: string): { all(...args: unknown[]): Record<string, unknown>[]; get(...args: unknown[]): Record<string, unknown> | undefined; run(...args: unknown[]): unknown }; exec(sql: string): void },
+  db: { prepare(sql: string): { all(...args: unknown[]): Record<string, unknown>[]; iterate(...args: unknown[]): Iterable<Record<string, unknown>>; get(...args: unknown[]): Record<string, unknown> | undefined; run(...args: unknown[]): unknown }; exec(sql: string): void },
   mode: ProgressionIdentity["mode"],
   cycleId: string,
   now = Date.now(),
 ): { generation: number; generatedAt: number } {
   initializeSeasonalSchema(db);
-  const snapshots = () => db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL).all(mode, cycleId);
-  const intervals = () => db.prepare(POPULATION_TIMELINE_INTERVAL_SQL).all(mode, cycleId);
-  const riskRows = () => db.prepare(POPULATION_RISK_SQL).all(mode, cycleId);
-  const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).all(mode, cycleId);
-  const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).all(mode, cycleId) as unknown as DetailDbRow[];
+  const snapshots = () => db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL.replace("ORDER BY s.aid", "ORDER BY ((s.pmc_raids - 1) / 10 + 1), s.aid")).iterate(mode, cycleId);
+  const intervals = () => db.prepare(POPULATION_TIMELINE_INTERVAL_SQL.replace("ORDER BY i.aid", "ORDER BY ((to_s.pmc_raids - 1) / 10 + 1), i.aid")).iterate(mode, cycleId);
+  const riskRows = () => db.prepare(POPULATION_RISK_SQL).iterate(mode, cycleId);
+  const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).iterate(mode, cycleId);
+  const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).iterate(mode, cycleId) as Iterable<DetailDbRow>;
   const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
   const payload = JSON.stringify(buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
     finiteNumber(cycle?.starts_at), mode, cycleId));

@@ -170,6 +170,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   const orderedCalls = [];
   const failOnce = new Set();
   const failAlways = new Set();
+  const staleResponses = new Map();
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -203,6 +204,10 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     const { aid, expectedUpdatedAt } = JSON.parse(raw);
     calls.set(aid, (calls.get(aid) ?? 0) + 1);
     orderedCalls.push(aid);
+    if (staleResponses.has(aid)) {
+      response.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify(staleResponses.get(aid)));
+      return;
+    }
     if (aid === 3) {
       response.writeHead(404).end();
       return;
@@ -341,6 +346,31 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     orderedCalls.length = 0;
     await run();
     assert.deepEqual(orderedCalls, [8], "unfinished work resumes after the newest version was saved");
+    failAlways.delete(8);
+    const oldTarget = Date.now() - 30 * 86_400_000;
+    const actual = oldTarget - 86_400_000;
+    for (const aid of [11, 12]) {
+      apiDb.prepare("INSERT INTO players VALUES (?, ?)").run(aid, actual);
+      progressionDb.prepare("INSERT INTO progression_snapshots (mode,cycle_id,aid,profile_updated_at) VALUES ('regular','persistent',?,?)").run(aid, actual);
+      apiDb.prepare(`INSERT INTO regular_profile_sync_queue (aid,feed_updated_at,status,updated_at)
+        VALUES (?,?,'pending',?)`).run(aid, oldTarget, oldTarget);
+    }
+    staleResponses.set(11, { state: "stale", actualUpdatedAt: actual });
+    staleResponses.set(12, { state: "busy" });
+    const deferred = await run();
+    assert.match(deferred.stdout, /"deferred":1/);
+    assert.equal(apiDb.prepare("SELECT stale_version FROM regular_profile_sync_queue WHERE aid=11").get().stale_version, actual);
+    assert.equal(apiDb.prepare("SELECT stale_version FROM regular_profile_sync_queue WHERE aid=12").get().stale_version, null);
+    const attempts = calls.get(11);
+    await run();
+    assert.equal(calls.get(11), attempts, "an unavailable expired version is not fetched again");
+    assert.equal(progressionDb.prepare("SELECT COUNT(*) n FROM progression_snapshots WHERE aid=11").get().n, 1, "history is preserved without fabricating the expected version");
+    staleResponses.clear();
+    feed = { ...feed, 11: Date.now() - 1000 };
+    await run();
+    const recovered = apiDb.prepare("SELECT status,stale_version FROM regular_profile_sync_queue WHERE aid=11").get();
+    assert.equal(recovered.status, "completed");
+    assert.equal(recovered.stale_version, null, "a new feed target reactivates the preserved task");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();

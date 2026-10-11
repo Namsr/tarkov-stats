@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { delay, envInteger, log } from "./regular-profile-sync-core.mjs";
 
 export const PROFILE_QUEUE_MODES = [
@@ -23,8 +25,10 @@ export function summaryComplete(result) {
 /** Stream diagnostics, but use the structured collector result rather than exit 0 alone. */
 export function runCollector(mode, budgetMs, deadline, signal) {
   return new Promise((resolveResult) => {
+    const arenaRunId = mode.name === "arena" ? randomUUID() : null;
     const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", `scripts/${mode.script}`], {
       env: { ...process.env, ...mode.env, [mode.budget]: String(Math.max(60_000, budgetMs)),
+        ...(arenaRunId ? { ARENA_PROFILE_SYNC_RUN_ID: arenaRunId } : {}),
         PROFILE_QUEUE_DEADLINE_MS: String(Math.min(deadline, Date.now() + budgetMs)) },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -56,13 +60,31 @@ export function runCollector(mode, budgetMs, deadline, signal) {
       }
     });
     child.on("error", (error) => log("COLLECTOR_ERROR", { mode: mode.name, error: error.message }));
-    child.on("close", (code) => {
+    child.on("close", async (code) => {
       clearTimeout(watchdog);
       clearTimeout(killTimer);
       signal?.removeEventListener("abort", stop);
+      // SIGKILL bypasses the collector's finally block. Only after this exact
+      // child has exited may its parent release this child's lease.
+      if (arenaRunId) await releaseArenaLease(arenaRunId);
       resolveResult({ code: code ?? 1, summary, killed });
     });
   });
+}
+
+export async function releaseArenaLease(owner, path = process.env.SQLITE_PATH || "/data/players.db") {
+  if (!existsSync(path)) return;
+  let db;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    db = new DatabaseSync(path);
+    db.exec("PRAGMA busy_timeout = 1000");
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'arena_profile_sync_lease'").get()) {
+      db.prepare("DELETE FROM arena_profile_sync_lease WHERE id = 1 AND owner = ?").run(owner);
+    }
+  } catch (error) {
+    log("LEASE_RELEASE_FAILED", { mode: "arena", error: error.message });
+  } finally { db?.close(); }
 }
 
 export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MAX_RUN_MS, sliceMs = PROFILE_QUEUE_SLICE_MS,
@@ -95,7 +117,8 @@ export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MA
       // Empty attempts must not spin on SQLite in a tight loop.
       if (!state.complete && !result.summary?.attempted) state.retryAt = Math.max(state.retryAt, now() + 60_000);
       emit("MODE_RESULT", { mode: state.mode.name, round, code: result.code, complete: state.complete,
-        backlog: result.summary?.backlog ?? null, errors: result.summary?.errors ?? null, retryAt: state.complete ? null : state.retryAt });
+        backlog: result.summary?.backlog ?? null, deferred: result.summary?.deferred ?? 0,
+        errors: result.summary?.errors ?? null, retryAt: state.complete ? null : state.retryAt });
     }
     if (!visited) {
       const next = Math.min(workDeadline, ...states.filter((state) => !state.complete).map((state) => state.retryAt));
@@ -119,10 +142,12 @@ export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MA
       && Number.isInteger(warmup.summary?.processed) && warmup.summary.processed >= 0;
     emit("MODE_RESULT", { mode: "warmup", code: warmup.code });
   }
-  const summary = { ok: complete && warmupOk && !signal?.aborted,
-    reason: signal?.aborted ? "signal" : !complete ? "deadline" : !warmupOk ? "warmup_failed" : "complete",
+  const deferred = states.reduce((sum, state) => sum + (state.result?.summary?.deferred ?? 0), 0);
+  const summary = { ok: complete && warmupOk && !signal?.aborted, deferred,
+    reason: signal?.aborted ? "signal" : !complete ? "deadline" : !warmupOk ? "warmup_failed" : deferred ? "complete_with_deferred" : "complete",
     rounds: round, modes: Object.fromEntries(states.map((state) => [state.mode.name,
-      { complete: state.complete, backlog: state.result?.summary?.backlog ?? null, code: state.result?.code ?? null }])) };
+      { complete: state.complete, backlog: state.result?.summary?.backlog ?? null,
+        deferred: state.result?.summary?.deferred ?? 0, code: state.result?.code ?? null }])) };
   emit("QUEUE_SUMMARY", summary);
   return summary;
 }
