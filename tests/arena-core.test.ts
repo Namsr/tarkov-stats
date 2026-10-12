@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- The direct Node runner uses the same path hook as Arena route tests.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -184,7 +184,7 @@ test("Arena v4 infers only one absent valid per-mode result and recomputes metri
   assert.equal(negativeResidual.counters.losses, null);
 
   for (const name of modeNames) {
-    source.stat.arenaOverAllCounters[name] = { Counters: { Kills: 0 } };
+    source.stat.arenaOverAllCounters[name] = { Counters: { Kills: 1 } };
   }
   source.stat.arenaOverAllCounters.UnrankedOverall = { Counters: { GamesCount: 10, ArenaWins: 4 } };
   const directOverall = parseArenaProfileStats(source).arenaProfile.overall;
@@ -202,7 +202,7 @@ test("Arena v4 account 8045310 keeps overall mode sums 78/58/20", () => {
     UnrankedShootOutDuo: { Counters: { GamesCount: 21, ArenaWins: 11, ArenaLoses: 10 } },
   };
   const arena = parseArenaProfileStats(source).arenaProfile;
-  assert.equal(arena.parserVersion, 4);
+  assert.equal(arena.parserVersion, ARENA_PARSER_VERSION);
   assert.equal(arena.overall.counters.matches, 78);
   assert.equal(arena.overall.counters.wins, 58);
   assert.equal(arena.overall.counters.losses, 20);
@@ -984,4 +984,64 @@ test("Arena average bounds survive a peer set larger than the thread stack can h
   } finally {
     resetArenaData();
   }
+});
+
+
+test("Arena comparison profiles recover complete sparse totals without mixing populations", async () => {
+  resetArenaData();
+  const sources = JSON.parse(readFileSync("tests/fixtures/arena-compare-profiles.json", "utf8"));
+  const first = parseArenaProfileStats(sources[0]).arenaProfile;
+  assert.equal(first.modes.blastGang.counters.matches, 0);
+  assert.equal(first.overall.source, "complete_mode_sum");
+  assert.deepEqual(Object.fromEntries(["matches", "wins", "losses", "kills", "deaths", "headshots", "assists", "damage"].map(key => [key, first.overall.counters[key]])), {
+    matches: 7, wins: 5, losses: 2, kills: 186, deaths: 112, headshots: 121, assists: 49, damage: 38798,
+  });
+  assert.equal(first.overall.metrics.win_rate, 5 / 7 * 100);
+  assert.equal(first.overall.metrics.headshot_rate, 121 / 186 * 100);
+  assert.equal(first.overall.counters.current_win_streak, null);
+  assert.equal(first.overall.bestArp, 1500);
+  const second = parseArenaProfileStats(sources[1]).arenaProfile;
+  assert.equal(second.overall.source, "upstream");
+  assert.equal(second.overall.counters.matches, 265);
+  assert.equal(second.overall.counters.kills, 6880);
+  assert.equal(second.overall.counters.wins, 186);
+  for (const source of sources) {
+    await save(source);
+    assert.deepEqual((await getArenaProfile(source.aid)).overall, parseArenaProfileStats(source).arenaProfile.overall);
+  }
+});
+
+test("Arena sparse zero activity is unplayed across counter encodings; invalid or positive activity stays unknown", () => {
+  const source = profile(7788);
+  const parse = (Counters) => {
+    source.stat.arenaOverAllCounters.UnrankedBlastGang = { Counters };
+    return parseArenaProfileStats(source).arenaProfile.modes.blastGang;
+  };
+  for (const Counters of [{ DamageDealt: 0 }, [{ Key: "DamageDealt", Value: 0 }], { Items: [{ Key: ["DamageDealt"], Value: 0 }] }]) {
+    assert.equal(parse(Counters).counters.matches, 0);
+  }
+  for (const Counters of [
+    { DamageDealt: 1 }, { Kills: 1 }, { GamesCount: -1 }, { GamesCount: null },
+    { DamageDealt: -1 }, { Kills: "0" }, { GamesCount: 0.5 },
+  ]) assert.equal(parse(Counters).counters.matches, null);
+});
+
+test("Arena preserves complete direct totals and refuses incomplete mode replacements", () => {
+  const source = JSON.parse(readFileSync("tests/fixtures/arena-compare-profiles.json", "utf8"))[0];
+  const original = structuredClone(source);
+  // A known complete upstream block remains authoritative even if modes differ.
+  Object.assign(source.stat.arenaOverAllCounters.UnrankedOverall.Counters, {
+    ArenaWins: 3, ArenaLoses: 2, Assists: 20, Headshots: 40, DamageDealt: 15000,
+    RoundMvpCount: 1, MatchMvpCount: 1,
+  });
+  const direct = parseArenaProfileStats(source).arenaProfile.overall;
+  assert.equal(direct.source, "upstream");
+  assert.equal(direct.counters.matches, 5);
+  assert.equal(direct.counters.kills, 122);
+  assert.equal(direct.metrics.win_rate, 60);
+  delete original.stat.arenaOverAllCounters.UnrankedTeamFight.Counters.Headshots;
+  const incomplete = parseArenaProfileStats(original).arenaProfile.overall;
+  assert.equal(incomplete.source, "upstream");
+  assert.equal(incomplete.counters.matches, 5);
+  assert.equal(incomplete.metrics.headshot_rate, null);
 });

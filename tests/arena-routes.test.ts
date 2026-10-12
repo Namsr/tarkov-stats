@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner needs explicit source hooks.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -639,4 +639,24 @@ test("Arena favorite keeps its legacy snapshot offline until it is reparsed", as
     assert.equal(body.favorites[0].stats.nickname, "Favorite Legacy Arena");
   });
   assert.equal(fetches, 0);
+});
+
+
+test("Arena compare profile API supplies recovered metrics and TSR for the reported accounts", async () => {
+  const sources = JSON.parse(readFileSync("tests/fixtures/arena-compare-profiles.json", "utf8"));
+  const store = await getStore("arena");
+  for (const source of sources) {
+    await store.upsert(source.aid, parseArenaProfileStats(source), []);
+    const response = await getProfile(profileRequest(source.aid));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.identity.aid, source.aid);
+    assert.equal(body.arena.parserVersion, ARENA_PARSER_VERSION);
+    assert.ok(body.arena.overall.metrics.win_rate > 0);
+    assert.ok(body.arena.overall.metrics.headshot_rate > 0);
+    assert.equal(body.tsRating.overall.complete, true);
+    assert.equal(body.tsRating.overall.displayReady, true);
+    assert.ok(Number.isFinite(body.tsRating.overall.rating));
+    assert.equal(body.arena.overall.counters.current_win_streak, null);
+  }
 });

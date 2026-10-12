@@ -1,0 +1,226 @@
+[
+  {
+    "aid": 7788,
+    "updated": 1791680200632,
+    "info": {
+      "nickname": "MAD_BAZA",
+      "side": "Bear",
+      "experience": 21540319
+    },
+    "stat": {
+      "totalInGameTime": 2549816,
+      "arenaOverAllCounters": {
+        "UnrankedOverall": {
+          "Counters": {
+            "MaxKillsWithoutDeaths": 10,
+            "LoseStreak": 0,
+            "LongestWinStreak": 2,
+            "BestArp": 1500,
+            "KillsWithoutDeaths": 0,
+            "LongestLoseStreak": 1,
+            "GamesCount": 5,
+            "Kills": 122,
+            "Deaths": 80
+          }
+        },
+        "UnrankedLastHero": {
+          "Counters": {
+            "ArenaWins": 2,
+            "WinStreak": 2,
+            "LongestWinStreak": 2,
+            "LoseStreak": 0,
+            "GamesCount": 2,
+            "Kills": 109,
+            "KillsWithoutDeaths": 10,
+            "MaxKillsWithoutDeaths": 10,
+            "Deaths": 60,
+            "Assists": 24,
+            "Headshots": 71,
+            "DamageDealt": 21750,
+            "BestArp": 1500,
+            "RoundMvpCount": 2,
+            "MatchMvpCount": 2
+          }
+        },
+        "UnrankedTeamFight": {
+          "Counters": {
+            "ArenaWins": 3,
+            "WinStreak": 2,
+            "LongestWinStreak": 2,
+            "LoseStreak": 0,
+            "GamesCount": 4,
+            "Kills": 29,
+            "KillsWithoutDeaths": 1,
+            "MaxKillsWithoutDeaths": 4,
+            "Deaths": 22,
+            "Assists": 9,
+            "Headshots": 20,
+            "DamageDealt": 4474,
+            "BestArp": 1500,
+            "RoundMvpCount": 5,
+            "MatchMvpCount": 1,
+            "ArenaLoses": 1,
+            "LongestLoseStreak": 1
+          }
+        },
+        "UnrankedCheckPoint": {
+          "Counters": {
+            "WinStreak": 0,
+            "ArenaLoses": 1,
+            "LoseStreak": 1,
+            "LongestLoseStreak": 1,
+            "GamesCount": 1,
+            "Kills": 48,
+            "KillsWithoutDeaths": 0,
+            "MaxKillsWithoutDeaths": 7,
+            "Deaths": 30,
+            "Assists": 16,
+            "Headshots": 30,
+            "DamageDealt": 12574,
+            "BestArp": 1500,
+            "RoundMvpCount": 0,
+            "MatchMvpCount": 0
+          }
+        },
+        "UnrankedBlastGang": {
+          "Counters": {
+            "MaxKillsWithoutDeaths": 0,
+            "DamageDealt": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "aid": 5869253,
+    "updated": 1791687945481,
+    "info": {
+      "nickname": "namsr_twitch",
+      "side": "Bear",
+      "experience": 21687619
+    },
+    "stat": {
+      "totalInGameTime": 3467604,
+      "arenaOverAllCounters": {
+        "UnrankedOverall": {
+          "Counters": {
+            "MaxKillsWithoutDeaths": 14,
+            "LoseStreak": 0,
+            "LongestWinStreak": 23,
+            "BestArp": 2814,
+            "KillsWithoutDeaths": 1,
+            "LongestLoseStreak": 5,
+            "GamesCount": 265,
+            "Kills": 6880,
+            "Deaths": 4025
+          }
+        },
+        "UnrankedLastHero": {
+          "Counters": {
+            "ArenaWins": 50,
+            "WinStreak": 1,
+            "LongestWinStreak": 18,
+            "LoseStreak": 0,
+            "GamesCount": 65,
+            "Kills": 3012,
+            "KillsWithoutDeaths": 85,
+            "MaxKillsWithoutDeaths": 13,
+            "Deaths": 1831,
+            "Assists": 689,
+            "Headshots": 1979,
+            "DamageDealt": 654256,
+            "BestArp": 2814,
+            "RoundMvpCount": 50,
+            "MatchMvpCount": 50,
+            "ArenaLoses": 15,
+            "LongestLoseStreak": 3
+          }
+        },
+        "UnrankedBlastGang": {
+          "Counters": {
+            "WinStreak": 0,
+            "ArenaLoses": 22,
+            "LoseStreak": 1,
+            "LongestLoseStreak": 5,
+            "GamesCount": 97,
+            "Kills": 1252,
+            "KillsWithoutDeaths": 176,
+            "MaxKillsWithoutDeaths": 14,
+            "Deaths": 555,
+            "Assists": 258,
+            "Headshots": 771,
+            "DamageDealt": 189851,
+            "BestArp": 2814,
+            "RoundMvpCount": 259,
+            "MatchMvpCount": 49,
+            "ArenaWins": 75,
+            "LongestWinStreak": 23
+          }
+        },
+        "UnrankedCheckPoint": {
+          "Counters": {
+            "ArenaWins": 52,
+            "WinStreak": 1,
+            "LongestWinStreak": 9,
+            "LoseStreak": 0,
+            "GamesCount": 82,
+            "Kills": 2438,
+            "KillsWithoutDeaths": 97,
+            "MaxKillsWithoutDeaths": 12,
+            "Deaths": 1544,
+            "Assists": 549,
+            "Headshots": 1454,
+            "DamageDealt": 565324,
+            "BestArp": 2814,
+            "RoundMvpCount": 38,
+            "MatchMvpCount": 38,
+            "ArenaLoses": 30,
+            "LongestLoseStreak": 2
+          }
+        },
+        "UnrankedTeamFight": {
+          "Counters": {
+            "ArenaWins": 7,
+            "WinStreak": 1,
+            "LongestWinStreak": 3,
+            "LoseStreak": 0,
+            "GamesCount": 10,
+            "Kills": 87,
+            "KillsWithoutDeaths": 10,
+            "MaxKillsWithoutDeaths": 9,
+            "Deaths": 36,
+            "Assists": 28,
+            "Headshots": 59,
+            "DamageDealt": 14105,
+            "BestArp": 2814,
+            "RoundMvpCount": 22,
+            "MatchMvpCount": 5,
+            "ArenaLoses": 3,
+            "LongestLoseStreak": 1
+          }
+        },
+        "UnrankedShootOutDuo": {
+          "Counters": {
+            "WinStreak": 0,
+            "ArenaLoses": 9,
+            "LoseStreak": 3,
+            "LongestLoseStreak": 4,
+            "GamesCount": 11,
+            "Kills": 91,
+            "KillsWithoutDeaths": 5,
+            "MaxKillsWithoutDeaths": 6,
+            "Deaths": 59,
+            "Assists": 14,
+            "Headshots": 52,
+            "DamageDealt": 31170,
+            "BestArp": 2814,
+            "RoundMvpCount": 41,
+            "MatchMvpCount": 0,
+            "ArenaWins": 2,
+            "LongestWinStreak": 1
+          }
+        }
+      }
+    }
+  }
+]

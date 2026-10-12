@@ -947,6 +947,11 @@ const ARENA_COUNTER_KEYS = [
   "max_loss_streak",
 ] as const satisfies readonly (keyof ArenaCounters)[];
 
+const ARENA_ADDITIVE_UPSTREAM_KEYS = {
+  matches: "GamesCount", wins: "ArenaWins", losses: "ArenaLoses", kills: "Kills", deaths: "Deaths",
+  assists: "Assists", headshots: "Headshots", damage: "DamageDealt", round_mvp: "RoundMvpCount", match_mvp: "MatchMvpCount",
+} as const satisfies Record<(typeof ARENA_ADDITIVE_COUNTER_KEYS)[number], string>;
+
 const ARENA_MAX_COUNTER_KEYS = [
   "max_kill_streak", "max_win_streak", "max_loss_streak",
 ] as const satisfies readonly (keyof ArenaCounters)[];
@@ -994,7 +999,11 @@ function arenaModeCounters(group: ArenaCounterGroup | undefined): ArenaCounters 
       counters.wins = counters.matches - counters.losses;
     }
   }
-  if (counters.matches === null && ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null)) {
+  // Unplayed modes can contain explicit zeroes (e.g. DamageDealt: 0).
+  // Invalid counters and positive activity must still keep matches unknown.
+  if (counters.matches === null &&
+      ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null || counters[key] === 0) &&
+      Object.values(ARENA_ADDITIVE_UPSTREAM_KEYS).every((key) => !arenaCounterExists(group, key) || arenaCounterValue(group, key) === 0)) {
     counters.matches = 0;
   }
   return counters;
@@ -1062,11 +1071,26 @@ function overallWithFallback(
   const summed = completeModeCounters(modes);
   if (!direct) return completeModeOverall(modes, hours);
   const directCounters = arenaCounters(direct);
+  // A sparse overall block can lag behind the mode totals. Mixing its kills
+  // and match count with summed wins/headshots produces ratios from different
+  // populations. Use one complete mode sum in that case, retaining only the
+  // upstream streaks, which cannot be summed across modes.
+  const useModeSum = directCounters.matches !== null && summed.matches !== null &&
+    directCounters.matches !== summed.matches &&
+    Object.values(ARENA_ADDITIVE_UPSTREAM_KEYS).some((key) => !arenaCounterExists(direct, key)) &&
+    ARENA_ADDITIVE_COUNTER_KEYS.every((key) => summed[key] !== null) &&
+    modes.every(({ counters: c }) => c.matches === 0
+      ? ARENA_ADDITIVE_COUNTER_KEYS.every((key) => c[key] === null || c[key] === 0)
+      : c.matches !== null && c.wins !== null && c.losses !== null && c.wins + c.losses <= c.matches &&
+        c.headshots !== null && c.kills !== null && c.headshots <= c.kills);
+  if (useModeSum) {
+    for (const key of ARENA_ADDITIVE_COUNTER_KEYS) directCounters[key] = summed[key];
+  }
   const counters = Object.fromEntries(ARENA_COUNTER_KEYS.map((key) => [
     key,
     directCounters[key] ?? summed[key],
   ])) as unknown as ArenaCounters;
-  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: "upstream" };
+  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: useModeSum ? "complete_mode_sum" : "upstream" };
 }
 
 /** Parses Arena's separate counter tree into the shared stored-stat envelope. */
@@ -1135,7 +1159,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     fetchedAt: null,
-    parserVersion: 4,
+    parserVersion: 5,
     overall: publicOverall,
     modes: publicModes,
   };
