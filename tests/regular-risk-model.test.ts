@@ -298,6 +298,11 @@ test("owner references use compact identity lookups and still reject deleted or 
       assert.ok(plans.some((plan) => plan.includes("COVERING INDEX idx_regular_risk_achievement_hours")), plans.join("; "));
     }
     assert.equal(queries.filter((query) => query.includes("INDEXED BY idx_players_risk_identity")).length, 2);
+    db.exec("DROP INDEX idx_players_risk_identity");
+    assert.deepEqual(readRegularRiskAchievementBaseline(db, ["a", "a", "missing"], 1), baseline,
+      "read-only consumers of older databases must return the same evidence before migration");
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_players_risk_identity'").get(), undefined,
+      "reading legacy evidence must not write a migration");
   } finally { db.close(); }
 });
 
