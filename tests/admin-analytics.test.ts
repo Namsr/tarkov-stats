@@ -147,6 +147,45 @@ test("15 minute analytics period excludes older events", () => {
   assert.equal(store.summary("15m", "all", now).health.requests, 1);
 });
 
+test("API health excludes background risk history while preserving its diagnostics", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const store = createAnalyticsStore(db);
+    const now = 275 * DAY;
+    const host = "tarkovstats.ru";
+    store.record({ occurredAt: now - 30, host, operation: "player_profile", mode: "regular", outcome: "success", status: 200, latencyMs: 11, cache: "hit" });
+    store.record({ occurredAt: now - 20, host, operation: "average", mode: "pve", outcome: "error", status: 503, latencyMs: 100 });
+    store.record({ occurredAt: now - 10, host, operation: "risk_evaluation", mode: "regular", outcome: "success", status: 200, latencyMs: 18000, queueMs: 12000, achievementsMs: 5900, storeOpenMs: 3 });
+    store.record({ occurredAt: now - 5, host, operation: "risk_evaluation", mode: "seasonal", outcome: "error", status: 503, latencyMs: 60000 });
+    for (const domain of ["all", host]) {
+      const summary = store.summary("24h", domain, now);
+      assert.equal(summary.health.requests, 2);
+      assert.equal(summary.health.success, 1);
+      assert.equal(summary.health.serverErrors, 1);
+      assert.equal(summary.errors, 1);
+      assert.equal(summary.health.p95Ms, 11);
+      assert.equal(summary.health.p99Ms, 11);
+      assert.equal(summary.health.activeIssueCount, 1);
+      assert.equal(summary.health.recentIssueCount, 1);
+      assert.deepEqual(summary.health.issues.map((issue) => issue.operation), ["average"]);
+      assert.equal(summary.health.series.reduce((n, point) => n + point.requests, 0), 2);
+      assert.equal(Math.max(...summary.health.series.map((point) => point.maxMs ?? 0)), 100);
+      assert.equal(summary.freshness.lastEventAt, now - 20);
+      const risk = summary.health.operations.find((op) => op.operation === "risk_evaluation" && op.mode === "regular");
+      assert.equal(risk.p95Ms, 18000);
+      assert.deepEqual(risk.phases.map((phase) => [phase.phase, phase.p95Ms]), [["queue", 12000], ["achievements", 5900], ["store_open", 3]]);
+      assert.equal(summary.health.operations.find((op) => op.mode === "seasonal").serverErrors, 1);
+    }
+    db.exec("DELETE FROM request_events WHERE operation != 'risk_evaluation'");
+    const empty = store.summary("24h", "all", now).health;
+    assert.equal(empty.requests, 0);
+    assert.equal(empty.p99Ms, null);
+    assert.deepEqual(empty.series, []);
+    assert.equal(empty.status, "healthy");
+    assert.equal(empty.operations.length, 2);
+  } finally { db.close(); }
+});
+
 test("profile issues are grouped by AID while unrelated issues remain anonymous", () => {
   const db = new DatabaseSync(":memory:");
   const store = createAnalyticsStore(db);

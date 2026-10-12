@@ -30,6 +30,9 @@ export interface RequestEvent {
   storeReadMs?: number | null;
   storeWriteMs?: number | null;
   averagesMs?: number | null;
+  queueMs?: number | null;
+  achievementsMs?: number | null;
+  storeOpenMs?: number | null;
 }
 
 export interface HealthOperationVariant {
@@ -43,7 +46,7 @@ export interface HealthOperationVariant {
 }
 
 export interface HealthPhaseSummary {
-  phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "risk" | "store_read" | "store_write" | "averages";
+  phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "risk" | "store_read" | "store_write" | "averages" | "queue" | "achievements" | "store_open";
   samples: number;
   p50Ms: number | null;
   p95Ms: number | null;
@@ -284,7 +287,7 @@ function percentile(
   where: string,
   args: unknown[],
   fraction: number,
-  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "risk_ms" | "store_read_ms" | "store_write_ms" | "averages_ms" = "latency_ms",
+  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "risk_ms" | "store_read_ms" | "store_write_ms" | "averages_ms" | "queue_ms" | "achievements_ms" | "store_open_ms" = "latency_ms",
   knownCount?: number,
 ): number | null {
   const count = knownCount ?? Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`).get(...args)?.n ?? 0);
@@ -322,7 +325,7 @@ function queryHealthSignal(db: any, domain: AdminDomain, now: number): { status:
     MIN(occurred_at) AS first_seen_at,
     MAX(occurred_at) AS last_seen_at
     FROM request_events
-    WHERE occurred_at >= ? AND occurred_at < ?${domainSql} AND ${problemSql()}`).get(...args) as Record<string, unknown>;
+    WHERE occurred_at >= ? AND occurred_at < ?${domainSql} AND operation != 'risk_evaluation' AND ${problemSql()}`).get(...args) as Record<string, unknown>;
   const activeIssueCount = Number(signal.active_issue_count ?? 0);
   const criticalCount = Number(signal.critical_count ?? 0);
   return {
@@ -459,6 +462,9 @@ function ensureRequestDiagnosticColumns(db: any): void {
     ["store_read_ms", "INTEGER"],
     ["store_write_ms", "INTEGER"],
     ["averages_ms", "INTEGER"],
+    ["queue_ms", "INTEGER"],
+    ["achievements_ms", "INTEGER"],
+    ["store_open_ms", "INTEGER"],
   ] as const) {
     if (!columns.has(name)) db.exec(`ALTER TABLE request_events ADD COLUMN ${name} ${type}`);
   }
@@ -540,8 +546,8 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       db.prepare(`INSERT INTO request_events
         (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache,
           storage, failure_stage, error_code, latency_ms, profile_ms, baseline_ms, metadata_ms, mastery_ms, cohort_ms,
-          risk_ms, store_read_ms, store_write_ms, averages_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          risk_ms, store_read_ms, store_write_ms, averages_ms, queue_ms, achievements_ms, store_open_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           occurredAt, event.host ?? null, event.operation, event.aid ?? null, event.nickname ?? null,
           event.mode ?? null, event.cycleId ?? null, event.outcome, event.status,
@@ -557,6 +563,9 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           event.storeReadMs == null ? null : Math.max(0, Math.round(event.storeReadMs)),
           event.storeWriteMs == null ? null : Math.max(0, Math.round(event.storeWriteMs)),
           event.averagesMs == null ? null : Math.max(0, Math.round(event.averagesMs)),
+          event.queueMs == null ? null : Math.max(0, Math.round(event.queueMs)),
+          event.achievementsMs == null ? null : Math.max(0, Math.round(event.achievementsMs)),
+          event.storeOpenMs == null ? null : Math.max(0, Math.round(event.storeOpenMs)),
         );
       const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
       if (occurredAt - lastCleanup >= CLEANUP_INTERVAL_MS) this.cleanup(occurredAt);
@@ -656,7 +665,10 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       return queryHealthSignal(db, domain, now);
     },
     summary(period, domain, now = Date.now(), includeDiagnostics = true) {
-      const { sql, args } = whereFor(period, domain, now);
+      const { sql: operationSql, args } = whereFor(period, domain, now);
+      // Risk timings include background SQL and FIFO wait, not an HTTP response.
+      // Keep them in operation diagnostics, including existing stored history.
+      const sql = `${operationSql} AND operation != 'risk_evaluation'`;
       const row = db.prepare(`SELECT
         COUNT(*) AS requests,
         SUM(CASE WHEN operation = 'player_search' AND outcome = 'success' AND aid IS NOT NULL THEN 1 ELSE 0 END) AS account_requests,
@@ -683,11 +695,11 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         SUM(CASE WHEN outcome = 'rate_limited' OR status = 429 THEN 1 ELSE 0 END) AS rate_limited,
         MAX(CASE WHEN outcome = 'success' THEN occurred_at END) AS last_success_at,
         MAX(CASE WHEN ${problemSql()} THEN occurred_at END) AS last_issue_at
-        FROM request_events WHERE ${sql}
+        FROM request_events WHERE ${operationSql}
         GROUP BY operation, mode ORDER BY requests DESC, operation, mode`).all(...args) as Record<string, unknown>[] : [];
       const operations: HealthOperationSummary[] = operationRows.map((operationRow) => {
         const mode = operationRow.mode == null ? null : String(operationRow.mode);
-        const operationWhere = `${sql} AND operation = ? AND ${mode == null ? "mode IS NULL" : "mode = ?"}`;
+        const operationWhere = `${operationSql} AND operation = ? AND ${mode == null ? "mode IS NULL" : "mode = ?"}`;
         const operationArgs = mode == null
           ? [...args, String(operationRow.operation)]
           : [...args, String(operationRow.operation), mode];
@@ -725,6 +737,9 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           ["store_read", "store_read_ms"],
           ["store_write", "store_write_ms"],
           ["averages", "averages_ms"],
+          ["queue", "queue_ms"],
+          ["achievements", "achievements_ms"],
+          ["store_open", "store_open_ms"],
         ] as const;
         const phases: HealthPhaseSummary[] = phaseColumns.flatMap(([phase, column]) => {
           const where = `${successfulOperationWhere} AND ${column} IS NOT NULL`;

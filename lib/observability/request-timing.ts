@@ -206,6 +206,9 @@ export function createRequestTiming(options: Options = {}) {
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
         averagesMs: input.averagesMs,
+        queueMs: input.queueMs,
+        achievementsMs: input.achievementsMs,
+        storeOpenMs: input.storeOpenMs,
       });
       const slow = totalMs >= 1_000;
       // Account lookups must be checkable even for fast cache hits or throttles.
@@ -218,7 +221,7 @@ export function createRequestTiming(options: Options = {}) {
         ...(slow ? { slow: true } : {}),
         ...(slow || accountRequest || riskRequest ? { at: Date.now(), pid: process.pid } : {}),
         ...(accountRequest ? profileIdentity() : {}),
-        entry: "api",
+        entry: input.operation === "risk_evaluation" ? "background" : "api",
         operation: input.operation,
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         outcome: input.outcome,

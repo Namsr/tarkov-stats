@@ -22,6 +22,7 @@ export interface PublishedAchievementBaseline {
 }
 
 export const ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA = `
+CREATE INDEX IF NOT EXISTS idx_players_risk_identity ON players(aid);
 CREATE TABLE IF NOT EXISTS regular_risk_achievement_owners (
   aid INTEGER NOT NULL, ach_id TEXT NOT NULL, hours REAL NOT NULL,
   PRIMARY KEY (aid, ach_id)
@@ -82,7 +83,8 @@ export function readRegularRiskAchievementBaseline(
   const ids = new Set(ownedIds);
   if (!ids.size) return { total: Math.max(0, Number(total) - 1), achievements };
   const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
-      AND EXISTS (SELECT 1 FROM players p WHERE p.aid = regular_risk_achievement_owners.aid)
+      AND EXISTS (SELECT 1 FROM players p INDEXED BY idx_players_risk_identity
+        WHERE p.aid = regular_risk_achievement_owners.aid)
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_risk_achievement_owners.aid)`;
   const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
       FROM regular_risk_achievement_owners ${where}`);

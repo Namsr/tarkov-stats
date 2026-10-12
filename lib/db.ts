@@ -51,6 +51,7 @@ const COHORT_INDEX_METRICS = [
   "pmc_kd_ratio",
   "kills_per_raid",
   "pmc_survival_rate",
+  "pmc_kills_per_raid",
   "longest_win_streak",
   "level",
 ];
@@ -558,9 +559,14 @@ function ensureSqliteAverageIndexes(db: any): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_pvp ON mode_players(mode, ${pvpColumns})`);
   for (const column of AVG_COLS) {
     if (!/^[a-z_]+$/.test(column)) throw new Error(`invalid average index column: ${column}`);
-    if (column === "hours" || column === "pmc_raids") continue;
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_${column} ON mode_players(mode, ${column})`);
+    const rangeMetric = column === "hours" || column === "pmc_raids";
+    if (!rangeMetric) db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
+    // mode_players has a separate rowid: unlike players, a metric index does
+    // not carry aid. Cover tombstones, recency and PvP eligibility so a sorted
+    // average does not fetch the large stats_json row for every sample.
+    const modeIndex = `idx_mode_players_${rangeMetric ? "" : "average_"}${column}`;
+    ensureIndexDefinition(db, modeIndex,
+      `CREATE INDEX ${modeIndex} ON mode_players(mode, ${column}, aid, profile_updated_at, pvp_stats_known)`);
   }
 }
 
@@ -1374,6 +1380,8 @@ function initializeSqliteSchema(opened: any): void {
       WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
   }
   initializeProfileChangeJournal(opened);
+  // Owner references only need existence, not the multi-KiB profile row.
+  opened.exec("CREATE INDEX IF NOT EXISTS idx_players_risk_identity ON players(aid)");
   ensureSqliteCohortIndexes(opened);
   ensureSqliteAverageIndexes(opened);
   initializeArenaSchema(opened);
