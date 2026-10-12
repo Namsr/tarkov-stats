@@ -31,6 +31,9 @@ const { markAveragePublicationDirty } = await import("../lib/average-publication
 // app's @/ alias; ARENA_PARSER_VERSION comes from the storage import above.
 const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V3_PARSER_VERSION = 3;
+const ARENA_V4_PARSER_VERSION = 4;
+const ARENA_V4_MIGRATION_KEY = "offline_v4_to_v5_complete";
+const ARENA_V4_PUBLICATION_KEY = "offline_v4_to_v5_publication_pending";
 const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v4_complete";
 const ARENA_V2_PUBLICATION_KEY = "offline_v2_to_v4_publication_pending";
 const ARENA_V3_MIGRATION_KEY = "offline_v3_to_v4_complete";
@@ -133,6 +136,13 @@ async function main() {
   if (migrationV2.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const migrationV3 = await migrateOfflineArenaV3Profiles(startedAt);
   if (migrationV3.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
+  const migrationV4 = await migrateOfflineArenaProfiles(startedAt, {
+    parserVersion: ARENA_V4_PARSER_VERSION,
+    migrationKey: ARENA_V4_MIGRATION_KEY,
+    publicationKey: ARENA_V4_PUBLICATION_KEY,
+    classify: (rows) => classifyArenaRows(rows, ARENA_V4_PARSER_VERSION),
+  });
+  if (migrationV4.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const index = await refreshIndexIfDue(startedAt);
   if (stopping || runBudgetExpired(startedAt)) return;
   let feed;
@@ -169,6 +179,7 @@ async function main() {
     migrations: {
       v2: migrationV2,
       v3: migrationV3,
+      v4: migrationV4,
     },
     index,
     ...feed,
