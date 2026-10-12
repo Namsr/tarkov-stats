@@ -275,6 +275,37 @@ test("indexed owner references exclude the target, tombstones, missing hours and
   db.close();
 });
 
+test("owner references use compact identity lookups and still reject deleted or newly excluded players", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE players(aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT); CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+    const insert = db.prepare("INSERT INTO players VALUES (?, ?, ?)");
+    for (let aid = 1; aid <= 40; aid++) insert.run(aid, aid * 10, '["a"]');
+    materializeAchievementBaseline(db, "regular");
+    db.exec("DELETE FROM players WHERE aid = 2; INSERT INTO excluded_players VALUES (3)");
+    const queries = [];
+    const baseline = readRegularRiskAchievementBaseline({ prepare(sql) { queries.push(sql); return db.prepare(sql); } }, ["a", "a", "missing"], 1);
+    assert.equal(baseline.achievements.length, 2);
+    const sample = baseline.achievements[0];
+    assert.equal(sample.owners, 37);
+    assert.equal(sample.meanHours, 220);
+    assert.equal(sample.earlyHours, 110);
+    assert.equal(baseline.achievements[1].owners, 0);
+    for (const sql of queries.filter((query) => query.includes("INDEXED BY idx_players_risk_identity"))) {
+      const params = sql.includes("OFFSET") ? ["a", 1, 7] : ["a", 1];
+      const plans = db.prepare("EXPLAIN QUERY PLAN " + sql).all(...params).map((row) => String(row.detail));
+      assert.ok(plans.some((plan) => /p (?:EXISTS )?USING COVERING INDEX idx_players_risk_identity/.test(plan)), plans.join("; "));
+      assert.ok(plans.some((plan) => plan.includes("COVERING INDEX idx_regular_risk_achievement_hours")), plans.join("; "));
+    }
+    assert.equal(queries.filter((query) => query.includes("INDEXED BY idx_players_risk_identity")).length, 2);
+    db.exec("DROP INDEX idx_players_risk_identity");
+    assert.deepEqual(readRegularRiskAchievementBaseline(db, ["a", "a", "missing"], 1), baseline,
+      "read-only consumers of older databases must return the same evidence before migration");
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_players_risk_identity'").get(), undefined,
+      "reading legacy evidence must not write a migration");
+  } finally { db.close(); }
+});
+
 function profile(aid, counters = raw()) {
   return { aid, updated: 1_800_000_000_000, info: { nickname: `p${aid}`, prestigeLevel: counters.prestige },
     pmcStats: { eft: { totalInGameTime: 100 * 3600, overAllCounters: { Items: [

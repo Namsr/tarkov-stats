@@ -103,6 +103,21 @@ test("range averages read every metric from covering indexes in both persistent 
     }
   }
 });
+test("population averages cover PvE identity, recency and PvP filters without profile row reads", () => {
+  for (const metric of AVG_COLS) {
+    for (const recent of [false, true]) {
+      const plans = db.prepare(`EXPLAIN QUERY PLAN SELECT AVG(v) FROM (
+        SELECT ${metric} AS v FROM pve_players WHERE ${metric} IS NOT NULL
+          ${recent ? "AND profile_updated_at >= 1" : ""}
+          ${["pmc_kd_ratio", "killed_pmc"].includes(metric) ? "AND pvp_stats_known = 1" : ""}
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = pve_players.aid)
+          ORDER BY ${metric} LIMIT 100 OFFSET 5
+      )`).all().map((row) => String(row.detail));
+      assert.ok(plans.some((plan) => /mode_players USING COVERING INDEX/.test(plan)), `${metric}, recent=${recent}: ${plans}`);
+    }
+  }
+});
+
 const insert = db.prepare(`INSERT INTO players
   (aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
    kills_per_raid, pmc_survival_rate, longest_win_streak, level, fetched_at)

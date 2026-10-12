@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Keyboard
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
-import type { AudienceSummary } from "@/lib/admin/analytics-db";
+import type { AudienceSummary, HealthPhaseSummary } from "@/lib/admin/analytics-db";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
@@ -21,7 +21,7 @@ type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" |
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
 type HealthOperationVariant = { source: string | null; cache: string | null; force: boolean | null; requests: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
-type HealthPhase = { phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "store_read" | "store_write"; samples: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
+type HealthPhase = HealthPhaseSummary;
 type HealthOperation = { operation: string; mode: string | null; requests: number; success: number; serverErrors: number; rateLimited: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; lastIssueAt: number | null; variants: HealthOperationVariant[]; phases: HealthPhase[] };
 type HealthIssue = { operation: string; mode: string | null; aid: number | null; stage: string; code: string; status: number; count: number; activeCount: number; firstSeenAt: number; lastSeenAt: number; maxLatencyMs: number; active: boolean; severity: "warning" | "critical" };
 type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; p999Ms: number | null; maxMs: number | null };

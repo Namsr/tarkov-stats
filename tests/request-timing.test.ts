@@ -103,6 +103,23 @@ test("Server-Timing always carries a total even with no measured phase", () => {
   assert.equal(timing.serverTiming(), "total;dur=7");
 });
 
+test("risk evaluation logs identify background work and persist its missing phases", async () => {
+  const output: string[] = [];
+  createRequestTiming({ sampleRate: 0, now: () => 0, logger: (event) => output.push(event) }).finish({
+    operation: "risk_evaluation", mode: "regular", outcome: "success", status: 200,
+    totalMs: 9000, queueMs: 3000, achievementsMs: 5800, storeOpenMs: 2,
+  });
+  const event = JSON.parse(output[0]);
+  assert.equal(event.entry, "background");
+  assert.equal(event.queue_ms, 3000);
+  const { getAnalyticsStore } = await import("../lib/admin/analytics-db.ts");
+  const store = await getAnalyticsStore();
+  await new Promise(setImmediate);
+  const summary = store.summary("24h", "all", Date.now() + 1);
+  const risk = summary.health.operations.find((operation) => operation.operation === "risk_evaluation");
+  assert.deepEqual(risk.phases.map((phase) => [phase.phase, phase.p95Ms]), [["queue", 3000], ["achievements", 5800], ["store_open", 2]]);
+});
+
 test("unsampled requests emit no timing log", () => {
   const output: string[] = [];
   const timing = createRequestTiming({

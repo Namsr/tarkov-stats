@@ -49,6 +49,7 @@ export function materializeRegularRiskAchievementOwners(
   now = Date.now(),
 ): void {
   db.exec(ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_players_risk_identity ON players(aid)");
   db.exec("SAVEPOINT publish_regular_risk_owners");
   try {
     db.exec(`DELETE FROM regular_risk_achievement_owners;
@@ -81,8 +82,12 @@ export function readRegularRiskAchievementBaseline(
   const achievements: PublishedAchievementStat[] = [];
   const ids = new Set(ownedIds);
   if (!ids.size) return { total: Math.max(0, Number(total) - 1), achievements };
+  // Read-only backfills can run before the web store migrates an older database.
+  const identityIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_players_risk_identity'").get()
+    ? " INDEXED BY idx_players_risk_identity" : "";
   const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
-      AND EXISTS (SELECT 1 FROM players p WHERE p.aid = regular_risk_achievement_owners.aid)
+      AND EXISTS (SELECT 1 FROM players p${identityIndex}
+        WHERE p.aid = regular_risk_achievement_owners.aid)
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_risk_achievement_owners.aid)`;
   const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
       FROM regular_risk_achievement_owners ${where}`);
