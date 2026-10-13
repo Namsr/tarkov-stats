@@ -417,7 +417,8 @@ test("compare progression keeps two isolated player histories and exposes the pu
   assert.match(section, /const primaryState = useProgressionTimeline\(primary, mode, cycleId\)/);
   assert.match(section, /const secondaryState = useProgressionTimeline\(secondary, mode, cycleId\)/);
   assert.match(section, /new URLSearchParams\(\{\s*aid: String\(aid\),\s*mode,\s*cycle: cycleId,\s*\}\)/);
-  assert.match(section, /cache: "no-store"/);
+  assert.match(section, /loadAverageJson<unknown>\(`/);
+  assert.match(section, /forceRefresh: true, retryUnavailable: true, onUpdate: apply/);
   assert.match(section, /new AbortController\(\)/);
   assert.match(section, /controller\.abort\(\)/);
   assert.match(section, /validTimelineResponse\(result, \{ aid, mode, cycleId \}\)/);

@@ -298,9 +298,12 @@ test("mounted comparison cohorts and timelines refresh stale answers and cancel 
   try {
     for (const name of ["useComparisonCohort", "useProgressionTimeline"]) {
       let calls = 0;
-      globalThis.fetch = async () => new Response(JSON.stringify({ identity: {
+      globalThis.fetch = async (_, options) => {
+        if (name === "useProgressionTimeline") assert.equal(options.cache, "no-store");
+        return new Response(JSON.stringify({ identity: {
         aid: 42, mode: calls === 2 ? "pve" : "regular", cycleId: "persistent",
-      }, n: ++calls }), { headers: { "X-Statistics-Stale": calls === 1 ? "1" : "0", "X-Statistics-Generated-At": String(calls) } });
+        }, n: ++calls }), { headers: { "X-Statistics-Stale": calls === 1 ? "1" : "0", "X-Statistics-Generated-At": String(calls) } });
+      };
       const harness = await statisticsHookHarness(name);
       const value = () => harness.state()[name === "useComparisonCohort" ? "data" : "timeline"];
       assert.equal(value().n, 1);
