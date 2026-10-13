@@ -330,7 +330,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
   const prepare = DatabaseSync.prototype.prepare;
   const projections = [];
   DatabaseSync.prototype.prepare = function (sql) {
-    if (sql.startsWith("WITH cohort AS (")) {
+    if (sql.startsWith("WITH cohort AS")) {
       projections.push(sql.slice(0, sql.indexOf("FROM players")));
     }
     return prepare.call(this, sql);
@@ -513,6 +513,40 @@ test("PvE PMC K/D distributions and route percentiles exclude unknown PvP stats"
     equal: 0,
   });
   assert.notEqual(body.percentiles.kd_ratio.percentile, null);
+});
+
+test("a cached in-flight PvE cohort timeout retains its phase and stable failure cause", async () => {
+  const aid = 919;
+  const version = 1_800_000_000_900;
+  const progression = await getProgressionStore("pve");
+  await progression.recordSnapshot({ aid, stats: pveStats({ hoursPlayed: 100, pmcRaids: 100 }),
+    achievementIds: [], upstreamUpdatedAt: version, capturedAt: version + 1 });
+  const { loadDynamicAverage } = await import("../lib/average-dynamic-cache.ts");
+  const { getAnalyticsStore } = await import("../lib/admin/analytics-db.ts");
+  const analytics = await getAnalyticsStore();
+  resetDynamicAverageCacheForTests();
+  const previous = process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
+  process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = "5";
+  const delayed = new Promise((resolve) => setTimeout(() => resolve({}), 200));
+  try {
+    await assert.rejects(loadDynamicAverage(`cohort:persistent:pve:${aid}:${version}:100:100:median:all`, () => delayed), /timed out/);
+    const response = await getCohort(new NextRequest(`http://local/api/average/cohort?mode=pve&aid=${aid}&statistic=median`));
+    assert.equal(response.status, 503);
+    assert.match(response.headers.get("Server-Timing"), /cohort;dur=\d+/);
+    await new Promise(setImmediate);
+    const health = analytics.summary("15m", "all").health;
+    const issue = health.issues.find((item) => item.code === "average_cohort_response_timeout");
+    assert.ok(issue);
+    assert.equal(issue.stage, "dependency");
+    const slow = health.slowRequests.find((item) => item.code === issue.code);
+    assert.ok(slow.phases.cohort >= 1);
+    assert.equal(slow.cache, null, "a coalesced failed cache hit must not be invented as a miss");
+  } finally {
+    if (previous === undefined) delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
+    else process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = previous;
+    await delayed;
+    resetDynamicAverageCacheForTests();
+  }
 });
 
 test("PvE two-axis averages select the first 10/15/20/30 percent window with 20 peers", async () => {
@@ -736,7 +770,7 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
   // averages on, every eligible row costs a table lookup inside a query that
   // blocks every other response.
   const COHORT_FILTER = ["hours", "pmc_raids", "pvp_stats_known", "profile_updated_at", "aid"];
-  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level"];
+  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level", "pvp_stats_version", "pmc_killed_pmc"];
   for (const name of ["idx_players_cohort", "idx_mode_players_cohort"]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
     const ddl = String(row?.sql ?? "").replace(/\s+/g, " ").toLowerCase();
@@ -745,6 +779,28 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
       assert.ok(ddl.includes(column), `${name} must carry ${column}: ${ddl}`);
     }
   }
+});
+
+test("persistent cohort SQL reads the killed-PMC inputs from covering indexes in both modes", async () => {
+  const prepare = DatabaseSync.prototype.prepare;
+  const plans = [];
+  DatabaseSync.prototype.prepare = function (sql) {
+    const statement = prepare.call(this, sql);
+    if (!sql.startsWith("WITH cohort AS")) return statement;
+    const all = statement.all.bind(statement);
+    statement.all = (...params) => {
+      plans.push(prepare.call(this, `EXPLAIN QUERY PLAN ${sql}`).all(...params).map((row) => row.detail));
+      return all(...params);
+    };
+    return statement;
+  };
+  try {
+    for (const mode of ["regular", "pve"]) await (await getStore(mode)).cohort2d(1e6, 1e6, 999999, "hours", "median", "all");
+  } finally { DatabaseSync.prototype.prepare = prepare; }
+  assert.equal(plans.length, 2);
+  assert.ok(plans[0].some((detail) => /COVERING INDEX idx_players_cohort/.test(detail)), plans[0].join("\n"));
+  assert.ok(plans[1].some((detail) => /COVERING INDEX idx_mode_players_cohort/.test(detail)), plans[1].join("\n"));
+  for (const plan of plans) assert.equal(plan.filter((detail) => /(?:SEARCH|SCAN) (?:players|mode_players) USING/.test(detail)).length, 1, plan.join("\n"));
 });
 
 test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {

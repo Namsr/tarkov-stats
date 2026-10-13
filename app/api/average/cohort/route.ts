@@ -11,7 +11,7 @@ import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
 import { ARENA_PARSER_VERSION, type getArenaCohort } from "@/lib/arena/service";
-import { computeCohortInBackground } from "@/lib/cohort-worker";
+import { cohortFailureDiagnostic, computeCohortInBackground } from "@/lib/cohort-worker";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
@@ -122,7 +122,7 @@ async function arenaCohortResponse(
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, cache, storage: "sqlite", cohortMs });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, ...cohortFailureDiagnostic(error), cache, storage: "sqlite", cohortMs });
     return NextResponse.json({
       identity,
       percentiles: null,
@@ -134,6 +134,13 @@ async function arenaCohortResponse(
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
+  const response = await cohortResponse(request, timing);
+  const header = timing.serverTiming();
+  if (header) response.headers.set("Server-Timing", header);
+  return response;
+}
+
+async function cohortResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"), requestId: request.headers.get("x-request-id") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
@@ -182,6 +189,9 @@ export async function GET(request: NextRequest) {
     let storeOpenMs: number | undefined;
     let storeReadMs: number | undefined;
     let cohortMs: number | undefined;
+    let queueMs: number | undefined;
+    let workerMs: number | undefined;
+    let calculating = false;
     try {
       const storeOpenStarted = timing.now();
       const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
@@ -237,18 +247,18 @@ export async function GET(request: NextRequest) {
       };
       const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
       const cohortStarted = timing.now();
+      calculating = true;
       const loaded = await loadDynamicAverage(
         ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => computeCohortInBackground({
+        () => { cache = "miss"; return computeCohortInBackground({
           kind: "persistent", mode,
           args: [centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics],
-        }),
-      );
-      cohortMs = timing.elapsedMs(cohortStarted);
+        }, (phases) => { queueMs = phases.queueMs; workerMs = phases.workerMs; }); },
+      ).finally(() => { cohortMs = timing.elapsedMs(cohortStarted); });
       cache = loaded.cache;
       timing.finish({
         operation: "average_cohort", mode, outcome: "success", status: 200,
-        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs, queueMs, workerMs,
       });
       return NextResponse.json({ ...loaded.value, statistic, period }, {
         // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
@@ -258,7 +268,8 @@ export async function GET(request: NextRequest) {
       console.error("persistent comparison cohort failed", error);
       timing.finish({
         operation: "average_cohort", mode: rawMode, outcome: "error", status: 503,
-        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+        ...(calculating ? cohortFailureDiagnostic(error) : {}),
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs, queueMs, workerMs,
       });
       return NextResponse.json({
         identity: { aid, mode, cycleId: "persistent" },

@@ -1,0 +1,49 @@
+import type { AdminDomain, AdminPeriod } from "./types.ts";
+import { periodMilliseconds } from "./types.ts";
+import type { BrowserSample } from "../observability/browser-performance.ts";
+
+export interface BrowserPerformanceSummary {
+  available: boolean; samples: number; lastSampleAt: number | null; from: number; to: number;
+  metrics: Array<{ path: string; endpoint: string | null; metric: string; samples: number; p50: number; p95: number; p99: number; max: number }>;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createBrowserPerformanceStore(db: any) {
+  db.exec(`CREATE TABLE IF NOT EXISTS browser_performance (
+    id INTEGER PRIMARY KEY, occurred_at INTEGER NOT NULL, host TEXT NOT NULL, path TEXT NOT NULL,
+    endpoint TEXT, metric TEXT NOT NULL, value REAL NOT NULL
+  ); CREATE INDEX IF NOT EXISTS idx_browser_performance_time ON browser_performance(occurred_at);`);
+  const insert = db.prepare("INSERT INTO browser_performance(occurred_at,host,path,endpoint,metric,value) VALUES (?,?,?,?,?,?)");
+  return {
+    record(host: string, path: string, samples: BrowserSample[], now = Date.now()) {
+      db.exec("SAVEPOINT browser_performance_batch");
+      try {
+        for (const sample of samples) insert.run(now, host, path, sample.endpoint, sample.metric, sample.value);
+        db.exec("RELEASE browser_performance_batch");
+      } catch (error) {
+        db.exec("ROLLBACK TO browser_performance_batch; RELEASE browser_performance_batch");
+        throw error;
+      }
+    },
+    summary(period: AdminPeriod, domain: AdminDomain, now = Date.now()): BrowserPerformanceSummary {
+      const from = now - periodMilliseconds(period);
+      const where = "occurred_at >= ? AND occurred_at <= ?" + (domain === "all" ? "" : " AND host = ?");
+      const args = domain === "all" ? [from, now] : [from, now, domain];
+      const totals = db.prepare(`SELECT COUNT(*) AS n, MAX(occurred_at) AS last FROM browser_performance WHERE ${where}`).get(...args);
+      const rows = db.prepare(`WITH ranked AS (
+        SELECT path, endpoint, metric, value,
+          ROW_NUMBER() OVER (PARTITION BY path, endpoint, metric ORDER BY value) AS rn,
+          COUNT(*) OVER (PARTITION BY path, endpoint, metric) AS n
+        FROM browser_performance WHERE ${where}
+      ) SELECT path, endpoint, metric, MAX(n) AS samples, MAX(value) AS max,
+        MAX(CASE WHEN rn = CAST((n * 50 + 99) / 100 AS INTEGER) THEN value END) AS p50,
+        MAX(CASE WHEN rn = CAST((n * 95 + 99) / 100 AS INTEGER) THEN value END) AS p95,
+        MAX(CASE WHEN rn = CAST((n * 99 + 99) / 100 AS INTEGER) THEN value END) AS p99
+      FROM ranked GROUP BY path, endpoint, metric ORDER BY samples DESC LIMIT 150`).all(...args);
+      return { available: true, samples: Number(totals.n), lastSampleAt: totals.last == null ? null : Number(totals.last), from, to: now,
+        metrics: rows.map((row: Record<string, unknown>) => ({ path: String(row.path), endpoint: row.endpoint == null ? null : String(row.endpoint), metric: String(row.metric),
+          samples: Number(row.samples), p50: Number(row.p50), p95: Number(row.p95), p99: Number(row.p99), max: Number(row.max) })) };
+    },
+    cleanup(now: number) { db.prepare("DELETE FROM browser_performance WHERE occurred_at < ?").run(now - 7 * 86_400_000); },
+  };
+}

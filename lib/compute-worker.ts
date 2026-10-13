@@ -19,13 +19,18 @@ type Job<Args extends unknown[], Result> = {
   resolve: (result: Result) => void;
   reject: (error: Error) => void;
   deadline?: ReturnType<typeof setTimeout>;
+  queuedAt: number;
+  dispatchedAt?: number;
+  observe?: (timing: { queueMs: number; workerMs?: number }) => void;
 };
 type Reply<Result> = { id: number } & ({ result: Result } | { error: string });
 
 export class ComputeUnavailableError extends Error {
-  constructor(message: string) {
+  readonly reason: string;
+  constructor(message: string, reason = "unavailable") {
     super(message);
     this.name = "ComputeUnavailableError";
+    this.reason = reason;
   }
 }
 
@@ -43,18 +48,23 @@ export class ComputeWorker<Args extends unknown[], Result> {
   }
 
   compute(...args: Args): Promise<Result> {
+    return this.computeObserved(args);
+  }
+
+  computeObserved(args: Args, observe?: Job<Args, Result>["observe"]): Promise<Result> {
     if (this.jobs.length >= (this.options.maxPending ?? 16)) {
-      return Promise.reject(this.unavailable(`${this.options.name} queue is full`));
+      return Promise.reject(this.unavailable(`${this.options.name} queue is full`, "queue_full"));
     }
     return new Promise((resolve, reject) => {
-      const job: Job<Args, Result> = { id: ++this.nextId, args, resolve, reject };
+      const job: Job<Args, Result> = { id: ++this.nextId, args, resolve, reject, queuedAt: performance.now(), observe };
       if (this.options.totalTimeoutMs !== undefined) {
         job.deadline = setTimeout(() => {
-          const error = this.unavailable(`${this.options.name} request timed out`);
+          const error = this.unavailable(`${this.options.name} request timed out`, "deadline");
           if (this.jobs[0] === job) this.fail(error);
           else {
             const index = this.jobs.indexOf(job);
             if (index !== -1) this.jobs.splice(index, 1);
+            this.measure(job);
             job.reject(error);
           }
         }, this.options.totalTimeoutMs);
@@ -69,8 +79,16 @@ export class ComputeWorker<Args extends unknown[], Result> {
     this.fail(this.unavailable(`${this.options.name} worker stopped`));
   }
 
-  private unavailable(message: string): Error {
-    return this.options.unavailableError?.(message) ?? new ComputeUnavailableError(message);
+  private unavailable(message: string, reason = "unavailable"): Error {
+    return this.options.unavailableError?.(message) ?? new ComputeUnavailableError(message, reason);
+  }
+
+  private measure(job: Job<Args, Result>, completed = true): void {
+    const now = performance.now();
+    try {
+      job.observe?.({ queueMs: Math.round((job.dispatchedAt ?? now) - job.queuedAt),
+        ...(!completed || job.dispatchedAt === undefined ? {} : { workerMs: Math.round(now - job.dispatchedAt) }) });
+    } catch { /* Diagnostics must not interfere with job completion. */ }
   }
 
   private fail(error: Error): void {
@@ -81,6 +99,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
     child?.kill("SIGKILL");
     for (const job of this.jobs.splice(0)) {
       if (job.deadline) clearTimeout(job.deadline);
+      this.measure(job);
       job.reject(error);
     }
   }
@@ -109,6 +128,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
           this.timer = undefined;
           const job = this.jobs.shift()!;
           if (job.deadline) clearTimeout(job.deadline);
+          this.measure(job);
           if ("error" in message) job.reject(new Error(message.error));
           else job.resolve(message.result);
           if (this.jobs.length) this.dispatch();
@@ -124,7 +144,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
         });
         child.once("exit", (code, signal) => {
           if (this.child === child) {
-            this.fail(this.unavailable(`${this.options.name} worker exited (${signal ?? code})`));
+            this.fail(this.unavailable(`${this.options.name} worker exited (${signal ?? code})`, "worker_exit"));
           }
         });
       }
@@ -133,10 +153,12 @@ export class ComputeWorker<Args extends unknown[], Result> {
       child.channel?.ref();
       // Bound synchronous work in the child, including time spent waiting for SQLite.
       this.timer = setTimeout(() => {
-        this.fail(this.unavailable(`${this.options.name} worker timed out`));
+        this.fail(this.unavailable(`${this.options.name} worker timed out`, "worker_timeout"));
       }, this.options.timeoutMs ?? 60_000);
       this.timer.unref();
       const { id, args } = this.jobs[0];
+      this.jobs[0].dispatchedAt = performance.now();
+      this.measure(this.jobs[0], false);
       child.send({ id, args }, (error) => {
         if (error && this.child === child) this.fail(this.unavailable(error.message));
       });

@@ -54,6 +54,8 @@ const COHORT_INDEX_METRICS = [
   "pmc_kills_per_raid",
   "longest_win_streak",
   "level",
+  "pvp_stats_version",
+  "pmc_killed_pmc",
 ];
 
 // One row per collected player, keyed by account id. Re-looking up the same
@@ -797,10 +799,15 @@ function persistentComparisonMetricsSql(
       metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
     }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""})`
   ).join("\n    UNION ALL\n    ");
-  return `WITH cohort AS (
+  // Materialize once: SQLite otherwise inlines the CTE into each metric and
+  // can select a narrow PvP index that reads every large profile row again.
+  const index = mode === "pve" ? "idx_mode_players_cohort" : "idx_players_cohort";
+  // INDEXED BY must name a table, not the pve_players view used by other reads.
+  const table = mode === "pve" ? "mode_players" : "players";
+  return `WITH cohort AS MATERIALIZED (
     SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.filter((metric) => metric !== "killed_pmc_per_raid").join(", ")},
       CASE WHEN pvp_stats_known = 1 AND pvp_stats_version = 1 AND pmc_raids > 0
-        THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid FROM players ${where}
+        THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid FROM ${table} INDEXED BY ${index} ${where.replace(/\bplayers\./g, `${table}.`)}${mode === "pve" ? " AND mode = 'pve'" : ""}
   )
   SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
     NULL AS below, NULL AS equal,

@@ -7,6 +7,7 @@ import NavigationPendingTracker from "@/components/NavigationPendingTracker";
 import SkipLink from "@/components/SkipLink";
 import FaqWidget from "@/components/FaqWidget";
 import PageviewBeacon from "@/components/PageviewBeacon";
+import PerformanceBeacon from "@/components/PerformanceBeacon";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
 import { dict, type Lang } from "@/lib/i18n/dictionary";
@@ -67,6 +68,7 @@ export default async function RootLayout({
             <SiteFooter />
             <FaqWidget />
             <PageviewBeacon />
+            <PerformanceBeacon />
           </FavoritesProvider>
         </LanguageProvider>
         {analyticsToken ? (

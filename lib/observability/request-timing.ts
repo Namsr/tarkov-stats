@@ -28,6 +28,7 @@ type TimingInput = {
   masteryMs?: number;
   queueMs?: number;
   achievementsMs?: number;
+  workerMs?: number;
 };
 
 export type RequestTimingInput = TimingInput & {
@@ -85,6 +86,10 @@ const SERVER_TIMING_PHASES: [keyof TimingInput, string][] = [
   ["cohortMs", "cohort"],
   ["queueMs", "queue"],
   ["achievementsMs", "achievements"],
+  ["workerMs", "worker"],
+  ["levelsMs", "levels"],
+  ["bucketAggregateMs", "bucketaggregate"],
+  ["rangeBoundsMs", "rangebounds"],
 ];
 
 const defaultNow = () => performance.now();
@@ -209,6 +214,13 @@ export function createRequestTiming(options: Options = {}) {
         queueMs: input.queueMs,
         achievementsMs: input.achievementsMs,
         storeOpenMs: input.storeOpenMs,
+        workerMs: input.workerMs,
+        seasonalMs: input.seasonalMs,
+        levelsMs: input.levelsMs,
+        parseMs: input.parseMs,
+        bucketAggregateMs: input.bucketAggregateMs,
+        rangeBoundsMs: input.rangeBoundsMs,
+        requestId: context.requestId,
       });
       const slow = totalMs >= 1_000;
       // Account lookups must be checkable even for fast cache hits or throttles.
@@ -250,6 +262,7 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.metadataMs === undefined ? {} : { metadata_ms: roundedMs(input.metadataMs) }),
         ...(input.masteryMs === undefined ? {} : { mastery_ms: roundedMs(input.masteryMs) }),
         ...(input.queueMs === undefined ? {} : { queue_ms: roundedMs(input.queueMs) }),
+        ...(input.workerMs === undefined ? {} : { worker_ms: roundedMs(input.workerMs) }),
         ...(input.achievementsMs === undefined ? {} : { achievements_ms: roundedMs(input.achievementsMs) }),
         ...(input.riskStatus === undefined ? {} : { risk_status: input.riskStatus }),
       };
