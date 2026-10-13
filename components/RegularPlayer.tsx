@@ -225,7 +225,7 @@ function LegacyPlayer({
             }
             return null;
           }
-          throw new Error(status === 429 ? translate.current("player.rateLimited") : data.error ?? translate.current("player.loadError"));
+          throw new Error(status === 429 ? translate.current("player.rateLimited") : translate.current("player.loadError"));
         }
         if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
@@ -253,9 +253,10 @@ function LegacyPlayer({
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof PlayerProfileResponseError
-            ? translate.current("player.loadError")
-            : err instanceof Error ? err.message : translate.current("player.loadError"));
+          const message = err instanceof Error ? err.message : "";
+          setError(message === translate.current("player.rateLimited")
+            ? message
+            : translate.current("player.loadError"));
         }
       })
       .finally(() => {
@@ -306,7 +307,7 @@ function LegacyPlayer({
             setError("");
             return "unchanged";
           }
-          throw new Error(status === 429 ? t("player.rateLimited") : data.error ?? t("player.loadError"));
+          throw new Error(status === 429 ? t("player.rateLimited") : t("player.loadError"));
         }
 
         if ((mode === "regular" || mode === "pve") && (
@@ -341,7 +342,12 @@ function LegacyPlayer({
       })
       .catch((error: unknown) => {
         const failure = error instanceof PlayerProfileResponseError ? new Error(t("player.loadError")) : error;
-        if (generation === requestGeneration.current) setError(failure instanceof Error ? failure.message : t("player.loadError"));
+        const message = failure instanceof Error ? failure.message : "";
+        if (generation === requestGeneration.current) {
+          setError(message === t("player.rateLimited") || message === t("player.refreshStatus.error")
+            ? message
+            : t("player.loadError"));
+        }
         throw failure;
       })
       .finally(() => {

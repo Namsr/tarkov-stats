@@ -466,13 +466,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
           setFavoriteProfile({ requestId: favoriteRequestId, stats: payload });
         }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (!cancelled) {
           setFavoriteError({
             key: "radar.error.favorite",
-            message: error instanceof PlayerProfileResponseError
-              ? null
-              : error instanceof Error ? error.message : null,
+            message: null,
           });
         }
       })

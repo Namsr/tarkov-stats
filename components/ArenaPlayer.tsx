@@ -268,7 +268,7 @@ export default function ArenaPlayer({ aid }: Props) {
             if (!cancelled) setUnavailable(true);
             return null;
           }
-          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("arena.profile.error"));
+          throw new Error(status === 429 ? t("player.rateLimited") : t("arena.profile.error"));
         }
         if (isLegacyArenaResponse(body)) return { body, profile: null, legacy: true };
         const nextProfile = toArenaProfile(body, numericAid);
@@ -294,7 +294,10 @@ export default function ArenaPlayer({ aid }: Props) {
         if (nextProfile.nickname) upsertRecentPlayer({ aid, nickname: nextProfile.nickname, mode: "arena" });
       })
       .catch((caught: unknown) => {
-        if (!cancelled) setError(caught instanceof PlayerProfileResponseError ? t("arena.profile.error") : caught instanceof Error ? caught.message : t("arena.profile.error"));
+        if (!cancelled) {
+          const message = caught instanceof Error ? caught.message : "";
+          setError(message === t("player.rateLimited") ? message : t("arena.profile.error"));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -323,7 +326,7 @@ export default function ArenaPlayer({ aid }: Props) {
             setError("");
             return "unchanged";
           }
-          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("arena.profile.error"));
+          throw new Error(status === 429 ? t("player.rateLimited") : t("arena.profile.error"));
         }
         if (body.capture?.status === "refresh_failed") {
           throw new Error(t("player.refreshStatus.error"));
@@ -349,7 +352,10 @@ export default function ArenaPlayer({ aid }: Props) {
       })
       .catch((caught: unknown) => {
         const failure = caught instanceof PlayerProfileResponseError ? new Error(t("arena.profile.error")) : caught;
-        setError(failure instanceof Error ? failure.message : t("arena.profile.error"));
+        const message = failure instanceof Error ? failure.message : "";
+        setError(message === t("player.rateLimited") || message === t("player.refreshStatus.error")
+          ? message
+          : t("arena.profile.error"));
         throw failure;
       })
       .finally(() => {

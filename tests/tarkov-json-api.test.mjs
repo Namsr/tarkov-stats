@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -13,6 +12,8 @@ import {
   fetchTarkovJson,
   TARKOV_JSON_USER_AGENT,
 } from "../lib/tarkov-api.ts";
+
+const makeAchievementCacheDir = () => mkdtemp(join(process.cwd(), ".tmp-achievement-cache-"));
 
 test("playerLevels validation, ordering and incremental XP boundaries", () => {
   const levels = parsePlayerLevels({
@@ -180,7 +181,7 @@ test("achievement metadata translates descriptions and accepts only official HTT
 test("Seasonal achievement metadata uses the pvp-season JSON dataset", async () => {
   const originalFetch = globalThis.fetch;
   const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
-  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  const cacheDir = await makeAchievementCacheDir();
   process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
   const requested = [];
   const payload = {
@@ -230,7 +231,7 @@ test("last-good achievement metadata survives an upstream outage", async () => {
   const originalFetch = globalThis.fetch;
   const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
   const originalNow = Date.now;
-  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  const cacheDir = await makeAchievementCacheDir();
   process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
   let now = 1_800_000_000_000;
   Date.now = () => now;
@@ -275,7 +276,7 @@ test("last-good achievement metadata survives an upstream outage", async () => {
 test("v1 persisted achievement rows without descriptions or images remain readable", async () => {
   const originalFetch = globalThis.fetch;
   const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
-  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  const cacheDir = await makeAchievementCacheDir();
   process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
   await writeFile(join(cacheDir, "achievements-regular.json"), JSON.stringify({
     version: 1,
@@ -307,7 +308,7 @@ test("v1 persisted achievement rows without descriptions or images remain readab
 test("fresh legacy achievement cache is refreshed from JSON when upstream is healthy", async () => {
   const originalFetch = globalThis.fetch;
   const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
-  const cacheDir = await mkdtemp(join(tmpdir(), "tarkov-achievements-"));
+  const cacheDir = await makeAchievementCacheDir();
   process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
   await writeFile(join(cacheDir, "achievements-regular.json"), JSON.stringify({
     version: 1,
@@ -315,6 +316,7 @@ test("fresh legacy achievement cache is refreshed from JSON when upstream is hea
     savedAt: Date.now(),
     entries: [{
       id: "legacy", name: "legacy title", nameEn: "Legacy", nameRu: null,
+      descriptionEn: null, descriptionRu: null, imageUrl: null,
       side: "All", rarity: "common", playersCompletedPercent: 1,
       adjustedPlayersCompletedPercent: 2,
     }],
@@ -360,13 +362,117 @@ test("fresh legacy achievement cache is refreshed from JSON when upstream is hea
     assert.equal(map.get("legacy")?.nameEn, "Fresh legacy");
     assert.equal(map.get("legacy")?.descriptionEn, "Fresh description");
     assert.equal(map.get("legacy")?.imageUrl, "https://assets.tarkov.dev/achievement/legacy.png");
+    let persisted = "";
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const persisted = await readFile(join(cacheDir, "achievements-regular.json"), "utf8");
+      persisted = await readFile(join(cacheDir, "achievements-regular.json"), "utf8");
       if (persisted.includes("Fresh legacy")) break;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    assert.equal(JSON.parse(persisted).version, 2);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
+    else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("partial achievement translation outages keep the last-good metadata cache", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCacheDir = process.env.ACHIEVEMENTS_CACHE_DIR;
+  const originalNow = Date.now;
+  const originalConsoleError = console.error;
+  const cacheDir = await makeAchievementCacheDir();
+  process.env.ACHIEVEMENTS_CACHE_DIR = cacheDir;
+  let now = 1_800_000_000_000;
+  Date.now = () => now;
+  let resolveRefreshFailure;
+  const refreshFailure = new Promise((resolve) => {
+    resolveRefreshFailure = resolve;
+  });
+  const payload = { data: { achievements: {
+    stable: {
+      id: "stable", name: "stable title", description: "stable description",
+      normalizedName: "stable-slug", side: "All", normalizedRarity: "rare",
+      playersCompletedPercent: 3, adjustedPlayersCompletedPercent: 4,
+      imageLink: "https://assets.tarkov.dev/achievement/stable.png",
+    },
+  } } };
+  const requests = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith("/tasks")) return new Response(JSON.stringify(payload));
+    if (url.endsWith("/tasks_en")) {
+      return new Response(JSON.stringify({ data: {
+        "stable title": "Stable title",
+        "stable description": "Stable description",
+      } }));
+    }
+    if (url.endsWith("/tasks_ru")) {
+      return new Response(JSON.stringify({ data: {
+        "stable title": "Стабильное достижение",
+        "stable description": "Стабильное описание",
+      } }));
+    }
+    return new Response(null, { status: 404 });
+  };
+  try {
+    const initialApi = await import(`../lib/tarkov-api.ts?last-good=${Date.now()}`);
+    const first = await initialApi.getAchievements("regular");
+    assert.equal(first.get("stable")?.nameEn, "Stable title");
+    assert.equal(first.get("stable")?.nameRu, "Стабильное достижение");
+    assert.equal(first.get("stable")?.descriptionEn, "Stable description");
+    assert.equal(first.get("stable")?.descriptionRu, "Стабильное описание");
+    const cacheFile = join(cacheDir, "achievements-regular.json");
+    const initialCache = await readFile(cacheFile, "utf8");
+    assert.equal(JSON.parse(initialCache).version, 2);
+
+    now += 7 * 60 * 60 * 1000;
+    requests.length = 0;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/tasks")) return new Response(JSON.stringify(payload));
+      if (url.endsWith("/tasks_en")) throw new Error("English translations unavailable");
+      if (url.endsWith("/tasks_ru")) {
+        return new Response(JSON.stringify({ data: {
+          "stable title": "Стабильное достижение",
+          "stable description": "Стабильное описание",
+        } }));
+      }
+      return new Response(null, { status: 404 });
+    };
+    console.error = (message, detail, ...rest) => {
+      if (message === "tarkov reference validation failed" && detail?.error === "achievement translation endpoint unavailable") {
+        resolveRefreshFailure();
+      }
+      originalConsoleError(message, detail, ...rest);
+    };
+    const restartedApi = await import(`../lib/tarkov-api.ts?partial-outage=${now}`);
+    const stale = await restartedApi.getAchievements("regular");
+    assert.equal(stale.get("stable")?.nameEn, "Stable title");
+    assert.equal(stale.get("stable")?.nameRu, "Стабильное достижение");
+    assert.equal(stale.get("stable")?.descriptionEn, "Stable description");
+    assert.equal(stale.get("stable")?.descriptionRu, "Стабильное описание");
+    const refreshResult = await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve("timed out"), 1_000);
+      refreshFailure.then(() => {
+        clearTimeout(timeout);
+        resolve("failed");
+      });
+    });
+    assert.equal(refreshResult, "failed", "the background refresh should reject the partial translation set");
+    assert.deepEqual(requests, [
+      "https://json.tarkov.dev/regular/tasks",
+      "https://json.tarkov.dev/regular/tasks_en",
+      "https://json.tarkov.dev/regular/tasks_ru",
+    ]);
+    assert.equal(await readFile(cacheFile, "utf8"), initialCache);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+    console.error = originalConsoleError;
     if (originalCacheDir === undefined) delete process.env.ACHIEVEMENTS_CACHE_DIR;
     else process.env.ACHIEVEMENTS_CACHE_DIR = originalCacheDir;
     await rm(cacheDir, { recursive: true, force: true });

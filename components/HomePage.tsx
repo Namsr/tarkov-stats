@@ -268,7 +268,14 @@ export default function HomePage() {
           </dl>}
           <div className="home-profile-bottom">
             {view && <><div className="home-achievement-count"><strong>{n(view.progression.achievementsCount)}</strong><span>{t("metric.achv_count")}</span></div>
-            <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
+            <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => {
+              const name = (lang === "ru" ? item.nameRu : item.name)?.trim();
+              const isSlug = name ? /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) : false;
+              const alt = name && name !== item.id && !isSlug
+                ? t("home.achievement", { name })
+                : t("home.achievementIcon");
+              return <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={alt} />;
+            })}</div>
             </>}
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>

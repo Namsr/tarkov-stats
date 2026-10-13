@@ -72,7 +72,7 @@ export default function ArenaOverallComparison({
       .catch((caught: unknown) => {
         if (!active || (caught instanceof Error && caught.name === "AbortError")) return;
         setCohort(null);
-        setError(caught instanceof Error ? caught.message : t("arena.radar.error"));
+        setError(t("arena.radar.error"));
       })
       .finally(() => {
         if (active) setLoading(false);
