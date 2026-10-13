@@ -1,4 +1,5 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { loadAverageJson } from "../lib/client-average-request.ts";
 import {
   ARENA_METRIC_KEYS,
   ARENA_MODE_KEYS,
@@ -478,17 +479,29 @@ export async function loadArenaModeBaselines(
   purpose: ArenaModeBaselinesPurpose,
   signal: AbortSignal,
   fetchImpl: typeof fetch = fetch,
+  onUpdate?: (value: ArenaModeBaselines) => void,
 ): Promise<ArenaModeBaselines> {
   const query = new URLSearchParams({ mode: "arena", aid: String(aid), statistic, purpose });
+  if (onUpdate && fetchImpl === fetch) {
+    const body = await loadAverageJson<unknown>(`/api/average/cohort/batch?${query}`, {
+      signal, retryUnavailable: true, onUpdate: (next) => onUpdate(parseArenaModeBaselines(next, aid, statistic)),
+    });
+    return parseArenaModeBaselines(body, aid, statistic);
+  }
   const response = await fetchImpl(`/api/average/cohort/batch?${query}`, { signal });
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error("baselines");
+  return parseArenaModeBaselines(body, aid, statistic);
+}
+
+function parseArenaModeBaselines(body: unknown, aid: number, statistic: ArenaStatistic): ArenaModeBaselines {
   const raw = isRecord(body) && isRecord(body.cohorts) ? body.cohorts : null;
   if (!raw) throw new Error("baselines");
   const cohorts: Partial<Record<ArenaModeKey, ArenaCohortResult | null>> = {};
   const unavailable: ArenaModeKey[] = [];
   for (const mode of ARENA_MODE_KEYS) {
-    const cohort = toArenaCohort(raw[mode]);
+    const candidate = toArenaCohort(raw[mode]);
+    const cohort = candidate && candidate.aid === aid && candidate.mode === mode && candidate.statistic === statistic ? candidate : null;
     cohorts[mode] = cohort;
     if (!cohort) unavailable.push(mode);
   }

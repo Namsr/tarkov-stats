@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import {
   parseAveragePeriod,
   parseAverageStatistic,
@@ -79,7 +80,7 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "success", status: 200,
       source: "stored", cache: lookup.cache, storage: "sqlite", cohortMs });
     return NextResponse.json({ ...lookup.result, percentiles: null, statistic, period }, {
-      headers: { "Cache-Control": "private, no-store" },
+      headers: statisticsCacheHeaders({ stale: lookup.stale ?? false, generatedAt: lookup.generatedAt ?? Date.now() }),
     });
   } catch (error) {
     console.error("Seasonal comparison cohort failed", error);

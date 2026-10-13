@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { loadArenaPopulationCohort, shouldFallbackToPopulation, toArenaCohort, arenaBarPositionFromRatio } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import type {
   ArenaCohortResult,
   ArenaOverallStats,
@@ -47,10 +48,20 @@ export default function ArenaOverallComparison({
     setLoading(true);
     setError("");
     setCohort(null);
-    fetch(`/api/average/cohort?${query}`, { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(t("arena.radar.error"));
+    const applyUpdate = async (body: unknown) => {
+      const next = toArenaCohort(body);
+      if (!next || next.aid !== aid || next.mode !== mode || next.statistic !== statistic) return;
+      const result = mode === "overall" || !shouldFallbackToPopulation(next) ? next :
+        await loadArenaPopulationCohort(aid, mode, statistic,
+          typeof body === "object" && body !== null && "schemaVersion" in body ? body.schemaVersion : null,
+          controller.signal) ?? next;
+      if (active) { setCohort(result); setError(""); setLoading(false); }
+    };
+    loadAverageJson<unknown>(`/api/average/cohort?${query}`, {
+      signal: controller.signal, retryUnavailable: true,
+      onUpdate: (body) => { void applyUpdate(body).catch(() => undefined); },
+    })
+      .then(async (body) => {
         const result = toArenaCohort(body);
         if (!result || result.aid !== aid || result.mode !== mode || result.statistic !== statistic) {
           throw new Error(t("arena.radar.error"));

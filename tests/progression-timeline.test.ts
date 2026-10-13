@@ -150,7 +150,7 @@ test("timeline route returns the combined response and keeps mode-specific cachi
   const source = await readFile("app/api/progression/timeline/route.ts", "utf8");
   assert.match(source, /parseProgressionTimelineRequest\(request\.nextUrl\.searchParams\)/);
   assert.match(source, /NextResponse\.json\(result\.timeline/);
-  assert.match(source, /PROGRESSION_CACHE_CONTROL/);
+  assert.match(source, /statisticsCacheHeaders/);
   assert.match(source, /getCachedProgressionTimeline\(input\.mode, input\.cycleId, input\.aid\)/);
   assert.doesNotMatch(source, /input\.mode === "regular"[\s\S]*?private, no-store/);
 });

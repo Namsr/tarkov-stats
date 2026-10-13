@@ -29,6 +29,13 @@ export interface AveragePublicationState {
   status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error";
 }
 
+const STATISTICS_SCHEMA = `CREATE TABLE IF NOT EXISTS statistics_response_cache (
+  cache_key TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  generated_at INTEGER NOT NULL,
+  payload_bytes INTEGER NOT NULL
+);`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS average_publication_current (
   scope TEXT PRIMARY KEY,
@@ -53,11 +60,41 @@ CREATE TABLE IF NOT EXISTS average_publication_state (
   last_duration_ms INTEGER,
   last_error TEXT
 );
+${STATISTICS_SCHEMA}
 `;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let database: any = null;
 let databasePath: string | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let statisticsReader: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let statisticsWriter: any = null;
+let statisticsPath: string | null = null;
+
+// The fallback reader never runs DDL or waits for the publication writer.
+// A separate, short-budget writer avoids changing publication transaction rules.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function openStatisticsDatabase(readOnly: boolean): Promise<any> {
+  const path = averagePublicationPath();
+  if (statisticsPath !== path) {
+    statisticsReader?.close(); statisticsWriter?.close();
+    statisticsReader = null; statisticsWriter = null; statisticsPath = path;
+  }
+  const cached = readOnly ? statisticsReader : statisticsWriter;
+  if (cached) return cached;
+  const sqlite = await import("node:sqlite" as string);
+  const opened = new sqlite.DatabaseSync(path, { readOnly });
+  try {
+    opened.exec("PRAGMA busy_timeout = 100;");
+    if (!readOnly) opened.exec(`PRAGMA journal_mode = WAL; ${STATISTICS_SCHEMA}`);
+  } catch (error) {
+    try { opened.close(); } catch { /* The cache may remain available in memory. */ }
+    throw error;
+  }
+  if (readOnly) statisticsReader = opened; else statisticsWriter = opened;
+  return opened;
+}
 
 export function averagePublicationPath(): string {
   return process.env.AVERAGE_PUBLICATION_SQLITE_PATH || "/data/average-publications.db";
@@ -67,6 +104,44 @@ export function averagePublicationsEnabled(): boolean {
   if (process.env.AVERAGE_PUBLICATIONS_ENABLED === "false") return false;
   return Boolean(process.env.SQLITE_PATH) &&
     (process.env.AVERAGE_PUBLICATIONS_ENABLED === "true" || process.env.NODE_ENV === "production");
+}
+
+// Shares the existing persistent volume and database with published averages.
+// Only successful responses are written; expiry never deletes the fallback.
+export async function readStatisticsResponse<T>(key: string): Promise<T | null> {
+  if (!process.env.SQLITE_PATH || (process.env.NODE_ENV !== "production" && process.env.AVERAGE_PUBLICATIONS_ENABLED !== "true")) return null;
+  try {
+    const db = await openStatisticsDatabase(true);
+    const row = db.prepare("SELECT payload_json FROM statistics_response_cache WHERE cache_key = ?").get(key);
+    return row ? JSON.parse(String(row.payload_json)) as T : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeStatisticsResponse(key: string, value: unknown, generatedAt: number): Promise<void> {
+  if (!process.env.SQLITE_PATH || (process.env.NODE_ENV !== "production" && process.env.AVERAGE_PUBLICATIONS_ENABLED !== "true")) return;
+  try {
+    const payload = JSON.stringify(value);
+    const bytes = Buffer.byteLength(payload);
+    if (bytes > 1024 * 1024) return;
+    const db = await openStatisticsDatabase(false);
+    db.prepare(`INSERT INTO statistics_response_cache (cache_key, payload_json, generated_at, payload_bytes)
+      VALUES (?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET
+      payload_json = excluded.payload_json, generated_at = excluded.generated_at, payload_bytes = excluded.payload_bytes
+      WHERE excluded.generated_at >= statistics_response_cache.generated_at`)
+      .run(key, payload, generatedAt, bytes);
+    // Bound disk use as well as cardinality. Old, rarely requested identities
+    // may be evicted, but transient compute errors never replace a good answer.
+    db.prepare(`DELETE FROM statistics_response_cache WHERE cache_key IN (
+      SELECT cache_key FROM (SELECT cache_key,
+        ROW_NUMBER() OVER (ORDER BY generated_at DESC, cache_key) AS position,
+        SUM(payload_bytes) OVER (ORDER BY generated_at DESC, cache_key) AS bytes
+        FROM statistics_response_cache) WHERE position > 4096 OR bytes > 67108864
+    )`).run();
+  } catch {
+    // A read-only/unavailable volume must not prevent serving the memory copy.
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -262,6 +337,8 @@ export function averagePublicationDue(state: AveragePublicationState | undefined
 }
 
 export function resetAveragePublicationForTests(): void {
+  statisticsReader?.close?.(); statisticsWriter?.close?.();
+  statisticsReader = null; statisticsWriter = null; statisticsPath = null;
   database?.close?.();
   database = null;
   databasePath = null;

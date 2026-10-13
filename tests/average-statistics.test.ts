@@ -1076,7 +1076,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   const medianBody = await medianResponse.json();
   assert.equal(
     medianResponse.headers.get("cache-control"),
-    "public, max-age=1800, s-maxage=1800, stale-while-revalidate=300",
+    "no-store",
   );
   assert.equal(medianResponse.headers.get("x-average-cache"), "next-data");
   assert.equal(medianBody.statistic, "median");
@@ -1139,7 +1139,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
       "http://local/api/average/cohort?aid=1&statistic=median&period=90d",
     ));
     assert.equal(unavailable.status, 200);
-    assert.equal(unavailable.headers.get("cache-control"), "private, max-age=60");
+    assert.equal(unavailable.headers.get("cache-control"), "no-store");
     assert.deepEqual(
       (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
       { statistic: "median", period: "90d" },

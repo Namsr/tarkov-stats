@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { unstable_cache } from "next/cache";
 import {
   parseAveragePeriod,
   parseAverageStatistic,
@@ -15,9 +14,7 @@ import { resolveY } from "@/lib/metrics";
 import { AverageComputeUnavailableError, computeAverageInBackground } from "@/lib/average-worker";
 import { isGameMode } from "@/types/seasonal";
 import {
-  AVERAGE_CACHE_CONTROL,
   AVERAGE_PUBLICATION_CACHE_CONTROL,
-  AVERAGE_CACHE_TTL_SECONDS,
 } from "@/lib/average-cache";
 import {
   arenaAverageCacheKey,
@@ -34,7 +31,7 @@ import {
   standardAverageVariant,
 } from "@/lib/average-publication";
 import { fakeAverageDashboard, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import { getClientIp } from "@/lib/client-ip";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 
@@ -52,7 +49,7 @@ function isDynamicComputeTimeout(error: unknown): boolean {
     (error as { name?: unknown }).name === "DynamicComputeTimeoutError";
 }
 
-const loadCachedAverage = unstable_cache(
+const loadCachedAverage = (
   async (
     mode: CrossSectionMode,
     dimension: RangeDimension,
@@ -63,9 +60,7 @@ const loadCachedAverage = unstable_cache(
     min: number | null,
     max: number | null,
     maxInclusive: boolean,
-  ) => computeAverageInBackground(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
-  ["average-dashboard-v2"],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+  ) => computeAverageInBackground(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive)
 );
 
 function isArenaMode(value: string | null): value is ArenaModeKey {
@@ -143,7 +138,9 @@ async function arenaAverageResponse(
       ranges[2].value,
       ranges[3].value,
       cacheVersion,
-    )).finally(() => {
+    ), Date.now(), {
+      fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaAverageCacheKey(arenaMode, statistic, dimension, metric, ranges.map((range) => range.value), 0)]),
+    }).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
     const result = loaded.value;
@@ -155,7 +152,7 @@ async function arenaAverageResponse(
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
       // The server cache is tagged and invalidated by the collector. Do not let
       // a browser or reverse proxy retain the first tiny backfill sample.
-      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
+      headers: { ...statisticsCacheHeaders(loaded), "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
     });
   } catch (error) {
     console.error("Arena average stats failed", error);
@@ -280,8 +277,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
     const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, true]);
+    const published = await readAveragePublication(rawMode, standardAverageVariant(statistic, period));
     const averagesStarted = timing.now();
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
+    const loaded = await loadDynamicAverage(JSON.stringify([dynamicKey, published?.generation ?? 0]), () => loadCachedAverage(
       rawMode,
       dimension,
       metric.key,
@@ -291,13 +289,14 @@ export async function GET(request: NextRequest) {
       parsedMin.value,
       parsedMax.value,
       true,
-    )).finally(() => {
+    ), Date.now(), { fallbackKey: dynamicKey, accept: (result) => result.storage === "sqlite" }).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
     const result = loaded.value;
+    if (result.storage !== "sqlite") throw new AverageComputeUnavailableError("Average storage is unavailable");
     const response = NextResponse.json(result.body, {
       headers: {
-        "Cache-Control": AVERAGE_CACHE_CONTROL,
+        ...statisticsCacheHeaders(loaded),
         "X-Average-Cache": "next-data",
         "X-Average-Source": "dynamic",
       },

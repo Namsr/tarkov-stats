@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import type { ProgressionRiskPayload } from "@/components/ProgressionPanel";
 import type { GameMode } from "@/types/seasonal";
 import type { PublicRiskFactor, PublicRiskTier, PublicRiskView } from "@/types/profile-view";
@@ -146,6 +147,15 @@ export default function CheaterScore({
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
+    let latestBaseline: Baseline | null = null;
+    let latestAchievements: LegacyAchievementPayload | null = null;
+    const apply = () => {
+      if (cancelled) return;
+      setLegacyResult(scoreCheater(stats, latestBaseline, latestAchievements?.achievements ? {
+        ownedIds: ownedKey ? ownedKey.split(",") : [], stats: latestAchievements.achievements,
+      } : null));
+    };
     const bracket = rangeForHours(stats.hoursPlayed);
     setLegacyLoading(true);
     const params = new URLSearchParams({
@@ -154,25 +164,24 @@ export default function CheaterScore({
     });
     if (bracket.max != null) params.set("maxHours", String(bracket.max));
     Promise.all([
-      fetch(`/api/baseline?${params}`).then((response) => response.ok ? response.json() as Promise<Baseline> : null).catch(() => null),
-      fetch(`/api/average/achievements?mode=${encodeURIComponent(mode)}`)
-        .then((response) => response.ok ? response.json() as Promise<LegacyAchievementPayload> : null)
+      loadAverageJson<Baseline>(`/api/baseline?${params}`, {
+        signal: controller.signal,
+        onUpdate: (value) => { latestBaseline = value; apply(); },
+      }).catch(() => null),
+      loadAverageJson<LegacyAchievementPayload>(`/api/average/achievements?mode=${encodeURIComponent(mode)}`, {
+        signal: controller.signal,
+        onUpdate: (value) => { latestAchievements = value; apply(); },
+      })
         .catch(() => null),
     ]).then(([baseline, achievementPayload]) => {
       if (cancelled) return;
-      const achievements = achievementPayload?.achievements;
-      setLegacyResult(scoreCheater(
-        stats,
-        baseline,
-        achievements ? {
-          ownedIds: ownedKey ? ownedKey.split(",") : [],
-          stats: achievements,
-        } : null,
-      ));
+      latestBaseline = baseline;
+      latestAchievements = achievementPayload;
+      apply();
     }).finally(() => {
       if (!cancelled) setLegacyLoading(false);
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [mode, ownedKey, stats]);
 
   const legacyRisk: PublicRiskView | null = legacyResult ? {

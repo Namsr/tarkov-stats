@@ -14,10 +14,12 @@ import { ARENA_PARSER_VERSION, type getArenaCohort } from "@/lib/arena/service";
 import { computeCohortInBackground } from "@/lib/cohort-worker";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { loadDynamicAverage, statisticsCacheHeaders, type StatisticsCacheResult } from "@/lib/average-dynamic-cache";
 import { arenaAverageCacheVersion, arenaCohortCacheKey } from "@/lib/arena-average-cache";
 
 export const runtime = "nodejs";
+
+class ComparisonProfileUnavailableError extends Error {}
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -88,11 +90,12 @@ async function arenaCohortResponse(
     // measuring the cohort rather than this version lookup.
     const cacheVersion = await arenaAverageCacheVersion();
     const cohortStarted = timing.now();
-    let loaded: { value: Awaited<ReturnType<typeof getArenaCohort>>; cache: "hit" | "miss" };
+    let loaded: StatisticsCacheResult<Awaited<ReturnType<typeof getArenaCohort>>>;
     try {
       loaded = await loadDynamicAverage(
         arenaCohortCacheKey(aid, arenaMode, statistic, cacheVersion),
         () => computeCohortInBackground({ kind: "arena", args: [aid, arenaMode, statistic] }),
+        Date.now(), { fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaCohortCacheKey(aid, arenaMode, statistic, 0)]) },
       );
     } finally {
       cohortMs = timing.elapsedMs(cohortStarted);
@@ -118,7 +121,7 @@ async function arenaCohortResponse(
       identity,
       percentiles: null,
     }, {
-      headers: { "Cache-Control": "private, max-age=60" },
+      headers: statisticsCacheHeaders(loaded),
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
@@ -183,68 +186,52 @@ export async function GET(request: NextRequest) {
     let storeReadMs: number | undefined;
     let cohortMs: number | undefined;
     try {
-      const storeOpenStarted = timing.now();
-      const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
-      storeOpenMs = timing.elapsedMs(storeOpenStarted);
-      if (!store) {
-        timing.finish({
-          operation: "average_cohort", mode, outcome: "unavailable", status: 503,
-          storage: "unavailable", storeOpenMs,
-        });
-        return NextResponse.json({
-          identity: { aid, mode, cycleId: "persistent" },
-          code: "comparison_unavailable",
-          error: "Comparison storage is unavailable",
-        }, { status: 503, headers: { "Cache-Control": "no-store" } });
-      }
-
-      const storeReadStarted = timing.now();
-      const snapshot = progressionStore ? await progressionStore.latest(aid).catch(() => null) : null;
-      storeReadMs = timing.elapsedMs(storeReadStarted);
-      let stats = snapshot?.stats;
-      if (stats) {
-        source = "stored";
-      } else {
-        source = "upstream";
-        const profileStarted = timing.now();
-        const profileResult = await getPublicProfile(aid, { mode });
-        profileMs = timing.elapsedMs(profileStarted);
-        if (!profileResult.profile) {
-          timing.finish({
-            operation: "average_cohort", mode, outcome: "not_found", status: 404,
-            source, storage: "sqlite", profileMs, storeOpenMs, storeReadMs,
-          });
-          return NextResponse.json({
-            identity: { aid, mode, cycleId: "persistent" },
-            code: "profile_unavailable",
-            error: "Profile is not available for comparison",
-          }, { status: 404, headers: { "Cache-Control": "no-store" } });
+      const identityKey = JSON.stringify(["cohort", "persistent", mode, aid, statistic, period]);
+      const loaded = await loadDynamicAverage(identityKey, async () => {
+        const storeOpenStarted = timing.now();
+        const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
+        storeOpenMs = timing.elapsedMs(storeOpenStarted);
+        if (!store) {
+          throw new Error("Comparison storage is unavailable");
         }
-        stats = parseProfileStats(profileResult.profile, []);
-      }
 
-      const centerHours = Number(stats.hoursPlayed);
-      const centerPmcRaids = Number(stats.pmcRaids);
-      const playerMetrics = {
-        kd_ratio: stats.kdRatio,
-        pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
-        kills_per_raid: stats.killsPerRaid,
-        killed_pmc_per_raid: stats.pvpStatsVersion === 1 && stats.pmcRaids > 0 && stats.pmcKilledPmc != null
-          ? stats.pmcKilledPmc / stats.pmcRaids : null,
-        pmc_survival_rate: stats.pmcSurvivalRate,
-        longest_win_streak: stats.longestWinStreak,
-        level: stats.level,
-      };
-      const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
-      const cohortStarted = timing.now();
-      const loaded = await loadDynamicAverage(
-        ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => computeCohortInBackground({
-          kind: "persistent", mode,
-          args: [centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics],
-        }),
-      );
-      cohortMs = timing.elapsedMs(cohortStarted);
+        const storeReadStarted = timing.now();
+        const snapshot = progressionStore ? await progressionStore.latest(aid).catch(() => null) : null;
+        storeReadMs = timing.elapsedMs(storeReadStarted);
+        let stats = snapshot?.stats;
+        if (stats) {
+          source = "stored";
+        } else {
+          source = "upstream";
+          const profileStarted = timing.now();
+          const profileResult = await getPublicProfile(aid, { mode });
+          profileMs = timing.elapsedMs(profileStarted);
+          if (!profileResult.profile) {
+            throw new ComparisonProfileUnavailableError("Profile is not available for comparison");
+          }
+          stats = parseProfileStats(profileResult.profile, []);
+        }
+
+        const centerHours = Number(stats.hoursPlayed);
+        const centerPmcRaids = Number(stats.pmcRaids);
+        const playerMetrics = {
+          kd_ratio: stats.kdRatio,
+          pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
+          kills_per_raid: stats.killsPerRaid,
+          killed_pmc_per_raid: stats.pvpStatsVersion === 1 && stats.pmcRaids > 0 && stats.pmcKilledPmc != null
+            ? stats.pmcKilledPmc / stats.pmcRaids : null,
+          pmc_survival_rate: stats.pmcSurvivalRate,
+          longest_win_streak: stats.longestWinStreak,
+          level: stats.level,
+        };
+        const cohortStarted = timing.now();
+        const cohort = await computeCohortInBackground({
+            kind: "persistent", mode,
+            args: [centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics],
+          });
+        cohortMs = timing.elapsedMs(cohortStarted);
+        return cohort;
+      }, Date.now(), { ttlMs: 60_000 });
       cache = loaded.cache;
       timing.finish({
         operation: "average_cohort", mode, outcome: "success", status: 200,
@@ -252,9 +239,14 @@ export async function GET(request: NextRequest) {
       });
       return NextResponse.json({ ...loaded.value, statistic, period }, {
         // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
-        headers: { "Cache-Control": "private, max-age=60" },
+        headers: statisticsCacheHeaders(loaded),
       });
     } catch (error) {
+      if (error instanceof ComparisonProfileUnavailableError) {
+        return NextResponse.json({
+          identity: { aid, mode, cycleId: "persistent" }, code: "profile_unavailable", error: error.message,
+        }, { status: 404, headers: { "Cache-Control": "no-store" } });
+      }
       console.error("persistent comparison cohort failed", error);
       timing.finish({
         operation: "average_cohort", mode: rawMode, outcome: "error", status: 503,

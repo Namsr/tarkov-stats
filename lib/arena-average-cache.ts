@@ -1,12 +1,8 @@
-import { unstable_cache } from "next/cache";
 import { getArenaBackend } from "@/lib/db";
 import {
-  ARENA_AVERAGE_CACHE_TAG,
-  AVERAGE_CACHE_TTL_SECONDS,
   arenaAverageCacheKey,
   arenaCohortCacheKey,
 } from "@/lib/average-cache";
-import { ARENA_PARSER_VERSION } from "@/lib/arena/service";
 import { computeCohortInBackground } from "@/lib/cohort-worker";
 import type { ArenaDimension, ArenaMetricKey, ArenaModeKey, ArenaStatistic } from "@/types/arena";
 
@@ -34,9 +30,9 @@ export async function arenaAverageCacheVersion(): Promise<number> {
   }
 }
 
-// Population fallback and the average route retain their shared versioned
-// cache, but cold SQL now runs in the same bounded worker as Arena cohorts.
-export const loadCachedArenaAverage = unstable_cache(
+// Fresh SQL belongs to the shared response cache; renewing its TTL with a
+// stale Next cache response would delay the background update again.
+export const loadCachedArenaAverage = (
   async (
     arenaMode: ArenaModeKey,
     statistic: ArenaStatistic,
@@ -52,7 +48,5 @@ export const loadCachedArenaAverage = unstable_cache(
     return computeCohortInBackground({ kind: "arena_population", args: [{
       mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches,
     }] });
-  },
-  ["arena-average-v2", String(ARENA_PARSER_VERSION)],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
+  }
 );

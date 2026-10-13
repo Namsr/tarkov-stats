@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import {
   getCachedProgressionBundle,
-  PROGRESSION_CACHE_CONTROL,
 } from "@/lib/seasonal/progression-cache";
 import { parseProgressionRequest } from "@/lib/seasonal/progression";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
       return errorResponse("Season cycle not found", 404);
     }
     return NextResponse.json(result.bundle[input.kind], {
-      headers: { "Cache-Control": PROGRESSION_CACHE_CONTROL },
+      headers: statisticsCacheHeaders({ stale: result.stale ?? false, generatedAt: result.generatedAt ?? Date.now() }),
     });
   } catch (error) {
     console.error("seasonal progression failed", error);

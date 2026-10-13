@@ -52,6 +52,10 @@ test("cohort IPC preserves persistent modes, periods, statistics, percentiles an
     }
     const empty = { kind: "persistent", mode, args: [0, 0, 1] };
     assert.deepEqual(await worker.compute(empty), await computeCohort(empty));
+    const baseline = { kind: "baseline", mode, args: [70, 130] };
+    assert.deepEqual(await worker.compute(baseline), await computeCohort(baseline));
+    const progression = { kind: "progression_average", mode, args: [] };
+    assert.deepEqual(await worker.compute(progression), await computeCohort(progression));
   }
 });
 
