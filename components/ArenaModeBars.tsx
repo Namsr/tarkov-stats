@@ -55,13 +55,20 @@ export default function ArenaModeBars({ profile, selected, onSelect, aid, statis
     const purpose = purposeFor(metric);
     // Один батч-запрос на aid+статистику+тип базы вместо 5×cohort (+5×fallback).
     const cacheKey = `${aid}:${statistic}:${purpose}`;
+    const apply = (result: Awaited<ReturnType<typeof loadArenaModeBaselines>>) => {
+      if (!activeRequest) return;
+      cacheRef.current.set(cacheKey, result);
+      setCohorts(result.cohorts); setUnavailable(result.unavailable); setLoading(false);
+      setError(Object.values(result.cohorts).every((cohort) => cohort == null) ? t("arena.radar.error") : "");
+    };
     setLoading(true);
     setError("");
     (async () => {
       try {
         const cached = cacheRef.current.get(cacheKey);
-        const result = cached ?? await loadArenaModeBaselines(aid, statistic, purpose, controller.signal);
-        if (!cached) cacheRef.current.set(cacheKey, result);
+        if (cached) apply(cached);
+        const result = await loadArenaModeBaselines(aid, statistic, purpose, controller.signal, fetch, apply);
+        cacheRef.current.set(cacheKey, result);
         if (!activeRequest) return;
         setCohorts(result.cohorts);
         setUnavailable(result.unavailable);

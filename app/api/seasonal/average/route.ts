@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { unstable_cache } from "next/cache";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { resolveY } from "@/lib/metrics";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
 import type { SeasonalAverageDimension } from "@/lib/seasonal/average-db";
-import { AVERAGE_PUBLICATION_CACHE_CONTROL, AVERAGE_CACHE_TTL_SECONDS, SEASONAL_AVERAGE_CACHE_TAG } from "@/lib/average-cache";
+import { AVERAGE_PUBLICATION_CACHE_CONTROL } from "@/lib/average-cache";
 import { averagePublicationsEnabled, readAveragePublication, seasonalPublicationScope, standardAverageVariant } from "@/lib/average-publication";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { computeCohortInBackground } from "@/lib/cohort-worker";
 import { ComputeUnavailableError } from "@/lib/compute-worker";
@@ -37,7 +36,7 @@ function isDynamicComputeTimeout(error: unknown): boolean {
     (error as { name?: unknown }).name === "DynamicComputeTimeoutError";
 }
 
-const loadCachedSeasonalAverage = unstable_cache(
+const loadCachedSeasonalAverage = (
   async (
     cycleId: string,
     period: AveragePeriod,
@@ -60,9 +59,7 @@ const loadCachedSeasonalAverage = unstable_cache(
     return result
       ? { status: "ready" as const, result }
       : { status: "not-found" as const };
-  },
-  ["average-seasonal-dashboard-v2"],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [SEASONAL_AVERAGE_CACHE_TAG] },
+  }
 );
 
 export async function GET(request: NextRequest) {
@@ -137,7 +134,9 @@ export async function GET(request: NextRequest) {
       });
     }
     const dynamicKey = JSON.stringify(["seasonal", cycle, period, statistic, dimension, metric, min, max]);
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max));
+    const published = await readAveragePublication(seasonalPublicationScope(cycle), standardAverageVariant(statistic, period));
+    const loaded = await loadDynamicAverage(JSON.stringify([dynamicKey, published?.generation ?? 0]), () => loadCachedSeasonalAverage(cycle, period, statistic, dimension, metric, min, max),
+      Date.now(), { fallbackKey: dynamicKey, accept: (value) => value.status === "ready" });
     const cached = loaded.value;
     if (cached.status === "not-found") {
       timing.finish({ operation: "average", mode: "seasonal", outcome: "not_found", status: 404 });
@@ -146,7 +145,7 @@ export async function GET(request: NextRequest) {
     timing.finish({ operation: "average", mode: "seasonal", outcome: "success", status: 200, storage: "sqlite", source: "dynamic", cache: loaded.cache });
     return NextResponse.json(cached.result, {
       headers: {
-        "Cache-Control": "no-store",
+        ...statisticsCacheHeaders(loaded),
         "X-Seasonal-Average-Cache": "next-data",
         "X-Average-Source": "dynamic",
       },

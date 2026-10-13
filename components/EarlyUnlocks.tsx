@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { EVENT_ACHIEVEMENT_IDS } from "@/lib/cheater-score";
 import type { CrossSectionMode } from "@/lib/db";
 
@@ -72,6 +73,7 @@ export default function EarlyUnlocks({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     if (!(playerHours > 0) || ownedIds.length === 0) {
       Promise.resolve().then(() => !cancelled && setUnlocks([]));
       return () => {
@@ -81,9 +83,7 @@ export default function EarlyUnlocks({
     const owned = new Set(ownedIds);
     const params = new URLSearchParams({ mode });
     if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
-    fetch(`/api/average/achievements?${params}`)
-      .then((res) => (res.ok ? (res.json() as Promise<Payload>) : null))
-      .then((data) => {
+    const apply = (data: Payload) => {
         if (cancelled || !data || data.total < MIN_SAMPLE) {
           if (!cancelled) setUnlocks([]);
           return;
@@ -111,10 +111,14 @@ export default function EarlyUnlocks({
           .sort((a, b) => a.z - b.z)
           .slice(0, MAX_SHOWN);
         setUnlocks(flagged);
-      })
+    };
+    loadAverageJson<Payload>(`/api/average/achievements?${params}`, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: apply,
+    }).then(apply)
       .catch(() => !cancelled && setUnlocks([]));
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [cycleId, mode, playerHours, ownedIds]);
 

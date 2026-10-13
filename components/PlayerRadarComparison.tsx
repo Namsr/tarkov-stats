@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { loadPlayerProfileResponse, PlayerProfileResponseError } from "@/lib/client-profile-request";
 import ProfileRadar from "@/components/ProfileRadar";
 import StatCard from "@/components/StatCard";
@@ -358,10 +359,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     setCohortLoading(true);
     setCohortError(false);
     const endpoint = mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort";
-    fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        const payload = (await response.json()) as CohortResponse;
-        if (!response.ok) throw new Error(translate.current("radar.error.cohort"));
+    const apply = (payload: CohortResponse) => {
         if (payload.identity && (
           (payload.identity.aid != null && payload.identity.aid !== aid) ||
           (payload.identity.mode != null && payload.identity.mode !== mode) ||
@@ -369,11 +367,15 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
         )) {
           throw new Error(translate.current("radar.error.cohort"));
         }
-        return normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
-      })
-      .then((payload) => {
-        if (!controller.signal.aborted && payload.requestId === cohortRequestId) setRemoteCohort(payload);
-      })
+        const normalized = normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
+        if (!controller.signal.aborted && normalized.requestId === cohortRequestId) {
+          setRemoteCohort(normalized); setCohortError(false); setCohortLoading(false);
+        }
+    };
+    loadAverageJson<CohortResponse>(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: apply,
+    })
+      .then(apply)
       .catch(() => {
         if (controller.signal.aborted) return;
         setRemoteCohort(null);

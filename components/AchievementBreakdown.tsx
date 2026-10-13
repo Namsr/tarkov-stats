@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { loadAverageJson } from "@/lib/client-average-request";
 import ProfileAchievements from "@/components/ProfileAchievements";
 import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
@@ -50,11 +51,9 @@ export default function AchievementBreakdown({
     });
     const params = new URLSearchParams({ mode });
     if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
-    fetch(`/api/average/achievements?${params}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(t("achv.error"));
-        return response.json() as Promise<Payload>;
-      })
+    loadAverageJson<Payload>(`/api/average/achievements?${params}`, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: (payload) => { setData(payload); setError(false); },
+    })
       .then((payload) => {
         if (!controller.signal.aborted) setData(payload);
       })

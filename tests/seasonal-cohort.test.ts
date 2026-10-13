@@ -14,6 +14,18 @@ const databasePath = join(directory, "progression.db");
 const previousPath = process.env.PROGRESSION_SQLITE_PATH;
 process.env.PROGRESSION_SQLITE_PATH = databasePath;
 
+async function refreshedCohort(input) {
+  const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
+  let lookup = await querySeasonalComparisonCohort(input);
+  const deadline = Date.now() + 20_000;
+  while (lookup.stale && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    lookup = await querySeasonalComparisonCohort(input);
+  }
+  assert.equal(lookup.stale, false, "the new revision must replace the retained cohort");
+  return lookup;
+}
+
 test.after(() => {
   if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
   else process.env.PROGRESSION_SQLITE_PATH = previousPath;
@@ -61,7 +73,10 @@ test("PMC kills per raid uses exact kills in the shared matched and population g
   zeros.prepare("UPDATE player_profiles SET pmc_killed_pmc = 0 WHERE cycle_id = 'exact-kills' AND aid BETWEEN 1002 AND 1021").run();
   zeros.close();
   const zeroAverage = await querySeasonalComparisonCohort({ aid: 1050, cycleId: "exact-kills", revision: "zeros" });
-  assert.deepEqual(zeroAverage.result.averages.killed_pmc_per_raid, { value: 0, count: 20 });
+  assert.equal(zeroAverage.stale, true);
+  assert.deepEqual(zeroAverage.result.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+  const refreshedZeros = await refreshedCohort({ aid: 1050, cycleId: "exact-kills", revision: "zeros" });
+  assert.deepEqual(refreshedZeros.result.averages.killed_pmc_per_raid, { value: 0, count: 20 });
 });
 
 test("Seasonal cohort reads the latest snapshot only from the requested cycle", async () => {
@@ -169,13 +184,14 @@ const profile = db.prepare(`INSERT INTO player_profiles (
   });
   assert.equal(cachedMedian.cache, "hit");
 
-  // A manual profile refresh must not read the old five-minute cohort cache.
+  // A manual refresh returns the retained cohort while the new revision computes.
   const revisedMedian = await querySeasonalComparisonCohort({
     aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
   });
-  assert.equal(revisedMedian.cache, "miss");
+  assert.equal(revisedMedian.cache, "hit");
+  assert.equal(revisedMedian.stale, true);
   assert.deepEqual(revisedMedian.result, median.result);
-  const repeatedRevision = await querySeasonalComparisonCohort({
+  const repeatedRevision = await refreshedCohort({
     aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
   });
   assert.equal(repeatedRevision.cache, "hit");

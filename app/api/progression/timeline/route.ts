@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import {
   getCachedProgressionTimeline,
-  PROGRESSION_CACHE_CONTROL,
 } from "@/lib/seasonal/progression-cache";
 import { parseProgressionTimelineRequest } from "@/lib/seasonal/progression";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     }
     return NextResponse.json(result.timeline, {
       headers: {
-        "Cache-Control": PROGRESSION_CACHE_CONTROL,
+        ...statisticsCacheHeaders({ stale: result.stale ?? false, generatedAt: result.generatedAt ?? Date.now() }),
       },
     });
   } catch (error) {

@@ -92,7 +92,7 @@ test("a Seasonal cycle that has not rolled out answers 404, a bad cycle still an
   }
 });
 
-test("a rolled-out cycle with a matching `cycle` still answers 200 with the public cache headers", async (t) => {
+test("a rolled-out cycle without any saved baseline reports unavailable rather than caching an empty success", async (t) => {
   restoreSeasonalEnv(t);
 
   // The gate must not cost the live case anything: with the gate fully on and
@@ -102,9 +102,9 @@ test("a rolled-out cycle with a matching `cycle` still answers 200 with the publ
   // network are needed: the baseline load degrades to storage: "unavailable"
   // and getAchievements already swallows its own failure.
   const live = await request("mode=seasonal&cycle=test-cycle", ROLLED_OUT);
-  assert.equal(live.status, 200);
-  assert.equal(live.headers.get("cache-control"), "public, max-age=300, s-maxage=300, stale-while-revalidate=3600");
-  assert.deepEqual(await live.json(), { total: 0, achievements: [] });
+  assert.equal(live.status, 503);
+  assert.equal(live.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await live.json(), { error: "Failed to compute achievement baseline" });
 
   // Every error response is no-store, not only the gate's 404: the client fetches
   // this URL with default cache mode, so a cacheable 400 would be pinned in the

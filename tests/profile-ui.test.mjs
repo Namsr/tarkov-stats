@@ -384,7 +384,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(compare, /translate\.current\("progression\.compare\.playerId", \{ aid: favorite\.aid \}\)/);
   assert.match(compare, /throw new Error\(translate\.current\("progression\.compare\.error"\)\);/);
   // Both load effects now read the translator through the ref: two sites each.
-  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 4);
+  assert.equal((panel.match(/translate\.current\(/g) ?? []).length, 3);
 
   // PlayerRadarComparison mounts on both profile pages, so the same defect there
   // was the remaining half of the report: every EN/RU toggle re-ran a fetch that
@@ -420,7 +420,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   // tree's many `t` calls stay out for the same reason.
   const cohortEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (demo) return;", "function changeStatistic(");
   assert.doesNotMatch(cohortEffect, /\bt\(/);
-  assert.equal((cohortEffect.match(/throw new Error\(translate\.current\("radar\.error\.cohort"\)\);/g) ?? []).length, 2);
+  assert.equal((cohortEffect.match(/throw new Error\(translate\.current\("radar\.error\.cohort"\)\);/g) ?? []).length, 1);
   // Dropping `t` from the array stopped the effect from re-running, so nothing
   // clears the error any more: it has to be a flag the render body translates.
   assert.match(cohortEffect, /setCohortError\(true\);/);
@@ -446,12 +446,12 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.doesNotMatch(notice, /\{cohortError \|\|/);
   assert.match(notice, /\? t\("radar\.error\.cohort"\)/);
   assert.match(notice, /favoriteError\.message \?\? t\(favoriteError\.key\)/);
-  // Both remaining `translate.current` calls are the cohort effect's own throws,
+  // The remaining `translate.current` call is the cohort identity guard's throw,
   // whose text is never read: its `.catch` drops it for the flag the render
   // translates. The favorite effect must translate nothing — anything it threw
   // would be pinned into `message` at the moment of failure.
-  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 2);
-  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 2);
+  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 1);
+  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 1);
   assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 0);
 });
 
@@ -732,7 +732,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.doesNotMatch(seasonal, /new AbortController\(\)/);
   assert.match(regular, /forceRefresh=\{forceProgressionRefresh\}/);
   const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
-  assert.match(progression, /cache: forceRefresh \|\| refreshRevision > 0 \? "no-store" : "default"/);
+  assert.match(progression, /forceRefresh: forceRefresh \|\| refreshRevision > 0/);
   assert.match(progression, /const timelineCache = new Map<string, ProgressionTimelineResponse>\(\)/);
   assert.match(progression, /`\$\{mode\}\\0\$\{cycleId\}\\0\$\{aid\}`/);
   assert.match(progression, /const cached = timelineCache\.get\(cacheKey\) \?\? null/);
@@ -1021,7 +1021,7 @@ test("radar statistic switch identifies requests by method", async () => {
   assert.match(source, /statistic,\s*period,\s*\}\);/);
   assert.match(source, /const cohortRequestId = `\$\{aid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:/);
   assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:/);
-  assert.match(source, /payload\.requestId === cohortRequestId/);
+  assert.match(source, /normalized\.requestId === cohortRequestId/);
   assert.match(source, /favoriteProfile\?\.requestId === favoriteRequestId \? favoriteProfile\.stats : null/);
   assert.match(source, /params\.delete\("statistic"\)/);
   assert.match(source, /router\.replace\([\s\S]*?\{ scroll: false \}\)/);
@@ -1034,10 +1034,10 @@ test("regular radar period switch identifies requests by freshness", async () =>
   assert.match(source, /mode === "regular" && searchParams\.get\("period"\) === "90d"/);
   assert.match(source, /const \[selectedPeriod, setSelectedPeriod\] = useState<AveragePeriod>\(urlPeriod\)/);
   assert.match(source, /setSelectedPeriod\(next\)/);
-  assert.match(source, /if \(!controller\.signal\.aborted && payload\.requestId === cohortRequestId\) setRemoteCohort\(payload\)/);
+  assert.match(source, /if \(!controller\.signal\.aborted && normalized\.requestId === cohortRequestId\) \{\s*setRemoteCohort\(normalized\)/);
   assert.match(source, /period,\s*\}\);/);
   assert.match(source, /requestId: `\$\{sourceAid\}:\$\{mode\}:\$\{cycleId\}:\$\{hoursCenter\}:\$\{raidsCenter\}:\$\{input\.statistic \?\? statistic\}:\$\{input\.period \?\? period\}`/);
-  assert.match(source, /payload\.requestId === cohortRequestId/);
+  assert.match(source, /normalized\.requestId === cohortRequestId/);
   assert.match(source, /params\.delete\("period"\)/);
   assert.match(source, /select value=\{period\} onChange=/);
 });
@@ -1243,7 +1243,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(profile, /setProgressionRefreshRevision\(\(current\) => current \+ 1\)/);
   assert.match(profile, /risk=\{mode === "regular" \? serverRisk : serverRisk \?\? progressionRisk\}/);
 
-  assert.match(panel, /fetch\(`\/api\/progression\/timeline\?\$\{params\}`/);
+  assert.match(panel, /loadAverageJson<unknown>\(`\/api\/progression\/timeline\?\$\{params\}`/);
   for (const parameter of [
     "mode,",
     "cycle: cycleId",
@@ -1274,7 +1274,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /const activeSecondary = selectedFavorite && secondaryCandidate && validTimelineResponse/);
   assert.match(panel, /onChange=\{\(event\) => selectComparison\(event\.target\.value\)\}/);
   assert.match(panel, /validTimelineResponse\(result, \{ aid: favorite\.aid, mode, cycleId \}\)/);
-  assert.match(panel, /!response\.ok \|\| !validTimelineResponse\(result/);
+  assert.match(panel, /if \(!validTimelineResponse\(result/);
   assert.match(panel, /timeline\.identity\.aid === expected\.aid/);
   assert.match(panel, /timeline\.identity\.mode === expected\.mode/);
   assert.match(panel, /timeline\.identity\.cycleId === expected\.cycleId/);
@@ -1381,7 +1381,7 @@ test("progression uses revision-aware five-hour bundle and timeline caches", asy
   assert.match(legacy, /function errorResponse\(error: string, status: number\)/);
   assert.match(legacy, /\{ status, headers: \{ "Cache-Control": "no-store" \} \}/);
   assert.doesNotMatch(legacy, /NextResponse\.json\(\{ error:/);
-  assert.match(legacy, /"Cache-Control": PROGRESSION_CACHE_CONTROL/);
+  assert.match(legacy, /statisticsCacheHeaders\(\{ stale: result\.stale/);
   assert.doesNotMatch(legacy, /searchParams[\s\S]*?revision/);
 });
 
@@ -1408,7 +1408,8 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(progression, /fetch\("\/api\/progression\/average"/);
   assert.match(progression, /<AverageMetricOverlay mode=\{mode\} cycleId=\{cycleId\} \/>/);
   assert.match(progression, /data\?\.mode === mode/);
-  assert.match(progression, /setData\(null\);\s*setError\(""\);/);
+  assert.doesNotMatch(progression, /setData\(null\)/);
+  assert.match(progression, /onUpdate: \(next\) => \{ setData\(next\); setError\(""\); \}/);
   assert.equal((progression.match(/averageOnly/g) ?? []).length, 1);
   assert.equal((progression.match(/mode="regular"/g) ?? []).length, 3);
   assert.match(chart, /levelAtExperience\(point\.value, levelBands\)/);
@@ -1418,9 +1419,9 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(chart, /function moscowTimestamp\(timestamp: number, lang: string\)/);
   assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt, lang\)/);
   assert.doesNotMatch(chart, /point\.periodStartAt[\s\S]*toISOString\(\)\.slice/);
-  assert.match(route, /getRegularProgressionAverage\(\)/);
+  assert.match(route, /kind: "progression_average", mode: "regular"/);
   assert.match(route, /AVERAGE_CACHE_CONTROL/);
-  assert.match(route, /unstable_cache/);
+  assert.match(route, /loadDynamicAverage\(/);
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
 });
@@ -1440,10 +1441,10 @@ test("average dashboard publishes standard variants outside the web process and 
 
   assert.match(cache, /30 \* 60/);
   assert.match(cache, /s-maxage=\$\{AVERAGE_CACHE_TTL_SECONDS\}/);
-  assert.match(average, /\["average-dashboard-v2"\]/);
+  assert.match(average, /fallbackKey: dynamicKey/);
   assert.match(average, /mode: CrossSectionMode/);
-  assert.match(seasonal, /\["average-seasonal-dashboard-v2"\]/);
-  assert.match(progression, /\["average-progression-regular-v2"\]/);
+  assert.match(seasonal, /fallbackKey: dynamicKey/);
+  assert.match(progression, /loadDynamicAverage\("average-progression-regular-v2"/);
   assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
   assert.match(page, /showAverageProgression && levelBands\.length > 0/);
   assert.match(page, /const identity = `\$\{props\.mode \?\? "regular"\}:\$\{props\.cycleId \?\? "persistent"\}`/);
@@ -1473,13 +1474,13 @@ test("average dashboard publishes standard variants outside the web process and 
   assert.match(client, /slow-2g/);
 });
 
-test("Seasonal average invalidation keeps the server cache tagged and the JSON response uncached", async () => {
+test("Seasonal averages refresh on publication generation and keep JSON responses uncached", async () => {
   const cache = await readFile("lib/average-cache.ts", "utf8");
   const seasonal = await readFile("app/api/seasonal/average/route.ts", "utf8");
   const sync = await readFile("app/api/operator/seasonal/profile-sync/route.ts", "utf8");
 
   assert.match(cache, /export const SEASONAL_AVERAGE_CACHE_TAG = "average-seasonal-dashboard-v2"/);
-  assert.match(seasonal, /revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: \[SEASONAL_AVERAGE_CACHE_TAG\]/);
+  assert.match(seasonal, /JSON\.stringify\(\[dynamicKey, published\?\.generation \?\? 0\]\)/);
   assert.match(seasonal, /if \(!lookup\.available\) throw new SeasonalAverageUnavailableError\(\)/);
   assert.doesNotMatch(seasonal, /return \{ status: "unavailable" as const \}/);
   // The cross-section SQL is synchronous node:sqlite, so it has to leave the

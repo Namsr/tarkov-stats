@@ -7,6 +7,7 @@ import StatCard from "@/components/StatCard";
 import { useFavorites } from "@/lib/favorites/context";
 import { favoriteKey } from "@/lib/favorites/identity";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import {
   timelineHasPlayerHistory as responseHasPlayerHistory,
   timelineHasPoints as responseHasPoints,
@@ -148,13 +149,21 @@ export default function ProgressionPanel({
           cycle: cycleId,
           aid: String(aid),
         });
-        const response = await fetch(`/api/progression/timeline?${params}`, {
+        const result = await loadAverageJson<unknown>(`/api/progression/timeline?${params}`, {
           signal: controller.signal,
-          cache: forceRefresh || refreshRevision > 0 ? "no-store" : "default",
+          forceRefresh: forceRefresh || refreshRevision > 0,
+          retryUnavailable: true,
+          onUpdate: (next) => {
+            if (!validTimelineResponse(next, { aid, mode, cycleId })) return;
+            timelineCache.set(cacheKey, next);
+            startTransition(() => {
+              if (controller.signal.aborted) return;
+              setData(next); setError(false);
+              onRiskChange?.(next.history?.ready && validRisk(next.risk) ? next.risk : null);
+            });
+          },
         });
-        if (!response.ok) throw new Error(translate.current(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
-        const result: unknown = await response.json();
-        if (!response.ok || !validTimelineResponse(result, { aid, mode, cycleId })) {
+        if (!validTimelineResponse(result, { aid, mode, cycleId })) {
           throw new Error(translate.current(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable"));
         }
         if (controller.signal.aborted) return;
@@ -288,12 +297,19 @@ export default function ProgressionPanel({
           cycle: cycleId,
           aid: String(favorite.aid),
         });
-        const response = await fetch(`/api/progression/timeline?${params}`, {
+        const result = await loadAverageJson<unknown>(`/api/progression/timeline?${params}`, {
           signal: controller.signal,
-          cache: "default",
+          retryUnavailable: true,
+          onUpdate: (next) => {
+            if (generation !== secondaryGeneration.current || !validTimelineResponse(next, { aid: favorite.aid, mode, cycleId })) return;
+            timelineCache.set(cacheKey, next);
+            startTransition(() => {
+              if (controller.signal.aborted || generation !== secondaryGeneration.current) return;
+              setSecondary({ aid: favorite.aid, nickname, timeline: next }); setSecondaryError(false);
+            });
+          },
         });
-        const result: unknown = await response.json();
-        if (!response.ok || !validTimelineResponse(result, { aid: favorite.aid, mode, cycleId })) {
+        if (!validTimelineResponse(result, { aid: favorite.aid, mode, cycleId })) {
           throw new Error(translate.current("progression.compare.error"));
         }
         if (controller.signal.aborted || generation !== secondaryGeneration.current) return;

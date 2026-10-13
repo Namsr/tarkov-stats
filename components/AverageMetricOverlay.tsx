@@ -57,19 +57,20 @@ export default function AverageMetricOverlay({
         const params = new URLSearchParams({ dimension: "pmc_raids", metric: metric.key, statistic, period });
         if (mode !== "seasonal") params.set("mode", mode);
         if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
-        try {
-          const json = await loadAverageJson<OverlayResponse>(`${endpoint}?${params.toString()}`, {
-            signal: controller.signal,
-            retryUnavailable: true,
-          });
+        const apply = (json: OverlayResponse) => {
           if (controller.signal.aborted) return;
           const buckets = json.buckets ?? [];
           const avg = buckets.map((bucket) => (bucket.n > 0 ? bucket.sum / bucket.n : 0));
           const lo = buckets.map((bucket) => bucket.lo);
-          setSeries((current) => ({
-            ...current,
-            [metric.key]: { avg, lo, max: Math.max(0, ...avg) },
-          }));
+          setSeries((current) => ({ ...current, [metric.key]: { avg, lo, max: Math.max(0, ...avg) } }));
+        };
+        try {
+          const json = await loadAverageJson<OverlayResponse>(`${endpoint}?${params.toString()}`, {
+            signal: controller.signal,
+            retryUnavailable: true,
+            onUpdate: apply,
+          });
+          apply(json);
         } catch (caught: unknown) {
           if (caught instanceof Error && caught.name === "AbortError") return;
           if (!controller.signal.aborted) setFailed(true);
