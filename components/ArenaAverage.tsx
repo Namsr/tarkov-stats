@@ -487,6 +487,12 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
     loadAverageJson<unknown>(contextRequestFor(mode, statistic, filter.dimension), {
       signal: controller.signal,
       retryUnavailable: true,
+      onUpdate: (body) => {
+        const next = toArenaAverage(body);
+        if (next && matchesContext(next, mode, statistic, filter.dimension)) {
+          setRangeContext(next); setContextError(false); setContextLoaded(true);
+        }
+      },
     })
       .then((body) => {
         const next = toArenaAverage(body);
@@ -524,6 +530,10 @@ function ArenaAverageModePanel({ mode, filter, statistic, ready, onFilterChange 
     loadAverageJson<unknown>(requestFor(mode, filter, statistic), {
       signal: controller.signal,
       retryUnavailable: true,
+      onUpdate: (body) => {
+        const next = toArenaAverage(body);
+        if (next && matchesFilter(next, mode, filter, statistic)) { setResult(next); setError(false); }
+      },
     })
       .then((body) => {
         const next = toArenaAverage(body);
@@ -642,6 +652,10 @@ export default function ArenaAverage({ seasonalCycleId }: { seasonalCycleId?: st
     loadAverageJson<unknown>(contextRequestFor("teamFight", statistic), {
       signal: controller.signal,
       retryUnavailable: true,
+      onUpdate: (body) => {
+        const next = toArenaAverage(body);
+        if (next && matchesContext(next, "teamFight", statistic)) setOverview(next);
+      },
     })
       .then((body) => {
         const next = toArenaAverage(body);

@@ -56,7 +56,7 @@ test("persistent cohort route derives both centers from a stored snapshot before
   assert.match(regularBranch, /computeCohortInBackground\(\{\s*kind: "persistent", mode,\s*args: \[centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\]/);
   assert.doesNotMatch(regularBranch, /store\.cohort2d\(/);
   assert.match(regularBranch, /loadDynamicAverage\(/);
-  assert.match(regularBranch, /\["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period\]\.join\(":"\)/);
+  assert.match(regularBranch, /JSON\.stringify\(\["cohort", "persistent", mode, aid, statistic, period\]\)/);
   assert.doesNotMatch(regularBranch, /params\.get\("center"\)/);
   assert.doesNotMatch(regularBranch, /centerValue/);
 });
@@ -92,7 +92,7 @@ test("seasonal route delegates center lookup to the identity-scoped helper", () 
   assert.doesNotMatch(seasonalHelper, /progression_snapshots/);
   assert.doesNotMatch(seasonalHelper, /WITH latest AS/);
   assert.match(seasonalHelper, /COHORT_CACHE_TTL_MS = 5 \* 60_000/);
-  assert.match(seasonalHelper, /COHORT_CACHE_MAX = 512/);
+  assert.match(seasonalHelper, /fallbackKey: `seasonal-cohort:/);
   assert.doesNotMatch(seasonalHelper, /metric_values AS/);
   assert.doesNotMatch(seasonalHelper, /PARTITION BY metric/);
   assert.match(seasonalHelper, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*COUNT\(\*\) OVER \(\) AS n FROM cohort WHERE \$\{metric\} IS NOT NULL/);
@@ -217,6 +217,14 @@ test("the Arena average and batch cohort routes share one LRU key, and a version
     assert.notEqual(averageAfterBump.keys[0], populationKey);
     assert.equal(batchAfterBump.keys[1], averageAfterBump.keys[0]);
     assert.notEqual(batchAfterBump.keys[1], populationKey);
+    // Refresh is asynchronous: the first answer after a version bump is the
+    // retained publication, followed by one shared compute for the new version.
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const refreshed = await getAverage(new NextRequest(averageUrl));
+      if (refreshed.headers.get("X-Statistics-Stale") === "0") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     // The retired entry is not recomputed: both routes recomputed once, into
     // the new version, and nothing read the old key a second time.
     assert.equal(computesFor(populationKey), 1);
@@ -252,7 +260,7 @@ test("both Arena cohort routes pass the same key arguments to the shared builder
   for (const [name, source] of [["cohort", regularRoute], ["batch", batchRoute]]) {
     // aid, mode, statistic, version: one builder call, no inlined copy. A second
     // spelling of the key is free to drift, and did.
-    assert.equal((source.match(/arenaCohortCacheKey\(/g) ?? []).length, 1,
+    assert.equal((source.match(/arenaCohortCacheKey\(/g) ?? []).length, 2,
       `the ${name} route must build its key once, through the builder`);
     assert.doesNotMatch(source, /\["cohort",\s*"arena"/,
       `the ${name} route must not inline the cohort key`);
@@ -342,13 +350,20 @@ test("the Arena cohort routes share one LRU entry, and a version bump retires it
     setVersion(2);
     for (let aid = 7; aid <= 46; aid += 1) insertPeer(aid);
 
-    const singleAfterBump = await drive(getCohort, cohortUrl);
+    let singleAfterBump = await drive(getCohort, cohortUrl);
     assert.equal(singleAfterBump.response.status, 200);
     const batchAfterBump = await drive(getBaselinesBatch, batchUrl);
     assert.equal(batchAfterBump.response.status, 200);
     // Both routes moved onto the new version, and onto the same one.
     assert.deepEqual(singleAfterBump.keys, [cohortKey(2)]);
     assert.ok(batchAfterBump.keys.includes(cohortKey(2)));
+    assert.equal(singleAfterBump.response.headers.get("X-Statistics-Stale"), "1");
+    assert.equal(singleAfterBump.body.sampleN, 5);
+    const deadline = Date.now() + 20_000;
+    while (singleAfterBump.response.headers.get("X-Statistics-Stale") === "1" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      singleAfterBump = await drive(getCohort, cohortUrl);
+    }
     assert.equal(singleAfterBump.body.sampleN, 45);
     assert.equal(singleAfterBump.body.quality, "sufficient");
     // The retired entry is not recomputed, and the new one is computed once
@@ -421,10 +436,8 @@ test("regular and arena cohort successes carry private max-age while errors stay
     regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")'),
     regularRoute.indexOf("  const dimension", regularRoute.indexOf('if (rawMode === "regular" || rawMode === "pve")')),
   );
-  assert.match(arenaBranch, /"private, max-age=60"/);
-  assert.doesNotMatch(arenaBranch, /"private, no-store"/);
-  assert.match(persistentBranch, /"private, max-age=60"/);
-  assert.doesNotMatch(persistentBranch, /"private, no-store"/);
+  assert.match(arenaBranch, /headers: statisticsCacheHeaders\(loaded\)/);
+  assert.match(persistentBranch, /headers: statisticsCacheHeaders\(loaded\)/);
   // 4xx/5xx paths keep no-store.
   assert.match(arenaBranch, /"Cache-Control":\s*"no-store"/);
   assert.match(persistentBranch, /"Cache-Control":\s*"no-store"/);

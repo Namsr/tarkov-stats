@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import ChartCrosshair from "@/components/ChartCrosshair";
 import { chartPointAtPointer } from "@/lib/chart-interaction";
 import { useChartWidth } from "@/components/home/useChartWidth";
@@ -53,10 +54,17 @@ export default function ProgressionTimelineChart({
     if (variant === "compare" || !needsFallback) return;
     const controller = new AbortController();
     const params = new URLSearchParams({ mode: data.identity.mode, cycle: data.identity.cycleId });
-    fetch(`/api/progression/average?${params}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        const body = await response.json() as ProgressionAverageResponse;
+    const pointsFrom = (body: ProgressionAverageResponse) =>
+      body.mode === data.identity.mode && body.cycleId === data.identity.cycleId && Array.isArray(body.series?.cumulative?.overall)
+        ? body.series.cumulative.overall : null;
+    loadAverageJson<ProgressionAverageResponse>(`/api/progression/average?${params}`, {
+      signal: controller.signal, retryUnavailable: true,
+      onUpdate: (body) => {
+        const points = pointsFrom(body);
+        if (points) setFallback({ key: fallbackKey, points });
+      },
+    })
+      .then((body) => {
         return body.mode === data.identity.mode && body.cycleId === data.identity.cycleId && Array.isArray(body.series?.cumulative?.overall)
           ? body.series.cumulative.overall : null;
       })

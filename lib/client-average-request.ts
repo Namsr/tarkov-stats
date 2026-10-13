@@ -1,4 +1,4 @@
-type CachedJson = { body: unknown; status: number; retryAfter: number };
+type CachedJson = { body: unknown; status: number; retryAfter: number; stale: boolean; generatedAt: number };
 type NetworkInformation = { saveData?: boolean; effectiveType?: string };
 
 /** Bounds the session cache so a long slider/metric session cannot grow it
@@ -12,6 +12,15 @@ function cacheResponse(url: string, value: Promise<CachedJson>): void {
     responses.delete(responses.keys().next().value as string);
   }
   responses.set(url, value);
+}
+
+async function rememberSuccessfulResponse(url: string, incoming: CachedJson): Promise<CachedJson> {
+  const previous = await responses.get(url)?.catch(() => null);
+  // A manual request or prefetch can arrive after a newer background response.
+  // Return the newer answer to the caller too, so its .then cannot regress UI.
+  if (previous && previous.generatedAt > incoming.generatedAt) return previous;
+  cacheResponse(url, Promise.resolve(incoming));
+  return incoming;
 }
 
 interface AverageInFlight {
@@ -29,8 +38,8 @@ let activePrefetches = 0;
 let idleScheduled = false;
 let idleHandle: number | ReturnType<typeof setTimeout> | null = null;
 
-function fetchJson(url: string, signal?: AbortSignal): Promise<CachedJson> {
-  return fetch(url, signal ? { cache: "default", signal } : { cache: "default" }).then(async (response) => {
+function fetchJson(url: string, signal?: AbortSignal, refresh = false): Promise<CachedJson> {
+  return fetch(url, { cache: refresh ? "no-store" : "default", ...(signal ? { signal } : {}) }).then(async (response) => {
     let body: unknown;
     try {
       body = await response.json() as unknown;
@@ -38,13 +47,77 @@ function fetchJson(url: string, signal?: AbortSignal): Promise<CachedJson> {
       if (error instanceof Error && error.name === "AbortError") throw error;
       throw new Error(`Average request failed (${response.status})`);
     }
+    const generatedAt = Number(response.headers.get("x-statistics-generated-at") ?? response.headers.get("x-average-generated-at"));
     const result = {
       body,
       status: response.status,
       retryAfter: Math.max(1, Math.min(15, Number(response.headers.get("retry-after")) || 5)),
+      // An aged daily publication does not imply an HTTP-triggered refresh.
+      // Only active response revalidation needs the short polling interval.
+      stale: response.headers.get("x-statistics-stale") === "1",
+      generatedAt: Number.isFinite(generatedAt) && generatedAt >= 0 ? generatedAt : 0,
     };
     return result;
   });
+}
+
+type Observer = { callback: (body: unknown) => void; signal: AbortSignal };
+type Refresh = { observers: Set<Observer>; timer?: ReturnType<typeof setTimeout>; controller?: AbortController };
+const refreshes = new Map<string, Refresh>();
+
+function observeResponse<T>(url: string, response: CachedJson,
+  options: { signal?: AbortSignal; onUpdate?: (body: T) => void }): void {
+  if (!options.onUpdate || !options.signal || options.signal.aborted) return;
+  let refresh = refreshes.get(url);
+  if (!refresh) {
+    refresh = { observers: new Set() };
+    refreshes.set(url, refresh);
+  }
+  const target = refresh;
+  const observer: Observer = { callback: options.onUpdate as (body: unknown) => void, signal: options.signal };
+  target.observers.add(observer);
+  const detach = () => {
+    target.observers.delete(observer);
+    if (target.observers.size === 0) {
+      if (target.timer) clearTimeout(target.timer);
+      target.controller?.abort();
+      if (refreshes.get(url) === target) refreshes.delete(url);
+    }
+  };
+  options.signal.addEventListener("abort", detach, { once: true });
+  const schedule = (result: CachedJson) => {
+    if (!target.observers.size || target.timer) return;
+    target.timer = setTimeout(async () => {
+      target.timer = undefined;
+      if (!target.observers.size) return;
+      // Hidden tabs do not spend the worker budget refreshing invisible charts.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        schedule(result);
+        return;
+      }
+      const controller = new AbortController();
+      target.controller = controller;
+      let next = result;
+      try {
+        const fetched = await fetchJson(url, controller.signal, true);
+        if (fetched.status >= 200 && fetched.status < 300 && !controller.signal.aborted) {
+          next = await rememberSuccessfulResponse(url, fetched);
+          for (const listener of target.observers) {
+            if (listener.signal.aborted) continue;
+            try { listener.callback(next.body); } catch { /* The view validates its own response. */ }
+          }
+        } else {
+          next = { ...result, stale: true, retryAfter: fetched.retryAfter };
+        }
+      } catch {
+        next = { ...result, stale: true };
+      } finally {
+        if (target.controller === controller) target.controller = undefined;
+        if (refreshes.get(url) === target) schedule(next);
+      }
+    }, result.stale ? result.retryAfter * 1000 : 60_000);
+  };
+  schedule(response);
 }
 
 function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -152,12 +225,12 @@ function throwForStatus(response: CachedJson): never {
 
 export async function loadAverageJson<T>(
   url: string,
-  options: { signal?: AbortSignal; retryUnavailable?: boolean } = {},
+  options: { signal?: AbortSignal; retryUnavailable?: boolean; onUpdate?: (body: T) => void; forceRefresh?: boolean } = {},
 ): Promise<T> {
   const signal = options.signal;
   for (;;) {
     aborted(signal);
-    const settled = responses.get(url);
+    const settled = options.forceRefresh ? undefined : responses.get(url);
     if (settled) {
       let response: CachedJson;
       try {
@@ -168,7 +241,10 @@ export async function loadAverageJson<T>(
         continue;
       }
       aborted(signal);
-      if (response.status >= 200 && response.status < 300) return response.body as T;
+      if (response.status >= 200 && response.status < 300) {
+        observeResponse(url, response, options);
+        return response.body as T;
+      }
       if (response.status === 503 && options.retryUnavailable) {
         await wait(response.retryAfter * 1_000, signal);
         continue;
@@ -185,9 +261,9 @@ export async function loadAverageJson<T>(
         consumers: 0,
         prefetch: false,
       };
-      const network = fetchJson(url, controller.signal).then((result) => {
+      const network = fetchJson(url, controller.signal, options.forceRefresh).then((result) => {
         if (result.status >= 200 && result.status < 300) {
-          cacheResponse(url, Promise.resolve(result));
+          return rememberSuccessfulResponse(url, result);
         }
         return result;
       });
@@ -215,7 +291,10 @@ export async function loadAverageJson<T>(
       throw error;
     }
     aborted(signal);
-    if (response.status >= 200 && response.status < 300) return response.body as T;
+    if (response.status >= 200 && response.status < 300) {
+      observeResponse(url, response, options);
+      return response.body as T;
+    }
     if (response.status === 503 && options.retryUnavailable) {
       await wait(response.retryAfter * 1_000, signal);
       continue;
@@ -243,7 +322,7 @@ function drainPrefetchQueue(): void {
     };
     const network = fetchJson(url, controller.signal).then((result) => {
       if (!controller.signal.aborted && result.status >= 200 && result.status < 300) {
-        cacheResponse(url, Promise.resolve(result));
+        return rememberSuccessfulResponse(url, result);
       }
       return result;
     });
@@ -337,6 +416,11 @@ export function cancelAveragePrefetches(urls?: readonly string[]): void {
 }
 
 export function resetAverageResponseCacheForTests(): void {
+  for (const refresh of refreshes.values()) {
+    if (refresh.timer) clearTimeout(refresh.timer);
+    refresh.controller?.abort();
+  }
+  refreshes.clear();
   try {
     cancelAveragePrefetches();
   } catch {

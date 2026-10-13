@@ -261,10 +261,93 @@ test("each profile refresh reloads its own cohort for the new revision", async (
   assert.match(source, /function cohortRevisionRequestUrl\([\s\S]*url\.searchParams\.set\("revision", revision\)/);
   assert.match(source, /revision\.current = \{ scopeKey, aid, value: nextRevision \}/);
   assert.match(source, /const currentRevision = revision\.current\?\.scopeKey === scopeKey && revision\.current\.aid === aid/);
-  assert.match(source, /fetch\(cohortRevisionRequestUrl\(scope, aid, nextRevision\), \{\s*cache: "no-store",\s*signal: controller\.signal,/);
+  assert.match(source, /loadAverageJson<unknown>\(cohortRevisionRequestUrl\(scope, aid, nextRevision\), \{\s*signal: controller\.signal, forceRefresh: true, retryUnavailable: true, onUpdate: apply,/);
   assert.match(source, /const primary = useComparisonProfile\(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController\.reload\)/);
   assert.match(source, /const secondary = useComparisonProfile\(profileScope, profileScopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController\.reload\)/);
   assert.match(source, /if \(active\(\)\) await onRefreshedRef\.current\?\.\(next\)/);
+});
+
+async function statisticsHookHarness(name) {
+  const file = name === "useComparisonCohort" ? "ComparePage" : "CompareProgressionSection";
+  const source = (await readFile(`components/${file}.tsx`, "utf8")).replace(/\r\n/g, "\n");
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf(name === "useComparisonCohort" ? "export default function ComparePage" : "function TimelineSlot", start);
+  const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const requests = await import("../lib/client-average-request.ts");
+  let state, cleanup;
+  const factory = new Function("useState", "useRef", "useEffect", "useCallback", "loadAverageJson",
+    "comparisonCohortRequestUrl", "cohortRevisionRequestUrl", "profileRevision", "adaptComparisonCohort", "validTimelineResponse",
+    `${compiled}; return ${name};`);
+  const hook = factory(initial => {
+    state = typeof initial === "function" ? initial() : initial;
+    return [state, next => { state = typeof next === "function" ? next(state) : next; }];
+  }, initial => ({ current: initial }), effect => { cleanup = effect(); }, callback => callback,
+  requests.loadAverageJson, (_, aid) => `/cohort?aid=${aid}`, (_, aid, revision) => `/cohort?aid=${aid}&revision=${revision}`,
+  profile => String(profile.updatedAt), (scope, aid, body) => body.identity?.aid === aid && body.identity?.mode === scope.mode ? body : null,
+  (body, expected) => body.identity?.aid === expected.aid && body.identity?.mode === expected.mode && body.identity?.cycleId === expected.cycleId);
+  const scope = { mode: "regular", cycleId: "persistent", arenaMode: null };
+  const result = name === "useComparisonCohort" ? hook(scope, "regular:persistent", 42, key => key)
+    : hook({ aid: 42, nickname: "Player", updatedAt: 1 }, "regular", "persistent");
+  await new Promise(setImmediate);
+  return { state: () => state, cleanup: () => cleanup?.(), result, reset: requests.resetAverageResponseCacheForTests };
+}
+
+test("mounted comparison cohorts and timelines refresh stale answers and cancel on unmount", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const name of ["useComparisonCohort", "useProgressionTimeline"]) {
+      let calls = 0;
+      globalThis.fetch = async (_, options) => {
+        if (name === "useProgressionTimeline") assert.equal(options.cache, "no-store");
+        return new Response(JSON.stringify({ identity: {
+        aid: 42, mode: calls === 2 ? "pve" : "regular", cycleId: "persistent",
+        }, n: ++calls }), { headers: { "X-Statistics-Stale": calls === 1 ? "1" : "0", "X-Statistics-Generated-At": String(calls) } });
+      };
+      const harness = await statisticsHookHarness(name);
+      const value = () => harness.state()[name === "useComparisonCohort" ? "data" : "timeline"];
+      assert.equal(value().n, 1);
+      t.mock.timers.tick(5000); await new Promise(setImmediate);
+      assert.equal(value().n, 2);
+      t.mock.timers.tick(60000); await new Promise(setImmediate);
+      assert.equal(calls, 3);
+      assert.equal(value().n, 2, "a background response for another mode must not replace the answer");
+      harness.cleanup();
+      t.mock.timers.tick(120000); await new Promise(setImmediate);
+      assert.equal(calls, 3);
+      harness.reset();
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("a manual comparison refresh retains polling ownership until navigation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const signals = [];
+  globalThis.fetch = async (_, options) => {
+    signals.push(options.signal);
+    calls++;
+    if (calls === 4) return new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    return new Response(JSON.stringify({ identity: { aid: 42, mode: "regular", cycleId: "persistent" }, n: calls }), {
+      headers: { "X-Statistics-Stale": "1", "X-Statistics-Generated-At": String(calls) },
+    });
+  };
+  const harness = await statisticsHookHarness("useComparisonCohort");
+  try {
+    await harness.result.reload({ updatedAt: 2 });
+    assert.equal(harness.state().data.n, 2);
+    t.mock.timers.tick(5000); await new Promise(setImmediate);
+    assert.equal(calls, 3, "only the refreshed revision must still poll");
+    assert.equal(harness.state().data.n, 3);
+    t.mock.timers.tick(5000); await new Promise(setImmediate);
+    assert.equal(calls, 4);
+    harness.cleanup();
+    assert.ok(signals.at(-1).aborted, "navigation aborts a pending background request");
+    t.mock.timers.tick(120000); await new Promise(setImmediate);
+    assert.equal(calls, 4);
+    assert.equal(harness.state().data.n, 3);
+  } finally { harness.cleanup(); harness.reset(); globalThis.fetch = originalFetch; }
 });
 
 test("profile and cohort generations isolate mode and player switches", async () => {

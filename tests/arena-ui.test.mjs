@@ -16,7 +16,9 @@ async function loadArenaUi() {
     importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove,
   };
   const typesUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(read("types/arena.ts"), { compilerOptions }).outputText)}`;
-  const source = read("components/arena-ui.ts").replaceAll("@/types/arena", typesUrl);
+  const requestsUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(read("lib/client-average-request.ts"), { compilerOptions }).outputText)}`;
+  const source = read("components/arena-ui.ts").replaceAll("@/types/arena", typesUrl)
+    .replaceAll("../lib/client-average-request.ts", requestsUrl);
   const moduleUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(source, { compilerOptions }).outputText)}`;
   arenaUiModule = await import(moduleUrl);
   return arenaUiModule;

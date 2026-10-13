@@ -14,10 +14,49 @@ process.env.AVERAGE_PUBLICATION_SQLITE_PATH = publicationPath;
 process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
 
 const publication = await import("../lib/average-publication.ts");
+const responseCache = await import("../lib/average-dynamic-cache.ts");
 
 test.after(() => {
+  responseCache.resetDynamicAverageCacheForTests();
   publication.resetAveragePublicationForTests();
   try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }
+});
+
+test("last successful statistics survive a process-cache reset and a failed new scan", async () => {
+  responseCache.resetDynamicAverageCacheForTests();
+  const identity = JSON.stringify(["cohort", "regular", 44, "all", "median"]);
+  const options = { fallbackKey: identity, ttlMs: 100 };
+  await responseCache.loadDynamicAverage("old-scan", async () => ({ n: 23, averages: { level: 42 } }), 1000, options);
+  responseCache.resetDynamicAverageCacheForTests();
+  publication.resetAveragePublicationForTests();
+  const restored = await responseCache.loadDynamicAverage("new-scan", async () => { throw new Error("unavailable"); }, 2000, options);
+  assert.deepEqual(restored.value, { n: 23, averages: { level: 42 } });
+  assert.equal(restored.stale, true);
+  assert.equal(restored.generatedAt >= 1000, true);
+  await new Promise(setImmediate);
+  const persisted = await publication.readStatisticsResponse(`statistics-v1:${identity}`);
+  assert.equal(persisted.value.n, 23);
+  await assert.rejects(responseCache.loadDynamicAverage("new-scan", async () => { throw new Error("unavailable"); }, 2000,
+    { ...options, fallbackKey: JSON.stringify(["cohort", "seasonal", "other-cycle", 44, "all", "median"]) }), /unavailable/);
+  responseCache.resetDynamicAverageCacheForTests();
+});
+
+test("a cold fallback read succeeds while the publication database has a write lease", async () => {
+  const options = { fallbackKey: "writer-lease", ttlMs: 1 };
+  await responseCache.loadDynamicAverage("first", async () => ({ n: 25 }), 1000, options);
+  responseCache.resetDynamicAverageCacheForTests();
+  publication.resetAveragePublicationForTests();
+  const writer = new DatabaseSync(publicationPath);
+  writer.exec("BEGIN IMMEDIATE");
+  try {
+    const fallback = await responseCache.loadDynamicAverage("next", async () => { throw new Error("busy"); }, 2000, options);
+    assert.equal(fallback.value.n, 25);
+    assert.equal(fallback.stale, true);
+    await new Promise(setImmediate);
+  } finally {
+    writer.exec("ROLLBACK"); writer.close();
+    responseCache.resetDynamicAverageCacheForTests();
+  }
 });
 
 test("publication swaps atomically, retains two generations, and survives a failed replacement", async () => {

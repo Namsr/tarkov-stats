@@ -14,9 +14,98 @@ Object.defineProperty(globalThis, "navigator", { configurable: true, value: { co
 const requests = await import("../lib/client-average-request.ts");
 const originalFetch = globalThis.fetch;
 
+const nextTurn = () => new Promise(setImmediate);
+
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
   requests.resetAverageResponseCacheForTests();
+});
+
+test("stale statistics display immediately, share refresh polling, and stop on the last abort", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let fetches = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetches++;
+    if (fetches > 1) assert.equal(options.cache, "no-store");
+    return new Response(JSON.stringify({ total: fetches }), {
+      headers: { "X-Statistics-Stale": fetches === 1 ? "1" : "0", "Retry-After": "5" },
+    });
+  };
+  const a = new AbortController(), b = new AbortController();
+  const firstUpdates = [], secondUpdates = [];
+  const first = await requests.loadAverageJson("/statistics", { signal: a.signal, onUpdate: (body) => firstUpdates.push(body) });
+  const second = await requests.loadAverageJson("/statistics", { signal: b.signal, onUpdate: (body) => secondUpdates.push(body) });
+  assert.deepEqual(first, { total: 1 });
+  assert.deepEqual(second, first);
+  assert.equal(fetches, 1);
+  t.mock.timers.tick(5000);
+  await nextTurn();
+  assert.equal(fetches, 2);
+  assert.deepEqual(firstUpdates, [{ total: 2 }]);
+  assert.deepEqual(secondUpdates, firstUpdates);
+  a.abort();
+  t.mock.timers.tick(60_000);
+  await nextTurn();
+  assert.equal(fetches, 3);
+  assert.equal(firstUpdates.length, 1);
+  assert.equal(secondUpdates.length, 2);
+  b.abort();
+  t.mock.timers.tick(120_000);
+  await nextTurn();
+  assert.equal(fetches, 3);
+});
+
+test("a refresh failure retains the last successful response and later updates it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches++;
+    return fetches === 2 ? new Response('{"error":"busy"}', { status: 503 }) :
+      new Response(JSON.stringify({ total: fetches }), { headers: { "X-Statistics-Stale": "1" } });
+  };
+  const controller = new AbortController();
+  const updates = [];
+  await requests.loadAverageJson("/retained", { signal: controller.signal, onUpdate: (body) => updates.push(body) });
+  t.mock.timers.tick(5000);
+  await nextTurn();
+  assert.deepEqual(updates, []);
+  assert.deepEqual(await requests.loadAverageJson("/retained"), { total: 1 });
+  t.mock.timers.tick(5000);
+  await nextTurn();
+  assert.deepEqual(updates, [{ total: 3 }]);
+  controller.abort();
+});
+
+test("a manual refresh bypasses the successful session response", async () => {
+  let fetches = 0;
+  globalThis.fetch = async () => new Response(JSON.stringify({ total: ++fetches }));
+  assert.deepEqual(await requests.loadAverageJson("/manual"), { total: 1 });
+  assert.deepEqual(await requests.loadAverageJson("/manual", { forceRefresh: true }), { total: 2 });
+});
+
+test("a slow older request cannot replace a newer background response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resolveOlder;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 2) return new Promise((resolve) => { resolveOlder = resolve; });
+    return new Response(JSON.stringify({ total: calls }), { headers: {
+      "X-Statistics-Generated-At": String(calls), "X-Statistics-Stale": calls === 1 ? "1" : "0",
+    } });
+  };
+  const controller = new AbortController();
+  const updates = [];
+  await requests.loadAverageJson("/ordered", { signal: controller.signal, onUpdate: (body) => updates.push(body) });
+  const older = requests.loadAverageJson("/ordered", { forceRefresh: true });
+  await nextTurn();
+  t.mock.timers.tick(5000);
+  await nextTurn();
+  assert.deepEqual(updates, [{ total: 3 }]);
+  resolveOlder(new Response('{"total":2}', { headers: { "X-Statistics-Generated-At": "2" } }));
+  assert.deepEqual(await older, { total: 3 });
+  assert.deepEqual(await requests.loadAverageJson("/ordered"), { total: 3 });
+  controller.abort();
 });
 
 test("average response cache shares successful requests in one browser session", async () => {

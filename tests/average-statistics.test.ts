@@ -529,7 +529,7 @@ test("a cached in-flight PvE cohort timeout retains its phase and stable failure
   process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = "5";
   const delayed = new Promise((resolve) => setTimeout(() => resolve({}), 200));
   try {
-    await assert.rejects(loadDynamicAverage(`cohort:persistent:pve:${aid}:${version}:100:100:median:all`, () => delayed), /timed out/);
+    await assert.rejects(loadDynamicAverage(JSON.stringify(["cohort", "persistent", "pve", aid, "median", "all"]), () => delayed), /timed out/);
     const response = await getCohort(new NextRequest(`http://local/api/average/cohort?mode=pve&aid=${aid}&statistic=median`));
     assert.equal(response.status, 503);
     assert.match(response.headers.get("Server-Timing"), /cohort;dur=\d+/);
@@ -1132,7 +1132,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   const medianBody = await medianResponse.json();
   assert.equal(
     medianResponse.headers.get("cache-control"),
-    "public, max-age=1800, s-maxage=1800, stale-while-revalidate=300",
+    "no-store",
   );
   assert.equal(medianResponse.headers.get("x-average-cache"), "next-data");
   assert.equal(medianBody.statistic, "median");
@@ -1195,7 +1195,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
       "http://local/api/average/cohort?aid=1&statistic=median&period=90d",
     ));
     assert.equal(unavailable.status, 200);
-    assert.equal(unavailable.headers.get("cache-control"), "private, max-age=60");
+    assert.equal(unavailable.headers.get("cache-control"), "no-store");
     assert.deepEqual(
       (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
       { statistic: "median", period: "90d" },
@@ -1329,7 +1329,7 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
   const route = await readFile(
     new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
   const validationStart = route.indexOf('"Invalid playtime range"');
-  const storeStart = route.indexOf("const store = await getStore(");
+  const storeStart = route.indexOf("loadDynamicAverage(");
   assert.ok(
     validationStart >= 0 && storeStart > validationStart,
     "the range check must precede the store open",
@@ -1378,7 +1378,7 @@ test("baseline caps anonymous bursts per IP and keeps the 429 out of shared cach
   assert.ok(
     route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })') >= 0
       && route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })')
-        < route.indexOf("const store = await getStore("),
+        < route.indexOf("loadDynamicAverage("),
     "the rate limiter must precede the store open",
   );
 });
