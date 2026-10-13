@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { SessionUser } from "@/lib/auth/session";
 import { useI18n } from "@/lib/i18n/context";
+import NotificationBell from "@/components/NotificationBell";
 
 export default function AuthButton() {
   const { t } = useI18n();
@@ -53,6 +54,7 @@ export default function AuthButton() {
 
   return (
     <div className="flex items-center gap-3">
+      <NotificationBell />
       <Link
         href={onProfile ? "/" : "/profile"}
         title={t("nav.profile")}
