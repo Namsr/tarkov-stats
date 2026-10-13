@@ -312,14 +312,22 @@ test("missing mode keeps the profile shell without mounting data sections", asyn
 });
 
 test("ordinary profile failures retain the generic error UI", async () => {
-  const source = await readFile("components/RegularPlayer.tsx", "utf8");
+  const [source, route] = await Promise.all([
+    readFile("components/RegularPlayer.tsx", "utf8"),
+    readFile("app/api/player/profile/route.ts", "utf8"),
+  ]);
+  // Reproducer: the route returns a server-authored English message on a 503,
+  // so the client must use its translated generic error instead of `data.error`.
+  assert.match(route, /error: "Failed to load player profile"[\s\S]*?status: 503/);
   assert.match(source, /const unavailable = data\.code === "mode_profile_unavailable"/);
   // Anchored on the load effect's own `unavailable` branch: `refreshProfile` throws
   // the same shape, so an unanchored match would pass against either code path.
   assert.match(
     source,
-    /const unavailable = data\.code === "mode_profile_unavailable"[\s\S]*?throw new Error\(status === 429 \? translate\.current\("player\.rateLimited"\) : data\.error \?\? translate\.current\("player\.loadError"\)\)/,
+    /const unavailable = data\.code === "mode_profile_unavailable"[\s\S]*?throw new Error\(status === 429 \? translate\.current\("player\.rateLimited"\) : translate\.current\("player\.loadError"\)\)/,
   );
+  assert.doesNotMatch(source, /data\.error\s*\?\?/);
+  assert.match(source, /setError\(message === translate\.current\("player\.rateLimited"\)[\s\S]*?translate\.current\("player\.loadError"\)\)/);
   assert.match(source, /if \(!stats\)[\s\S]*?<ProfileErrorNotice>\{error \|\| t\("player\.unknownError"\)\}/);
 });
 
@@ -340,7 +348,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   // The translator is read through a ref so the error strings stay current.
   assert.match(regular, /const translate = useRef\(t\);/);
   assert.match(regular, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
-  assert.equal((regular.match(/translate\.current\("player\.loadError"\)/g) ?? []).length, 4);
+  assert.equal((regular.match(/translate\.current\("player\.loadError"\)/g) ?? []).length, 3);
   // Only the load effect changes. `refreshProfile` is a useCallback, so a new `t`
   // just gives the button a new callback and re-runs nothing.
   assert.equal((regular.match(/\bt\("player\.loadError"\)/g) ?? []).length, 4);
@@ -352,7 +360,7 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(seasonal, /\}, \[aid, cycleId, profileRequestUrl\]\);/);
   assert.match(seasonal, /const translate = useRef\(t\);/);
   assert.match(seasonal, /useEffect\(\(\) => \{\s*\n\s*translate\.current = t;\s*\n\s*\}, \[t\]\);/);
-  assert.equal((seasonal.match(/translate\.current\("seasonal\.profileUnavailable"\)/g) ?? []).length, 4);
+  assert.equal((seasonal.match(/translate\.current\("seasonal\.profileUnavailable"\)/g) ?? []).length, 3);
   assert.match(seasonal, /error instanceof PlayerProfileResponseError \? new Error\(t\("seasonal\.profileUnavailable"\)\) : error/);
 
   // The timeline parameters carry no language, so the fetch must not re-run for one.
@@ -420,17 +428,13 @@ test("a language switch does not re-request the profile or discard a refresh", a
   const favoriteEffect = sliceDeclaration(radarSource, "useEffect(() => {\n    if (\n      demo ||", "const cohort = demo");
   assert.ok(favoriteEffect.length > 0, "the favorite profile effect must be present");
   assert.doesNotMatch(favoriteEffect, /\bt\(/);
-  // `error.message` can be a transport string no dictionary owns, so the state
-  // carries the key alongside it and the render resolves the key.
-  assert.match(favoriteEffect, /setFavoriteError\(\{\s*\n\s*key: "radar\.error\.favorite",\s*\n\s*message: error instanceof PlayerProfileResponseError\s*\n\s*\? null\s*\n\s*: error instanceof Error \? error\.message : null,\s*\n\s*\}\);/);
+  // Transport messages are not dictionary strings. Every failure must resolve
+  // through the favorite error key so a language change updates the displayed text.
+  assert.match(favoriteEffect, /\.catch\(\(\) => \{[\s\S]*?setFavoriteError\(\{\s*\n\s*key: "radar\.error\.favorite",\s*\n\s*message: null,\s*\n\s*\}\);/);
+  assert.doesNotMatch(favoriteEffect, /message:\s*error\.message/);
   assert.doesNotMatch(favoriteEffect, /setFavoriteError\("|setFavoriteError\(translate/);
-  // The identity guard still fails closed, but it must not fail with dictionary
-  // text. The catch copies `error.message` into state and the render prints it
-  // verbatim, so a translated throw would keep rendering in the language of the
-  // failure — the exact regression this report is about, and the common path
-  // (an HTTP 4xx/5xx returns `{ ok: false }` rather than throwing a
-  // `PlayerProfileResponseError`). Only that class maps to `message: null`, which
-  // hands the render back to `t(favoriteError.key)`.
+  // The identity guard still fails closed. HTTP errors and network failures both
+  // drop raw messages and let the render resolve `t(favoriteError.key)`.
   assert.doesNotMatch(favoriteEffect, /throw new Error\(/);
   assert.match(favoriteEffect, /throw new PlayerProfileResponseError\(\);/);
   // The guard is fail-closed on identity: an unrecognised payload or a foreign aid
@@ -1104,6 +1108,15 @@ test("seasonal PMC K/D fallback uses PMC-vs-PMC kills", async () => {
   assert.match(
     seasonal,
     /const pmcKdRatio = existing\?\.pmcKdRatio \?\? \(counters\.pmcDeaths > 0 \? counters\.killedPmc \/ counters\.pmcDeaths : null\);/,
+  );
+});
+
+test("seasonal PMC kills card counts PMC targets, not all kills while playing PMC", async () => {
+  const seasonal = await readFile("components/SeasonalPlayer.tsx", "utf8");
+
+  assert.match(
+    seasonal,
+    /<StatCard label=\{t\("player\.pmcKills"\)\} value=\{profile\.counters\.killedPmc\} \/>/,
   );
 });
 

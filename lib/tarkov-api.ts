@@ -490,7 +490,7 @@ async function writePersistedMastery(cache: MasteryCache): Promise<void> {
 function parsePersistedAchievements(payload: unknown, mode: AchievementMode): AchievementCache {
   const root = record(payload);
   if (
-    root?.version !== 1 ||
+    (root?.version !== 1 && root?.version !== 2) ||
     root.mode !== mode ||
     typeof root.savedAt !== "number" ||
     !Number.isFinite(root.savedAt) ||
@@ -540,9 +540,9 @@ function parsePersistedAchievements(payload: unknown, mode: AchievementMode): Ac
       adjustedPlayersCompletedPercent: percentage(row.adjustedPlayersCompletedPercent, `achievement ${row.id}.adjustedPlayersCompletedPercent`),
     });
   }
-  // v1 caches written before descriptions/images were added remain valid
-  // outage fallbacks, but must refresh on the next healthy request.
-  return { data, ts: hasLegacyEntry ? 0 : root.savedAt };
+  // Version 1 caches may contain metadata written after a partial translation
+  // outage, so keep them as a fallback but refresh them on the next request.
+  return { data, ts: root.version === 1 || hasLegacyEntry ? 0 : root.savedAt };
 }
 
 async function readPersistedAchievements(mode: AchievementMode): Promise<AchievementCache | null> {
@@ -571,7 +571,7 @@ async function writePersistedAchievements(mode: AchievementMode, cache: Achievem
     temporary = `${file}.${Date.now()}.tmp`;
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(temporary, JSON.stringify({
-      version: 1,
+      version: 2,
       mode,
       savedAt: cache.ts,
       entries: [...cache.data.values()],
@@ -720,10 +720,13 @@ async function refreshAchievements(
           error: russianResult.reason instanceof Error ? russianResult.reason.message : "unknown",
         });
       }
+      if (englishResult.status === "rejected" || russianResult.status === "rejected") {
+        throw new Error("achievement translation endpoint unavailable");
+      }
       const map = parseAchievements(
         tasksResult.value,
-        englishResult.status === "fulfilled" ? englishResult.value : undefined,
-        russianResult.status === "fulfilled" ? russianResult.value : undefined,
+        englishResult.value,
+        russianResult.value,
       );
       const cache = { data: map, ts: Date.now() };
       achievementsCache.set(mode, cache);
