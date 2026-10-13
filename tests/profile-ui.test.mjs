@@ -446,12 +446,12 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.doesNotMatch(notice, /\{cohortError \|\|/);
   assert.match(notice, /\? t\("radar\.error\.cohort"\)/);
   assert.match(notice, /favoriteError\.message \?\? t\(favoriteError\.key\)/);
-  // Both remaining `translate.current` calls are the cohort effect's own throws,
+  // The remaining `translate.current` call is the cohort identity guard's throw,
   // whose text is never read: its `.catch` drops it for the flag the render
   // translates. The favorite effect must translate nothing — anything it threw
   // would be pinned into `message` at the moment of failure.
-  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 2);
-  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 2);
+  assert.equal((radarSource.match(/translate\.current\(/g) ?? []).length, 1);
+  assert.equal((cohortEffect.match(/translate\.current\(/g) ?? []).length, 1);
   assert.equal((favoriteEffect.match(/translate\.current\(/g) ?? []).length, 0);
 });
 
