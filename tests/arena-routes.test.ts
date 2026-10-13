@@ -353,7 +353,7 @@ test("Arena mode baselines batch all five modes in one request", async () => {
     "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison",
   ));
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "private, max-age=60");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
   assert.equal(body.gameMode, "arena");
   assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);

@@ -36,17 +36,17 @@ test("dedupes cold work and serves expired data while refreshing after 15 minute
     assert.equal(calls, 1);
 
     // Still a hit just before the 15-minute TTL.
-    const beforeExpiry = await cache.loadDynamicAverage("same", load, 1_000 + TTL_MS - 1);
+    const beforeExpiry = await cache.loadDynamicAverage("same", load, first.generatedAt + TTL_MS - 1);
     assert.equal(beforeExpiry.value, 1);
     assert.equal(beforeExpiry.cache, "hit");
     assert.equal(calls, 1);
 
     // Expired: immediately serves the old answer and schedules one refresh.
-    const afterExpiry = await cache.loadDynamicAverage("same", load, 1_000 + TTL_MS + 1);
+    const afterExpiry = await cache.loadDynamicAverage("same", load, first.generatedAt + TTL_MS + 1);
     assert.equal(afterExpiry.value, 1);
     assert.equal(afterExpiry.stale, true);
     await new Promise(setImmediate);
-    const refreshed = await cache.loadDynamicAverage("same", load, 1_000 + TTL_MS + 2);
+    const refreshed = await cache.loadDynamicAverage("same", load, first.generatedAt + TTL_MS + 2);
     assert.equal(refreshed.value, 2);
     assert.equal(refreshed.stale, false);
     assert.equal(calls, 2);

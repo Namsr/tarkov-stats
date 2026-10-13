@@ -1273,7 +1273,7 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
   const route = await readFile(
     new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
   const validationStart = route.indexOf('"Invalid playtime range"');
-  const storeStart = route.indexOf("const store = await getStore(");
+  const storeStart = route.indexOf("loadDynamicAverage(");
   assert.ok(
     validationStart >= 0 && storeStart > validationStart,
     "the range check must precede the store open",
@@ -1322,7 +1322,7 @@ test("baseline caps anonymous bursts per IP and keeps the 429 out of shared cach
   assert.ok(
     route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })') >= 0
       && route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })')
-        < route.indexOf("const store = await getStore("),
+        < route.indexOf("loadDynamicAverage("),
     "the rate limiter must precede the store open",
   );
 });
