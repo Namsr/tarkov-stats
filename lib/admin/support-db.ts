@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS support_notifications (
 CREATE INDEX IF NOT EXISTS idx_support_notifications_active
   ON support_notifications(is_active, id);
 
+CREATE TABLE IF NOT EXISTS user_notification_reads (
+  user_sub TEXT NOT NULL,
+  notification_id TEXT NOT NULL,
+  read_at INTEGER NOT NULL,
+  PRIMARY KEY (user_sub, notification_id)
+);
+
 CREATE TABLE IF NOT EXISTS support_fundraising_goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   collected_rub INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +142,8 @@ function rowGoal(row: Record<string, unknown>): FundraisingGoal {
 }
 
 export interface SupportStore {
+  readNotificationIds(userSub: string, ids: string[]): string[];
+  markNotificationsRead(userSub: string, ids: string[]): void;
   listNotifications(): SupportNotification[];
   createNotification(input: { title: string; body: string; href?: string | null; level?: NotificationLevel }): SupportNotification;
   updateNotification(id: number, patch: { title?: string; body?: string; href?: string | null; level?: NotificationLevel }): SupportNotification;
@@ -189,6 +198,23 @@ export function createSupportStore(db: SqliteDatabase): SupportStore {
   }
 
   return {
+    readNotificationIds(userSub, ids) {
+      if (ids.length === 0) return [];
+      const placeholders = ids.map(() => "?").join(",");
+      return (db.prepare(`SELECT notification_id FROM user_notification_reads
+        WHERE user_sub = ? AND notification_id IN (${placeholders})`).all(userSub, ...ids) as { notification_id: string }[])
+        .map((row) => row.notification_id);
+    },
+
+    markNotificationsRead(userSub, ids) {
+      write(() => {
+        const insert = db.prepare(`INSERT OR IGNORE INTO user_notification_reads
+          (user_sub, notification_id, read_at) VALUES (?, ?, ?)`);
+        const now = Date.now();
+        for (const id of ids) insert.run(userSub, id, now);
+      });
+    },
+
     listNotifications() {
       return allNotifications();
     },
