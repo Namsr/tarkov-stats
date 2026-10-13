@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Keyboard
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
-import type { AudienceSummary, HealthPhaseSummary } from "@/lib/admin/analytics-db";
+import type { AudienceSummary, HealthPhaseSummary, LocalSummary } from "@/lib/admin/analytics-db";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
@@ -22,12 +22,12 @@ type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
 type HealthOperationVariant = { source: string | null; cache: string | null; force: boolean | null; requests: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
 type HealthPhase = HealthPhaseSummary;
-type HealthOperation = { operation: string; mode: string | null; requests: number; success: number; serverErrors: number; rateLimited: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; lastIssueAt: number | null; variants: HealthOperationVariant[]; phases: HealthPhase[] };
-type HealthIssue = { operation: string; mode: string | null; aid: number | null; stage: string; code: string; status: number; count: number; activeCount: number; firstSeenAt: number; lastSeenAt: number; maxLatencyMs: number; active: boolean; severity: "warning" | "critical" };
 type HealthSeriesPoint = { at: number; requests: number; problems: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; p999Ms: number | null; maxMs: number | null };
-type Health = { requests: number; success: number; notFound: number; rateLimited: number; serverErrors: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; lastSuccessAt: number | null; cacheHits: number; cacheMisses: number; status: "healthy" | "degraded" | "incident"; statusSinceAt: number | null; activeIssueCount: number; recentIssueCount: number; operations: HealthOperation[]; issues: HealthIssue[]; series: HealthSeriesPoint[]; bucketMs: number };
-type AveragePublication = { scope: string; generation: number | null; generatedAt: number | null; dirtyAt: number | null; lastStartedAt: number | null; lastCompletedAt: number | null; lastDurationMs: number | null; lastError: string | null; variants: number; status: "warming" | "dirty" | "processing" | "ready" | "stale" | "error" };
-type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[] };
+type Health = LocalSummary["health"];
+import type { AveragePublicationState as AveragePublication } from "@/lib/average-publication";
+import { healthReport, type HealthDiagnostics } from "@/lib/admin/health-report";
+
+type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[]; diagnostics?: HealthDiagnostics };
 type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
 type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localRecordCount: number | null; differenceCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
 type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
@@ -675,33 +675,6 @@ function healthPhaseLabel(phase: HealthPhase, t: T): string {
 function healthStageLabel(stage: string, t: T): string {
   return ["request", "rate_limit", "upstream", "dependency", "storage", "application"].includes(stage)
     ? t("admin.health.stage." + stage) : t("admin.health.stage.unknown");
-}
-
-function healthReport(summary: Summary): string {
-  const health = summary.health;
-  return JSON.stringify({
-    schema: "tarkovstats_health_v1",
-    generatedAt: new Date(summary.generatedAt).toISOString(),
-    period: summary.period,
-    domain: summary.domain,
-    storageAvailable: summary.storageAvailable,
-    health: health && {
-      status: health.status,
-      activeIssueCount: health.activeIssueCount,
-      recentIssueCount: health.recentIssueCount,
-      requests: health.requests,
-      success: health.success,
-      notFound: health.notFound,
-      rateLimited: health.rateLimited,
-      serverErrors: health.serverErrors,
-      latencyMs: { p50: health.p50Ms, p95: health.p95Ms, p99: health.p99Ms },
-      cache: { hits: health.cacheHits, misses: health.cacheMisses },
-      operations: health.operations,
-      issues: health.issues,
-    },
-    freshness: summary.freshness,
-    averagePublications: summary.averagePublications ?? [],
-  }, null, 2);
 }
 
 /** Chart-scale latency split into its number and unit so the unit can be dimmed. Each chip

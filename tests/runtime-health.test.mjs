@@ -22,8 +22,12 @@ test("Linux pressure and swap counters keep their units and unavailable data sta
 test("runtime measurements belong to the blocked HTTP process and recover for the next window", () => {
   const url = pathToFileURL(resolve("lib/observability/runtime-health.mjs")).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
-    import { startRuntimeHealth } from ${JSON.stringify(url)};
-    startRuntimeHealth({ intervalMs: 500 });
+    import { startRuntimeHealth, runtimeHealthReport } from ${JSON.stringify(url)};
+    startRuntimeHealth({ intervalMs: 500, logger: (line) => {
+      const report = runtimeHealthReport(0);
+      console.log(JSON.stringify({ ...JSON.parse(line), reportPid: report.latest?.pid,
+        reportSamples: report.sampleCount, outsideWindowAvailable: runtimeHealthReport(Date.now() + 1).available }));
+    } });
     console.log(JSON.stringify({ pid: process.pid }));
     setTimeout(() => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250), 100);
     setTimeout(() => {}, 1300);
@@ -36,6 +40,10 @@ test("runtime measurements belong to the blocked HTTP process and recover for th
   assert.ok(events[0].eventLoop.maxMs >= 200, result.stdout);
   assert.ok(events[0].cpuMs >= 0 && Number.isFinite(events[0].cpuPercent), result.stdout);
   assert.equal(events[0].pid, identity.pid);
+  assert.equal(events[0].reportPid, identity.pid);
+  assert.equal(events[0].reportSamples, 1);
+  assert.equal(events[0].outsideWindowAvailable, false);
+  assert.equal(events[1].reportSamples, 2);
   assert.ok(events[0].windowMs >= 400);
   assert.ok(events[0].memory.rss > 0);
   assert.ok(Number.isFinite(events[0].eventLoop.utilization));

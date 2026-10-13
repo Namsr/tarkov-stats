@@ -1,6 +1,8 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
 import { bucketMilliseconds, periodMilliseconds } from "./types.ts";
 import { PAGEVIEW_SESSION_GAP_MS } from "./pageviews.ts";
+import { createBrowserPerformanceStore, type BrowserPerformanceSummary } from "./browser-performance-db.ts";
+import type { BrowserSample } from "../observability/browser-performance.ts";
 
 export type RequestOutcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
 
@@ -33,6 +35,13 @@ export interface RequestEvent {
   queueMs?: number | null;
   achievementsMs?: number | null;
   storeOpenMs?: number | null;
+  workerMs?: number | null;
+  seasonalMs?: number | null;
+  levelsMs?: number | null;
+  parseMs?: number | null;
+  bucketAggregateMs?: number | null;
+  rangeBoundsMs?: number | null;
+  requestId?: string | null;
 }
 
 export interface HealthOperationVariant {
@@ -46,7 +55,7 @@ export interface HealthOperationVariant {
 }
 
 export interface HealthPhaseSummary {
-  phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "risk" | "store_read" | "store_write" | "averages" | "queue" | "achievements" | "store_open";
+  phase: "profile" | "baseline" | "metadata" | "mastery" | "cohort" | "risk" | "store_read" | "store_write" | "averages" | "queue" | "achievements" | "store_open" | "worker" | "seasonal" | "levels" | "parse" | "bucket_aggregate" | "range_bounds";
   samples: number;
   p50Ms: number | null;
   p95Ms: number | null;
@@ -67,6 +76,8 @@ export interface HealthOperationSummary {
   lastIssueAt: number | null;
   variants: HealthOperationVariant[];
   phases: HealthPhaseSummary[];
+  failurePhases: HealthPhaseSummary[];
+  allLatencyMs: { p50: number | null; p95: number | null; p99: number | null; max: number | null };
 }
 
 export interface HealthIssueSummary {
@@ -97,6 +108,12 @@ export interface HealthSeriesPoint {
   maxMs: number | null;
 }
 
+export interface HealthRequestSample {
+  at: number; operation: string; mode: string | null; aid: number | null; requestId: string | null;
+  outcome: string; status: number; latencyMs: number; source: string | null; cache: string | null;
+  stage: string | null; code: string | null; phases: Record<string, number>;
+}
+
 export interface LocalSummary {
   accountRequests: number;
   errors: number;
@@ -121,6 +138,7 @@ export interface LocalSummary {
     series: HealthSeriesPoint[];
     /** Width of one `series` bucket. The client renders it instead of a period table. */
     bucketMs: number;
+    slowRequests: HealthRequestSample[];
   };
   freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null };
   auth: { activeUsers: number; signIns: number };
@@ -188,6 +206,8 @@ export interface OwnTraffic {
 }
 
 export interface AnalyticsStore {
+  recordBrowserPerformance(host: string, path: string, samples: BrowserSample[], now?: number): void;
+  browserPerformanceSummary(period: AdminPeriod, domain: AdminDomain, now?: number): BrowserPerformanceSummary;
   record(event: RequestEvent): void;
   recordAuth(subjectHash: string, kind: "sign_in" | "activity", now?: number): void;
   audienceSummary(period: AdminPeriod, domain: AdminDomain, now?: number): AudienceSummary;
@@ -287,7 +307,7 @@ function percentile(
   where: string,
   args: unknown[],
   fraction: number,
-  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "risk_ms" | "store_read_ms" | "store_write_ms" | "averages_ms" | "queue_ms" | "achievements_ms" | "store_open_ms" = "latency_ms",
+  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "risk_ms" | "store_read_ms" | "store_write_ms" | "averages_ms" | "queue_ms" | "achievements_ms" | "store_open_ms" | "worker_ms" | "seasonal_ms" | "levels_ms" | "parse_ms" | "bucket_aggregate_ms" | "range_bounds_ms" = "latency_ms",
   knownCount?: number,
 ): number | null {
   const count = knownCount ?? Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`).get(...args)?.n ?? 0);
@@ -465,6 +485,13 @@ function ensureRequestDiagnosticColumns(db: any): void {
     ["queue_ms", "INTEGER"],
     ["achievements_ms", "INTEGER"],
     ["store_open_ms", "INTEGER"],
+    ["worker_ms", "INTEGER"],
+    ["seasonal_ms", "INTEGER"],
+    ["levels_ms", "INTEGER"],
+    ["parse_ms", "INTEGER"],
+    ["bucket_aggregate_ms", "INTEGER"],
+    ["range_bounds_ms", "INTEGER"],
+    ["request_id", "TEXT"],
   ] as const) {
     if (!columns.has(name)) db.exec(`ALTER TABLE request_events ADD COLUMN ${name} ${type}`);
   }
@@ -536,7 +563,14 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
   ensureRequestDiagnosticColumns(db);
   removeExactAuthTimestamps(db);
   ensureAudienceHistory(db);
+  const browser = createBrowserPerformanceStore(db);
   return {
+    recordBrowserPerformance(host, path, samples, now = Date.now()) {
+      browser.record(host, path, samples, now);
+      const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
+      if (now - lastCleanup >= CLEANUP_INTERVAL_MS) this.cleanup(now);
+    },
+    browserPerformanceSummary: browser.summary,
     record(event) {
       const occurredAt = event.occurredAt ?? Date.now();
       const failureStage = event.failureStage && FAILURE_STAGES.has(event.failureStage) ? event.failureStage : null;
@@ -546,8 +580,8 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       db.prepare(`INSERT INTO request_events
         (occurred_at, host, operation, aid, nickname, mode, cycle_id, outcome, status, force, source, cache,
           storage, failure_stage, error_code, latency_ms, profile_ms, baseline_ms, metadata_ms, mastery_ms, cohort_ms,
-          risk_ms, store_read_ms, store_write_ms, averages_ms, queue_ms, achievements_ms, store_open_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          risk_ms, store_read_ms, store_write_ms, averages_ms, queue_ms, achievements_ms, store_open_ms, worker_ms, seasonal_ms, levels_ms, parse_ms, bucket_aggregate_ms, range_bounds_ms, request_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           occurredAt, event.host ?? null, event.operation, event.aid ?? null, event.nickname ?? null,
           event.mode ?? null, event.cycleId ?? null, event.outcome, event.status,
@@ -566,6 +600,9 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           event.queueMs == null ? null : Math.max(0, Math.round(event.queueMs)),
           event.achievementsMs == null ? null : Math.max(0, Math.round(event.achievementsMs)),
           event.storeOpenMs == null ? null : Math.max(0, Math.round(event.storeOpenMs)),
+          ...[event.workerMs, event.seasonalMs, event.levelsMs, event.parseMs, event.bucketAggregateMs, event.rangeBoundsMs]
+            .map((value) => value == null || !Number.isFinite(value) ? null : Math.max(0, Math.round(value))),
+          event.requestId && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(event.requestId) ? event.requestId : null,
         );
       const lastCleanup = Number(db.prepare("SELECT value FROM analytics_meta WHERE key = 'last_cleanup_at'").get()?.value ?? 0);
       if (occurredAt - lastCleanup >= CLEANUP_INTERVAL_MS) this.cleanup(occurredAt);
@@ -740,9 +777,15 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           ["queue", "queue_ms"],
           ["achievements", "achievements_ms"],
           ["store_open", "store_open_ms"],
+          ["worker", "worker_ms"],
+          ["seasonal", "seasonal_ms"],
+          ["levels", "levels_ms"],
+          ["parse", "parse_ms"],
+          ["bucket_aggregate", "bucket_aggregate_ms"],
+          ["range_bounds", "range_bounds_ms"],
         ] as const;
-        const phases: HealthPhaseSummary[] = phaseColumns.flatMap(([phase, column]) => {
-          const where = `${successfulOperationWhere} AND ${column} IS NOT NULL`;
+        const phaseSummary = (baseWhere: string): HealthPhaseSummary[] => phaseColumns.flatMap(([phase, column]) => {
+          const where = `${baseWhere} AND ${column} IS NOT NULL`;
           const samples = Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`)
             .get(...operationArgs)?.n ?? 0);
           return samples === 0 ? [] : [{
@@ -763,7 +806,11 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
           lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
           variants,
-          phases,
+          phases: phaseSummary(successfulOperationWhere),
+          failurePhases: phaseSummary(`${operationWhere} AND ${problemSql()}`),
+          allLatencyMs: { p50: percentile(db, operationWhere, operationArgs, 0.5),
+            p95: percentile(db, operationWhere, operationArgs, 0.95), p99: percentile(db, operationWhere, operationArgs, 0.99),
+            max: db.prepare(`SELECT MAX(latency_ms) AS n FROM request_events WHERE ${operationWhere}`).get(...operationArgs)?.n ?? null },
         };
       });
       const issueRows = includeDiagnostics ? db.prepare(`SELECT
@@ -792,6 +839,22 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           severity: status >= 500 || stage === "storage" || stage === "application" ? "critical" : "warning",
         };
       });
+      const slowRows = includeDiagnostics ? db.prepare(`SELECT occurred_at, operation, mode, aid, request_id,
+        outcome, status, latency_ms, source, cache, failure_stage, error_code,
+        profile_ms, baseline_ms, metadata_ms, mastery_ms, cohort_ms, risk_ms, store_read_ms, store_write_ms,
+        averages_ms, queue_ms, achievements_ms, store_open_ms, worker_ms, seasonal_ms, levels_ms, parse_ms,
+        bucket_aggregate_ms, range_bounds_ms
+        FROM request_events WHERE ${operationSql} AND (latency_ms >= 1000 OR ${problemSql()})
+        ORDER BY latency_ms DESC, occurred_at DESC LIMIT 30`).all(...args) as Record<string, unknown>[] : [];
+      const slowRequests: HealthRequestSample[] = slowRows.map((sample) => ({
+        at: Number(sample.occurred_at), operation: String(sample.operation), mode: sample.mode == null ? null : String(sample.mode),
+        aid: sample.aid == null ? null : Number(sample.aid), requestId: sample.request_id == null ? null : String(sample.request_id),
+        outcome: String(sample.outcome), status: Number(sample.status), latencyMs: Number(sample.latency_ms),
+        source: sample.source == null ? null : String(sample.source), cache: sample.cache == null ? null : String(sample.cache),
+        stage: sample.failure_stage == null ? null : String(sample.failure_stage), code: sample.error_code == null ? null : String(sample.error_code),
+        phases: Object.fromEntries(Object.entries(sample).filter(([key, value]) => key.endsWith("_ms") && key !== "latency_ms" && value != null)
+          .map(([key, value]) => [key.slice(0, -3), Number(value)])),
+      }));
       const bucketMs = bucketMilliseconds(period);
       const seriesRows = includeDiagnostics ? db.prepare(`WITH bucketed AS (
           SELECT CAST(occurred_at / ? AS INTEGER) * ? AS at, latency_ms, outcome, status
@@ -838,7 +901,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           statusSinceAt: currentSignal.firstSeenAt,
           activeIssueCount: currentSignal.activeIssueCount,
           recentIssueCount: issues.reduce((total, issue) => total + issue.count, 0),
-          operations, issues, series, bucketMs,
+          operations, issues, series, bucketMs, slowRequests,
         },
         freshness: {
           lastEventAt: row.last_event_at == null ? null : Number(row.last_event_at),
@@ -931,6 +994,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       };
     },
     cleanup(now = Date.now()) {
+      browser.cleanup(now);
       const result = db.prepare("DELETE FROM request_events WHERE occurred_at < ?").run(now - RETENTION_MS);
       db.prepare("DELETE FROM auth_activity_daily WHERE day < ?").run(new Date(now - RETENTION_MS).toISOString().slice(0, 10));
       db.prepare("DELETE FROM page_views WHERE occurred_at < ?").run(now - RETENTION_MS);

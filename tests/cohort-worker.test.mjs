@@ -137,8 +137,10 @@ test("HTTP responds during cohort SQL; the shared FIFO rejects overflow and reus
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   let finished = false;
-  const active = worker.compute(job("hold")).then((value) => { finished = true; return value; });
-  const pending = Promise.all([active, worker.compute(job("normal"))]);
+  const activePhases = [];
+  const queuedPhases = [];
+  const active = worker.computeObserved([job("hold")], (phases) => activePhases.push(phases)).then((value) => { finished = true; return value; });
+  const pending = Promise.all([active, worker.computeObserved([job("normal")], (phases) => queuedPhases.push(phases))]);
   pending.catch(() => {});
   await assert.rejects(worker.compute(job("overflow")), ComputeUnavailableError);
   const marker = process.env.COHORT_WORKER_TEST_MARKER;
@@ -152,6 +154,9 @@ test("HTTP responds during cohort SQL; the shared FIFO rejects overflow and reus
   const [first, second] = await pending;
   assert.equal(first.pid, second.pid);
   assert.notEqual(first.pid, process.pid);
+  assert.ok(activePhases.at(-1).workerMs > 0);
+  assert.ok(queuedPhases.at(-1).queueMs > 0);
+  assert.ok(queuedPhases.at(-1).workerMs >= 0);
 });
 
 test("SQL failures, crashes and stuck cohort jobs permit recovery without keeping a failed result", async (t) => {
@@ -164,7 +169,9 @@ test("SQL failures, crashes and stuck cohort jobs permit recovery without keepin
   assert.ok(failed.every((result) => result.status === "rejected" && result.reason instanceof ComputeUnavailableError));
   const recovered = await worker.compute(job("normal"));
   assert.notEqual(recovered.pid, first.pid);
-  await assert.rejects(worker.compute(job("stall")), /worker timed out/);
+  const stalledPhases = [];
+  await assert.rejects(worker.computeObserved([job("stall")], (phases) => stalledPhases.push(phases)), (error) => error.reason === "worker_timeout");
+  assert.ok(stalledPhases.at(-1).workerMs >= 2500);
   assert.notEqual((await worker.compute(job("normal"))).pid, recovered.pid);
 });
 
