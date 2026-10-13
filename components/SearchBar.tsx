@@ -153,7 +153,10 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     } catch (caught) {
       if (searchRequestRef.current !== controller || controller.signal.aborted) return;
       if (caught instanceof Error && caught.name === "AbortError") return;
-      setError(caught instanceof Error ? caught.message : t("search.searchFailed"));
+      const message = caught instanceof Error ? caught.message : "";
+      setError(message === t("search.tooManyRequests") || message === t("search.indexUnavailable")
+        ? message
+        : t("search.searchFailed"));
       setNotFound(false);
     } finally {
       if (searchRequestRef.current === controller) {

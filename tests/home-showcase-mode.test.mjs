@@ -167,3 +167,11 @@ test("home showcase achievement icons are the rarest unlocked ones", async () =>
   // The strip used to render the first five ids the profile API happened to send.
   assert.doesNotMatch(component, /slice\(0, 5\)/);
 });
+
+test("home achievement alt text does not expose untranslated slugs", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /const name = \(lang === "ru" \? item\.nameRu : item\.name\)\?\.trim\(\);/);
+  assert.match(component, /const isSlug = name \? \/\^\[a-z0-9\]\+\(\?:-\[a-z0-9\]\+\)\*\$\/\.test\(name\) : false;/);
+  assert.match(component, /name && name !== item\.id && !isSlug/);
+  assert.match(component, /t\("home\.achievementIcon"\)/);
+});

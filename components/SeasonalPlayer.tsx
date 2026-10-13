@@ -292,7 +292,7 @@ export default function SeasonalPlayer({
             if (!cancelled && generation === requestGeneration.current) setModeUnavailable(true);
             return null;
           }
-          throw new Error(status === 429 ? translate.current("player.rateLimited") : body.error ?? translate.current("seasonal.profileUnavailable"));
+          throw new Error(status === 429 ? translate.current("player.rateLimited") : translate.current("seasonal.profileUnavailable"));
         }
         if (
           body.identity?.aid !== aid ||
@@ -327,9 +327,10 @@ export default function SeasonalPlayer({
       })
       .catch((caught: unknown) => {
         if (cancelled || generation !== requestGeneration.current) return;
-        setError(caught instanceof PlayerProfileResponseError
-          ? translate.current("seasonal.profileUnavailable")
-          : caught instanceof Error ? caught.message : translate.current("seasonal.profileUnavailable"));
+        const message = caught instanceof Error ? caught.message : "";
+        setError(message === translate.current("player.rateLimited")
+          ? message
+          : translate.current("seasonal.profileUnavailable"));
       })
       .finally(() => {
         if (!cancelled && generation === requestGeneration.current) setLoading(false);
@@ -363,7 +364,7 @@ export default function SeasonalPlayer({
             setError("");
             return "unchanged";
           }
-          throw new Error(status === 429 ? t("player.rateLimited") : body.error ?? t("seasonal.profileUnavailable"));
+          throw new Error(status === 429 ? t("player.rateLimited") : t("seasonal.profileUnavailable"));
         }
         if (
           body.identity?.aid !== aid ||
@@ -404,7 +405,12 @@ export default function SeasonalPlayer({
       })
       .catch((error: unknown) => {
         const failure = error instanceof PlayerProfileResponseError ? new Error(t("seasonal.profileUnavailable")) : error;
-        if (generation === requestGeneration.current) setError(failure instanceof Error ? failure.message : t("seasonal.profileUnavailable"));
+        const message = failure instanceof Error ? failure.message : "";
+        if (generation === requestGeneration.current) {
+          setError(message === t("player.rateLimited") || message === t("player.refreshStatus.error")
+            ? message
+            : t("seasonal.profileUnavailable"));
+        }
         throw failure;
       })
       .finally(() => {
@@ -462,7 +468,7 @@ export default function SeasonalPlayer({
           <StatCard label={t("player.totalRaids")} value={stats.totalRaids ?? unknownValue} />
           <StatCard label={t("player.pmcRaids")} value={profile.counters.pmcRaids} />
           <StatCard label={t("player.scavRaids")} value={profile.counters.scavRaids} />
-          <StatCard label={t("player.pmcKills")} value={profile.counters.pmcKills} />
+          <StatCard label={t("player.pmcKills")} value={profile.counters.killedPmc} />
           <StatCard label={t("player.deaths")} value={stats.deaths ?? unknownValue} />
           <StatCard label={t("seasonal.metric.pvpKd")} value={displayNumber(stats.pmcKdRatio, 2, unknownValue)} />
           <StatCard label={t("seasonal.metric.survival")} value={displayNumber(stats.pmcSurvivalRate, 1, unknownValue)} suffix={stats.pmcSurvivalRate == null ? undefined : "%"} />
