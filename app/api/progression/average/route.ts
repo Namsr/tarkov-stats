@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
+import { DynamicComputeTimeoutError, loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
+import { ComputeUnavailableError } from "@/lib/compute-worker";
 import { computeCohortInBackground } from "@/lib/cohort-worker";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { AVERAGE_CACHE_CONTROL } from "@/lib/average-cache";
@@ -51,6 +52,11 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     console.error("persistent progression average failed", error);
+    if (error instanceof ComputeUnavailableError || error instanceof DynamicComputeTimeoutError) {
+      return NextResponse.json({ error: "Progression averages are warming" }, {
+        status: 503, headers: { "Retry-After": "5", "Cache-Control": "no-store" },
+      });
+    }
     return NextResponse.json({ error: "Failed to query persistent progression" }, { status: 500 });
   }
 }
