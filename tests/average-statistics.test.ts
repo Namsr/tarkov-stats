@@ -39,6 +39,7 @@ process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 process.env.REPORTS_SQLITE_PATH = join(directory, "community-reports.db");
 
 const { getStore, AVG_COLS } = await import("../lib/db.ts");
+const { referenceComparisonMetricsSql } = await import("./fixtures/reference-cohort-sql.mjs");
 const { getProgressionStore } = await import("../lib/progression-db.ts");
 const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
 const { isLocalFakeAverageEnabled } = await import("../lib/local-fake-average.ts");
@@ -1468,4 +1469,42 @@ test("a failed average releases its read transaction and the next calculation su
   assert.equal((await store.averages(range(null, null), "median")).n, 0);
   add(1, { value: 30 });
   assert.equal((await store.averages(range(null, null), "median")).total_raids, 30);
+});
+
+test("shared cohort summary preserves the complete response against previous ranked SQL", async (t) => {
+  db.exec("DELETE FROM players; DELETE FROM mode_players; DELETE FROM excluded_players");
+  for (const [table, mode] of [["players", ""], ["mode_players", "'pve',"]]) {
+    const seed = db.prepare(`INSERT INTO ${table} (${mode ? "mode," : ""}aid,nickname,hours,pmc_raids,total_raids,
+      kd_ratio,pmc_kd_ratio,kills_per_raid,pmc_survival_rate,longest_win_streak,level,
+      pvp_stats_known,pvp_stats_version,pmc_killed_pmc,profile_updated_at,fetched_at${mode ? ",stats_json" : ""})
+      VALUES (${mode} ?, 'fixture', ?, ?, 100, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1${mode ? ",'{}'" : ""})`);
+    for (let aid = 1; aid <= 81; aid++) seed.run(aid, 100 + (aid % 4) * 6 - 9, 100 + (aid % 5) * 7,
+      aid % 3 ? aid / 7 : null, aid % 4 ? 0.1 : 0, aid % 5 ? aid / 11 : 0,
+      aid % 6 ? aid % 100 : 0, aid % 7 ? 3 : null, aid % 10,
+      aid % 8 ? 1 : 0, aid % 9 ? 1 : 0, aid % 12 ? aid : null,
+      Date.now() - (aid % 11 ? 10 : 120) * 86400_000);
+  }
+  db.exec("INSERT INTO excluded_players(aid,reason,created_at) VALUES(7,'fixture',1)");
+  const prepare = DatabaseSync.prototype.prepare;
+  let useReference = false;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (useReference && sql.includes("summary AS MATERIALIZED")) {
+      const match = sql.match(/FROM (players|mode_players) INDEXED BY \w+ ([\s\S]*?)\n  \), summary AS MATERIALIZED/);
+      assert.ok(match, "capture actual cohort selection for the frozen reference");
+      const mode = match[1] === "players" ? "regular" : "pve";
+      const where = match[2].replace(/ AND mode = 'pve'$/, "").replace(/\bmode_players\./g, "players.");
+      sql = referenceComparisonMetricsSql(mode, where, sql.includes("rn IN (") ? "median" : "trimmed_mean");
+    }
+    return prepare.call(this, sql);
+  };
+  t.after(() => { DatabaseSync.prototype.prepare = prepare; });
+  for (const target of [store, pveStore]) for (const statistic of ["median", "trimmed_mean"]) {
+    for (const period of ["all", "90d"]) for (const center of [[100,100],[110,110],[120,130],[150,150],[1e6,1e6],[0,0]]) {
+      const args = [...center, 1, "hours", statistic, period, { kd_ratio: 2.5, pmc_survival_rate: 0, killed_pmc_per_raid: 0 }];
+      useReference = true;
+      const expected = await target.cohort2d(...args);
+      useReference = false;
+      assert.deepEqual(await target.cohort2d(...args), expected, JSON.stringify({mode: expected.mode, statistic, period, center}));
+    }
+  }
 });

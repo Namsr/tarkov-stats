@@ -691,28 +691,66 @@ export interface PublishedSeasonalAchievementBaseline {
   }>;
 }
 
+type PopulationReader = Parameters<typeof sqlitePopulationSnapshot>[0];
+type AchievementBaselineEntry = {
+  generation: number; generatedAt: number; version: number; changes: number;
+  value: PublishedSeasonalAchievementBaseline;
+};
+const publishedAchievementBaselines = new WeakMap<PopulationReader, Map<string, AchievementBaselineEntry>>();
+
+function copyAchievementBaseline(value: PublishedSeasonalAchievementBaseline): PublishedSeasonalAchievementBaseline {
+  return { ...value, achievements: value.achievements.map((row) => ({ ...row })) };
+}
+
+/** Cache only the small display baseline, never the full population payload. */
+export function readPublishedSeasonalAchievementBaseline(
+  db: PopulationReader,
+  cycleId: string,
+): PublishedSeasonalAchievementBaseline | null {
+  let cache = publishedAchievementBaselines.get(db);
+  if (!cache) {
+    cache = new Map();
+    publishedAchievementBaselines.set(db, cache);
+  }
+  const version = Number(db.prepare("PRAGMA data_version").get()?.data_version);
+  const changes = Number(db.prepare("SELECT total_changes() AS n").get()?.n);
+  const current = db.prepare(`SELECT g.generation, g.generated_at
+    FROM progression_population_current c JOIN progression_population_generations g
+      ON g.mode = c.mode AND g.cycle_id = c.cycle_id AND g.generation = c.generation
+    WHERE c.mode = 'seasonal' AND c.cycle_id = ?`).get(cycleId);
+  const cached = cache.get(cycleId);
+  if (current && cached && cached.generation === Number(current.generation) &&
+      cached.generatedAt === Number(current.generated_at) && cached.version === version && cached.changes === changes) {
+    return copyAchievementBaseline(cached.value);
+  }
+  cache.delete(cycleId);
+  if (!current) return null;
+  const population = sqlitePopulationSnapshot(db, "seasonal", cycleId);
+  const baseline = population?.payload.achievementBaseline;
+  if (!population || !baseline) return null;
+  const value = {
+    eligibleN: baseline.eligibleN,
+    achievements: baseline.achievements.map((achievement) => ({
+      id: achievement.id,
+      owners: achievement.owners,
+      samplePct: achievement.samplePct,
+      meanHours: Number(achievement.meanHours) || 0,
+      stdHours: Number(achievement.stdHours) || 0,
+      earlyHours: firstFiniteHours(achievement.earlyHours, achievement.meanHours),
+      unlockHours: firstFiniteHours(achievement.unlockHours, achievement.earlyHours, achievement.meanHours),
+    })),
+  };
+  if (cache.size >= 4) cache.delete(cache.keys().next().value!);
+  cache.set(cycleId, { generation: population.generation, generatedAt: population.generatedAt, version, changes, value });
+  return copyAchievementBaseline(value);
+}
+
 /** Read the already-published achievement sample without rescanning players. */
 export async function getPublishedSeasonalAchievementBaseline(
   cycleId: string,
 ): Promise<PublishedSeasonalAchievementBaseline | null> {
   try {
-    const population = sqlitePopulationSnapshot(await getSqliteProgressionDatabase(), "seasonal", cycleId);
-    const baseline = population?.payload.achievementBaseline;
-    if (!baseline) return null;
-    return {
-      eligibleN: baseline.eligibleN,
-      achievements: baseline.achievements.map((achievement) => ({
-        id: achievement.id,
-        owners: achievement.owners,
-        samplePct: achievement.samplePct,
-        meanHours: Number(achievement.meanHours) || 0,
-        stdHours: Number(achievement.stdHours) || 0,
-        // Same collapse as the writer had: a genuine 0-hour owner must not be
-        // replaced by the mean, so fall through on null rather than on falsy.
-        earlyHours: firstFiniteHours(achievement.earlyHours, achievement.meanHours),
-        unlockHours: firstFiniteHours(achievement.unlockHours, achievement.earlyHours, achievement.meanHours),
-      })),
-    };
+    return readPublishedSeasonalAchievementBaseline(await getSqliteProgressionDatabase(), cycleId);
   } catch (error) {
     console.warn("published Seasonal achievement baseline unavailable: " + (error as Error).message);
     return null;

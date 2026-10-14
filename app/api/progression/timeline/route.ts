@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
+import { compressedJsonResponse } from "@/lib/compressed-json-response";
 import {
   getCachedProgressionTimeline,
 } from "@/lib/seasonal/progression-cache";
@@ -30,11 +31,8 @@ export async function GET(request: NextRequest) {
     if (result.status === "not-found") {
       return errorResponse("Progression profile not found", 404);
     }
-    return NextResponse.json(result.timeline, {
-      headers: {
-        ...statisticsCacheHeaders({ stale: result.stale ?? false, generatedAt: result.generatedAt ?? Date.now() }),
-      },
-    });
+    return await compressedJsonResponse(request, result.timeline,
+      statisticsCacheHeaders({ stale: result.stale ?? false, generatedAt: result.generatedAt ?? Date.now() }));
   } catch (error) {
     console.error("progression timeline query failed", error);
     return errorResponse("Failed to query progression timeline", 500);

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
-import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
+import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot, readPublishedSeasonalAchievementBaseline } from "../lib/seasonal/progression-db.ts";
 import { buildProgressionMetricSeries, buildProgressionPopulationMetric, type DailyRow } from "../lib/seasonal/progression.ts";
 import { PLAYTIME_RANGES } from "../lib/playtime-brackets.ts";
 
@@ -235,4 +238,71 @@ test("materializer phase timings preserve skip, publication success and per-scop
     assert.equal(baseline.phases.filter(phase=>phase.phase==="baseline_publish").length, 2);
     assert.deepEqual(materializeDueAchievementBaselines(db,{now}).phases, []);
   } finally { db.close(); }
+});
+
+test("Seasonal display baseline reuses only unchanged publication data and isolates caller mutations", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const payload = { metrics: {}, riskBaselines: [], achievementBaseline: { eligibleN: 30,
+      achievements: [{ id: "a", owners: 12, samplePct: 40, meanHours: 100, stdHours: 2, earlyHours: 0, unlockHours: 0 }] } };
+    db.prepare("INSERT INTO progression_population_generations VALUES ('seasonal','s1',1,1,?)").run(JSON.stringify(payload));
+    db.exec("INSERT INTO progression_population_current VALUES ('seasonal','s1',1,1)");
+    let reads = 0;
+    const reader = { prepare(sql: string) { if (sql.includes("g.payload")) reads++; return db.prepare(sql); } };
+    const first = readPublishedSeasonalAchievementBaseline(reader, "s1")!;
+    assert.equal(first.achievements[0].earlyHours, 0);
+    const expected = structuredClone(first);
+    first.achievements[0].owners = 999;
+    first.achievements.length = 0;
+    assert.deepEqual(readPublishedSeasonalAchievementBaseline(reader, "s1"), expected);
+    assert.equal(reads, 1);
+    payload.achievementBaseline.eligibleN = 31;
+    db.prepare("UPDATE progression_population_generations SET payload = ?").run(JSON.stringify(payload));
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+    assert.equal(reads, 2);
+    db.exec("DELETE FROM progression_population_generations");
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1"), null);
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "missing"), null);
+    db.prepare("INSERT INTO progression_population_generations VALUES ('seasonal','s1',2,2,?)").run(JSON.stringify(payload));
+    db.exec("UPDATE progression_population_current SET generation = 2, generated_at = 2");
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+    for (const bad of ['broken', '{}', '{"metrics":false,"riskBaselines":[],"achievementBaseline":{}}', '{"metrics":{},"riskBaselines":{}}']) {
+      db.prepare("UPDATE progression_population_generations SET payload = ?").run(bad);
+      assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1"), null);
+    }
+    // Preserve JSON.parse's last-key-wins semantics for a legacy publication.
+    db.prepare("UPDATE progression_population_generations SET payload = ?").run(`{"metrics":{},"riskBaselines":[],"achievementBaseline":null,"achievementBaseline":${JSON.stringify(payload.achievementBaseline)}}`);
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+  } finally { db.close(); }
+});
+
+test("Seasonal display baseline invalidates external writes and isolates cycles and database handles", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-baseline-cache-"));
+  const path = join(directory, "fixture.db");
+  const db = new DatabaseSync(path);
+  let writer: DatabaseSync | undefined;
+  const other = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    initializeSeasonalSchema(other);
+    const payload = (eligibleN: number) => JSON.stringify({ metrics: {}, riskBaselines: [], achievementBaseline: { eligibleN, achievements: [] } });
+    const publish = (target: DatabaseSync, cycleId: string, n: number) => {
+      target.prepare("INSERT INTO progression_population_generations VALUES ('seasonal',?,1,1,?)").run(cycleId, payload(n));
+      target.prepare("INSERT INTO progression_population_current VALUES ('seasonal',?,1,1)").run(cycleId);
+    };
+    publish(db, "s1", 1); publish(db, "s2", 2); publish(other, "s1", 3);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1")?.eligibleN, 1);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s2")?.eligibleN, 2);
+    assert.equal(readPublishedSeasonalAchievementBaseline(other, "s1")?.eligibleN, 3);
+    writer = new DatabaseSync(path);
+    writer.prepare("UPDATE progression_population_generations SET payload = ? WHERE cycle_id = 's1'").run(payload(4));
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1")?.eligibleN, 4);
+    writer.exec("DELETE FROM progression_population_current WHERE cycle_id = 's1'");
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1"), null);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s2")?.eligibleN, 2);
+  } finally {
+    writer?.close(); db.close(); other.close();
+    unlinkSync(path); rmdirSync(directory);
+  }
 });
