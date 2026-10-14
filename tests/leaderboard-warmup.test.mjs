@@ -568,10 +568,16 @@ async function warmupCliFixture(t, handler) {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
   });
-  return { checkpointPath, lockPath, run: async (env = {}) => {
+  return { checkpointPath, lockPath, run: async (env = {}, { stopWhen } = {}) => {
     const started = Date.now();
-    const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite",
-      "scripts/warmup-leaderboard-profiles.mjs"], { cwd: process.cwd(), env: {
+    // Windows terminates a process on child.kill("SIGTERM") without running its
+    // handler. IPC delivers that same handler event there; Linux uses SIGTERM.
+    const ipcStop = stopWhen && process.platform === "win32";
+    const args = ["--experimental-strip-types", "--experimental-sqlite"];
+    if (ipcStop) args.push("--import", "data:text/javascript,process.once('message',()=>{process.emit('SIGTERM');process.disconnect();});");
+    args.push("scripts/warmup-leaderboard-profiles.mjs");
+    const child = spawn(process.execPath, args, { cwd: process.cwd(),
+      stdio: ipcStop ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], env: {
         ...process.env, SQLITE_PATH: playersPath, PROGRESSION_SQLITE_PATH: progressionPath,
         LEADERBOARD_WARMUP_CHECKPOINT: checkpointPath, LEADERBOARD_WARMUP_LOCK: lockPath,
         PROFILE_REFRESH_SECRET: "x".repeat(32), LEADERBOARD_WARMUP_MODES: "regular,pve",
@@ -584,7 +590,11 @@ async function warmupCliFixture(t, handler) {
     let stderr = "";
     child.stdout.on("data", data => { stdout += data; });
     child.stderr.on("data", data => { stderr += data; });
-    const timeout = setTimeout(() => child.kill(), 10_000);
+    stopWhen?.then(() => {
+      if (ipcStop) child.send("SIGTERM");
+      else child.kill("SIGTERM");
+    });
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
     try {
       const code = await new Promise((resolve, reject) => {
         child.once("error", reject);
@@ -628,14 +638,76 @@ test("warmup CLI preserves the reset flag and rotates modes across bounded runs"
     }
   });
   writeFileSync(fixture.checkpointPath, "");
+  let previousModes = {};
   for (let run = 0; run < 4; run++) {
     const { result, stderr } = await fixture.run({ LEADERBOARD_WARMUP_MAX_PROFILES: "1" });
     assert.equal(result.processed, 1);
     assert.equal(result.checkpointReset, run === 0);
     assert.equal(stderr.includes("unreadable leaderboard warmup checkpoint"), run === 0);
     assert.equal(result.modes[0], run % 2 === 0 ? "regular" : "pve");
+    const checkpoint = JSON.parse(readFileSync(fixture.checkpointPath, "utf8"));
+    const otherMode = result.modes[0] === "regular" ? "pve" : "regular";
+    assert.deepEqual(checkpoint.modes[otherMode], previousModes[otherMode], "an unscanned mode keeps its completion state");
+    previousModes = checkpoint.modes;
   }
   assert.deepEqual(events, ["regular", "pve", "regular", "pve"]);
+});
+
+test("warmup CLI stops a partial profile response, releases its lock and resumes the profile", async (t) => {
+  let signalReady;
+  const stopWhen = new Promise(resolve => { signalReady = resolve; });
+  let requests = 0;
+  const fixture = await warmupCliFixture(t, (_request, response) => {
+    requests++;
+    if (requests === 1) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"state":');
+      signalReady();
+    } else response.end('{"state":"ok"}');
+  });
+  const { result, elapsed } = await fixture.run({ LEADERBOARD_WARMUP_MODES: "regular",
+    LEADERBOARD_WARMUP_MAX_RUN_MS: "60000", LEADERBOARD_WARMUP_MAX_PROFILES: "1" }, { stopWhen });
+  assert.equal(result.processed, 0);
+  assert.equal(result.stopped, true);
+  assert.equal(result.bounded, false);
+  assert.ok(elapsed < 2000, `stop must finish before the parent's five-second kill: ${elapsed}ms`);
+  const checkpoint = JSON.parse(readFileSync(fixture.checkpointPath, "utf8"));
+  assert.equal(checkpoint.modes.regular.attempted, 0);
+  assert.equal(checkpoint.modes.regular.completed, 0);
+  assert.deepEqual(checkpoint.skipped, {});
+  const resumed = await fixture.run({ LEADERBOARD_WARMUP_MODES: "regular", LEADERBOARD_WARMUP_MAX_PROFILES: "1" });
+  assert.equal(resumed.result.processed, 1);
+  assert.equal(resumed.result.stopped, false);
+  assert.equal(requests, 2, "the interrupted profile remains selectable without another request during shutdown");
+});
+
+test("profile stop signal interrupts headers, retry backoff and request pacing", async (t) => {
+  for (const stage of ["headers", "retry", "pace"]) {
+    await t.test(stage, async () => {
+      const controller = new AbortController();
+      let calls = 0;
+      const pace = createRequestPacer({ intervalMs: 30_000, signal: controller.signal });
+      if (stage === "pace") await pace();
+      const timer = setTimeout(() => controller.abort(), 50);
+      const started = Date.now();
+      try {
+        const result = await requestCandidate({ mode: "regular", aid: 1, sourceVersion: 100 }, {
+          baseUrl: "http://127.0.0.1:3000", secret: "x".repeat(32), maxRetries: 3, timeoutMs: 30_000,
+          signal: controller.signal, pace,
+          fetch: async (_url, { signal }) => {
+            calls++;
+            if (stage === "headers") return new Promise((_, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            });
+            return new Response("{}", { status: 503 });
+          },
+        });
+        assert.deepEqual(result, { kind: "stopped", outcome: "signal", attempts: stage === "pace" ? 0 : 1 });
+        assert.equal(calls, stage === "pace" ? 0 : 1);
+        assert.ok(Date.now() - started < 1000);
+      } finally { clearTimeout(timer); }
+    });
+  }
 });
 
 test("409 retries through the global pacer while an uncertain timeout stops the run", async () => {

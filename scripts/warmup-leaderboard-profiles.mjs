@@ -42,8 +42,8 @@ function integer(value, fallback, minimum, maximum) {
   return parsed;
 }
 
-export function createRequestPacer({ intervalMs = 500, now = Date.now, sleep = (ms) =>
-  new Promise((done) => setTimeout(done, ms)) } = {}) {
+export function createRequestPacer({ intervalMs = 500, now = Date.now, signal, sleep = (ms) =>
+  delay(ms, undefined, { signal }) } = {}) {
   let previousStart = null;
   return async () => {
     const waitMs = previousStart === null ? 0 : Math.max(0, previousStart + intervalMs - now());
@@ -432,18 +432,27 @@ function retryable(status) {
 
 export async function requestCandidate(candidate, options) {
   const request = endpointRequest(options.baseUrl, options.secret, candidate);
+  const stopped = () => options.signal?.aborted || options.shouldStop?.();
+  const stopResult = (attempts) => ({ kind: "stopped", outcome: "signal", attempts });
+  const sleep = options.sleep ?? ((ms) => delay(ms, undefined, { signal: options.signal }));
   let lastError;
   for (let attempt = 1; attempt <= options.maxRetries + 1; attempt += 1) {
-    if (options.shouldStop?.()) return { kind: "stopped", outcome: "signal", attempts: attempt - 1 };
-    await options.pace();
-    if (options.shouldStop?.()) return { kind: "stopped", outcome: "signal", attempts: attempt - 1 };
+    if (stopped()) return stopResult(attempt - 1);
+    try { await options.pace(); }
+    catch (error) {
+      if (stopped()) return stopResult(attempt - 1);
+      throw error;
+    }
+    if (stopped()) return stopResult(attempt - 1);
     const timeoutMs = remainingRunBudget(options.timeoutMs, options.deadline, (options.now ?? Date.now)());
     if (timeoutMs === 0) return { kind: "bounded", outcome: "deadline", attempts: attempt - 1 };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     try {
-      const response = await options.fetch(request.url, { ...request.init, signal: controller.signal });
+      const response = await options.fetch(request.url, { ...request.init, signal });
       const text = await response.text();
+      if (stopped()) return stopResult(attempt);
       let body = {};
       try { body = text ? JSON.parse(text) : {}; } catch {}
       if (response.status === 401 || response.status === 403) {
@@ -459,19 +468,24 @@ export async function requestCandidate(candidate, options) {
       });
       throw error;
     } catch (error) {
+      if (stopped()) return stopResult(attempt);
       if (error?.fatal) throw error;
       if (controller.signal.aborted) {
         throw new Error("warmup request timed out; stopping to avoid overlapping server-side profile work");
       }
       lastError = error;
       if (attempt > options.maxRetries || error?.retryable === false) break;
-      const waitMs = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
-      if (remainingRunBudget(waitMs + 1, options.deadline, (options.now ?? Date.now)()) <= waitMs) {
-        return { kind: "bounded", outcome: "deadline", attempts: attempt };
-      }
-      await options.sleep(waitMs);
     } finally {
       clearTimeout(timeout);
+    }
+    const waitMs = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+    if (remainingRunBudget(waitMs + 1, options.deadline, (options.now ?? Date.now)()) <= waitMs) {
+      return { kind: "bounded", outcome: "deadline", attempts: attempt };
+    }
+    try { await sleep(waitMs); }
+    catch (error) {
+      if (stopped()) return stopResult(attempt);
+      throw error;
     }
   }
   throw new Error(lastError instanceof Error ? lastError.message : String(lastError));
@@ -484,6 +498,7 @@ export async function runWarmup(options) {
   removeOrphanedCheckpointTemps(options.checkpointPath);
   const { checkpoint, reset: checkpointReset } = loadCheckpoint(options.checkpointPath);
   const modes = options.modes ?? WARMUP_MODES;
+  const modeOrder = options.modeOrder ?? modes;
   const grouped = Object.fromEntries(modes.map((mode) => [mode, []]));
   for (const candidate of options.candidates) {
     if (!grouped[candidate.mode]) continue;
@@ -505,7 +520,7 @@ export async function runWarmup(options) {
       if (checkpoint.skipped[skippedKey(candidate)]) continue;
       state.attempted += 1;
       state.lastAid = candidate.aid;
-      checkpoint.nextMode = modes[(modes.indexOf(mode) + 1) % modes.length];
+      checkpoint.nextMode = modeOrder[(modeOrder.indexOf(mode) + 1) % modeOrder.length];
       state.completedAt = null;
       saveCheckpoint(options.checkpointPath, checkpoint);
       let result;
@@ -571,7 +586,7 @@ async function main() {
     // Reserve time for selected profiles so an expensive later mode cannot
     // consume the entire run before any earlier candidate is requested.
     const selectionDeadline = deadline - Math.min(60_000, Math.max(0, Math.floor((deadline - Date.now()) / 2)));
-    const pace = createRequestPacer({ intervalMs: 1_000 });
+    const pace = createRequestPacer({ intervalMs: 1_000, signal: stopController.signal });
     const counts = Object.fromEntries(modes.map((mode) => [mode, 0]));
     let result = { processed: 0, bounded: false, stopped: false, checkpoint, checkpointReset };
     let selectionBounded = false;
@@ -630,11 +645,11 @@ async function main() {
       saveCheckpoint(checkpointPath, checkpoint);
       const batch = await runWarmup({
         candidates, checkpointPath, maxProfiles: maxProfiles - result.processed,
-        maxRunMs: Math.max(0, deadline - Date.now()), modes,
+        maxRunMs: Math.max(0, deadline - Date.now()), modes: [mode], modeOrder: modes,
         request: (candidate) => requestCandidate(candidate, {
           baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
-          secret, maxRetries, timeoutMs, deadline, pace, fetch, shouldStop: () => stopping,
-          sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+          secret, maxRetries, timeoutMs, deadline, pace, fetch, signal: stopController.signal,
+          shouldStop: () => stopping,
         }),
         shouldStop: () => stopping,
       });
