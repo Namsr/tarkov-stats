@@ -713,23 +713,14 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
       UNIQUE(mode, cycle_id, aid, profile_updated_at)
     );
   `);
-  // The feed ladder is charged against the same budget as the capture ladder.
-  // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
-  // catch block has to refuse the wait and let the loop-top guard end the run
-  // on the first attempt. The budget is a real one, so the regression costs
-  // real seconds only when the clamp is missing.
-  let feedRequests = 0;
-  const server = createServer((request, response) => {
-    if (!request.url?.startsWith("/profile/updated.json")) return response.writeHead(404).end();
-    feedRequests += 1;
-    response.writeHead(503).end("stuck");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  const feedLog = join(directory, "feed.log");
+  const waitLog = join(directory, "wait.log");
+  await writeFile(waitLog, "");
 
   const startedAt = Date.now();
   try {
     const { stdout, code } = await runCollectorReportingExit([
+      "--import", new URL("fixtures/feed-budget-clock.mjs", import.meta.url).href,
       "--experimental-sqlite",
       "scripts/sync-regular-profiles.mjs",
     ], {
@@ -740,29 +731,21 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
         SQLITE_PATH: dbPath,
         PROGRESSION_SQLITE_PATH: progressionDbPath,
         PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
-        REGULAR_PROFILE_UPDATED_URL: `http://127.0.0.1:${port}/profile/updated.json`,
-        REGULAR_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
+        REGULAR_PROFILE_UPDATED_URL: "http://127.0.0.1:9/profile/updated.json",
+        REGULAR_PROFILE_SYNC_BASE_URL: "http://127.0.0.1:9",
         REGULAR_PROFILE_SYNC_MAX_RETRIES: "3",
         REGULAR_PROFILE_SYNC_MAX_RUN_MS: "3000000",
         PROFILE_QUEUE_DEADLINE_MS: String(startedAt + 700),
+        PROFILE_TEST_FEED_LOG: feedLog,
+        PROFILE_TEST_WAIT_LOG: waitLog,
       },
     });
-    const elapsedMs = Date.now() - startedAt;
+    const feedRequests = (await readFile(feedLog, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
     assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
-    // The request count alone cannot see the regression: `await delay(backoff(1))`
-    // is the sleep that outlives the deadline, and the loop-top guard only runs
-    // once that sleep returns, so an unclamped collector still opens exactly one
-    // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms sits above the worst clean run measured here (224ms under
-    // 12 CPU burners) and below the 1000 ms the first backoff must cost plus
-    // process start (1146-1542ms unclamped), so it cannot flake on a loaded worker
-    // and cannot miss the overshoot either.
-    assert.ok(
-      elapsedMs < 900,
-      `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
-    );
+    assert.equal(await readFile(waitLog, "utf8"), "",
+      "the feed ladder must refuse retry waits that exceed its remaining budget");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
     const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
@@ -775,7 +758,6 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
       "a feed that was never admitted queues nothing",
     );
   } finally {
-    await new Promise((resolve) => server.close(resolve));
     apiDb.close();
     progressionDb.close();
     await rm(directory, { recursive: true, force: true });
