@@ -175,3 +175,15 @@ test("home achievement alt text does not expose untranslated slugs", async () =>
   assert.match(component, /name && name !== item\.id && !isSlug/);
   assert.match(component, /t\("home\.achievementIcon"\)/);
 });
+
+
+test("home showcase polls missing risk and only updates its originating snapshot", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /scheduleArenaRiskPoll\(aid, arena.profile.profileUpdatedAt/);
+  assert.match(component, /schedulePlayerRiskPoll\(\{/);
+  assert.match(component, /profileUpdatedAt: profile.viewModel.freshness.profileUpdatedAt/);
+  assert.match(component, /snapshot.mode !== mode/);
+  assert.match(component, /profile.identity.cycleId !== cycleId/);
+  assert.equal(component.match(/current === snapshot \?/g)?.length, 2);
+  assert.match(component, /body.identity.cycleId !== \(cycle \?\? "persistent"\)/);
+});

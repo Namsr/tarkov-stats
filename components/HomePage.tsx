@@ -18,6 +18,8 @@ import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
+import { schedulePlayerRiskPoll } from "@/lib/client-risk";
+import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 import {
   HOME_EXAMPLE_AIDS,
   homeProfilePrestige,
@@ -146,7 +148,8 @@ export default function HomePage() {
       try {
         const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force });
         const body = response.body;
-        if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode) return null;
+        if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode
+          || body.identity.cycleId !== (cycle ?? "persistent")) return null;
         if (mode === "arena") {
           const arena = toArenaProfile(body, aid);
           return arena?.aid === aid ? { profile: null, arena: {
@@ -175,6 +178,25 @@ export default function HomePage() {
     });
     return () => { cancelled = true; controller.abort(); };
   }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
+
+  useEffect(() => {
+    if (!snapshot || snapshot.mode !== mode || aid == null) return;
+    const arena = snapshot.arena;
+    if (mode === "arena") {
+      if (!arena || arena.profile.aid !== aid || arena.risk) return;
+      return scheduleArenaRiskPoll(aid, arena.profile.profileUpdatedAt, (risk) => {
+        setSnapshot((current) => current === snapshot ? { ...current, arena: { ...arena, risk } } : current);
+      });
+    }
+    const profile = snapshot.profile;
+    const cycleId = showcaseTimelineCycle(mode, seasonalCycleId);
+    if (!profile || profile.identity.aid !== aid || profile.identity.cycleId !== cycleId || profile.risk || !cycleId) return;
+    return schedulePlayerRiskPoll({
+      aid, mode, cycleId, profileUpdatedAt: profile.viewModel.freshness.profileUpdatedAt ?? 0,
+    }, (risk) => {
+      setSnapshot((current) => current === snapshot ? { ...current, profile: { ...profile, risk } } : current);
+    });
+  }, [aid, mode, seasonalCycleId, snapshot]);
 
   // Stale-while-revalidate: keep the previous mode's card on screen while the
   // next mode loads. Wiping to the loading panel collapses the section and
