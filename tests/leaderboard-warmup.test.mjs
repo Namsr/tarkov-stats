@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 
 test("warmup time budget stops before another request without marking a signal stop", async () => {
   const dir = mkdtempSync(join(tmpdir(), "warmup-budget-"));
@@ -453,6 +455,187 @@ test("PvE feed retries a terminated partial stream without keeping partial versi
     request: async () => { calls += 1; return partial(); },
   }), /warmup updated feed failed after 2 attempts: TypeError: terminated/);
   assert.equal(calls, 2);
+});
+
+test("bounded scans honor rotated modes across consecutive runs", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, profile_updated_at INTEGER);
+    CREATE TABLE mode_players(mode TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    ATTACH DATABASE ':memory:' AS progression_scan;
+    CREATE TABLE progression_scan.progression_snapshots
+      (id INTEGER PRIMARY KEY, mode TEXT, cycle_id TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    INSERT INTO players VALUES (1,100),(2,100),(3,100),(4,100);
+    INSERT INTO progression_scan.progression_snapshots VALUES
+      (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":2}'),
+      (2,'regular','persistent',2,100,'{"pvpStatsParserVersion":2}'),
+      (3,'regular','persistent',3,100,'{"pvpStatsParserVersion":2}'),
+      (4,'regular','persistent',4,100,'{"pvpStatsParserVersion":2}');
+    INSERT INTO mode_players VALUES ('pve',5,500,'{}');`);
+  let visited = 0;
+  const checkpoint = { modes: {}, nextMode: "regular" };
+  const selected = [];
+  try {
+    for (let run = 0; run < 4; run++) {
+      visited = 0;
+      const modes = checkpoint.nextMode === "pve" ? ["pve", "regular"] : ["regular", "pve"];
+      let lastMode;
+      const candidates = selectWarmupCandidates(db, null, new Map(), modes, {
+        checkpoint, limitPerMode: 1, shouldStop: () => visited >= 2,
+        onProgress: (mode, aid) => { visited++; checkpoint.modes[mode] = { scanAid: aid }; lastMode = mode; },
+      });
+      selected.push(...candidates.map(row => row.mode));
+      checkpoint.nextMode = candidates.length ? "regular" : modes[(modes.indexOf(lastMode) + 1) % modes.length];
+    }
+    assert.deepEqual(selected, ["pve", "pve"]);
+  } finally { db.close(); }
+});
+
+test("PvE feed bounds headers, partial bodies and retry backoff by the deadline", async (t) => {
+  for (const stage of ["headers", "body", "retry"]) {
+    await t.test(stage, async () => {
+      let calls = 0;
+      let cancelled = false;
+      const started = Date.now();
+      await assert.rejects(loadUpdatedVersions("http://feed.test", {
+        deadline: started + 100, timeoutMs: 30_000, maxRetries: 3,
+        request: async (_url, { signal }) => {
+          calls++;
+          if (stage === "headers") return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+          if (stage === "retry") return new Response("{}", { status: 503 });
+          return new Response(new ReadableStream({
+            start(controller) { controller.enqueue(new TextEncoder().encode('{"3":300,')); },
+            cancel() { cancelled = true; },
+          }));
+        },
+      }), { code: "WARMUP_BOUNDED" });
+      assert.equal(calls, 1);
+      assert.ok(Date.now() - started < 1000);
+      if (stage === "body") assert.equal(cancelled, true);
+    });
+  }
+});
+
+test("PvE feed signals interrupt a partial body and a pending retry delay", async (t) => {
+  for (const stage of ["body", "retry"]) {
+    await t.test(stage, async () => {
+      const controller = new AbortController();
+      let calls = 0;
+      const timer = setTimeout(() => controller.abort(), 50);
+      const started = Date.now();
+      try {
+        await assert.rejects(loadUpdatedVersions("http://feed.test", {
+          signal: controller.signal, maxRetries: 3, timeoutMs: 30_000,
+          request: async () => {
+            calls++;
+            return stage === "retry" ? new Response("{}", { status: 503 })
+              : new Response(new ReadableStream({
+                start(stream) { stream.enqueue(new TextEncoder().encode('{"3":300,')); },
+              }));
+          },
+        }), { code: "WARMUP_STOPPED" });
+        assert.equal(calls, 1);
+        assert.ok(Date.now() - started < 1000);
+      } finally { clearTimeout(timer); }
+    });
+  }
+});
+
+async function warmupCliFixture(t, handler) {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-cli-"));
+  const playersPath = join(dir, "players.db");
+  const progressionPath = join(dir, "progression.db");
+  const checkpointPath = join(dir, "state.json");
+  const lockPath = join(dir, "warmup.lock");
+  const players = new DatabaseSync(playersPath);
+  players.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY,profile_updated_at INTEGER);
+    CREATE TABLE mode_players(mode TEXT,aid INTEGER,profile_updated_at INTEGER,stats_json TEXT);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    INSERT INTO players VALUES (1,100);
+    INSERT INTO mode_players VALUES ('pve',2,0,'{}');`);
+  players.close();
+  const progression = new DatabaseSync(progressionPath);
+  progression.exec(`CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY,mode TEXT,cycle_id TEXT,aid INTEGER,
+    profile_updated_at INTEGER,stats_json TEXT);`);
+  progression.close();
+  const server = createServer(handler);
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { checkpointPath, lockPath, run: async (env = {}) => {
+    const started = Date.now();
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite",
+      "scripts/warmup-leaderboard-profiles.mjs"], { cwd: process.cwd(), env: {
+        ...process.env, SQLITE_PATH: playersPath, PROGRESSION_SQLITE_PATH: progressionPath,
+        LEADERBOARD_WARMUP_CHECKPOINT: checkpointPath, LEADERBOARD_WARMUP_LOCK: lockPath,
+        PROFILE_REFRESH_SECRET: "x".repeat(32), LEADERBOARD_WARMUP_MODES: "regular,pve",
+        LEADERBOARD_WARMUP_MAX_RUN_MS: "1000", LEADERBOARD_WARMUP_MAX_PROFILES: "10",
+        LEADERBOARD_WARMUP_MAX_RETRIES: "3", LEADERBOARD_WARMUP_TIMEOUT_MS: "30000",
+        PROFILE_QUEUE_DEADLINE_MS: "", LEADERBOARD_WARMUP_BASE_URL: url,
+        PVE_PROFILE_UPDATED_URL: `${url}/updated.json`, ...env,
+      } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", data => { stdout += data; });
+    child.stderr.on("data", data => { stderr += data; });
+    const timeout = setTimeout(() => child.kill(), 10_000);
+    try {
+      const code = await new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      assert.equal(code, 0, stderr);
+      assert.equal(existsSync(lockPath), false, "CLI releases its lock");
+      return { result: JSON.parse(stdout.trim()), stderr, elapsed: Date.now() - started };
+    } finally { clearTimeout(timeout); }
+  } };
+}
+
+test("warmup CLI bounds a slow PvE index after processing the preceding mode", async (t) => {
+  const events = [];
+  const fixture = await warmupCliFixture(t, (request, response) => {
+    if (request.url.startsWith("/updated.json")) {
+      events.push("feed");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"2":200,'); // Leave the stream unfinished past the deadline.
+    } else {
+      events.push("regular");
+      response.end('{"state":"ok"}');
+    }
+  });
+  const { result, elapsed } = await fixture.run();
+  assert.deepEqual(events, ["regular", "feed"]);
+  assert.equal(result.processed, 1);
+  assert.equal(result.bounded, true);
+  assert.equal(result.stopped, false);
+  assert.ok(elapsed < 2000, `CLI exceeded its budget with cleanup/startup allowance: ${elapsed}ms`);
+  assert.deepEqual(JSON.parse(readFileSync(fixture.checkpointPath, "utf8")).skipped, {});
+});
+
+test("warmup CLI preserves the reset flag and rotates modes across bounded runs", async (t) => {
+  const events = [];
+  const fixture = await warmupCliFixture(t, (request, response) => {
+    if (request.url.startsWith("/updated.json")) response.end('{"2":200}');
+    else {
+      events.push(request.url.includes("/pve/") ? "pve" : "regular");
+      response.end('{"state":"ok"}');
+    }
+  });
+  writeFileSync(fixture.checkpointPath, "");
+  for (let run = 0; run < 4; run++) {
+    const { result, stderr } = await fixture.run({ LEADERBOARD_WARMUP_MAX_PROFILES: "1" });
+    assert.equal(result.processed, 1);
+    assert.equal(result.checkpointReset, run === 0);
+    assert.equal(stderr.includes("unreadable leaderboard warmup checkpoint"), run === 0);
+    assert.equal(result.modes[0], run % 2 === 0 ? "regular" : "pve");
+  }
+  assert.deepEqual(events, ["regular", "pve", "regular", "pve"]);
 });
 
 test("409 retries through the global pacer while an uncertain timeout stops the run", async () => {

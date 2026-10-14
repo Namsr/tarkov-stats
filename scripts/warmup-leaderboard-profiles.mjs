@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const WARMUP_MODES = ["regular", "pve", "arena", "pvp-season"];
 
@@ -208,25 +209,41 @@ export function acquireWarmupLock(path) {
 }
 
 export async function loadUpdatedVersions(url, options = {}) {
-  const request = typeof options === "function" ? options : options.request ?? fetchTarkovJson;
-  const maxRetries = typeof options === "function" ? 0 : options.maxRetries ?? 0;
-  const timeoutMs = typeof options === "function" ? 30_000 : options.timeoutMs ?? 30_000;
-  const sleep = typeof options === "function" ? (ms) => new Promise((done) => setTimeout(done, ms))
-    : options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
+  if (typeof options === "function") options = { request: options };
+  const request = options.request ?? fetchTarkovJson;
+  const maxRetries = options.maxRetries ?? 0;
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const sleep = options.sleep ?? ((ms) => delay(ms, undefined, { signal: options.signal }));
   let lastError;
   let attempts = 0;
+  const now = options.now ?? Date.now;
+  const interrupted = () => {
+    if (options.signal?.aborted) return Object.assign(new Error("warmup updated feed stopped"), { code: "WARMUP_STOPPED" });
+    if (remainingRunBudget(timeoutMs, options.deadline, now()) === 0) {
+      return Object.assign(new Error("warmup updated feed reached deadline"), { code: "WARMUP_BOUNDED" });
+    }
+  };
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    const interruption = interrupted();
+    if (interruption) throw interruption;
     attempts = attempt;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const attemptTimeoutMs = remainingRunBudget(timeoutMs, options.deadline, now());
+    const deadlineLimited = options.deadline != null && Number(options.deadline) - now() <= timeoutMs;
+    const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
+    const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
+    let reader;
+    const cancelReader = () => { reader?.cancel(signal.reason).catch(() => {}); };
+    signal.addEventListener("abort", cancelReader, { once: true });
     try {
-      const response = await request(url, { cache: "no-store", signal: controller.signal });
+      const response = await request(url, { cache: "no-store", signal });
       if (!response.ok) {
         const error = new Error(`warmup updated feed HTTP ${response.status}`);
         error.retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        response.body?.cancel().catch(() => {});
         throw error;
       }
-      const reader = response.body?.getReader();
+      reader = response.body?.getReader();
       if (!reader) throw new Error("warmup updated feed has no readable body");
       const versions = new Map();
       const parser = createTimestampObjectParser((aidValue, updatedValue) => {
@@ -236,20 +253,49 @@ export async function loadUpdatedVersions(url, options = {}) {
       });
       const decoder = new TextDecoder();
       for (;;) {
+        signal.throwIfAborted();
         const { value, done } = await reader.read();
+        signal.throwIfAborted();
         if (done) break;
         parser.append(decoder.decode(value, { stream: true }));
       }
       parser.finish(decoder.decode());
+      const interruption = interrupted();
+      if (interruption) throw interruption;
       return versions;
     } catch (error) {
+      const interruption = interrupted();
+      if (interruption) throw interruption;
+      if (controller.signal.aborted && deadlineLimited) {
+        throw Object.assign(new Error("warmup updated feed reached deadline"), { code: "WARMUP_BOUNDED" });
+      }
       lastError = controller.signal.aborted
-        ? new Error(`warmup updated feed timed out after ${timeoutMs}ms`, { cause: error })
+        ? new Error(`warmup updated feed timed out after ${attemptTimeoutMs}ms`, { cause: error })
         : error;
       if (attempt > maxRetries || error?.retryable === false) break;
-      await sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
     } finally {
       clearTimeout(timeout);
+      signal.removeEventListener("abort", cancelReader);
+      if (reader) {
+        reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+    }
+    const waitMs = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+    if (remainingRunBudget(waitMs + 1, options.deadline, now()) <= waitMs) {
+      throw Object.assign(new Error("warmup updated feed reached deadline"), { code: "WARMUP_BOUNDED" });
+    }
+    // A signal must also interrupt backoff, when no fetch is in flight.
+    let stop;
+    const stopped = new Promise((_, reject) => {
+      stop = () => reject(interrupted());
+      options.signal?.addEventListener("abort", stop, { once: true });
+      if (options.signal?.aborted) stop();
+    });
+    try {
+      await Promise.race([sleep(waitMs), stopped]);
+    } finally {
+      options.signal?.removeEventListener("abort", stop);
     }
   }
   const detail = lastError instanceof Error ? `${lastError.name}: ${lastError.message}` : String(lastError);
@@ -260,7 +306,6 @@ export async function loadUpdatedVersions(url, options = {}) {
 export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES, {
   checkpoint = {}, limitPerMode = Infinity, shouldStop = () => false, onProgress = () => {},
 } = {}) {
-  const wanted = new Set(modes);
   const candidates = [];
   const counts = new Map();
   // Scan source identities in small indexed pages, including when no profile
@@ -291,70 +336,73 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     counts.set(candidate.mode, count);
     return count >= limitPerMode;
   };
-  if (wanted.has("regular")) {
-  const query = players.prepare(`
-    SELECT p.aid,p.profile_updated_at source_version
-    FROM players p
-    WHERE p.aid = ? AND p.profile_updated_at>0
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      AND COALESCE((SELECT CASE WHEN s.profile_updated_at>=p.profile_updated_at AND json_valid(s.stats_json)
-          THEN json_extract(s.stats_json,'$.pvpStatsParserVersion') ELSE 0 END
-        FROM progression_scan.progression_snapshots s
-        WHERE s.mode='regular' AND s.cycle_id='persistent' AND s.aid=p.aid
-        ORDER BY s.profile_updated_at DESC,s.id DESC LIMIT 1),0) < ?`);
-  for (const aid of identities("regular", "SELECT aid FROM players WHERE 1 = 1")) {
-    const row = query.get(aid, CURRENT_PVP_PARSER);
-    if (!row) continue;
-    if (add({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
-  }
-  }
-  if (wanted.has("pve")) {
-  const query = players.prepare(`
-    SELECT p.aid,p.profile_updated_at source_version
-    FROM mode_players p
-    WHERE p.aid = ? AND p.mode='pve'
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      AND CASE WHEN json_valid(p.stats_json)
-        THEN COALESCE(json_extract(p.stats_json,'$.pvpStatsParserVersion'),0) ELSE 0 END < ?`);
-  for (const identity of identities("pve", "SELECT aid FROM mode_players WHERE mode = 'pve'")) {
-    const row = query.get(identity, CURRENT_PVP_PARSER);
-    if (!row) continue;
-    const aid = Number(row.aid);
-    const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
-    if (sourceVersion > 0 && add({ mode: "pve", aid, sourceVersion })) break;
-  }
-  }
-  if (wanted.has("arena")) {
-  const query = players.prepare(`
-    SELECT p.aid,MAX(p.profile_updated_at,COALESCE(s.upstream_version,0)) source_version
-    FROM mode_players p
-    LEFT JOIN (
-      SELECT aid,MAX(upstream_version) upstream_version,COUNT(DISTINCT arena_mode) mode_count,
-        MIN(parser_version) parser_version
-      FROM arena_mode_stats WHERE aid = ? GROUP BY aid
-    ) s ON s.aid=p.aid
-    WHERE p.aid = ? AND p.mode='arena' AND p.profile_updated_at>0
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      AND (s.aid IS NULL OR s.mode_count<6 OR s.parser_version<?)`);
-  for (const aid of identities("arena", "SELECT aid FROM mode_players WHERE mode = 'arena' AND profile_updated_at > 0")) {
-    const row = query.get(aid, aid, CURRENT_ARENA_PARSER);
-    if (!row) continue;
-    if (add({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
-  }
-  }
-  if (cycleId && wanted.has("pvp-season")) {
-    const query = players.prepare(`
-      SELECT p.aid,p.profile_updated_at source_version
-      FROM progression_scan.player_profiles p
-      WHERE p.aid = ? AND p.mode='seasonal' AND p.cycle_id=? AND p.profile_updated_at>0
-        AND COALESCE(p.pvp_stats_parser_version,0)<?
-        AND p.confirmed_banned=0
-        AND NOT EXISTS (SELECT 1 FROM progression_scan.excluded_players e WHERE e.aid=p.aid)
-        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)`);
-    for (const aid of identities("pvp-season", "SELECT aid FROM progression_scan.player_profiles WHERE mode = 'seasonal' AND cycle_id = ? AND profile_updated_at > 0", [cycleId])) {
-      const row = query.get(aid, cycleId, CURRENT_SEASONAL_PARSER);
-      if (!row) continue;
-      if (add({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId })) break;
+  for (const mode of modes) {
+    if (shouldStop()) break;
+    if (mode === "regular") {
+      const query = players.prepare(`
+        SELECT p.aid,p.profile_updated_at source_version
+        FROM players p
+        WHERE p.aid = ? AND p.profile_updated_at>0
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
+          AND COALESCE((SELECT CASE WHEN s.profile_updated_at>=p.profile_updated_at AND json_valid(s.stats_json)
+              THEN json_extract(s.stats_json,'$.pvpStatsParserVersion') ELSE 0 END
+            FROM progression_scan.progression_snapshots s
+            WHERE s.mode='regular' AND s.cycle_id='persistent' AND s.aid=p.aid
+            ORDER BY s.profile_updated_at DESC,s.id DESC LIMIT 1),0) < ?`);
+      for (const aid of identities("regular", "SELECT aid FROM players WHERE 1 = 1")) {
+        const row = query.get(aid, CURRENT_PVP_PARSER);
+        if (!row) continue;
+        if (add({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
+      }
+    }
+    if (mode === "pve") {
+      const query = players.prepare(`
+        SELECT p.aid,p.profile_updated_at source_version
+        FROM mode_players p
+        WHERE p.aid = ? AND p.mode='pve'
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
+          AND CASE WHEN json_valid(p.stats_json)
+            THEN COALESCE(json_extract(p.stats_json,'$.pvpStatsParserVersion'),0) ELSE 0 END < ?`);
+      for (const identity of identities("pve", "SELECT aid FROM mode_players WHERE mode = 'pve'")) {
+        const row = query.get(identity, CURRENT_PVP_PARSER);
+        if (!row) continue;
+        const aid = Number(row.aid);
+        const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
+        if (sourceVersion > 0 && add({ mode: "pve", aid, sourceVersion })) break;
+      }
+    }
+    if (mode === "arena") {
+      const query = players.prepare(`
+        SELECT p.aid,MAX(p.profile_updated_at,COALESCE(s.upstream_version,0)) source_version
+        FROM mode_players p
+        LEFT JOIN (
+          SELECT aid,MAX(upstream_version) upstream_version,COUNT(DISTINCT arena_mode) mode_count,
+            MIN(parser_version) parser_version
+          FROM arena_mode_stats WHERE aid = ? GROUP BY aid
+        ) s ON s.aid=p.aid
+        WHERE p.aid = ? AND p.mode='arena' AND p.profile_updated_at>0
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
+          AND (s.aid IS NULL OR s.mode_count<6 OR s.parser_version<?)`);
+      for (const aid of identities("arena", "SELECT aid FROM mode_players WHERE mode = 'arena' AND profile_updated_at > 0")) {
+        const row = query.get(aid, aid, CURRENT_ARENA_PARSER);
+        if (!row) continue;
+        if (add({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
+      }
+    }
+    if (cycleId && mode === "pvp-season") {
+      const query = players.prepare(`
+        SELECT p.aid,p.profile_updated_at source_version
+        FROM progression_scan.player_profiles p
+        WHERE p.aid = ? AND p.mode='seasonal' AND p.cycle_id=? AND p.profile_updated_at>0
+          AND COALESCE(p.pvp_stats_parser_version,0)<?
+          AND p.confirmed_banned=0
+          AND NOT EXISTS (SELECT 1 FROM progression_scan.excluded_players e WHERE e.aid=p.aid)
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)`);
+      for (const aid of identities("pvp-season", "SELECT aid FROM progression_scan.player_profiles WHERE mode = 'seasonal' AND cycle_id = ? AND profile_updated_at > 0", [cycleId])) {
+        const row = query.get(aid, cycleId, CURRENT_SEASONAL_PARSER);
+        if (!row) continue;
+        if (add({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId })) break;
+      }
     }
   }
   return candidates;
@@ -507,67 +555,99 @@ async function main() {
   const releaseLock = acquireWarmupLock(lockPath);
   let players;
   let stopping = false;
-  process.once("SIGINT", () => { stopping = true; });
-  process.once("SIGTERM", () => { stopping = true; });
+  const stopController = new AbortController();
+  const stop = () => { stopping = true; stopController.abort(); };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
   try {
-    const { checkpoint } = loadCheckpoint(checkpointPath);
+    const { checkpoint, reset: checkpointReset } = loadCheckpoint(checkpointPath);
     const requestedModes = warmupModesFromArgs();
     const pivot = Math.max(0, requestedModes.indexOf(checkpoint.nextMode));
     const modes = [...requestedModes.slice(pivot), ...requestedModes.slice(0, pivot)];
     players = new DatabaseSync(dbPath, { readOnly: true });
     players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
     const cycleId = validCycleId(process.env.SEASONAL_CYCLE_ID);
-    const needsPveVersions = modes.includes("pve") && players.prepare(`SELECT 1 FROM mode_players p
-      WHERE p.mode = 'pve' AND p.profile_updated_at <= 0
-        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
-        AND CASE WHEN json_valid(p.stats_json) THEN COALESCE(json_extract(p.stats_json, '$.pvpStatsParserVersion'), 0) ELSE 0 END < ?
-      LIMIT 1`).get(CURRENT_PVP_PARSER);
-    const pveVersions = !needsPveVersions ? new Map() : await (async () => {
-      const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
-      pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
-      return loadUpdatedVersions(pveUpdatedUrl, {
-        maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-      });
-    })();
-    const scanCursors = new Map();
     // Candidate discovery shares the three-minute budget with HTTP work.
     // Reserve time for selected profiles so an expensive later mode cannot
     // consume the entire run before any earlier candidate is requested.
     const selectionDeadline = deadline - Math.min(60_000, Math.max(0, Math.floor((deadline - Date.now()) / 2)));
-    const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes, {
-      checkpoint, limitPerMode: Math.ceil(maxProfiles / modes.length),
-      shouldStop: () => stopping || Date.now() >= selectionDeadline,
-      onProgress: (mode, aid) => scanCursors.set(mode, aid),
-    });
-    const selectionBounded = Date.now() >= selectionDeadline;
-    const selectionMs = Date.now() - startedAt;
-    for (const [mode, aid] of scanCursors) {
-      const state = checkpoint.modes[mode] ||= { attempted: 0, completed: 0, skipped: 0 };
-      // Requests maintain lastAid. Advance a separate scan cursor only when
-      // nothing was selected, so failed/unstarted requests remain resumable.
-      if (candidates.some((candidate) => candidate.mode === mode)) delete state.scanAid;
-      else state.scanAid = aid;
-    }
-    if (!candidates.length && scanCursors.size) {
-      const lastMode = [...scanCursors.keys()].at(-1);
-      checkpoint.nextMode = modes[(modes.indexOf(lastMode) + 1) % modes.length];
+    const pace = createRequestPacer({ intervalMs: 1_000 });
+    const counts = Object.fromEntries(modes.map((mode) => [mode, 0]));
+    let result = { processed: 0, bounded: false, stopped: false, checkpoint, checkpointReset };
+    let selectionBounded = false;
+    let selectionMs = 0;
+    for (const mode of modes) {
+      const selectionStartedAt = Date.now();
+      if (stopping || selectionStartedAt >= selectionDeadline || result.processed >= maxProfiles) {
+        selectionBounded = selectionStartedAt >= selectionDeadline;
+        result.stopped = stopping;
+        result.bounded ||= selectionBounded || result.processed >= maxProfiles;
+        break;
+      }
+      // Process earlier modes before waiting for PvE's optional version index.
+      let pveVersions = new Map();
+      const needsPveVersions = mode === "pve" && players.prepare(`SELECT 1 FROM mode_players p
+        WHERE p.mode = 'pve' AND p.profile_updated_at <= 0
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
+          AND CASE WHEN json_valid(p.stats_json) THEN COALESCE(json_extract(p.stats_json, '$.pvpStatsParserVersion'), 0) ELSE 0 END < ?
+        LIMIT 1`).get(CURRENT_PVP_PARSER);
+      if (needsPveVersions) {
+        const pveUpdatedUrl = new URL(process.env.PVE_PROFILE_UPDATED_URL || "https://players.tarkov.dev/pve/updated.json");
+        pveUpdatedUrl.searchParams.set("v", String(feedCacheSlot()));
+        try {
+          pveVersions = await loadUpdatedVersions(pveUpdatedUrl, {
+            maxRetries, timeoutMs, deadline: selectionDeadline, signal: stopController.signal,
+          });
+        } catch (error) {
+          if (error?.code !== "WARMUP_BOUNDED" && error?.code !== "WARMUP_STOPPED") throw error;
+          selectionBounded = error.code === "WARMUP_BOUNDED";
+          result.bounded = selectionBounded;
+          result.stopped = error.code === "WARMUP_STOPPED";
+          checkpoint.nextMode = modes[(modes.indexOf(mode) + 1) % modes.length];
+          saveCheckpoint(checkpointPath, checkpoint);
+          selectionMs += Date.now() - selectionStartedAt;
+          break;
+        }
+      }
+      const scanCursors = new Map();
+      const candidates = selectWarmupCandidates(players, cycleId, pveVersions, [mode], {
+        checkpoint, limitPerMode: Math.ceil(maxProfiles / modes.length),
+        shouldStop: () => stopping || Date.now() >= selectionDeadline,
+        onProgress: (scannedMode, aid) => scanCursors.set(scannedMode, aid),
+      });
+      counts[mode] = candidates.length;
+      selectionBounded ||= Date.now() >= selectionDeadline;
+      selectionMs += Date.now() - selectionStartedAt;
+      for (const [scannedMode, aid] of scanCursors) {
+        const state = checkpoint.modes[scannedMode] ||= { attempted: 0, completed: 0, skipped: 0 };
+        // Requests maintain lastAid; scans without candidates maintain scanAid.
+        if (candidates.length) delete state.scanAid;
+        else state.scanAid = aid;
+      }
+      if (!candidates.length && scanCursors.size) {
+        checkpoint.nextMode = modes[(modes.indexOf(mode) + 1) % modes.length];
+      }
+      saveCheckpoint(checkpointPath, checkpoint);
+      const batch = await runWarmup({
+        candidates, checkpointPath, maxProfiles: maxProfiles - result.processed,
+        maxRunMs: Math.max(0, deadline - Date.now()), modes,
+        request: (candidate) => requestCandidate(candidate, {
+          baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
+          secret, maxRetries, timeoutMs, deadline, pace, fetch, shouldStop: () => stopping,
+          sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+        }),
+        shouldStop: () => stopping,
+      });
+      Object.assign(checkpoint, batch.checkpoint);
+      result = { ...batch, processed: result.processed + batch.processed,
+        checkpointReset: result.checkpointReset || batch.checkpointReset };
+      if (batch.bounded || batch.stopped || selectionBounded) break;
     }
     saveCheckpoint(checkpointPath, checkpoint);
-    const pace = createRequestPacer({ intervalMs: 1_000 });
-    const result = await runWarmup({
-      candidates, checkpointPath, maxProfiles,
-      maxRunMs: Math.max(0, deadline - Date.now()), modes,
-      request: (candidate) => requestCandidate(candidate, {
-        baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
-        secret, maxRetries, timeoutMs, deadline, pace, fetch, shouldStop: () => stopping,
-        sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-      }),
-      shouldStop: () => stopping,
-    });
     process.stdout.write(`${JSON.stringify({
       modes,
-      candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
-      processed: result.processed, bounded: selectionBounded || result.bounded, stopped: result.stopped, checkpointPath,
+      candidates: counts,
+      processed: result.processed, bounded: selectionBounded || result.bounded, stopped: result.stopped || stopping, checkpointPath,
       selectionBounded, selectionMs,
       // ops/profile-queue.sh keeps stderr out of $log and replays it into the journal as
       // WARMUP_WARN, so a reset is reported both as prose and as this machine-readable flag.
@@ -576,6 +656,8 @@ async function main() {
   } finally {
     players?.close();
     releaseLock();
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
   }
 }
 
