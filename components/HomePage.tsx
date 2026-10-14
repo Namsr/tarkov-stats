@@ -18,7 +18,7 @@ import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
-import { schedulePlayerRiskPoll } from "@/lib/client-risk";
+import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "@/lib/client-risk";
 import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 import {
   HOME_EXAMPLE_AIDS,
@@ -190,7 +190,9 @@ export default function HomePage() {
     }
     const profile = snapshot.profile;
     const cycleId = showcaseTimelineCycle(mode, seasonalCycleId);
-    if (!profile || profile.identity.aid !== aid || profile.identity.cycleId !== cycleId || profile.risk || !cycleId) return;
+    if (!profile || profile.identity.aid !== aid || profile.identity.cycleId !== cycleId || !cycleId) return;
+    // A retained verdict can be unavailable or older while its replacement is computing.
+    if (isPlayerRiskCurrent(profile.risk, profile.viewModel.freshness.profileUpdatedAt ?? 0)) return;
     return schedulePlayerRiskPoll({
       aid, mode, cycleId, profileUpdatedAt: profile.viewModel.freshness.profileUpdatedAt ?? 0,
     }, (risk) => {

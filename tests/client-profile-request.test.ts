@@ -302,7 +302,7 @@ test("a throttled forced request is not cached, so the next retry reaches the ne
 
 
 for (const mode of ["regular", "pve", "seasonal"] as const) {
-  test(`${mode} showcase risk recovers from pending and stale results, including zero`, async (t) => {
+  test(`${mode} showcase risk recovers from pending, stale and expired results, including zero`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const input = { aid: 8045310, mode, cycleId: mode === "seasonal" ? "kord-breach-s1" : "persistent", profileUpdatedAt: 100 };
     const identity = { aid: input.aid, mode, cycleId: input.cycleId };
@@ -312,15 +312,15 @@ for (const mode of ["regular", "pve", "seasonal"] as const) {
       assert.equal(url, `/api/player/risk?aid=8045310&mode=${mode}&cycle=${input.cycleId}`);
       assert.equal(options.cache, "no-store");
       calls++;
-      return Response.json({ identity, risk: calls === 1 ? null : { score: 0, availability: "partial", profileUpdatedAt: calls === 2 ? 99 : 100 } });
+      return Response.json({ identity, risk: calls === 1 ? null : { score: 0, availability: "partial", profileUpdatedAt: calls === 2 ? 99 : 100, freshnessAt: calls === 3 ? Date.now() - 5 * 60 * 60 * 1000 : Date.now() } });
     });
     const stop = schedulePlayerRiskPoll(input, (risk) => received.push(risk));
     t.after(stop);
-    for (const delay of [0, 500, 1_000, 30_000]) {
+    for (const delay of [0, 500, 1_000, 2_000, 30_000]) {
       t.mock.timers.tick(delay);
       await flushPoll();
     }
-    assert.equal(calls, 3);
+    assert.equal(calls, 4);
     assert.equal(received.length, 1);
     assert.equal(received[0].score, 0);
   });

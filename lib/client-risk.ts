@@ -3,6 +3,17 @@
 import type { PublicRiskView } from "../types/profile-view";
 import type { GameMode } from "../types/seasonal";
 
+/** A usable verdict must match the displayed profile and the server's five-hour TTL. */
+export function isPlayerRiskCurrent(
+  risk: PublicRiskView | null | undefined,
+  profileUpdatedAt: number,
+  now = Date.now(),
+): risk is PublicRiskView {
+  return Boolean(risk && risk.score != null && Number.isFinite(risk.score) && risk.available !== false
+    && risk.availability !== "unavailable" && (risk.profileUpdatedAt ?? 0) >= profileUpdatedAt
+    && now - (risk.freshnessAt ?? 0) < 5 * 60 * 60 * 1000);
+}
+
 /** Read a completed background evaluation without refetching the profile. */
 export function schedulePlayerRiskPoll(
   input: { aid: number; mode: Exclude<GameMode, "arena">; cycleId: string; profileUpdatedAt: number },
@@ -26,8 +37,7 @@ export function schedulePlayerRiskPoll(
           if (controller.signal.aborted) return;
           if (body.identity?.aid !== input.aid || body.identity.mode !== input.mode || body.identity.cycleId !== input.cycleId) return;
           const risk = body.risk;
-          if (risk && risk.score != null && Number.isFinite(risk.score) && risk.available !== false
-            && risk.availability !== "unavailable" && (risk.profileUpdatedAt ?? 0) >= input.profileUpdatedAt) {
+          if (isPlayerRiskCurrent(risk, input.profileUpdatedAt)) {
             onRisk(risk);
             return;
           }
