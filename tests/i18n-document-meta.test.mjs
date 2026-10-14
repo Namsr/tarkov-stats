@@ -1,6 +1,56 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { registerHooks } from "node:module";
+import { readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import ts from "typescript";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+// Exercise the actual client boundary during SSR, including the layout-less
+// fallback Next uses. Transpile only these TSX modules with the installed compiler.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "next/link" && context.parentURL?.endsWith("/components/NotFoundPage.tsx")) {
+      return { shortCircuit: true, url: "data:text/javascript,import {createElement} from 'react'; export default function Link(props){return createElement('a',props)}" };
+    }
+    if (specifier === "@/lib/i18n/context") {
+      return { shortCircuit: true, url: pathToFileURL(realpathSync(resolve("lib/i18n/context.tsx"))).href };
+    }
+    if (specifier === "./dictionary" && context.parentURL?.endsWith("/lib/i18n/context.tsx")) {
+      return { shortCircuit: true, url: pathToFileURL(realpathSync(resolve("lib/i18n/dictionary.ts"))).href };
+    }
+    if (specifier === "react" && context.parentURL?.startsWith("data:")) return nextResolve(specifier, { ...context, parentURL: import.meta.url });
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url.endsWith("/lib/i18n/context.tsx") || url.endsWith("/components/NotFoundPage.tsx")) {
+      const source = ts.transpileModule(readFileSync(new URL(url), "utf8"), {
+        compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
+      }).outputText;
+      return { shortCircuit: true, format: "module", source };
+    }
+    return nextLoad(url, context);
+  },
+});
+
+test("404 renders in either language without a layout and inherits an existing language provider", async () => {
+  const { default: NotFoundPage } = await import("../components/NotFoundPage.tsx");
+  const { LanguageProvider, useI18n } = await import("../lib/i18n/context.tsx");
+  const { dict } = await import("../lib/i18n/dictionary.ts");
+  for (const lang of ["ru", "en"]) {
+    const html = renderToStaticMarkup(createElement(NotFoundPage, { initialLang: lang }));
+    assert.ok(html.includes(dict[lang]["notFound.title"]));
+    assert.ok(html.includes(dict[lang]["notFound.description"]));
+    assert.ok(html.includes('href="/"'));
+  }
+  const html = renderToStaticMarkup(createElement(LanguageProvider, { initialLang: "ru" },
+    createElement(NotFoundPage, { initialLang: "en" })));
+  assert.ok(html.includes(dict.ru["notFound.title"]), "the header's language stays authoritative");
+  assert.throws(() => renderToStaticMarkup(createElement(function MissingProvider() { useI18n(); return null; })), /LanguageProvider/);
+});
 
 /** Line comments in the provider explain why, and one of them names the rejected
  *  alternative, so every assertion below reads the code rather than the prose. */

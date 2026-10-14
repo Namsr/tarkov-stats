@@ -48,7 +48,7 @@ for NAME in $DATABASES; do
   available_kb=$(df -Pk "$VOL" | awk 'NR == 2 { print $4 }')
   # Reserve the snapshot first. Compression checks actual free space on every
   # output chunk rather than rejecting a small archive as another full database.
-  required_kb=$(( (source_bytes + 1023) / 1024 + 262144 ))
+  required_kb=$(( (source_bytes + 1023) / 1024 + 1048576 ))
   if [ "$available_kb" -lt "$required_kb" ]; then
     echo "insufficient free space for $NAME backup; retaining previous set" >&2
     exit 1
@@ -83,7 +83,7 @@ for NAME in $DATABASES; do
       try {
         for await (const chunk of input) {
           const space = fs.statfsSync(target);
-          if (space.bavail * space.bsize < 256 * 1024 * 1024 + chunk.length) {
+          if (space.bavail * space.bsize < 1024 * 1024 * 1024 + chunk.length) {
             throw new Error("insufficient free space during backup compression; retaining previous set");
           }
           let offset = 0;

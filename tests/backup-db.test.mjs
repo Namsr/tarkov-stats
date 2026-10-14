@@ -52,7 +52,8 @@ async function fixture(scenario) {
     df() {
       echo 'Filesystem 1024-blocks Used Available Capacity Mounted'
       if [ "$SCENARIO" = disk-full ]; then echo 'fixture 1000 999 1 99% volume'
-      elif [ "$SCENARIO" = snapshot-only-space ]; then echo 'fixture 400000 1 262155 65% volume'
+      elif [ "$SCENARIO" = snapshot-only-space ]; then echo 'fixture 2000000 1 1048587 48% volume'
+      elif [ "$SCENARIO" = below-reserve ]; then echo 'fixture 2000000 1 1048575 48% volume'
       else echo 'fixture 100000000 1 99999999 1% volume'; fi
     }
     gzip() {
@@ -96,7 +97,7 @@ async function fixture(scenario) {
   } };
 }
 
-for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'compression-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'compression-full', 'invalid-volume']) {
   test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {

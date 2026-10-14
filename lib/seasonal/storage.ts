@@ -74,6 +74,16 @@ BEGIN
 END;
 `;
 
+const PROGRESSION_NORMALIZATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS progression_normalizations (
+  mode TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  PRIMARY KEY (mode, cycle_id, aid)
+);`;
+
 export const SEASONAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS excluded_players (
   aid INTEGER PRIMARY KEY,
@@ -265,6 +275,7 @@ CREATE TABLE IF NOT EXISTS progression_population_generations (
   payload TEXT NOT NULL,
   PRIMARY KEY (mode, cycle_id, generation)
 );
+${PROGRESSION_NORMALIZATION_SCHEMA}
 CREATE TABLE IF NOT EXISTS progression_population_current (
   mode TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -520,6 +531,11 @@ export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean
   // turn that wait back into a 30-second synchronous pause of the HTTP process.
   if (!Number(db.prepare("PRAGMA busy_timeout").get()?.timeout)) db.exec("PRAGMA busy_timeout = 30000");
   if (currentSeasonalSchema(db)) {
+    // Add only the small normalization journal to an otherwise current
+    // database; do not replay the expensive historical portrait backfill.
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'progression_normalizations'").get()) {
+      db.exec(PROGRESSION_NORMALIZATION_SCHEMA);
+    }
     // A current database already has every object in SEASONAL_LEADERBOARD_CHANGE_SCHEMA
     // — all of them are in CURRENT_SCHEMA_OBJECTS — so exec'ing that schema here would
     // be a no-op. The four journal triggers still need the body-drift check though:

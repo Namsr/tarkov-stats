@@ -7,6 +7,8 @@ import type { PersistentProgressionMode } from "../types/seasonal";
 type SqliteDatabase = any;
 export type { PersistentProgressionMode } from "../types/seasonal";
 export const PERSISTENT_CYCLE_ID = "persistent";
+/** Bump when normalization rules change so unchanged legacy histories are repaired once. */
+export const PERSISTENT_MATERIALIZATION_VERSION = 1;
 type Counters = Record<"experience" | "pmcRaids" | "scavRaids" | "pmcSurvived" | "pmcDeaths" | "pmcKills" | "killedPmc", number>;
 interface SnapshotRow {
   id: number; aid: number; profile_updated_at: number; upstream_updated_at: number; captured_at: number;
@@ -144,6 +146,14 @@ export function materializePersistentProgression(
         Number(latest.profile_updated_at || latest.upstream_updated_at), Number(latest.captured_at),
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
         Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0, aid);
+      // Snapshot/profile triggers increment this revision for relevant changes.
+      // Save the post-normalization value in the same transaction as the rows.
+      db.prepare(`INSERT INTO progression_normalizations (mode, cycle_id, aid, revision, version)
+        VALUES (?, ?, ?, COALESCE((SELECT revision FROM progression_personal_revisions
+          WHERE mode = ? AND cycle_id = ? AND aid = ?), 0), ?)
+        ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET revision = excluded.revision, version = excluded.version
+        WHERE progression_normalizations.revision != excluded.revision OR progression_normalizations.version != excluded.version`)
+        .run(mode, PERSISTENT_CYCLE_ID, aid, mode, PERSISTENT_CYCLE_ID, aid, PERSISTENT_MATERIALIZATION_VERSION);
     }
     if (options.refreshAggregates !== false) {
       refreshSqliteProgressionAggregates(db, mode, PERSISTENT_CYCLE_ID, options.targetBucket);
