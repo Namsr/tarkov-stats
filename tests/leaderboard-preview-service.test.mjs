@@ -7,14 +7,21 @@ globalThis.previewServiceTest = state;
 const stubs = {
   "@/lib/db": `export async function getStore(mode) { return {
     stored: async () => globalThis.previewServiceTest.stored,
-    cohort2d: async (...args) => { const s = globalThis.previewServiceTest; s.calls.push([mode, ...args]); return s.cohort; }
+    cohort2d: async () => { throw new Error("preview must use the worker"); }
   }; }`,
+  "@/lib/cohort-worker": `export async function computeCohortInBackground(job) {
+    const s = globalThis.previewServiceTest;
+    if (job.kind === "persistent") { s.calls.push([job.mode, ...job.args]); return s.cohort; }
+    s.calls.push(job);
+    if (job.kind === "arena_population") return { sampleN: 20, metrics: { kd_ratio: { value: 2, count: 20 } } };
+    return s.cohort;
+  }`,
   "@/lib/progression-db": `export async function getProgressionStore() { return { latest: async () => globalThis.previewServiceTest.snapshot }; }`,
   "@/lib/seasonal/storage": `export async function getSeasonalStore() { return { getProfile: async () => globalThis.previewServiceTest.seasonal }; }`,
   "@/lib/seasonal/comparison-cohort": `export async function querySeasonalComparisonCohort() { return { result: globalThis.previewServiceTest.cohort }; }`,
   "@/lib/arena/service": `export async function getArenaProfile() { return globalThis.previewServiceTest.arena; }
-    export async function getArenaCohort() { return globalThis.previewServiceTest.cohort; }
-    export async function getArenaAverage() { return { sampleN: 20, metrics: { kd_ratio: { value: 2, count: 20 } } }; }`,
+    export async function getArenaCohort() { throw new Error("preview must use the worker"); }
+    export async function getArenaAverage() { throw new Error("preview must use the worker"); }`,
   "@/lib/arena-average-cache": `export async function arenaAverageCacheVersion() { return 1; }`,
   "@/lib/average-dynamic-cache": `export async function loadDynamicAverage(key, loader) { return { value: await loader() }; }`,
 };
@@ -61,6 +68,7 @@ test("Arena preview uses its own counters and population fallback", async () => 
   assert.equal(card.metrics[0].value, 3);
   assert.equal(card.metrics[0].average, 2);
   assert.equal(card.raids, 25);
+  assert.deepEqual(state.calls.slice(-2), [{ kind: "arena", args: [42, "lastHero"] }, { kind: "arena_population", args: [{ mode: "lastHero", statistic: "trimmed_mean" }] }]);
   assert.equal(card.totals[0].value, 75);
 });
 

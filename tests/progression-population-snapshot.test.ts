@@ -210,3 +210,29 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
   const plain = await assembleProgressionTimeline(...withoutAchievement);
   assert.ok(ready.risk.static > plain.risk.static, "materialized achievement baseline remains part of static risk");
 });
+
+
+test("materializer phase timings preserve skip, publication success and per-scope failure", async () => {
+  const { materializeDuePopulations, materializeDueAchievementBaselines } = await import("../scripts/materialize-progression-population.mjs");
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const now = 1_800_000_000_000;
+    const successOptions = { now, refresh: () => undefined, publish: () => ({ generation: now, generatedAt: now }) };
+    const success = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], successOptions);
+    assert.equal(success.published.length, 1); assert.equal(success.errors.length, 0);
+    assert.deepEqual(Object.keys(success.phases[0]), ["mode", "cycleId", "normalizeMs", "normalizedPlayers", "refreshMs", "publishMs", "totalMs"]);
+    assert.ok(success.phases[0].totalMs >= 0);
+    const failedOptions = { now, refresh: () => { throw new Error("fixture refresh"); } };
+    const failed = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], failedOptions);
+    assert.equal(failed.published.length, 0); assert.match(failed.errors[0].error, /fixture refresh/); assert.equal(failed.phases.length, 1);
+    db.prepare("INSERT INTO progression_population_current VALUES ('regular','persistent',?,?)").run(now,now);
+    const skipped = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], { now });
+    assert.equal(skipped.phases.length, 0);
+    db.exec("CREATE TABLE players (aid INTEGER PRIMARY KEY,hours REAL,achievements TEXT);CREATE TABLE mode_players (mode TEXT,aid INTEGER,hours REAL,achievements TEXT)");
+    const baseline = materializeDueAchievementBaselines(db,{now});
+    assert.equal(baseline.published.length, 2); assert.equal(baseline.errors.length,0);
+    assert.equal(baseline.phases.filter(phase=>phase.phase==="baseline_publish").length, 2);
+    assert.deepEqual(materializeDueAchievementBaselines(db,{now}).phases, []);
+  } finally { db.close(); }
+});

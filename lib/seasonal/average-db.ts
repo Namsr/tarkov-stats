@@ -9,7 +9,8 @@ import { initializeSeasonalSchema, upsertSqliteSeasonCycle } from "./storage.ts"
 import type { ProgressionKind, SeasonalAverageResponse } from "../../types/seasonal.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { resolveY } from "../metrics.ts";
+import { resolveY, AVERAGE_OVERLAY_METRICS } from "../metrics.ts";
+import type { AverageMetricSeriesResponse } from "../average-metric-series";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
@@ -265,37 +266,12 @@ function buildSeasonalCrossSectionsFromRows(
   // whose range metric is null is excluded from its bucket entirely, which is
   // what the SQL counted, and for a median bucket the sum carries
   // median * n so the client still recovers median from sum / n.
-  const metricDef = resolveY(metric);
-  const rangeColumn = metricDef.agg === "count" ? null : (metricDef.column ?? metric);
-  const grouped = new Map<string, { lo: number; hi: number | null; n: number; values: number[] }>();
-  let boundLo: number | null = null;
-  let boundHi: number | null = null;
-  for (const row of periodRows) {
-    const value = finiteOrNull(row[dimensionColumn]);
-    if (value == null) continue;
-    if (boundLo == null || value < boundLo) boundLo = value;
-    if (boundHi == null || value > boundHi) boundHi = value;
-    const metricValue = rangeColumn == null ? null : finiteOrNull(row[rangeColumn]);
-    if (rangeColumn != null && metricValue == null) continue;
-    const bucket = seasonalBucket(input.dimension, value);
-    const key = `${bucket.lo}:${bucket.hi ?? ""}`;
-    const entry = grouped.get(key) ?? { lo: bucket.lo, hi: bucket.hi, n: 0, values: [] as number[] };
-    entry.n += 1;
-    if (metricValue != null) entry.values.push(metricValue);
-    grouped.set(key, entry);
-  }
-  const orderedBuckets = [...grouped.values()].sort((left, right) => left.lo - right.lo);
+  const preparedBuckets = prepareSeasonalBuckets(periodRows, input.dimension, metric);
+  const { boundLo, boundHi } = preparedBuckets;
   const sharedComputeMs = Date.now() - startedAt;
   const variants = portraits.map(({ statistic, averages, metricCounts }) => {
     const variantStartedAt = Date.now();
-    const buckets = orderedBuckets.map((entry) => ({
-      lo: entry.lo,
-      hi: entry.hi,
-      n: entry.n,
-      sum: statistic === "median" && rangeColumn != null
-        ? (averageNumbers(entry.values, "median") ?? 0) * entry.n
-        : entry.values.reduce((total, value) => total + value, 0),
-    }));
+    const buckets = seasonalMetricBuckets(preparedBuckets, statistic);
     const response: SeasonalAverageCrossSectionResponse = {
       mode: "seasonal",
       cycleId: input.cycleId,
@@ -314,6 +290,58 @@ function buildSeasonalCrossSectionsFromRows(
     return { response, computeMs: Date.now() - variantStartedAt };
   });
   return { variants, sharedComputeMs };
+}
+
+function prepareSeasonalBuckets(periodRows: readonly Record<string, unknown>[], dimension: SeasonalAverageDimension, metric: string) {
+  const metricDef = resolveY(metric);
+  const rangeColumn = metricDef.agg === "count" ? null : (metricDef.column ?? metric);
+  const grouped = new Map<string, { lo: number; hi: number | null; n: number; values: number[] }>();
+  let boundLo: number | null = null;
+  let boundHi: number | null = null;
+  for (const row of periodRows) {
+    const value = finiteOrNull(row[dimension === "hours" ? "hours" : "pmc_raids"]);
+    if (value == null) continue;
+    if (boundLo == null || value < boundLo) boundLo = value;
+    if (boundHi == null || value > boundHi) boundHi = value;
+    const metricValue = rangeColumn == null ? null : finiteOrNull(row[rangeColumn]);
+    if (rangeColumn != null && metricValue == null) continue;
+    const bucket = seasonalBucket(dimension, value);
+    const key = `${bucket.lo}:${bucket.hi ?? ""}`;
+    const entry = grouped.get(key) ?? { lo: bucket.lo, hi: bucket.hi, n: 0, values: [] as number[] };
+    entry.n += 1;
+    if (metricValue != null) entry.values.push(metricValue);
+    grouped.set(key, entry);
+  }
+  const orderedBuckets = [...grouped.values()].sort((left, right) => left.lo - right.lo);
+  return { orderedBuckets, rangeColumn, boundLo, boundHi };
+}
+
+function seasonalMetricBuckets(prepared: ReturnType<typeof prepareSeasonalBuckets>, statistic: AverageStatistic) {
+  return prepared.orderedBuckets.map((entry) => ({
+    lo: entry.lo,
+    hi: entry.hi,
+    n: entry.n,
+    sum: statistic === "median" && prepared.rangeColumn != null
+      ? (averageNumbers(entry.values, "median") ?? 0) * entry.n
+      : entry.values.reduce((total, value) => total + value, 0),
+  }));
+}
+
+/** Bucket-only overlay: one normalized scan, no portrait statistics or bounds queries. */
+export async function computeSeasonalMetricSeries(cycleId: string, period: AveragePeriod, statistic: AverageStatistic, now = Date.now()): Promise<AverageMetricSeriesResponse | null> {
+  const backend = await openSeasonalAverageBackend();
+  if (!backend) return null;
+  // Preserve the existing portrait projection and row order for exact floating sum parity.
+  const rows = await backendRows(backend,
+    `${PORTRAIT_CTE} SELECT ${SEASONAL_PORTRAIT_COLUMNS.join(", ")} FROM normalized`,
+    [cycleId, cycleId, cycleId],
+  );
+  const cutoff = period === "90d" ? Math.floor(now - 90 * 86_400_000) : null;
+  const periodRows = cutoff == null ? rows : rows.filter((row) => Number(row.profile_updated_at) >= cutoff);
+  const series = Object.fromEntries(AVERAGE_OVERLAY_METRICS.map((metric) => [metric,
+    seasonalMetricBuckets(prepareSeasonalBuckets(periodRows, "pmc_raids", metric), statistic),
+  ])) as AverageMetricSeriesResponse["series"];
+  return { mode: "seasonal", cycleId, statistic, period, series };
 }
 
 /**
