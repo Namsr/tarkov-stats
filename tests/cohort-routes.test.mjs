@@ -693,3 +693,48 @@ test("Arena and Seasonal cohort envelopes expose exact percentile capability", (
   assert.match(arenaBranch, /schemaVersion: ARENA_PARSER_VERSION,\s*identity,\s*percentiles: null/);
   assert.match(seasonalRoute, /\.\.\.lookup\.result, percentiles: null, statistic, period/);
 });
+
+test("progression averages retry worker failures and preserve application errors", async (t) => {
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousEnvironment = process.env.NODE_ENV;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
+  process.env.NODE_ENV = "test";
+  t.after(() => {
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousEnvironment;
+  });
+  const { GET } = await import("../app/api/progression/average/route.ts");
+  const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
+  const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
+  const { DynamicComputeTimeoutError, resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
+  t.mock.method(console, "error", () => {});
+  t.after(() => resetDynamicAverageCacheForTests());
+  let failure;
+  const payload = { mode: "regular", fixture: "ready" };
+  t.mock.method(CohortComputeWorker.prototype, "compute", async () => {
+    if (failure) throw failure;
+    return payload;
+  });
+  for (const mode of ["regular", "pve"]) {
+    for (const error of [new ComputeUnavailableError("queue full", "queue_full"),
+      new ComputeUnavailableError("worker timed out", "execution_timeout"), new DynamicComputeTimeoutError(25_000)]) {
+      resetDynamicAverageCacheForTests();
+      failure = error;
+      const request = () => GET(new Request(`http://local/api/progression/average?mode=${mode}`));
+      const response = await request();
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("Retry-After"), "5");
+      assert.equal(response.headers.get("Cache-Control"), "no-store");
+      failure = undefined;
+      resetDynamicAverageCacheForTests();
+      const recovered = await request();
+      assert.equal(recovered.status, 200);
+      assert.deepEqual(await recovered.json(), payload);
+    }
+  }
+  resetDynamicAverageCacheForTests();
+  failure = new Error("fixture SQL failed");
+  assert.equal((await GET(new Request("http://local/api/progression/average?mode=regular"))).status, 500);
+});

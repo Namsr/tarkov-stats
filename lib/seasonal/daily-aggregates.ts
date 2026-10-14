@@ -231,14 +231,22 @@ export function refreshSqliteProgressionAggregates(
   const aggregates: DailyAggregateRecord[] = [];
   let intervalCount = 0;
   try {
+    if (targetBucket == null) {
+      db.prepare(`CREATE TEMP TABLE progression_interval_source AS
+        SELECT source.*, ((dimension_raids - 1) / 10 + 1) * 10 AS bucket
+        FROM (${intervalSql()}) source`).run(mode, cycleId);
+      db.exec("CREATE INDEX progression_interval_source_bucket ON progression_interval_source (bucket, dimension_raids, aid, ended_at, id)");
+    }
     const buckets = targetBucket === 0 ? [] : targetBucket == null
       ? db.prepare(`SELECT DISTINCT ((pmc_raids - 1) / 10 + 1) * 10 AS bucket
           FROM progression_snapshots WHERE mode = ? AND cycle_id = ? ORDER BY bucket`).all(mode, cycleId)
           .map((row: { bucket: number }) => Number(row.bucket))
       : [targetBucket];
     for (const bucket of buckets) {
-      const args = [mode, cycleId, bucket];
-      const query = db.prepare(intervalSql(bucket));
+      const args = targetBucket == null ? [bucket] : [mode, cycleId, bucket];
+      const query = db.prepare(targetBucket == null
+        ? "SELECT * FROM progression_interval_source WHERE bucket = ? ORDER BY dimension_raids, aid, ended_at, id"
+        : intervalSql(bucket));
       const latest = new Map<number, IntervalRow>();
       for (const row of query.iterate(...args) as Iterable<IntervalRow>) {
         if (!isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids))) continue;
@@ -308,6 +316,7 @@ export function refreshSqliteProgressionAggregates(
       throw error;
     }
   } finally {
+    db.exec("DROP TABLE IF EXISTS temp.progression_interval_source");
     db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
   }
 }

@@ -30,34 +30,46 @@ export function materializeDueAchievementBaselines(db, { now = Date.now(), publi
   db.exec(ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA);
   const published = [];
   const errors = [];
+  const phases = [];
   for (const mode of ["regular", "pve"]) {
+    const startedAt = Date.now();
     try {
       const current = readPublishedAchievementBaseline(db, mode);
       const age = current ? now - current.generatedAt : Infinity;
       const riskReferencesReady = mode !== "regular" || db.prepare(
         "SELECT 1 FROM regular_risk_reference_state WHERE id = 1"
       ).get();
-      if (!riskReferencesReady) materializeRegularRiskAchievementOwners(db, now);
+      if (!riskReferencesReady) {
+        const started = Date.now();
+        materializeRegularRiskAchievementOwners(db, now);
+        phases.push({ mode, phase: "risk_owners", durationMs: Date.now() - started });
+      }
       if (age >= 0 && age < intervalMs) continue;
+      const publishStarted = Date.now();
       published.push(publish(db, mode, now));
+      phases.push({ mode, phase: "baseline_publish", durationMs: Date.now() - publishStarted });
     } catch (error) {
       errors.push({ mode, error: error instanceof Error ? error.message : String(error) });
+      phases.push({ mode, phase: "failed", durationMs: Date.now() - startedAt });
     }
   }
-  return { published, errors };
+  return { published, errors, phases };
 }
 
 function materializeAchievementBaselines(reason) {
   const startedAt = Date.now();
   let db;
   let snapshots;
+  let riskBackfillMs = 0;
   try {
     db = new DatabaseSync(playersDatabasePath);
     db.exec("PRAGMA busy_timeout = 5000");
     // On first startup the population step below creates the snapshot database.
     if (existsSync(databasePath)) {
       snapshots = new DatabaseSync(databasePath, { readOnly: true });
+      const backfillStarted = Date.now();
       const riskRows = backfillRegularRiskReferences(db, snapshots);
+      riskBackfillMs = Date.now() - backfillStarted;
       if (riskRows) console.log("regular risk references backfilled", { updated: riskRows });
     }
     const result = materializeDueAchievementBaselines(db);
@@ -65,7 +77,7 @@ function materializeAchievementBaselines(reason) {
       mode, generation, generatedAt, total, achievements: achievements.length,
     }));
     if (reason === "startup" || published.length || result.errors.length) {
-      console.log(`achievement baselines checked (${reason}) in ${Date.now() - startedAt}ms`, { published, errors: result.errors });
+      console.log(`achievement baselines checked (${reason}) in ${Date.now() - startedAt}ms`, { published, errors: result.errors, riskBackfillMs, phases: result.phases });
     }
     return { skipped: published.length === 0 && result.errors.length === 0, ...result };
   } catch (error) {
@@ -80,37 +92,60 @@ function materializeAchievementBaselines(reason) {
 export async function materializeDuePopulations(db, scopes, { now = Date.now(), refresh, publish = materializeSqlitePopulationSnapshot } = {}) {
   const published = [];
   const errors = [];
+  const phases = [];
   for (const { mode, cycleId } of scopes) {
     const current = db.prepare(`SELECT generated_at FROM progression_population_current
       WHERE mode = ? AND cycle_id = ?`).get(mode, cycleId);
     if (current && now - Number(current.generated_at) < intervalMs) continue;
+    const startedAt = Date.now();
+    const phase = { mode, cycleId, normalizeMs: 0, normalizedPlayers: 0, refreshMs: 0, publishMs: 0 };
+    let activePhase = "refreshMs";
+    let phaseStarted = Date.now();
     try {
+      let refreshStarted = Date.now();
       if (refresh) await retrySqliteBusy(() => refresh(db, mode, cycleId));
       else if (mode === "regular") {
         // Captures need the same writer. Commit one complete player's repair at
         // a time; a failed publication continues serving its previous generation.
         // The identity index and revision tables are small. Avoid reading every
         // unchanged raw history daily; unmarked legacy identities still repair.
+        activePhase = "normalizeMs";
+        phaseStarted = Date.now();
+        const normalizationStarted = phaseStarted;
         const aids = db.prepare(`SELECT DISTINCT s.aid FROM progression_snapshots s
           LEFT JOIN progression_normalizations n ON n.mode = s.mode AND n.cycle_id = s.cycle_id AND n.aid = s.aid
           LEFT JOIN progression_personal_revisions r ON r.mode = s.mode AND r.cycle_id = s.cycle_id AND r.aid = s.aid
           WHERE s.mode = 'regular' AND s.cycle_id = 'persistent'
             AND (n.aid IS NULL OR n.version != ? OR n.revision != COALESCE(r.revision, 0))
           ORDER BY s.aid`).all(PERSISTENT_MATERIALIZATION_VERSION);
+        phase.normalizedPlayers = 0;
         for (const { aid } of aids) {
           // A stale WAL read snapshot must be rolled back and retried. Keep
           // already committed players instead of restarting the whole scope.
           await retrySqliteBusy(() => materializeRegularProgression(db, Number(aid), { refreshAggregates: false }));
+          phase.normalizedPlayers += 1;
         }
+        phase.normalizeMs = Date.now() - normalizationStarted;
+        refreshStarted = Date.now();
+        activePhase = "refreshMs";
+        phaseStarted = refreshStarted;
         await retrySqliteBusy(() => refreshSqliteProgressionAggregates(db, mode, cycleId));
       }
       else await retrySqliteBusy(() => refreshSqliteProgressionAggregates(db, mode, cycleId));
+      phase.refreshMs = Date.now() - refreshStarted;
+      const publishStarted = Date.now();
+      activePhase = "publishMs";
+      phaseStarted = publishStarted;
       published.push({ mode, cycleId, ...await retrySqliteBusy(() => publish(db, mode, cycleId, now)) });
+      phase.publishMs = Date.now() - publishStarted;
     } catch (error) {
+      phase[activePhase] = Date.now() - phaseStarted;
       errors.push({ mode, cycleId, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      phases.push({ ...phase, totalMs: Date.now() - startedAt });
     }
   }
-  return { published, errors };
+  return { published, errors, phases };
 }
 
 export async function materializeProgressionPopulation(reason = "manual") {

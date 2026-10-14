@@ -126,6 +126,7 @@ try {
     portraitRows: batch.timings.portraitRows,
     portraitFetchMs: batch.timings.portraitFetchMs,
     variants: batch.timings.variants,
+    periods: batch.timings.periods,
     totalMs: batch.timings.totalMs,
     wallTotalMs: totalMs,
     budgetMs: BUDGET_MS,

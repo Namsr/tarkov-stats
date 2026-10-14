@@ -436,17 +436,19 @@ function countSql(where: string): string {
 }
 
 // One statistic for one metric in a range. The trimmed mean preserves the
-// existing LIMIT/OFFSET behavior; median ranks the populated values per metric.
+// existing LIMIT/OFFSET behavior. A count from the same read snapshot also lets
+// median select just the middle values; other callers keep self-contained ranks.
 function metricStatisticSql(
   column: string,
   where: string,
   statistic: AverageStatistic,
   trim: boolean,
+  boundedMedian = false,
 ): string {
   if (!/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
   }
-  if (statistic === "median") {
+  if (statistic === "median" && !boundedMedian) {
     return (
       `WITH ranked AS (` +
       `SELECT ${column} AS v, ROW_NUMBER() OVER (ORDER BY ${column}) AS rn, ` +
@@ -456,7 +458,7 @@ function metricStatisticSql(
       `WHERE rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))`
     );
   }
-  if (!trim) return `SELECT AVG(${column}) AS a FROM players ${where}`;
+  if (!trim && statistic !== "median") return `SELECT AVG(${column}) AS a FROM players ${where}`;
   return (
     `SELECT AVG(v) AS a FROM ` +
     `(SELECT ${column} AS v FROM players ${where} ORDER BY ${column} LIMIT ? OFFSET ?)`
@@ -1528,26 +1530,48 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       async averages(range, statistic = "trimmed_mean", period = "all") {
         const { where: rangeWhere, params } = statRangeClause(range);
         const where = averagePeriodWhere(period, rangeWhere);
-        const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
-        const n = Number(cnt?.n ?? 0);
-        if (n === 0) return emptyAverageRow();
-        const row: AverageRow = { n, metricCounts: {} };
-        for (const c of AVG_COLS) {
-          const metricWhere = eligibleMetricWhere(mode, c, where);
-          const count = metricWhere === where
-            ? n
-            : Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0);
-          const { trim, off, lim } = trimWindow(count);
-          const stmt = db.prepare(metricStatisticSql(c, metricWhere, statistic, trim));
-          const r = (statistic === "trimmed_mean" && trim
-            ? stmt.get(...params, lim, off)
-            : stmt.get(...params)) as
-            | { a: number | null }
-            | undefined;
-          row[c] = r?.a == null ? null : Number(r.a);
-          row.metricCounts[c] = count;
+        // Count every metric in one covering scan. Keep zero values and apply
+        // known-PvP eligibility only to the two metrics that require it.
+        const counts = AVG_COLS.map((column) => {
+          const value = (mode === "regular" || mode === "pve") && PVP_METRICS.has(column)
+            ? `CASE WHEN pvp_stats_known = 1 THEN ${column} END` : column;
+          return `COUNT(${value}) AS ${column}`;
+        });
+        // Count and middle/trim windows must see the same rows while collectors
+        // commit updates on another connection. No await inside this snapshot.
+        rawDb.exec("BEGIN");
+        try {
+          const counted = db.prepare(`SELECT COUNT(*) AS n, ${counts.join(", ")} FROM players ${where}`)
+            .get(...params) as Record<string, number>;
+          const n = Number(counted.n);
+          const row: AverageRow = n === 0 ? emptyAverageRow() : { n, metricCounts: {} };
+          if (n > 0) for (const c of AVG_COLS) {
+            const count = Number(counted[c]);
+            row.metricCounts[c] = count;
+            if (count === 0) {
+              row[c] = null;
+              continue;
+            }
+            const metricWhere = eligibleMetricWhere(mode, c, where);
+            const { trim, off, lim } = trimWindow(count);
+            // Filtered regular scans can use a covering range index with ranked
+            // SQL. LIMIT would make SQLite prefer non-covering metric indexes.
+            const median = statistic === "median" && (mode !== "regular" || period === "all") &&
+              range?.min == null && range?.max == null;
+            const stmt = db.prepare(metricStatisticSql(c, metricWhere, statistic, trim, median));
+            const r = (median
+              ? stmt.get(...params, count % 2 === 0 ? 2 : 1, Math.floor((count - 1) / 2))
+              : statistic === "trimmed_mean" && trim ? stmt.get(...params, lim, off) : stmt.get(...params)) as
+              | { a: number | null }
+              | undefined;
+            row[c] = r?.a == null ? null : Number(r.a);
+          }
+          rawDb.exec("COMMIT");
+          return row;
+        } catch (error) {
+          rawDb.exec("ROLLBACK");
+          throw error;
         }
-        return row;
       },
       async bracketAggregate(column, period = "all") {
         const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(period, ""));

@@ -116,11 +116,26 @@ test("the pmc_raids histogram buckets every dimension and carries the range metr
 test("the request path scans the portrait once instead of once per metric", async () => {
   const source = await readFile("lib/seasonal/average-db.ts", "utf8");
 
-  // Both the publication batch and the request path share one portrait fetch;
+  // Publication, request and overlay paths each use one portrait fetch;
   // nothing else may reference the CTE, and no ranked/statistic SQL is left.
-  assert.equal((source.match(/\$\{PORTRAIT_CTE\} SELECT/g) ?? []).length, 2);
+  assert.equal((source.match(/\$\{PORTRAIT_CTE\} SELECT/g) ?? []).length, 3);
   assert.doesNotMatch(source, /ROW_NUMBER/);
   assert.doesNotMatch(source, /USE TEMP B-TREE/);
   // The per-metric COUNT + ranked loop is what re-ran the CTE ~39 times.
   assert.doesNotMatch(source, /for \(const column of SEASONAL_AVG_COLS\)[\s\S]{0,400}backendFirst/);
+});
+
+
+test("the six-series Seasonal overlay matches individual bucket responses for both statistics and periods", async () => {
+  const { computeSeasonalMetricSeries, getSeasonalAverageCrossSectionQuery } = await import("../lib/seasonal/average-db.ts");
+  const query = await getSeasonalAverageCrossSectionQuery();
+  for (const statistic of ["trimmed_mean", "median"]) for (const period of ["all", "90d"]) {
+    const batch = await computeSeasonalMetricSeries("b1", period, statistic, now);
+    assert.ok(batch);
+    assert.deepEqual(Object.keys(batch.series), ["kd_ratio", "survival_rate", "kills_per_raid", "total_kills", "deaths", "total_raids"]);
+    for (const [metric, buckets] of Object.entries(batch.series)) {
+      const single = await query({ cycleId: "b1", period, statistic, dimension: "pmc_raids", metric, min: null, max: null, now });
+      assert.deepEqual(buckets, single.buckets);
+    }
+  }
 });

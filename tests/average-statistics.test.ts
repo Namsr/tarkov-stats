@@ -226,7 +226,7 @@ const range = (min, max, excludeAid) => ({
 
 test("SQLite median handles empty, odd, even, repeated, missing, and singleton values", async () => {
   reset();
-  const empty = await store.averages(range(0, 999), "median");
+  const empty = await store.averages(range(null, null), "median");
   assert.deepEqual(empty, {
     n: 0,
     metricCounts: Object.fromEntries([
@@ -255,22 +255,22 @@ test("SQLite median handles empty, odd, even, repeated, missing, and singleton v
   });
 
   add(1, { hours: 10, totalRaids: 1 });
-  assert.equal((await store.averages(range(10, 10), "median")).total_raids, 1);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 1);
 
   reset();
   add(1, { hours: 20, totalRaids: 1 });
   add(2, { hours: 20, totalRaids: 2 });
   add(3, { hours: 20, totalRaids: 100 });
-  assert.equal((await store.averages(range(20, 20), "median")).total_raids, 2);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 2);
   add(4, { hours: 20, totalRaids: 200 });
-  assert.equal((await store.averages(range(20, 20), "median")).total_raids, 51);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 51);
 
   reset();
   add(1, { hours: 30, totalRaids: 5 });
   add(2, { hours: 30, totalRaids: 5 });
   add(3, { hours: 30, totalRaids: null });
   add(4, { hours: 30, totalRaids: 9 });
-  const missing = await store.averages(range(30, 30), "median");
+  const missing = await store.averages(range(null, null), "median");
   assert.equal(missing.total_raids, 5);
   assert.equal(missing.metricCounts.total_raids, 3);
 });
@@ -460,7 +460,7 @@ test("PvE PMC K/D distributions and route percentiles exclude unknown PvP stats"
 
   db.prepare("UPDATE mode_players SET killed_pmc = aid WHERE mode = 'pve' AND aid <= 20").run();
   db.prepare("UPDATE mode_players SET killed_pmc = 1000 WHERE mode = 'pve' AND aid = 21").run();
-  const average = await pveStore.averages(range(0, 999), "median", "all");
+  const average = await pveStore.averages(range(null, null), "median", "all");
   assert.equal(average.metricCounts.pmc_kd_ratio, 20);
   assert.equal(average.metricCounts.killed_pmc, 20);
   assert.equal(average.pmc_kd_ratio, 10.5);
@@ -1411,4 +1411,61 @@ test("the average route rejects the legacy minHours/maxHours pair instead of dro
   ));
   assert.equal(ranged.status, 200);
   assert.equal((await ranged.json()).averages.n, 1);
+});
+
+test("average counts and statistic windows share a snapshot during external commits", async () => {
+  db.exec("PRAGMA journal_mode = WAL");
+  for (const mode of ["regular", "pve"]) for (const statistic of ["median", "trimmed_mean"]) {
+    resetPve();
+    const selected = mode === "regular" ? store : pveStore;
+    const table = mode === "regular" ? "players" : "mode_players";
+    for (const [aid, value] of [[1, 1], [2, 10], [3, 100]]) {
+      if (mode === "regular") add(aid, { value });
+      else addMode(mode, aid, { value });
+    }
+    const prepare = DatabaseSync.prototype.prepare;
+    let committed = false;
+    DatabaseSync.prototype.prepare = function (sql) {
+      const stmt = prepare.call(this, sql);
+      if (!committed && (sql.startsWith("SELECT AVG(") || sql.startsWith("WITH ranked AS"))) {
+        committed = true;
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          prepare.call(db, `UPDATE ${table} SET total_raids = 1000 WHERE aid = 1`).run();
+          prepare.call(db, `DELETE FROM ${table} WHERE aid = 2`).run();
+          db.exec("COMMIT");
+        } catch (error) { db.exec("ROLLBACK"); throw error; }
+      }
+      return stmt;
+    };
+    try {
+      const result = await selected.averages(range(null, null), statistic);
+      assert.ok(committed, "the other connection must commit during the portrait calculation");
+      assert.equal(result.n, 3);
+      assert.equal(result.metricCounts.total_raids, 3);
+      assert.equal(result.total_raids, statistic === "median" ? 10 : 111 / 3);
+    } finally { DatabaseSync.prototype.prepare = prepare; }
+    const next = await selected.averages(range(null, null), statistic);
+    assert.equal(next.n, 2);
+    assert.equal(next.total_raids, 550);
+  }
+});
+
+test("a failed average releases its read transaction and the next calculation succeeds", async () => {
+  resetPve();
+  add(1, { value: 10 });
+  const prepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (sql.startsWith("SELECT AVG(") || sql.startsWith("WITH ranked AS")) throw new Error("fixture statistic failed");
+    return prepare.call(this, sql);
+  };
+  try {
+    await assert.rejects(store.averages(range(null, null), "median"), /fixture statistic failed/);
+  } finally { DatabaseSync.prototype.prepare = prepare; }
+  db.exec("UPDATE players SET total_raids = 20 WHERE aid = 1");
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 20);
+  reset();
+  assert.equal((await store.averages(range(null, null), "median")).n, 0);
+  add(1, { value: 30 });
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 30);
 });

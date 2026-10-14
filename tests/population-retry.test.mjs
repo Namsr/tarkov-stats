@@ -25,7 +25,7 @@ test("achievement startup bootstraps missing modes and reuses fresh publications
     // Reusing a valid publication must not even read these expensive sources.
     db.exec("DROP TABLE players; DROP TABLE mode_players");
     const second = materializeDueAchievementBaselines(db, { now: now + retryIntervalMs });
-    assert.deepEqual(second, { published: [], errors: [] });
+    assert.deepEqual(second, { published: [], errors: [], phases: [] });
     assert.equal(readPublishedAchievementBaseline(db, "regular").generation, now);
   } finally { db.close(); }
 });

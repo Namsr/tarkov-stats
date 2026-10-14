@@ -690,3 +690,38 @@ test("the regular progression backfill refuses a missing database instead of cre
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test("full aggregate rebuild stages intervals once, preserves targeted rebuilds and cleans up on failure", async (t) => {
+  const { refreshSqliteProgressionAggregates } = await import("../lib/seasonal/daily-aggregates.ts");
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  materializeRegularProgression(db);
+  const insert = db.prepare(`INSERT INTO progression_snapshots
+    (mode,cycle_id,aid,profile_updated_at,upstream_updated_at,captured_at,local_date,stats_json)
+    VALUES ('regular','persistent',?,?,?,?, 'x',?)`);
+  for (const aid of [1,2,3]) for (const [i,raids] of [1,10,11,20,21].entries()) {
+    insert.run(aid,(i+1)*day,(i+1)*day,(i+1)*day,stats((i+1)*100+aid,raids));
+  }
+  materializeRegularProgression(db);
+  const prepare = db.prepare.bind(db);
+  const sql=[];
+  t.mock.method(db,"prepare",(query)=>{sql.push(query);return prepare(query);});
+  const content=()=>({daily:prepare("SELECT * FROM daily_aggregates ORDER BY kind,bucket_min").all(),
+    scores:prepare("SELECT id,tempo_score,form_score,score_sample_n FROM progression_intervals ORDER BY id").all()});
+  const clean=()=>assert.equal(prepare("SELECT COUNT(*) AS n FROM sqlite_temp_master WHERE name LIKE 'progression_%'").get().n,0);
+  refreshSqliteProgressionAggregates(db,"regular","persistent");
+  const full=content(); clean();
+  assert.equal(sql.filter(query=>query.includes("json_extract")&&query.includes("FROM progression_intervals i")).length,1);
+  sql.length=0;
+  refreshSqliteProgressionAggregates(db,"regular","persistent",10);
+  assert.deepEqual(content(),full); clean();
+  assert.equal(sql.some(query=>query.includes("CREATE TEMP TABLE progression_interval_source")),false);
+  const beforeGeneration=prepare("SELECT generation FROM progression_materializations WHERE mode='regular'").get().generation;
+  db.exec("CREATE TRIGGER reject_daily BEFORE INSERT ON daily_aggregates BEGIN SELECT RAISE(ABORT,'reject daily'); END");
+  assert.throws(()=>refreshSqliteProgressionAggregates(db,"regular","persistent"),/reject daily/);
+  assert.deepEqual(content(),full); clean();
+  assert.equal(prepare("SELECT generation FROM progression_materializations WHERE mode='regular'").get().generation,beforeGeneration);
+  db.exec("DROP TRIGGER reject_daily");
+  refreshSqliteProgressionAggregates(db,"regular","persistent"); assert.deepEqual(content(),full); clean();
+});

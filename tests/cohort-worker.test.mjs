@@ -50,6 +50,15 @@ test("cohort IPC preserves persistent modes, periods, statistics, percentiles an
         assert.deepEqual(await worker.compute(input), expected);
       }
     }
+    const store = await getStore(mode);
+    for (const statistic of ["median", "trimmed_mean"]) for (const period of ["all", "90d"]) {
+      const input = { kind: "average_metrics", args: [{ mode, cycleId: "persistent", statistic, period }] };
+      const actual = await worker.compute(input);
+      assert.deepEqual(actual, await computeCohort(input));
+      for (const [metric, buckets] of Object.entries(actual.series)) {
+        assert.deepEqual(buckets, await store.bucketAggregate("pmc_raids", metric, period, statistic));
+      }
+    }
     const empty = { kind: "persistent", mode, args: [0, 0, 1] };
     assert.deepEqual(await worker.compute(empty), await computeCohort(empty));
     const baseline = { kind: "baseline", mode, args: [70, 130] };
@@ -104,6 +113,10 @@ test("the Seasonal cross-section averages cross the IPC boundary byte for byte",
     assert.ok(expected.available);
     assert.ok(expected.result);
     assert.deepEqual(await worker.compute(input), expected);
+  }
+  for (const statistic of ["median", "trimmed_mean"]) for (const period of ["all", "90d"]) {
+    const input = { kind: "average_metrics", args: [{ mode: "seasonal", cycleId: "s1", period, statistic }] };
+    assert.deepEqual(await worker.compute(input), await computeCohort(input));
   }
   // A range narrows the averages while the histogram still spans the period.
   // The cohort fixture above puts every profile at 100 hours except aid 30 at

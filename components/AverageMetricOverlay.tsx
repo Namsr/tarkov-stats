@@ -3,19 +3,8 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { loadAverageJson } from "@/lib/client-average-request";
+import type { AverageMetricSeriesResponse } from "@/lib/average-metric-series";
 import { useI18n } from "@/lib/i18n/context";
-
-interface OverlayBucket {
-  lo: number;
-  hi: number | null;
-  n: number;
-  sum: number;
-}
-
-interface OverlayResponse {
-  buckets?: OverlayBucket[];
-  bounds?: { min: number; max: number };
-}
 
 const OVERLAY_METRICS = [
   { key: "kd_ratio", digits: 2, color: "#9ec49f" },
@@ -51,32 +40,27 @@ export default function AverageMetricOverlay({
     const controller = new AbortController();
     setSeries({});
     setFailed(false);
-    const endpoint = mode === "seasonal" ? "/api/seasonal/average" : "/api/average";
-    void Promise.all(
-      OVERLAY_METRICS.map(async (metric) => {
-        const params = new URLSearchParams({ dimension: "pmc_raids", metric: metric.key, statistic, period });
-        if (mode !== "seasonal") params.set("mode", mode);
-        if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
-        const apply = (json: OverlayResponse) => {
-          if (controller.signal.aborted) return;
-          const buckets = json.buckets ?? [];
-          const avg = buckets.map((bucket) => (bucket.n > 0 ? bucket.sum / bucket.n : 0));
-          const lo = buckets.map((bucket) => bucket.lo);
-          setSeries((current) => ({ ...current, [metric.key]: { avg, lo, max: Math.max(0, ...avg) } }));
-        };
-        try {
-          const json = await loadAverageJson<OverlayResponse>(`${endpoint}?${params.toString()}`, {
-            signal: controller.signal,
-            retryUnavailable: true,
-            onUpdate: apply,
-          });
-          apply(json);
-        } catch (caught: unknown) {
-          if (caught instanceof Error && caught.name === "AbortError") return;
-          if (!controller.signal.aborted) setFailed(true);
-        }
-      }),
-    );
+    const params = new URLSearchParams({ mode, statistic, period });
+    if (mode === "seasonal") params.set("cycle", cycleId);
+    const apply = (json: AverageMetricSeriesResponse) => {
+      if (controller.signal.aborted) return;
+      const next: typeof series = {};
+      for (const metric of OVERLAY_METRICS) {
+        const buckets = json.series?.[metric.key];
+        if (!Array.isArray(buckets)) throw new Error("Missing metric series");
+        const avg = buckets.map((bucket) => (bucket.n > 0 ? bucket.sum / bucket.n : 0));
+        next[metric.key] = { avg, lo: buckets.map((bucket) => bucket.lo), max: Math.max(0, ...avg) };
+      }
+      setSeries(next);
+    };
+    void loadAverageJson<AverageMetricSeriesResponse>(`/api/average/metrics?${params}`, {
+      signal: controller.signal,
+      retryUnavailable: true,
+      onUpdate: apply,
+    }).then(apply).catch((caught: unknown) => {
+      if (caught instanceof Error && caught.name === "AbortError") return;
+      if (!controller.signal.aborted) setFailed(true);
+    });
     return () => controller.abort();
   }, [cycleId, mode, period, statistic]);
 
@@ -155,7 +139,7 @@ export default function AverageMetricOverlay({
         {active.map((metric) => (
           <span key={metric.key}>
             <i aria-hidden="true" style={{ display: "inline-block", width: 10, height: 4, background: metric.color, marginRight: 6 }} />
-            {t("metric." + metric.key)} · max {fmtMax(metric.key, series[metric.key].max)}
+            {t("metric." + metric.key)} · {t("average.metricChartMax", { n: fmtMax(metric.key, series[metric.key].max) })}
           </span>
         ))}
       </div>

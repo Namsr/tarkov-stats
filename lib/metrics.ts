@@ -62,3 +62,6 @@ export function formatValue(m: YMetric, v: number): string {
   }
   return m.unit ? `${s}${m.unit}` : s;
 }
+
+/** Fixed series displayed together by the population metric overlay. */
+export const AVERAGE_OVERLAY_METRICS = ["kd_ratio", "survival_rate", "kills_per_raid", "total_kills", "deaths", "total_raids"] as const;

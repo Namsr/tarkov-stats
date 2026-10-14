@@ -1,3 +1,4 @@
+import { computeAverageMetricSeries } from "@/lib/average-metric-series";
 import { getStore, type PlayerStore } from "@/lib/db";
 import { getArenaAverage, getArenaCohort } from "@/lib/arena/service";
 import { computeSeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort";
@@ -8,6 +9,7 @@ import type { CrossSectionMode } from "@/lib/db";
 import type { ProgressionAverageResponse, SeasonalAverageResponse } from "@/types/seasonal";
 
 export type CohortJob =
+  | { kind: "average_metrics"; args: Parameters<typeof computeAverageMetricSeries> }
   | { kind: "persistent"; mode: "regular" | "pve"; args: Parameters<PlayerStore["cohort2d"]> }
   | { kind: "arena"; args: Parameters<typeof getArenaCohort> }
   | { kind: "arena_population"; args: Parameters<typeof getArenaAverage> }
@@ -18,6 +20,7 @@ export type CohortJob =
   | { kind: "seasonal_progression_average"; args: [cycleId: string] };
 
 export type CohortResults = {
+  average_metrics: Awaited<ReturnType<typeof computeAverageMetricSeries>>;
   persistent: Awaited<ReturnType<PlayerStore["cohort2d"]>>;
   arena: Awaited<ReturnType<typeof getArenaCohort>>;
   arena_population: Awaited<ReturnType<typeof getArenaAverage>>;
@@ -32,6 +35,7 @@ export type CohortResults = {
 // semantics in their current modules rather than duplicating them for IPC.
 export async function computeCohort(job: CohortJob): Promise<CohortResults[keyof CohortResults]> {
   switch (job.kind) {
+    case "average_metrics": return computeAverageMetricSeries(...job.args);
     case "persistent": {
       const store = await getStore(job.mode);
       if (!store) throw new Error("Comparison storage is unavailable");

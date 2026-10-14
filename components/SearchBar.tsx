@@ -14,6 +14,7 @@ import { selectPlayerSearchProfile } from "@/lib/player-search";
 import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchProfileResult, PlayerSearchResult } from "@/types/tarkov";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
@@ -110,7 +111,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
         cycle: "persistent",
         aid: String(aid),
       });
-      void fetch(`/api/progression/timeline?${timeline}`, { cache: "default" }).catch(() => {});
+      void loadAverageJson(`/api/progression/timeline?${timeline}`).catch(() => {});
     }
     router.push(profileHref(aid, selectedProfile));
   }
@@ -384,7 +385,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     }
     if (selectedMode === "regular" || selectedMode === "pve") {
       const timelineParams = new URLSearchParams({ mode: selectedMode, cycle: "persistent", aid: String(player.aid) });
-      void fetch(`/api/progression/timeline?${timelineParams}`, { cache: "default" }).catch(() => {
+      void loadAverageJson(`/api/progression/timeline?${timelineParams}`).catch(() => {
         // The mounted progression panel retries and owns its visible error state.
       });
     }

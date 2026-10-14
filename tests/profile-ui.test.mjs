@@ -797,7 +797,9 @@ test("profile navigation exposes the shell immediately and overlaps regular API 
   assert.match(search, /warmPlayerProfileResponse\(`\/api\/player\/profile\?\$\{profileParams\}`\)/);
   assert.match(search, /selectedMode === "regular" \|\| selectedMode === "pve"/);
   assert.match(search, /const timelineParams = new URLSearchParams\(\{ mode: selectedMode, cycle: "persistent", aid: String\(player\.aid\) \}\)/);
-  assert.match(search, /fetch\(`\/api\/progression\/timeline\?\$\{timelineParams\}`, \{ cache: "default" \}\)/);
+  assert.match(search, /import \{ loadAverageJson \} from "@\/lib\/client-average-request"/);
+  assert.match(search, /loadAverageJson\(`\/api\/progression\/timeline\?\$\{timelineParams\}`\)/);
+  assert.doesNotMatch(search, /fetch\(`\/api\/progression\/timeline\?/);
   assert.match(search, /router\.push\(href\)/);
 });
 

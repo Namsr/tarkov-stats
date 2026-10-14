@@ -2,7 +2,8 @@ import { getStore } from "@/lib/db";
 import { getProgressionStore } from "@/lib/progression-db";
 import { getSeasonalStore } from "@/lib/seasonal/storage";
 import { querySeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort";
-import { getArenaProfile, getArenaCohort, getArenaAverage } from "@/lib/arena/service";
+import { getArenaProfile } from "@/lib/arena/service";
+import { computeCohortInBackground } from "@/lib/cohort-worker";
 import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
 import { arenaAverageCacheVersion } from "@/lib/arena-average-cache";
 import { rateArenaMode } from "@/lib/arena/ts-rating";
@@ -37,10 +38,10 @@ export async function loadLeaderboardPreview(aid: number, scope: LeaderboardPrev
     if (!profile) return null;
     const version = await arenaAverageCacheVersion();
     const loaded = await loadDynamicAverage(`preview-arena-cohort:${aid}:${mode}:${version}:${profile.profileUpdatedAt}:${profile.parserVersion}`, async () => {
-      const matched = await getArenaCohort(aid, mode);
+      const matched = await computeCohortInBackground({ kind: "arena", args: [aid, mode] });
       if (matched?.reason !== "insufficient_cohort") return matched;
       // Same matched-group -> population fallback as the full Arena comparison.
-      const population = await getArenaAverage({ mode, statistic: "trimmed_mean" });
+      const population = await computeCohortInBackground({ kind: "arena_population", args: [{ mode, statistic: "trimmed_mean" }] });
       return population && population.sampleN >= 20 ? { ...matched, quality: "sufficient" as const, metrics: population.metrics } : matched;
     });
     const stats = profile.modes[mode];
@@ -82,7 +83,8 @@ export async function loadLeaderboardPreview(aid: number, scope: LeaderboardPrev
       longestWinStreak: s?.longestWinStreak ?? profile.staticSignals?.longestWinStreak };
     cohort = (await querySeasonalComparisonCohort({ aid, cycleId: scope.cycleId! })).result;
   } else {
-    const store = await getStore(scope.mode);
+    const mode = scope.mode;
+    const store = await getStore(mode);
     if (!store) return null;
     // The cross-section may lag a recorded profile; use the same latest-snapshot preference as /api/average/cohort.
     const progression = await getProgressionStore(scope.mode).catch(() => null);
@@ -91,7 +93,7 @@ export async function loadLeaderboardPreview(aid: number, scope: LeaderboardPrev
     if (!stored) return null;
     stats = stored;
     const loaded = await loadDynamicAverage(`preview-cohort-v1:${scope.mode}:${aid}:${stats.profileUpdatedAt}:${stats.pvpStatsVersion}`, () =>
-      store.cohort2d(stats.hoursPlayed ?? 0, stats.pmcRaids ?? 0, aid, "hours", "trimmed_mean", "all"));
+      computeCohortInBackground({ kind: "persistent", mode, args: [stats.hoursPlayed ?? 0, stats.pmcRaids ?? 0, aid, "hours", "trimmed_mean", "all"] }));
     cohort = loaded.value;
   }
   return { ...scope, aid, nickname: stats.nickname ?? `#${aid}`, side: stats.side ?? null, level: finite(stats.level), prestige: finite(stats.prestige),
