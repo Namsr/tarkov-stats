@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   materializeAchievementBaseline,
   readPublishedAchievementBaseline,
+  readRegularRiskAchievementBaseline,
 } from "../lib/achievement-baseline-publication.ts";
 
 function fixture(): DatabaseSync {
@@ -130,5 +131,38 @@ test("an unresolved percentile rank still falls back to the mean", () => {
     // Without the mean fallback these publish 0, which reads as "unlocked at 0h".
     assert.equal(gapped?.earlyHours, 100);
     assert.equal(gapped?.unlockHours, 100);
+  } finally { db.close(); }
+});
+
+test("risk achievement tombstone membership preserves exact moments, owner order and p20", () => {
+  const db = fixture();
+  try {
+    materializeAchievementBaseline(db, "regular", 1);
+    db.prepare("INSERT INTO regular_risk_achievement_owners VALUES (999,'a',0.1)").run();
+    const owner = db.prepare("INSERT INTO regular_risk_achievement_owners VALUES (?,'fractional',?)");
+    const player = db.prepare("INSERT INTO players VALUES (?,?,'[]')");
+    for (let i = 10; i < 511; i++) {
+      const hours = i % 13 / 7;
+      player.run(i, hours); owner.run(i, hours);
+    }
+    db.exec("DELETE FROM players WHERE aid=11; INSERT INTO excluded_players VALUES (12)");
+    const where = `WHERE ach_id=? AND aid!=? AND hours>0 AND hours<1e100
+      AND EXISTS(SELECT 1 FROM players p INDEXED BY idx_players_risk_identity WHERE p.aid=regular_risk_achievement_owners.aid)
+      AND NOT EXISTS(SELECT 1 FROM excluded_players e WHERE e.aid=regular_risk_achievement_owners.aid)`;
+    const agg = db.prepare(`SELECT COUNT(*) n, AVG(hours) mean, AVG(hours*hours) square FROM regular_risk_achievement_owners ${where}`);
+    const rank = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where} ORDER BY hours,aid LIMIT 1 OFFSET ?`);
+    for (const aid of [1, 9, 11, 12, 999999]) {
+      const ids = ["fractional", "a", "absent", "fractional"];
+      const expected = [...new Set(ids)].map((id) => {
+        const row = agg.get(id, aid)!;
+        const n = Number(row.n); const mean = Number(row.mean ?? 0);
+        const p20 = n ? Number(rank.get(id, aid, Math.ceil(n * 0.2) - 1)?.hours ?? 0) : 0;
+        return { ach_id: id, owners: n, hoursOwners: n, meanHours: mean,
+          stdHours: Math.sqrt(Math.max(0, Number(row.square ?? 0) - mean * mean)), earlyHours: p20, unlockHours: p20 };
+      });
+      const actual = readRegularRiskAchievementBaseline(db, ids, aid);
+      assert.deepEqual(actual.achievements, expected);
+      assert.equal(actual.total, 2);
+    }
   } finally { db.close(); }
 });

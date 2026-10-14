@@ -8,10 +8,17 @@ import { useI18n } from "@/lib/i18n/context";
 import type { LeaderboardMeta, LeaderboardRow, LeaderboardSort } from "@/types/leaderboard";
 import { LeaderboardPreviewLink } from "@/components/LeaderboardPreview";
 
+// The two UI locales and three precisions reuse six formatters across all rows.
+const numberFormats = new Map<string, Intl.NumberFormat>();
 function formatNumber(value: number | null, locale: string, digits = 0): string {
-  return value == null
-    ? "—"
-    : value.toLocaleString(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  if (value == null) return "—";
+  const key = `${locale}:${digits}`;
+  let formatter = numberFormats.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+    numberFormats.set(key, formatter);
+  }
+  return formatter.format(value);
 }
 
 function scoreValue(row: LeaderboardRow, meta: LeaderboardMeta, locale: string): string {
@@ -77,11 +84,16 @@ function flipRows(container: HTMLElement | null, prev: Map<number, number>): Map
   const current = new Map<number, number>();
   if (!container) return current;
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  container.querySelectorAll("[data-aid]").forEach((node) => {
-    const el = node as HTMLElement;
-    flipActive.get(el)?.cancel();
-    if (el.getClientRects().length === 0) return;
-    const top = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  const elements = Array.from(container.querySelectorAll<HTMLElement>("[data-aid]"));
+  // Finish writes before reading geometry, then start all animations after the
+  // reads. Alternating reads and animation writes forced layout for every row.
+  elements.forEach((el) => flipActive.get(el)?.cancel());
+  if (container.getClientRects().length === 0) return current;
+  const containerTop = container.getBoundingClientRect().top;
+  const positions = elements.flatMap((el) => el.getClientRects().length === 0 ? [] : [{
+    el, top: el.getBoundingClientRect().top - containerTop,
+  }]);
+  positions.forEach(({ el, top }) => {
     const aid = Number(el.dataset.aid);
     current.set(aid, top);
     if (reduceMotion) return;

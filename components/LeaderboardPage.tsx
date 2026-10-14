@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import LeaderboardTable from "@/components/LeaderboardTable";
 import { LeaderboardPreviewProvider } from "@/components/LeaderboardPreview";
 import { useI18n } from "@/lib/i18n/context";
@@ -52,6 +52,8 @@ function queryCycle(value: string | null): string | null {
 
 export default function LeaderboardPage() {
   const { lang, t } = useI18n();
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
   const searchParams = useSearchParams();
   const mode = queryMode(searchParams.get("mode"));
   const arenaMode = queryArenaMode(searchParams.get("arenaMode"));
@@ -106,7 +108,7 @@ export default function LeaderboardPage() {
       try {
         const response = await fetch(requestUrl, { signal: controller.signal, cache: "no-store" });
         const body = await response.json() as LeaderboardPageResponse | LeaderboardErrorResponse;
-        if (!response.ok || !("meta" in body)) throw new Error(t("leaderboard.error"));
+        if (!response.ok || !("meta" in body)) throw new Error(tRef.current("leaderboard.error"));
         if (cancelled) return;
         setResult({ key: requestUrl, data: body, error: "" });
         setFailedUrl((current) => (current === requestUrl ? null : current));
@@ -121,7 +123,7 @@ export default function LeaderboardPage() {
         if (cancelled) return;
         // Keep the previous table on screen instead of wiping to the error
         // panel: mode tabs and controls stay usable while this fetch is down.
-        setResult((prev) => (prev?.data ? prev : { key: requestUrl, data: null, error: t("leaderboard.error") }));
+        setResult((prev) => (prev?.data ? prev : { key: requestUrl, data: null, error: tRef.current("leaderboard.error") }));
         setFailedUrl(requestUrl);
       } finally {
         clearTimeout(timeout);
@@ -133,7 +135,7 @@ export default function LeaderboardPage() {
       cancelled = true;
       supersede.abort();
     };
-  }, [requestUrl, t, retryNonce]);
+  }, [requestUrl, retryNonce]);
 
   function updateQuery(next: {
     mode?: LeaderboardMode;

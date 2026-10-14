@@ -88,7 +88,7 @@ export function readRegularRiskAchievementBaseline(
   const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
       AND EXISTS (SELECT 1 FROM players p${identityIndex}
         WHERE p.aid = regular_risk_achievement_owners.aid)
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = regular_risk_achievement_owners.aid)`;
+      AND aid NOT IN (SELECT aid FROM excluded_players)`;
   const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
       FROM regular_risk_achievement_owners ${where}`);
   const percentile = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}

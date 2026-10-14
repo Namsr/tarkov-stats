@@ -1,8 +1,50 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 const read = (path) => readFile(path, "utf8");
+
+test("leaderboard formatter reuse preserves the exact existing locale and precision text", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  const helper = table.slice(table.indexOf("const numberFormats"), table.indexOf("function scoreValue"));
+  const format = new Function(`${ts.transpile(helper)}; return formatNumber`)();
+  for (const locale of ["en-US", "ru-RU"]) for (const digits of [0, 1, 2]) {
+    for (const value of [null, 0, -0, 1.005, -1.005, 1 / 7, 1234567.891, NaN, Infinity]) {
+      assert.equal(format(value, locale, digits), value == null ? "—"
+        : value.toLocaleString(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits }));
+    }
+  }
+});
+
+test("leaderboard FLIP cancels before geometry and measures every row before animation writes", async () => {
+  const table = await read("components/LeaderboardTable.tsx");
+  const helper = table.slice(table.indexOf("const flipActive"), table.indexOf("export default function"));
+  let reduced = false;
+  const { flipRows, flipActive } = new Function("window", `${ts.transpile(helper)}; return { flipRows, flipActive }`)({
+    matchMedia: () => ({ matches: reduced }),
+  });
+  const calls = [];
+  const elements = [1, 2].map((aid) => ({
+    dataset: { aid: String(aid) },
+    getClientRects: () => [1],
+    getBoundingClientRect: () => { calls.push(`read:${aid}`); return { top: aid * 20 }; },
+    animate: (frames, options) => { calls.push(`write:${aid}`); return { frames, options, cancel: () => calls.push(`cancel:${aid}`) }; },
+  }));
+  elements.forEach((el, i) => flipActive.set(el, { cancel: () => calls.push(`cancel:${i + 1}`) }));
+  let containerReads = 0;
+  const container = { querySelectorAll: () => elements, getClientRects: () => [1],
+    getBoundingClientRect: () => { containerReads++; return { top: 10 }; } };
+  assert.deepEqual([...flipRows(container, new Map([[1, 30], [2, 50]]))], [[1, 10], [2, 30]]);
+  assert.deepEqual(calls, ["cancel:1", "cancel:2", "read:1", "read:2", "write:1", "write:2"]);
+  assert.equal(containerReads, 1);
+  calls.length = 0; reduced = true;
+  flipRows(container, new Map([[1, 30], [2, 50]]));
+  assert.ok(!calls.some((call) => call.startsWith("write:")));
+  calls.length = 0;
+  assert.equal(flipRows({ ...container, getClientRects: () => [] }, new Map()).size, 0);
+  assert.ok(!calls.some((call) => call.startsWith("read:")));
+});
 
 test("leaderboard route uses the query-driven client and a route loading state", async () => {
   const [page, loading] = await Promise.all([
@@ -237,7 +279,8 @@ test("leaderboard fetch fails fast and retries without a full reload", async () 
   // One automatic retry, then a manual retry that re-issues the API request.
   assert.match(page, /LEADERBOARD_FETCH_RETRIES = 1/);
   assert.match(page, /setRetryNonce\(\(nonce\) => nonce \+ 1\)/);
-  assert.match(page, /\[requestUrl, t, retryNonce\]/);
+  assert.match(page, /\[requestUrl, retryNonce\]/);
+  assert.match(page, /tRef\.current\("leaderboard\.error"\)/);
   assert.doesNotMatch(page, /window\.location\.reload/);
   // A failed fetch keeps the previous table instead of wiping to the panel.
   assert.match(page, /prev\?\.data \? prev : \{ key: requestUrl, data: null/);

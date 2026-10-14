@@ -76,7 +76,11 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   // The six metrics are ranked one at a time over the shared cohort CTE. A
   // UNION ALL of per-metric rows would expand the cohort six times before the
   // sort, which is what made the population fallback take seconds.
-  assert.match(db, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*COUNT\(\*\) OVER \(\) AS n FROM cohort WHERE \$\{metric\} IS NOT NULL/);
+  const metricsSql = db.slice(db.indexOf("function persistentComparisonMetricsSql"), db.indexOf("async function computePersistentTwoDimensionalCohort"));
+  assert.match(metricsSql, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*count_\$\{index\} AS n FROM cohort CROSS JOIN summary/);
+  assert.match(metricsSql, /summary AS MATERIALIZED/);
+  assert.match(metricsSql, /COUNT\(CASE WHEN \$\{metricWhere\(metric\)\} THEN 1 END\)/);
+  assert.doesNotMatch(metricsSql, /COUNT\(\*\) OVER \(\)/);
   assert.doesNotMatch(db, /metric_values AS/);
   assert.doesNotMatch(db, /PARTITION BY metric/);
   assert.match(db, /SUM\(CASE WHEN v < player_v THEN 1 ELSE 0 END\) AS below/);
