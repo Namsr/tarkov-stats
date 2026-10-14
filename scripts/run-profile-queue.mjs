@@ -60,14 +60,14 @@ export function runCollector(mode, budgetMs, deadline, signal) {
       }
     });
     child.on("error", (error) => log("COLLECTOR_ERROR", { mode: mode.name, error: error.message }));
-    child.on("close", async (code) => {
+    child.on("close", async (code, terminationSignal) => {
       clearTimeout(watchdog);
       clearTimeout(killTimer);
       signal?.removeEventListener("abort", stop);
       // SIGKILL bypasses the collector's finally block. Only after this exact
       // child has exited may its parent release this child's lease.
       if (arenaRunId) await releaseArenaLease(arenaRunId);
-      resolveResult({ code: code ?? 1, summary, killed });
+      resolveResult({ code: code ?? 1, summary, killed, signal: terminationSignal });
     });
   });
 }
@@ -140,7 +140,9 @@ export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MA
     }
     warmupOk = warmup.code === 0 && !warmup.killed && typeof warmup.summary?.bounded === "boolean" && warmup.summary?.stopped === false
       && Number.isInteger(warmup.summary?.processed) && warmup.summary.processed >= 0;
-    emit("MODE_RESULT", { mode: "warmup", code: warmup.code });
+    emit("MODE_RESULT", { mode: "warmup", code: warmup.code, killed: Boolean(warmup.killed),
+      signal: warmup.signal ?? null, processed: warmup.summary?.processed ?? null,
+      bounded: warmup.summary?.bounded ?? null, selectionBounded: warmup.summary?.selectionBounded ?? null });
   }
   const deferred = states.reduce((sum, state) => sum + (state.result?.summary?.deferred ?? 0), 0);
   const summary = { ok: complete && warmupOk && !signal?.aborted, deferred,

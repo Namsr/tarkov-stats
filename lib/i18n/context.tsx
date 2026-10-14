@@ -62,3 +62,9 @@ export function useI18n(): I18nValue {
   if (!ctx) throw new Error("useI18n must be used within <LanguageProvider>");
   return ctx;
 }
+
+/** Next can render the root 404 without the layout's provider. Reuse it when present. */
+export function LanguageBoundary({ initialLang, children }: { initialLang: Lang; children: React.ReactNode }) {
+  const context = useContext(I18nContext);
+  return context ? children : <LanguageProvider initialLang={initialLang}>{children}</LanguageProvider>;
+}

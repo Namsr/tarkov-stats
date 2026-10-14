@@ -263,6 +263,40 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   players.close();
 });
 
+test("warmup selection reads only a bounded identity page and resumes scans with no candidates", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, profile_updated_at INTEGER);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    ATTACH DATABASE ':memory:' AS progression_scan;
+    CREATE TABLE progression_scan.progression_snapshots
+      (id INTEGER PRIMARY KEY, mode TEXT, cycle_id TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    CREATE INDEX progression_scan.latest_snapshot ON progression_snapshots(mode,cycle_id,aid,profile_updated_at,id);`);
+  const insertPlayer = db.prepare("INSERT INTO players VALUES (?,100)");
+  const insertSnapshot = db.prepare("INSERT INTO progression_scan.progression_snapshots VALUES (?,'regular','persistent',?,100,?)");
+  for (let aid = 1; aid <= 1000; aid++) {
+    insertPlayer.run(aid);
+    insertSnapshot.run(aid, aid, JSON.stringify({ pvpStatsParserVersion: aid === 1 ? 1 : 2 }));
+  }
+  let reads = 0;
+  db.function("json_valid", (value) => { reads++; return typeof value === "string" ? 1 : 0; });
+  try {
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], { limitPerMode: 1 })
+      .map(row => row.aid), [1]);
+    assert.equal(reads, 1, "LIMIT must take effect before inspecting every saved JSON");
+    db.exec(`UPDATE progression_scan.progression_snapshots SET stats_json = '{"pvpStatsParserVersion":2}' WHERE aid = 1;
+      UPDATE progression_scan.progression_snapshots SET stats_json = '{"pvpStatsParserVersion":1}' WHERE aid = 3;`);
+    reads = 0;
+    let scanAid = 0;
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], {
+      shouldStop: () => reads >= 2, onProgress: (_mode, aid) => { scanAid = aid; },
+    }), []);
+    assert.equal(scanAid, 2);
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], {
+      checkpoint: { modes: { regular: { scanAid } } }, limitPerMode: 1,
+    }).map(row => row.aid), [3]);
+  } finally { db.close(); }
+});
+
 test("skip checkpoints invalidate Regular and PvE parser 1 while retaining Seasonal parser 1", async () => {
   const dir = mkdtempSync(join(tmpdir(), "warmup-parser-modes-"));
   const checkpointPath = join(dir, "state.json");
@@ -294,6 +328,29 @@ test("one pacer allows at most two request starts per second", async () => {
   now += 1_500;
   assert.equal(await pace(), 12_000);
   assert.deepEqual(waits, [250]);
+});
+
+test("warmup deadline bounds retry waits and leaves an unprocessed candidate resumable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-retry-deadline-"));
+  const checkpointPath = join(dir, "state.json");
+  let requests = 0;
+  const options = { baseUrl: "http://web:3000", secret: "x".repeat(32), maxRetries: 3,
+    timeoutMs: 30_000, deadline: 500, now: () => 0, pace: async () => {},
+    sleep: async () => { throw new Error("retry wait exceeds the remaining budget"); },
+    fetch: async () => { requests++; return new Response("{}", { status: 409 }); } };
+  const candidate = { mode: "regular", aid: 1, sourceVersion: 100 };
+  try {
+    const result = await runWarmup({ candidates: [candidate], checkpointPath, maxProfiles: 10,
+      request: candidate => requestCandidate(candidate, options) });
+    assert.equal(result.bounded, true);
+    assert.equal(result.stopped, false);
+    assert.equal(result.processed, 0);
+    assert.equal(requests, 1);
+    assert.deepEqual(result.checkpoint.skipped, {});
+    const resumed = await runWarmup({ candidates: [candidate], checkpointPath, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }) });
+    assert.equal(resumed.processed, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("mode filtering rejects typos and retains checkpoint state for other modes", async () => {

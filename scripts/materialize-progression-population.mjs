@@ -1,13 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "node:path";
 import { existsSync } from "node:fs";
-import { materializeRegularProgression } from "../lib/regular-progression.ts";
+import { materializeRegularProgression, PERSISTENT_MATERIALIZATION_VERSION } from "../lib/regular-progression.ts";
 import { refreshSqliteProgressionAggregates } from "../lib/seasonal/daily-aggregates.ts";
 import {
   materializeSqlitePopulationSnapshot,
 } from "../lib/seasonal/progression-db.ts";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
 import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-backfill.ts";
+import { retrySqliteBusy } from "../lib/sqlite-busy-retry.ts";
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   materializeAchievementBaseline,
@@ -76,7 +77,7 @@ function materializeAchievementBaselines(reason) {
   }
 }
 
-export function materializeDuePopulations(db, scopes, { now = Date.now(), refresh, publish = materializeSqlitePopulationSnapshot } = {}) {
+export async function materializeDuePopulations(db, scopes, { now = Date.now(), refresh, publish = materializeSqlitePopulationSnapshot } = {}) {
   const published = [];
   const errors = [];
   for (const { mode, cycleId } of scopes) {
@@ -84,17 +85,27 @@ export function materializeDuePopulations(db, scopes, { now = Date.now(), refres
       WHERE mode = ? AND cycle_id = ?`).get(mode, cycleId);
     if (current && now - Number(current.generated_at) < intervalMs) continue;
     try {
-      if (refresh) refresh(db, mode, cycleId);
+      if (refresh) await retrySqliteBusy(() => refresh(db, mode, cycleId));
       else if (mode === "regular") {
         // Captures need the same writer. Commit one complete player's repair at
         // a time; a failed publication continues serving its previous generation.
-        const aids = db.prepare(`SELECT DISTINCT aid FROM progression_snapshots
-          WHERE mode = 'regular' AND cycle_id = 'persistent' ORDER BY aid`).all();
-        for (const { aid } of aids) materializeRegularProgression(db, Number(aid), { refreshAggregates: false });
-        refreshSqliteProgressionAggregates(db, mode, cycleId);
+        // The identity index and revision tables are small. Avoid reading every
+        // unchanged raw history daily; unmarked legacy identities still repair.
+        const aids = db.prepare(`SELECT DISTINCT s.aid FROM progression_snapshots s
+          LEFT JOIN progression_normalizations n ON n.mode = s.mode AND n.cycle_id = s.cycle_id AND n.aid = s.aid
+          LEFT JOIN progression_personal_revisions r ON r.mode = s.mode AND r.cycle_id = s.cycle_id AND r.aid = s.aid
+          WHERE s.mode = 'regular' AND s.cycle_id = 'persistent'
+            AND (n.aid IS NULL OR n.version != ? OR n.revision != COALESCE(r.revision, 0))
+          ORDER BY s.aid`).all(PERSISTENT_MATERIALIZATION_VERSION);
+        for (const { aid } of aids) {
+          // A stale WAL read snapshot must be rolled back and retried. Keep
+          // already committed players instead of restarting the whole scope.
+          await retrySqliteBusy(() => materializeRegularProgression(db, Number(aid), { refreshAggregates: false }));
+        }
+        await retrySqliteBusy(() => refreshSqliteProgressionAggregates(db, mode, cycleId));
       }
-      else refreshSqliteProgressionAggregates(db, mode, cycleId);
-      published.push({ mode, cycleId, ...publish(db, mode, cycleId, now) });
+      else await retrySqliteBusy(() => refreshSqliteProgressionAggregates(db, mode, cycleId));
+      published.push({ mode, cycleId, ...await retrySqliteBusy(() => publish(db, mode, cycleId, now)) });
     } catch (error) {
       errors.push({ mode, cycleId, error: error instanceof Error ? error.message : String(error) });
     }
@@ -109,13 +120,13 @@ export async function materializeProgressionPopulation(reason = "manual") {
   let db;
   try {
     db = new DatabaseSync(databasePath);
-    db.exec("PRAGMA busy_timeout = 5000");
-    initializeSeasonalSchema(db);
+    db.exec("PRAGMA busy_timeout = 250");
+    await retrySqliteBusy(() => initializeSeasonalSchema(db));
     const cycles = db.prepare("SELECT cycle_id FROM season_cycles WHERE mode = 'seasonal' AND enabled = 1")
       .all().map((row) => String(row.cycle_id));
     const configuredCycle = process.env.SEASONAL_ENABLED === "true" ? process.env.SEASONAL_CYCLE_ID?.trim() : null;
     if (configuredCycle && !cycles.includes(configuredCycle)) cycles.push(configuredCycle);
-    const result = materializeDuePopulations(db, [
+    const result = await materializeDuePopulations(db, [
       { mode: "regular", cycleId: "persistent" },
       ...cycles.map((cycleId) => ({ mode: "seasonal", cycleId })),
     ]);

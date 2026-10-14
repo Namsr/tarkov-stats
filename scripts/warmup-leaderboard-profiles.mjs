@@ -257,11 +257,33 @@ export async function loadUpdatedVersions(url, options = {}) {
 }
 
 /** Select only rows produced before the current parser, not current-parser rows with genuinely absent metrics. */
-export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES, { checkpoint = {}, limitPerMode = Infinity } = {}) {
+export function selectWarmupCandidates(players, cycleId = null, pveVersions = new Map(), modes = WARMUP_MODES, {
+  checkpoint = {}, limitPerMode = Infinity, shouldStop = () => false, onProgress = () => {},
+} = {}) {
   const wanted = new Set(modes);
   const candidates = [];
   const counts = new Map();
-  const cursor = (mode) => Number(checkpoint.modes?.[mode]?.lastAid) || 0;
+  // Scan source identities in small indexed pages, including when no profile
+  // needs repair. Sorting every candidate by a boolean read gigabytes of raw
+  // JSON before returning the first row and could exhaust the entire budget.
+  function* identities(mode, source, args = []) {
+    const cursor = Number(checkpoint.modes?.[mode]?.scanAid ?? checkpoint.modes?.[mode]?.lastAid) || 0;
+    const page = players.prepare(`${source} AND aid > ? AND aid <= ? ORDER BY aid LIMIT 128`);
+    for (const [lower, upper] of [[cursor, Number.MAX_SAFE_INTEGER], [0, cursor]]) {
+      let after = lower;
+      while (after < upper && !shouldStop()) {
+        const rows = page.all(...args, after, upper);
+        if (!rows.length) break;
+        for (const { aid } of rows) {
+          if (shouldStop()) return;
+          after = Number(aid);
+          yield after;
+          onProgress(mode, after);
+        }
+      }
+    }
+    if (!shouldStop()) onProgress(mode, 0);
+  }
   const add = (candidate) => {
     if (checkpoint.skipped?.[skippedKey(candidate)]) return false;
     candidates.push(candidate);
@@ -270,60 +292,68 @@ export function selectWarmupCandidates(players, cycleId = null, pveVersions = ne
     return count >= limitPerMode;
   };
   if (wanted.has("regular")) {
-  for (const row of players.prepare(`
+  const query = players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM players p
-    WHERE p.profile_updated_at>0
+    WHERE p.aid = ? AND p.profile_updated_at>0
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
       AND COALESCE((SELECT CASE WHEN s.profile_updated_at>=p.profile_updated_at AND json_valid(s.stats_json)
           THEN json_extract(s.stats_json,'$.pvpStatsParserVersion') ELSE 0 END
         FROM progression_scan.progression_snapshots s
         WHERE s.mode='regular' AND s.cycle_id='persistent' AND s.aid=p.aid
-        ORDER BY s.profile_updated_at DESC,s.id DESC LIMIT 1),0) < ?
-    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_PVP_PARSER, cursor("regular"))) {
+        ORDER BY s.profile_updated_at DESC,s.id DESC LIMIT 1),0) < ?`);
+  for (const aid of identities("regular", "SELECT aid FROM players WHERE 1 = 1")) {
+    const row = query.get(aid, CURRENT_PVP_PARSER);
+    if (!row) continue;
     if (add({ mode: "regular", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
   }
   }
   if (wanted.has("pve")) {
-  for (const row of players.prepare(`
+  const query = players.prepare(`
     SELECT p.aid,p.profile_updated_at source_version
     FROM mode_players p
-    WHERE p.mode='pve'
+    WHERE p.aid = ? AND p.mode='pve'
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
       AND CASE WHEN json_valid(p.stats_json)
-        THEN COALESCE(json_extract(p.stats_json,'$.pvpStatsParserVersion'),0) ELSE 0 END < ?
-    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_PVP_PARSER, cursor("pve"))) {
+        THEN COALESCE(json_extract(p.stats_json,'$.pvpStatsParserVersion'),0) ELSE 0 END < ?`);
+  for (const identity of identities("pve", "SELECT aid FROM mode_players WHERE mode = 'pve'")) {
+    const row = query.get(identity, CURRENT_PVP_PARSER);
+    if (!row) continue;
     const aid = Number(row.aid);
     const sourceVersion = Number(row.source_version) || pveVersions.get(aid) || 0;
     if (sourceVersion > 0 && add({ mode: "pve", aid, sourceVersion })) break;
   }
   }
   if (wanted.has("arena")) {
-  for (const row of players.prepare(`
+  const query = players.prepare(`
     SELECT p.aid,MAX(p.profile_updated_at,COALESCE(s.upstream_version,0)) source_version
     FROM mode_players p
     LEFT JOIN (
       SELECT aid,MAX(upstream_version) upstream_version,COUNT(DISTINCT arena_mode) mode_count,
         MIN(parser_version) parser_version
-      FROM arena_mode_stats GROUP BY aid
+      FROM arena_mode_stats WHERE aid = ? GROUP BY aid
     ) s ON s.aid=p.aid
-    WHERE p.mode='arena' AND p.profile_updated_at>0
+    WHERE p.aid = ? AND p.mode='arena' AND p.profile_updated_at>0
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      AND (s.aid IS NULL OR s.mode_count<6 OR s.parser_version<?)
-    ORDER BY (p.aid <= ?), p.aid`).iterate(CURRENT_ARENA_PARSER, cursor("arena"))) {
+      AND (s.aid IS NULL OR s.mode_count<6 OR s.parser_version<?)`);
+  for (const aid of identities("arena", "SELECT aid FROM mode_players WHERE mode = 'arena' AND profile_updated_at > 0")) {
+    const row = query.get(aid, aid, CURRENT_ARENA_PARSER);
+    if (!row) continue;
     if (add({ mode: "arena", aid: Number(row.aid), sourceVersion: Number(row.source_version) })) break;
   }
   }
   if (cycleId && wanted.has("pvp-season")) {
-    for (const row of players.prepare(`
+    const query = players.prepare(`
       SELECT p.aid,p.profile_updated_at source_version
       FROM progression_scan.player_profiles p
-      WHERE p.mode='seasonal' AND p.cycle_id=? AND p.profile_updated_at>0
+      WHERE p.aid = ? AND p.mode='seasonal' AND p.cycle_id=? AND p.profile_updated_at>0
         AND COALESCE(p.pvp_stats_parser_version,0)<?
         AND p.confirmed_banned=0
         AND NOT EXISTS (SELECT 1 FROM progression_scan.excluded_players e WHERE e.aid=p.aid)
-        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)
-      ORDER BY (p.aid <= ?), p.aid`).iterate(cycleId, CURRENT_SEASONAL_PARSER, cursor("pvp-season"))) {
+        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid=p.aid)`);
+    for (const aid of identities("pvp-season", "SELECT aid FROM progression_scan.player_profiles WHERE mode = 'seasonal' AND cycle_id = ? AND profile_updated_at > 0", [cycleId])) {
+      const row = query.get(aid, cycleId, CURRENT_SEASONAL_PARSER);
+      if (!row) continue;
       if (add({ mode: "pvp-season", aid: Number(row.aid), sourceVersion: Number(row.source_version), cycleId })) break;
     }
   }
@@ -359,8 +389,10 @@ export async function requestCandidate(candidate, options) {
     if (options.shouldStop?.()) return { kind: "stopped", outcome: "signal", attempts: attempt - 1 };
     await options.pace();
     if (options.shouldStop?.()) return { kind: "stopped", outcome: "signal", attempts: attempt - 1 };
+    const timeoutMs = remainingRunBudget(options.timeoutMs, options.deadline, (options.now ?? Date.now)());
+    if (timeoutMs === 0) return { kind: "bounded", outcome: "deadline", attempts: attempt - 1 };
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await options.fetch(request.url, { ...request.init, signal: controller.signal });
       const text = await response.text();
@@ -385,7 +417,11 @@ export async function requestCandidate(candidate, options) {
       }
       lastError = error;
       if (attempt > options.maxRetries || error?.retryable === false) break;
-      await options.sleep(Math.min(30_000, 1_000 * 2 ** (attempt - 1)));
+      const waitMs = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+      if (remainingRunBudget(waitMs + 1, options.deadline, (options.now ?? Date.now)()) <= waitMs) {
+        return { kind: "bounded", outcome: "deadline", attempts: attempt };
+      }
+      await options.sleep(waitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -432,10 +468,10 @@ export async function runWarmup(options) {
         saveCheckpoint(options.checkpointPath, checkpoint);
         throw error;
       }
-      if (result.kind === "stopped") {
+      if (result.kind === "stopped" || result.kind === "bounded") {
         state.attempted -= 1;
         saveCheckpoint(options.checkpointPath, checkpoint);
-        return { processed, bounded: false, stopped: true, checkpoint, checkpointReset };
+        return { processed, bounded: result.kind === "bounded", stopped: result.kind === "stopped", checkpoint, checkpointReset };
       }
       processed += 1;
       state.lastError = null;
@@ -453,12 +489,16 @@ export async function runWarmup(options) {
 }
 
 async function main() {
+  const startedAt = Date.now();
   const dbPath = process.env.SQLITE_PATH || "/data/players.db";
   const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
   const checkpointPath = process.env.LEADERBOARD_WARMUP_CHECKPOINT || "/data/leaderboard-warmup-state.json";
   const lockPath = process.env.LEADERBOARD_WARMUP_LOCK || "/data/leaderboard-warmup.lock";
   const maxProfiles = integer(process.env.LEADERBOARD_WARMUP_MAX_PROFILES, 100, 1, 100_000);
   const maxRunMs = integer(process.env.LEADERBOARD_WARMUP_MAX_RUN_MS, 180_000, 1_000, 900_000);
+  // Leave the parent watchdog time to receive the summary and close resources.
+  const budgetMs = remainingRunBudget(maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
+  const deadline = startedAt + budgetMs - Math.min(5_000, Math.floor(budgetMs / 10));
   const maxRetries = integer(process.env.LEADERBOARD_WARMUP_MAX_RETRIES, 3, 0, 10);
   const timeoutMs = integer(process.env.LEADERBOARD_WARMUP_TIMEOUT_MS, 120_000, 30_000, 300_000);
   const secret = process.env.PROFILE_REFRESH_SECRET || "";
@@ -489,16 +529,37 @@ async function main() {
         maxRetries, timeoutMs, sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
       });
     })();
+    const scanCursors = new Map();
+    // Candidate discovery shares the three-minute budget with HTTP work.
+    // Reserve time for selected profiles so an expensive later mode cannot
+    // consume the entire run before any earlier candidate is requested.
+    const selectionDeadline = deadline - Math.min(60_000, Math.max(0, Math.floor((deadline - Date.now()) / 2)));
     const candidates = selectWarmupCandidates(players, cycleId, pveVersions, modes, {
       checkpoint, limitPerMode: Math.ceil(maxProfiles / modes.length),
+      shouldStop: () => stopping || Date.now() >= selectionDeadline,
+      onProgress: (mode, aid) => scanCursors.set(mode, aid),
     });
+    const selectionBounded = Date.now() >= selectionDeadline;
+    const selectionMs = Date.now() - startedAt;
+    for (const [mode, aid] of scanCursors) {
+      const state = checkpoint.modes[mode] ||= { attempted: 0, completed: 0, skipped: 0 };
+      // Requests maintain lastAid. Advance a separate scan cursor only when
+      // nothing was selected, so failed/unstarted requests remain resumable.
+      if (candidates.some((candidate) => candidate.mode === mode)) delete state.scanAid;
+      else state.scanAid = aid;
+    }
+    if (!candidates.length && scanCursors.size) {
+      const lastMode = [...scanCursors.keys()].at(-1);
+      checkpoint.nextMode = modes[(modes.indexOf(lastMode) + 1) % modes.length];
+    }
+    saveCheckpoint(checkpointPath, checkpoint);
     const pace = createRequestPacer({ intervalMs: 1_000 });
     const result = await runWarmup({
       candidates, checkpointPath, maxProfiles,
-      maxRunMs: remainingRunBudget(maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS), modes,
+      maxRunMs: Math.max(0, deadline - Date.now()), modes,
       request: (candidate) => requestCandidate(candidate, {
         baseUrl: process.env.LEADERBOARD_WARMUP_BASE_URL || process.env.REGULAR_PROFILE_SYNC_BASE_URL || "http://127.0.0.1:3000",
-        secret, maxRetries, timeoutMs, pace, fetch, shouldStop: () => stopping,
+        secret, maxRetries, timeoutMs, deadline, pace, fetch, shouldStop: () => stopping,
         sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
       }),
       shouldStop: () => stopping,
@@ -506,7 +567,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({
       modes,
       candidates: Object.fromEntries(modes.map((mode) => [mode, candidates.filter((row) => row.mode === mode).length])),
-      processed: result.processed, bounded: result.bounded, stopped: result.stopped, checkpointPath,
+      processed: result.processed, bounded: selectionBounded || result.bounded, stopped: result.stopped, checkpointPath,
+      selectionBounded, selectionMs,
       // ops/profile-queue.sh keeps stderr out of $log and replays it into the journal as
       // WARMUP_WARN, so a reset is reported both as prose and as this machine-readable flag.
       checkpointReset: result.checkpointReset,

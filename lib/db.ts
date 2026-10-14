@@ -38,6 +38,7 @@ import {
   readRegularRiskAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
 import { buildRegularRiskBaseline, storedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
+import { retrySqliteBusy } from "@/lib/sqlite-busy-retry";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
 // The cohort and population scans filter on these five columns and read the
@@ -1438,68 +1439,78 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
     const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
       async upsert(aid, stats, ids, options = {}) {
-        const now = Date.now();
-        if (MAX_PLAYERS > 0) {
-          const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
-          if (!existing) {
-            const row = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
-            if (row && row.n >= MAX_PLAYERS) return;
-          }
-        }
-        if (mode === "regular") {
-          rawDb.exec("BEGIN IMMEDIATE");
+        return retrySqliteBusy(() => {
+          // A synchronous five-second lock wait freezes unrelated HTTP work.
+          // Restore the shared connection setting before yielding or returning.
+          const previousTimeout = Number(rawDb.prepare("PRAGMA busy_timeout").get().timeout);
+          rawDb.exec("PRAGMA busy_timeout = 250");
           try {
-            const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
-            if (Number(saved.changes) > 0) {
-              rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
-              if (Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0) {
-                const insertOwner = rawDb.prepare("INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours) VALUES (?, ?, ?)");
-                for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
+            const now = Date.now();
+            if (MAX_PLAYERS > 0) {
+              const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
+              if (!existing) {
+                const row = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
+                if (row && row.n >= MAX_PLAYERS) return;
               }
             }
-            updateSearchIndex(aid, stats, now);
-            rawDb.exec("COMMIT");
-          } catch (error) {
-            rawDb.exec("ROLLBACK");
-            throw error;
-          }
-        } else {
-          if (mode === "arena" && stats.arenaProfile) {
-            rawDb.exec("BEGIN IMMEDIATE");
-            try {
-              if (options.leaseOwner) {
-                const lease = rawDb.prepare(
-                  "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
-                ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
-                const leaseNow = Date.now();
-                const age = leaseNow - Number(lease?.heartbeat_at);
-                const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
-                if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
-                  throw new Error("Arena profile sync lease was lost");
+            if (mode === "regular") {
+              rawDb.exec("BEGIN IMMEDIATE");
+              try {
+                const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+                if (Number(saved.changes) > 0) {
+                  rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
+                  if (Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0) {
+                    const insertOwner = rawDb.prepare("INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours) VALUES (?, ?, ?)");
+                    for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
+                  }
+                }
+                updateSearchIndex(aid, stats, now);
+                rawDb.exec("COMMIT");
+              } catch (error) {
+                rawDb.exec("ROLLBACK");
+                throw error;
+              }
+            } else {
+              if (mode === "arena" && stats.arenaProfile) {
+                rawDb.exec("BEGIN IMMEDIATE");
+                try {
+                  if (options.leaseOwner) {
+                    const lease = rawDb.prepare(
+                      "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
+                    ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
+                    const leaseNow = Date.now();
+                    const age = leaseNow - Number(lease?.heartbeat_at);
+                    const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
+                    if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
+                      throw new Error("Arena profile sync lease was lost");
+                    }
+                  }
+                  rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                  upsertArenaSqlite(rawDb, stats.arenaProfile, now);
+                  updateSearchIndex(aid, stats, now);
+                  rawDb.exec("COMMIT");
+                } catch (error) {
+                  rawDb.exec("ROLLBACK");
+                  throw error;
+                }
+              } else {
+                rawDb.exec("BEGIN IMMEDIATE");
+                try {
+                  rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                  updateSearchIndex(aid, stats, now);
+                  rawDb.exec("COMMIT");
+                } catch (error) {
+                  rawDb.exec("ROLLBACK");
+                  throw error;
                 }
               }
-              rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-                .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
-              upsertArenaSqlite(rawDb, stats.arenaProfile, now);
-              updateSearchIndex(aid, stats, now);
-              rawDb.exec("COMMIT");
-            } catch (error) {
-              rawDb.exec("ROLLBACK");
-              throw error;
             }
-          } else {
-            rawDb.exec("BEGIN IMMEDIATE");
-            try {
-              rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-                .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
-              updateSearchIndex(aid, stats, now);
-              rawDb.exec("COMMIT");
-            } catch (error) {
-              rawDb.exec("ROLLBACK");
-              throw error;
-            }
+          } finally {
+            rawDb.exec(`PRAGMA busy_timeout = ${previousTimeout}`);
           }
-        }
+        }, 5_000);
       },
       async stored(aid) {
         if (mode === "regular") return null;
