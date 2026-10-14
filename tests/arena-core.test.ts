@@ -1045,3 +1045,68 @@ test("Arena preserves complete direct totals and refuses incomplete mode replace
   assert.equal(incomplete.counters.matches, 5);
   assert.equal(incomplete.metrics.headshot_rate, null);
 });
+
+test("Arena publication reads each mode once and shares a snapshot across all ten variants", async (t) => {
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { getArenaAveragePublicationPayloads } = await import("../lib/arena/service.ts");
+  const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
+  const { db } = await getArenaBackend();
+  db.exec("PRAGMA journal_mode = WAL; DELETE FROM arena_mode_stats; DELETE FROM excluded_players; BEGIN");
+  try {
+    for (let aid = 1; aid <= 25; aid++) {
+      upsertArenaSqlite(db, parseArenaProfileStats(profile(aid, {
+        games: aid === 2 ? 9 : 20, kills: aid === 1 ? 0 : aid, deaths: aid,
+        headshots: aid % 5 === 0 ? null : 0,
+      })).arenaProfile);
+    }
+    db.exec("UPDATE arena_mode_stats SET parser_version = 0 WHERE aid = 3; COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
+  const prepare = db.prepare;
+  const reads = { modes: 0, population: 0 };
+  t.mock.method(db, "prepare", function (sql) {
+    if (sql.startsWith("SELECT aid, hours, games_count")) reads.modes++;
+    if (sql.startsWith("SELECT arena_mode,")) reads.population++;
+    return prepare.call(this, sql);
+  });
+  const batch = await getArenaAveragePublicationPayloads();
+  assert.equal(batch.size, 10);
+  assert.deepEqual(reads, { modes: 5, population: 1 });
+  for (const mode of ARENA_MODE_KEYS) for (const statistic of ["median", "trimmed_mean"]) {
+    assert.deepEqual(batch.get(`standard:${mode}:${statistic}`),
+      await getArenaAverage({ mode, statistic, dimension: "matches", metric: "players" }));
+  }
+  const writer = new DatabaseSync(process.env.SQLITE_PATH);
+  t.after(() => writer.close());
+  let changed = false;
+  t.mock.method(db, "prepare", function (sql) {
+    const stmt = prepare.call(this, sql);
+    if (!changed && sql.startsWith("SELECT aid, hours, games_count")) {
+      return { all(...args) {
+        const rows = stmt.all(...args);
+        changed = true;
+        writer.exec("INSERT INTO excluded_players(aid, reason, created_at) VALUES (5, 'fixture', 1)");
+        return rows;
+      } };
+    }
+    return stmt;
+  });
+  assert.deepEqual(await getArenaAveragePublicationPayloads(), batch);
+  assert.ok(changed);
+  const updated = await getArenaAveragePublicationPayloads();
+  for (const [key, payload] of updated) assert.equal(payload.sampleN, batch.get(key).sampleN - 1);
+});
+
+test("an Arena publication failure releases its read transaction", async (t) => {
+  const { getArenaBackend } = await import("../lib/db.ts");
+  const { db } = await getArenaBackend();
+  const { getArenaAveragePublicationPayloads } = await import("../lib/arena/service.ts");
+  const prepare = db.prepare;
+  let fail = true;
+  t.mock.method(db, "prepare", function (sql) {
+    if (fail && sql.startsWith("SELECT aid, hours, games_count")) throw new Error("fixture mode scan failed");
+    return prepare.call(this, sql);
+  });
+  await assert.rejects(getArenaAveragePublicationPayloads(), /fixture mode scan failed/);
+  fail = false;
+  assert.equal((await getArenaAveragePublicationPayloads()).size, 10);
+});

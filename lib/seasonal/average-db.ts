@@ -122,6 +122,7 @@ export interface SeasonalPublicationVariantTimings {
   variant: string;
   period: AveragePeriod;
   statistic: AverageStatistic;
+  /** Variant construction after shared period preparation. */
   computeMs: number;
 }
 
@@ -131,6 +132,7 @@ export interface SeasonalPublicationTimings {
   portraitRows: number;
   totalMs: number;
   variants: SeasonalPublicationVariantTimings[];
+  periods: { period: AveragePeriod; sharedComputeMs: number }[];
 }
 
 const SEASONAL_PORTRAIT_COLUMNS = [
@@ -178,17 +180,17 @@ function finiteOrNull(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
-function averageNumbers(values: number[], statistic: AverageStatistic): number | null {
+function averageNumbers(values: number[], statistic: AverageStatistic, preparedSorted?: number[]): number | null {
   if (values.length === 0) return null;
   if (statistic === "median") {
-    const sorted = [...values].sort((left, right) => left - right);
+    const sorted = preparedSorted ?? [...values].sort((left, right) => left - right);
     const n = sorted.length;
     if (n % 2 === 1) return sorted[(n - 1) / 2] ?? null;
     return ((sorted[n / 2 - 1] ?? 0) + (sorted[n / 2] ?? 0)) / 2;
   }
   const { off, limit } = trimWindow(values.length);
   if (off === 0) return values.reduce((sum, value) => sum + value, 0) / values.length;
-  const sorted = [...values].sort((left, right) => left - right);
+  const sorted = preparedSorted ?? [...values].sort((left, right) => left - right);
   const window = sorted.slice(off, off + limit);
   if (window.length === 0) return null;
   return window.reduce((sum, value) => sum + value, 0) / window.length;
@@ -212,18 +214,18 @@ export function seasonalHoursBucket(value: number): { lo: number; hi: number | n
  */
 export function buildSeasonalCrossSectionFromRows(
   rows: readonly Record<string, unknown>[],
-  input: {
-    cycleId: string;
-    period: AveragePeriod;
-    statistic: AverageStatistic;
-    dimension: SeasonalAverageDimension;
-    metric: string;
-    min: number | null;
-    max: number | null;
-    now?: number;
-  },
+  input: SeasonalAverageCrossSectionInput,
 ): SeasonalAverageCrossSectionResponse {
-  const now = input.now ?? Date.now();
+  return buildSeasonalCrossSectionsFromRows(rows, input, [input.statistic]).variants[0].response;
+}
+
+function buildSeasonalCrossSectionsFromRows(
+  rows: readonly Record<string, unknown>[],
+  input: Omit<SeasonalAverageCrossSectionInput, "statistic">,
+  statistics: readonly AverageStatistic[],
+) {
+  const startedAt = Date.now();
+  const now = input.now ?? startedAt;
   const metric = resolveY(input.metric).key;
   const dimensionColumn = input.dimension === "hours" ? "hours" : "pmc_raids";
   const cutoff = input.period === "90d" ? Math.floor(now - 90 * 86_400_000) : null;
@@ -239,16 +241,24 @@ export function buildSeasonalCrossSectionFromRows(
   };
   const scopedRows = periodRows.filter(inRange);
   const total = periodRows.length;
-  const averages = { n: scopedRows.length } as NonNullable<AverageDashboardResponse["averages"]>;
-  const metricCounts: Record<string, number> = {};
+  const portraits = statistics.map((statistic) => ({
+    statistic,
+    averages: { n: scopedRows.length } as NonNullable<AverageDashboardResponse["averages"]>,
+    metricCounts: {} as Record<string, number>,
+  }));
   for (const column of SEASONAL_AVG_COLS) {
     const values: number[] = [];
     for (const row of scopedRows) {
       const value = finiteOrNull(row[column]);
       if (value != null) values.push(value);
     }
-    metricCounts[column] = values.length;
-    averages[column] = averageNumbers(values, input.statistic);
+    // Retain one metric array at a time. The median and trimmed mean reuse its
+    // sorted order, but small trimmed samples still sum the original row order.
+    const sorted = statistics.length > 1 ? [...values].sort((left, right) => left - right) : undefined;
+    for (const portrait of portraits) {
+      portrait.metricCounts[column] = values.length;
+      portrait.averages[column] = averageNumbers(values, portrait.statistic, sorted);
+    }
   }
   // Buckets ignore the requested range: the histogram spans the whole period so
   // the page can draw the full domain and highlight the selected slice. A row
@@ -257,7 +267,6 @@ export function buildSeasonalCrossSectionFromRows(
   // median * n so the client still recovers median from sum / n.
   const metricDef = resolveY(metric);
   const rangeColumn = metricDef.agg === "count" ? null : (metricDef.column ?? metric);
-  const medianBucket = input.statistic === "median" && rangeColumn != null;
   const grouped = new Map<string, { lo: number; hi: number | null; n: number; values: number[] }>();
   let boundLo: number | null = null;
   let boundHi: number | null = null;
@@ -275,31 +284,36 @@ export function buildSeasonalCrossSectionFromRows(
     if (metricValue != null) entry.values.push(metricValue);
     grouped.set(key, entry);
   }
-  const buckets = [...grouped.values()]
-    .sort((left, right) => left.lo - right.lo)
-    .map((entry) => ({
+  const orderedBuckets = [...grouped.values()].sort((left, right) => left.lo - right.lo);
+  const sharedComputeMs = Date.now() - startedAt;
+  const variants = portraits.map(({ statistic, averages, metricCounts }) => {
+    const variantStartedAt = Date.now();
+    const buckets = orderedBuckets.map((entry) => ({
       lo: entry.lo,
       hi: entry.hi,
       n: entry.n,
-      sum: medianBucket
+      sum: statistic === "median" && rangeColumn != null
         ? (averageNumbers(entry.values, "median") ?? 0) * entry.n
         : entry.values.reduce((total, value) => total + value, 0),
     }));
-  return {
-    mode: "seasonal",
-    cycleId: input.cycleId,
-    period: input.period,
-    statistic: input.statistic,
-    total,
-    averages: total === 0 ? null : averages,
-    metricCounts,
-    buckets,
-    bounds: boundLo == null || boundHi == null
-      ? DEFAULT_BOUNDS[input.dimension]
-      : { min: Math.max(0, Math.floor(boundLo)), max: Math.ceil(boundHi) },
-    dimension: input.dimension,
-    metric,
-  };
+    const response: SeasonalAverageCrossSectionResponse = {
+      mode: "seasonal",
+      cycleId: input.cycleId,
+      period: input.period,
+      statistic,
+      total,
+      averages: total === 0 ? null : averages,
+      metricCounts,
+      buckets,
+      bounds: boundLo == null || boundHi == null
+        ? DEFAULT_BOUNDS[input.dimension]
+        : { min: Math.max(0, Math.floor(boundLo)), max: Math.ceil(boundHi) },
+      dimension: input.dimension,
+      metric,
+    };
+    return { response, computeMs: Date.now() - variantStartedAt };
+  });
+  return { variants, sharedComputeMs };
 }
 
 /**
@@ -334,13 +348,14 @@ export async function getSeasonalAveragePublicationPayloads(
   const portraitFetchMs = Date.now() - portraitFetchStartedAt;
   const payloads = new Map<string, SeasonalAverageCrossSectionResponse>();
   const variants: SeasonalPublicationVariantTimings[] = [];
-  for (const statistic of SEASONAL_PUBLICATION_STATISTICS) {
-    for (const period of SEASONAL_PUBLICATION_PERIODS) {
-      const computeStartedAt = Date.now();
-      const response = buildSeasonalCrossSectionFromRows(rows, {
-        cycleId, period, statistic, dimension: "hours", metric: "players", min: null, max: null, now,
-      });
-      const computeMs = Date.now() - computeStartedAt;
+  const periods: SeasonalPublicationTimings["periods"] = [];
+  for (const period of SEASONAL_PUBLICATION_PERIODS) {
+    const batch = buildSeasonalCrossSectionsFromRows(rows, {
+      cycleId, period, dimension: "hours", metric: "players", min: null, max: null, now,
+    }, SEASONAL_PUBLICATION_STATISTICS);
+    periods.push({ period, sharedComputeMs: batch.sharedComputeMs });
+    for (const { response, computeMs } of batch.variants) {
+      const statistic = response.statistic;
       const variant = standardSeasonalVariant(statistic, period);
       payloads.set(variant, response);
       variants.push({ variant, period, statistic, computeMs });
@@ -353,6 +368,7 @@ export async function getSeasonalAveragePublicationPayloads(
       portraitRows: rows.length,
       totalMs: Date.now() - totalStartedAt,
       variants,
+      periods,
     },
   };
 }

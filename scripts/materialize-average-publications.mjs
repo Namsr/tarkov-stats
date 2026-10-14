@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { computeAverage } from "../lib/average-compute.ts";
 import { MAX_HISTOGRAM_BINS } from "../lib/histogram.ts";
-import { getArenaAverage } from "../lib/arena/service.ts";
+import { getArenaAveragePublicationPayloads } from "../lib/arena/service.ts";
 import { getSeasonalAveragePublicationPayloads } from "../lib/seasonal/average-db.ts";
 import {
   averagePublicationDue,
@@ -10,15 +10,12 @@ import {
   getAveragePublicationStates,
   publishAverageScope,
   seasonalPublicationScope,
-  standardArenaVariant,
   standardAverageVariant,
 } from "../lib/average-publication.ts";
 import { STANDARD_AVERAGE_PERIODS, STANDARD_AVERAGE_STATISTICS } from "../lib/average-publication-variants.ts";
-import { ARENA_MODE_KEYS } from "../types/arena.ts";
 
 const statistics = STANDARD_AVERAGE_STATISTICS;
 const periods = STANDARD_AVERAGE_PERIODS;
-const arenaModes = ARENA_MODE_KEYS;
 const pollMs = 30_000;
 const scopePauseMs = 500;
 const arenaSyncLeaseMaxAgeMs = 30 * 60_000;
@@ -94,6 +91,7 @@ async function seasonalPayloads(scope) {
     portraitRows: timings.portraitRows,
     portraitFetchMs: timings.portraitFetchMs,
     variants: timings.variants,
+    periods: timings.periods,
     sqlPhases: { portraitFetchMs: timings.portraitFetchMs },
     totalMs: Date.now() - startedAt,
   });
@@ -101,14 +99,8 @@ async function seasonalPayloads(scope) {
 }
 
 async function arenaPayloads() {
-  const payloads = new Map();
-  for (const statistic of statistics) {
-    for (const mode of arenaModes) {
-      const result = await getArenaAverage({ mode, statistic, dimension: "matches", metric: "players" });
-      if (!result) throw new Error("arena storage unavailable");
-      payloads.set(standardArenaVariant(mode, statistic), result);
-    }
-  }
+  const payloads = await getArenaAveragePublicationPayloads();
+  if (!payloads) throw new Error("arena storage unavailable");
   return payloads;
 }
 

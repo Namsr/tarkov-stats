@@ -159,3 +159,47 @@ test("seasonal materializer uses the shared batch with timings and a single atom
   assert.match(database, /buildSeasonalCrossSectionFromRows/);
   assert.match(database, /portraitFetchMs/);
 });
+
+test("paired seasonal statistics preserve small-sample float order, null counts and the exact 90d boundary", async (t) => {
+  const prepare = DatabaseSync.prototype.prepare;
+  let rows = [];
+  let scans = 0;
+  t.mock.method(DatabaseSync.prototype, "prepare", function (sql) {
+    if (sql.endsWith("FROM normalized")) return { all() { scans++; return rows; } };
+    return prepare.call(this, sql);
+  });
+  for (const count of [0, 1, 3, 19, 20, 21]) {
+    rows = Array.from({ length: count }, (_, index) => ({
+      aid: index + 1,
+      profile_updated_at: now - 90 * 86_400_000 - (index % 2 ? 1 : 0),
+      hours: index === 1 ? null : index * 100,
+      total_raids: index === 0 ? 1e16 : 1,
+      pmc_raids: index % 4 ? index : null,
+      kd_ratio: index % 3 ? 0 : null,
+      pmc_kd_ratio: index % 5 ? index / 10 : null,
+      level: index % 7 ? 1 : null,
+    }));
+    const before = scans;
+    const batch = await averageDb.getSeasonalAveragePublicationPayloads("s1", now);
+    assert.equal(scans - before, 1);
+    assert.equal(batch.payloads.get("standard:trimmed_mean:all").total, count);
+    assert.equal(batch.payloads.get("standard:trimmed_mean:90d").total, Math.ceil(count / 2));
+    assert.equal(batch.timings.periods.length, 2);
+    assert.ok(batch.timings.periods.every((period) => period.sharedComputeMs >= 0));
+    for (const period of ["all", "90d"]) for (const statistic of ["median", "trimmed_mean"]) {
+      const expected = averageDb.buildSeasonalCrossSectionFromRows(rows, {
+        cycleId: "s1", period, statistic, dimension: "hours", metric: "players", min: null, max: null, now,
+      });
+      assert.deepEqual(batch.payloads.get(`standard:${statistic}:${period}`), expected);
+    }
+  }
+});
+
+test("the next seasonal publication sees a newly banned profile", async () => {
+  const before = await averageDb.getSeasonalAveragePublicationPayloads("s1", now);
+  const writer = new DatabaseSync(databasePath);
+  try { writer.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE aid = 1 AND cycle_id = 's1'"); }
+  finally { writer.close(); }
+  const after = await averageDb.getSeasonalAveragePublicationPayloads("s1", now);
+  for (const [key, payload] of after.payloads) assert.equal(payload.total, before.payloads.get(key).total - 1);
+});
