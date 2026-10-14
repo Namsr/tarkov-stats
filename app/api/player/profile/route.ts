@@ -494,9 +494,8 @@ async function handleGet(request: NextRequest, timing: ReturnType<typeof createR
   });
   timing.startProfileRequest(isGameMode(mode) ? mode : undefined);
 
-  // Строгий лимит: роут делает upstream-fetch к tarkov.dev и пишет строку в БД
-  // (датасет /average), поэтому жёстче общего лимита.
-  const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "profile", max: 10 });
+  // Общий лимит профилей на IP: 120 запросов в минуту для всех режимов.
+  const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "profile", max: 120 });
   // Профиль не кэшируем у браузера/CDN — иначе «Обновить»/F5 показывал бы старое.
   const noStore = { ...headers, "Cache-Control": "no-store" };
   if (!allowed) {

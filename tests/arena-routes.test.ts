@@ -28,6 +28,7 @@ registerHooks({
 const directory = mkdtempSync(join(tmpdir(), "tarkov-arena-routes-"));
 process.env.SQLITE_PATH = join(directory, "players.db");
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = ":memory:";
 
 const { getFavoritesStore, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
@@ -659,4 +660,20 @@ test("Arena compare profile API supplies recovered metrics and TSR for the repor
     assert.ok(Number.isFinite(body.tsRating.overall.rating));
     assert.equal(body.arena.overall.counters.current_win_streak, null);
   }
+});
+
+test("profile API allows 120 requests per minute across modes and rejects request 121", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const modes = ["regular", "pve", "arena", "seasonal"];
+  const request = (index, ip = "198.51.100.120") => new NextRequest(
+    "http://local/api/player/profile?aid=invalid&mode=" + modes[index % modes.length],
+    { headers: { "x-real-ip": ip } },
+  );
+  for (let index = 0; index < 120; index++) {
+    assert.equal((await getProfile(request(index))).status, 400, "request " + (index + 1) + " must reach validation");
+  }
+  const limited = await getProfile(request(120));
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("cache-control"), "no-store");
+  assert.equal((await getProfile(request(0, "198.51.100.121"))).status, 400);
 });

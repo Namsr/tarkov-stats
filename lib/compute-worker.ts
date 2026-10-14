@@ -60,7 +60,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
       if (this.options.totalTimeoutMs !== undefined) {
         job.deadline = setTimeout(() => {
           const error = this.unavailable(`${this.options.name} request timed out`, "deadline");
-          if (this.jobs[0] === job) this.fail(error);
+          if (this.jobs[0] === job) this.fail(error, true);
           else {
             const index = this.jobs.indexOf(job);
             if (index !== -1) this.jobs.splice(index, 1);
@@ -91,21 +91,33 @@ export class ComputeWorker<Args extends unknown[], Result> {
     } catch { /* Diagnostics must not interfere with job completion. */ }
   }
 
-  private fail(error: Error): void {
+  private fail(error: Error, preserveQueued = false): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     const child = this.child;
     this.child = undefined;
     child?.kill("SIGKILL");
-    for (const job of this.jobs.splice(0)) {
+    for (const job of this.jobs.splice(0, preserveQueued ? 1 : this.jobs.length)) {
       if (job.deadline) clearTimeout(job.deadline);
       this.measure(job);
       job.reject(error);
     }
+    // A timeout belongs to the active job. Younger queued requests still have
+    // their own budget and must run on a fresh child instead of inheriting it.
+    if (preserveQueued) this.dispatch();
   }
 
   private dispatch(): void {
-    if (this.timer || this.jobs.length === 0) return;
+    if (this.timer) return;
+    // Do not restart work whose original end-to-end budget already expired.
+    while (this.jobs.length && this.options.totalTimeoutMs !== undefined &&
+        performance.now() - this.jobs[0].queuedAt >= this.options.totalTimeoutMs) {
+      const expired = this.jobs.shift()!;
+      if (expired.deadline) clearTimeout(expired.deadline);
+      this.measure(expired);
+      expired.reject(this.unavailable(`${this.options.name} request timed out`, "deadline"));
+    }
+    if (this.jobs.length === 0) return;
     try {
       if (!this.child) {
         const child = spawn(process.execPath, [
@@ -153,7 +165,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
       child.channel?.ref();
       // Bound synchronous work in the child, including time spent waiting for SQLite.
       this.timer = setTimeout(() => {
-        this.fail(this.unavailable(`${this.options.name} worker timed out`, "worker_timeout"));
+        this.fail(this.unavailable(`${this.options.name} worker timed out`, "worker_timeout"), true);
       }, this.options.timeoutMs ?? 60_000);
       this.timer.unref();
       const { id, args } = this.jobs[0];

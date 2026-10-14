@@ -204,3 +204,45 @@ test("a cohort deadline includes waiting in the FIFO and releases all failed wor
   assert.ok(failed.every((result) => result.status === "rejected" && /request timed out/.test(result.reason.message)));
   assert.notEqual((await worker.compute(job("normal"))).pid, first.pid);
 });
+
+test("a timed-out cohort does not reject newer queued comparisons", async (t) => {
+  const worker = new CohortComputeWorker({ entry: fixture, timeoutMs: 5000, totalTimeoutMs: 3000 });
+  t.after(() => worker.stop());
+  const initial = await worker.compute(job("normal"));
+  const stalled = assert.rejects(worker.compute(job("stall")), (error) => error.reason === "deadline");
+  await delay(1000);
+  const phases = [];
+  const queued = worker.computeObserved([job("normal")], (sample) => phases.push(sample));
+  const following = worker.compute(job("normal"));
+  await stalled;
+  const [first, second] = await Promise.all([queued, following]);
+  assert.notEqual(first.pid, initial.pid);
+  assert.equal(second.pid, first.pid);
+  assert.ok(first.id < second.id, "surviving jobs retain FIFO order");
+  assert.ok(phases.at(-1).queueMs >= 1500);
+  assert.ok(phases.at(-1).workerMs >= 0);
+});
+
+test("a worker execution timeout restarts only the active cohort", async (t) => {
+  const worker = new CohortComputeWorker({ entry: fixture, timeoutMs: 3000, totalTimeoutMs: 10000 });
+  t.after(() => worker.stop());
+  const initial = await worker.compute(job("normal"));
+  const stalled = assert.rejects(worker.compute(job("stall")), (error) => error.reason === "worker_timeout");
+  const queued = worker.compute(job("normal"));
+  await stalled;
+  assert.notEqual((await queued).pid, initial.pid);
+});
+
+test("surviving queued cohorts retain their original request deadline", async (t) => {
+  const worker = new CohortComputeWorker({ entry: fixture, timeoutMs: 5000, totalTimeoutMs: 3000 });
+  t.after(() => worker.stop());
+  await worker.compute(job("normal"));
+  const first = assert.rejects(worker.compute(job("stall")), (error) => error.reason === "deadline");
+  await delay(1000);
+  const queuedAt = performance.now();
+  const second = assert.rejects(worker.compute(job("stall")), (error) => error.reason === "deadline");
+  await first;
+  await second;
+  const elapsed = performance.now() - queuedAt;
+  assert.ok(elapsed >= 2800 && elapsed < 4500, "queued deadline took " + elapsed + "ms");
+});

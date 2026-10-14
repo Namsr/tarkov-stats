@@ -81,6 +81,8 @@ async function arenaCohortResponse(
   const identity = { aid, mode: "arena" as const, cycleId, arenaMode };
   timing.setRequestContext({ aid });
   let cohortMs: number | undefined;
+  let queueMs: number | undefined;
+  let workerMs: number | undefined;
   let cache: "hit" | "miss" | undefined;
   try {
     // Same versioned key as GET /api/average/cohort/batch, so single and batch
@@ -94,7 +96,10 @@ async function arenaCohortResponse(
     try {
       loaded = await loadDynamicAverage(
         arenaCohortCacheKey(aid, arenaMode, statistic, cacheVersion),
-        () => computeCohortInBackground({ kind: "arena", args: [aid, arenaMode, statistic] }),
+        () => computeCohortInBackground({ kind: "arena", args: [aid, arenaMode, statistic] }, (phases) => {
+          queueMs = phases.queueMs;
+          workerMs = phases.workerMs;
+        }),
         Date.now(), { fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaCohortCacheKey(aid, arenaMode, statistic, 0)]) },
       );
     } finally {
@@ -103,7 +108,7 @@ async function arenaCohortResponse(
     cache = loaded.cache;
     const cohort = loaded.value;
     if (!cohort) {
-      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs });
+      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs, queueMs, workerMs });
       return NextResponse.json({
         identity,
         percentiles: null,
@@ -112,7 +117,7 @@ async function arenaCohortResponse(
       }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
     if (cohort.aid !== aid || cohort.mode !== arenaMode) throw new Error("Arena cohort identity mismatch");
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs, queueMs, workerMs });
     // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
     return NextResponse.json({
       ...cohort,
@@ -125,7 +130,7 @@ async function arenaCohortResponse(
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, ...cohortFailureDiagnostic(error), cache, storage: "sqlite", cohortMs });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, ...cohortFailureDiagnostic(error), cache, storage: "sqlite", cohortMs, queueMs, workerMs });
     return NextResponse.json({
       identity,
       percentiles: null,
