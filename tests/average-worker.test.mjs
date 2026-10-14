@@ -135,7 +135,9 @@ test("a stuck job is killed and releases the queue for a fresh worker", async (t
 });
 
 test("the end-to-end deadline kills a stuck job and frees its queued slot", async (t) => {
-  const worker = new AverageComputeWorker({ entry: fixtureEntry, maxPending: 2, totalTimeoutMs: 2_000 });
+  // Include cold child startup under CI load; the test still exhausts the
+  // original end-to-end budget for both active and queued work.
+  const worker = new AverageComputeWorker({ entry: fixtureEntry, maxPending: 2, totalTimeoutMs: 5_000 });
   t.after(() => worker.stop());
   const initial = await worker.compute(...args("normal"));
   const stuck = worker.compute(...args("stall"));

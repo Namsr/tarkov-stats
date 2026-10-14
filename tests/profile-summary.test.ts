@@ -197,9 +197,10 @@ test("mode-scoped profile responses carry identity and keep optional summaries a
     profileRouteSource,
     /NextResponse\.json\(\s*\{ error: "Rate limit exceeded" \},\s*\{ status: 429/,
   );
+  const parsedAidAt = profileRouteSource.indexOf('const aid = parsePlayerId(requestedAid ?? "")');
+  const profileLimitAt = profileRouteSource.indexOf('getRateLimitHeaders(ip, { bucket: "profile", max: 120 })');
   assert.ok(
-    profileRouteSource.indexOf('const aid = parsePlayerId(request.nextUrl.searchParams.get("aid") ?? "")') <
-      profileRouteSource.indexOf('getRateLimitHeaders(ip, { bucket: "profile", max: 10 })'),
+    parsedAidAt >= 0 && profileLimitAt > parsedAidAt,
     "profile AID must be parsed before the rate limiter records a 429",
   );
   assert.match(profileRouteSource, /timing\.setRequestContext\(\{[\s\S]*?aid: aid \?\? undefined,[\s\S]*?\}\);/);
