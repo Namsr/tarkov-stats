@@ -453,6 +453,7 @@ function populationPoint(members: DailyRow[], start: number, end: number, scored
 export function buildProgressionPopulationMetric(
   rows: Iterable<DailyRow>, metric: ProgressionMetricKey,
   ranges: readonly { min: number; max: number | null }[],
+  pointPrefix = `${metric}:overall`,
 ) {
   const scored = !["xp", "survival", "pvp_kd", "ai_kd"].includes(metric);
   const states = [null, ...ranges].map(range => ({ range, start: 0, end: 0,
@@ -462,7 +463,7 @@ export function buildProgressionPopulationMetric(
     if (state.members.size >= PROGRESSION_MIN_SAMPLE) {
       const end = state.members.size >= PROGRESSION_TARGET_SAMPLE ? state.end
         : state.start + PROGRESSION_MAX_RAID_WIDTH - PROGRESSION_BASE_RAID_STEP;
-      const point = populationPoint([...state.members.values()], state.start, end, scored, `${metric}:overall`);
+      const point = populationPoint([...state.members.values()], state.start, end, scored, pointPrefix);
       if (point) state.points.push(point);
     }
     state.members.clear();

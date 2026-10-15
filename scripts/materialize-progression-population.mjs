@@ -6,7 +6,8 @@ import { refreshSqliteProgressionAggregates } from "../lib/seasonal/daily-aggreg
 import {
   materializeSqlitePopulationSnapshot,
 } from "../lib/seasonal/progression-db.ts";
-import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
+import { initializeSeasonalSchema, upsertSqliteSeasonCycle } from "../lib/seasonal/storage.ts";
+import { loadSeasonalCycleConfig } from "../lib/seasonal/config.ts";
 import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-backfill.ts";
 import { retrySqliteBusy } from "../lib/sqlite-busy-retry.ts";
 import {
@@ -94,9 +95,11 @@ export async function materializeDuePopulations(db, scopes, { now = Date.now(), 
   const errors = [];
   const phases = [];
   for (const { mode, cycleId } of scopes) {
-    const current = db.prepare(`SELECT generated_at FROM progression_population_current
-      WHERE mode = ? AND cycle_id = ?`).get(mode, cycleId);
-    if (current && now - Number(current.generated_at) < intervalMs) continue;
+    const current = db.prepare(`SELECT c.generated_at, json_type(g.payload, '$.average') AS average_type
+      FROM progression_population_current c JOIN progression_population_generations g
+        ON g.mode = c.mode AND g.cycle_id = c.cycle_id AND g.generation = c.generation
+      WHERE c.mode = ? AND c.cycle_id = ?`).get(mode, cycleId);
+    if (current?.average_type === "object" && now - Number(current.generated_at) < intervalMs) continue;
     const startedAt = Date.now();
     const phase = { mode, cycleId, normalizeMs: 0, normalizedPlayers: 0, refreshMs: 0, publishMs: 0 };
     let activePhase = "refreshMs";
@@ -157,12 +160,15 @@ export async function materializeProgressionPopulation(reason = "manual") {
     db = new DatabaseSync(databasePath);
     db.exec("PRAGMA busy_timeout = 250");
     await retrySqliteBusy(() => initializeSeasonalSchema(db));
+    const cycleConfig = loadSeasonalCycleConfig();
+    if (cycleConfig) await retrySqliteBusy(() => upsertSqliteSeasonCycle(db, cycleConfig));
     const cycles = db.prepare("SELECT cycle_id FROM season_cycles WHERE mode = 'seasonal' AND enabled = 1")
       .all().map((row) => String(row.cycle_id));
     const configuredCycle = process.env.SEASONAL_ENABLED === "true" ? process.env.SEASONAL_CYCLE_ID?.trim() : null;
     if (configuredCycle && !cycles.includes(configuredCycle)) cycles.push(configuredCycle);
     const result = await materializeDuePopulations(db, [
       { mode: "regular", cycleId: "persistent" },
+      { mode: "pve", cycleId: "persistent" },
       ...cycles.map((cycleId) => ({ mode: "seasonal", cycleId })),
     ]);
     if (result.published.length || result.errors.length) {

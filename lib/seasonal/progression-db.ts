@@ -6,6 +6,7 @@ import { scoreCheater, type Baseline, type CheaterScoreResult } from "../cheater
 import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
 import { achievementUnlockHours, firstFiniteHours } from "../achievement-unlock-hours.ts";
+import { buildPublishedProgressionAverage } from "./progression-average-publication.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,
@@ -646,8 +647,11 @@ export function materializeSqlitePopulationSnapshot(
   const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).iterate(mode, cycleId);
   const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).iterate(mode, cycleId) as Iterable<DetailDbRow>;
   const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
-  const payload = JSON.stringify(buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
-    finiteNumber(cycle?.starts_at), mode, cycleId));
+  const payload = JSON.stringify({
+    ...buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
+      finiteNumber(cycle?.starts_at), mode, cycleId),
+    average: buildPublishedProgressionAverage(db, mode, cycleId, now),
+  });
   const generation = now;
   db.exec("SAVEPOINT publish_progression_population");
   try {

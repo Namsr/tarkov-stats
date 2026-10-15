@@ -1,20 +1,23 @@
 import { NextResponse } from "next/server";
-import { DynamicComputeTimeoutError, loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
-import { ComputeUnavailableError } from "@/lib/compute-worker";
-import { computeCohortInBackground } from "@/lib/cohort-worker";
+import { statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
+import { getPublishedProgressionAverage } from "@/lib/seasonal/progression-average-publication";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { AVERAGE_CACHE_CONTROL } from "@/lib/average-cache";
 import { fakeProgressionAverage, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
 
 export const runtime = "nodejs";
 
-const loadCachedRegularAverageProgression = () =>
-  loadDynamicAverage("average-progression-regular-v2", () => computeCohortInBackground({ kind: "progression_average", mode: "regular", args: [] }));
-const loadCachedPveAverageProgression = () =>
-  loadDynamicAverage("average-progression-pve-v1", () => computeCohortInBackground({ kind: "progression_average", mode: "pve", args: [] }));
-const loadCachedSeasonalAverageProgression = (cycleId: string) =>
-  loadDynamicAverage(JSON.stringify(["average-progression-seasonal-v2", cycleId]), () =>
-    computeCohortInBackground({ kind: "seasonal_progression_average", args: [cycleId] }));
+function warming() {
+  return NextResponse.json({ error: "Progression averages are warming" }, {
+    status: 503, headers: { "Retry-After": "5", "Cache-Control": "no-store" },
+  });
+}
+
+function publicationHeaders(loaded: { stale: boolean; generatedAt: number }) {
+  // Age belongs to the scheduled publication; HTTP cannot start a refresh.
+  // Keep the client's regular polling interval instead of its five-second revalidation loop.
+  return { ...statisticsCacheHeaders({ ...loaded, stale: false }), "X-Average-Stale": loaded.stale ? "1" : "0" };
+}
 
 export async function GET(request: Request) {
   try {
@@ -32,31 +35,20 @@ export async function GET(request: Request) {
       if (!cycle || cycleId !== cycle.cycleId || params.getAll("cycle").length !== 1) {
         return NextResponse.json({ error: "Invalid Seasonal cycle" }, { status: 400 });
       }
-      const loaded = await loadCachedSeasonalAverageProgression(cycleId);
-      const result = loaded.value;
-      if (!result) return NextResponse.json({ error: "Seasonal progression unavailable" }, { status: 503 });
-      return NextResponse.json(result, { headers: statisticsCacheHeaders(loaded) });
+      const loaded = await getPublishedProgressionAverage("seasonal", cycleId);
+      if (!loaded) return warming();
+      return NextResponse.json(loaded.value, { headers: publicationHeaders(loaded) });
     }
     if (mode !== "regular" && mode !== "pve") {
       return NextResponse.json({ error: "Invalid progression mode" }, { status: 400 });
     }
-    const loaded = mode === "regular"
-      ? await loadCachedRegularAverageProgression()
-      : await loadCachedPveAverageProgression();
-    const result = loaded.value;
-    if (!result) {
-      return NextResponse.json({ error: `${mode === "pve" ? "PvE" : "PvP"} progression unavailable` }, { status: 503 });
-    }
-    return NextResponse.json(result, {
-      headers: statisticsCacheHeaders(loaded),
+    const loaded = await getPublishedProgressionAverage(mode, "persistent");
+    if (!loaded) return warming();
+    return NextResponse.json(loaded.value, {
+      headers: publicationHeaders(loaded),
     });
   } catch (error) {
     console.error("persistent progression average failed", error);
-    if (error instanceof ComputeUnavailableError || error instanceof DynamicComputeTimeoutError) {
-      return NextResponse.json({ error: "Progression averages are warming" }, {
-        status: 503, headers: { "Retry-After": "5", "Cache-Control": "no-store" },
-      });
-    }
     return NextResponse.json({ error: "Failed to query persistent progression" }, { status: 500 });
   }
 }

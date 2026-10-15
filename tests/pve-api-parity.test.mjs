@@ -54,8 +54,8 @@ test("shared radar accepts explicit population strategy and one-value population
   assert.doesNotMatch(radar, /average\.value > 0/);
 });
 
-test("PvE average progression has a separate mode cache", () => {
-  assert.match(progressionAverage, /kind: "progression_average", mode: "pve"/);
-  assert.match(progressionAverage, /loadDynamicAverage\("average-progression-pve-v1"/);
+test("PvE average progression reads its own published mode", () => {
+  assert.match(progressionAverage, /getPublishedProgressionAverage\(mode, "persistent"\)/);
+  assert.doesNotMatch(progressionAverage, /computeCohortInBackground/);
   assert.match(progressionAverage, /mode !== "regular" && mode !== "pve"/);
 });

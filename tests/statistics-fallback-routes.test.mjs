@@ -48,7 +48,6 @@ const cases = [
   ["dynamic average", "average", "mode=regular&metric=kd_ratio", dynamicKey, { storage: "sqlite", body: { total: 25 } }, "total"],
   ["Seasonal dynamic average", "seasonal/average", "cycle=test-cycle&metric=kd_ratio", seasonalKey, { status: "ready", result: { total: 25 } }, "total"],
   ["Arena dynamic average", "average", "mode=arena&arenaMode=lastHero&metric=kd_ratio", arenaIdentity(arenaAverageCacheKey("lastHero", "trimmed_mean", "matches", "kd_ratio", [null, null, null, null], 0)), { total: 25 }, "total"],
-  ["average progression", "progression/average", "mode=regular", "average-progression-regular-v2", { total: 25 }, "total"],
   ["personal timeline", "progression/timeline", `mode=regular&cycle=persistent&aid=${aid}`, JSON.stringify(["progression-timeline-v2", "regular", "persistent", aid]), { status: "ready", timeline: { total: 25 } }, "total"],
   ["Seasonal personal progression", "seasonal/progression", `cycle=test-cycle&aid=${aid}&kind=cumulative`, JSON.stringify(["progression-bundle-v4", "seasonal", "test-cycle", aid]), { status: "ready", bundle: { cumulative: { total: 25 } } }, "total"],
   ["baseline", "baseline", "mode=regular&minHours=100&maxHours=200", JSON.stringify(["baseline", "regular", 100, 200]), { n: 25, metrics: {} }, "n"],
@@ -79,6 +78,38 @@ test("invalid requests cannot use a saved response to bypass validation", async 
   const { GET } = await import("../app/api/baseline/route.ts");
   const response = await GET(new NextRequest("http://local/api/baseline?mode=regular&minHours=-1"));
   assert.equal(response.status, 400);
+});
+
+test("progression reads durable previous-release answers without starting unavailable workers", async () => {
+  const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
+  const previousPath = process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+  process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
+  process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "migration-publications.db");
+  try {
+    const { writeStatisticsResponse } = await import("../lib/average-publication.ts");
+    const { GET } = await import("../app/api/progression/average/route.ts");
+    for (const [mode, cycleId, key] of [
+      ["regular", "persistent", "average-progression-regular-v2"],
+      ["pve", "persistent", "average-progression-pve-v1"],
+      ["seasonal", "test-cycle", JSON.stringify(["average-progression-seasonal-v2", "test-cycle"])],
+    ]) {
+      const value = { mode, cycleId, series: { fixture: "previous successful answer" } };
+      await writeStatisticsResponse(key, { value, generatedAt: 100 }, 100);
+      const response = await GET(new NextRequest(`http://local/api/progression/average?mode=${mode}&cycle=${cycleId}`));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), value);
+      assert.equal(response.headers.get("X-Average-Stale"), "1");
+      assert.equal(response.headers.get("X-Statistics-Stale"), "0");
+      assert.equal(response.headers.get("X-Statistics-Generated-At"), "100");
+    }
+    assert.equal((await GET(new NextRequest("http://local/api/progression/average?mode=seasonal&cycle=wrong"))).status, 400);
+    assert.equal((await GET(new NextRequest("http://local/api/progression/average?mode=seasonal&cycle=test-cycle&cycle=test-cycle"))).status, 400);
+  } finally {
+    if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
+    else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
+    if (previousPath === undefined) delete process.env.AVERAGE_PUBLICATION_SQLITE_PATH;
+    else process.env.AVERAGE_PUBLICATION_SQLITE_PATH = previousPath;
+  }
 });
 
 test("a missing persistent comparison profile records its 404 and server timing", async () => {
