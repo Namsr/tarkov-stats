@@ -78,6 +78,8 @@ test("failed population retries every 15 minutes, preserves old data and skips s
   let fail = true;
   const refresh = (_db, mode) => { calls.push(mode); if (mode === "regular" && fail) throw new Error("busy"); };
   const publish = (db, mode, cycle, now) => {
+    db.prepare("INSERT OR REPLACE INTO progression_population_generations VALUES (?, ?, ?, ?, ?)")
+      .run(mode, cycle, now, now, JSON.stringify({ average: {} }));
     db.prepare("INSERT OR REPLACE INTO progression_population_current VALUES (?, ?, ?, ?)").run(mode, cycle, now, now);
     return { generation: now, generatedAt: now };
   };
@@ -154,5 +156,25 @@ test("adding normalization markers to a current database does not replay histori
       },
     });
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'progression_normalizations'").get());
+  } finally { db.close(); }
+});
+
+
+test("population publisher repairs malformed payloads and future timestamps without blocking other modes", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const now = 30_000_000;
+    const scopes = [{ mode: "regular", cycleId: "persistent" }, { mode: "pve", cycleId: "persistent" }];
+    db.prepare("INSERT INTO progression_population_generations VALUES ('regular','persistent',1,1,?)").run("broken");
+    db.exec("INSERT INTO progression_population_current VALUES ('regular','persistent',1,1)");
+    const options = { now, refresh: () => undefined };
+    const result = await materializeDuePopulations(db, scopes, options);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.published.map(({ mode }) => mode), ["regular", "pve"]);
+    db.prepare("UPDATE progression_population_current SET generated_at = ? WHERE mode = 'regular'").run(now + 2);
+    const repaired = await materializeDuePopulations(db, scopes, { ...options, now: now + 1 });
+    assert.deepEqual(repaired.errors, []);
+    assert.deepEqual(repaired.published.map(({ mode }) => mode), ["regular"]);
   } finally { db.close(); }
 });

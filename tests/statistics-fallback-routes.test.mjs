@@ -86,7 +86,6 @@ test("progression reads durable previous-release answers without starting unavai
   process.env.AVERAGE_PUBLICATIONS_ENABLED = "true";
   process.env.AVERAGE_PUBLICATION_SQLITE_PATH = join(directory, "migration-publications.db");
   try {
-    const { writeStatisticsResponse } = await import("../lib/average-publication.ts");
     const { GET } = await import("../app/api/progression/average/route.ts");
     for (const [mode, cycleId, key] of [
       ["regular", "persistent", "average-progression-regular-v2"],
@@ -94,13 +93,14 @@ test("progression reads durable previous-release answers without starting unavai
       ["seasonal", "test-cycle", JSON.stringify(["average-progression-seasonal-v2", "test-cycle"])],
     ]) {
       const value = { mode, cycleId, series: { fixture: "previous successful answer" } };
-      await writeStatisticsResponse(key, { value, generatedAt: 100 }, 100);
+      const saved = await cache.loadDynamicAverage(key, async () => value, 100);
+      cache.resetDynamicAverageCacheForTests();
       const response = await GET(new NextRequest(`http://local/api/progression/average?mode=${mode}&cycle=${cycleId}`));
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), value);
       assert.equal(response.headers.get("X-Average-Stale"), "1");
       assert.equal(response.headers.get("X-Statistics-Stale"), "0");
-      assert.equal(response.headers.get("X-Statistics-Generated-At"), "100");
+      assert.equal(response.headers.get("X-Statistics-Generated-At"), String(saved.generatedAt));
     }
     assert.equal((await GET(new NextRequest("http://local/api/progression/average?mode=seasonal&cycle=wrong"))).status, 400);
     assert.equal((await GET(new NextRequest("http://local/api/progression/average?mode=seasonal&cycle=test-cycle&cycle=test-cycle"))).status, 400);

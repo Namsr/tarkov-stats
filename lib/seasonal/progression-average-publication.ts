@@ -63,7 +63,7 @@ export async function getPublishedProgressionAverage(mode: ProgressionMode, cycl
   // Preserve the previous release's durable successful answer until the first new publication.
   const key = mode === "seasonal" ? JSON.stringify(["average-progression-seasonal-v2", cycleId])
     : mode === "pve" ? "average-progression-pve-v1" : "average-progression-regular-v2";
-  const saved = await readStatisticsResponse<{ value: Average; generatedAt: number }>(key);
+  const saved = await readStatisticsResponse<{ value: Average; generatedAt: number }>(`statistics-v1:${key}`);
   if (!saved?.value || saved.value.mode !== mode || saved.value.cycleId !== cycleId || !saved.value.series) return null;
   return { value: saved.value, generatedAt: saved.generatedAt, stale: true };
 }

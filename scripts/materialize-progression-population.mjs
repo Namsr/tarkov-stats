@@ -95,11 +95,13 @@ export async function materializeDuePopulations(db, scopes, { now = Date.now(), 
   const errors = [];
   const phases = [];
   for (const { mode, cycleId } of scopes) {
-    const current = db.prepare(`SELECT c.generated_at, json_type(g.payload, '$.average') AS average_type
+    const current = db.prepare(`SELECT c.generated_at,
+      CASE WHEN json_valid(g.payload) THEN json_type(g.payload, '$.average') END AS average_type
       FROM progression_population_current c JOIN progression_population_generations g
         ON g.mode = c.mode AND g.cycle_id = c.cycle_id AND g.generation = c.generation
       WHERE c.mode = ? AND c.cycle_id = ?`).get(mode, cycleId);
-    if (current?.average_type === "object" && now - Number(current.generated_at) < intervalMs) continue;
+    const age = now - Number(current?.generated_at);
+    if (current?.average_type === "object" && age >= 0 && age < intervalMs) continue;
     const startedAt = Date.now();
     const phase = { mode, cycleId, normalizeMs: 0, normalizedPlayers: 0, refreshMs: 0, publishMs: 0 };
     let activePhase = "refreshMs";
