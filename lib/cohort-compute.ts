@@ -3,10 +3,7 @@ import { getStore, type PlayerStore } from "@/lib/db";
 import { getArenaAverage, getArenaCohort } from "@/lib/arena/service";
 import { computeSeasonalComparisonCohort } from "@/lib/seasonal/comparison-cohort";
 import { computeSeasonalAverageCrossSection } from "@/lib/seasonal/average-db";
-import { getPersistentProgressionAverage } from "@/lib/seasonal/progression-db";
-import { getSeasonalAverageQuery } from "@/lib/seasonal/average-db";
 import type { CrossSectionMode } from "@/lib/db";
-import type { ProgressionAverageResponse, SeasonalAverageResponse } from "@/types/seasonal";
 
 export type CohortJob =
   | { kind: "average_metrics"; args: Parameters<typeof computeAverageMetricSeries> }
@@ -15,9 +12,7 @@ export type CohortJob =
   | { kind: "arena_population"; args: Parameters<typeof getArenaAverage> }
   | { kind: "seasonal"; args: Parameters<typeof computeSeasonalComparisonCohort> }
   | { kind: "seasonal_average"; args: Parameters<typeof computeSeasonalAverageCrossSection> }
-  | { kind: "baseline"; mode: CrossSectionMode; args: Parameters<PlayerStore["baseline"]> }
-  | { kind: "progression_average"; mode: "regular" | "pve"; args: [] }
-  | { kind: "seasonal_progression_average"; args: [cycleId: string] };
+  | { kind: "baseline"; mode: CrossSectionMode; args: Parameters<PlayerStore["baseline"]> };
 
 export type CohortResults = {
   average_metrics: Awaited<ReturnType<typeof computeAverageMetricSeries>>;
@@ -27,8 +22,6 @@ export type CohortResults = {
   seasonal: Awaited<ReturnType<typeof computeSeasonalComparisonCohort>>;
   seasonal_average: Awaited<ReturnType<typeof computeSeasonalAverageCrossSection>>;
   baseline: Awaited<ReturnType<PlayerStore["baseline"]>>;
-  progression_average: ProgressionAverageResponse | null;
-  seasonal_progression_average: SeasonalAverageResponse | null;
 };
 
 // Only the child calls these existing calculations. Keep SQL and cohort
@@ -49,11 +42,6 @@ export async function computeCohort(job: CohortJob): Promise<CohortResults[keyof
       const store = await getStore(job.mode);
       if (!store) throw new Error("Baseline storage is unavailable");
       return store.baseline(...job.args);
-    }
-    case "progression_average": return getPersistentProgressionAverage(job.mode);
-    case "seasonal_progression_average": {
-      const query = await getSeasonalAverageQuery();
-      return query ? query(job.args[0]) : null;
     }
   }
 }

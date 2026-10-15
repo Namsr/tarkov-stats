@@ -1421,9 +1421,9 @@ test("regular average mounts median raid progression and cumulative tooltips inc
   assert.match(chart, /function moscowTimestamp\(timestamp: number, lang: string\)/);
   assert.match(chart, /point\.periodStartAt == null \? null : moscowTimestamp\(point\.periodStartAt, lang\)/);
   assert.doesNotMatch(chart, /point\.periodStartAt[\s\S]*toISOString\(\)\.slice/);
-  assert.match(route, /kind: "progression_average", mode: "regular"/);
+  assert.match(route, /getPublishedProgressionAverage\(mode, "persistent"\)/);
   assert.match(route, /AVERAGE_CACHE_CONTROL/);
-  assert.match(route, /loadDynamicAverage\(/);
+  assert.doesNotMatch(route, /loadDynamicAverage\(|computeCohortInBackground/);
   assert.match(dictionary, /"progression\.xpLevelValue": "XP \{xp\} · Level \{level\}"/);
   assert.match(dictionary, /"progression\.xpLevelValue": "опыт: \{xp\} · уровень \{level\}"/);
 });
@@ -1446,7 +1446,7 @@ test("average dashboard publishes standard variants outside the web process and 
   assert.match(average, /fallbackKey: dynamicKey/);
   assert.match(average, /mode: CrossSectionMode/);
   assert.match(seasonal, /fallbackKey: dynamicKey/);
-  assert.match(progression, /loadDynamicAverage\("average-progression-regular-v2"/);
+  assert.match(progression, /getPublishedProgressionAverage\(mode, "persistent"\)/);
   assert.match(page, /showAverageProgression = mode === "regular" \|\| mode === "pve" \|\| mode === "seasonal"/);
   assert.match(page, /showAverageProgression && levelBands\.length > 0/);
   assert.match(page, /const identity = `\$\{props\.mode \?\? "regular"\}:\$\{props\.cycleId \?\? "persistent"\}`/);

@@ -698,12 +698,16 @@ test("Arena and Seasonal cohort envelopes expose exact percentile capability", (
   assert.match(seasonalRoute, /\.\.\.lookup\.result, percentiles: null, statistic, period/);
 });
 
-test("progression averages retry worker failures and preserve application errors", async (t) => {
+test("progression averages serve publications without entering a saturated cohort queue", async (t) => {
   const previousEnabled = process.env.AVERAGE_PUBLICATIONS_ENABLED;
   const previousEnvironment = process.env.NODE_ENV;
+  const previousPath = process.env.PROGRESSION_SQLITE_PATH;
+  process.env.PROGRESSION_SQLITE_PATH = join(sqliteDirectory, "published-progression.db");
   process.env.AVERAGE_PUBLICATIONS_ENABLED = "false";
   process.env.NODE_ENV = "test";
   t.after(() => {
+    if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
+    else process.env.PROGRESSION_SQLITE_PATH = previousPath;
     if (previousEnabled === undefined) delete process.env.AVERAGE_PUBLICATIONS_ENABLED;
     else process.env.AVERAGE_PUBLICATIONS_ENABLED = previousEnabled;
     if (previousEnvironment === undefined) delete process.env.NODE_ENV;
@@ -711,34 +715,33 @@ test("progression averages retry worker failures and preserve application errors
   });
   const { GET } = await import("../app/api/progression/average/route.ts");
   const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
-  const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
-  const { DynamicComputeTimeoutError, resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
-  t.mock.method(console, "error", () => {});
-  t.after(() => resetDynamicAverageCacheForTests());
-  let failure;
-  const payload = { mode: "regular", fixture: "ready" };
-  t.mock.method(CohortComputeWorker.prototype, "compute", async () => {
-    if (failure) throw failure;
-    return payload;
-  });
+  const { DatabaseSync } = await import("node:sqlite");
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const { materializeSqlitePopulationSnapshot } = await import("../lib/seasonal/progression-db.ts");
+  t.mock.method(console, "warn", () => {});
+  const enqueue = t.mock.method(CohortComputeWorker.prototype, "compute", () => { throw new Error("queue full"); });
+  const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
+  t.after(() => db.close());
+  initializeSeasonalSchema(db);
   for (const mode of ["regular", "pve"]) {
-    for (const error of [new ComputeUnavailableError("queue full", "queue_full"),
-      new ComputeUnavailableError("worker timed out", "execution_timeout"), new DynamicComputeTimeoutError(25_000)]) {
-      resetDynamicAverageCacheForTests();
-      failure = error;
-      const request = () => GET(new Request(`http://local/api/progression/average?mode=${mode}`));
-      const response = await request();
-      assert.equal(response.status, 503);
-      assert.equal(response.headers.get("Retry-After"), "5");
-      assert.equal(response.headers.get("Cache-Control"), "no-store");
-      failure = undefined;
-      resetDynamicAverageCacheForTests();
-      const recovered = await request();
-      assert.equal(recovered.status, 200);
-      assert.deepEqual(await recovered.json(), payload);
-    }
+    const request = () => GET(new Request(`http://local/api/progression/average?mode=${mode}`));
+    const warming = await request();
+    assert.equal(warming.status, 503);
+    assert.equal(warming.headers.get("Retry-After"), "5");
+    assert.equal(warming.headers.get("Cache-Control"), "no-store");
+    const now = Date.now();
+    materializeSqlitePopulationSnapshot(db, mode, "persistent", now);
+    const ready = await request();
+    assert.equal(ready.status, 200);
+    assert.equal((await ready.json()).mode, mode);
+    assert.equal(ready.headers.get("X-Statistics-Stale"), "0");
+    // A failed refresh retains the same published generation, even after expiry.
+    db.prepare("UPDATE progression_population_generations SET generated_at = ? WHERE mode = ?").run(now - 7 * 3600_000, mode);
+    const stale = await request();
+    assert.equal(stale.status, 200);
+    assert.equal(stale.headers.get("X-Average-Stale"), "1");
+    assert.equal(stale.headers.get("X-Statistics-Stale"), "0", "scheduled publication age must not trigger rapid polling");
   }
-  resetDynamicAverageCacheForTests();
-  failure = new Error("fixture SQL failed");
-  assert.equal((await GET(new Request("http://local/api/progression/average?mode=regular"))).status, 500);
+  assert.equal(enqueue.mock.callCount(), 0);
+  assert.equal((await GET(new Request("http://local/api/progression/average?mode=arena"))).status, 400);
 });
