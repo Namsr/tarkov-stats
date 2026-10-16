@@ -325,6 +325,9 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     const clean = query.trim();
     if (!clean || loading) return;
 
+    // Keep focus inside the search when its submit button becomes disabled.
+    inputRef.current?.focus();
+
     cancelPendingResultsOpen();
     setRecentOpen(false);
     setResultsOpen(false);
