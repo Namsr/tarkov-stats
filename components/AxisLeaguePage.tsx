@@ -8,7 +8,7 @@ import AxisMatchHistory from "@/components/AxisMatchHistory";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
-export default function AxisLeaguePage() {
+export default function AxisLeaguePage({ initialView = "standings" }: { initialView?: "standings" | "history" }) {
   const { t, lang } = useI18n();
   const [data, setData] = useState<AxisLeagueResponse | null>(null);
   const [failed, setFailed] = useState(false);
@@ -16,7 +16,7 @@ export default function AxisLeaguePage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
-  const [view, setView] = useState<"standings" | "history">("standings");
+  const [view, setView] = useState<"standings" | "history">(initialView);
   const locale = lang === "ru" ? "ru-RU" : "en-US";
 
   useEffect(() => {

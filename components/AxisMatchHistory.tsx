@@ -1,6 +1,7 @@
 "use client";
 
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
@@ -12,9 +13,18 @@ export default function AxisMatchHistory() {
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [canEditKda, setCanEditKda] = useState(false);
   const current = data?.page === page && data?.season === season ? data : null;
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/auth/me", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+      if (response.ok) { const body = await response.json(); if (!controller.signal.aborted) setCanEditKda(body.canEditAxisKda === true); }
+    }).catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -80,18 +90,32 @@ export default function AxisMatchHistory() {
             <span>{match.maps.length ? match.maps.join(", ") : t("axis.history.noMap")}</span>
             <span className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
-          {match.teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{match.teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
+          <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => setRetry((value) => value + 1)} onSaved={(players, rounds) => {
+            const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
+            setData((previous) => previous ? { ...previous, matches: previous.matches.map((entry) => entry.number !== match.number ? entry : { ...entry,
+              rounds: rounds === undefined ? entry.rounds : rounds,
+              teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous);
+            setRetry((value) => value + 1);
+          }}>{({ teams, renderInputs, rounds }) => <>
+            {rounds}
+          {teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
-            <p className="axis-match-mmr-label">{t("axis.history.mmr")}</p>
+            <p className="axis-match-mmr-label">{t("axis.kda.manual")} · {t("axis.history.mmr")}</p>
             <ul>{team.players.map((player) => <li key={player.id}>
               <AxisPlayerIdentity player={player} mmr={player.mmr} />
+              <div className="axis-match-values">
+              {renderInputs(player.id) ?? <span className="axis-match-kda" aria-label={t("axis.kda.value", { kills: player.kda?.kills ?? "—", deaths: player.kda?.deaths ?? "—", assists: player.kda?.assists ?? "—" })}>
+                <small>{t("axis.kda.short")}</small><strong>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</strong>
+              </span>}
               <span className="axis-match-stats"><span>{player.mmr == null ? "—" : number(player.mmr)}</span>
                 <span className={player.change == null || player.change === 0 ? "" : player.change > 0 ? "axis-match-gain" : "axis-match-loss"} aria-label={t("axis.history.change", { n: player.change == null ? "—" : number(player.change) })}>
                   {player.change == null ? "—" : `${player.change > 0 ? "+" : ""}${number(player.change)}`}
                 </span>
               </span>
+              </div>
             </li>)}</ul>
           </section>)}</div>}
+          </>}</AxisMatchStatsEditor>
         </details>)}</div>}
     </>}
   </section>;

@@ -9,6 +9,7 @@ import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 const mockModule = (source) => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin-auth") return mockModule("export async function requireAdmin() { return globalThis.axisAccess; }");
+  if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
   if (specifier === "@/lib/admin/axis-league-db") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
   if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season) { return globalThis.axisStore.readSeasonHistory(page,season); }");
@@ -18,17 +19,76 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 const { GET, POST } = await import("../app/api/admin/axis-league/route.ts");
 const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
+const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
+const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
 
 const id = "95520357670191104";
 function setup(t) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
   globalThis.axisAccess = { ok: true, user: { sub: "admin" } };
+  globalThis.axisKdaAccess = null;
   globalThis.axisReadError = false;
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publish([{ id, name: "Player", position: 1, mmr: 1000, peakMmr: 1000,
     games: 1, wins: 1, losses: 0, winrate: 1, streak: 1, peakStreak: 1, profile: null }]);
 }
+
+function setupStats(t) {
+  setup(t);
+  globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ number: 5, time: Date.now(), queueId: "1343726040421367842", queue: "Arena League", maps: [], winner: 0,
+    teams: [{ name: null, players: [{ id, name: "Player", mmr: 1000, change: 25, profile: null }] }, { name: null, players: [] }] }] });
+}
+
+test("editors can save round scores without changing player KDA", async (t) => {
+  setupStats(t);
+  globalThis.axisAccess = { ok: false, status: 403 };
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  const body = { matchNumber: 5, players: [], rounds: { score: { a: 7, b: 5 }, expected: null } };
+  const response = await statsPost(request(body));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).rounds, { a: 7, b: 5 });
+  assert.equal((await statsPost(request(body))).status, 409);
+  const read = await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?season=current"));
+  assert.deepEqual((await read.json()).matches[0].rounds, { a: 7, b: 5 });
+});
+
+test("KDA writes validate access, origin, roster and counters, and detect lost updates", async (t) => {
+  setupStats(t);
+  const kda = { kills: 8, deaths: 2, assists: 4 };
+  const body = { matchNumber: 5, players: [{ discordId: id, kda, expected: null }] };
+  for (const status of [401, 403]) {
+    globalThis.axisKdaAccess = { ok: false, status };
+    assert.equal((await statsPost(request(body))).status, status);
+  }
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  assert.equal((await statsPost(request(body, { origin: "https://evil.test" }))).status, 403);
+  assert.equal((await statsPost(request(body, { "content-type": "text/plain" }))).status, 415);
+  assert.equal((await statsPost(request({ ...body, matchNumber: 999 }))).status, 400);
+  assert.equal((await statsPost(request({ ...body, players: [{ ...body.players[0], discordId: "999" }] }))).status, 400);
+  assert.equal((await statsPost(request({ ...body, players: [{ ...body.players[0], kda: { ...kda, kills: -1 } }] }))).status, 400);
+  const response = await statsPost(request(body));
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal((await statsPost(request(body))).status, 409);
+  assert.deepEqual(globalThis.axisStore.readSeasonHistory(1, "current").matches[0].teams[0].players[0].kda, kda);
+  assert.equal((await statsPost(request({ ...body, players: [{ discordId: id, kda: null, expected: kda }] }))).status, 200);
+});
+
+test("only full admins can list, assign or revoke KDA editors or change profile links", async (t) => {
+  setupStats(t);
+  globalThis.axisAccess = { ok: false, status: 403 };
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  assert.equal((await editorsGet()).status, 403);
+  assert.equal((await editorsPost(request({ subject: "self", enabled: true }))).status, 403);
+  assert.equal((await POST(request({ discordId: id, profile: "12345" }))).status, 403);
+  globalThis.axisAccess = { ok: true, user: { sub: "admin" } };
+  assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: true }))).status, 200);
+  assert.deepEqual((await (await editorsGet()).json()).editors, ["limited-editor"]);
+  assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), true);
+  assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: false }))).status, 200);
+  assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), false);
+  assert.equal((await editorsPost(request({ subject: "<invalid>", enabled: true }))).status, 400);
+});
 function request(body, headers = {}) {
   return new Request("https://tarkovstats.ru/api/admin/axis-league", { method: "POST",
     headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body) });

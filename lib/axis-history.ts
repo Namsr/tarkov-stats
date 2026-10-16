@@ -1,14 +1,17 @@
 import { AXIS_SERVER_ID, axisAvatarUrl, type AxisProfile } from "./axis-league.ts";
 import type { AxisSeason } from "./axis-seasons";
+import type { AxisKda, AxisRoundScore } from "./axis-kda";
 
 export const AXIS_HISTORY_SOURCE_URL = `https://www.neatqueue.com/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_API_URL = `https://api.neatqueue.com/api/v1/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_PAGE_SIZE = 25;
 
 export interface AxisMatchPlayer {
+  kda?: AxisKda | null;
   id: string; name: string; avatarUrl?: string | null; mmr: number | null; change: number | null; profile: AxisProfile | null;
 }
 export interface AxisMatch {
+  rounds?: AxisRoundScore | null;
   queueId?: string | null;
   number: number; time: number | null; queue: string | null; maps: string[];
   teams: { name: string | null; players: AxisMatchPlayer[] }[];

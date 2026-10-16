@@ -3,11 +3,25 @@ import { AXIS_REFRESH_MS } from "../axis-league.ts";
 import type { AxisHistoryPage, AxisHistoryResponse } from "../axis-history";
 import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
 import { detectAxisSeasons, axisSeasonMatches } from "../axis-seasons.ts";
+import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
 type SqliteDatabase = any;
 export function createAxisLeagueStore(db: SqliteDatabase) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS axis_match_rounds (
+      match_number INTEGER PRIMARY KEY,
+      team_a INTEGER NOT NULL CHECK(team_a BETWEEN 0 AND 9999),
+      team_b INTEGER NOT NULL CHECK(team_b BETWEEN 0 AND 9999)
+    );
+    CREATE TABLE IF NOT EXISTS axis_kda_editors (google_sub TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS axis_match_kda (
+      match_number INTEGER NOT NULL, discord_id TEXT NOT NULL,
+      kills INTEGER NOT NULL CHECK(kills BETWEEN 0 AND 9999),
+      deaths INTEGER NOT NULL CHECK(deaths BETWEEN 0 AND 9999),
+      assists INTEGER NOT NULL CHECK(assists BETWEEN 0 AND 9999),
+      PRIMARY KEY(match_number, discord_id)
+    );
     CREATE TABLE IF NOT EXISTS axis_archive_matches (number INTEGER PRIMARY KEY, payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS axis_archive_state (
       id INTEGER PRIMARY KEY CHECK(id = 1), next_page INTEGER NOT NULL DEFAULT 2,
@@ -36,7 +50,71 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     }
     return links;
   }
+  function decorateMatches(matches: AxisHistoryPage["matches"]) {
+    const links = profileLinks();
+    const stats = new Map<string, AxisKda>();
+    const rounds = new Map<number, AxisRoundScore>();
+    if (matches.length) {
+      for (const row of db.prepare(`SELECT * FROM axis_match_kda WHERE match_number IN (${matches.map(() => "?").join(",")})`).all(...matches.map((match) => match.number))) {
+        stats.set(`${row.match_number}:${row.discord_id}`, { kills: row.kills, deaths: row.deaths, assists: row.assists });
+      }
+      for (const row of db.prepare(`SELECT * FROM axis_match_rounds WHERE match_number IN (${matches.map(() => "?").join(",")})`).all(...matches.map((match) => match.number))) {
+        rounds.set(row.match_number, { a: row.team_a, b: row.team_b });
+      }
+    }
+    return matches.map((match) => ({ ...match, rounds: rounds.get(match.number) ?? null, teams: match.teams.map((team) => ({ ...team,
+      players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) }));
+  }
   return {
+    listKdaEditors(): string[] { return db.prepare("SELECT google_sub FROM axis_kda_editors ORDER BY google_sub").all().map((row: { google_sub: string }) => row.google_sub); },
+    isKdaEditor(subject: string): boolean { return Boolean(db.prepare("SELECT 1 FROM axis_kda_editors WHERE google_sub=?").get(subject)); },
+    setKdaEditor(subject: string, enabled: boolean) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(subject) || typeof enabled !== "boolean") throw new TypeError("Invalid editor identity");
+      if (enabled) db.prepare("INSERT OR IGNORE INTO axis_kda_editors(google_sub) VALUES(?)").run(subject);
+      else db.prepare("DELETE FROM axis_kda_editors WHERE google_sub=?").run(subject);
+    },
+    setMatchStats(matchNumber: number, input: AxisKdaChange[], roundInput?: AxisRoundChange) {
+      if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
+      const changes = Array.isArray(input) && input.length === 0 ? [] : parseAxisKdaChanges(input);
+      const rounds = roundInput === undefined ? undefined : parseAxisRoundChange(roundInput);
+      if (!changes.length && rounds === undefined) throw new TypeError("No match changes");
+      const archived = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?").get(matchNumber);
+      let match: AxisHistoryPage["matches"][number] | undefined = archived ? JSON.parse(archived.payload) : undefined;
+      if (!match) {
+        for (const row of db.prepare("SELECT payload FROM axis_history_pages WHERE payload IS NOT NULL").all()) {
+          match = (JSON.parse(row.payload) as AxisHistoryPage).matches.find((entry) => entry.number === matchNumber);
+          if (match) break;
+        }
+      }
+      if (!match) throw new RangeError("Unknown match");
+      if (rounds?.score && match.teams.length !== 2) throw new RangeError("Round score requires two teams");
+      const participants = new Set(match.teams.flatMap((team) => team.players.map((player) => player.id)));
+      if (changes.some((change) => !participants.has(change.discordId))) throw new RangeError("Player is not in this match");
+      const read = db.prepare("SELECT kills,deaths,assists FROM axis_match_kda WHERE match_number=? AND discord_id=?");
+      const save = db.prepare("INSERT INTO axis_match_kda(match_number,discord_id,kills,deaths,assists) VALUES(?,?,?,?,?) ON CONFLICT(match_number,discord_id) DO UPDATE SET kills=excluded.kills,deaths=excluded.deaths,assists=excluded.assists");
+      const remove = db.prepare("DELETE FROM axis_match_kda WHERE match_number=? AND discord_id=?");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (rounds !== undefined) {
+          const existing = db.prepare("SELECT team_a AS a,team_b AS b FROM axis_match_rounds WHERE match_number=?").get(matchNumber) ?? null;
+          if (!sameAxisRoundScore(existing, rounds.expected)) throw new AxisKdaConflict("Round score was changed by another editor");
+        }
+        for (const change of changes) {
+          const existing = read.get(matchNumber, change.discordId) ?? null;
+          if (!sameAxisKda(existing, change.expected)) throw new AxisKdaConflict("Match statistics were changed by another administrator");
+        }
+        for (const { discordId, kda } of changes) {
+          if (kda) save.run(matchNumber, discordId, kda.kills, kda.deaths, kda.assists);
+          else remove.run(matchNumber, discordId);
+        }
+        if (rounds !== undefined) {
+          if (rounds.score) db.prepare("INSERT INTO axis_match_rounds(match_number,team_a,team_b) VALUES(?,?,?) ON CONFLICT(match_number) DO UPDATE SET team_a=excluded.team_a,team_b=excluded.team_b").run(matchNumber, rounds.score.a, rounds.score.b);
+          else db.prepare("DELETE FROM axis_match_rounds WHERE match_number=?").run(matchNumber);
+        }
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+      return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score };
+    },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
     claimArchiveRefresh(now = Date.now()): boolean {
       const interval = this.archiveState().complete ? AXIS_REFRESH_MS : 30_000;
@@ -63,10 +141,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const selected = seasons.find((entry) => entry.id === season);
       if (season !== "all" && !selected) throw new RangeError("Unknown AXIS season");
       const matches = selected ? axisSeasonMatches(all, selected) : all;
-      const links = profileLinks();
       return { page, total: matches.length, pages: Math.max(1, Math.ceil(matches.length / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season,
-        matches: matches.slice((page - 1) * AXIS_HISTORY_PAGE_SIZE, page * AXIS_HISTORY_PAGE_SIZE).map((match) => ({ ...match, teams: match.teams.map((team) => ({ ...team,
-          players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })) })) })),
+        matches: decorateMatches(matches.slice((page - 1) * AXIS_HISTORY_PAGE_SIZE, page * AXIS_HISTORY_PAGE_SIZE)),
         archiveComplete: Boolean(state.complete), updatedAt: state.updated_at, available: state.updated_at != null,
         stale: Boolean(state.last_error) || state.updated_at != null && now - state.updated_at > AXIS_REFRESH_MS * 2 };
     },
@@ -93,9 +169,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     readHistory(page: number, now = Date.now()): AxisHistoryResponse {
       const row = db.prepare("SELECT * FROM axis_history_pages WHERE page = ?").get(page);
       const data: AxisHistoryPage = row?.payload == null ? { matches: [], page, pages: 1, total: 0 } : JSON.parse(row.payload);
-      const links = profileLinks();
-      return { ...data, matches: data.matches.map((match) => ({ ...match, teams: match.teams.map((team) => ({ ...team,
-        players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })) })) })),
+      return { ...data, matches: decorateMatches(data.matches),
         updatedAt: row?.updated_at ?? null, available: row?.payload != null,
         stale: Boolean(row?.last_error) || (row?.updated_at != null && now - row.updated_at > AXIS_REFRESH_MS * 2) };
     },

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { AxisAvatar } from "@/components/AxisPlayerIdentity";
+import AxisLeagueEditors from "@/components/AxisLeagueEditors";
 import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { axisProfileHref, parseAxisProfile, type AxisLeagueResponse, type AxisPlayer } from "@/lib/axis-league";
@@ -12,6 +13,8 @@ export default function AdminAxisLeague({ data, onChange }: { data: AxisLeagueRe
   const players = (data?.players ?? []).filter((player) => `${player.name} ${player.id} ${player.profile?.aid ?? ""}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return <section className="data-panel admin-panel" aria-label={t("axis.title")}>
     <div className="axis-heading"><h2 className="section-heading">{t("axis.title")}</h2><Link href="/axis-league" className="ghost-button">{t("axis.admin.open")}</Link></div>
+    <Link href="/axis-league?view=history" className="ghost-button axis-admin-history">{t("axis.kda.openHistory")}</Link>
+    <AxisLeagueEditors />
     <p className="admin-chart-description">{t("axis.admin.description")}</p>
     {(data?.stale || !data?.available) && <p className="admin-notice" role="status">{t(data?.available ? "axis.stale" : "axis.error")}</p>}
     <div className="admin-moderation axis-admin-search"><label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label></div>

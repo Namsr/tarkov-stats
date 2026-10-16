@@ -31,12 +31,14 @@ export default function ProfilePage() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canEditAxisKda, setCanEditAxisKda] = useState(false);
+  const [accountId, setAccountId] = useState("");
 
   useEffect(() => {
     if (!enabled) return;
     fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => response.json() as Promise<{ isAdmin?: boolean }>)
-      .then((data) => setIsAdmin(data.isAdmin === true))
+      .then((response) => response.json() as Promise<{ isAdmin?: boolean; canEditAxisKda?: boolean; user?: { sub?: string } | null }>)
+      .then((data) => { setIsAdmin(data.isAdmin === true); setCanEditAxisKda(data.canEditAxisKda === true); setAccountId(data.user?.sub ?? ""); })
       .catch(() => setIsAdmin(false));
   }, [enabled]);
 
@@ -128,7 +130,13 @@ export default function ProfilePage() {
         <h1 className="page-title">{t("profile.title")}</h1>
         </div>
         {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
+        {!isAdmin && canEditAxisKda && <Link href="/axis-league?view=history" className="tactical-button">{t("axis.editor.profileLink")}</Link>}
       </div>
+
+      {accountId && <section className="data-panel axis-profile-access" aria-label={t("axis.editor.accountId")}>
+        <p>{t("axis.editor.accountId")}: <code>{accountId}</code></p>
+        <p>{t("axis.editor.accountHint")}</p>
+      </section>}
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}
 

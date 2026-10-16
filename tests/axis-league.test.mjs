@@ -7,6 +7,7 @@ import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts"
 import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "../lib/axis-history.ts";
 import { fetchAxisHistory, refreshAxisHistory, refreshAxisArchive } from "../lib/axis-history-sync.ts";
 import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
+import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
 
 function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
@@ -44,6 +45,61 @@ function seasonMatch(number, time, mmr = 1100, queueId = AXIS_CHANNEL_ID) {
   return { number, time, queueId, queue: "Arena League", winner: 0, maps: [], teams: [{ name: null,
     players: Array.from({ length: 10 }, (_, i) => ({ id: String(i + 1), name: `Player ${i}`, mmr, change: i < 5 ? 25 : -25, profile: null })) }] };
 }
+
+test("manual KDA stays with a match and Discord identity across refreshes, renames and reopen", (t) => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  let db = createAxisLeagueStore(sql);
+  const match = seasonMatch(100, AXIS_CURRENT_SEASON_START + 1);
+  const snapshot = { matches: [match], page: 1, pages: 1, total: 1 };
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  const kda = { kills: 12, deaths: 0, assists: 3 };
+  db.setMatchStats(100, [{ discordId: "1", kda, expected: null }]);
+  match.teams[0].players[0].name = "Renamed";
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  db = createAxisLeagueStore(sql);
+  assert.deepEqual(db.readHistory(1).matches[0].teams[0].players[0].kda, kda);
+  assert.deepEqual(db.readSeasonHistory(1, "current").matches[0].teams[0].players[0].kda, kda);
+  assert.equal(db.readSeasonHistory(1, "all").matches[0].teams[0].players[1].kda, null);
+  db.setMatchStats(100, [{ discordId: "1", kda: null, expected: kda }]);
+  assert.equal(db.readHistory(1).matches[0].teams[0].players[0].kda, null);
+  db.setMatchStats(100, [{ discordId: "1", kda: { kills: 0, deaths: 0, assists: 0 }, expected: null }]);
+  assert.deepEqual(db.readHistory(1).matches[0].teams[0].players[0].kda, { kills: 0, deaths: 0, assists: 0 });
+});
+
+test("KDA batches reject stale edits atomically and cannot edit people outside a match", (t) => {
+  const db = store(t); const match = seasonMatch(1, AXIS_CURRENT_SEASON_START + 1);
+  db.publishHistory({ matches: [match], page: 1, pages: 1, total: 1 });
+  const kda = { kills: 3, deaths: 1, assists: 2 };
+  db.setMatchStats(1, [{ discordId: "1", kda, expected: null }]);
+  assert.throws(() => db.setMatchStats(1, [{ discordId: "2", kda, expected: null }, { discordId: "1", kda: null, expected: null }]), AxisKdaConflict);
+  assert.equal(db.readHistory(1).matches[0].teams[0].players[1].kda, null);
+  assert.throws(() => db.setMatchStats(1, [{ discordId: "999", kda, expected: null }]), RangeError);
+  assert.throws(() => db.setMatchStats(99, [{ discordId: "1", kda, expected: null }]), RangeError);
+  for (const invalid of [-1, 1.5, 10000, "2", null]) assert.throws(() => parseAxisKdaChanges([{ discordId: "1", kda: { ...kda, deaths: invalid }, expected: null }]), TypeError);
+  assert.throws(() => parseAxisKdaChanges([{ discordId: "1", kda }]), TypeError);
+  assert.throws(() => parseAxisKdaChanges([{ discordId: "1", kda, expected: null }, { discordId: "1", kda, expected: null }]), TypeError);
+});
+
+test("round scores persist with match KDA and stale score updates cannot partially save player stats", (t) => {
+  const db = store(t); const match = seasonMatch(55, AXIS_CURRENT_SEASON_START + 1);
+  match.teams.push({ name: "Team B", players: [] });
+  const snapshot = { matches: [match], page: 1, pages: 1, total: 1 };
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  const kda = { kills: 7, deaths: 3, assists: 2 };
+  const score = { a: 7, b: 5 };
+  db.setMatchStats(55, [{ discordId: "1", kda, expected: null }], { score, expected: null });
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  assert.deepEqual(db.readSeasonHistory(1, "current").matches[0].rounds, score);
+  assert.deepEqual(db.readHistory(1).matches[0].rounds, score);
+  assert.throws(() => db.setMatchStats(55, [{ discordId: "2", kda, expected: null }], { score: { a: 1, b: 0 }, expected: null }), AxisKdaConflict);
+  assert.equal(db.readHistory(1).matches[0].teams[0].players[1].kda, null);
+  for (const a of [-1, 1.5, 10000, "7"]) assert.throws(() => db.setMatchStats(55, [], { score: { a, b: 0 }, expected: score }), TypeError);
+  db.setMatchStats(55, [], { score: { a: 0, b: 0 }, expected: score });
+  assert.deepEqual(db.readHistory(1).matches[0].rounds, { a: 0, b: 0 });
+  db.setMatchStats(55, [], { score: null, expected: { a: 0, b: 0 } });
+  assert.equal(db.readHistory(1).matches[0].rounds, null);
+  assert.deepEqual(db.readHistory(1).matches[0].teams[0].players[0].kda, kda);
+});
 
 test("seasons require a mass returning-player reset and preserve the confirmed Moscow boundary", () => {
   const start = Date.UTC(2026, 8, 1);
