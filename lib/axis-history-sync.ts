@@ -43,11 +43,11 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
   try { await refresh; } finally { pendingArchives.delete(store); }
 }
 
-export async function loadAxisSeasonHistory(page: number, season: string, defer?: (task: () => Promise<void>) => void) {
+export async function loadAxisSeasonHistory(page: number, season: string, defer?: (task: () => Promise<void>) => void, matchNumber?: number) {
   const store = await getAxisLeagueStore();
   // Bootstrap only a small head page; never delay the first response for older seasons.
   if (store.archiveState().updated_at == null) await refreshAxisArchive(store, fetch, Date.now(), true);
   // Also recover when the dedicated worker is absent. The shared lease prevents duplicate syncs.
   else defer?.(() => refreshAxisArchive(store, fetch, Date.now(), true));
-  return store.readSeasonHistory(page, season);
+  return matchNumber == null ? store.readSeasonHistory(page, season) : store.readMatchHistory(matchNumber);
 }

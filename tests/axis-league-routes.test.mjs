@@ -13,7 +13,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
   if (specifier === "@/lib/admin/axis-league-db" || specifier === "./admin/axis-league-db.ts") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
-  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season) { return globalThis.axisStore.readSeasonHistory(page,season); }");
+  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season,_defer,matchNumber) { return matchNumber == null ? globalThis.axisStore.readSeasonHistory(page,season) : globalThis.axisStore.readMatchHistory(matchNumber); }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
@@ -274,4 +274,19 @@ test("public reads serve a stale snapshot; no snapshot returns a retryable error
   t.after(() => db.close());
   globalThis.axisStore = createAxisLeagueStore(db);
   assert.equal((await publicGet()).status, 503);
+});
+
+
+test("direct match links read the indexed archive entry and reject invalid or missing numbers", async (t) => {
+  setupStats(t);
+  const request = (query) => new Request("https://tarkovstats.ru/api/axis-league/history?" + query);
+  const response = await historyGet(request("match=5&season=all"));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.matchNumber, 5); assert.equal(body.matches[0].number, 5);
+  assert.equal(body.season, "all"); assert.equal(body.matches.length, 1);
+  assert.equal((await historyGet(request("match=999"))).status, 404);
+  for (const query of ["match=0", "match=-1", "match=01", "match=1.5", "match=1000000000", "match=5&page=2", "match=5&season=current"]) {
+    assert.equal((await historyGet(request(query))).status, 400, query);
+  }
 });

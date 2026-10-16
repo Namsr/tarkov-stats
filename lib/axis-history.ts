@@ -21,6 +21,7 @@ export interface AxisMatch {
 }
 export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: number; total: number }
 export interface AxisHistoryResponse extends AxisHistoryPage {
+  matchNumber?: number;
   updatedAt: number | null; available: boolean; stale: boolean;
   seasons?: AxisSeason[]; season?: string; archiveComplete?: boolean;
 }

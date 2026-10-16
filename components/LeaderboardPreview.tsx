@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useId, useCallback, type ReactNode } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import ProfilePortrait from "@/components/ProfilePortrait";
-import { LEADERBOARD_PREVIEW_DELAY_MS, LEADERBOARD_PREVIEW_CLOSE_MS, previewRatio } from "@/lib/leaderboard-preview";
+import { AXIS_PREVIEW_DELAY_MS, LEADERBOARD_PREVIEW_DELAY_MS, LEADERBOARD_PREVIEW_CLOSE_MS, previewRatio } from "@/lib/leaderboard-preview";
 import type { LeaderboardMeta } from "@/types/leaderboard";
 import type { LeaderboardPreview } from "@/types/leaderboard-preview";
 
@@ -17,7 +17,7 @@ const Context = createContext<PreviewContext | null>(null);
 const cache = new Map<string, { expiresAt: number; value: LeaderboardPreview }>();
 const finePointer = () => window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
-export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { detailsLabel?: string; meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
+export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detailsHeader }: { detailsHeader?: (nameId: string) => ReactNode; detailsLabel?: string; meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
   const { t, lang } = useI18n();
   const id = useId();
   const [target, setTarget] = useState<Target | null>(null);
@@ -28,6 +28,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
   const [touch, setTouch] = useState(false);
   const card = useRef<HTMLDivElement>(null);
   const current = useRef<Target | null>(null);
+  const positionedTarget = useRef<Target | null>(null);
   const pending = useRef<Target | null>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -55,6 +56,27 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
     }
   }, [clearTimers]);
 
+  const loadPreview = useCallback((next: Target) => {
+    if (next.aid == null || controller.current && !controller.current.signal.aborted) return;
+    const params = new URLSearchParams({ aid: String(next.aid), mode: meta.mode });
+    if (meta.cycleId) params.set("cycle", meta.cycleId);
+    if (meta.arenaMode) params.set("arenaMode", meta.arenaMode);
+    const key = `${meta.generation}:${params}`;
+    const cached = cache.get(key);
+    if (cached && cached.expiresAt > Date.now()) { setData(cached.value); return; }
+    const request = new AbortController();
+    controller.current = request;
+    fetch(`/api/leaderboard/preview?${params}`, { signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]) }).then(async (response) => {
+      if (!response.ok) throw new Error("preview unavailable");
+      const value = await response.json() as LeaderboardPreview;
+      if (request.signal.aborted) return;
+      if (value.aid !== next.aid || value.mode !== meta.mode || value.cycleId !== meta.cycleId || value.arenaMode !== meta.arenaMode) throw new Error("preview identity mismatch");
+      if (cache.size >= 64) cache.delete(cache.keys().next().value!);
+      cache.set(key, { expiresAt: Date.now() + 60_000, value });
+      setData(value);
+    }).catch(() => { if (!request.signal.aborted) setError(true); }).finally(() => { if (controller.current === request) controller.current = null; });
+  }, [meta.mode, meta.cycleId, meta.arenaMode, meta.generation]);
+
   const enter = useCallback((next: Target, immediate = false) => {
     if (restoring.current) return;
     keyboard.current = next.focus === true || next.element.matches(":focus-visible");
@@ -74,28 +96,16 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
       setTab("details");
       setTouch(!finePointer());
       setTarget(next);
-      if (next.aid == null) return;
-      const params = new URLSearchParams({ aid: String(next.aid), mode: meta.mode });
-      if (meta.cycleId) params.set("cycle", meta.cycleId);
-      if (meta.arenaMode) params.set("arenaMode", meta.arenaMode);
-      const key = `${meta.generation}:${params}`;
-      const cached = cache.get(key);
-      if (cached && cached.expiresAt > Date.now()) { setData(cached.value); return; }
-      const request = new AbortController();
-      controller.current = request;
-      fetch(`/api/leaderboard/preview?${params}`, { signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]) }).then(async (response) => {
-        if (!response.ok) throw new Error("preview unavailable");
-        const value = await response.json() as LeaderboardPreview;
-        if (request.signal.aborted) return;
-        if (value.aid !== next.aid || value.mode !== meta.mode || value.cycleId !== meta.cycleId || value.arenaMode !== meta.arenaMode) throw new Error("preview identity mismatch");
-        if (cache.size >= 64) cache.delete(cache.keys().next().value!);
-        cache.set(key, { expiresAt: Date.now() + 60_000, value });
-        setData(value);
-      }).catch(() => { if (!request.signal.aborted) setError(true); });
+      if (!detailsLabel || !next.details) loadPreview(next);
     };
     if (immediate) show();
-    else openTimer.current = setTimeout(show, LEADERBOARD_PREVIEW_DELAY_MS);
-  }, [clearTimers, meta.mode, meta.cycleId, meta.arenaMode, meta.generation]);
+    else openTimer.current = setTimeout(show, detailsLabel && next.details ? AXIS_PREVIEW_DELAY_MS : LEADERBOARD_PREVIEW_DELAY_MS);
+  }, [clearTimers, detailsLabel, loadPreview]);
+
+  const selectTab = (value: "details" | "profile") => {
+    setTab(value);
+    if (value === "profile" && target && !data && !error) loadPreview(target);
+  };
 
   const inside = useCallback(() => {
     const anchor = current.current?.element;
@@ -144,7 +154,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
       keyboard.current = true;
       if (event.key === "Escape") { event.preventDefault(); close(true); }
       if (touch && event.key === "Tab" && card.current) {
-        const controls = [...card.current.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]), a[href]')];
+        const controls = [...card.current.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]):not(:disabled), a[href]')].filter((element) => element.getClientRects().length > 0);
         const first = controls[0], last = controls.at(-1);
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -162,7 +172,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
 
   useLayoutEffect(() => {
     if (!target || !card.current) return;
-    const position = () => {
+    const position = (preserve = false) => {
       if (!target.element.isConnected || !target.element.getClientRects().length) { close(); return; }
       const popup = card.current!;
       const a = target.element.getBoundingClientRect(), b = popup.getBoundingClientRect();
@@ -179,13 +189,20 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
         if (a.top - b.height - margin >= margin) top = a.top - b.height - margin;
         else top = Math.max(margin, innerHeight - b.height - margin);
       }
+      // Lazy panels must not jump away from the pointer while loading or switching tabs.
+      if (preserve && !touch) {
+        left = Math.max(margin, Math.min(Number.parseFloat(popup.style.left), innerWidth - b.width - margin));
+        top = Math.max(margin, Math.min(Number.parseFloat(popup.style.top), innerHeight - b.height - margin));
+      }
       setPlacement({ left, top });
     };
-    position();
+    position(positionedTarget.current === target);
+    positionedTarget.current = target;
+    const reposition = () => position();
     if (target.focus && !card.current.contains(document.activeElement)) card.current.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
-    window.addEventListener("resize", position);
-    window.addEventListener("scroll", position, true);
-    return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => { window.removeEventListener("resize", reposition); window.removeEventListener("scroll", reposition, true); };
   }, [target, data, error, touch, lang, tab, close]);
 
   const format = (value: number | null, digits = 0) => value === null ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits, minimumFractionDigits: digits });
@@ -196,11 +213,11 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
     {children}
     {target && createPortal(<>
       {touch && <div className="leaderboard-preview-backdrop" onClick={() => close(true)} />}
-      <div ref={card} id={id} className="leaderboard-preview" role="dialog" aria-modal={touch || undefined} aria-labelledby={`${id}-name`}
+      <div ref={card} id={id} className={`leaderboard-preview${showingDetails ? " leaderboard-preview--axis" : ""}`} role="dialog" aria-modal={touch || undefined} aria-labelledby={`${id}-name`}
         style={placement} onPointerEnter={() => { if (closeTimer.current) clearTimeout(closeTimer.current); }} onPointerLeave={() => { if (!touch) leave(); }}
         onBlur={(event) => { if (!touch && !event.currentTarget.contains(event.relatedTarget)) leave(); }}>
         <button className="leaderboard-preview__close" type="button" aria-label={t("common.close")} onClick={() => close(true)}>×</button>
-        <div className="leaderboard-preview__identity">
+        {showingDetails && detailsHeader ? detailsHeader(`${id}-name`) : <div className="leaderboard-preview__identity">
           {target.portrait ?? (target.aid != null && <ProfilePortrait key={`${mode}:${target.aid}`} aid={target.aid} mode={mode} cycleId={meta.cycleId ?? undefined} nickname={target.nickname} />)}
           <div><div className="leaderboard-preview__name"><h2 id={`${id}-name`} title={target.portrait ? target.nickname : data?.nickname ?? target.nickname}>{target.portrait ? target.nickname : data?.nickname ?? target.nickname}</h2>
             {!showingDetails && data?.prestige != null && Number.isSafeInteger(data.prestige) && data.prestige > 0 && <Image src={`https://assets.tarkov.dev/prestige-${data.prestige}-icon.webp`} width={24} height={24} unoptimized referrerPolicy="no-referrer" alt={t("player.prestigeLabel", { n: data.prestige })} onError={(event) => { event.currentTarget.style.display = "none"; }} />}
@@ -210,18 +227,18 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
             {data?.level != null && <span>{t("leaderboard.preview.level", { n: data.level })}</span>}
             {data?.updatedAt != null && data.updatedAt > 0 && <span>{t("leaderboard.preview.updated", { date: new Date(data.updatedAt).toLocaleDateString(lang, { day: "numeric", month: "short" }) })}</span>}
           </div>}</div>
-        </div>
+        </div>}
         {hasTabs && <div className="leaderboard-preview__tabs" role="tablist" aria-label={t("leaderboard.preview.statistics")}
           onKeyDown={(event) => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             event.preventDefault();
             const next = event.key === "Home" ? "details" : event.key === "End" ? "profile" : tab === "details" ? "profile" : "details";
-            setTab(next);
+            selectTab(next);
             card.current?.querySelector<HTMLButtonElement>(`#${CSS.escape(`${id}-tab-${next}`)}`)?.focus();
           }}>
           {(["details", "profile"] as const).map((value) => <button key={value} id={`${id}-tab-${value}`} type="button" role="tab"
             aria-selected={tab === value} aria-controls={`${id}-panel-${value}`} tabIndex={tab === value ? 0 : -1}
-            onClick={() => setTab(value)}>{value === "details" ? detailsLabel : t("fav.mode.arena")}</button>)}
+            onClick={() => selectTab(value)}>{value === "details" ? detailsLabel : t("fav.mode.arena")}</button>)}
         </div>}
         {target.details && <div id={`${id}-panel-details`} role={hasTabs ? "tabpanel" : undefined}
           aria-labelledby={hasTabs ? `${id}-tab-details` : undefined} tabIndex={hasTabs ? 0 : undefined} hidden={hasTabs && !showingDetails}>{target.details}</div>}
@@ -243,7 +260,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { d
           <dl className="leaderboard-preview__totals">{data.totals.map((total) => <div key={total.label}><dd>{format(total.value)}</dd><dt>{t(total.label)}</dt></div>)}</dl>
         </>}
         </div>
-        {target.href && <div className="leaderboard-preview__footer"><Link href={target.href} prefetch={false}>{t("home.openProfile")} <span aria-hidden="true">↗</span></Link></div>}
+        {!showingDetails && target.href && <div className="leaderboard-preview__footer"><Link href={target.href} prefetch={false}>{t("home.openProfile")} <span aria-hidden="true">↗</span></Link></div>}
       </div>
     </>, document.body)}
   </Context.Provider>;
