@@ -61,3 +61,15 @@ test("profile linking uses the same signed editor role and stops immediately aft
   globalThis.axisUser = { ...globalThis.axisUser, sub: "full-admin" };
   assert.equal((await profilesPost(request())).status, 200);
 });
+
+test("the configured main administrator can edit AXIS without assigning themselves an editor role", async (t) => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  process.env.ADMIN_GOOGLE_SUB = "configured-main-admin";
+  globalThis.axisRoleStore = createAxisLeagueStore(db);
+  globalThis.axisStoreFailure = false;
+  globalThis.axisUser = { sub: "configured-main-admin", email: "admin@example.test", name: "Admin", picture: "" };
+  assert.equal(globalThis.axisRoleStore.isKdaEditor(globalThis.axisUser.sub), false);
+  assert.equal(await canEditAxisKda(globalThis.axisUser), true);
+  assert.equal((await requireAxisKdaEditor()).ok, true);
+  assert.equal((await requireAdmin()).ok, true);
+});

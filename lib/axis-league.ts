@@ -25,7 +25,7 @@ export interface AxisPlayer {
   profile: AxisProfile | null;
 }
 export interface AxisLeagueResponse {
-  currentSeason?: { startsAt: number; inferred: boolean };
+  currentSeason?: { startsAt: number; inferred: boolean; games: number | null };
   players: AxisPlayer[];
   updatedAt: number | null;
   stale: boolean;

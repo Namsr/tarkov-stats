@@ -191,12 +191,25 @@ test("persisted season summaries survive reopen, skip unchanged imports and upda
   assert.ok(sql.prepare("SELECT payload FROM axis_archive_seasons").get().payload);
 });
 
+test("season games count completed AXIS matches once, excluding cancellations and other queues", (t) => {
+  const db = store(t);
+  assert.equal(db.read().currentSeason.games, null);
+  const matches = [seasonMatch(1, AXIS_CURRENT_SEASON_START + 1),
+    { ...seasonMatch(2, AXIS_CURRENT_SEASON_START + 2), winner: -2 },
+    { ...seasonMatch(3, AXIS_CURRENT_SEASON_START + 3), winner: -1 },
+    { ...seasonMatch(4, AXIS_CURRENT_SEASON_START + 4), winner: null },
+    seasonMatch(5, AXIS_CURRENT_SEASON_START + 5, 1100, "another-queue"),
+    seasonMatch(6, AXIS_CURRENT_SEASON_START - 1)];
+  db.publishArchive({ page: 1, pages: 1, total: matches.length, matches });
+  assert.equal(db.read().currentSeason.games, 2);
+});
+
 test("archive refresh imports bounded pages, coordinates store handles and retains data on failure", async (t) => {
   const db = store(t); let calls = 0;
   const request = async url => {
     calls++;
-    assert.equal(url.searchParams.get("page_size"), "500");
-    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    assert.equal(url.searchParams.get("page_size"), "50");
+    const body = historyPage(1, 1); body.pagination.per_page = 50;
     body.data[0].queue_channel = AXIS_CHANNEL_ID;
     return Response.json(body);
   };
@@ -222,15 +235,35 @@ test("complete archives poll only 25 newest matches and catch up missing matches
   };
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   assert.deepEqual(calls, [[1, 25]]);
-  total = 27; calls.length = 0;
+  // A saved cursor from an earlier import must not skip a gap after a longer outage.
+  db.publishArchive({ page: 7, pages: 20, total: 1, matches: [] });
+  total = 127; calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
-  assert.deepEqual(calls, [[1, 25], [1, 500]]);
+  assert.deepEqual(calls, [[1, 25], [1, 50], [2, 50], [3, 50]]);
   assert.equal(db.archiveState().complete, 1);
-  assert.equal(db.readSeasonHistory(1, "all").total, 27);
-  assert.equal(db.readSeasonHistory(2, "all").matches.at(-1).number, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 127);
+  assert.equal(db.readSeasonHistory(6, "all").matches.at(-1).number, 1);
   calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 3);
   assert.deepEqual(calls, [[1, 25]]);
+});
+
+test("initial archive import stays bounded and resumes the next 50-match page", async (t) => {
+  const db = store(t); const calls = [];
+  const request = async url => {
+    const page = Number(url.searchParams.get("page"));
+    const size = Number(url.searchParams.get("page_size"));
+    calls.push(page); assert.equal(size, 50);
+    return Response.json({ data: Array.from({ length: Math.min(size, 151 - (page - 1) * size) }, (_, i) => historyMatch(151 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: 4, total_items: 151 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 3]); assert.equal(db.archiveState().complete, 0);
+  assert.equal(db.readSeasonHistory(1, "all").total, 150);
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
+  assert.deepEqual(calls, [1, 4]); assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 151);
 });
 
 test("history retains exact player identity, interprets UTC, and strips unrelated metadata", () => {
@@ -280,11 +313,11 @@ test("archive fetch uses a fixed server, bounded page size and newest-first orde
     assert.equal(url.origin, "https://api.neatqueue.com");
     assert.equal(url.pathname, `/api/v1/history/${AXIS_SERVER_ID}`);
     assert.equal(url.searchParams.get("page"), "1");
-    assert.equal(url.searchParams.get("page_size"), "500");
+    assert.equal(url.searchParams.get("page_size"), "50");
     assert.equal(url.searchParams.get("order"), "desc");
     assert.equal(options.cache, "no-store");
     assert.ok(options.signal instanceof AbortSignal);
-    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    const body = historyPage(1, 1); body.pagination.per_page = 50;
     return Response.json(body);
   }, AXIS_REFRESH_MS);
 });
@@ -306,7 +339,7 @@ test("concurrent archive refreshes share one request and retain saved data on fa
   const db = store(t);
   let calls = 0, release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const request = async () => { calls++; await gate; const body = historyPage(1, 1); body.pagination.per_page = 500; return Response.json(body); };
+  const request = async () => { calls++; await gate; const body = historyPage(1, 1); body.pagination.per_page = 50; return Response.json(body); };
   const first = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   const duplicate = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   assert.equal(calls, 1);

@@ -64,6 +64,31 @@ test("saved standings return before a blocked upstream refresh; both history URL
   assert.equal((await loadSavedLeague()).available, true);
 });
 
+test("empty archives bootstrap only 25 matches and saved history refreshes after responding", async (t) => {
+  setup(t);
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(Number(url.searchParams.get("page_size")));
+    assert.equal(url.searchParams.get("page_size"), "25", "HTTP must never import large archive pages");
+    return Response.json({ data: Array.from({ length: 25 }, (_, index) => ({ guild_id: "1343726035136413716", game_num: 100 - index,
+      time: "2026-10-16 02:00:00", queue_channel: "1343726040421367842", game: "Arena League", winner: 0,
+      teams: [[{ id, name: "Player", mmr: 1000, mmr_change: 25 }]], team_names: ["Team A"] })),
+      pagination: { current_page: 1, per_page: 25, total_pages: 4, total_items: 100 } });
+  };
+  const first = await loadSavedSeason(1, "current");
+  assert.equal(first.available, true); assert.equal(first.matches.length, 25);
+  assert.deepEqual(calls, [25]);
+  const deferred = [];
+  const saved = await loadSavedSeason(1, "current", task => deferred.push(task));
+  assert.equal(saved.available, true); assert.equal(deferred.length, 1);
+  assert.deepEqual(calls, [25]);
+  // A refresh lease is shared with the worker; it cannot duplicate the bootstrap.
+  await deferred[0]();
+  assert.deepEqual(calls, [25]);
+});
+
 test("editors can save round scores without changing player KDA", async (t) => {
   setupStats(t);
   globalThis.axisAccess = { ok: false, status: 403 };

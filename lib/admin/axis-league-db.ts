@@ -141,6 +141,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score };
     },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
+    restartArchiveImport() { db.prepare("UPDATE axis_archive_state SET next_page=2 WHERE id=1").run(); },
     claimArchiveRefresh(now = Date.now()): boolean {
       const interval = this.archiveState().complete ? AXIS_REFRESH_MS : 30_000;
       return db.prepare("UPDATE axis_archive_state SET attempted_at = ? WHERE id = 1 AND attempted_at <= ?").run(now, now - interval).changes === 1;
@@ -181,7 +182,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const players: AxisPlayer[] = row.payload == null ? [] : JSON.parse(row.payload);
       const links = profileLinks();
       const currentSeason = readSeasons()[0];
-      return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred }, players: players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })),
+      const games = this.archiveState().updated_at == null ? null : db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=? AND (json_extract(payload, '$.winner')>=0 OR json_extract(payload, '$.winner')=-2)")
+        .get(AXIS_CHANNEL_ID, currentSeason.startsAt).n;
+      return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred, games }, players: players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })),
         updatedAt: row.updated_at, available: row.payload != null,
         stale: Boolean(row.last_error) || (row.updated_at != null && now - row.updated_at > AXIS_REFRESH_MS * 2) };
     },

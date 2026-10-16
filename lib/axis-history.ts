@@ -5,6 +5,8 @@ import type { AxisKda, AxisRoundScore } from "./axis-kda";
 export const AXIS_HISTORY_SOURCE_URL = `https://www.neatqueue.com/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_API_URL = `https://api.neatqueue.com/api/v1/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_PAGE_SIZE = 25;
+// Larger NeatQueue history pages time out from the VPS; keep imports within measured working sizes.
+export const AXIS_ARCHIVE_PAGE_SIZE = 50;
 
 export interface AxisMatchPlayer {
   kda?: AxisKda | null;

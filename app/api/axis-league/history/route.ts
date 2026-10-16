@@ -1,4 +1,5 @@
 import { loadAxisHistory, loadAxisSeasonHistory } from "@/lib/axis-history-sync";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 export async function GET(request: Request) {
@@ -9,7 +10,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "invalid_page" }, { status: 400, headers });
   }
   try {
-    const data = season == null ? await loadAxisHistory(Number(raw)) : await loadAxisSeasonHistory(Number(raw), season);
+    const data = season == null ? await loadAxisHistory(Number(raw), after) : await loadAxisSeasonHistory(Number(raw), season, after);
     return Response.json(data, { status: data.available ? 200 : 503, headers });
   } catch (error) {
     if (error instanceof RangeError) return Response.json({ error: "invalid_season" }, { status: 400, headers });

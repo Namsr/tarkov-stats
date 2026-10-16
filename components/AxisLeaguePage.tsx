@@ -23,13 +23,23 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/auth/me", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) }).then(async (response) => {
-      if (!response.ok) throw new Error("Session unavailable");
-      const body = await response.json();
-      if (!controller.signal.aborted) setCanEdit(body.canEditAxisKda === true);
-    }).catch(() => { if (!controller.signal.aborted) setCanEdit(false); });
-    return () => controller.abort();
-  }, []);
+    let running = false;
+    async function loadAccess() {
+      if (running || document.visibilityState === "hidden") return;
+      running = true;
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        if (!response.ok) throw new Error("Session unavailable");
+        const body = await response.json();
+        if (!controller.signal.aborted) setCanEdit(body.isAdmin === true || body.canEditAxisKda === true);
+      } catch { if (!controller.signal.aborted) setCanEdit(false); }
+      finally { running = false; }
+    }
+    void loadAccess();
+    window.addEventListener("focus", loadAccess);
+    document.addEventListener("visibilitychange", loadAccess);
+    return () => { controller.abort(); window.removeEventListener("focus", loadAccess); document.removeEventListener("visibilitychange", loadAccess); };
+  }, [view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -77,7 +87,7 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
       <div className="axis-season-strip">
         <span className="axis-season-live"><span aria-hidden="true" />{t("axis.season.current")}</span>
         <span>{t("axis.season.since", { date: new Date(data?.currentSeason?.startsAt ?? AXIS_CURRENT_SEASON_START).toLocaleString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) })}</span>
-        {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.topMmr")}: <strong>{number(data.players.length ? Math.max(...data.players.map((player) => player.mmr)) : null)}</strong></span>}
+        {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.gamesPlayed")}: <strong>{number(data.currentSeason?.games ?? null)}</strong></span>}
       </div>
       <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
