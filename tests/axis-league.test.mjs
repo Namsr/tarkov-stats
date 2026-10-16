@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers } from "../lib/axis-league.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
-import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "../lib/axis-history.ts";
+import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory, sortAxisMatchPlayers } from "../lib/axis-history.ts";
 import { refreshAxisArchive } from "../lib/axis-history-sync.ts";
 import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
@@ -45,6 +45,24 @@ function store(t) {
   t.after(() => db.close());
   return createAxisLeagueStore(db);
 }
+
+test("match players rank by kills, assists, fewer deaths, then nickname without mutating the roster", () => {
+  const player = (name, kills, deaths, assists) => ({ id: name, name, kda: { kills, deaths, assists } });
+  const players = [
+    { id: "missing", name: "Unknown", kda: null },
+    player("Zulu", 10, 2, 5), player("Leader", 11, 20, 0),
+    player("Bravo", 10, 2, 5), player("Assist", 10, 99, 6),
+    player("FewerDeaths", 10, 1, 5), player("Zero", 0, 0, 0),
+    { id: "omitted", name: "Absent" },
+  ];
+  const original = structuredClone(players);
+  assert.deepEqual(sortAxisMatchPlayers(players, "en").map(p => p.name),
+    ["Leader", "Assist", "FewerDeaths", "Bravo", "Zulu", "Zero", "Unknown", "Absent"]);
+  assert.deepEqual(players, original);
+  assert.deepEqual(sortAxisMatchPlayers(players.filter(p => p.kda == null), "en"), players.filter(p => p.kda == null));
+  assert.deepEqual(sortAxisMatchPlayers([player("Яков", 1, 1, 1), player("Антон", 1, 1, 1), player("Борис", 1, 1, 1)], "ru").map(p => p.name),
+    ["Антон", "Борис", "Яков"]);
+});
 
 function historyMatch(number = 25) {
   return { guild_id: AXIS_SERVER_ID, game_num: number, game: "Arena League", time: "2026-10-02 23:36:08", winner: 1,

@@ -25,6 +25,16 @@ export interface AxisHistoryResponse extends AxisHistoryPage {
   seasons?: AxisSeason[]; season?: string; archiveComplete?: boolean;
 }
 
+/** Rank saved results within a team; keep players without K/D/A in their source order. */
+export function sortAxisMatchPlayers(players: readonly AxisMatchPlayer[], locale: string): AxisMatchPlayer[] {
+  const names = new Intl.Collator(locale, { sensitivity: "base" });
+  return [...players].sort((a, b) => {
+    if (a.kda == null || b.kda == null) return Number(b.kda != null) - Number(a.kda != null);
+    return b.kda.kills - a.kda.kills || b.kda.assists - a.kda.assists
+      || a.kda.deaths - b.kda.deaths || names.compare(a.name, b.name);
+  });
+}
+
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid match history object");
   return value as Record<string, unknown>;
