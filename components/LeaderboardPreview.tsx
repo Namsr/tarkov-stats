@@ -17,12 +17,13 @@ const Context = createContext<PreviewContext | null>(null);
 const cache = new Map<string, { expiresAt: number; value: LeaderboardPreview }>();
 const finePointer = () => window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
-export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
+export function LeaderboardPreviewProvider({ meta, children, detailsLabel }: { detailsLabel?: string; meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
   const { t, lang } = useI18n();
   const id = useId();
   const [target, setTarget] = useState<Target | null>(null);
   const [data, setData] = useState<LeaderboardPreview | null>(null);
   const [error, setError] = useState(false);
+  const [tab, setTab] = useState<"details" | "profile">("details");
   const [placement, setPlacement] = useState({ left: 0, top: 0 });
   const [touch, setTouch] = useState(false);
   const card = useRef<HTMLDivElement>(null);
@@ -70,6 +71,7 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<Lead
       current.current = next;
       setData(null);
       setError(false);
+      setTab("details");
       setTouch(!finePointer());
       setTarget(next);
       if (next.aid == null) return;
@@ -142,7 +144,7 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<Lead
       keyboard.current = true;
       if (event.key === "Escape") { event.preventDefault(); close(true); }
       if (touch && event.key === "Tab" && card.current) {
-        const controls = [...card.current.querySelectorAll<HTMLElement>("button, a[href]")];
+        const controls = [...card.current.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]), a[href]')];
         const first = controls[0], last = controls.at(-1);
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -184,9 +186,11 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<Lead
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => { window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
-  }, [target, data, error, touch, lang, close]);
+  }, [target, data, error, touch, lang, tab, close]);
 
   const format = (value: number | null, digits = 0) => value === null ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  const hasTabs = Boolean(detailsLabel && target?.details);
+  const showingDetails = hasTabs && tab === "details";
   const mode = meta.mode === "pvp-season" ? "seasonal" : meta.mode;
   return <Context.Provider value={{ id, active: target?.id ?? null, enter, leave, close }}>
     {children}
@@ -199,16 +203,31 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<Lead
         <div className="leaderboard-preview__identity">
           {target.portrait ?? (target.aid != null && <ProfilePortrait key={`${mode}:${target.aid}`} aid={target.aid} mode={mode} cycleId={meta.cycleId ?? undefined} nickname={target.nickname} />)}
           <div><div className="leaderboard-preview__name"><h2 id={`${id}-name`} title={target.portrait ? target.nickname : data?.nickname ?? target.nickname}>{target.portrait ? target.nickname : data?.nickname ?? target.nickname}</h2>
-            {data?.prestige != null && Number.isSafeInteger(data.prestige) && data.prestige > 0 && <Image src={`https://assets.tarkov.dev/prestige-${data.prestige}-icon.webp`} width={24} height={24} unoptimized referrerPolicy="no-referrer" alt={t("player.prestigeLabel", { n: data.prestige })} onError={(event) => { event.currentTarget.style.display = "none"; }} />}
-          </div><div className="leaderboard-preview__meta">
+            {!showingDetails && data?.prestige != null && Number.isSafeInteger(data.prestige) && data.prestige > 0 && <Image src={`https://assets.tarkov.dev/prestige-${data.prestige}-icon.webp`} width={24} height={24} unoptimized referrerPolicy="no-referrer" alt={t("player.prestigeLabel", { n: data.prestige })} onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+          </div>{!showingDetails && <div className="leaderboard-preview__meta">
             {target.aid != null && meta.mode === "arena" && meta.arenaMode && <span className="leaderboard-preview__mode">{t("fav.mode.arena")} · {t("arena.mode." + meta.arenaMode)}</span>}
             {data?.side && <span>{data.side}</span>}
             {data?.level != null && <span>{t("leaderboard.preview.level", { n: data.level })}</span>}
             {data?.updatedAt != null && data.updatedAt > 0 && <span>{t("leaderboard.preview.updated", { date: new Date(data.updatedAt).toLocaleDateString(lang, { day: "numeric", month: "short" }) })}</span>}
-          </div></div>
+          </div>}</div>
         </div>
-        {target.details}
-        {target.aid == null ? null : !data ? <p className="leaderboard-preview__status" role="status">{t(error ? "leaderboard.preview.unavailable" : "common.loading")}</p> : <>
+        {hasTabs && <div className="leaderboard-preview__tabs" role="tablist" aria-label={t("leaderboard.preview.statistics")}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === "Home" ? "details" : event.key === "End" ? "profile" : tab === "details" ? "profile" : "details";
+            setTab(next);
+            card.current?.querySelector<HTMLButtonElement>(`#${CSS.escape(`${id}-tab-${next}`)}`)?.focus();
+          }}>
+          {(["details", "profile"] as const).map((value) => <button key={value} id={`${id}-tab-${value}`} type="button" role="tab"
+            aria-selected={tab === value} aria-controls={`${id}-panel-${value}`} tabIndex={tab === value ? 0 : -1}
+            onClick={() => setTab(value)}>{value === "details" ? detailsLabel : t("fav.mode.arena")}</button>)}
+        </div>}
+        {target.details && <div id={`${id}-panel-details`} role={hasTabs ? "tabpanel" : undefined}
+          aria-labelledby={hasTabs ? `${id}-tab-details` : undefined} tabIndex={hasTabs ? 0 : undefined} hidden={hasTabs && !showingDetails}>{target.details}</div>}
+        <div id={`${id}-panel-profile`} role={hasTabs ? "tabpanel" : undefined}
+          aria-labelledby={hasTabs ? `${id}-tab-profile` : undefined} tabIndex={hasTabs ? 0 : undefined} hidden={showingDetails}>
+        {target.aid == null ? <p className="leaderboard-preview__status" role="status">{t("axis.admin.unlinked")}</p> : !data ? <p className="leaderboard-preview__status" role="status">{t(error ? "leaderboard.preview.unavailable" : "common.loading")}</p> : <>
           {meta.mode === "arena" ? <div className="leaderboard-preview__activity leaderboard-preview__activity--arena">
             <span>{t("leaderboard.hoursValue", { v: format(data.hours, 1) })}<small>{t("arena.account.hours")}</small></span>
             <span>{format(data.raids)}<small>{t("arena.counter.matches")}</small></span>
@@ -223,6 +242,7 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<Lead
           })}</dl>
           <dl className="leaderboard-preview__totals">{data.totals.map((total) => <div key={total.label}><dd>{format(total.value)}</dd><dt>{t(total.label)}</dt></div>)}</dl>
         </>}
+        </div>
         {target.href && <div className="leaderboard-preview__footer"><Link href={target.href} prefetch={false}>{t("home.openProfile")} <span aria-hidden="true">↗</span></Link></div>}
       </div>
     </>, document.body)}

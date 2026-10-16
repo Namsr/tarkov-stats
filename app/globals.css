@@ -808,7 +808,7 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin: 16px 0; color: var(--muted); font-size: .72rem; }
 .axis-list { margin-top: 18px; }
 .axis-list .axis-table-wrap { display: block; }
-.axis-table { min-width: 1080px; table-layout: auto; }
+.axis-list .axis-table { min-width: 1080px; table-layout: auto; }
 .axis-table thead th:not(:first-child):not(.leaderboard-table__player) { width: auto; }
 .axis-table thead th.leaderboard-table__player { width: 20%; }
 .axis-table .leaderboard-table__player { max-width: 230px; }
@@ -825,11 +825,12 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-avatar { display: inline-grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; overflow: hidden; border-radius: 50%; background: var(--input-bg); color: var(--muted-strong); font-size: .9rem; font-weight: 700; }
 .axis-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .leaderboard-preview__identity > .axis-avatar { width: 64px; height: 64px; flex-basis: 64px; font-size: 1.5rem; }
-.axis-preview-rating { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); font-size: .76rem; }
+.axis-preview-rating { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 16px 0; font-size: .76rem; }
 .axis-preview-rating strong { margin-left: auto; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
 .axis-preview-rating small { font-size: .7rem; color: var(--muted); }
 .axis-preview-rating p { flex-basis: 100%; color: var(--muted); }
-.axis-preview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; width: 100%; margin: 8px 0; }
+.axis-preview-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; margin: 8px 0; }
+.axis-preview-metrics--secondary { padding-top: 12px; border-top: 1px solid var(--card-border); }
 .axis-preview-metrics dt { color: var(--muted); font-size: .65rem; }
 .axis-preview-metrics dd { margin-top: 4px; font-size: 1rem; font-weight: 700; }
 .axis-history-toolbar { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; margin: 20px 0; }
@@ -974,7 +975,11 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
   100% { transform: scale(1); }
 }
 .leaderboard-lists { display: grid; gap: 16px; margin-top: 18px; }
-.leaderboard-preview { position: fixed; z-index: 80; width: min(380px, calc(100vw - 24px)); border: 1px solid var(--card-border); border-radius: 13px; background: var(--card-bg); color: var(--foreground); padding: 16px; box-shadow: 0 20px 60px #0006; font-family: var(--body-font); font-weight: 400; line-height: 1.4; overflow-anchor: none; }
+.leaderboard-preview { position: fixed; z-index: 80; width: min(380px, calc(100vw - 24px)); border: 1px solid var(--card-border); border-radius: 13px; background: var(--card-bg); color: var(--foreground); padding: 16px; box-shadow: 0 20px 60px #0006; font-family: var(--body-font); font-weight: 400; line-height: 1.4; overflow-anchor: none; max-height: calc(100dvh - 24px); overflow-y: auto; }
+.leaderboard-preview__tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 16px; border-bottom: 1px solid var(--card-border); }
+.leaderboard-preview__tabs button { min-height: 40px; padding: 8px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 11px; font-weight: 700; }
+.leaderboard-preview__tabs button[aria-selected="true"] { border-bottom-color: var(--foreground); color: var(--foreground); }
+.leaderboard-preview__tabs button:focus-visible, .leaderboard-preview [role="tabpanel"]:focus-visible { outline: 2px solid var(--foreground); outline-offset: -2px; }
 .leaderboard-preview__close { position: absolute; top: 4px; right: 4px; width: 32px; height: 32px; color: var(--muted); font-size: 20px; }
 .leaderboard-preview__identity { display: flex; align-items: center; gap: 11px; padding-right: 20px; }
 .leaderboard-preview__identity .profile-portrait { width: 56px; height: 56px; flex: none; border-radius: 8px; }

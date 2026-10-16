@@ -15,9 +15,10 @@ function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
 }
 
-test("AXIS hover previews always request Arena stats regardless of the linked profile mode", async () => {
+test("AXIS previews keep league statistics separate and request Arena regardless of the linked mode", async () => {
   const require = createRequire(import.meta.url);
   const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
   const source = await readFile("components/AxisPlayerIdentity.tsx", "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
   const identityModule = { exports: {} };
@@ -32,9 +33,23 @@ test("AXIS hover previews always request Arena stats regardless of the linked pr
     const identity = identityModule.exports.default({ player: { name: "Discord player", profile: { aid: 12345, mode } }, mmr: 1000 });
     assert.deepEqual(identity.props.meta, { mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 });
     assert.equal(identity.props.children.props.aid, 12345);
+    assert.equal(identity.props.detailsLabel, "axis.title");
   }
   const unlinked = identityModule.exports.default({ player: { name: "Discord player", profile: null }, mmr: null });
   assert.equal(unlinked.props.children.props.aid, null);
+  const league = identityModule.exports.default({ player: { name: "Player", profile: null,
+    position: 1, games: 0, wins: 0, losses: 0, winrate: 0, peakMmr: null, streak: -2, peakStreak: 0 }, mmr: 1000 });
+  const details = renderToStaticMarkup(league.props.children.props.details);
+  for (const key of ["games", "wins", "losses", "winrate", "position", "streak", "peakStreak"]) {
+    assert.ok(details.includes(`axis.column.${key}`), key);
+  }
+  assert.match(details, />-2</);
+  assert.match(details, />0\s%</);
+  assert.doesNotMatch(details, /axis.column.peakMmr|arena\.|HS%|NaN|undefined/);
+  const match = identityModule.exports.default({ player: { name: "Player", profile: null, kda: { kills: 0, deaths: 2, assists: 3 } }, mmr: null });
+  const matchDetails = renderToStaticMarkup(match.props.children.props.details);
+  assert.match(matchDetails, /0 \/ 2 \/ 3/);
+  assert.doesNotMatch(matchDetails, /axis.column.games|axis.column.winrate/);
 });
 function page(rows = [row()], total = rows.length, pages = 1) {
   return { server_id: AXIS_SERVER_ID, channel_id: AXIS_CHANNEL_ID, display: "players",

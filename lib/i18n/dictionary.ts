@@ -59,6 +59,7 @@ const en: Dict = {
   "axis.season.inferredHint": "Older boundaries are estimates from mass MMR resets to 1,000. The full archive also includes other queues and undated matches.",
   "axis.season.importing": "Importing older matches. More seasons will appear as the archive loads.",
 
+  "leaderboard.preview.statistics": "Player statistics",
   "axis.title": "AXIS League",
   "axis.kicker": "Community competition",
   "axis.description": "Arena competition. Follow the rankings, explore matches and join the next game.",
@@ -1813,6 +1814,7 @@ const ru: Dict = {
   "axis.season.inferredHint": "Границы старых сезонов восстановлены по массовым сбросам MMR до 1000. Весь архив также включает другие очереди и матчи без даты.",
   "axis.season.importing": "Загружаем старые матчи. Остальные сезоны появятся по мере загрузки архива.",
 
+  "leaderboard.preview.statistics": "Статистика игрока",
   "axis.title": "AXIS League",
   "axis.kicker": "Лига сообщества",
   "axis.description": "Соревнования на Арене. Следите за рейтингом, разбирайте матчи и присоединяйтесь к следующей игре.",
