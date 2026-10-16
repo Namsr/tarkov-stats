@@ -1,19 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { axisLeagueRefreshDelay, cacheAxisLeague, getCachedAxisLeague, getServerAxisLeague, loadClientAxisLeague, subscribeAxisLeague } from "@/lib/client-axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import { AXIS_CURRENT_SEASON_START } from "@/lib/axis-seasons";
 import AxisMatchHistory from "@/components/AxisMatchHistory";
 import AdminAxisLeague from "@/components/AdminAxisLeague";
 import { useI18n } from "@/lib/i18n/context";
-import { AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
+import { AXIS_REFRESH_MS, AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
 export default function AxisLeaguePage({ initialView = "standings" }: { initialView?: "standings" | "history" | "profiles" }) {
   const { t, lang } = useI18n();
-  const [data, setData] = useState<AxisLeagueResponse | null>(null);
+  const data = useSyncExternalStore(subscribeAxisLeague, getCachedAxisLeague, getServerAxisLeague);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  const handledRetry = useRef(0);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
@@ -44,22 +46,30 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
   useEffect(() => {
     const controller = new AbortController();
     let running = false;
-    async function load() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function load(force = false) {
       if (running || document.visibilityState === "hidden") return;
+      clearTimeout(timer);
       running = true;
+      let delay = AXIS_REFRESH_MS;
       try {
-        const response = await fetch("/api/axis-league", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
-        const body = await response.json() as AxisLeagueResponse;
-        if (!response.ok || !body.available || !Array.isArray(body.players)) throw new Error("Leaderboard unavailable");
-        if (!controller.signal.aborted) { setData(body); setFailed(false); }
+        await loadClientAxisLeague(controller.signal, force);
+        if (!controller.signal.aborted) setFailed(false);
+        // Reusing a snapshot must not restart its five-minute freshness window.
+        delay = axisLeagueRefreshDelay();
       } catch { if (!controller.signal.aborted) setFailed(true); }
-      finally { running = false; }
+      finally {
+        running = false;
+        if (!controller.signal.aborted) timer = setTimeout(() => void load(), delay);
+      }
     }
-    void load();
-    // Match the five-minute upstream cadence; hidden documents do not poll.
-    const timer = setInterval(() => void load(), 5 * 60_000);
-    document.addEventListener("visibilitychange", load);
-    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", load); };
+    const onVisible = () => void load();
+    // Activity can restart effects on Back while preserving the retry counter.
+    const force = retry !== handledRetry.current;
+    handledRetry.current = retry;
+    void load(force);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [retry]);
 
   const players = useMemo(() => sortAxisPlayers((data?.players ?? []).filter((player) =>
@@ -95,7 +105,7 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
         {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
       </div>
       <div hidden={view !== "history"}><AxisMatchHistory active={view === "history"} canEditKda={canEdit === true} /></div>
-      {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={setData} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
+      {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={cacheAxisLeague} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
       {view === "standings" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
