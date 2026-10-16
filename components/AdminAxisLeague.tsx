@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { AxisAvatar } from "@/components/AxisPlayerIdentity";
 import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { axisProfileHref, parseAxisProfile, type AxisLeagueResponse, type AxisPlayer } from "@/lib/axis-league";
@@ -40,7 +41,7 @@ function ProfileEditor({ player, onChange }: { player: AxisPlayer; onChange: (da
     finally { setBusy(false); }
   }
   return <li className="axis-admin-player">
-    <div className="axis-admin-identity"><strong>{player.name}</strong><span className="admin-badge">#{player.position}</span><small>{t("axis.admin.discordId", { id: player.id })}</small>
+    <div className="axis-admin-identity"><AxisAvatar name={player.name} url={player.avatarUrl} /><strong>{player.name}</strong><span className="admin-badge">#{player.position}</span><small>{t("axis.admin.discordId", { id: player.id })}</small>
       {player.profile ? <Link className="admin-account__profile-link" href={axisProfileHref(player.profile)} prefetch={false}>{t("admin.showcase.openProfile")}</Link> : <span className="admin-badge">{t("axis.admin.unlinked")}</span>}
     </div>
     <form className="admin-moderation" onSubmit={(event) => { event.preventDefault(); void save(draft.trim()); }}>

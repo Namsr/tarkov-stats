@@ -1,13 +1,15 @@
-import { AXIS_SERVER_ID, type AxisProfile } from "./axis-league.ts";
+import { AXIS_SERVER_ID, axisAvatarUrl, type AxisProfile } from "./axis-league.ts";
+import type { AxisSeason } from "./axis-seasons";
 
 export const AXIS_HISTORY_SOURCE_URL = `https://www.neatqueue.com/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_API_URL = `https://api.neatqueue.com/api/v1/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_PAGE_SIZE = 25;
 
 export interface AxisMatchPlayer {
-  id: string; name: string; mmr: number | null; change: number | null; profile: AxisProfile | null;
+  id: string; name: string; avatarUrl?: string | null; mmr: number | null; change: number | null; profile: AxisProfile | null;
 }
 export interface AxisMatch {
+  queueId?: string | null;
   number: number; time: number | null; queue: string | null; maps: string[];
   teams: { name: string | null; players: AxisMatchPlayer[] }[];
   winner: number | null;
@@ -15,6 +17,7 @@ export interface AxisMatch {
 export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: number; total: number }
 export interface AxisHistoryResponse extends AxisHistoryPage {
   updatedAt: number | null; available: boolean; stale: boolean;
+  seasons?: AxisSeason[]; season?: string; archiveComplete?: boolean;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -33,12 +36,12 @@ function text(value: unknown): string {
 }
 
 /** Keep only public match details, and validate the whole page before publishing it. */
-export function parseAxisHistory(value: unknown, requestedPage: number): AxisHistoryPage {
+export function parseAxisHistory(value: unknown, requestedPage: number, pageSize = AXIS_HISTORY_PAGE_SIZE): AxisHistoryPage {
   const body = object(value), pagination = object(body.pagination);
   const page = numeric(pagination.current_page, true, 1);
   const total = numeric(pagination.total_items, true, 0);
   const pages = Math.max(1, numeric(pagination.total_pages, true, 0));
-  if (page !== requestedPage || pagination.per_page !== AXIS_HISTORY_PAGE_SIZE || pages !== Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)) || !Array.isArray(body.data)) {
+  if (page !== requestedPage || pagination.per_page !== pageSize || pages !== Math.max(1, Math.ceil(total / pageSize)) || !Array.isArray(body.data)) {
     throw new TypeError("Unexpected match history pagination");
   }
   const matches = body.data.map((value): AxisMatch => {
@@ -56,7 +59,7 @@ export function parseAxisHistory(value: unknown, requestedPage: number): AxisHis
         players: team.map((value): AxisMatchPlayer => {
           const player = object(value);
           if (typeof player.id !== "string" || !/^\d{1,20}$/.test(player.id)) throw new TypeError("Invalid match player ID");
-          return { id: player.id, name: text(player.name), mmr: row.show_mmr === false || player.mmr == null ? null : numeric(player.mmr),
+          return { id: player.id, name: text(player.name), avatarUrl: axisAvatarUrl(player.avatar_url), mmr: row.show_mmr === false || player.mmr == null ? null : numeric(player.mmr),
             change: row.show_mmr === false || player.mmr_change == null ? null : numeric(player.mmr_change), profile: null };
         }),
       };
@@ -70,9 +73,10 @@ export function parseAxisHistory(value: unknown, requestedPage: number): AxisHis
         if (Array.isArray(field) && field[0] === "Map" && Array.isArray(field[1])) maps.push(...field[1].map(text));
       }
     }
-    return { number: numeric(row.game_num, true, 1), time: timestamp, queue: row.game == null ? null : text(row.game), maps, teams, winner };
+    const queueId = typeof row.queue_channel === "string" && /^\d{1,20}$/.test(row.queue_channel) ? row.queue_channel : null;
+    return { number: numeric(row.game_num, true, 1), time: timestamp, queueId, queue: row.game == null ? null : text(row.game), maps, teams, winner };
   });
-  const expected = Math.max(0, Math.min(AXIS_HISTORY_PAGE_SIZE, total - (page - 1) * AXIS_HISTORY_PAGE_SIZE));
+  const expected = Math.max(0, Math.min(pageSize, total - (page - 1) * pageSize));
   if (matches.length !== expected || new Set(matches.map((match) => match.number)).size !== matches.length || matches.some((match, i) => i > 0 && match.number >= matches[i - 1].number)) {
     throw new TypeError("Incomplete or unordered match history");
   }

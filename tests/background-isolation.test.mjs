@@ -23,6 +23,9 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(worker, /memswap_limit: 768m/);
   assert.doesNotMatch(worker, /^\s+(ports|expose|build|depends_on):/m);
   assert.match(worker, /profiles: \["background"\]/);
+  assert.match(compose, /worker: &background-worker/);
+  assert.match(compose, /axis-league:\s+<<: \*background-worker\s+profiles: \[\]/);
+  assert.match(web, /depends_on:\s+- axis-league/);
   const slice = await readFile("ops/systemd/tarkovstats-background.slice", "utf8");
   assert.match(slice, /^MemoryMax=512M$/m);
   assert.match(slice, /^MemorySwapMax=256M$/m);

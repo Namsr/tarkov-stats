@@ -17,7 +17,7 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data: https://lh3.googleusercontent.com https://assets.tarkov.dev https://imagemagic.tarkov.dev",
+  "img-src 'self' blob: data: https://lh3.googleusercontent.com https://assets.tarkov.dev https://imagemagic.tarkov.dev https://cdn.discordapp.com https://media.discordapp.net",
   "font-src 'self'",
   `connect-src 'self' https://cloudflareinsights.com${isDev ? " ws:" : ""}`,
   "worker-src 'self' blob:",

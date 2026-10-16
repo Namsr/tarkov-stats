@@ -2,6 +2,7 @@ import type { GameMode } from "../types/seasonal";
 import { parsePlayerInput } from "./player-id.ts";
 
 export const AXIS_REFRESH_MS = 5 * 60_000;
+export const AXIS_DISCORD_URL = "https://discord.gg/axispl";
 export const AXIS_SERVER_ID = "1343726035136413716";
 export const AXIS_CHANNEL_ID = "1343726040421367842";
 export const AXIS_SOURCE_URL = `https://www.neatqueue.com/leaderboard/${AXIS_SERVER_ID}/${AXIS_CHANNEL_ID}?display=players`;
@@ -11,6 +12,7 @@ export interface AxisProfile { aid: number; mode: GameMode }
 export interface AxisPlayer {
   id: string;
   name: string;
+  avatarUrl?: string | null;
   position: number;
   mmr: number;
   peakMmr: number | null;
@@ -23,6 +25,7 @@ export interface AxisPlayer {
   profile: AxisProfile | null;
 }
 export interface AxisLeagueResponse {
+  currentSeason?: { startsAt: number; inferred: boolean };
   players: AxisPlayer[];
   updatedAt: number | null;
   stale: boolean;
@@ -40,6 +43,19 @@ function number(value: unknown, integer = false, minimum = -Infinity): number {
     throw new TypeError("Invalid leaderboard statistic");
   }
   return value;
+}
+
+/** Only Discord's public avatar CDN is accepted; never render arbitrary upstream URLs. */
+export function axisAvatarUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || !["cdn.discordapp.com", "media.discordapp.net"].includes(url.hostname)
+      || !/^\/(?:avatars\/\d{1,20}\/[a-zA-Z0-9_]+\.(?:png|webp|gif|jpe?g)|embed\/avatars\/\d+\.png)$/.test(url.pathname)) return null;
+    url.search = "?size=128";
+    url.hash = "";
+    return url.href;
+  } catch { return null; }
 }
 
 /** Reject an incomplete page before it can replace the last successful snapshot. */
@@ -63,7 +79,7 @@ export function parseAxisPage(value: unknown): { players: AxisPlayer[]; total: n
     const winrate = number(stats.winrate, false, 0);
     if (winrate > 1) throw new TypeError("Invalid winrate");
     return {
-      id: row.id, name: row.name, position: number(stats.current_rank, true, 1),
+      id: row.id, name: row.name, avatarUrl: axisAvatarUrl(row.avatar_url), position: number(stats.current_rank, true, 1),
       mmr: number(stats.mmr), peakMmr: stats.peak_mmr == null ? null : number(stats.peak_mmr),
       games: number(stats.totalgames, true, 0), wins: number(stats.wins, true, 0), losses: number(stats.losses, true, 0),
       winrate, streak: number(stats.streak, true),

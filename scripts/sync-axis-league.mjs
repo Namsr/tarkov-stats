@@ -1,12 +1,12 @@
 import { AXIS_REFRESH_MS } from "../lib/axis-league.ts";
 import { getAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { refreshAxisLeague } from "../lib/axis-league-sync.ts";
-import { refreshAxisHistory } from "../lib/axis-history-sync.ts";
+import { refreshAxisHistory, refreshAxisArchive } from "../lib/axis-history-sync.ts";
 
 async function sync() {
   try {
     const store = await getAxisLeagueStore();
-    await Promise.all([refreshAxisLeague(store), refreshAxisHistory(store)]);
+    await Promise.all([refreshAxisLeague(store), refreshAxisHistory(store), refreshAxisArchive(store)]);
   }
   catch (error) { console.warn("AXIS League worker: " + error.message); }
 }

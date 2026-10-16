@@ -13,9 +13,20 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "axis.join": "Join AXIS League",
+  "axis.avatar": "{name}’s Discord avatar",
+  "axis.season.label": "Season",
+  "axis.season.current": "Current season",
+  "axis.season.since": "Since {date} MSK",
+  "axis.season.from": "Season from {date}",
+  "axis.season.all": "Full server archive",
+  "axis.season.currentHint": "Matches after the latest rating reset to 1,000.",
+  "axis.season.inferredHint": "Older boundaries are estimates from mass MMR resets to 1,000. The full archive also includes other queues and undated matches.",
+  "axis.season.importing": "Importing older matches. More seasons will appear as the archive loads.",
+
   "axis.title": "AXIS League",
   "axis.kicker": "Community competition",
-  "axis.description": "League standings from NeatQueue. Linked players open their Tarkov Stats profile.",
+  "axis.description": "Arena competition. Follow the rankings, explore matches and join the next game.",
   "axis.source": "View on NeatQueue",
   "axis.players": "Players",
   "axis.linked": "Linked profiles",
@@ -1720,9 +1731,20 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "axis.join": "Присоединиться к AXIS League",
+  "axis.avatar": "Аватар {name} в Discord",
+  "axis.season.label": "Сезон",
+  "axis.season.current": "Текущий сезон",
+  "axis.season.since": "С {date} МСК",
+  "axis.season.from": "Сезон с {date}",
+  "axis.season.all": "Весь архив сервера",
+  "axis.season.currentHint": "Матчи после последнего сброса рейтинга до 1000.",
+  "axis.season.inferredHint": "Границы старых сезонов восстановлены по массовым сбросам MMR до 1000. Весь архив также включает другие очереди и матчи без даты.",
+  "axis.season.importing": "Загружаем старые матчи. Остальные сезоны появятся по мере загрузки архива.",
+
   "axis.title": "AXIS League",
   "axis.kicker": "Лига сообщества",
-  "axis.description": "Таблица лиги из NeatQueue. Участники с привязанным аккаунтом ведут на профиль в Tarkov Stats.",
+  "axis.description": "Соревнования на Арене. Следите за рейтингом, разбирайте матчи и присоединяйтесь к следующей игре.",
   "axis.source": "Открыть в NeatQueue",
   "axis.players": "Участники",
   "axis.linked": "Привязанные профили",

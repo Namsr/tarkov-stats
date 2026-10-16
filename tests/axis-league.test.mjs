@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, sortAxisPlayers } from "../lib/axis-league.ts";
+import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers } from "../lib/axis-league.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
 import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "../lib/axis-history.ts";
-import { fetchAxisHistory, refreshAxisHistory } from "../lib/axis-history-sync.ts";
+import { fetchAxisHistory, refreshAxisHistory, refreshAxisArchive } from "../lib/axis-history-sync.ts";
+import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
 
 function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
@@ -29,6 +30,81 @@ function historyPage(pageNumber = 1, total = 25) {
   return { data: Array.from({ length: Math.max(0, Math.min(25, total - (pageNumber - 1) * 25)) }, (_, i) => historyMatch(total - (pageNumber - 1) * 25 - i)),
     pagination: { current_page: pageNumber, per_page: AXIS_HISTORY_PAGE_SIZE, total_pages: Math.ceil(total / 25), total_items: total } };
 }
+
+test("Discord avatars accept only public avatar paths and discard arbitrary destinations", () => {
+  const url = `https://cdn.discordapp.com/avatars/${row().id}/abc123.png?size=1024`;
+  assert.equal(axisAvatarUrl(url), url.replace("1024", "128"));
+  assert.equal(parseAxisPage(page([{ ...row(), avatar_url: url }])).players[0].avatarUrl, axisAvatarUrl(url));
+  const body = historyPage(); body.data[0].teams[0][0].avatar_url = url;
+  assert.equal(parseAxisHistory(body, 1).matches[0].teams[0].players[0].avatarUrl, axisAvatarUrl(url));
+  for (const invalid of ["javascript:alert(1)", "https://evil.test/avatar.png", "https://cdn.discordapp.com/attachments/1/2/image.png", "http://cdn.discordapp.com/embed/avatars/0.png", "https://user@cdn.discordapp.com/embed/avatars/0.png", null]) assert.equal(axisAvatarUrl(invalid), null);
+});
+
+function seasonMatch(number, time, mmr = 1100, queueId = AXIS_CHANNEL_ID) {
+  return { number, time, queueId, queue: "Arena League", winner: 0, maps: [], teams: [{ name: null,
+    players: Array.from({ length: 10 }, (_, i) => ({ id: String(i + 1), name: `Player ${i}`, mmr, change: i < 5 ? 25 : -25, profile: null })) }] };
+}
+
+test("seasons require a mass returning-player reset and preserve the confirmed Moscow boundary", () => {
+  const start = Date.UTC(2026, 8, 1);
+  const first = seasonMatch(1, start);
+  const ordinary = seasonMatch(2, start + 1000, 1125);
+  ordinary.teams[0].players[0].mmr = 1000;
+  const reset = seasonMatch(3, start + 2000, 1000);
+  const current = seasonMatch(4, AXIS_CURRENT_SEASON_START + 60_000, 1000);
+  const seasons = detectAxisSeasons([current, reset, ordinary, first, seasonMatch(5, start + 3000, 1000, "other")]);
+  assert.equal(seasons.length, 3);
+  assert.equal(seasons[0].startsAt, Date.parse("2026-10-15T22:59:00Z"));
+  assert.equal(seasons[0].inferred, false);
+  assert.equal(seasons[1].firstMatch, 3);
+  assert.equal(seasons[1].inferred, true);
+  assert.equal(seasons[2].matches, 2);
+  assert.deepEqual(detectAxisSeasons([]).map(s => s.id), ["current"]);
+});
+
+test("season pages exclude other queues and unknown times while the full archive retains them", (t) => {
+  const db = store(t);
+  const matches = Array.from({ length: 26 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i * 1000));
+  matches.push(seasonMatch(27, null), seasonMatch(28, AXIS_CURRENT_SEASON_START, 1000, "other"));
+  db.publishArchive({ page: 1, pages: 1, total: matches.length, matches }, 1000);
+  const first = db.readSeasonHistory(1, "current", 1000);
+  assert.equal(first.total, 26); assert.equal(first.pages, 2); assert.equal(first.matches.length, 25);
+  assert.equal(db.readSeasonHistory(2, "current", 1000).matches[0].number, 1);
+  assert.equal(db.readSeasonHistory(1, "all", 1000).total, 28);
+  assert.equal(first.archiveComplete, true);
+  assert.throws(() => db.readSeasonHistory(1, "match-999"), RangeError);
+  db.failArchiveRefresh();
+  assert.equal(db.readSeasonHistory(1, "current", 1000).stale, true);
+  assert.equal(db.readSeasonHistory(1, "current", 1000).total, 26);
+});
+
+test("future mass resets create another season without erasing the confirmed boundary", () => {
+  const first = seasonMatch(100, AXIS_CURRENT_SEASON_START + 1000, 1000);
+  const next = seasonMatch(101, AXIS_CURRENT_SEASON_START + 2000, 1200);
+  const reset = seasonMatch(102, AXIS_CURRENT_SEASON_START + 3000, 1000);
+  const seasons = detectAxisSeasons([first, next, reset]);
+  assert.equal(seasons.length, 2);
+  assert.equal(seasons[0].id, "current"); assert.equal(seasons[0].inferred, true);
+  assert.equal(seasons[1].startsAt, AXIS_CURRENT_SEASON_START);
+  assert.equal(seasons[1].inferred, false);
+});
+
+test("archive refresh imports bounded pages, coordinates store handles and retains data on failure", async (t) => {
+  const db = store(t); let calls = 0;
+  const request = async url => {
+    calls++;
+    assert.equal(url.searchParams.get("page_size"), "500");
+    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    body.data[0].queue_channel = AXIS_CHANNEL_ID;
+    return Response.json(body);
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 1);
+  assert.equal(calls, 1); assert.equal(db.archiveState().complete, 1);
+  await refreshAxisArchive(db, async () => { throw new Error("offline"); }, AXIS_REFRESH_MS * 2);
+  assert.equal(db.readSeasonHistory(1, "all").matches.length, 1);
+  assert.equal(db.readSeasonHistory(1, "all").stale, true);
+});
 
 test("history retains exact player identity, interprets UTC, and strips unrelated metadata", () => {
   const data = parseAxisHistory(historyPage(), 1);

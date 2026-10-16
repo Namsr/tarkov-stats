@@ -1,18 +1,18 @@
 "use client";
 
-import Link from "next/link";
+import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { axisProfileHref } from "@/lib/axis-league";
-import { AXIS_HISTORY_SOURCE_URL, type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
+import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
 export default function AxisMatchHistory() {
   const { t, lang } = useI18n();
   const [page, setPage] = useState(1);
+  const [season, setSeason] = useState("current");
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
-  const current = data?.page === page ? data : null;
+  const current = data?.page === page && data?.season === season ? data : null;
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
 
@@ -23,9 +23,9 @@ export default function AxisMatchHistory() {
       if (running || document.visibilityState === "hidden") return;
       running = true;
       try {
-        const response = await fetch(`/api/axis-league/history?page=${page}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        const response = await fetch(`/api/axis-league/history?page=${page}&season=${season}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
         const body = await response.json() as AxisHistoryResponse;
-        if (!response.ok || !body.available || body.page !== page || !Array.isArray(body.matches)) throw new Error("History unavailable");
+        if (!response.ok || !body.available || body.page !== page || body.season !== season || !Array.isArray(body.matches)) throw new Error("History unavailable");
         if (!controller.signal.aborted) { setData(body); setFailed(false); }
       } catch { if (!controller.signal.aborted) setFailed(true); }
       finally { running = false; }
@@ -34,7 +34,7 @@ export default function AxisMatchHistory() {
     const timer = setInterval(() => void load(), 60_000);
     document.addEventListener("visibilitychange", load);
     return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", load); };
-  }, [page, retry]);
+  }, [page, season, retry]);
 
   function navigate(target: number) { setFailed(false); setPage(target); }
   function teamName(match: AxisMatch, index: number) {
@@ -49,12 +49,15 @@ export default function AxisMatchHistory() {
   }
 
   return <section className="axis-history" aria-label={t("axis.history.title")}>
-    <div className="axis-heading">
-      <h2 className="section-heading">{t("axis.history.title")}</h2>
-      <a href={AXIS_HISTORY_SOURCE_URL} target="_blank" rel="noopener noreferrer" className="ghost-button">{t("axis.source")} <span aria-hidden>↗</span></a>
+    <div className="axis-history-toolbar">
+      <label><span>{t("axis.season.label")}</span><select value={season} onChange={(event) => { setPage(1); setFailed(false); setSeason(event.target.value); }}>
+        <option value="current">{t("axis.season.current")}</option>
+        {(data?.seasons ?? []).filter((entry) => !entry.current).map((entry) => <option key={entry.id} value={entry.id}>{t("axis.season.from", { date: new Date(entry.startsAt).toLocaleDateString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "short", year: "numeric" }) })}</option>)}
+        <option value="all">{t("axis.season.all")}</option>
+      </select></label>
+      <p>{season === "current" ? t("axis.season.currentHint") : t("axis.season.inferredHint")}</p>
     </div>
-    <p className="axis-description">{t("axis.history.description")}</p>
-    <div className="axis-meta"><span>{t("axis.refreshHint")}</span>{current?.updatedAt != null && <span>{t("axis.updated", { time: new Date(current.updatedAt).toLocaleString(locale) })}</span>}</div>
+    {current && !current.archiveComplete && <p className="axis-meta" role="status">{t("axis.season.importing")}</p>}
     {(failed || current?.stale) && <div className="leaderboard-state data-panel" role="status">
       <p>{t(current ? "axis.history.stale" : "axis.history.error")}</p>
       <button type="button" className="ghost-button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button>
@@ -81,7 +84,7 @@ export default function AxisMatchHistory() {
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
             <p className="axis-match-mmr-label">{t("axis.history.mmr")}</p>
             <ul>{team.players.map((player) => <li key={player.id}>
-              {player.profile ? <Link href={axisProfileHref(player.profile)} prefetch={false} aria-label={t("axis.openPlayer", { name: player.name })}>{player.name}<span className="axis-profile-mark" aria-hidden>↗</span></Link> : <span>{player.name}</span>}
+              <AxisPlayerIdentity player={player} mmr={player.mmr} />
               <span className="axis-match-stats"><span>{player.mmr == null ? "—" : number(player.mmr)}</span>
                 <span className={player.change == null || player.change === 0 ? "" : player.change > 0 ? "axis-match-gain" : "axis-match-loss"} aria-label={t("axis.history.change", { n: player.change == null ? "—" : number(player.change) })}>
                   {player.change == null ? "—" : `${player.change > 0 ? "+" : ""}${number(player.change)}`}

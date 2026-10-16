@@ -11,7 +11,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/admin-auth") return mockModule("export async function requireAdmin() { return globalThis.axisAccess; }");
   if (specifier === "@/lib/admin/axis-league-db") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
-  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); }");
+  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season) { return globalThis.axisStore.readSeasonHistory(page,season); }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
@@ -66,6 +66,19 @@ test("admin reads and writes require a session and admin identity", async (t) =>
     assert.equal((await POST(request({ discordId: id, profile: "12345" }))).status, status);
     assert.equal(globalThis.axisStore.read().players[0].profile, null);
   }
+});
+
+test("season API validates selectors and returns only the requested local season", async (t) => {
+  setup(t);
+  for (const season of ["", "../file", "match-0", "unknown"]) {
+    assert.equal((await historyGet(new Request(`https://tarkovstats.ru/api/axis-league/history?season=${season}`))).status, 400);
+  }
+  assert.equal((await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?season=match-999"))).status, 400);
+  globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ number: 5, time: Date.now(), queueId: "1343726040421367842", queue: "Arena League", maps: [], teams: [], winner: null }] });
+  const response = await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?season=current"));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.season, "current"); assert.equal(body.total, 1);
 });
 
 test("cross-origin and non-JSON writes are rejected without changing links", async (t) => {

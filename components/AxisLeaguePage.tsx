@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
-import StatCard from "@/components/StatCard";
+import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import { AXIS_CURRENT_SEASON_START } from "@/lib/axis-seasons";
 import AxisMatchHistory from "@/components/AxisMatchHistory";
 import { useI18n } from "@/lib/i18n/context";
-import { AXIS_SORTS, AXIS_SOURCE_URL, axisProfileHref, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
+import { AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
 export default function AxisLeaguePage() {
   const { t, lang } = useI18n();
@@ -50,30 +51,28 @@ export default function AxisLeaguePage() {
   }
 
   function playerName(player: AxisPlayer) {
-    return player.profile
-      ? <Link href={axisProfileHref(player.profile)} prefetch={false} aria-label={t("axis.openPlayer", { name: player.name })}>{player.name}<span className="axis-profile-mark" aria-hidden>↗</span></Link>
-      : <span>{player.name}</span>;
+    return <AxisPlayerIdentity player={player} mmr={player.mmr} />;
   }
 
   return (
     <main className="page-frame leaderboard-page axis-page">
       <Link href="/leaderboard" className="back-link">{t("nav.leaderboard")}</Link>
-      <div className="axis-heading">
-        <div><p className="page-kicker">{t("axis.kicker")}</p><h1 className="page-title">{t("axis.title")}</h1></div>
-        <a href={AXIS_SOURCE_URL} target="_blank" rel="noopener noreferrer" className="ghost-button">{t("axis.source")} <span aria-hidden>↗</span></a>
+      <header className="axis-hero">
+        <div><p className="page-kicker">{t("axis.kicker")}</p><h1 className="page-title">{t("axis.title")}</h1>
+          <p className="axis-description">{t("axis.description")}</p></div>
+        <a href={AXIS_DISCORD_URL} target="_blank" rel="noopener noreferrer" className="tactical-button axis-join">{t("axis.join")} <span aria-hidden>↗</span></a>
+      </header>
+      <div className="axis-season-strip">
+        <span className="axis-season-live"><span aria-hidden="true" />{t("axis.season.current")}</span>
+        <span>{t("axis.season.since", { date: new Date(data?.currentSeason?.startsAt ?? AXIS_CURRENT_SEASON_START).toLocaleString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) })}</span>
+        {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.topMmr")}: <strong>{number(data.players.length ? Math.max(...data.players.map((player) => player.mmr)) : null)}</strong></span>}
       </div>
-      <p className="axis-description">{t("axis.description")}</p>
-      {data && <div className="axis-summary">
-        <StatCard label={t("axis.players")} value={number(data.players.length)} />
-        <StatCard label={t("axis.linked")} value={number(data.players.filter((player) => player.profile).length)} />
-        <StatCard label={t("axis.topMmr")} value={number(data.players.length ? Math.max(...data.players.map((player) => player.mmr)) : null)} />
-      </div>}
       <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
       </div>
       {view === "history" ? <AxisMatchHistory /> : <>
-      <section className="leaderboard-controls data-panel axis-controls" aria-label={t("leaderboard.settings")}>
+      <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
         <label><span>{t("leaderboard.sort.label")}</span><select value={sort} onChange={(event) => changeSort(event.target.value as AxisSort)}>
           {AXIS_SORTS.map((key) => <option key={key} value={key}>{t("axis.column." + key)}</option>)}
@@ -82,7 +81,7 @@ export default function AxisLeaguePage() {
           {t(direction === "asc" ? "axis.ascending" : "axis.descending")} <span aria-hidden>{direction === "asc" ? "↑" : "↓"}</span>
         </button>
       </section>
-      <div className="axis-meta"><span>{t("axis.refreshHint")}</span>{data?.updatedAt != null && <span>{t("axis.updated", { time: new Date(data.updatedAt).toLocaleString(locale) })}</span>}</div>
+      <div className="axis-meta"><span>{t("axis.refreshHint")}</span>{data?.updatedAt != null && <span>{t("axis.updated", { time: new Date(data.updatedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) })}</span>}</div>
       {(failed || data?.stale) && <div className="leaderboard-state data-panel" role="status">
         <p>{t(data ? "axis.stale" : "axis.error")}</p><button className="ghost-button" type="button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button>
       </div>}
