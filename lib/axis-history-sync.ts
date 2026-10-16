@@ -10,7 +10,7 @@ const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
 export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now(), headOnly = false) {
   const pending = pendingArchives.get(store);
   if (pending) return pending;
-  if (!store.claimArchiveRefresh(now)) return;
+  if (!store.claimArchiveRefresh(now, headOnly)) return;
   const refresh = (async () => {
     try {
       const signal = AbortSignal.timeout(12_000);
@@ -27,10 +27,7 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
       let first = await read(1, complete || headOnly ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
       if (headOnly) return;
       // A normal refresh needs only the newest 25. Catch up after longer outages without gaps.
-      if (complete && !store.archiveState().complete) {
-        store.restartArchiveImport();
-        first = await read(1);
-      }
+      if (complete && !store.archiveState().complete) first = await read(1);
       // Bounded initial import: two older pages per worker tick.
       for (let i = 0; i < 2 && !store.archiveState().complete; i++) {
         const page = store.archiveState().next_page;

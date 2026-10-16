@@ -204,6 +204,16 @@ test("season games count completed AXIS matches once, excluding cancellations an
   assert.equal(db.read().currentSeason.games, 2);
 });
 
+test("partial archives do not report an incomplete season count as the full number of games", (t) => {
+  const db = store(t);
+  const matches = Array.from({ length: 25 }, (_, i) => seasonMatch(100 - i, AXIS_CURRENT_SEASON_START + i));
+  db.publishArchive({ page: 1, pages: 4, total: 100, matches });
+  assert.equal(db.read().currentSeason.games, null);
+  matches.forEach((match, i) => { if (i >= 2) match.time = AXIS_CURRENT_SEASON_START - 1; });
+  db.publishArchive({ page: 1, pages: 4, total: 100, matches });
+  assert.equal(db.read().currentSeason.games, 2);
+});
+
 test("archive refresh imports bounded pages, coordinates store handles and retains data on failure", async (t) => {
   const db = store(t); let calls = 0;
   const request = async url => {
@@ -264,6 +274,26 @@ test("initial archive import stays bounded and resumes the next 50-match page", 
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
   assert.deepEqual(calls, [1, 4]); assert.equal(db.archiveState().complete, 1);
   assert.equal(db.readSeasonHistory(1, "all").total, 151);
+});
+
+test("HTTP head refreshes cannot starve archive import or leave the cursor beyond an outage gap", async (t) => {
+  const db = store(t); const calls = [];
+  db.publishArchive({ page: 7, pages: 20, total: 1, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
+  const request = async url => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push([page, size]);
+    return Response.json({ data: Array.from({ length: Math.min(size, 127 - (page - 1) * size) }, (_, i) => historyMatch(127 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(127 / size), total_items: 127 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS, true);
+  assert.equal(db.archiveState().complete, 0);
+  assert.equal(db.archiveState().next_page, 2, "head requests must restart the cursor atomically when they discover a gap");
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000, true);
+  assert.deepEqual(calls, [[1, 25]], "HTTP fallback must not take the worker's next import slot");
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
+  assert.deepEqual(calls, [[1, 25], [1, 50], [2, 50], [3, 50]]);
+  assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 127);
 });
 
 test("history retains exact player identity, interprets UTC, and strips unrelated metadata", () => {

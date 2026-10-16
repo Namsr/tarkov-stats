@@ -141,21 +141,23 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score };
     },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
-    restartArchiveImport() { db.prepare("UPDATE axis_archive_state SET next_page=2 WHERE id=1").run(); },
-    claimArchiveRefresh(now = Date.now()): boolean {
-      const interval = this.archiveState().complete ? AXIS_REFRESH_MS : 30_000;
+    claimArchiveRefresh(now = Date.now(), headOnly = false): boolean {
+      // HTTP fallback must leave the 30-second import slots to the dedicated worker.
+      const interval = headOnly || this.archiveState().complete ? AXIS_REFRESH_MS : 30_000;
       return db.prepare("UPDATE axis_archive_state SET attempted_at = ? WHERE id = 1 AND attempted_at <= ?").run(now, now - interval).changes === 1;
     },
     publishArchive(data: AxisHistoryPage, now = Date.now()) {
       const statement = db.prepare("INSERT INTO axis_archive_matches(number,payload) VALUES(?,?) ON CONFLICT(number) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload");
       db.exec("BEGIN IMMEDIATE");
       try {
+        const previous = this.archiveState();
         let changed = false;
         for (const match of data.matches) if (statement.run(match.number, JSON.stringify(match)).changes) changed = true;
         if (changed || db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload == null) updateSeasons();
         // A page can shift while the archive is imported. Completeness requires every record.
         const count = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches").get().n;
-        const nextPage = data.page === 1 ? this.archiveState().next_page : data.page + 1;
+        // An HTTP head refresh can discover the gap before the worker does.
+        const nextPage = previous.complete && count < data.total ? 2 : data.page === 1 ? previous.next_page : data.page + 1;
         db.prepare("UPDATE axis_archive_state SET updated_at=?,last_error=0,complete=?,next_page=? WHERE id=1")
           .run(now, Number(count >= data.total), nextPage > data.pages ? 2 : nextPage);
         db.exec("COMMIT");
@@ -182,7 +184,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const players: AxisPlayer[] = row.payload == null ? [] : JSON.parse(row.payload);
       const links = profileLinks();
       const currentSeason = readSeasons()[0];
-      const games = this.archiveState().updated_at == null ? null : db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=? AND (json_extract(payload, '$.winner')>=0 OR json_extract(payload, '$.winner')=-2)")
+      const archive = this.archiveState();
+      // A partial head proves the current total only after it reaches the previous season.
+      const knownSeason = archive.complete || db.prepare("SELECT 1 FROM (SELECT payload FROM axis_archive_matches ORDER BY number DESC LIMIT ?) WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')<? LIMIT 1")
+        .get(AXIS_HISTORY_PAGE_SIZE, AXIS_CHANNEL_ID, currentSeason.startsAt);
+      const games = archive.updated_at == null || !knownSeason ? null : db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=? AND (json_extract(payload, '$.winner')>=0 OR json_extract(payload, '$.winner')=-2)")
         .get(AXIS_CHANNEL_ID, currentSeason.startsAt).n;
       return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred, games }, players: players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })),
         updatedAt: row.updated_at, available: row.payload != null,
