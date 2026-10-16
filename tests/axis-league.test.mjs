@@ -5,7 +5,7 @@ import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseA
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
 import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "../lib/axis-history.ts";
-import { fetchAxisHistory, refreshAxisHistory, refreshAxisArchive } from "../lib/axis-history-sync.ts";
+import { refreshAxisArchive } from "../lib/axis-history-sync.ts";
 import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
 
@@ -145,6 +145,28 @@ test("future mass resets create another season without erasing the confirmed bou
   assert.equal(seasons[1].inferred, false);
 });
 
+test("persisted season summaries survive reopen, skip unchanged imports and update across store handles", (t) => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  const one = createAxisLeagueStore(sql), two = createAxisLeagueStore(sql);
+  const matches = Array.from({ length: 60 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i));
+  const snapshot = { page: 1, pages: 1, total: matches.length, matches };
+  one.publishArchive(snapshot, 1000);
+  assert.equal(two.readSeasonHistory(3, "current").matches.length, 10);
+  const before = sql.prepare("SELECT total_changes() AS n").get().n;
+  one.publishArchive(snapshot, 1000);
+  assert.equal(sql.prepare("SELECT total_changes() AS n").get().n - before, 1, "unchanged matches and season summaries must not be rewritten");
+  matches[59].time = AXIS_CURRENT_SEASON_START - 1;
+  one.publishArchive(snapshot, 1000);
+  assert.equal(two.readSeasonHistory(1, "current").total, 59);
+  assert.equal(two.readSeasonHistory(1, "all").total, 60);
+  const reopened = createAxisLeagueStore(sql);
+  assert.equal(reopened.readSeasonHistory(1, "current").total, 59);
+  // Existing installations build the summary once from their saved archive.
+  sql.prepare("UPDATE axis_archive_seasons SET payload=NULL").run();
+  assert.equal(reopened.readSeasonHistory(1, "current").total, 59);
+  assert.ok(sql.prepare("SELECT payload FROM axis_archive_seasons").get().payload);
+});
+
 test("archive refresh imports bounded pages, coordinates store handles and retains data on failure", async (t) => {
   const db = store(t); let calls = 0;
   const request = async url => {
@@ -160,6 +182,31 @@ test("archive refresh imports bounded pages, coordinates store handles and retai
   await refreshAxisArchive(db, async () => { throw new Error("offline"); }, AXIS_REFRESH_MS * 2);
   assert.equal(db.readSeasonHistory(1, "all").matches.length, 1);
   assert.equal(db.readSeasonHistory(1, "all").stale, true);
+});
+
+test("complete archives poll only 25 newest matches and catch up missing matches after an outage", async (t) => {
+  const db = store(t);
+  db.publishArchive({ page: 1, pages: 1, total: 1, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
+  const calls = [];
+  let total = 1;
+  const request = async (url) => {
+    const size = Number(url.searchParams.get("page_size"));
+    const page = Number(url.searchParams.get("page"));
+    calls.push([page, size]);
+    return Response.json({ data: Array.from({ length: Math.max(0, Math.min(size, total - (page - 1) * size)) }, (_, i) => historyMatch(total - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(total / size), total_items: total } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [[1, 25]]);
+  total = 27; calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
+  assert.deepEqual(calls, [[1, 25], [1, 500]]);
+  assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 27);
+  assert.equal(db.readSeasonHistory(2, "all").matches.at(-1).number, 1);
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 3);
+  assert.deepEqual(calls, [[1, 25]]);
 });
 
 test("history retains exact player identity, interprets UTC, and strips unrelated metadata", () => {
@@ -204,18 +251,18 @@ test("malformed or incomplete history cannot replace a saved page", () => {
   }
 });
 
-test("history fetch uses a fixed server, bounded page size and newest-first order", async () => {
-  await fetchAxisHistory(2, async (url, options) => {
+test("archive fetch uses a fixed server, bounded page size and newest-first order", async (t) => {
+  await refreshAxisArchive(store(t), async (url, options) => {
     assert.equal(url.origin, "https://api.neatqueue.com");
     assert.equal(url.pathname, `/api/v1/history/${AXIS_SERVER_ID}`);
-    assert.equal(url.searchParams.get("page"), "2");
-    assert.equal(url.searchParams.get("page_size"), "25");
+    assert.equal(url.searchParams.get("page"), "1");
+    assert.equal(url.searchParams.get("page_size"), "500");
     assert.equal(url.searchParams.get("order"), "desc");
     assert.equal(options.cache, "no-store");
     assert.ok(options.signal instanceof AbortSignal);
-    return Response.json(historyPage(2, 26));
-  });
-  await assert.rejects(fetchAxisHistory(1, async () => new Response(null, { status: 429 })), /429/);
+    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    return Response.json(body);
+  }, AXIS_REFRESH_MS);
 });
 
 test("history snapshots use current admin links even after a player leaves the standings", (t) => {
@@ -231,34 +278,29 @@ test("history snapshots use current admin links even after a player leaves the s
   assert.equal(db.readHistory(1, 1000 + AXIS_REFRESH_MS * 2 + 1).stale, true);
 });
 
-test("history refreshes deduplicate by page and keep the last good data on failure", async (t) => {
+test("concurrent archive refreshes share one request and retain saved data on failure", async (t) => {
   const db = store(t);
   let calls = 0, release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const request = async (url) => { calls++; await gate; return Response.json(historyPage(Number(url.searchParams.get("page")), 26)); };
-  const first = refreshAxisHistory(db, 1, request, AXIS_REFRESH_MS);
-  const duplicate = refreshAxisHistory(db, 1, request, AXIS_REFRESH_MS);
-  const secondPage = refreshAxisHistory(db, 2, request, AXIS_REFRESH_MS);
-  assert.equal(calls, 2);
-  release(); await Promise.all([first, duplicate, secondPage]);
-  assert.equal(db.readHistory(1).matches.length, 25);
-  assert.equal(db.readHistory(2).matches.length, 1);
-  await refreshAxisHistory(db, 1, async () => { throw new Error("offline"); }, AXIS_REFRESH_MS * 2);
-  assert.equal(db.readHistory(1).available, true);
-  assert.equal(db.readHistory(1).stale, true);
-  assert.equal(db.readHistory(1).matches.length, 25);
-  await refreshAxisHistory(db, 1, async () => Response.json(historyPage(1, 0)), AXIS_REFRESH_MS * 3);
-  assert.equal(db.readHistory(1).matches.length, 0);
-  assert.equal(db.readHistory(1).stale, false);
+  const request = async () => { calls++; await gate; const body = historyPage(1, 1); body.pagination.per_page = 500; return Response.json(body); };
+  const first = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  const duplicate = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.equal(calls, 1);
+  release(); await Promise.all([first, duplicate]);
+  assert.equal(db.readSeasonHistory(1, "all").matches.length, 1);
+  await refreshAxisArchive(db, async () => new Response(null, { status: 429 }), AXIS_REFRESH_MS * 2);
+  assert.equal(db.readSeasonHistory(1, "all").available, true);
+  assert.equal(db.readSeasonHistory(1, "all").stale, true);
+  assert.equal(db.readSeasonHistory(1, "all").matches.length, 1);
 });
 
-test("history five-minute leases coordinate separate SQLite store handles", (t) => {
+test("archive five-minute leases coordinate separate SQLite store handles", (t) => {
   const db = new DatabaseSync(":memory:"); t.after(() => db.close());
   const one = createAxisLeagueStore(db), two = createAxisLeagueStore(db);
-  assert.equal(one.claimHistoryRefresh(1, AXIS_REFRESH_MS), true);
-  assert.equal(two.claimHistoryRefresh(1, AXIS_REFRESH_MS + 1), false);
-  assert.equal(two.claimHistoryRefresh(2, AXIS_REFRESH_MS + 1), true);
-  assert.equal(two.claimHistoryRefresh(1, AXIS_REFRESH_MS * 2), true);
+  one.publishArchive({ page: 1, pages: 1, total: 0, matches: [] });
+  assert.equal(one.claimArchiveRefresh(AXIS_REFRESH_MS), true);
+  assert.equal(two.claimArchiveRefresh(AXIS_REFRESH_MS + 1), false);
+  assert.equal(two.claimArchiveRefresh(AXIS_REFRESH_MS * 2), true);
   assert.equal(one.claimRefresh(AXIS_REFRESH_MS), true);
 });
 

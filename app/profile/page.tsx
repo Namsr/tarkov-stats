@@ -127,16 +127,14 @@ export default function ProfilePage() {
           {t("common.back")}
         </Link>
         <p className="page-kicker">{t("nav.profile")}</p>
-        <h1 className="page-title">{t("profile.title")}</h1>
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
+          <h1 className="page-title">{t("profile.title")}</h1>
+          {accountId && <code className="axis-profile-access" aria-label={t("profile.accountId")}>{accountId}</code>}
+        </div>
         </div>
         {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
         {!isAdmin && canEditAxisKda && <Link href="/axis-league?view=history" className="tactical-button">{t("axis.editor.profileLink")}</Link>}
       </div>
-
-      {accountId && <section className="data-panel axis-profile-access" aria-label={t("axis.editor.accountId")}>
-        <p>{t("axis.editor.accountId")}: <code>{accountId}</code></p>
-        <p>{t("axis.editor.accountHint")}</p>
-      </section>}
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}
 

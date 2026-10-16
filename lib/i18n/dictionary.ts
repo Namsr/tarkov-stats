@@ -28,8 +28,7 @@ const en: Dict = {
   "axis.editor.revoke": "Revoke access",
   "axis.editor.revokeUser": "Revoke K/D/A editor access for {id}",
   "axis.editor.profileLink": "AXIS League editor",
-  "axis.editor.accountId": "Account ID for AXIS League access",
-  "axis.editor.accountHint": "Share this ID with the administrator to request permission to enter match K/D/A and round scores.",
+  "profile.accountId": "Account ID",
 
   "axis.kda.short": "K/D/A",
   "axis.kda.manual": "K/D/A entered by admin",
@@ -1780,8 +1779,7 @@ const ru: Dict = {
   "axis.editor.revoke": "Отозвать доступ",
   "axis.editor.revokeUser": "Отозвать доступ редактора K/D/A у {id}",
   "axis.editor.profileLink": "Редактор AXIS League",
-  "axis.editor.accountId": "ID аккаунта для доступа к AXIS League",
-  "axis.editor.accountHint": "Передайте этот ID администратору, чтобы получить доступ к вводу K/D/A и счёта по раундам.",
+  "profile.accountId": "ID аккаунта",
 
   "axis.kda.short": "K/D/A",
   "axis.kda.manual": "K/D/A введено вручную",

@@ -34,8 +34,8 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
       finally { running = false; }
     }
     void load();
-    // Read the local snapshot frequently; the server limits upstream syncs to five minutes.
-    const timer = setInterval(() => void load(), 60_000);
+    // Match the five-minute upstream cadence; hidden documents do not poll.
+    const timer = setInterval(() => void load(), 5 * 60_000);
     document.addEventListener("visibilitychange", load);
     return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", load); };
   }, [retry]);
@@ -71,7 +71,8 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
       </div>
-      {view === "history" ? <AxisMatchHistory /> : <>
+      <div hidden={view !== "history"}><AxisMatchHistory active={view === "history"} /></div>
+      {view === "standings" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
         <label><span>{t("leaderboard.sort.label")}</span><select value={sort} onChange={(event) => changeSort(event.target.value as AxisSort)}>

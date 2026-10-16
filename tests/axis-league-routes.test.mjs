@@ -8,9 +8,10 @@ import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 
 const mockModule = (source) => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") return mockModule("export function after() {};");
   if (specifier === "@/lib/admin-auth") return mockModule("export async function requireAdmin() { return globalThis.axisAccess; }");
   if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
-  if (specifier === "@/lib/admin/axis-league-db") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
+  if (specifier === "@/lib/admin/axis-league-db" || specifier === "./admin/axis-league-db.ts") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
   if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season) { return globalThis.axisStore.readSeasonHistory(page,season); }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
@@ -21,6 +22,8 @@ const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
 const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
 const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
+const { loadAxisLeague: loadSavedLeague } = await import("../lib/axis-league-sync.ts");
+const { loadAxisHistory: loadSavedHistory, loadAxisSeasonHistory: loadSavedSeason } = await import("../lib/axis-history-sync.ts");
 
 const id = "95520357670191104";
 function setup(t) {
@@ -39,6 +42,26 @@ function setupStats(t) {
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ number: 5, time: Date.now(), queueId: "1343726040421367842", queue: "Arena League", maps: [], winner: 0,
     teams: [{ name: null, players: [{ id, name: "Player", mmr: 1000, change: 25, profile: null }] }, { name: null, players: [] }] }] });
 }
+
+test("saved standings return before a blocked upstream refresh; both history URLs stay local", async (t) => {
+  setupStats(t);
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0, release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async () => { calls++; await gate; throw new Error("offline"); };
+  const deferred = [];
+  const saved = await loadSavedLeague((task) => deferred.push(task));
+  assert.equal(saved.available, true); assert.equal(calls, 0); assert.equal(deferred.length, 1);
+  const pending = deferred[0]();
+  assert.equal(calls, 1);
+  assert.equal((await loadSavedLeague()).available, true);
+  assert.equal((await loadSavedHistory(1)).matches[0].number, 5);
+  assert.equal((await loadSavedSeason(1, "current")).matches[0].number, 5);
+  assert.equal(calls, 1);
+  release(); await pending;
+  assert.equal((await loadSavedLeague()).available, true);
+});
 
 test("editors can save round scores without changing player KDA", async (t) => {
   setupStats(t);

@@ -1,61 +1,45 @@
 import { AXIS_HISTORY_API_URL, AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "./axis-history.ts";
 import { getAxisLeagueStore, type AxisLeagueStore } from "./admin/axis-league-db.ts";
 
-export async function fetchAxisHistory(page: number, request: typeof fetch = fetch) {
-  const url = new URL(AXIS_HISTORY_API_URL);
-  url.search = new URLSearchParams({ page: String(page), page_size: String(AXIS_HISTORY_PAGE_SIZE), order: "desc" }).toString();
-  const response = await request(url, { cache: "no-store", signal: AbortSignal.timeout(12_000) });
-  if (!response.ok) throw new Error(`NeatQueue history HTTP ${response.status}`);
-  return parseAxisHistory(await response.json(), page);
+export async function loadAxisHistory(page: number) {
+  // Compatibility URL uses the same archive as the season selector, without a second upstream sync.
+  return loadAxisSeasonHistory(page, "all");
 }
 
-const pendingRefreshes = new WeakMap<AxisLeagueStore, Map<number, Promise<void>>>();
-export async function refreshAxisHistory(store: AxisLeagueStore, page = 1, request: typeof fetch = fetch, now = Date.now()) {
-  let pages = pendingRefreshes.get(store);
-  if (!pages) { pages = new Map(); pendingRefreshes.set(store, pages); }
-  const pending = pages.get(page);
+const pendingArchives = new WeakMap<AxisLeagueStore, Promise<void>>();
+export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now()) {
+  const pending = pendingArchives.get(store);
   if (pending) return pending;
-  if (!store.claimHistoryRefresh(page, now)) return;
+  if (!store.claimArchiveRefresh(now)) return;
   const refresh = (async () => {
-    try { store.publishHistory(await fetchAxisHistory(page, request)); }
-    catch (error) {
-      store.failHistoryRefresh(page);
-      console.warn("AXIS history refresh failed: " + (error instanceof Error ? error.message : String(error)));
+    try {
+      const signal = AbortSignal.timeout(12_000);
+      const read = async (page: number, pageSize = 500) => {
+        const url = new URL(AXIS_HISTORY_API_URL);
+        url.search = new URLSearchParams({ page: String(page), page_size: String(pageSize), order: "desc" }).toString();
+        const response = await request(url, { cache: "no-store", signal });
+        if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
+        const data = parseAxisHistory(await response.json(), page, pageSize);
+        store.publishArchive(data, now);
+        return data;
+      };
+      const complete = Boolean(store.archiveState().complete);
+      let first = await read(1, complete ? AXIS_HISTORY_PAGE_SIZE : 500);
+      // A normal refresh needs only the newest 25. Catch up after longer outages without gaps.
+      if (complete && !store.archiveState().complete) first = await read(1);
+      // Bounded initial import: two older pages per worker tick.
+      for (let i = 0; i < 2 && !store.archiveState().complete; i++) {
+        const page = store.archiveState().next_page;
+        if (page > first.pages) break;
+        await read(page);
+      }
+    } catch (error) {
+      store.failArchiveRefresh();
+      console.warn("AXIS archive refresh failed: " + (error instanceof Error ? error.message : String(error)));
     }
   })();
-  pages.set(page, refresh);
-  try { await refresh; } finally { pages.delete(page); }
-}
-
-export async function loadAxisHistory(page: number) {
-  const store = await getAxisLeagueStore();
-  await refreshAxisHistory(store, page);
-  return store.readHistory(page);
-}
-
-export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof fetch = fetch, now = Date.now()) {
-  if (!store.claimArchiveRefresh(now)) return;
-  try {
-    const read = async (page: number) => {
-      const url = new URL(AXIS_HISTORY_API_URL);
-      url.search = new URLSearchParams({ page: String(page), page_size: "500", order: "desc" }).toString();
-      const response = await request(url, { cache: "no-store", signal: AbortSignal.timeout(12_000) });
-      if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
-      const data = parseAxisHistory(await response.json(), page, 500);
-      store.publishArchive(data, now);
-      return data;
-    };
-    const first = await read(1);
-    // Bounded initial import: two older pages per worker tick; completed archives only refresh the head.
-    for (let i = 0; i < 2 && !store.archiveState().complete; i++) {
-      const page = store.archiveState().next_page;
-      if (page > first.pages) break;
-      await read(page);
-    }
-  } catch (error) {
-    store.failArchiveRefresh();
-    console.warn("AXIS archive refresh failed: " + (error instanceof Error ? error.message : String(error)));
-  }
+  pendingArchives.set(store, refresh);
+  try { await refresh; } finally { pendingArchives.delete(store); }
 }
 
 export async function loadAxisSeasonHistory(page: number, season: string) {

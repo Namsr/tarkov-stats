@@ -6,27 +6,30 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
-export default function AxisMatchHistory() {
+export default function AxisMatchHistory({ active = true }: { active?: boolean }) {
   const { t, lang } = useI18n();
   const [page, setPage] = useState(1);
   const [season, setSeason] = useState("current");
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
+  const [cachedPages, setCachedPages] = useState<AxisHistoryResponse[]>([]);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const [canEditKda, setCanEditKda] = useState(false);
-  const current = data?.page === page && data?.season === season ? data : null;
+  const current = data?.page === page && data?.season === season ? data : cachedPages.find((entry) => entry.page === page && entry.season === season) ?? null;
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     fetch("/api/auth/me", { cache: "no-store", signal: controller.signal }).then(async (response) => {
       if (response.ok) { const body = await response.json(); if (!controller.signal.aborted) setCanEditKda(body.canEditAxisKda === true); }
     }).catch(() => {});
     return () => controller.abort();
-  }, []);
+  }, [active]);
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     let running = false;
     async function load() {
@@ -36,15 +39,19 @@ export default function AxisMatchHistory() {
         const response = await fetch(`/api/axis-league/history?page=${page}&season=${season}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
         const body = await response.json() as AxisHistoryResponse;
         if (!response.ok || !body.available || body.page !== page || body.season !== season || !Array.isArray(body.matches)) throw new Error("History unavailable");
-        if (!controller.signal.aborted) { setData(body); setFailed(false); }
+        if (!controller.signal.aborted) {
+          setData(body); setFailed(false);
+          setCachedPages((previous) => [body, ...previous.filter((entry) => entry.page !== page || entry.season !== season)].slice(0, 8));
+        }
       } catch { if (!controller.signal.aborted) setFailed(true); }
       finally { running = false; }
     }
     void load();
-    const timer = setInterval(() => void load(), 60_000);
+    // Current results follow the five-minute import; historical pages only check for manual edits.
+    const timer = setInterval(() => void load(), season === "current" || season === "all" ? 5 * 60_000 : 10 * 60_000);
     document.addEventListener("visibilitychange", load);
     return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", load); };
-  }, [page, season, retry]);
+  }, [active, page, season, retry]);
 
   function navigate(target: number) { setFailed(false); setPage(target); }
   function teamName(match: AxisMatch, index: number) {
@@ -90,7 +97,8 @@ export default function AxisMatchHistory() {
             <span>{match.maps.length ? match.maps.join(", ") : t("axis.history.noMap")}</span>
             <span className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
-          <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => setRetry((value) => value + 1)} onSaved={(players, rounds) => {
+          <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds) => {
+            setCachedPages([]);
             const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
             setData((previous) => previous ? { ...previous, matches: previous.matches.map((entry) => entry.number !== match.number ? entry : { ...entry,
               rounds: rounds === undefined ? entry.rounds : rounds,

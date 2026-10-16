@@ -1,9 +1,10 @@
 import { loadAxisLeague } from "@/lib/axis-league-sync";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 export async function GET() {
   try {
-    const data = await loadAxisLeague();
+    const data = await loadAxisLeague(after);
     return Response.json(data, { status: data.available ? 200 : 503, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.warn("AXIS League read failed", error);

@@ -43,8 +43,14 @@ export async function refreshAxisLeague(store: AxisLeagueStore, request: typeof 
   finally { pendingRefreshes.delete(store); }
 }
 
-export async function loadAxisLeague() {
+export async function loadAxisLeague(defer?: (task: () => Promise<void>) => void) {
   const store = await getAxisLeagueStore();
+  const saved = store.read();
+  if (saved.available) {
+    // Refresh after the response; never make a saved snapshot wait on NeatQueue.
+    defer?.(() => refreshAxisLeague(store));
+    return saved;
+  }
   await refreshAxisLeague(store);
   return store.read();
 }

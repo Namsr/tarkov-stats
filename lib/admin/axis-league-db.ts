@@ -1,8 +1,8 @@
 import type { AxisLeagueResponse, AxisPlayer, AxisProfile } from "../axis-league";
-import { AXIS_REFRESH_MS } from "../axis-league.ts";
+import { AXIS_CHANNEL_ID, AXIS_REFRESH_MS } from "../axis-league.ts";
 import type { AxisHistoryPage, AxisHistoryResponse } from "../axis-history";
 import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
-import { detectAxisSeasons, axisSeasonMatches } from "../axis-seasons.ts";
+import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
@@ -23,6 +23,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       PRIMARY KEY(match_number, discord_id)
     );
     CREATE TABLE IF NOT EXISTS axis_archive_matches (number INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS axis_archive_queue_time ON axis_archive_matches(
+      json_extract(payload, '$.queueId'), json_extract(payload, '$.time'), number
+    );
+    CREATE TABLE IF NOT EXISTS axis_archive_seasons (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT);
+    INSERT OR IGNORE INTO axis_archive_seasons(id) VALUES(1);
     CREATE TABLE IF NOT EXISTS axis_archive_state (
       id INTEGER PRIMARY KEY CHECK(id = 1), next_page INTEGER NOT NULL DEFAULT 2,
       complete INTEGER NOT NULL DEFAULT 0, updated_at INTEGER, attempted_at INTEGER NOT NULL DEFAULT 0,
@@ -43,6 +48,26 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       UNIQUE(aid, mode)
     );
   `);
+  // Persist only the small season summary. HTTP reads parse at most one 25-match page.
+  function updateSeasons(): AxisSeason[] {
+    const matches = db.prepare("SELECT payload FROM axis_archive_matches ORDER BY number").all()
+      .map((row: { payload: string }) => JSON.parse(row.payload));
+    const seasons = detectAxisSeasons(matches);
+    db.prepare("UPDATE axis_archive_seasons SET payload=? WHERE id=1").run(JSON.stringify(seasons));
+    return seasons;
+  }
+  function readSeasons(): AxisSeason[] {
+    const row = db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get();
+    if (row.payload != null) return JSON.parse(row.payload);
+    // One-time migration for an existing archive, coordinated across web and worker.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const saved = db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get();
+      const seasons = saved.payload == null ? updateSeasons() : JSON.parse(saved.payload);
+      db.exec("COMMIT");
+      return seasons;
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
   function profileLinks() {
     const links = new Map<string, AxisProfile>();
     for (const link of db.prepare("SELECT * FROM axis_league_profiles").all()) {
@@ -121,10 +146,12 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       return db.prepare("UPDATE axis_archive_state SET attempted_at = ? WHERE id = 1 AND attempted_at <= ?").run(now, now - interval).changes === 1;
     },
     publishArchive(data: AxisHistoryPage, now = Date.now()) {
-      const statement = db.prepare("INSERT INTO axis_archive_matches(number,payload) VALUES(?,?) ON CONFLICT(number) DO UPDATE SET payload=excluded.payload");
+      const statement = db.prepare("INSERT INTO axis_archive_matches(number,payload) VALUES(?,?) ON CONFLICT(number) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload");
       db.exec("BEGIN IMMEDIATE");
       try {
-        for (const match of data.matches) statement.run(match.number, JSON.stringify(match));
+        let changed = false;
+        for (const match of data.matches) if (statement.run(match.number, JSON.stringify(match)).changes) changed = true;
+        if (changed || db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload == null) updateSeasons();
         // A page can shift while the archive is imported. Completeness requires every record.
         const count = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches").get().n;
         const nextPage = data.page === 1 ? this.archiveState().next_page : data.page + 1;
@@ -136,13 +163,16 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     failArchiveRefresh() { db.prepare("UPDATE axis_archive_state SET last_error=1 WHERE id=1").run(); },
     readSeasonHistory(page: number, season: string, now = Date.now()): AxisHistoryResponse {
       const state = this.archiveState();
-      const all: AxisHistoryPage["matches"] = db.prepare("SELECT payload FROM axis_archive_matches ORDER BY number DESC").all().map((row: {payload: string}) => JSON.parse(row.payload));
-      const seasons = detectAxisSeasons(all);
+      const seasons = readSeasons();
       const selected = seasons.find((entry) => entry.id === season);
       if (season !== "all" && !selected) throw new RangeError("Unknown AXIS season");
-      const matches = selected ? axisSeasonMatches(all, selected) : all;
-      return { page, total: matches.length, pages: Math.max(1, Math.ceil(matches.length / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season,
-        matches: decorateMatches(matches.slice((page - 1) * AXIS_HISTORY_PAGE_SIZE, page * AXIS_HISTORY_PAGE_SIZE)),
+      const where = selected ? " WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=?" + (selected.endsAt == null ? "" : " AND json_extract(payload, '$.time')<?") : "";
+      const parameters = selected ? [AXIS_CHANNEL_ID, selected.startsAt, ...(selected.endsAt == null ? [] : [selected.endsAt])] : [];
+      const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + where).get(...parameters).n;
+      const matches = db.prepare("SELECT payload FROM axis_archive_matches" + where + " ORDER BY number DESC LIMIT ? OFFSET ?")
+        .all(...parameters, AXIS_HISTORY_PAGE_SIZE, (page - 1) * AXIS_HISTORY_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
+      return { page, total, pages: Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season,
+        matches: decorateMatches(matches),
         archiveComplete: Boolean(state.complete), updatedAt: state.updated_at, available: state.updated_at != null,
         stale: Boolean(state.last_error) || state.updated_at != null && now - state.updated_at > AXIS_REFRESH_MS * 2 };
     },
@@ -150,8 +180,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const row = db.prepare("SELECT * FROM axis_league_snapshot WHERE id = 1").get();
       const players: AxisPlayer[] = row.payload == null ? [] : JSON.parse(row.payload);
       const links = profileLinks();
-      const archive: AxisHistoryPage["matches"] = db.prepare("SELECT payload FROM axis_archive_matches ORDER BY number").all().map((row: {payload: string}) => JSON.parse(row.payload));
-      const currentSeason = detectAxisSeasons(archive)[0];
+      const currentSeason = readSeasons()[0];
       return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred }, players: players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })),
         updatedAt: row.updated_at, available: row.payload != null,
         stale: Boolean(row.last_error) || (row.updated_at != null && now - row.updated_at > AXIS_REFRESH_MS * 2) };
