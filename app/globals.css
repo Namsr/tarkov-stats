@@ -822,6 +822,8 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-player:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .axis-player:hover .axis-player__name { text-decoration: underline; text-underline-offset: 4px; }
 .axis-player__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.axis-player--editing .axis-player__name { white-space: normal; overflow-wrap: anywhere; }
+.axis-player__arena-name { color: var(--muted-strong); }
 .axis-avatar { display: inline-grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; overflow: hidden; border-radius: 50%; background: var(--input-bg); color: var(--muted-strong); font-size: .9rem; font-weight: 700; }
 .axis-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .leaderboard-preview__identity > .axis-avatar { width: 64px; height: 64px; flex-basis: 64px; font-size: 1.5rem; }
@@ -1021,7 +1023,10 @@ button.leaderboard-jump-toggle { flex: 0 0 auto; width: 44px; height: 44px; marg
   100% { transform: scale(1); }
 }
 .leaderboard-lists { display: grid; gap: 16px; margin-top: 18px; }
-.leaderboard-preview { position: fixed; z-index: 80; width: min(380px, calc(100vw - 24px)); border: 1px solid var(--card-border); border-radius: 13px; background: var(--card-bg); color: var(--foreground); padding: 16px; box-shadow: 0 20px 60px #0006; font-family: var(--body-font); font-weight: 400; line-height: 1.4; overflow-anchor: none; max-height: calc(100dvh - 24px); overflow-y: auto; }
+.leaderboard-preview { position: fixed; z-index: 80; width: min(380px, calc(100vw - 24px)); border: 1px solid var(--card-border); border-radius: 13px; background: var(--card-bg); color: var(--foreground); padding: 16px; box-shadow: 0 20px 60px #0006; font-family: var(--body-font); font-weight: 400; line-height: 1.4; overflow-anchor: none; max-height: calc(100dvh - 24px); overflow-y: auto; animation: lb-preview-in 160ms ease-out both; }
+.leaderboard-preview.is-closing { pointer-events: none; animation-name: lb-preview-out; animation-timing-function: ease-in; }
+@keyframes lb-preview-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes lb-preview-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(6px); } }
 .leaderboard-preview__tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 16px; border-bottom: 1px solid var(--card-border); }
 .leaderboard-preview__tabs button { min-height: 40px; padding: 8px; border-bottom: 2px solid transparent; color: var(--muted); font-size: 11px; font-weight: 700; }
 .leaderboard-preview__tabs button[aria-selected="true"] { border-bottom-color: var(--foreground); color: var(--foreground); }
@@ -1966,7 +1971,7 @@ a.help-card:hover { border-color: var(--foreground); }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .skeleton { animation: none; }
+  .skeleton, .leaderboard-preview { animation: none; }
   .profile-collapsible__content,
   .profile-collapsible__toggle { transition-duration: .01ms; }
   .achievement-collapsible__content.is-collapsed { transition-duration: .01ms; }

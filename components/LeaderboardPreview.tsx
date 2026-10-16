@@ -15,11 +15,15 @@ type PreviewContext = { id: string; active: string | null; enter: (target: Targe
 const Context = createContext<PreviewContext | null>(null);
 // Bounded session cache; closing cancels an in-flight request and never stores partial results.
 const cache = new Map<string, { expiresAt: number; value: LeaderboardPreview }>();
+// Providers share ownership so a new trigger also closes cards in other lists.
+let activePreviewClose: ((restore?: boolean, immediate?: boolean) => void) | null = null;
+const PREVIEW_EXIT_MS = 120;
 const finePointer = () => window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
 export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detailsHeader }: { detailsHeader?: (nameId: string) => ReactNode; detailsLabel?: string; meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
   const { t, lang } = useI18n();
   const id = useId();
+  const [closing, setClosing] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [data, setData] = useState<LeaderboardPreview | null>(null);
   const [error, setError] = useState(false);
@@ -32,6 +36,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
   const pending = useRef<Target | null>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controller = useRef<AbortController | null>(null);
   const restoring = useRef(false);
   const pointer = useRef({ x: -1, y: -1 });
@@ -40,15 +45,24 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
   const clearTimers = useCallback(() => {
     if (openTimer.current) clearTimeout(openTimer.current);
     if (closeTimer.current) clearTimeout(closeTimer.current);
-    openTimer.current = closeTimer.current = null;
+    if (exitTimer.current) clearTimeout(exitTimer.current);
+    openTimer.current = closeTimer.current = exitTimer.current = null;
     pending.current = null;
   }, []);
-  const close = useCallback((restore = false) => {
+  const close = useCallback(function closePreview(restore = false, immediate = false) {
     clearTimers();
     controller.current?.abort();
     const previous = current.current;
     current.current = null;
-    setTarget(null);
+    const finish = () => {
+      if (activePreviewClose === closePreview) activePreviewClose = null;
+      exitTimer.current = null;
+      setTarget(null); setClosing(false);
+    };
+    if (!immediate && previous && card.current && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setClosing(true);
+      exitTimer.current = setTimeout(finish, PREVIEW_EXIT_MS);
+    } else finish();
     if (restore) {
       restoring.current = true;
       previous?.element.focus({ preventScroll: true });
@@ -82,6 +96,8 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
     keyboard.current = next.focus === true || next.element.matches(":focus-visible");
     clearTimers();
     if (current.current?.element === next.element) return;
+    activePreviewClose?.(false, true);
+    activePreviewClose = close;
     // Switching nicknames closes the old card immediately and starts a fresh dwell timer.
     controller.current?.abort();
     current.current = null;
@@ -100,7 +116,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
     };
     if (immediate) show();
     else openTimer.current = setTimeout(show, detailsLabel && next.details ? AXIS_PREVIEW_DELAY_MS : LEADERBOARD_PREVIEW_DELAY_MS);
-  }, [clearTimers, detailsLabel, loadPreview]);
+  }, [clearTimers, close, detailsLabel, loadPreview]);
 
   const selectTab = (value: "details" | "profile") => {
     setTab(value);
@@ -137,7 +153,10 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
     }, LEADERBOARD_PREVIEW_CLOSE_MS);
   }, [inside, close]);
 
-  useEffect(() => () => { clearTimers(); controller.current?.abort(); }, [clearTimers]);
+  useEffect(() => () => {
+    clearTimers(); controller.current?.abort();
+    if (activePreviewClose === close) activePreviewClose = null;
+  }, [clearTimers, close]);
   useEffect(() => {
     if (!target) return;
     const move = (event: PointerEvent) => {
@@ -213,8 +232,8 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
     {children}
     {target && createPortal(<>
       {touch && <div className="leaderboard-preview-backdrop" onClick={() => close(true)} />}
-      <div ref={card} id={id} className={`leaderboard-preview${showingDetails ? " leaderboard-preview--axis" : ""}`} role="dialog" aria-modal={touch || undefined} aria-labelledby={`${id}-name`}
-        style={placement} onPointerEnter={() => { if (closeTimer.current) clearTimeout(closeTimer.current); }} onPointerLeave={() => { if (!touch) leave(); }}
+      <div ref={card} id={id} className={`leaderboard-preview${showingDetails ? " leaderboard-preview--axis" : ""}${closing ? " is-closing" : ""}`} role="dialog" inert={closing} aria-hidden={closing || undefined} aria-modal={touch || undefined} aria-labelledby={`${id}-name`}
+        style={{ ...placement, animationDuration: closing ? `${PREVIEW_EXIT_MS}ms` : undefined }} onPointerEnter={() => { if (closeTimer.current) clearTimeout(closeTimer.current); }} onPointerLeave={() => { if (!touch) leave(); }}
         onBlur={(event) => { if (!touch && !event.currentTarget.contains(event.relatedTarget)) leave(); }}>
         <button className="leaderboard-preview__close" type="button" aria-label={t("common.close")} onClick={() => close(true)}>×</button>
         {showingDetails && detailsHeader ? detailsHeader(`${id}-name`) : <div className="leaderboard-preview__identity">

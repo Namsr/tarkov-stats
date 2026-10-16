@@ -110,13 +110,13 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
               rounds: rounds === undefined ? entry.rounds : rounds,
               teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous);
             setRetry((value) => value + 1);
-          }}>{({ teams, renderInputs, rounds }) => <>
+          }}>{({ teams, renderInputs, rounds, editing }) => <>
             {rounds}
           {teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
             <p className="axis-match-mmr-label">{t("axis.kda.manual")} · {t("axis.history.mmr")}</p>
             <ul>{team.players.map((player) => <li key={player.id}>
-              <AxisPlayerIdentity player={leaguePlayers.get(player.id) ?? player} mmr={leaguePlayers.get(player.id)?.mmr ?? null} averageKda={averageKda} />
+              <AxisPlayerIdentity player={leaguePlayers.get(player.id) ?? player} mmr={leaguePlayers.get(player.id)?.mmr ?? null} averageKda={averageKda} showArenaNickname={editing} />
               <div className="axis-match-values">
               {renderInputs(player.id) ?? <span className="axis-match-kda" aria-label={t("axis.kda.value", { kills: player.kda?.kills ?? "—", deaths: player.kda?.deaths ?? "—", assists: player.kda?.assists ?? "—" })}>
                 <small>{t("axis.kda.short")}</small><strong>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</strong>

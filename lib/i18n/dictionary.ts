@@ -61,6 +61,8 @@ const en: Dict = {
   "axis.kda.openHistory": "Match history and K/D/A entry",
 
   "axis.join": "Join AXIS",
+  "axis.player.arenaNickname": " ({name})",
+  "axis.player.arenaUnavailable": "Arena nickname unavailable",
   "axis.avatar": "{name}’s Discord avatar",
   "axis.season.label": "Season",
   "axis.season.current": "Current season",
@@ -1828,6 +1830,8 @@ const ru: Dict = {
   "axis.kda.openHistory": "История матчей и ввод K/D/A",
 
   "axis.join": "Присоединиться к AXIS",
+  "axis.player.arenaNickname": " ({name})",
+  "axis.player.arenaUnavailable": "Ник Arena недоступен",
   "axis.avatar": "Аватар {name} в Discord",
   "axis.season.label": "Сезон",
   "axis.season.current": "Текущий сезон",

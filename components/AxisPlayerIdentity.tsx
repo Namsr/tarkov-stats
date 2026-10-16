@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { LeaderboardPreviewLink, LeaderboardPreviewProvider } from "@/components/LeaderboardPreview";
 import { useI18n } from "@/lib/i18n/context";
 import { axisKdaRatio, axisMatchHref, axisProfileHref, type AxisPlayer } from "@/lib/axis-league";
@@ -75,7 +75,28 @@ function AxisLeagueStats({ player, averageKda }: { player: PreviewPlayer; averag
   </div>;
 }
 
-export default function AxisPlayerIdentity({ player, mmr, averageKda = null }: { player: PreviewPlayer; mmr: number | null; averageKda?: number | null }) {
+function ArenaNickname({ aid }: { aid: number }) {
+  const { t } = useI18n();
+  const [nickname, setNickname] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ aid: String(aid), mode: "arena", arenaMode: "blastGang" });
+    void fetch(`/api/leaderboard/preview?${params}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Arena nickname unavailable");
+        const body = await response.json();
+        if (body.aid !== aid || body.mode !== "arena" || typeof body.nickname !== "string" || !body.nickname.trim()) throw new Error("Invalid Arena nickname");
+        if (!controller.signal.aborted) setNickname(body.nickname);
+      }).catch(() => { if (!controller.signal.aborted) setFailed(true); });
+    return () => controller.abort();
+  }, [aid]);
+  return <span className="axis-player__arena-name" title={nickname ?? undefined}>
+    {t("axis.player.arenaNickname", { name: nickname ?? t(failed ? "axis.player.arenaUnavailable" : "common.loading") })}
+  </span>;
+}
+
+export default function AxisPlayerIdentity({ player, mmr, averageKda = null, showArenaNickname = false }: { player: PreviewPlayer; mmr: number | null; averageKda?: number | null; showArenaNickname?: boolean }) {
   const { t, lang } = useI18n();
   const number = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString(lang);
   const portrait = <AxisAvatar name={player.name} url={player.avatarUrl} />;
@@ -87,9 +108,9 @@ export default function AxisPlayerIdentity({ player, mmr, averageKda = null }: {
       <div className="axis-form__ratings"><span>{t("axis.column.mmr")} <strong>{number(mmr)}</strong></span><span>{t("axis.column.peakMmr")} <strong>{number(player.peakMmr)}</strong></span></div>
     </>}>
     <LeaderboardPreviewLink aid={player.profile?.aid ?? null} nickname={player.name}
-      href={player.profile ? axisProfileHref(player.profile) : null} className="axis-player"
+      href={player.profile ? axisProfileHref(player.profile) : null} className={`axis-player${showArenaNickname ? " axis-player--editing" : ""}`}
       portrait={portrait} details={<AxisLeagueStats player={player} averageKda={averageKda} />}>
-      {portrait}<span className="axis-player__name">{player.name}</span>
+      {portrait}<span className="axis-player__name">{player.name}{showArenaNickname && player.profile && <ArenaNickname key={player.profile.aid} aid={player.profile.aid} />}</span>
     </LeaderboardPreviewLink>
   </LeaderboardPreviewProvider>;
 }

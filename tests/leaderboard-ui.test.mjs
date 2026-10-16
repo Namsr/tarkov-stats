@@ -305,3 +305,84 @@ test("leaderboard mobile layout exposes one full list and sticky controls", asyn
   assert.doesNotMatch(css, /body:has\(\.leaderboard-page--focused\) \.faq-trigger/);
   assert.match(css, /tr\[aria-current="true"\]/);
 });
+
+test("preview ownership closes other providers, cancels pending opens and releases on unmount", async () => {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const timers = new Map();
+  const requests = [];
+  let sequence = 0, rendering, reducedMotion = true;
+  const react = {
+    createContext: () => ({ Provider: () => null }),
+    useId: () => String(++sequence),
+    useRef: (current) => { const ref = { current }; rendering.refs.push(ref); return ref; },
+    useState: (value) => {
+      const states = rendering.states, index = states.length;
+      states.push(value);
+      return [value, (next) => { states[index] = next; }];
+    },
+    useCallback: (callback) => callback,
+    useEffect: (effect) => { const cleanup = effect(); if (cleanup) rendering.cleanups.push(cleanup); },
+    useLayoutEffect: () => {},
+  };
+  const stubs = {
+    react,
+    "@/lib/i18n/context": { useI18n: () => ({ lang: "en", t: (key) => key }) },
+    "@/lib/leaderboard-preview": { AXIS_PREVIEW_DELAY_MS: 180, LEADERBOARD_PREVIEW_DELAY_MS: 400 },
+    "@/components/ProfilePortrait": () => null,
+    "next/link": () => null,
+    "next/image": () => null,
+    "react-dom": { createPortal: () => null },
+  };
+  const compiled = ts.transpileModule(await read("components/LeaderboardPreview.tsx"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText;
+  const previewModule = { exports: {} };
+  new Function("require", "module", "exports", "window", "setTimeout", "clearTimeout", "fetch", compiled)(
+    (name) => stubs[name] ?? require(name), previewModule, previewModule.exports,
+    { matchMedia: (query) => ({ matches: query.includes("reduced-motion") ? reducedMotion : true }) },
+    (callback) => { const id = ++sequence; timers.set(id, callback); return id; },
+    (id) => timers.delete(id),
+    (_url, { signal }) => { requests.push(signal); return new Promise(() => {}); },
+  );
+  const provider = () => {
+    const state = { states: [], cleanups: [], refs: [] }; rendering = state;
+    const tree = previewModule.exports.LeaderboardPreviewProvider({ meta: { mode: "regular", cycleId: null, arenaMode: null, generation: 1 } });
+    return { ...tree.props.value, state };
+  };
+  const flush = () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach((callback) => callback()); };
+  const target = (id) => ({ id, aid: 123, nickname: id, element: { isConnected: true, matches: () => false } });
+  const first = provider(), second = provider(), third = provider();
+  first.enter(target("first")); flush();
+  assert.equal(first.state.states[1].nickname, "first");
+  second.enter(target("second"));
+  assert.equal(first.state.states[1], null, "the previous card closes before the next dwell timer");
+  assert.equal(requests[0].aborted, true, "switching cancels the previous profile request");
+  third.enter(target("third")); flush();
+  assert.equal(second.state.states[1], null, "a superseded timer cannot reopen its card");
+  assert.equal(third.state.states[1].nickname, "third");
+  second.state.cleanups.forEach((cleanup) => cleanup());
+  first.enter(target("new first"), true);
+  assert.equal(third.state.states[1], null, "unmounting an old provider cannot release the current owner");
+  assert.equal(first.state.states[1].nickname, "new first");
+  first.enter(target("same provider"), true);
+  assert.equal(first.state.states[1].nickname, "same provider");
+  reducedMotion = false;
+  first.state.refs[0].current = {};
+  first.close();
+  assert.equal(first.state.states[0], true, "ordinary close starts the exit animation");
+  assert.equal(first.state.states[1].nickname, "same provider");
+  third.enter(target("during exit"));
+  assert.equal(first.state.states[1], null, "switching bypasses the previous exit animation");
+  flush();
+  assert.equal(third.state.states[1].nickname, "during exit", "an old exit timer cannot dismiss the new card");
+  third.state.refs[0].current = {};
+  third.close(); flush();
+  assert.equal(third.state.states[1], null);
+  first.enter(target("reduced motion"), true); reducedMotion = true;
+  first.close();
+  assert.equal(first.state.states[1], null, "reduced motion skips delayed unmount");
+  for (const instance of [first, third]) instance.state.cleanups.forEach((cleanup) => cleanup());
+  assert.equal(timers.size, 0);
+  assert.ok(requests.every((signal) => signal.aborted));
+});
