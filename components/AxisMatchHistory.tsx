@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
-export default function AxisMatchHistory({ active = true }: { active?: boolean }) {
+export default function AxisMatchHistory({ active = true, canEditKda = false }: { active?: boolean; canEditKda?: boolean }) {
   const { t, lang } = useI18n();
   const [page, setPage] = useState(1);
   const [season, setSeason] = useState("current");
@@ -14,19 +14,9 @@ export default function AxisMatchHistory({ active = true }: { active?: boolean }
   const [cachedPages, setCachedPages] = useState<AxisHistoryResponse[]>([]);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
-  const [canEditKda, setCanEditKda] = useState(false);
   const current = data?.page === page && data?.season === season ? data : cachedPages.find((entry) => entry.page === page && entry.season === season) ?? null;
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
-
-  useEffect(() => {
-    if (!active) return;
-    const controller = new AbortController();
-    fetch("/api/auth/me", { cache: "no-store", signal: controller.signal }).then(async (response) => {
-      if (response.ok) { const body = await response.json(); if (!controller.signal.aborted) setCanEditKda(body.canEditAxisKda === true); }
-    }).catch(() => {});
-    return () => controller.abort();
-  }, [active]);
 
   useEffect(() => {
     if (!active) return;

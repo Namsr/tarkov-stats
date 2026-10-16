@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers } from "../lib/axis-league.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
-import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory } from "../lib/axis-history.ts";
+import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory, sortAxisMatchPlayers } from "../lib/axis-history.ts";
 import { refreshAxisArchive } from "../lib/axis-history-sync.ts";
 import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
@@ -12,6 +14,28 @@ import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
 function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
 }
+
+test("AXIS hover previews always request Arena stats regardless of the linked profile mode", async () => {
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript");
+  const source = await readFile("components/AxisPlayerIdentity.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
+  const identityModule = { exports: {} };
+  const stubs = {
+    "next/image": () => null,
+    "@/components/LeaderboardPreview": { LeaderboardPreviewLink: () => null, LeaderboardPreviewProvider: () => null },
+    "@/lib/i18n/context": { useI18n: () => ({ lang: "ru", t: (key) => key }) },
+    "@/lib/axis-league": { axisProfileHref },
+  };
+  new Function("require", "module", "exports", compiled)((name) => stubs[name] ?? require(name), identityModule, identityModule.exports);
+  for (const mode of ["regular", "pve", "seasonal", "arena"]) {
+    const identity = identityModule.exports.default({ player: { name: "Discord player", profile: { aid: 12345, mode } }, mmr: 1000 });
+    assert.deepEqual(identity.props.meta, { mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 });
+    assert.equal(identity.props.children.props.aid, 12345);
+  }
+  const unlinked = identityModule.exports.default({ player: { name: "Discord player", profile: null }, mmr: null });
+  assert.equal(unlinked.props.children.props.aid, null);
+});
 function page(rows = [row()], total = rows.length, pages = 1) {
   return { server_id: AXIS_SERVER_ID, channel_id: AXIS_CHANNEL_ID, display: "players",
     months: [{ month: "alltime", data: rows, pagination: { total_items: total, total_pages: pages } }] };
@@ -21,6 +45,24 @@ function store(t) {
   t.after(() => db.close());
   return createAxisLeagueStore(db);
 }
+
+test("match players rank by kills, assists, fewer deaths, then nickname without mutating the roster", () => {
+  const player = (name, kills, deaths, assists) => ({ id: name, name, kda: { kills, deaths, assists } });
+  const players = [
+    { id: "missing", name: "Unknown", kda: null },
+    player("Zulu", 10, 2, 5), player("Leader", 11, 20, 0),
+    player("Bravo", 10, 2, 5), player("Assist", 10, 99, 6),
+    player("FewerDeaths", 10, 1, 5), player("Zero", 0, 0, 0),
+    { id: "omitted", name: "Absent" },
+  ];
+  const original = structuredClone(players);
+  assert.deepEqual(sortAxisMatchPlayers(players, "en").map(p => p.name),
+    ["Leader", "Assist", "FewerDeaths", "Bravo", "Zulu", "Zero", "Unknown", "Absent"]);
+  assert.deepEqual(players, original);
+  assert.deepEqual(sortAxisMatchPlayers(players.filter(p => p.kda == null), "en"), players.filter(p => p.kda == null));
+  assert.deepEqual(sortAxisMatchPlayers([player("Яков", 1, 1, 1), player("Антон", 1, 1, 1), player("Борис", 1, 1, 1)], "ru").map(p => p.name),
+    ["Антон", "Борис", "Яков"]);
+});
 
 function historyMatch(number = 25) {
   return { guild_id: AXIS_SERVER_ID, game_num: number, game: "Arena League", time: "2026-10-02 23:36:08", winner: 1,
@@ -167,12 +209,35 @@ test("persisted season summaries survive reopen, skip unchanged imports and upda
   assert.ok(sql.prepare("SELECT payload FROM axis_archive_seasons").get().payload);
 });
 
+test("season games count completed AXIS matches once, excluding cancellations and other queues", (t) => {
+  const db = store(t);
+  assert.equal(db.read().currentSeason.games, null);
+  const matches = [seasonMatch(1, AXIS_CURRENT_SEASON_START + 1),
+    { ...seasonMatch(2, AXIS_CURRENT_SEASON_START + 2), winner: -2 },
+    { ...seasonMatch(3, AXIS_CURRENT_SEASON_START + 3), winner: -1 },
+    { ...seasonMatch(4, AXIS_CURRENT_SEASON_START + 4), winner: null },
+    seasonMatch(5, AXIS_CURRENT_SEASON_START + 5, 1100, "another-queue"),
+    seasonMatch(6, AXIS_CURRENT_SEASON_START - 1)];
+  db.publishArchive({ page: 1, pages: 1, total: matches.length, matches });
+  assert.equal(db.read().currentSeason.games, 2);
+});
+
+test("partial archives do not report an incomplete season count as the full number of games", (t) => {
+  const db = store(t);
+  const matches = Array.from({ length: 25 }, (_, i) => seasonMatch(100 - i, AXIS_CURRENT_SEASON_START + i));
+  db.publishArchive({ page: 1, pages: 4, total: 100, matches });
+  assert.equal(db.read().currentSeason.games, null);
+  matches.forEach((match, i) => { if (i >= 2) match.time = AXIS_CURRENT_SEASON_START - 1; });
+  db.publishArchive({ page: 1, pages: 4, total: 100, matches });
+  assert.equal(db.read().currentSeason.games, 2);
+});
+
 test("archive refresh imports bounded pages, coordinates store handles and retains data on failure", async (t) => {
   const db = store(t); let calls = 0;
   const request = async url => {
     calls++;
-    assert.equal(url.searchParams.get("page_size"), "500");
-    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    assert.equal(url.searchParams.get("page_size"), "50");
+    const body = historyPage(1, 1); body.pagination.per_page = 50;
     body.data[0].queue_channel = AXIS_CHANNEL_ID;
     return Response.json(body);
   };
@@ -198,15 +263,55 @@ test("complete archives poll only 25 newest matches and catch up missing matches
   };
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   assert.deepEqual(calls, [[1, 25]]);
-  total = 27; calls.length = 0;
+  // A saved cursor from an earlier import must not skip a gap after a longer outage.
+  db.publishArchive({ page: 7, pages: 20, total: 1, matches: [] });
+  total = 127; calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 2);
-  assert.deepEqual(calls, [[1, 25], [1, 500]]);
+  assert.deepEqual(calls, [[1, 25], [1, 50], [2, 50], [3, 50]]);
   assert.equal(db.archiveState().complete, 1);
-  assert.equal(db.readSeasonHistory(1, "all").total, 27);
-  assert.equal(db.readSeasonHistory(2, "all").matches.at(-1).number, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 127);
+  assert.equal(db.readSeasonHistory(6, "all").matches.at(-1).number, 1);
   calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS * 3);
   assert.deepEqual(calls, [[1, 25]]);
+});
+
+test("initial archive import stays bounded and resumes the next 50-match page", async (t) => {
+  const db = store(t); const calls = [];
+  const request = async url => {
+    const page = Number(url.searchParams.get("page"));
+    const size = Number(url.searchParams.get("page_size"));
+    calls.push(page); assert.equal(size, 50);
+    return Response.json({ data: Array.from({ length: Math.min(size, 151 - (page - 1) * size) }, (_, i) => historyMatch(151 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: 4, total_items: 151 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(calls, [1, 2, 3]); assert.equal(db.archiveState().complete, 0);
+  assert.equal(db.readSeasonHistory(1, "all").total, 150);
+  calls.length = 0;
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
+  assert.deepEqual(calls, [1, 4]); assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 151);
+});
+
+test("HTTP head refreshes cannot starve archive import or leave the cursor beyond an outage gap", async (t) => {
+  const db = store(t); const calls = [];
+  db.publishArchive({ page: 7, pages: 20, total: 1, matches: [seasonMatch(1, AXIS_CURRENT_SEASON_START)] });
+  const request = async url => {
+    const page = Number(url.searchParams.get("page")), size = Number(url.searchParams.get("page_size"));
+    calls.push([page, size]);
+    return Response.json({ data: Array.from({ length: Math.min(size, 127 - (page - 1) * size) }, (_, i) => historyMatch(127 - (page - 1) * size - i)),
+      pagination: { current_page: page, per_page: size, total_pages: Math.ceil(127 / size), total_items: 127 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS, true);
+  assert.equal(db.archiveState().complete, 0);
+  assert.equal(db.archiveState().next_page, 2, "head requests must restart the cursor atomically when they discover a gap");
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000, true);
+  assert.deepEqual(calls, [[1, 25]], "HTTP fallback must not take the worker's next import slot");
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
+  assert.deepEqual(calls, [[1, 25], [1, 50], [2, 50], [3, 50]]);
+  assert.equal(db.archiveState().complete, 1);
+  assert.equal(db.readSeasonHistory(1, "all").total, 127);
 });
 
 test("history retains exact player identity, interprets UTC, and strips unrelated metadata", () => {
@@ -256,11 +361,11 @@ test("archive fetch uses a fixed server, bounded page size and newest-first orde
     assert.equal(url.origin, "https://api.neatqueue.com");
     assert.equal(url.pathname, `/api/v1/history/${AXIS_SERVER_ID}`);
     assert.equal(url.searchParams.get("page"), "1");
-    assert.equal(url.searchParams.get("page_size"), "500");
+    assert.equal(url.searchParams.get("page_size"), "50");
     assert.equal(url.searchParams.get("order"), "desc");
     assert.equal(options.cache, "no-store");
     assert.ok(options.signal instanceof AbortSignal);
-    const body = historyPage(1, 1); body.pagination.per_page = 500;
+    const body = historyPage(1, 1); body.pagination.per_page = 50;
     return Response.json(body);
   }, AXIS_REFRESH_MS);
 });
@@ -282,7 +387,7 @@ test("concurrent archive refreshes share one request and retain saved data on fa
   const db = store(t);
   let calls = 0, release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const request = async () => { calls++; await gate; const body = historyPage(1, 1); body.pagination.per_page = 500; return Response.json(body); };
+  const request = async () => { calls++; await gate; const body = historyPage(1, 1); body.pagination.per_page = 50; return Response.json(body); };
   const first = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   const duplicate = refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   assert.equal(calls, 1);

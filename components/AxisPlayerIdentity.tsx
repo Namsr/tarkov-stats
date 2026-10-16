@@ -17,9 +17,8 @@ export function AxisAvatar({ name, url }: { name: string; url?: string | null })
 
 export default function AxisPlayerIdentity({ player, mmr }: { player: { name: string; avatarUrl?: string | null; profile: AxisProfile | null; games?: number; wins?: number; losses?: number; winrate?: number }; mmr: number | null }) {
   const { t, lang } = useI18n();
-  const mode = player.profile?.mode === "seasonal" ? "pvp-season" : player.profile?.mode ?? "arena";
   const portrait = <AxisAvatar name={player.name} url={player.avatarUrl} />;
-  return <LeaderboardPreviewProvider meta={{ mode, cycleId: null, arenaMode: mode === "arena" ? "blastGang" : null, generation: 0 }}>
+  return <LeaderboardPreviewProvider meta={{ mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 }}>
     <LeaderboardPreviewLink aid={player.profile?.aid ?? null} nickname={player.name}
       href={player.profile ? axisProfileHref(player.profile) : null} className="axis-player"
       portrait={portrait} details={<div className="axis-preview-rating"><span>{t("axis.title")}</span><strong>{mmr == null ? "—" : mmr.toLocaleString(lang)} <small>{t("axis.column.mmr")}</small></strong>

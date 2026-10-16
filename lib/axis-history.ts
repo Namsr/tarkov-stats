@@ -5,6 +5,8 @@ import type { AxisKda, AxisRoundScore } from "./axis-kda";
 export const AXIS_HISTORY_SOURCE_URL = `https://www.neatqueue.com/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_API_URL = `https://api.neatqueue.com/api/v1/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_PAGE_SIZE = 25;
+// Larger NeatQueue history pages time out from the VPS; keep imports within measured working sizes.
+export const AXIS_ARCHIVE_PAGE_SIZE = 50;
 
 export interface AxisMatchPlayer {
   kda?: AxisKda | null;
@@ -21,6 +23,16 @@ export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: nu
 export interface AxisHistoryResponse extends AxisHistoryPage {
   updatedAt: number | null; available: boolean; stale: boolean;
   seasons?: AxisSeason[]; season?: string; archiveComplete?: boolean;
+}
+
+/** Rank saved results within a team; keep players without K/D/A in their source order. */
+export function sortAxisMatchPlayers(players: readonly AxisMatchPlayer[], locale: string): AxisMatchPlayer[] {
+  const names = new Intl.Collator(locale, { sensitivity: "base" });
+  return [...players].sort((a, b) => {
+    if (a.kda == null || b.kda == null) return Number(b.kda != null) - Number(a.kda != null);
+    return b.kda.kills - a.kda.kills || b.kda.assists - a.kda.assists
+      || a.kda.deaths - b.kda.deaths || names.compare(a.name, b.name);
+  });
 }
 
 function object(value: unknown): Record<string, unknown> {

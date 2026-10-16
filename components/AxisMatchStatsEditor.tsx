@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import type { AxisMatch } from "@/lib/axis-history";
+import { sortAxisMatchPlayers, type AxisMatch } from "@/lib/axis-history";
 import { AXIS_KDA_MAX, parseAxisKda, sameAxisKda, parseAxisRoundScore, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "@/lib/axis-kda";
 
 const fields = ["kills", "deaths", "assists"] as const;
@@ -16,7 +16,7 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
   onSaved: (players: { discordId: string; kda: AxisKda | null }[], rounds?: AxisRoundScore | null) => void;
   onConflict: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [draft, setDraft] = useState<Draft[] | null>(null);
   const [roundDraft, setRoundDraft] = useState<RoundDraft | null>(null);
   const [roster, setRoster] = useState<AxisMatch["teams"]>([]);
@@ -24,13 +24,13 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
   const [message, setMessage] = useState("");
   const players = match.teams.flatMap((team) => team.players);
   const hasStats = players.some((player) => player.kda != null) || match.rounds != null;
-  const teams = draft === null ? match.teams : roster;
+  const teams = draft === null ? match.teams.map((team) => ({ ...team, players: sortAxisMatchPlayers(team.players, lang) })) : roster;
   function teamName(index: number) {
     const name = teams[index].name;
     return name && !/^Team [A-Z]$/.test(name) ? name : t("axis.history.team", { n: String.fromCharCode(65 + index) });
   }
   function begin() {
-    setMessage(""); setRoster(match.teams);
+    setMessage(""); setRoster(teams);
     setDraft(players.map((player) => ({ discordId: player.id, expected: player.kda ?? null,
       kills: player.kda == null ? "" : String(player.kda.kills), deaths: player.kda == null ? "" : String(player.kda.deaths), assists: player.kda == null ? "" : String(player.kda.assists) })));
     setRoundDraft({ a: match.rounds == null ? "" : String(match.rounds.a), b: match.rounds == null ? "" : String(match.rounds.b), expected: match.rounds ?? null });

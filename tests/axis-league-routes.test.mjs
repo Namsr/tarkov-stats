@@ -22,6 +22,7 @@ const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
 const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
 const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
+const { POST: profilesPost } = await import("../app/api/axis-league/profiles/route.ts");
 const { loadAxisLeague: loadSavedLeague } = await import("../lib/axis-league-sync.ts");
 const { loadAxisHistory: loadSavedHistory, loadAxisSeasonHistory: loadSavedSeason } = await import("../lib/axis-history-sync.ts");
 
@@ -63,6 +64,31 @@ test("saved standings return before a blocked upstream refresh; both history URL
   assert.equal((await loadSavedLeague()).available, true);
 });
 
+test("empty archives bootstrap only 25 matches and saved history refreshes after responding", async (t) => {
+  setup(t);
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(Number(url.searchParams.get("page_size")));
+    assert.equal(url.searchParams.get("page_size"), "25", "HTTP must never import large archive pages");
+    return Response.json({ data: Array.from({ length: 25 }, (_, index) => ({ guild_id: "1343726035136413716", game_num: 100 - index,
+      time: "2026-10-16 02:00:00", queue_channel: "1343726040421367842", game: "Arena League", winner: 0,
+      teams: [[{ id, name: "Player", mmr: 1000, mmr_change: 25 }]], team_names: ["Team A"] })),
+      pagination: { current_page: 1, per_page: 25, total_pages: 4, total_items: 100 } });
+  };
+  const first = await loadSavedSeason(1, "current");
+  assert.equal(first.available, true); assert.equal(first.matches.length, 25);
+  assert.deepEqual(calls, [25]);
+  const deferred = [];
+  const saved = await loadSavedSeason(1, "current", task => deferred.push(task));
+  assert.equal(saved.available, true); assert.equal(deferred.length, 1);
+  assert.deepEqual(calls, [25]);
+  // A refresh lease is shared with the worker; it cannot duplicate the bootstrap.
+  await deferred[0]();
+  assert.deepEqual(calls, [25]);
+});
+
 test("editors can save round scores without changing player KDA", async (t) => {
   setupStats(t);
   globalThis.axisAccess = { ok: false, status: 403 };
@@ -97,7 +123,7 @@ test("KDA writes validate access, origin, roster and counters, and detect lost u
   assert.equal((await statsPost(request({ ...body, players: [{ discordId: id, kda: null, expected: kda }] }))).status, 200);
 });
 
-test("only full admins can list, assign or revoke KDA editors or change profile links", async (t) => {
+test("only full admins can manage editors or use admin profile-link endpoints", async (t) => {
   setupStats(t);
   globalThis.axisAccess = { ok: false, status: 403 };
   globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
@@ -112,10 +138,50 @@ test("only full admins can list, assign or revoke KDA editors or change profile 
   assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), false);
   assert.equal((await editorsPost(request({ subject: "<invalid>", enabled: true }))).status, 400);
 });
-function request(body, headers = {}) {
-  return new Request("https://tarkovstats.ru/api/admin/axis-league", { method: "POST",
+function request(body, headers = {}, path = "/api/admin/axis-league") {
+  return new Request("https://tarkovstats.ru" + path, { method: "POST",
     headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
 }
+
+test("AXIS editors can link, correct and unlink profiles without admin access", async (t) => {
+  setupStats(t);
+  globalThis.axisAccess = { ok: false, status: 403 };
+  const profileRequest = (body, headers = {}) => request(body, headers, "/api/axis-league/profiles");
+  const body = { discordId: id, profile: "12345" };
+  for (const status of [401, 403]) {
+    globalThis.axisKdaAccess = { ok: false, status };
+    assert.equal((await profilesPost(profileRequest(body))).status, status);
+  }
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  assert.equal((await profilesPost(profileRequest(body, { origin: "https://evil.test" }))).status, 403);
+  assert.equal((await profilesPost(profileRequest(body, { "content-type": "text/plain" }))).status, 415);
+  for (const invalid of [{ ...body, discordId: "999" }, { ...body, discordId: 123 }, { ...body, profile: "0" }, { ...body, profile: "https://evil.test/player/arena/123" }, { discordId: id }]) {
+    assert.equal((await profilesPost(profileRequest(invalid))).status, 400);
+  }
+  const response = await profilesPost(profileRequest(body));
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual((await response.json()).data.players[0].profile, { aid: 12345, mode: "arena" });
+  assert.deepEqual(globalThis.axisStore.readSeasonHistory(1, "current").matches[0].teams[0].players[0].profile, { aid: 12345, mode: "arena" });
+  assert.equal((await POST(request(body))).status, 403);
+  assert.equal((await editorsGet()).status, 403);
+  assert.equal((await editorsPost(request({ subject: "self", enabled: true }))).status, 403);
+  assert.equal((await profilesPost(profileRequest({ ...body, profile: "/player/regular/54321" }))).status, 200);
+  assert.deepEqual(globalThis.axisStore.read().players[0].profile, { aid: 54321, mode: "regular" });
+  assert.equal((await profilesPost(profileRequest({ ...body, profile: null }))).status, 200);
+  assert.equal(globalThis.axisStore.read().players[0].profile, null);
+});
+
+test("editor profile links reject duplicate assignments and fail safely on unavailable storage", async (t) => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish([...store.read().players, { ...store.read().players[0], id: "2", name: "Second" }]);
+  store.setProfile("2", { aid: 12345, mode: "arena" });
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  assert.equal((await profilesPost(request({ discordId: id, profile: "12345" }))).status, 400);
+  assert.equal(store.read().players[0].profile, null);
+  globalThis.axisStore = { setProfile() { throw new Error("offline"); } };
+  assert.equal((await profilesPost(request({ discordId: id, profile: "54321" }))).status, 503);
+});
 
 test("public history validates pages and returns saved data with current profile links", async (t) => {
   setup(t);

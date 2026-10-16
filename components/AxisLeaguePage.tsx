@@ -5,10 +5,11 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import { AXIS_CURRENT_SEASON_START } from "@/lib/axis-seasons";
 import AxisMatchHistory from "@/components/AxisMatchHistory";
+import AdminAxisLeague from "@/components/AdminAxisLeague";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_SORTS, AXIS_DISCORD_URL, sortAxisPlayers, type AxisLeagueResponse, type AxisPlayer, type AxisSort } from "@/lib/axis-league";
 
-export default function AxisLeaguePage({ initialView = "standings" }: { initialView?: "standings" | "history" }) {
+export default function AxisLeaguePage({ initialView = "standings" }: { initialView?: "standings" | "history" | "profiles" }) {
   const { t, lang } = useI18n();
   const [data, setData] = useState<AxisLeagueResponse | null>(null);
   const [failed, setFailed] = useState(false);
@@ -16,8 +17,29 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<AxisSort>("position");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
-  const [view, setView] = useState<"standings" | "history">(initialView);
+  const [view, setView] = useState<"standings" | "history" | "profiles">(initialView);
+  const [canEdit, setCanEdit] = useState<boolean | null>(null);
   const locale = lang === "ru" ? "ru-RU" : "en-US";
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let running = false;
+    async function loadAccess() {
+      if (running || document.visibilityState === "hidden") return;
+      running = true;
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        if (!response.ok) throw new Error("Session unavailable");
+        const body = await response.json();
+        if (!controller.signal.aborted) setCanEdit(body.isAdmin === true || body.canEditAxisKda === true);
+      } catch { if (!controller.signal.aborted) setCanEdit(false); }
+      finally { running = false; }
+    }
+    void loadAccess();
+    window.addEventListener("focus", loadAccess);
+    document.addEventListener("visibilitychange", loadAccess);
+    return () => { controller.abort(); window.removeEventListener("focus", loadAccess); document.removeEventListener("visibilitychange", loadAccess); };
+  }, [view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -65,13 +87,15 @@ export default function AxisLeaguePage({ initialView = "standings" }: { initialV
       <div className="axis-season-strip">
         <span className="axis-season-live"><span aria-hidden="true" />{t("axis.season.current")}</span>
         <span>{t("axis.season.since", { date: new Date(data?.currentSeason?.startsAt ?? AXIS_CURRENT_SEASON_START).toLocaleString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) })}</span>
-        {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.topMmr")}: <strong>{number(data.players.length ? Math.max(...data.players.map((player) => player.mmr)) : null)}</strong></span>}
+        {data && <span className="axis-season-count">{t("axis.results", { n: number(data.players.length) })}<span aria-hidden="true"> · </span>{t("axis.gamesPlayed")}: <strong>{number(data.currentSeason?.games ?? null)}</strong></span>}
       </div>
       <div className="admin-tabs axis-view-switch" role="group" aria-label={t("axis.history.view")}>
         <button type="button" className={view === "standings" ? "is-active" : ""} aria-pressed={view === "standings"} onClick={() => setView("standings")}>{t("axis.standings")}</button>
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
+        {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
       </div>
-      <div hidden={view !== "history"}><AxisMatchHistory active={view === "history"} /></div>
+      <div hidden={view !== "history"}><AxisMatchHistory active={view === "history"} canEditKda={canEdit === true} /></div>
+      {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={setData} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
       {view === "standings" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>
         <label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label>
