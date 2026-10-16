@@ -144,6 +144,8 @@ export interface WeaponStat {
 }
 
 export interface ParsedPlayerStats {
+  /** Validated raw PMC counters; null preserves absent or incompatible data. */
+  regularRiskInputs?: RegularRiskInputs;
   nickname: string;
   level: number;
   prestige: number;
@@ -203,4 +205,14 @@ export interface ParsedPlayerStats {
   /** Achievement unlock timestamps retained for stored profile views. */
   achievementUnlocks?: Record<string, number>;
   [key: string]: unknown;
+}
+
+export interface RegularRiskInputs {
+  raids: number | null;
+  deaths: number | null;
+  survived: number | null;
+  kills: number | null;
+  killedPmc: number | null;
+  streak: number | null;
+  prestige: number | null;
 }

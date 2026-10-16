@@ -1,8 +1,17 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript test runner requires explicit .ts imports.
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createRequestTiming, getObservabilitySampleRate } from "../lib/observability/request-timing.ts";
+
+// Recording is asynchronous, but uses synchronous SQLite once opened. Keep
+// these real writes off runtime databases even when a local /data exists.
+const directory = mkdtempSync(join(tmpdir(), "request-timing-"));
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "analytics.db");
+process.env.PROGRESSION_SQLITE_PATH = join(directory, "absent-progression.db");
 
 test("sampling defaults, validates, and clamps its configured rate", () => {
   assert.equal(getObservabilitySampleRate(undefined, "production"), 0.05);
@@ -94,6 +103,23 @@ test("Server-Timing always carries a total even with no measured phase", () => {
   assert.equal(timing.serverTiming(), "total;dur=7");
 });
 
+test("risk evaluation logs identify background work and persist its missing phases", async () => {
+  const output: string[] = [];
+  createRequestTiming({ sampleRate: 0, now: () => 0, logger: (event) => output.push(event) }).finish({
+    operation: "risk_evaluation", mode: "regular", outcome: "success", status: 200,
+    totalMs: 9000, queueMs: 3000, achievementsMs: 5800, storeOpenMs: 2,
+  });
+  const event = JSON.parse(output[0]);
+  assert.equal(event.entry, "background");
+  assert.equal(event.queue_ms, 3000);
+  const { getAnalyticsStore } = await import("../lib/admin/analytics-db.ts");
+  const store = await getAnalyticsStore();
+  await new Promise(setImmediate);
+  const summary = store.summary("24h", "all", Date.now() + 1);
+  const risk = summary.health.operations.find((operation) => operation.operation === "risk_evaluation");
+  assert.deepEqual(risk.phases.map((phase) => [phase.phase, phase.p95Ms]), [["queue", 3000], ["achievements", 5800], ["store_open", 2]]);
+});
+
 test("unsampled requests emit no timing log", () => {
   const output: string[] = [];
   const timing = createRequestTiming({
@@ -103,6 +129,65 @@ test("unsampled requests emit no timing log", () => {
   });
   timing.finish({ operation: "baseline", outcome: "success", status: 200 });
   assert.deepEqual(output, []);
+});
+
+test("every profile response logs its validated account, including throttles, without raw input", () => {
+  for (const status of [200, 400, 404, 429, 503]) {
+    const output: string[] = [];
+    const timing = createRequestTiming({ sampleRate: 0, now: () => 0, logger: (event) => output.push(event) });
+    timing.setRequestContext({ aid: 5869253, aidState: "valid", cycleId: "persistent", nickname: "secret", host: "secret" });
+    timing.finish({ operation: "player_profile", mode: "pve", outcome: status === 429 ? "rate_limited" : "success", status });
+    timing.finish({ operation: "player_profile", outcome: "success", status });
+    assert.equal(output.length, 1);
+    const event = JSON.parse(output[0]);
+    assert.equal(event.aid, 5869253);
+    assert.equal(event.aid_state, "valid");
+    assert.equal(event.cycle, "persistent");
+    assert.equal(event.status, status);
+    assert.equal(event.mode, "pve");
+    assert.ok(Number.isFinite(event.at));
+    assert.equal(output[0].includes("secret"), false);
+  }
+  for (const aidState of ["missing", "empty", "invalid"]) {
+    const output: string[] = [];
+    const timing = createRequestTiming({ sampleRate: 0, logger: (event) => output.push(event) });
+    timing.setRequestContext({ aidState });
+    timing.finish({ operation: "player_profile", outcome: "invalid", status: 400 });
+    const event = JSON.parse(output[0]);
+    assert.equal(event.aid, null);
+    assert.equal(event.aid_state, aidState);
+  }
+});
+
+test("a profile start records identity before a response and correlates through a validated request ID", () => {
+  const output: string[] = [];
+  const timing = createRequestTiming({ sampleRate: 0, logger: (event) => output.push(event) });
+  const requestId = "11223344-5566-7788-9900-aabbccddeeff";
+  timing.setRequestContext({ aid: 123, aidState: "valid", requestId, cycleId: "s1", nickname: "secret" });
+  timing.startProfileRequest("seasonal");
+  timing.startProfileRequest("seasonal");
+  assert.equal(output.length, 1);
+  const start = JSON.parse(output[0]);
+  assert.equal(start.event, "profile_request_v1");
+  assert.equal(start.aid, 123);
+  assert.equal(start.request_id, requestId);
+  assert.equal("status" in start, false);
+  timing.finish({ operation: "player_profile", mode: "seasonal", outcome: "rate_limited", status: 429 });
+  assert.equal(JSON.parse(output[1]).request_id, requestId);
+  assert.equal(output.join("").includes("secret"), false);
+});
+
+test("unsampled cohort responses identify the target account and cycle without private context", () => {
+  const output: string[] = [];
+  const timing = createRequestTiming({ sampleRate: 0, logger: (event) => output.push(event) });
+  timing.setRequestContext({ aid: 8014149, cycleId: "s1", nickname: "secret", host: "secret" });
+  timing.finish({ operation: "average_cohort", mode: "seasonal", outcome: "error", status: 503 });
+  assert.equal(output.length, 1);
+  const event = JSON.parse(output[0]);
+  assert.equal(event.aid, 8014149);
+  assert.equal(event.cycle, "s1");
+  assert.equal(event.status, 503);
+  assert.equal(output[0].includes("secret"), false);
 });
 
 test("slow requests bypass sampling once, retaining SQL phases and excluding private context", () => {

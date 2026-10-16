@@ -5,6 +5,7 @@ export const PERSISTENT_COMPARISON_METRIC_KEYS = [
   "kd_ratio",
   "pmc_kd_ratio",
   "kills_per_raid",
+  "killed_pmc_per_raid",
   "pmc_survival_rate",
   "longest_win_streak",
   "level",

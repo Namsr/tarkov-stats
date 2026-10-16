@@ -197,6 +197,42 @@ function useComparisonProfile(
     };
   }, [aid, modeLabel, scope, scopeKey, t]);
 
+  useEffect(() => {
+    const data = state.data;
+    if (!scope || scope.mode === "arena" || aid === null || !data || state.scopeKey !== scopeKey || state.aid !== aid
+      || comparisonDossier(scope, aid, data.payload)?.risk) return;
+    const controller = new AbortController();
+    const generation = requestGeneration.current;
+    const active = () => !controller.signal.aborted && generation === requestGeneration.current;
+    let timer: ReturnType<typeof setTimeout>;
+    void (async () => {
+      for (const delay of [1_500, 3_000, 5_000]) {
+        await new Promise<void>((resolve) => { timer = setTimeout(resolve, delay); });
+        if (!active()) return;
+        try {
+          const params = new URLSearchParams({ aid: String(aid), mode: scope.mode, cycle: scope.cycleId });
+          const response = await fetch(`/api/player/risk?${params}`, { cache: "no-store", signal: controller.signal });
+          if (!response.ok) continue;
+          const body = record(await response.json());
+          if (!active()) return;
+          const identity = record(body?.identity);
+          if (identity?.aid !== aid || identity.mode !== scope.mode || identity.cycleId !== scope.cycleId) return;
+          if (!body?.risk) continue;
+          const payload = record(data.payload)!;
+          const viewModel = record(payload.viewModel);
+          const nextPayload = { ...payload, risk: body.risk, ...(viewModel ? { viewModel: { ...viewModel, risk: body.risk } } : {}) };
+          if (!comparisonDossier(scope, aid, nextPayload)?.risk) continue;
+          setState((current) => active() && current.data === data && current.scopeKey === scopeKey && current.aid === aid
+            ? { ...current, data: storedProfile(data.profile, nextPayload) } : current);
+          return;
+        } catch {
+          if (!active()) return;
+        }
+      }
+    })();
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [aid, scope, scopeKey, state.aid, state.data, state.scopeKey]);
+
   const refresh = useCallback(async (): Promise<RefreshCheckResult> => {
     if (!scope || aid === null) throw new Error(t("compare.profileLoadError", { mode: modeLabel }));
     const previous = state.scopeKey === scopeKey && state.aid === aid ? state.data : null;
@@ -277,13 +313,16 @@ function useComparisonCohort(scope: ComparisonScope | null, scopeKey: string, ai
       ? cohortRevisionRequestUrl(scope, aid, currentRevision)
       : comparisonCohortRequestUrl(scope, aid);
     setState({ scopeKey, aid, data: null, loading: true, error: "" });
-    loadAverageJson<unknown>(requestUrl, { signal: controller.signal })
-      .then((body) => {
-        if (!active()) return;
-        const adapted = adaptComparisonCohort(scope, aid, body) as AnyComparisonCohort | null;
-        if (!adapted) throw new Error("cohort identity mismatch");
-        setState({ scopeKey, aid, data: adapted, loading: false, error: "" });
-      })
+    const apply = (body: unknown) => {
+      if (!active()) return;
+      const adapted = adaptComparisonCohort(scope, aid, body) as AnyComparisonCohort | null;
+      if (!adapted) throw new Error("cohort identity mismatch");
+      setState({ scopeKey, aid, data: adapted, loading: false, error: "" });
+    };
+    loadAverageJson<unknown>(requestUrl, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: apply,
+    })
+      .then(apply)
       .catch(() => {
         if (active()) {
           setState({ scopeKey, aid, data: null, loading: false, error: t("compare.cohortError") });
@@ -307,25 +346,22 @@ function useComparisonCohort(scope: ComparisonScope | null, scopeKey: string, ai
     const controller = new AbortController();
     activeController.current = controller;
     const active = () => generation === requestGeneration.current && !controller.signal.aborted;
-    setState({ scopeKey, aid, data: null, loading: true, error: "" });
+    setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const response = await fetch(cohortRevisionRequestUrl(scope, aid, nextRevision), {
-        cache: "no-store",
-        signal: controller.signal,
+      const apply = (body: unknown) => {
+        if (!active()) return;
+        const adapted = adaptComparisonCohort(scope, aid, body) as AnyComparisonCohort | null;
+        if (!adapted) throw new Error("cohort identity mismatch");
+        setState({ scopeKey, aid, data: adapted, loading: false, error: "" });
+      };
+      const body = await loadAverageJson<unknown>(cohortRevisionRequestUrl(scope, aid, nextRevision), {
+        signal: controller.signal, forceRefresh: true, retryUnavailable: true, onUpdate: apply,
       });
-      if (!active()) return;
-      if (!response.ok) throw new Error("cohort request failed");
-      const body: unknown = await response.json();
-      if (!active()) return;
-      const adapted = adaptComparisonCohort(scope, aid, body) as AnyComparisonCohort | null;
-      if (!adapted) throw new Error("cohort identity mismatch");
-      setState({ scopeKey, aid, data: adapted, loading: false, error: "" });
+      apply(body);
     } catch {
       if (active()) {
-        setState({ scopeKey, aid, data: null, loading: false, error: t("compare.cohortError") });
+        setState((current) => ({ ...current, loading: false, error: t("compare.cohortError") }));
       }
-    } finally {
-      if (activeController.current === controller) activeController.current = null;
     }
   }, [aid, scope, scopeKey, t]);
 

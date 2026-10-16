@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAverageStatistic } from "@/lib/db";
 import { createRequestTiming } from "@/lib/observability/request-timing";
-import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_PARSER_VERSION } from "@/lib/arena/service";
+import { computeCohortInBackground } from "@/lib/cohort-worker";
 import {
   ARENA_MODE_KEYS,
   type ArenaCohortResult,
@@ -13,7 +14,7 @@ import {
   shouldFallbackToPopulation,
   toArenaPopulationCohort,
 } from "@/components/arena-ui";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import {
   arenaAverageCacheKey,
   arenaAverageCacheVersion,
@@ -57,6 +58,7 @@ async function populationCohort(
   statistic: ArenaStatistic,
   needsMatches: boolean,
   cacheVersion: number,
+  metadata: Array<{ stale: boolean; generatedAt: number }>,
 ): Promise<ArenaCohortResult | null> {
   const publication = await readAveragePublication<Record<string, unknown>>(
     "arena",
@@ -72,7 +74,10 @@ async function populationCohort(
     );
     const matches = readAverageMatches(cohort);
     const hasRequiredMatches = matches != null && matches.value !== null && matches.count >= 20;
-    if (cohort && !shouldFallbackToPopulation(cohort) && (!needsMatches || hasRequiredMatches)) return cohort;
+    if (cohort && !shouldFallbackToPopulation(cohort) && (!needsMatches || hasRequiredMatches)) {
+      metadata.push({ stale: publication.stale, generatedAt: publication.generatedAt });
+      return cohort;
+    }
   }
   // Same versioned LRU key and same tagged loader as GET /api/average, so the
   // two routes share one entry: a sync that bumps the population version
@@ -81,7 +86,10 @@ async function populationCohort(
   // so both halves of a response describe the same population.
   const dynamicKey = arenaAverageCacheKey(mode, statistic, "matches", "players", [null, null, null, null], cacheVersion);
   const loaded = await loadDynamicAverage(dynamicKey, () =>
-    loadCachedArenaAverage(mode, statistic, "matches", "players", null, null, null, null, cacheVersion));
+    loadCachedArenaAverage(mode, statistic, "matches", "players", null, null, null, null, cacheVersion), Date.now(), {
+      fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaAverageCacheKey(mode, statistic, "matches", "players", [null, null, null, null], 0)]),
+    });
+  metadata.push(loaded);
   if (!loaded.value) return null;
   return toArenaPopulationCohort(
     { mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...loaded.value },
@@ -98,16 +106,19 @@ async function comparisonCohort(
   statistic: ArenaStatistic,
   needsMatches: boolean,
   cacheVersion: number,
+  metadata: Array<{ stale: boolean; generatedAt: number }>,
 ): Promise<ArenaCohortResult | null> {
   // Same LRU key as GET /api/average/cohort, so batch and single requests share entries.
   const loaded = await loadDynamicAverage(
     arenaCohortCacheKey(aid, mode, statistic, cacheVersion),
-    () => getArenaCohort(aid, mode, statistic),
+    () => computeCohortInBackground({ kind: "arena", args: [aid, mode, statistic] }),
+    Date.now(), { fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaCohortCacheKey(aid, mode, statistic, 0)]) },
   );
+  metadata.push(loaded);
   const cohort = loaded.value;
   if (!cohort) return null;
   if (!shouldFallbackToPopulation(cohort)) return cohort;
-  return (await populationCohort(aid, mode, statistic, needsMatches, cacheVersion)) ?? cohort;
+  return (await populationCohort(aid, mode, statistic, needsMatches, cacheVersion, metadata).catch(() => null)) ?? cohort;
 }
 
 async function batchResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
@@ -136,6 +147,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
     // population versions.
     const cacheVersion = await arenaAverageCacheVersion();
     const batchStarted = timing.now();
+    const metadata: Array<{ stale: boolean; generatedAt: number }> = [];
     const entries = await Promise.all(modes.map(async (mode) => {
       try {
         const cohort = await comparisonCohort(
@@ -144,6 +156,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
           statistic,
           selectedPurpose === "matches",
           cacheVersion,
+          metadata,
         );
         return [mode, cohort] as const;
       } catch {
@@ -173,7 +186,10 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
       cohorts,
       unavailable,
     }, {
-      headers: { "Cache-Control": "private, max-age=60" },
+      headers: statisticsCacheHeaders({
+        stale: unavailable.length > 0 || metadata.some((entry) => entry.stale),
+        generatedAt: Math.min(Date.now(), ...metadata.map((entry) => entry.generatedAt)),
+      }),
     });
   } catch (error) {
     console.error("Arena baselines batch failed", error);
@@ -188,7 +204,7 @@ async function batchResponse(request: NextRequest, timing: ReturnType<typeof cre
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
-  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"), requestId: request.headers.get("x-request-id") });
   const rawMode = request.nextUrl.searchParams.get("mode") ?? "regular";
   if (rawMode !== "arena") {
     timing.finish({ operation: "average_cohort", outcome: "invalid", status: 400 });

@@ -27,10 +27,11 @@ function searchMode(value: string | null): SearchMode | null {
 async function searchPersistentMode(
   mode: PersistentPlayerIndexMode,
   nickname: string,
+  aids?: readonly number[],
 ): Promise<{ available: boolean; matches: PlayerSearchIndexMatch[] }> {
   const index = await getPlayerIndexStore(mode);
   if (!index || !(await index.isReady())) return { available: false, matches: [] };
-  const rows = await index.search(nickname, SEARCH_LIMIT);
+  const rows = aids ? await index.byIds(aids) : await index.search(nickname, SEARCH_LIMIT);
   return {
     available: true,
     matches: rows.map((row: PlayerIndexResult) => ({
@@ -45,12 +46,13 @@ async function searchPersistentMode(
 
 async function searchSeasonalMode(
   nickname: string,
+  aids?: readonly number[],
 ): Promise<{ available: boolean; matches: PlayerSearchIndexMatch[] }> {
   const cycle = loadSeasonalCycleConfig();
   if (!cycle || !isSeasonalRolloutReady()) return { available: false, matches: [] };
   const index = await getSeasonalPlayerIndexStore(cycle.cycleId);
   if (!index || !(await index.isReady())) return { available: false, matches: [] };
-  const rows = await index.search(nickname, SEARCH_LIMIT);
+  const rows = aids ? await index.byIds(aids) : await index.search(nickname, SEARCH_LIMIT);
   return {
     available: true,
     matches: rows.map((row) => ({
@@ -70,7 +72,7 @@ export async function GET(request: NextRequest) {
   });
   const ip = getClientIp(request);
 
-  const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "search" });
+  const { allowed, headers } = getRateLimitHeaders(ip, { bucket: "search", max: 120 });
   // `getRateLimitHeaders` no longer emits anything, which used to leave the
   // 429/503/502 paths with no Cache-Control at all and a shared cache free to
   // store and replay a rate-limit or outage error for another visitor.
@@ -96,7 +98,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const requestedModes = mode === "all" ? [...SEARCH_MODES] : [mode];
+    const requestedModes = mode === "all"
+      ? SEARCH_MODES.filter((requestedMode) => requestedMode !== "seasonal" || isSeasonalRolloutReady())
+      : [mode];
     const settled = await Promise.allSettled(requestedModes.map((requestedMode) =>
       requestedMode === "seasonal"
         ? searchSeasonalMode(name)
@@ -105,18 +109,27 @@ export async function GET(request: NextRequest) {
     const available = settled.flatMap((result) =>
       result.status === "fulfilled" && result.value.available ? [result.value] : []
     );
-    if (available.length === 0) {
+    if (available.length === 0 || available.length !== requestedModes.length) {
       timing.finish({ operation: "player_search", outcome: "unavailable", status: 503 });
       return NextResponse.json(
         { error: "Player nickname index is not ready" },
         { status: 503, headers: noStore }
       );
     }
-    const results = groupPlayerSearchResults(
+    const matched = groupPlayerSearchResults(
       available.flatMap((result) => result.matches),
       name,
       SEARCH_LIMIT,
     );
+    // Once an account matches, include its other modes even when their
+    // nicknames differ. Otherwise a newer profile could never be selected.
+    const aids = matched.map((player) => player.aid);
+    const profiles = await Promise.all(requestedModes.map((requestedMode) =>
+      requestedMode === "seasonal"
+        ? searchSeasonalMode(name, aids)
+        : searchPersistentMode(requestedMode, name, aids)
+    ));
+    const results = groupPlayerSearchResults(profiles.flatMap((result) => result.matches), name, SEARCH_LIMIT);
     const exact = results.find((player) =>
       player.profiles.some((profile) => profile.name.trim().toLowerCase() === name.toLowerCase())
     );

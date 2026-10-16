@@ -5,6 +5,7 @@
 import {
   loadDynamicAverage as realLoadDynamicAverage,
   resetDynamicAverageCacheForTests,
+  statisticsCacheHeaders,
 } from "../../lib/average-dynamic-cache.ts";
 
 /** Keys passed to the LRU, in call order. */
@@ -17,12 +18,13 @@ export function resetAverageLruRecorder() {
   computedKeys.length = 0;
 }
 
-export async function loadDynamicAverage(key, load, now) {
+export async function loadDynamicAverage(key, load, now, options) {
   requestedKeys.push(key);
   return realLoadDynamicAverage(key, async () => {
     computedKeys.push(key);
     return load();
-  }, now);
+  }, now, options);
 }
 
-export { resetDynamicAverageCacheForTests };
+export { DynamicComputeTimeoutError } from "../../lib/average-dynamic-cache.ts";
+export { resetDynamicAverageCacheForTests, statisticsCacheHeaders };

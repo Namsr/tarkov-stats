@@ -10,13 +10,16 @@ import {
 import { isGameMode, normalizeCycleId } from "@/types/seasonal";
 import { createRequestTiming } from "@/lib/observability/request-timing";
 import { getPublicProfile, parseProfileStats } from "@/lib/tarkov-api";
-import { ARENA_PARSER_VERSION, getArenaCohort } from "@/lib/arena/service";
+import { ARENA_PARSER_VERSION, type getArenaCohort } from "@/lib/arena/service";
+import { cohortFailureDiagnostic, computeCohortInBackground } from "@/lib/cohort-worker";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "@/types/arena";
 import { getProgressionStore } from "@/lib/progression-db";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { DynamicComputeTimeoutError, loadDynamicAverage, statisticsCacheHeaders, type StatisticsCacheResult } from "@/lib/average-dynamic-cache";
 import { arenaAverageCacheVersion, arenaCohortCacheKey } from "@/lib/arena-average-cache";
 
 export const runtime = "nodejs";
+
+class ComparisonProfileUnavailableError extends Error {}
 
 const RADAR_METRICS: RadarMetric[] = [
   "kd_ratio",
@@ -78,6 +81,8 @@ async function arenaCohortResponse(
   const identity = { aid, mode: "arena" as const, cycleId, arenaMode };
   timing.setRequestContext({ aid });
   let cohortMs: number | undefined;
+  let queueMs: number | undefined;
+  let workerMs: number | undefined;
   let cache: "hit" | "miss" | undefined;
   try {
     // Same versioned key as GET /api/average/cohort/batch, so single and batch
@@ -87,11 +92,15 @@ async function arenaCohortResponse(
     // measuring the cohort rather than this version lookup.
     const cacheVersion = await arenaAverageCacheVersion();
     const cohortStarted = timing.now();
-    let loaded: { value: Awaited<ReturnType<typeof getArenaCohort>>; cache: "hit" | "miss" };
+    let loaded: StatisticsCacheResult<Awaited<ReturnType<typeof getArenaCohort>>>;
     try {
       loaded = await loadDynamicAverage(
         arenaCohortCacheKey(aid, arenaMode, statistic, cacheVersion),
-        () => getArenaCohort(aid, arenaMode, statistic),
+        () => computeCohortInBackground({ kind: "arena", args: [aid, arenaMode, statistic] }, (phases) => {
+          queueMs = phases.queueMs;
+          workerMs = phases.workerMs;
+        }),
+        Date.now(), { fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaCohortCacheKey(aid, arenaMode, statistic, 0)]) },
       );
     } finally {
       cohortMs = timing.elapsedMs(cohortStarted);
@@ -99,7 +108,7 @@ async function arenaCohortResponse(
     cache = loaded.cache;
     const cohort = loaded.value;
     if (!cohort) {
-      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs });
+      timing.finish({ operation: "average_cohort", mode: "arena", outcome: "unavailable", status: 503, cache, storage: "sqlite", cohortMs, queueMs, workerMs });
       return NextResponse.json({
         identity,
         percentiles: null,
@@ -108,7 +117,7 @@ async function arenaCohortResponse(
       }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }
     if (cohort.aid !== aid || cohort.mode !== arenaMode) throw new Error("Arena cohort identity mismatch");
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "success", status: 200, cache, storage: "sqlite", cohortMs, queueMs, workerMs });
     // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
     return NextResponse.json({
       ...cohort,
@@ -117,11 +126,11 @@ async function arenaCohortResponse(
       identity,
       percentiles: null,
     }, {
-      headers: { "Cache-Control": "private, max-age=60" },
+      headers: statisticsCacheHeaders(loaded),
     });
   } catch (error) {
     console.error("Arena comparison cohort failed", error);
-    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, cache, storage: "sqlite", cohortMs });
+    timing.finish({ operation: "average_cohort", mode: "arena", outcome: "error", status: 503, ...cohortFailureDiagnostic(error), cache, storage: "sqlite", cohortMs, queueMs, workerMs });
     return NextResponse.json({
       identity,
       percentiles: null,
@@ -133,7 +142,14 @@ async function arenaCohortResponse(
 
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
-  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  const response = await cohortResponse(request, timing);
+  const header = timing.serverTiming();
+  if (header) response.headers.set("Server-Timing", header);
+  return response;
+}
+
+async function cohortResponse(request: NextRequest, timing: ReturnType<typeof createRequestTiming>) {
+  timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host"), requestId: request.headers.get("x-request-id") });
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (rawMode === "arena") return arenaCohortResponse(request, timing);
@@ -181,78 +197,83 @@ export async function GET(request: NextRequest) {
     let storeOpenMs: number | undefined;
     let storeReadMs: number | undefined;
     let cohortMs: number | undefined;
+    let queueMs: number | undefined;
+    let workerMs: number | undefined;
+    let calculating = false;
+    const loadingStarted = timing.now();
     try {
-      const storeOpenStarted = timing.now();
-      const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
-      storeOpenMs = timing.elapsedMs(storeOpenStarted);
-      if (!store) {
-        timing.finish({
-          operation: "average_cohort", mode, outcome: "unavailable", status: 503,
-          storage: "unavailable", storeOpenMs,
-        });
-        return NextResponse.json({
-          identity: { aid, mode, cycleId: "persistent" },
-          code: "comparison_unavailable",
-          error: "Comparison storage is unavailable",
-        }, { status: 503, headers: { "Cache-Control": "no-store" } });
-      }
-
-      const storeReadStarted = timing.now();
-      const snapshot = progressionStore ? await progressionStore.latest(aid).catch(() => null) : null;
-      storeReadMs = timing.elapsedMs(storeReadStarted);
-      let stats = snapshot?.stats;
-      if (stats) {
-        source = "stored";
-      } else {
-        source = "upstream";
-        const profileStarted = timing.now();
-        const profileResult = await getPublicProfile(aid, { mode });
-        profileMs = timing.elapsedMs(profileStarted);
-        if (!profileResult.profile) {
-          timing.finish({
-            operation: "average_cohort", mode, outcome: "not_found", status: 404,
-            source, storage: "sqlite", profileMs, storeOpenMs, storeReadMs,
-          });
-          return NextResponse.json({
-            identity: { aid, mode, cycleId: "persistent" },
-            code: "profile_unavailable",
-            error: "Profile is not available for comparison",
-          }, { status: 404, headers: { "Cache-Control": "no-store" } });
+      const identityKey = JSON.stringify(["cohort", "persistent", mode, aid, statistic, period]);
+      const loaded = await loadDynamicAverage(identityKey, async () => {
+        const storeOpenStarted = timing.now();
+        const [progressionStore, store] = await Promise.all([getProgressionStore(mode), getStore(mode)]);
+        storeOpenMs = timing.elapsedMs(storeOpenStarted);
+        if (!store) {
+          throw new Error("Comparison storage is unavailable");
         }
-        stats = parseProfileStats(profileResult.profile, []);
-      }
 
-      const centerHours = Number(stats.hoursPlayed);
-      const centerPmcRaids = Number(stats.pmcRaids);
-      const playerMetrics = {
-        kd_ratio: stats.kdRatio,
-        pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
-        kills_per_raid: stats.killsPerRaid,
-        pmc_survival_rate: stats.pmcSurvivalRate,
-        longest_win_streak: stats.longestWinStreak,
-        level: stats.level,
-      };
-      const version = snapshot?.upstreamUpdatedAt ?? (Number(stats.profileUpdatedAt) || 0);
-      const cohortStarted = timing.now();
-      const loaded = await loadDynamicAverage(
-        ["cohort", "persistent", mode, aid, version, centerHours, centerPmcRaids, statistic, period].join(":"),
-        () => store.cohort2d(centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics),
-      );
-      cohortMs = timing.elapsedMs(cohortStarted);
+        const storeReadStarted = timing.now();
+        const snapshot = progressionStore ? await progressionStore.latest(aid).catch(() => null) : null;
+        storeReadMs = timing.elapsedMs(storeReadStarted);
+        let stats = snapshot?.stats;
+        if (stats) {
+          source = "stored";
+        } else {
+          source = "upstream";
+          const profileStarted = timing.now();
+          const profileResult = await getPublicProfile(aid, { mode });
+          profileMs = timing.elapsedMs(profileStarted);
+          if (!profileResult.profile) {
+            throw new ComparisonProfileUnavailableError("Profile is not available for comparison");
+          }
+          stats = parseProfileStats(profileResult.profile, []);
+        }
+
+        const centerHours = Number(stats.hoursPlayed);
+        const centerPmcRaids = Number(stats.pmcRaids);
+        const playerMetrics = {
+          kd_ratio: stats.kdRatio,
+          pmc_kd_ratio: stats.pvpStatsKnown === true ? stats.pmcKdRatio : null,
+          kills_per_raid: stats.killsPerRaid,
+          killed_pmc_per_raid: stats.pvpStatsVersion === 1 && stats.pmcRaids > 0 && stats.pmcKilledPmc != null
+            ? stats.pmcKilledPmc / stats.pmcRaids : null,
+          pmc_survival_rate: stats.pmcSurvivalRate,
+          longest_win_streak: stats.longestWinStreak,
+          level: stats.level,
+        };
+        const cohortStarted = timing.now();
+        calculating = true;
+        cache = "miss";
+        return computeCohortInBackground({
+          kind: "persistent", mode,
+          args: [centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics],
+        }, (phases) => { queueMs = phases.queueMs; workerMs = phases.workerMs; })
+          .finally(() => { cohortMs = timing.elapsedMs(cohortStarted); });
+      }, Date.now(), { ttlMs: 60_000 });
       cache = loaded.cache;
       timing.finish({
         operation: "average_cohort", mode, outcome: "success", status: 200,
-        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs, queueMs, workerMs,
       });
       return NextResponse.json({ ...loaded.value, statistic, period }, {
         // Per-aid data, centers change slowly, 60s is within the server LRU staleness envelope.
-        headers: { "Cache-Control": "private, max-age=60" },
+        headers: statisticsCacheHeaders(loaded),
       });
     } catch (error) {
+      if (error instanceof ComparisonProfileUnavailableError) {
+        timing.finish({
+          operation: "average_cohort", mode, outcome: "not_found", status: 404,
+          source, storage: "sqlite", profileMs, storeOpenMs, storeReadMs,
+        });
+        return NextResponse.json({
+          identity: { aid, mode, cycleId: "persistent" }, code: "profile_unavailable", error: error.message,
+        }, { status: 404, headers: { "Cache-Control": "no-store" } });
+      }
+      if (error instanceof DynamicComputeTimeoutError) cohortMs ??= timing.elapsedMs(loadingStarted);
       console.error("persistent comparison cohort failed", error);
       timing.finish({
         operation: "average_cohort", mode: rawMode, outcome: "error", status: 503,
-        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs,
+        ...(calculating || error instanceof DynamicComputeTimeoutError ? cohortFailureDiagnostic(error) : {}),
+        source, cache, storage: "sqlite", profileMs, storeOpenMs, storeReadMs, cohortMs, queueMs, workerMs,
       });
       return NextResponse.json({
         identity: { aid, mode, cycleId: "persistent" },

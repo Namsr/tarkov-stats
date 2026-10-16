@@ -1,0 +1,16 @@
+[Unit]
+Description=TarkovStats shared background resource budget on the 2 GiB VPS
+
+[Slice]
+# Includes one-shot workers, leaderboard and the operator ban scanner.
+MemoryMax=512M
+MemorySwapMax=256M
+CPUQuota=50%
+CPUWeight=10
+IOWeight=10
+# Root disk verified as /dev/vda on this VPS; weights alone depend on scheduler.
+IOReadBandwidthMax=/dev/vda 8M
+IOWriteBandwidthMax=/dev/vda 4M
+
+[Install]
+WantedBy=multi-user.target

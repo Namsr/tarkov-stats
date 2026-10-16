@@ -31,6 +31,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm audit --omit=dev
+      - run: systemd-analyze verify ops/systemd/tarkovstats-background.slice
   build:
     needs: checks
     runs-on: ubuntu-24.04
@@ -44,12 +45,27 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build the production image
         run: docker build --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag "tarkovstats-web:$GITHUB_SHA" .
+      - name: Validate the VPS worker configuration
+        run: |
+          touch ops/.env ops/.env.private
+          docker compose --profile background -p image-config -f ops/docker-compose.vps.yml config --format json > /tmp/vps-compose.json
+          node -e '
+            const assert = require("node:assert/strict");
+            const { services } = require("/tmp/vps-compose.json");
+            assert.equal(services.web.environment.WEB_BACKGROUND_WORKERS, "false");
+            assert.equal(Number(services.web.mem_limit), 896 * 1024 ** 2);
+            assert.equal(Number(services.worker.mem_limit), 512 * 1024 ** 2);
+            assert.equal(Number(services.worker.memswap_limit), 768 * 1024 ** 2);
+            assert.equal(services.worker.cgroup_parent, "tarkovstats-background.slice");
+            assert.equal(services.worker.ports, undefined);
+          '
       - name: Verify the runtime image
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
           docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('node:fs').accessSync('/app/server.js')"
-          docker run --detach --network none --name image-smoke "tarkovstats-web:$GITHUB_SHA"
-          trap 'docker logs image-smoke; docker rm --force image-smoke' EXIT
+          docker network create image-smoke
+          trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
+          docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"
           docker exec image-smoke node -e '
             (async () => {
               for (let attempt = 0; attempt < 30; attempt++) {
@@ -58,6 +74,33 @@ jobs:
               }
               process.exit(1);
             })()'
+          # Use the effective Compose URLs, including its environment precedence.
+          node -e '
+            const { services } = require("/tmp/vps-compose.json");
+            for (const key of ["REGULAR_PROFILE_SYNC_BASE_URL", "PVE_PROFILE_SYNC_BASE_URL", "ARENA_PROFILE_SYNC_BASE_URL", "SEASONAL_PROFILE_SYNC_BASE_URL", "LEADERBOARD_WARMUP_BASE_URL"]) {
+              const value = services.worker.environment[key];
+              if (!value) throw new Error(`Missing worker endpoint: ${key}`);
+              console.log(`${key}=${value}`);
+            }
+          ' > /tmp/worker-endpoints.env
+          docker run --rm --network image-smoke --memory 512m --memory-swap 768m --cpus 0.5 --env-file /tmp/worker-endpoints.env --entrypoint node "tarkovstats-web:$GITHUB_SHA" -e '
+            (async () => {
+              for (const [key, base] of Object.entries(process.env).filter(([key]) => key.endsWith("_BASE_URL"))) {
+                const response = await fetch(new URL("/healthz", base), { signal: AbortSignal.timeout(5000) });
+                if (response.status !== 200) throw new Error(`${key}: HTTP ${response.status}`);
+                await response.body?.cancel();
+              }
+            })().catch(error => { console.error(error); process.exitCode = 1; })'
+          processes=$(docker top image-smoke -eo pid,args)
+          if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression)'; then
+            echo "HTTP-only container launched an offline materializer"
+            exit 1
+          fi
+          # The same image also supports sequential one-shot jobs under the worker cap.
+          docker run --rm --network none --memory 512m --memory-swap 768m --cpus 0.5 --env AVERAGE_MATERIALIZE_ONCE=true --env PROGRESSION_MATERIALIZE_ONCE=true --entrypoint sh "tarkovstats-web:$GITHUB_SHA" -c '
+              nice -n 19 node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs scripts/materialize-average-publications.mjs &&
+              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs
+            '
       - name: Publish a revision-specific image
         if: github.event_name != 'pull_request'
         run: |

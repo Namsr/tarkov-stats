@@ -135,7 +135,20 @@ test("Seasonal index streams atomically, persists validators and preserves a non
     const afterRejected = new DatabaseSync(dbPath);
     assert.equal(afterRejected.prepare("SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?")
       .get(cycleId).n, 4);
+    afterRejected.prepare(`INSERT INTO player_profiles
+      (mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, experience, pmc_raids,
+        scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc, first_seen_at, last_seen_at)
+      VALUES ('seasonal', ?, 11, 'Alpha', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)`).run(cycleId);
     afterRejected.close();
+
+    body = JSON.stringify({ "15": "Replacement", "16": "Next" });
+    etag = '"seasonal-v3"';
+    await launch(dbPath, url, "--force");
+    const replaced = new DatabaseSync(dbPath);
+    assert.equal(replaced.prepare("SELECT COUNT(*) AS n FROM seasonal_player_index_previous WHERE cycle_id = ?").get(cycleId).n, 4);
+    assert.equal(replaced.prepare("SELECT COUNT(*) AS n FROM seasonal_player_index WHERE cycle_id = ?").get(cycleId).n, 3);
+    assert.equal(replaced.prepare("SELECT nickname FROM seasonal_player_index WHERE cycle_id = ? AND aid = 11").get(cycleId).nickname, "Alpha");
+    replaced.close();
   } finally {
     await new Promise((resolve) => server.close(resolve));
     try { await rm(directory, { recursive: true, force: true }); } catch { /* SQLite keeps the adapter open. */ }

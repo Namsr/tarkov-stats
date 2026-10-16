@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
+import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -40,7 +40,6 @@ const config = {
   dbBusyRetries: envInteger("PVE_PROFILE_SYNC_DB_BUSY_RETRIES", 2, 0, 10),
   maxRunMs: envInteger("PVE_PROFILE_SYNC_MAX_RUN_MS", 12 * 60_000, 60_000, 13 * 60_000),
   leaseMs: envInteger("PVE_PROFILE_SYNC_LEASE_MS", 30 * 60_000, 60_000, 24 * 60 * 60_000),
-  overlapMs: envInteger("PVE_PROFILE_SYNC_OVERLAP_MS", 60 * 60_000, 0, 24 * 60 * 60_000),
 };
 config.maxRunMs = remainingRunBudget(config.maxRunMs, process.env.PROFILE_QUEUE_DEADLINE_MS);
 
@@ -220,10 +219,6 @@ async function seedBaselines() {
   });
 }
 
-function isEligibleUnknown(feedUpdatedAt, savedWatermark) {
-  return savedWatermark === null || feedUpdatedAt >= Math.max(PVE_FEED_CUTOFF_MS, savedWatermark - config.overlapMs);
-}
-
 async function loadFeed(startedAt) {
   const tracked = new Map();
   const excluded = new Set(db.prepare("SELECT aid FROM excluded_players").all().map((row) => Number(row.aid)));
@@ -296,6 +291,7 @@ async function loadFeed(startedAt) {
     // Validators are accepted only together with the parsed queue changes in
     // this transaction; a 304 keeps the previously accepted validators.
     setMeta("feed_source_url", config.updatedUrl);
+    setMeta("feed_policy", PROFILE_FEED_POLICY);
     if (feed.notModified) {
       // Keep the accepted validators; only the 304 poll itself is recorded.
     } else if (feed.etag) {
@@ -333,7 +329,7 @@ async function loadFeed(startedAt) {
 
 async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, stale: 0, skipped: 0, errors: 0 };
-  const next = db.prepare(`SELECT q.aid, q.feed_updated_at FROM pve_profile_sync_queue q
+  const next = profileQueueSelector(db, `SELECT q.aid, q.feed_updated_at FROM pve_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
       AND NOT EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
@@ -375,6 +371,7 @@ async function processQueue(startedAt) {
     ));
     await heartbeat();
     if (counters.attempted % 100 === 0) log("PROGRESS", counters);
+    log("PROFILE_RESULT", { mode: "pve", aid, expectedUpdatedAt, outcome: result.kind, httpStatus: result.status });
   }
   return counters;
 }
@@ -392,6 +389,7 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
+      log("PROFILE_REQUEST", { mode: "pve", runId, aid, expectedUpdatedAt, attempt });
       const response = await fetch(config.endpoint, {
         method: "POST",
         headers: {
@@ -455,7 +453,7 @@ function latestSnapshotVersion(aid) {
 }
 
 async function loadFeedWithRetry(url, tracked, excluded, savedWatermark, startedAt) {
-  const useValidators = getMeta("feed_source_url") === config.updatedUrl;
+  const useValidators = getMeta("feed_source_url") === config.updatedUrl && getMeta("feed_policy") === PROFILE_FEED_POLICY;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
@@ -534,12 +532,13 @@ async function loadFeedWithRetry(url, tracked, excluded, savedWatermark, started
           counters.upToDate += 1;
           return;
         }
-        if (current === undefined && !isEligibleUnknown(feedUpdatedAt, savedWatermark)) {
+        const kind = classifyFeedEntry(current === undefined ? undefined : (current.snapshotUpdatedAt ?? 0),
+          feedUpdatedAt, startedAt, PVE_FEED_CUTOFF_MS);
+        if (kind === null) {
           counters.oldUnknownIgnored += 1;
           return;
         }
         counters.eligible += 1;
-        const kind = current === undefined ? "new" : "updated";
         if (kind === "new") counters.newProfiles += 1;
         else counters.updatedProfiles += 1;
         const pending = pendingVersions.get(aid);

@@ -4,13 +4,6 @@ export interface PlayerSearchIndexMatch extends PlayerSearchProfileResult {
   aid: number;
 }
 
-export type RecentSearchMode = "regular" | "pve" | "arena" | "seasonal" | "pvp-season";
-
-export interface RecentSearchEntry {
-  aid: string | number;
-  mode: RecentSearchMode;
-}
-
 const MODE_ORDER = new Map([
   ["regular", 0],
   ["pve", 1],
@@ -22,10 +15,6 @@ function normalizedTimestamp(value: unknown): number | null {
   if (value == null) return null;
   const timestamp = Number(value);
   return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function recentProfileMode(mode: RecentSearchMode): PlayerSearchProfileResult["mode"] {
-  return mode === "pvp-season" ? "seasonal" : mode;
 }
 
 function newestProfile(profiles: readonly PlayerSearchProfileResult[]): PlayerSearchProfileResult | null {
@@ -42,31 +31,14 @@ function newestProfile(profiles: readonly PlayerSearchProfileResult[]): PlayerSe
 
 /** Selects the profile opened by a whole-row search result. */
 export function selectPlayerSearchProfile(
-  aid: number,
   profiles: readonly PlayerSearchProfileResult[],
   nickname: string,
-  recentPlayers: readonly RecentSearchEntry[] = [],
 ): PlayerSearchProfileResult | null {
   if (profiles.length === 0) return null;
 
   const query = nickname.trim().toLowerCase();
   const exact = profiles.filter((profile) => profile.name.trim().toLowerCase() === query);
-  const recent = recentPlayers.find((entry) => String(entry.aid) === String(aid));
-  const recentMode = recent ? recentProfileMode(recent.mode) : null;
-
-  if (exact.length > 0) {
-    if (recentMode) {
-      const recentExact = exact.find((profile) => profile.mode === recentMode);
-      if (recentExact) return recentExact;
-    }
-    return newestProfile(exact) ?? exact[0];
-  }
-
-  if (recentMode) {
-    const recentProfile = profiles.find((profile) => profile.mode === recentMode);
-    if (recentProfile) return recentProfile;
-  }
-  return newestProfile(profiles) ?? profiles[0];
+  return newestProfile(profiles) ?? exact[0] ?? profiles[0];
 }
 
 function compareProfiles(query: string) {

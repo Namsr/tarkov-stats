@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { backoff, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError } from "./regular-profile-sync-core.mjs";
+import { backoff, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError, PROFILE_FEED_WINDOW_MS, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -239,7 +239,7 @@ async function loadFeed(startedAt) {
         return;
       }
       counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, updatedAt);
-      if (updatedAt < cycle.startsAt) {
+      if (updatedAt < Math.max(cycle.startsAt, startedAt - PROFILE_FEED_WINDOW_MS) || updatedAt > startedAt) {
         counters.preCycleIgnored += 1;
         return;
       }
@@ -269,6 +269,7 @@ async function loadFeed(startedAt) {
     saveMeta("last_poll_at", String(counters.polledAt));
     saveMeta("last_feed_max_updated_at", String(counters.maxFeedUpdatedAt));
     saveMeta("feed_source_url", config.updatedUrl);
+    saveMeta("feed_policy", PROFILE_FEED_POLICY);
     if (feedResponse.notModified) {
       // Keep the accepted validators; only the 304 poll itself is recorded.
     } else if (feedResponse.etag) {
@@ -299,7 +300,7 @@ async function loadFeed(startedAt) {
 }
 
 async function requestFeed(url, startedAt) {
-  const useValidators = getMeta("feed_source_url") === config.updatedUrl;
+  const useValidators = getMeta("feed_source_url") === config.updatedUrl && getMeta("feed_policy") === PROFILE_FEED_POLICY;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
@@ -359,11 +360,11 @@ async function requestFeed(url, startedAt) {
 
 async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, superseded: 0, errors: 0, newSnapshots: 0 };
-  const next = db.prepare(`
-    SELECT aid, feed_updated_at FROM seasonal_profile_sync_queue
-    WHERE cycle_id = ? AND status IN ('pending', 'error')
-      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = seasonal_profile_sync_queue.aid)
-      AND (last_run_id IS NULL OR last_run_id <> ?)
+  const next = profileQueueSelector(db, `
+    SELECT q.aid, q.feed_updated_at FROM seasonal_profile_sync_queue q
+    WHERE q.cycle_id = ? AND q.status IN ('pending', 'error')
+      AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
+      AND (q.last_run_id IS NULL OR q.last_run_id <> ?)
     ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, feed_updated_at, aid LIMIT 1
   `);
   const update = db.prepare(`
@@ -395,6 +396,7 @@ async function processQueue(startedAt) {
       cycle.cycleId, aid, expectedUpdatedAt);
     heartbeat();
     if (counters.attempted % 100 === 0) log("PROGRESS", counters);
+    log("PROFILE_RESULT", { mode: "seasonal", cycleId: cycle.cycleId, aid, expectedUpdatedAt, outcome: result.kind, httpStatus: result.status });
   }
   return counters;
 }
@@ -414,6 +416,7 @@ async function syncProfile(aid, expectedUpdatedAt, startedAt) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
+      log("PROFILE_REQUEST", { mode: "seasonal", runId, cycleId: cycle.cycleId, aid, expectedUpdatedAt, attempt });
       const response = await fetch(config.endpoint, {
         method: "POST",
         headers: {

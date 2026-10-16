@@ -35,7 +35,10 @@ import {
 import {
   ACHIEVEMENT_BASELINE_PUBLICATION_SCHEMA,
   readPublishedAchievementBaseline,
+  readRegularRiskAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
+import { buildRegularRiskBaseline, storedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
+import { retrySqliteBusy } from "@/lib/sqlite-busy-retry";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
 // The cohort and population scans filter on these five columns and read the
@@ -49,8 +52,11 @@ const COHORT_INDEX_METRICS = [
   "pmc_kd_ratio",
   "kills_per_raid",
   "pmc_survival_rate",
+  "pmc_kills_per_raid",
   "longest_win_streak",
   "level",
+  "pvp_stats_version",
+  "pmc_killed_pmc",
 ];
 
 // One row per collected player, keyed by account id. Re-looking up the same
@@ -68,6 +74,7 @@ CREATE TABLE IF NOT EXISTS players (
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
   achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  risk_raids INTEGER, risk_deaths INTEGER, risk_survived INTEGER, risk_kills INTEGER, risk_killed_pmc INTEGER, risk_streak INTEGER, risk_prestige INTEGER, risk_parser_version INTEGER,
   pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_players_bracket ON players(bracket_key);
@@ -89,6 +96,7 @@ CREATE TABLE IF NOT EXISTS mode_players (
   survival_rate REAL DEFAULT 0, kills_per_raid REAL DEFAULT 0,
   pmc_survival_rate REAL DEFAULT 0, pmc_kills_per_raid REAL DEFAULT 0, achv_count INTEGER DEFAULT 0,
   achievements TEXT, profile_updated_at INTEGER DEFAULT 0, last_played_at INTEGER,
+  risk_raids INTEGER, risk_deaths INTEGER, risk_survived INTEGER, risk_kills INTEGER, risk_killed_pmc INTEGER, risk_streak INTEGER, risk_prestige INTEGER, risk_parser_version INTEGER,
   pvp_stats_known INTEGER DEFAULT 0, pvp_stats_version INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
   PRIMARY KEY (mode, aid)
 );
@@ -184,7 +192,9 @@ const CURRENT_PLAYER_SCHEMA_OBJECTS = [
   "idx_favorites_user_identity", "player_index", "idx_player_index_nickname_lower", "player_index_meta",
   "pve_player_index", "idx_pve_player_index_nickname_lower", "pve_player_index_meta",
   "arena_player_index", "idx_arena_player_index_nickname_lower", "arena_player_index_meta",
-  "achievement_baseline_publications",
+  "achievement_baseline_publications", "regular_risk_achievement_owners", "idx_regular_risk_achievement_hours",
+  "regular_risk_reference_state",
+  "idx_players_regular_risk",
 ] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -196,7 +206,7 @@ export function currentSqlitePlayerSchema(db: any): boolean {
   for (const table of ["players", "mode_players"]) {
     const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
       .map((column) => column.name));
-    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "last_played_at"]
+    if (!["pmc_survival_rate", "pmc_kills_per_raid", "profile_updated_at", "pvp_stats_known", "pvp_stats_version", "pmc_killed_pmc", "last_played_at", "risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version"]
       .every((name) => columns.has(name))) return false;
   }
   const favorites = db.prepare("PRAGMA table_info(favorites)").all() as { name: string; pk: number }[];
@@ -212,6 +222,7 @@ const COLS = [
   "kd_ratio", "pmc_kd_ratio", "survival_rate", "kills_per_raid",
   "pmc_survival_rate", "pmc_kills_per_raid",
   "achv_count", "achievements", "profile_updated_at", "last_played_at", "pvp_stats_known", "pvp_stats_version", "fetched_at",
+  "risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version",
 ];
 const SQLITE_UPSERT_SQL =
   `INSERT INTO players (${COLS.join(", ")}) ` +
@@ -425,17 +436,19 @@ function countSql(where: string): string {
 }
 
 // One statistic for one metric in a range. The trimmed mean preserves the
-// existing LIMIT/OFFSET behavior; median ranks the populated values per metric.
+// existing LIMIT/OFFSET behavior. A count from the same read snapshot also lets
+// median select just the middle values; other callers keep self-contained ranks.
 function metricStatisticSql(
   column: string,
   where: string,
   statistic: AverageStatistic,
   trim: boolean,
+  boundedMedian = false,
 ): string {
   if (!/^[a-z_]+$/.test(column)) {
     throw new Error(`invalid metric column: ${column}`);
   }
-  if (statistic === "median") {
+  if (statistic === "median" && !boundedMedian) {
     return (
       `WITH ranked AS (` +
       `SELECT ${column} AS v, ROW_NUMBER() OVER (ORDER BY ${column}) AS rn, ` +
@@ -445,7 +458,7 @@ function metricStatisticSql(
       `WHERE rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))`
     );
   }
-  if (!trim) return `SELECT AVG(${column}) AS a FROM players ${where}`;
+  if (!trim && statistic !== "median") return `SELECT AVG(${column}) AS a FROM players ${where}`;
   return (
     `SELECT AVG(v) AS a FROM ` +
     `(SELECT ${column} AS v FROM players ${where} ORDER BY ${column} LIMIT ? OFFSET ?)`
@@ -551,9 +564,14 @@ function ensureSqliteAverageIndexes(db: any): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_pvp ON mode_players(mode, ${pvpColumns})`);
   for (const column of AVG_COLS) {
     if (!/^[a-z_]+$/.test(column)) throw new Error(`invalid average index column: ${column}`);
-    if (column === "hours" || column === "pmc_raids") continue;
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_mode_players_average_${column} ON mode_players(mode, ${column})`);
+    const rangeMetric = column === "hours" || column === "pmc_raids";
+    if (!rangeMetric) db.exec(`CREATE INDEX IF NOT EXISTS idx_players_average_${column} ON players(${column})`);
+    // mode_players has a separate rowid: unlike players, a metric index does
+    // not carry aid. Cover tombstones, recency and PvP eligibility so a sorted
+    // average does not fetch the large stats_json row for every sample.
+    const modeIndex = `idx_mode_players_${rangeMetric ? "" : "average_"}${column}`;
+    ensureIndexDefinition(db, modeIndex,
+      `CREATE INDEX ${modeIndex} ON mode_players(mode, ${column}, aid, profile_updated_at, pvp_stats_known)`);
   }
 }
 
@@ -774,24 +792,38 @@ function persistentComparisonMetricsSql(
   // cheap for a matched window of a few hundred rows and ruinous for the
   // population fallback, which has no window and aggregates every eligible row.
   // Ranking each metric on its own keeps the cohort at one row per player.
-  const perMetric = COMPARISON_RADAR_METRICS.map((metric) =>
+  const metricWhere = (metric: string) => `${metric} IS NOT NULL${
+    metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
+  }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""}`;
+  const perMetric = COMPARISON_RADAR_METRICS.map((metric, index) =>
     `SELECT '${metric}' AS metric, MAX(n) AS n,
       AVG(CASE WHEN ${selected} THEN v END) AS a,
       SUM(CASE WHEN v < player_v THEN 1 ELSE 0 END) AS below,
       SUM(CASE WHEN v = player_v THEN 1 ELSE 0 END) AS equal, NULL, NULL, NULL, NULL
       FROM (SELECT ${metric} AS v, ? AS player_v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
-        COUNT(*) OVER () AS n FROM cohort WHERE ${metric} IS NOT NULL${
-      metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
-    }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""})`
+        count_${index} AS n FROM cohort CROSS JOIN summary WHERE ${metricWhere(metric)})`
   ).join("\n    UNION ALL\n    ");
-  return `WITH cohort AS (
-    SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.join(", ")} FROM players ${where}
+  // Materialize once: SQLite otherwise inlines the CTE into each metric and
+  // can select a narrow PvP index that reads every large profile row again.
+  const index = mode === "pve" ? "idx_mode_players_cohort" : "idx_players_cohort";
+  // INDEXED BY must name a table, not the pve_players view used by other reads.
+  const table = mode === "pve" ? "mode_players" : "players";
+  return `WITH cohort AS MATERIALIZED (
+    SELECT hours, pmc_raids, pvp_stats_known, ${COMPARISON_RADAR_METRICS.filter((metric) => metric !== "killed_pmc_per_raid").join(", ")},
+      CASE WHEN pvp_stats_known = 1 AND pvp_stats_version = 1 AND pmc_raids > 0
+        THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid FROM ${table} INDEXED BY ${index} ${where.replace(/\bplayers\./g, `${table}.`)}${mode === "pve" ? " AND mode = 'pve'" : ""}
+  ), summary AS MATERIALIZED (
+    SELECT COUNT(*) AS n, MIN(hours) AS hours_min, MAX(hours) AS hours_max,
+      MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max,
+      ${COMPARISON_RADAR_METRICS.map((metric, index) =>
+        `COUNT(CASE WHEN ${metricWhere(metric)} THEN 1 END) AS count_${index}`
+      ).join(", ")}
+    FROM cohort
   )
-  SELECT '__group__' AS metric, COUNT(*) AS n, NULL AS a,
+  SELECT '__group__' AS metric, n, NULL AS a,
     NULL AS below, NULL AS equal,
-    MIN(hours) AS hours_min, MAX(hours) AS hours_max,
-    MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max
-  FROM cohort
+    hours_min, hours_max, raids_min, raids_max
+  FROM summary
   UNION ALL
   ${perMetric}`;
 }
@@ -932,7 +964,22 @@ async function computePersistentRiskBaseline(input: {
   excludeAid: number;
   period: AveragePeriod;
   readFirst: CohortFirstReader;
+  readAll: CohortAllReader;
 }): Promise<BaselineResult> {
+  if (input.mode === "regular") {
+    const range = comparisonRangeFor(input.center, 30);
+    const rows = await input.readAll(`SELECT aid, hours, risk_raids, risk_deaths, risk_survived, risk_kills, risk_killed_pmc, risk_streak, risk_prestige
+      FROM players WHERE hours >= ? AND hours <= ? AND pmc_raids >= ? AND pmc_raids <= ?
+      AND aid != ? AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = players.aid)
+      AND risk_raids > 0
+      ORDER BY ABS(hours - ?) / ? + ABS(pmc_raids - ?) / ?, aid LIMIT ?`,
+      [range.hours.min, range.hours.max, range.pmcRaids.min, range.pmcRaids.max, input.excludeAid,
+        input.center.hours, Math.max(1, input.center.hours), input.center.pmcRaids, Math.max(1, input.center.pmcRaids), REGULAR_RISK_MAX_COHORT]);
+    return buildRegularRiskBaseline(rows.map((r) => ({ aid: Number(r.aid), hours: Number(r.hours), raw: {
+      raids: r.risk_raids as number | null, deaths: r.risk_deaths as number | null, survived: r.risk_survived as number | null,
+      kills: r.risk_kills as number | null, killedPmc: r.risk_killed_pmc as number | null, streak: r.risk_streak as number | null, prestige: r.risk_prestige as number | null,
+    } })), input.center, input.excludeAid);
+  }
   const widest = twoDimensionalRangeWhere(input.mode, input.center, 30, input.excludeAid, input.period);
   const ranges = COMPARISON_COHORT_PERCENTAGES.map((percent) => comparisonRangeFor(input.center, percent));
   const countRow = await input.readFirst(
@@ -963,6 +1010,7 @@ async function computePersistentRiskBaseline(input: {
 }
 
 function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], now: number): unknown[] {
+  const raw = storedRegularRiskInputs(s);
   return [
     aid, s.nickname, s.side, s.prestige, s.level, s.experience, s.hoursPlayed,
     bracketFor(s.hoursPlayed).key, s.totalRaids, s.pmcRaids, s.scavRaids, s.survivedRaids,
@@ -975,7 +1023,7 @@ function argsFor(aid: number, s: ParsedPlayerStats, achievementIds: string[], no
       : null,
     s.pvpStatsKnown === true ? 1 : 0,
     Number.isSafeInteger(s.pvpStatsVersion) && Number(s.pvpStatsVersion) >= 0 ? Number(s.pvpStatsVersion) : 0,
-    now,
+    now, raw.raids, raw.deaths, raw.survived, raw.kills, raw.killedPmc, raw.streak, raw.prestige, s.pvpStatsParserVersion ?? 0,
   ];
 }
 
@@ -1053,6 +1101,7 @@ export interface HistogramRange {
 
 /** Playtime baseline for a single achievement across the whole sample. */
 export interface AchievementStat {
+  hoursOwners?: number;
   /** Achievement id (matches tarkov.dev achievement ids). */
   ach_id: string;
   /** Players in the sample who own it. */
@@ -1075,6 +1124,10 @@ export interface AchievementBaseline {
 }
 
 export interface MetricBaseline {
+  p90?: number;
+  p99?: number;
+  percent?: number;
+  prior?: { survival: number; deaths: number; kills: number; killedPmc: number };
   /** Players in the range that actually have this metric populated (value > 0). */
   n: number;
   mean: number;
@@ -1083,6 +1136,8 @@ export interface MetricBaseline {
 
 /** Mean + std of each scored metric within a playtime range (cheating-risk z-scores). */
 export interface BaselineResult {
+  strategy?: "matched";
+  percent?: number;
   /** Players in the range the baseline was computed over. */
   n: number;
   metrics: Record<string, MetricBaseline>;
@@ -1164,6 +1219,7 @@ export interface PlayerStore {
    * the mean/std of owner playtime, for rarity and early-unlock z-scores.
    */
   achievementBaseline(): Promise<AchievementBaseline | null>;
+  achievementRiskBaseline(ownedIds: readonly string[], excludeAid: number): Promise<AchievementBaseline | null>;
   /**
    * Mean + std of each scored metric over a playtime range, for the within-bracket
    * z-scores behind the cheating-risk score.
@@ -1188,6 +1244,7 @@ export interface PlayerIndexResult {
 export interface PlayerIndexStore {
   isReady(): Promise<boolean>;
   search(nickname: string, limit: number): Promise<PlayerIndexResult[]>;
+  byIds(aids: readonly number[]): Promise<PlayerIndexResult[]>;
 }
 
 function parseStoredPlayer(
@@ -1299,6 +1356,12 @@ function initializeSqliteSchema(opened: any): void {
     // Lightweight migration for DBs created before the PMC score columns existed.
     // CREATE TABLE IF NOT EXISTS won't add columns to an existing table, so add
     // them here; a duplicate-column error on already-migrated DBs is expected.
+    for (const table of ["players", "mode_players"]) {
+      for (const col of ["risk_raids", "risk_deaths", "risk_survived", "risk_kills", "risk_killed_pmc", "risk_streak", "risk_prestige", "risk_parser_version"]) {
+        const columns = opened.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+        if (!columns.some((entry) => entry.name === col)) opened.exec(`ALTER TABLE ${table} ADD COLUMN ${col} INTEGER`);
+      }
+    }
     for (const [table, col, type] of [
       ["players", "pmc_survival_rate", "REAL DEFAULT 0"],
       ["players", "pmc_kills_per_raid", "REAL DEFAULT 0"],
@@ -1325,12 +1388,17 @@ function initializeSqliteSchema(opened: any): void {
     opened.exec(
       "CREATE INDEX IF NOT EXISTS idx_players_cohort_regular ON players(pvp_stats_known, profile_updated_at, hours, pmc_raids)"
     );
+    opened.exec(`CREATE INDEX IF NOT EXISTS idx_players_regular_risk ON players(
+      hours, pmc_raids, aid, risk_raids, risk_deaths, risk_survived, risk_kills, risk_killed_pmc, risk_streak, risk_prestige
+    ) WHERE risk_raids > 0`);
     opened.exec(`UPDATE players SET pvp_stats_known = 1
       WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
     opened.exec(`UPDATE mode_players SET pvp_stats_known = 1
       WHERE pvp_stats_known = 0 AND (killed_pmc > 0 OR pmc_kd_ratio > 0)`);
   }
   initializeProfileChangeJournal(opened);
+  // Owner references only need existence, not the multi-KiB profile row.
+  opened.exec("CREATE INDEX IF NOT EXISTS idx_players_risk_identity ON players(aid)");
   ensureSqliteCohortIndexes(opened);
   ensureSqliteAverageIndexes(opened);
   initializeArenaSchema(opened);
@@ -1349,70 +1417,109 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
   if (!rawDb) return null;
   try {
     const table = tableFor(mode);
-    const hasPlayerIndex = mode === "regular" && Boolean(rawDb.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'"
-    ).get());
+    const indexTable = mode === "regular" ? "player_index" : `${mode}_player_index`;
+    const hasPlayerIndex = Boolean(rawDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+    ).get(indexTable));
+    function updateSearchIndex(aid: number, stats: ParsedPlayerStats, now: number) {
+      if (!hasPlayerIndex) return;
+      const modeColumn = mode === "regular" ? "" : "mode, ";
+      const modeSelect = mode === "regular" ? "" : `'${mode}', `;
+      const modeWhere = mode === "regular" ? "" : `mode = '${mode}' AND `;
+      const conflict = mode === "regular" ? "aid" : "mode, aid";
+      // Recover the complete reserve before a direct-link save makes the
+      // empty primary look usable. This runs inside the profile transaction.
+      if (!rawDb.prepare(`SELECT 1 FROM ${indexTable} WHERE ${modeWhere}1 = 1 LIMIT 1`).get() &&
+        rawDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(`${indexTable}_previous`)) {
+        const columns = `${modeColumn}aid, nickname, nickname_lower, synced_at`;
+        rawDb.exec(`INSERT INTO ${indexTable} (${columns})
+          SELECT ${columns} FROM ${indexTable}_previous WHERE ${modeWhere}1 = 1`);
+      }
+      rawDb.prepare(`INSERT INTO ${indexTable} (${modeColumn}aid, nickname, nickname_lower, synced_at)
+        SELECT ${modeSelect}?, ?, ?, ? WHERE EXISTS (
+          SELECT 1 FROM ${table} WHERE ${modeWhere}aid = ? AND profile_updated_at = ?
+        ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
+        ON CONFLICT(${conflict}) DO UPDATE SET nickname = excluded.nickname,
+          nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
+        .run(aid, stats.nickname, normalizeNickname(stats.nickname), now,
+          aid, Number(stats.profileUpdatedAt) || 0, aid);
+    }
     const q = (sql: string) => scopePlayerSql(sql, table);
     const db = { prepare: (sql: string) => rawDb.prepare(q(sql)) };
     return {
       async upsert(aid, stats, ids, options = {}) {
-        const now = Date.now();
-        if (MAX_PLAYERS > 0) {
-          const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
-          if (!existing) {
-            const row = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
-            if (row && row.n >= MAX_PLAYERS) return;
-          }
-        }
-        if (mode === "regular") {
-          rawDb.exec("BEGIN IMMEDIATE");
+        return retrySqliteBusy(() => {
+          // A synchronous five-second lock wait freezes unrelated HTTP work.
+          // Restore the shared connection setting before yielding or returning.
+          const previousTimeout = Number(rawDb.prepare("PRAGMA busy_timeout").get().timeout);
+          rawDb.exec("PRAGMA busy_timeout = 250");
           try {
-            const profileUpdatedAt = Number(stats.profileUpdatedAt) || 0;
-            db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
-            if (hasPlayerIndex) {
-              rawDb.prepare(`INSERT INTO player_index
-                (aid, nickname, nickname_lower, synced_at)
-                SELECT ?, ?, ?, ? WHERE EXISTS (
-                  SELECT 1 FROM players WHERE aid = ? AND profile_updated_at = ?
-                ) AND NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
-                ON CONFLICT(aid) DO UPDATE SET nickname = excluded.nickname,
-                  nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
-                .run(aid, stats.nickname, normalizeNickname(stats.nickname), now,
-                  aid, profileUpdatedAt, aid);
+            const now = Date.now();
+            if (MAX_PLAYERS > 0) {
+              const existing = db.prepare("SELECT 1 FROM players WHERE aid = ?").get(aid);
+              if (!existing) {
+                const row = db.prepare("SELECT COUNT(*) AS n FROM players").get() as { n: number };
+                if (row && row.n >= MAX_PLAYERS) return;
+              }
             }
-            rawDb.exec("COMMIT");
-          } catch (error) {
-            rawDb.exec("ROLLBACK");
-            throw error;
-          }
-        } else {
-          if (mode === "arena" && stats.arenaProfile) {
-            rawDb.exec("BEGIN IMMEDIATE");
-            try {
-              if (options.leaseOwner) {
-                const lease = rawDb.prepare(
-                  "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
-                ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
-                const leaseNow = Date.now();
-                const age = leaseNow - Number(lease?.heartbeat_at);
-                const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
-                if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
-                  throw new Error("Arena profile sync lease was lost");
+            if (mode === "regular") {
+              rawDb.exec("BEGIN IMMEDIATE");
+              try {
+                const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
+                if (Number(saved.changes) > 0) {
+                  rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
+                  if (Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0) {
+                    const insertOwner = rawDb.prepare("INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours) VALUES (?, ?, ?)");
+                    for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
+                  }
+                }
+                updateSearchIndex(aid, stats, now);
+                rawDb.exec("COMMIT");
+              } catch (error) {
+                rawDb.exec("ROLLBACK");
+                throw error;
+              }
+            } else {
+              if (mode === "arena" && stats.arenaProfile) {
+                rawDb.exec("BEGIN IMMEDIATE");
+                try {
+                  if (options.leaseOwner) {
+                    const lease = rawDb.prepare(
+                      "SELECT owner, heartbeat_at FROM arena_profile_sync_lease WHERE id = 1"
+                    ).get() as { owner?: unknown; heartbeat_at?: unknown } | undefined;
+                    const leaseNow = Date.now();
+                    const age = leaseNow - Number(lease?.heartbeat_at);
+                    const maxAge = options.leaseMaxAgeMs ?? 30 * 60_000;
+                    if (lease?.owner !== options.leaseOwner || !Number.isFinite(age) || age < 0 || age > maxAge) {
+                      throw new Error("Arena profile sync lease was lost");
+                    }
+                  }
+                  rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                  upsertArenaSqlite(rawDb, stats.arenaProfile, now);
+                  updateSearchIndex(aid, stats, now);
+                  rawDb.exec("COMMIT");
+                } catch (error) {
+                  rawDb.exec("ROLLBACK");
+                  throw error;
+                }
+              } else {
+                rawDb.exec("BEGIN IMMEDIATE");
+                try {
+                  rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
+                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                  updateSearchIndex(aid, stats, now);
+                  rawDb.exec("COMMIT");
+                } catch (error) {
+                  rawDb.exec("ROLLBACK");
+                  throw error;
                 }
               }
-              rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-                .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
-              upsertArenaSqlite(rawDb, stats.arenaProfile, now);
-              rawDb.exec("COMMIT");
-            } catch (error) {
-              rawDb.exec("ROLLBACK");
-              throw error;
             }
-          } else {
-            rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-              .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+          } finally {
+            rawDb.exec(`PRAGMA busy_timeout = ${previousTimeout}`);
           }
-        }
+        }, 5_000);
       },
       async stored(aid) {
         if (mode === "regular") return null;
@@ -1430,26 +1537,48 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
       async averages(range, statistic = "trimmed_mean", period = "all") {
         const { where: rangeWhere, params } = statRangeClause(range);
         const where = averagePeriodWhere(period, rangeWhere);
-        const cnt = db.prepare(countSql(where)).get(...params) as { n: number } | undefined;
-        const n = Number(cnt?.n ?? 0);
-        if (n === 0) return emptyAverageRow();
-        const row: AverageRow = { n, metricCounts: {} };
-        for (const c of AVG_COLS) {
-          const metricWhere = eligibleMetricWhere(mode, c, where);
-          const count = metricWhere === where
-            ? n
-            : Number((db.prepare(countSql(metricWhere)).get(...params) as { n: number } | undefined)?.n ?? 0);
-          const { trim, off, lim } = trimWindow(count);
-          const stmt = db.prepare(metricStatisticSql(c, metricWhere, statistic, trim));
-          const r = (statistic === "trimmed_mean" && trim
-            ? stmt.get(...params, lim, off)
-            : stmt.get(...params)) as
-            | { a: number | null }
-            | undefined;
-          row[c] = r?.a == null ? null : Number(r.a);
-          row.metricCounts[c] = count;
+        // Count every metric in one covering scan. Keep zero values and apply
+        // known-PvP eligibility only to the two metrics that require it.
+        const counts = AVG_COLS.map((column) => {
+          const value = (mode === "regular" || mode === "pve") && PVP_METRICS.has(column)
+            ? `CASE WHEN pvp_stats_known = 1 THEN ${column} END` : column;
+          return `COUNT(${value}) AS ${column}`;
+        });
+        // Count and middle/trim windows must see the same rows while collectors
+        // commit updates on another connection. No await inside this snapshot.
+        rawDb.exec("BEGIN");
+        try {
+          const counted = db.prepare(`SELECT COUNT(*) AS n, ${counts.join(", ")} FROM players ${where}`)
+            .get(...params) as Record<string, number>;
+          const n = Number(counted.n);
+          const row: AverageRow = n === 0 ? emptyAverageRow() : { n, metricCounts: {} };
+          if (n > 0) for (const c of AVG_COLS) {
+            const count = Number(counted[c]);
+            row.metricCounts[c] = count;
+            if (count === 0) {
+              row[c] = null;
+              continue;
+            }
+            const metricWhere = eligibleMetricWhere(mode, c, where);
+            const { trim, off, lim } = trimWindow(count);
+            // Filtered regular scans can use a covering range index with ranked
+            // SQL. LIMIT would make SQLite prefer non-covering metric indexes.
+            const median = statistic === "median" && (mode !== "regular" || period === "all") &&
+              range?.min == null && range?.max == null;
+            const stmt = db.prepare(metricStatisticSql(c, metricWhere, statistic, trim, median));
+            const r = (median
+              ? stmt.get(...params, count % 2 === 0 ? 2 : 1, Math.floor((count - 1) / 2))
+              : statistic === "trimmed_mean" && trim ? stmt.get(...params, lim, off) : stmt.get(...params)) as
+              | { a: number | null }
+              | undefined;
+            row[c] = r?.a == null ? null : Number(r.a);
+          }
+          rawDb.exec("COMMIT");
+          return row;
+        } catch (error) {
+          rawDb.exec("ROLLBACK");
+          throw error;
         }
-        return row;
       },
       async bracketAggregate(column, period = "all") {
         const where = eligibleMetricWhere(mode, column ?? "", averagePeriodWhere(period, ""));
@@ -1617,6 +1746,9 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           return row?.a == null ? null : Number(row.a);
         });
       },
+      async achievementRiskBaseline(ownedIds, excludeAid) {
+        return mode === "regular" ? readRegularRiskAchievementBaseline(rawDb, ownedIds, excludeAid) : null;
+      },
       async achievementBaseline() {
         return mode === "arena" ? null : readPublishedAchievementBaseline(rawDb, mode);
       },
@@ -1633,6 +1765,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           excludeAid,
           period,
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+          readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });
       },
       async riskBaseline(centerHours, centerPmcRaids, excludeAid) {
@@ -1643,6 +1776,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
           excludeAid,
           period: "all",
           readFirst: async (sql, params) => db.prepare(sql).get(...params) as Record<string, unknown> | null,
+          readAll: async (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
         });
       },
     };
@@ -1700,8 +1834,9 @@ const PLAYER_INDEX_SPECS: Record<PersistentPlayerIndexMode, {
   arena: { table: "arena_player_index", meta: "arena_player_index_meta", modeWhere: "i.mode = 'arena' AND " },
 };
 
-function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean) {
-  const { table, meta, modeWhere } = PLAYER_INDEX_SPECS[mode];
+function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean, previous = false) {
+  const { table: currentTable, meta, modeWhere } = PLAYER_INDEX_SPECS[mode];
+  const table = previous ? `${currentTable}_previous` : currentTable;
   const profileTable = mode === "regular" ? "players" : "mode_players";
   const profileMode = mode === "regular" ? "" : ` AND p.mode = '${mode}'`;
   const profileSelect = includeProfileMetadata ? "p.profile_updated_at" : "NULL";
@@ -1710,6 +1845,10 @@ function playerIndexSql(mode: PersistentPlayerIndexMode, includeProfileMetadata:
     : "";
   return {
     ready: `SELECT value FROM ${meta} WHERE key = 'synced_at'`,
+    populated: `SELECT i.nickname_lower FROM ${table} AS i WHERE ${modeWhere}1 = 1 LIMIT 1`,
+    byIds: (placeholders: string) => `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
+      `WHERE ${modeWhere}i.aid IN (${placeholders}) ` +
+      "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)",
     exact: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin} ` +
       `WHERE ${modeWhere}i.nickname_lower = ? ` +
       "AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid) " +
@@ -1736,27 +1875,42 @@ function sqliteProfileMetadataAvailable(db: any, mode: PersistentPlayerIndexMode
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqlitePlayerIndexStore(db: any, mode: PersistentPlayerIndexMode, includeProfileMetadata: boolean): PlayerIndexStore {
   const sql = playerIndexSql(mode, includeProfileMetadata);
+  const previousSql = playerIndexSql(mode, includeProfileMetadata, true);
+  function populated(source: typeof sql): boolean {
+    try { return Boolean(db.prepare(source.populated).get()); } catch { return false; }
+  }
+  function ready(): boolean {
+    try { db.prepare(sql.populated).get(); return Boolean(db.prepare(sql.ready).get()); } catch { return false; }
+  }
+  function read(readRows: (source: typeof sql) => PlayerIndexResult[]): PlayerIndexResult[] {
+    let failure: unknown;
+    for (const source of [sql, previousSql]) {
+      if (!populated(source) && !(source === sql && ready() && !populated(previousSql))) continue;
+      try { return readRows(source); } catch (error) { failure = error; }
+    }
+    throw failure ?? new Error("Player nickname index is not available");
+  }
   return {
     async isReady() {
-      return Boolean(db.prepare(sql.ready).get());
+      // A failed sync keeps the last table. A missing readiness marker must
+      // not hide an intact directory or profiles added through a direct link.
+      return populated(sql) || populated(previousSql) || ready();
     },
     async search(nickname, limit) {
       const q = normalizeNickname(nickname);
-      const exact = toIndexResults(
-        db.prepare(sql.exact).all(q, limit) as { aid: number; name: string; updated_at?: unknown }[]
-      );
-      const prefix = toIndexResults(
-        db.prepare(sql.prefix).all(q, `${q}\uffff`, limit * 2) as {
-          aid: number;
-          name: string;
-          updated_at?: unknown;
-        }[]
-      );
-      const out: PlayerIndexResult[] = [];
-      const seen = new Set<number>();
-      pushUniqueIndexResults(out, seen, exact, limit);
-      pushUniqueIndexResults(out, seen, prefix, limit);
-      return out;
+      return read((source) => {
+        const exact = toIndexResults(db.prepare(source.exact).all(q, limit));
+        const prefix = toIndexResults(db.prepare(source.prefix).all(q, `${q}\uffff`, limit * 2));
+        const out: PlayerIndexResult[] = [];
+        const seen = new Set<number>();
+        pushUniqueIndexResults(out, seen, exact, limit);
+        pushUniqueIndexResults(out, seen, prefix, limit);
+        return out;
+      });
+    },
+    async byIds(aids) {
+      if (aids.length === 0) return [];
+      return read((source) => toIndexResults(db.prepare(source.byIds(aids.map(() => "?").join(","))).all(...aids)));
     },
   };
 }

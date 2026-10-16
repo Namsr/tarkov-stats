@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { parsePlayerInput } from "@/lib/player-id";
+import { parsePlayerInput, type ParsedPlayerInput } from "@/lib/player-id";
 import { useTrackedRouter } from "@/lib/use-tracked-router";
 import {
   filterRecentPlayers,
@@ -14,6 +14,7 @@ import { selectPlayerSearchProfile } from "@/lib/player-search";
 import { useI18n } from "@/lib/i18n/context";
 import type { PlayerSearchProfileResult, PlayerSearchResult } from "@/types/tarkov";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { warmPlayerProfileResponse } from "@/lib/client-profile-request";
 
 const NICKNAME_RE = /^[a-zA-Z0-9_-]{1,15}$/;
@@ -51,6 +52,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
   const suppressPointerInputPanelRef = useRef(false);
   const resultsOpenFrameRef = useRef<number | null>(null);
   const pendingResultsOpenRef = useRef(false);
+  const searchDismissedRef = useRef(false);
   const recentListId = useId();
   const resultListId = useId();
   const modeMenuId = useId();
@@ -109,7 +111,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
         cycle: "persistent",
         aid: String(aid),
       });
-      void fetch(`/api/progression/timeline?${timeline}`, { cache: "default" }).catch(() => {});
+      void loadAverageJson(`/api/progression/timeline?${timeline}`).catch(() => {});
     }
     router.push(profileHref(aid, selectedProfile));
   }
@@ -119,6 +121,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     cancelPendingResultsOpen();
     const controller = new AbortController();
     searchRequestRef.current = controller;
+    searchDismissedRef.current = false;
     setLoading(true);
     setError("");
     setNotFound(false);
@@ -128,11 +131,17 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     try {
       const params = new URLSearchParams({ name: clean, mode });
       const response = await fetch(`/api/player/search?${params}`, { signal: controller.signal });
+      if (response.status === 429) throw new Error(t("search.tooManyRequests"));
       if (response.status === 503) throw new Error(t("search.indexUnavailable"));
       if (!response.ok) throw new Error(t("search.searchFailed"));
 
       const found = (await response.json()) as PlayerSearchResult[];
-      if (searchRequestRef.current !== controller) return;
+      if (searchRequestRef.current !== controller || controller.signal.aborted) return;
+      const numericPlayer = /^\d{1,15}$/.test(clean) ? parsePlayerInput(clean) : null;
+      if (numericPlayer && !found.some((player) => player.profiles.some((profile) => profile.name === clean))) {
+        if (!searchDismissedRef.current) openPlayerInput(clean, numericPlayer, mode);
+        return;
+      }
       if (found.length === 0) {
         setError(t("search.nickNotFound"));
         setNotFound(true);
@@ -141,10 +150,14 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
       setResults(found);
       setResultsOpen(false);
       setRecentOpen(false);
-      pendingResultsOpenRef.current = true;
+      pendingResultsOpenRef.current = !searchDismissedRef.current;
     } catch (caught) {
+      if (searchRequestRef.current !== controller || controller.signal.aborted) return;
       if (caught instanceof Error && caught.name === "AbortError") return;
-      setError(caught instanceof Error ? caught.message : t("search.searchFailed"));
+      const message = caught instanceof Error ? caught.message : "";
+      setError(message === t("search.tooManyRequests") || message === t("search.indexUnavailable")
+        ? message
+        : t("search.searchFailed"));
       setNotFound(false);
     } finally {
       if (searchRequestRef.current === controller) {
@@ -164,6 +177,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
   }
 
   function openInputPanel() {
+    searchDismissedRef.current = false;
     cancelPendingResultsOpen();
     setModeMenuOpen(false);
     if (results.length > 0 && searchedNickname === query.trim()) {
@@ -202,6 +216,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
   }
 
   function closeSearchPanels() {
+    searchDismissedRef.current = true;
     cancelPendingResultsOpen();
     setRecentOpen(false);
     setResultsOpen(false);
@@ -236,6 +251,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
 
   useEffect(() => {
     setRecentPlayers(readRecentPlayers());
+    return () => { searchRequestRef.current?.abort(); };
   }, []);
 
   useEffect(() => {
@@ -256,7 +272,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
   }, [query, results.length, searchedNickname]);
 
   useEffect(() => {
-    if (!recentOpen && !modeMenuOpen && !resultsOpen && !pendingResultsOpenRef.current) return;
+    if (!loading && !recentOpen && !modeMenuOpen && !resultsOpen && !pendingResultsOpenRef.current) return;
 
     function isSearchTarget(target: EventTarget | null) {
       return target instanceof Node && (
@@ -265,6 +281,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     }
 
     function closePanels() {
+      searchDismissedRef.current = true;
       pendingResultsOpenRef.current = false;
       if (resultsOpenFrameRef.current !== null) {
         cancelAnimationFrame(resultsOpenFrameRef.current);
@@ -293,25 +310,30 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
       document.removeEventListener("focusout", closeOnFocusOut, true);
       window.removeEventListener("blur", closePanels);
     };
-  }, [modeMenuOpen, recentOpen, results.length, resultsOpen]);
+  }, [loading, modeMenuOpen, recentOpen, results.length, resultsOpen]);
 
   const recentMatches = filterRecentPlayers(recentPlayers, query).filter((entry) => {
-    if (!fixedMode) return true;
-    if (recentEntryMode(entry) !== fixedMode) return false;
-    return fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && entry.cycle === cycleId;
+    const mode = fixedMode ?? effectiveSearchMode;
+    if (mode === "all") return true;
+    if (recentEntryMode(entry) !== mode) return false;
+    return !fixedMode || fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && entry.cycle === cycleId?.trim();
   });
   const showResults = resultsOpen && results.length > 0 && searchedNickname === query.trim();
   const showRecent = !showResults && recentOpen && recentMatches.length > 0;
 
   async function submit() {
     const clean = query.trim();
-    if (!clean) return;
+    if (!clean || loading) return;
 
     cancelPendingResultsOpen();
     setRecentOpen(false);
     setResultsOpen(false);
 
     const player = parsePlayerInput(clean);
+    if (player && /^\d{1,15}$/.test(clean)) {
+      await searchNickname(clean, effectiveSearchMode);
+      return;
+    }
     if (player === null) {
       if (!NICKNAME_RE.test(clean)) {
         setError(t("search.error"));
@@ -325,13 +347,17 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
       return;
     }
 
+    openPlayerInput(clean, player, effectiveSearchMode);
+  }
+
+  function openPlayerInput(clean: string, player: ParsedPlayerInput, mode: SearchMode) {
     setError("");
     setNotFound(false);
     setResults([]);
     setResultsOpen(false);
     const selectedMode = fixedMode ?? (
-      /^\d{1,15}$/.test(clean) && effectiveSearchMode !== "all"
-        ? effectiveSearchMode
+      /^\d{1,15}$/.test(clean) && mode !== "all"
+        ? mode
         : player.mode
     );
     const selectedCycleId = selectedMode === "seasonal" && fixedMode
@@ -359,7 +385,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
     }
     if (selectedMode === "regular" || selectedMode === "pve") {
       const timelineParams = new URLSearchParams({ mode: selectedMode, cycle: "persistent", aid: String(player.aid) });
-      void fetch(`/api/progression/timeline?${timelineParams}`, { cache: "default" }).catch(() => {
+      void loadAverageJson(`/api/progression/timeline?${timelineParams}`).catch(() => {
         // The mounted progression panel retries and owns its visible error state.
       });
     }
@@ -610,10 +636,8 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
                     (fixedMode !== "seasonal" || Boolean(cycleId?.trim()) && profile.cycleId === cycleId))
                   : player.profiles;
                 const selectedProfile = selectPlayerSearchProfile(
-                  player.aid,
                   profiles,
                   searchedNickname,
-                  recentPlayers,
                 );
                 if (!selectedProfile) return null;
                 const selectedKey = `${selectedProfile.mode}:${selectedProfile.cycleId}`;

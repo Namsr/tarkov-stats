@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import CheaterScore from "@/components/CheaterScore";
 import ProfileRadar from "@/components/ProfileRadar";
+import AverageComparison from "@/components/AverageComparison";
 import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
 import { comparisonAdvantage, comparisonDossier, type ComparisonDossier } from "@/lib/comparison-dossier";
 import { useI18n } from "@/lib/i18n/context";
@@ -16,7 +17,7 @@ interface Metric { field: string; label: string; digits?: number; suffix?: strin
 const persistentMetrics: Metric[] = [
   { field: "kdRatio", label: "metric.kd_ratio", digits: 2, benchmark: "kd_ratio" },
   { field: "pmcKdRatio", label: "metric.pmc_kd_ratio", digits: 2, benchmark: "pmc_kd_ratio" },
-  { field: "killedPmcPerRaid", label: "seasonal.metric.pmcKillsPerRaid", digits: 2 },
+  { field: "killedPmcPerRaid", label: "metric.killed_pmc_per_raid", digits: 2, benchmark: "killed_pmc_per_raid" },
   { field: "killsPerRaid", label: "metric.kills_per_raid", digits: 2, benchmark: "kills_per_raid" },
   { field: "pmcSurvivalRate", label: "metric.pmc_survival_rate", digits: 1, suffix: "%", benchmark: "pmc_survival_rate" },
   { field: "survivalRate", label: "player.survivalRate", digits: 1, suffix: "%" },
@@ -84,7 +85,10 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     const state = cohorts[index];
     const benchmarks = state.data?.benchmarks as Partial<Record<ComparisonMetricKey, { value: number | null; count: number }>> | undefined;
     const median = state.data?.quality === "sufficient" ? benchmarks?.[metric.benchmark] : null;
-    return <span className="dossier-benchmark">{t("compare.playerMedian")}: {state.loading ? t("common.loading") : number(median && median.count > 0 ? median.value : null, metric.digits)}{median?.value != null ? metric.suffix : ""}</span>;
+    const average = !state.loading && median && median.count > 0 ? median.value : null;
+    return <><span className="dossier-benchmark">{t("compare.playerMedian")}: {state.loading ? t("common.loading") : number(average, metric.digits)}{average != null ? metric.suffix : ""}</span>
+      {metric.benchmark === "killed_pmc_per_raid" && <AverageComparison value={value(index, metric.field)} average={average} />}
+    </>;
   }
   function metricPairs(metrics: readonly Metric[], neutral = false) {
     return <div className="dossier-metrics">{metrics.map(metric => {
@@ -151,7 +155,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
   });
   function radar(player: ComparisonDossier, index: number) {
     const metrics = (scope.mode === "arena" ? selectedArenaMetrics : [...persistentMetrics, progressionMetrics[0]])
-      .filter(metric => metric.benchmark).map(metric => {
+      .filter(metric => metric.benchmark && metric.benchmark !== "killed_pmc_per_raid").map(metric => {
         const benchmarks = cohorts[index].data?.benchmarks as Partial<Record<ComparisonMetricKey, { value: number | null; count: number }>> | undefined;
         const base = cohorts[index].data?.quality === "sufficient" ? benchmarks?.[metric.benchmark!]?.value ?? null : null;
         return { key: metric.field, label: t(metric.label), a: player.values[metric.field] ?? null, b: base, baseline: base, digits: metric.digits ?? 0, percent: metric.suffix === "%" };

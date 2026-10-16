@@ -15,6 +15,7 @@ import type { WeaponMasteryProgress } from "@/types/tarkov";
 // positive for this cross-runtime import.
 import { expToLevel, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
 import { normalizeWeaponMastery } from "./profile-mastery.ts";
+import { seasonalPrestige } from "./seasonal/prestige.ts";
 
 export type SeasonalUpstreamContract = SeasonalUpstreamContractType;
 
@@ -373,7 +374,10 @@ function parseSeasonalStats(profile: UnknownRecord, counters: SeasonalCounters):
     // Level is derived from the shared Seasonal XP table at the ingestion
     // boundary; it is never copied from the regular PvP profile.
     level: expToLevel(counters.experience, [...PLAYER_LEVELS_V2026_07_22]),
-    prestige: info.prestigeLevel === undefined ? null : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
+    prestige: seasonalPrestige(
+      info.prestigeLevel === undefined ? null : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
+      seasonalAchievements?.map((achievement) => achievement.id) ?? [],
+    ),
     longestWinStreak: optionalCounterValue(pmc, "LongestWinStreak", "Pmc"),
     achievementsCount: seasonalAchievements === null ? null : seasonalAchievements.length,
   };
@@ -384,9 +388,10 @@ function parseStaticSignals(profile: UnknownRecord) {
   const pmc = counterItems(profile.pmcStats, "profile.pmcStats");
   const achievements = parseSeasonalAchievements(profile) ?? [];
   return {
-    prestige: info.prestigeLevel === undefined
-      ? 0
-      : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
+    prestige: seasonalPrestige(
+      info.prestigeLevel === undefined ? null : nonNegativeInteger(info.prestigeLevel, "profile.info.prestigeLevel"),
+      achievements.map((achievement) => achievement.id),
+    ) ?? 0,
     longestWinStreak: counterValue(pmc, "LongestWinStreak", "Pmc"),
     achievementIds: achievements.map((achievement) => achievement.id),
   };

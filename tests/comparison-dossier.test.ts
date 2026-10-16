@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { comparisonDossier, comparisonAdvantage, comparisonTimelineBenchmark } from "../lib/comparison-dossier.ts";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
+import type { ComparisonScope } from "../types/comparison";
 const scope = { mode: "seasonal", cycleId: "s1", arenaMode: null } as const;
 const identity = { aid: 1, mode: "seasonal", cycleId: "s1" };
 function payload() {
-  return { identity, profile: { aid: 1, nickname: "Player", seasonalStats: { runThrough: 0, pmcSurvivalRate: 40 }, counters: { pmcRaids: 10, killedPmc: 5 } },
+  return { identity, profile: { aid: 1, nickname: "Player", pvpStatsVersion: 1, seasonalStats: { runThrough: 0, pmcSurvivalRate: 40 }, counters: { pmcRaids: 10, killedPmc: 5, pmcKilledPmc: 5 } },
     viewModel: { identity, statistics: {}, overview: {}, achievements: { items: [] }, skills: { items: [] }, mastering: { items: [] } } };
 }
 test("dossier preserves recorded zero, leaves absent counters unavailable and keeps PMC targets distinct", () => {
@@ -15,6 +16,26 @@ test("dossier preserves recorded zero, leaves absent counters unavailable and ke
   assert.equal(dossier.values.killedPmc, 5);
   assert.equal(dossier.values.pmcAllKills, null);
   assert.equal(dossier.values.killedPmcPerRaid, .5);
+});
+
+test("dossier rate requires the exact versioned counter in Regular, PvE and Seasonal", () => {
+  for (const mode of ["regular", "pve", "seasonal"] as const) {
+    const currentScope: ComparisonScope = mode === "seasonal"
+      ? { mode, cycleId: "s1", arenaMode: null }
+      : { mode, cycleId: "persistent", arenaMode: null };
+    for (const [patch, expected] of [
+      [{}, .5], [{ pmcKilledPmc: 0 }, 0], [{ pmcKilledPmc: null }, null],
+      [{ pmcKilledPmc: undefined }, null], [{ pmcRaids: 0 }, null],
+      [{ pvpStatsVersion: 0 }, null], [{ pvpStatsVersion: undefined }, null],
+    ] as const) {
+      const data = { pmcRaids: 10, pmcKilledPmc: 5, killedPmc: 999, pmcKillsPerRaid: 99, pvpStatsVersion: 1, ...patch };
+      const body: unknown = { identity: { aid: 1, ...currentScope },
+        stats: mode === "seasonal" ? undefined : data,
+        profile: mode === "seasonal" ? { counters: data, pvpStatsVersion: data.pvpStatsVersion } : undefined,
+      };
+      assert.equal(comparisonDossier(currentScope, 1, body)!.values.killedPmcPerRaid, expected);
+    }
+  }
 });
 
 test("public Seasonal DTO retains combat summaries and exact recorded survival outcomes", () => {

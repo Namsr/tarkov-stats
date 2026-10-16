@@ -19,9 +19,10 @@ import {
 }
 from "../types/arena.ts";
 import { normalizeWeaponMastery, parseWeaponMastery, type WeaponMasteryReference } from "./profile-mastery.ts";
+import { validatedRegularRiskInputs } from "./regular-risk-score.ts";
 
 export const TARKOV_JSON_USER_AGENT = "tarkovstats.ru";
-export const PVP_STATS_PARSER_VERSION = 1;
+export const PVP_STATS_PARSER_VERSION = 2;
 
 export function needsPvpStatsParserRefresh(
   stats: Pick<ParsedPlayerStats, "pvpStatsParserVersion"> | null | undefined,
@@ -30,10 +31,10 @@ export function needsPvpStatsParserRefresh(
 }
 
 /** Server-side JSON request with the identity required by tarkov.dev. */
-export function fetchTarkovJson(url: string | URL, init: RequestInit = {}): Promise<Response> {
+export function fetchTarkovJson(url: string | URL, init: RequestInit = {}, scanner?: "ban-archive"): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
-  headers.set("User-Agent", TARKOV_JSON_USER_AGENT);
+  headers.set("User-Agent", scanner === "ban-archive" ? `${TARKOV_JSON_USER_AGENT} ban-archive-scanner` : TARKOV_JSON_USER_AGENT);
   return fetch(url, { ...init, headers });
 }
 
@@ -489,7 +490,7 @@ async function writePersistedMastery(cache: MasteryCache): Promise<void> {
 function parsePersistedAchievements(payload: unknown, mode: AchievementMode): AchievementCache {
   const root = record(payload);
   if (
-    root?.version !== 1 ||
+    (root?.version !== 1 && root?.version !== 2) ||
     root.mode !== mode ||
     typeof root.savedAt !== "number" ||
     !Number.isFinite(root.savedAt) ||
@@ -539,9 +540,9 @@ function parsePersistedAchievements(payload: unknown, mode: AchievementMode): Ac
       adjustedPlayersCompletedPercent: percentage(row.adjustedPlayersCompletedPercent, `achievement ${row.id}.adjustedPlayersCompletedPercent`),
     });
   }
-  // v1 caches written before descriptions/images were added remain valid
-  // outage fallbacks, but must refresh on the next healthy request.
-  return { data, ts: hasLegacyEntry ? 0 : root.savedAt };
+  // Version 1 caches may contain metadata written after a partial translation
+  // outage, so keep them as a fallback but refresh them on the next request.
+  return { data, ts: root.version === 1 || hasLegacyEntry ? 0 : root.savedAt };
 }
 
 async function readPersistedAchievements(mode: AchievementMode): Promise<AchievementCache | null> {
@@ -570,7 +571,7 @@ async function writePersistedAchievements(mode: AchievementMode, cache: Achievem
     temporary = `${file}.${Date.now()}.tmp`;
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(temporary, JSON.stringify({
-      version: 1,
+      version: 2,
       mode,
       savedAt: cache.ts,
       entries: [...cache.data.values()],
@@ -719,10 +720,13 @@ async function refreshAchievements(
           error: russianResult.reason instanceof Error ? russianResult.reason.message : "unknown",
         });
       }
+      if (englishResult.status === "rejected" || russianResult.status === "rejected") {
+        throw new Error("achievement translation endpoint unavailable");
+      }
       const map = parseAchievements(
         tasksResult.value,
-        englishResult.status === "fulfilled" ? englishResult.value : undefined,
-        russianResult.status === "fulfilled" ? russianResult.value : undefined,
+        englishResult.value,
+        russianResult.value,
       );
       const cache = { data: map, ts: Date.now() };
       achievementsCache.set(mode, cache);
@@ -946,6 +950,11 @@ const ARENA_COUNTER_KEYS = [
   "max_loss_streak",
 ] as const satisfies readonly (keyof ArenaCounters)[];
 
+const ARENA_ADDITIVE_UPSTREAM_KEYS = {
+  matches: "GamesCount", wins: "ArenaWins", losses: "ArenaLoses", kills: "Kills", deaths: "Deaths",
+  assists: "Assists", headshots: "Headshots", damage: "DamageDealt", round_mvp: "RoundMvpCount", match_mvp: "MatchMvpCount",
+} as const satisfies Record<(typeof ARENA_ADDITIVE_COUNTER_KEYS)[number], string>;
+
 const ARENA_MAX_COUNTER_KEYS = [
   "max_kill_streak", "max_win_streak", "max_loss_streak",
 ] as const satisfies readonly (keyof ArenaCounters)[];
@@ -993,7 +1002,11 @@ function arenaModeCounters(group: ArenaCounterGroup | undefined): ArenaCounters 
       counters.wins = counters.matches - counters.losses;
     }
   }
-  if (counters.matches === null && ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null)) {
+  // Unplayed modes can contain explicit zeroes (e.g. DamageDealt: 0).
+  // Invalid counters and positive activity must still keep matches unknown.
+  if (counters.matches === null &&
+      ARENA_ADDITIVE_COUNTER_KEYS.every((key) => counters[key] === null || counters[key] === 0) &&
+      Object.values(ARENA_ADDITIVE_UPSTREAM_KEYS).every((key) => !arenaCounterExists(group, key) || arenaCounterValue(group, key) === 0)) {
     counters.matches = 0;
   }
   return counters;
@@ -1061,11 +1074,26 @@ function overallWithFallback(
   const summed = completeModeCounters(modes);
   if (!direct) return completeModeOverall(modes, hours);
   const directCounters = arenaCounters(direct);
+  // A sparse overall block can lag behind the mode totals. Mixing its kills
+  // and match count with summed wins/headshots produces ratios from different
+  // populations. Use one complete mode sum in that case, retaining only the
+  // upstream streaks, which cannot be summed across modes.
+  const useModeSum = directCounters.matches !== null && summed.matches !== null &&
+    directCounters.matches !== summed.matches &&
+    Object.values(ARENA_ADDITIVE_UPSTREAM_KEYS).some((key) => !arenaCounterExists(direct, key)) &&
+    ARENA_ADDITIVE_COUNTER_KEYS.every((key) => summed[key] !== null) &&
+    modes.every(({ counters: c }) => c.matches === 0
+      ? ARENA_ADDITIVE_COUNTER_KEYS.every((key) => c[key] === null || c[key] === 0)
+      : c.matches !== null && c.wins !== null && c.losses !== null && c.wins + c.losses <= c.matches &&
+        c.headshots !== null && c.kills !== null && c.headshots <= c.kills);
+  if (useModeSum) {
+    for (const key of ARENA_ADDITIVE_COUNTER_KEYS) directCounters[key] = summed[key];
+  }
   const counters = Object.fromEntries(ARENA_COUNTER_KEYS.map((key) => [
     key,
     directCounters[key] ?? summed[key],
   ])) as unknown as ArenaCounters;
-  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: "upstream" };
+  return { hours, counters, metrics: arenaMetrics(counters), bestArp: null, source: useModeSum ? "complete_mode_sum" : "upstream" };
 }
 
 /** Parses Arena's separate counter tree into the shared stored-stat envelope. */
@@ -1134,7 +1162,7 @@ export function parseArenaProfileStats(profile: PlayerProfile): ParsedPlayerStat
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
     profileUpdatedAt: profileUpdatedAt(profile.updated) ?? 0,
     fetchedAt: null,
-    parserVersion: 4,
+    parserVersion: 5,
     overall: publicOverall,
     modes: publicModes,
   };
@@ -1262,6 +1290,18 @@ export function parseProfileStats(
 
   return {
     nickname: profile.info?.nickname ?? profile.nickname ?? "Unknown",
+    regularRiskInputs: validatedRegularRiskInputs({
+      raids: exactPmcRaids,
+      deaths: exactPmcRaids !== null && exactPmcDeaths !== null && exactPmcDeaths <= exactPmcRaids ? exactPmcDeaths : null,
+      survived: (() => {
+        const value = exactCount(pmcCounters, "ExitStatus", "Survived", "Pmc");
+        return exactPmcRaids !== null && value !== null && value <= exactPmcRaids ? value : null;
+      })(),
+      kills: exactCount(pmcCounters, "Kills"),
+      killedPmc: exactCount(pmcCounters, "KilledPmc"),
+      streak: exactCount(pmcCounters, "LongestWinStreak", "Pmc"),
+      prestige: Number.isSafeInteger(profile.info?.prestigeLevel) && Number(profile.info?.prestigeLevel) >= 0 ? Number(profile.info?.prestigeLevel) : null,
+    }),
     level,
     prestige: profile.info?.prestigeLevel ?? 0,
     experience,

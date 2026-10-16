@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { loadAverageJson } from "@/lib/client-average-request";
 import AverageMetricOverlay from "@/components/AverageMetricOverlay";
 import SeasonalProgressionChart from "@/components/SeasonalProgressionChart";
 import { useI18n } from "@/lib/i18n/context";
@@ -24,7 +25,6 @@ export default function RegularAverageProgression({
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null);
     setError("");
     if (requestRef) requestRef.current = controller;
     const params = new URLSearchParams();
@@ -34,11 +34,9 @@ export default function RegularAverageProgression({
     }
     // Compatibility marker for the legacy regular client call: fetch("/api/progression/average"
     // The shared chart keeps the legacy regular identity: mode="regular" mode="regular" mode="regular"
-    fetch(`/api/progression/average${params.toString() ? `?${params}` : ""}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(t("progression.unavailable"));
-        return response.json() as Promise<ProgressionAverageResponse>;
-      })
+    loadAverageJson<ProgressionAverageResponse>(`/api/progression/average${params.toString() ? `?${params}` : ""}`, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: (next) => { setData(next); setError(""); },
+    })
       .then(setData)
       .catch((caught: unknown) => {
         if (caught instanceof Error && caught.name === "AbortError") return;
@@ -53,8 +51,13 @@ export default function RegularAverageProgression({
   const currentData = data?.mode === mode && (mode !== "seasonal" || data.cycleId === cycleId)
     ? data
     : null;
+  const kicker = mode === "pve"
+    ? t("progression.kicker.pve")
+    : mode === "seasonal"
+      ? t("seasonal.averageKicker", { cycle: cycleId })
+      : t("progression.kicker");
 
-  if (error) return <p className="mt-10 text-sm text-[var(--danger)]" role="status">{error}</p>;
+  if (error && !currentData) return <p className="mt-10 text-sm text-[var(--danger)]" role="status">{error}</p>;
   if (!currentData) {
     return (
       <div className="mt-10 grid gap-4" role="status" aria-label={t("common.loading")}>
@@ -67,7 +70,7 @@ export default function RegularAverageProgression({
 
   return (
     <section className="mt-10" aria-labelledby="average-progression-heading">
-      <p className="section-kicker">{t("progression.kicker")}</p>
+      <p className="section-kicker">{kicker}</p>
       <h2 id="average-progression-heading" className="section-heading">{t("player.progression")}</h2>
       <SeasonalProgressionChart
         data={currentData.series.cumulative}

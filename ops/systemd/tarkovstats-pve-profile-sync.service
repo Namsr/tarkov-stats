@@ -1,7 +1,7 @@
 [Unit]
 Description=TarkovStats PvE profile feed sync
-After=docker.service network-online.target
-Requires=docker.service
+After=docker.service network-online.target tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
 Wants=network-online.target
 ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
 
@@ -9,9 +9,10 @@ ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats-auto
 ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
-# `exec -e` carries the run budget: the compose service passes no environment, so
+# The worker runner passes `-e` carrying the run budget: the compose service passes no environment, so
 # a unit-level Environment= would stop at the docker CLI and never reach the collector.
-ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/bin/docker compose -p tarkovstats -f docker-compose.vps.yml exec -T -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 web nice -n 10 node --experimental-strip-types --experimental-sqlite scripts/sync-pve-profiles.mjs
+ExecStart=/usr/bin/flock -n /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-run-background -e PVE_PROFILE_SYNC_MAX_RUN_MS=480000 worker nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/sync-pve-profiles.mjs
 # 8 min budget, 6 min short of the window: the same budget the hourly queue gives
 # this mode, with room for the collector to unwind before the window runs out.
 TimeoutStartSec=14m
+TimeoutStopSec=90s

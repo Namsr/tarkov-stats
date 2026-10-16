@@ -4,8 +4,12 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useFavorites } from "@/lib/favorites/context";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { loadPlayerProfileResponse, PlayerProfileResponseError } from "@/lib/client-profile-request";
 import ProfileRadar from "@/components/ProfileRadar";
+import StatCard from "@/components/StatCard";
+import AverageComparison from "@/components/AverageComparison";
+import { killedPmcPerRaid } from "@/lib/killed-pmc-per-raid";
 import type { ParsedPlayerStats } from "@/types/tarkov";
 import type { ProfileComparisonStats } from "@/types/profile-view";
 import type { AveragePeriod, AverageStatistic } from "@/lib/db";
@@ -17,6 +21,7 @@ type MetricKey =
   | "kd_ratio"
   | "pmc_kd_ratio"
   | "kills_per_raid"
+  | "killed_pmc_per_raid"
   | "pmc_survival_rate"
   | "longest_win_streak"
   | "level";
@@ -129,9 +134,14 @@ const METRICS: MetricDefinition[] = [
     decimals: 0,
   },
   { key: "level", labelKey: "radar.metric.level", get: (s) => s.level, decimals: 0 },
+  {
+    key: "killed_pmc_per_raid", labelKey: "metric.killed_pmc_per_raid", decimals: 2,
+    get: (s) => "killedPmcPerRaid" in s ? finiteNonNegativeMetricValue(s.killedPmcPerRaid) : killedPmcPerRaid(s),
+  },
 ];
 
 const DEMO_AVERAGES: Record<MetricKey, number> = {
+  killed_pmc_per_raid: 0.8,
   kd_ratio: 4.1,
   pmc_kd_ratio: 1.55,
   kills_per_raid: 3.2,
@@ -141,6 +151,7 @@ const DEMO_AVERAGES: Record<MetricKey, number> = {
 };
 
 const DEMO_PLAYER: Record<MetricKey, number> = {
+  killed_pmc_per_raid: 1.6,
   kd_ratio: 6.4,
   pmc_kd_ratio: 2.35,
   kills_per_raid: 4.15,
@@ -150,6 +161,7 @@ const DEMO_PLAYER: Record<MetricKey, number> = {
 };
 
 const DEMO_FAVORITE: Record<MetricKey, number> = {
+  killed_pmc_per_raid: 0.6,
   kd_ratio: 3.2,
   pmc_kd_ratio: 1.1,
   kills_per_raid: 2.65,
@@ -272,7 +284,7 @@ function valuesFromStats(stats: ComparisonStats): Record<MetricKey, number | nul
 }
 
 export default function PlayerRadarComparison({ aid, stats, mode = "regular", cycleId = "persistent", demo = false, nickname }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const favoriteHintId = useId();
   const pathname = usePathname();
   const router = useRouter();
@@ -347,10 +359,7 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
     setCohortLoading(true);
     setCohortError(false);
     const endpoint = mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort";
-    fetch(`${endpoint}?${params.toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        const payload = (await response.json()) as CohortResponse;
-        if (!response.ok) throw new Error(translate.current("radar.error.cohort"));
+    const apply = (payload: CohortResponse) => {
         if (payload.identity && (
           (payload.identity.aid != null && payload.identity.aid !== aid) ||
           (payload.identity.mode != null && payload.identity.mode !== mode) ||
@@ -358,11 +367,15 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
         )) {
           throw new Error(translate.current("radar.error.cohort"));
         }
-        return normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
-      })
-      .then((payload) => {
-        if (!controller.signal.aborted && payload.requestId === cohortRequestId) setRemoteCohort(payload);
-      })
+        const normalized = normalizeResponse(payload, hoursCenter, raidsCenter, aid, mode, cycleId, statistic, period);
+        if (!controller.signal.aborted && normalized.requestId === cohortRequestId) {
+          setRemoteCohort(normalized); setCohortError(false); setCohortLoading(false);
+        }
+    };
+    loadAverageJson<CohortResponse>(`${endpoint}?${params.toString()}`, {
+      signal: controller.signal, retryUnavailable: true, onUpdate: apply,
+    })
+      .then(apply)
       .catch(() => {
         if (controller.signal.aborted) return;
         setRemoteCohort(null);
@@ -455,13 +468,11 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
           setFavoriteProfile({ requestId: favoriteRequestId, stats: payload });
         }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (!cancelled) {
           setFavoriteError({
             key: "radar.error.favorite",
-            message: error instanceof PlayerProfileResponseError
-              ? null
-              : error instanceof Error ? error.message : null,
+            message: null,
           });
         }
       })
@@ -505,11 +516,14 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
       : null;
     return {
       key: metric.key, label: t(metric.labelKey),
-      shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index]),
+      shortLabel: t(["radar.metric.kd", "radar.metric.pmcKd", "home.radarKills", "home.radarSurvival", "home.radarStreak", "metric.level"][index] ?? metric.labelKey),
       a: playerValues?.[metric.key] ?? null, b: useFavorite ? favoriteValues?.[metric.key] ?? null : baseline,
       baseline, digits: metric.decimals, percent: metric.suffix === "%",
     };
   });
+  const killedPmcRow = rows.find((row) => row.key === "killed_pmc_per_raid")!;
+  const formatRate = (value: number | null) => value === null ? t("common.notAvailable")
+    : value.toLocaleString(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return <div className="profile-comparison" aria-busy={cohortLoading || (useFavorite && favoriteLoading) || undefined}>
     <h2 className="section-heading">{t("profile.section.comparison")}</h2>
@@ -536,6 +550,13 @@ export default function PlayerRadarComparison({ aid, stats, mode = "regular", cy
         : t("common.loading")}</p>}
     {!playerStatsKnown && <p className="profile-chart-notice" role="status">{t("radar.incompletePvp.player")}</p>}
     {useFavorite && favoriteStats && !favoriteStatsKnown && <p className="profile-chart-notice" role="status">{t("radar.incompletePvp.favorite")}</p>}
-    <ProfileRadar key={`${aid}:${mode}:${cycleId}:${statistic}:${period}:${useFavorite}:${effectiveFavoriteAid}`} metrics={rows} playerName={nickname || ("nickname" in stats ? stats.nickname : t("radar.series.player"))} otherName={otherName} />
+    <ProfileRadar key={`${aid}:${mode}:${cycleId}:${statistic}:${period}:${useFavorite}:${effectiveFavoriteAid}`} metrics={rows.filter((row) => row.key !== "killed_pmc_per_raid")} playerName={nickname || ("nickname" in stats ? stats.nickname : t("radar.series.player"))} otherName={otherName} />
+    <div className="profile-comparison-rate" data-compare-metric="killedPmcPerRaid">
+      <div><StatCard label={t("metric.killed_pmc_per_raid")} value={formatRate(killedPmcRow.a)} />
+        <AverageComparison value={killedPmcRow.a} average={killedPmcRow.baseline} />
+      </div>
+      <StatCard label={t("radar.series.average")} value={formatRate(killedPmcRow.baseline)} />
+      {useFavorite && <StatCard className="profile-comparison-rate__favorite" label={otherName} value={formatRate(killedPmcRow.b)} />}
+    </div>
   </div>;
 }

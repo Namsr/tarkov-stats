@@ -72,14 +72,15 @@ function arenaAveragePath(arenaMode, statistic) {
 }
 
 async function warmAverageCache() {
+  const paths = [];
   for (const statistic of statistics) {
     for (const mode of modes) {
       for (const period of periods) {
-        await request(averagePath(mode, statistic, period));
+        paths.push(averagePath(mode, statistic, period));
       }
     }
     for (const arenaMode of arenaModes) {
-      await request(arenaAveragePath(arenaMode, statistic));
+      paths.push(arenaAveragePath(arenaMode, statistic));
     }
   }
 
@@ -87,26 +88,36 @@ async function warmAverageCache() {
   if (process.env.SEASONAL_ENABLED === "true" && cycle) {
     for (const statistic of statistics) {
       for (const period of periods) {
-        await request(seasonalAveragePath(cycle, statistic, period));
+        paths.push(seasonalAveragePath(cycle, statistic, period));
       }
     }
   }
 
-  await request("/api/progression/average?mode=regular");
-  await request("/api/progression/average?mode=pve");
-  await request("/api/average/achievements?mode=regular");
-  await request("/api/average/achievements?mode=pve");
+  paths.push("/api/progression/average?mode=regular");
+  paths.push("/api/progression/average?mode=pve");
+  paths.push("/api/average/achievements?mode=regular");
+  paths.push("/api/average/achievements?mode=pve");
   if (process.env.SEASONAL_ENABLED === "true" && cycle) {
-    await request(`/api/progression/average?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
-    await request(`/api/average/achievements?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
+    paths.push(`/api/progression/average?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
+    paths.push(`/api/average/achievements?mode=seasonal&cycle=${encodeURIComponent(cycle)}`);
   }
+  let failed = 0;
+  for (const path of paths) {
+    try {
+      await request(path);
+    } catch (error) {
+      failed += 1;
+      console.warn(`average cache warm request failed: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { total: paths.length, failed };
 }
 
 async function waitForWeb() {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await request(averagePath("regular", "trimmed_mean", "all"));
+      await request("/healthz");
       return;
     } catch (error) {
       lastError = error;
@@ -121,8 +132,10 @@ async function runWarm(reason) {
   running = true;
   const startedAt = Date.now();
   try {
-    await warmAverageCache();
-    console.log(`average cache warm completed (${reason}) in ${Date.now() - startedAt}ms`);
+    const { total, failed } = await warmAverageCache();
+    const summary = `(${reason}) in ${Date.now() - startedAt}ms: ${total - failed}/${total} requests succeeded`;
+    if (failed) console.warn(`average cache warm failed ${summary}`);
+    else console.log(`average cache warm completed ${summary}`);
   } catch (error) {
     console.warn(`average cache warm failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
   } finally {

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { cookies, headers } from "next/headers";
+import { headers } from "next/headers";
 import Script from "next/script";
 import SiteHeader from "@/components/SiteHeader";
 import SiteFooter from "@/components/SiteFooter";
@@ -7,9 +7,11 @@ import NavigationPendingTracker from "@/components/NavigationPendingTracker";
 import SkipLink from "@/components/SkipLink";
 import FaqWidget from "@/components/FaqWidget";
 import PageviewBeacon from "@/components/PageviewBeacon";
+import PerformanceBeacon from "@/components/PerformanceBeacon";
 import { LanguageProvider } from "@/lib/i18n/context";
 import { FavoritesProvider } from "@/lib/favorites/context";
-import { dict, type Lang } from "@/lib/i18n/dictionary";
+import { dict } from "@/lib/i18n/dictionary";
+import { resolveLang } from "@/lib/i18n/server";
 import "./globals.css";
 
 const analyticsTokens: Record<string, string> = {
@@ -18,14 +20,6 @@ const analyticsTokens: Record<string, string> = {
   "tarkovstats.online": "f7051c60efbf4d67985f5ae11292f196",
   "www.tarkovstats.online": "f7051c60efbf4d67985f5ae11292f196",
 };
-
-/** Resolve the UI language from the cookie, else the browser's Accept-Language. */
-async function resolveLang(): Promise<Lang> {
-  const cookieLang = (await cookies()).get("lang")?.value;
-  if (cookieLang === "ru" || cookieLang === "en") return cookieLang;
-  const accept = ((await headers()).get("accept-language") ?? "").toLowerCase();
-  return accept.startsWith("ru") || /[ ,]ru\b/.test(accept) ? "ru" : "en";
-}
 
 export async function generateMetadata(): Promise<Metadata> {
   const lang = await resolveLang();
@@ -67,6 +61,7 @@ export default async function RootLayout({
             <SiteFooter />
             <FaqWidget />
             <PageviewBeacon />
+            <PerformanceBeacon />
           </FavoritesProvider>
         </LanguageProvider>
         {analyticsToken ? (

@@ -7,6 +7,8 @@ import type { PersistentProgressionMode } from "../types/seasonal";
 type SqliteDatabase = any;
 export type { PersistentProgressionMode } from "../types/seasonal";
 export const PERSISTENT_CYCLE_ID = "persistent";
+/** Bump when normalization rules change so unchanged legacy histories are repaired once. */
+export const PERSISTENT_MATERIALIZATION_VERSION = 1;
 type Counters = Record<"experience" | "pmcRaids" | "scavRaids" | "pmcSurvived" | "pmcDeaths" | "pmcKills" | "killedPmc", number>;
 interface SnapshotRow {
   id: number; aid: number; profile_updated_at: number; upstream_updated_at: number; captured_at: number;
@@ -67,7 +69,9 @@ export function materializePersistentProgression(
   let intervalCount = 0;
     const updateSnapshot = db.prepare(`UPDATE progression_snapshots SET profile_updated_at = ?,
       upstream_updated_at = ?, local_date = ?, series_id = ?, experience = ?, pmc_raids = ?,
-      scav_raids = ?, pmc_survived = ?, pmc_deaths = ?, pmc_kills = ?, killed_pmc = ? WHERE id = ?`);
+      scav_raids = ?, pmc_survived = ?, pmc_deaths = ?, pmc_kills = ?, killed_pmc = ? WHERE id = ?
+      AND (profile_updated_at, upstream_updated_at, local_date, series_id, experience, pmc_raids,
+        scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc) IS NOT (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const insertInterval = db.prepare(`INSERT INTO progression_intervals (
       mode, cycle_id, aid, from_snapshot_id, to_snapshot_id, ended_at, local_date, elapsed_days,
       status, experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
@@ -78,7 +82,12 @@ export function materializePersistentProgression(
       status = excluded.status, experience = excluded.experience, pmc_raids = excluded.pmc_raids,
       scav_raids = excluded.scav_raids, pmc_survived = excluded.pmc_survived,
       pmc_deaths = excluded.pmc_deaths, pmc_kills = excluded.pmc_kills,
-      killed_pmc = excluded.killed_pmc, confidence = excluded.confidence, score_version = 1`);
+      killed_pmc = excluded.killed_pmc, confidence = excluded.confidence, score_version = 1
+    WHERE (ended_at, local_date, elapsed_days, status, experience, pmc_raids, scav_raids,
+      pmc_survived, pmc_deaths, pmc_kills, killed_pmc, confidence, score_version)
+      IS NOT (excluded.ended_at, excluded.local_date, excluded.elapsed_days, excluded.status,
+        excluded.experience, excluded.pmc_raids, excluded.scav_raids, excluded.pmc_survived,
+        excluded.pmc_deaths, excluded.pmc_kills, excluded.killed_pmc, excluded.confidence, 1)`);
     const upsertProfile = db.prepare(`INSERT INTO player_profiles (
       mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
       experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
@@ -93,7 +102,15 @@ export function materializePersistentProgression(
       pmc_kills = excluded.pmc_kills, killed_pmc = excluded.killed_pmc,
       first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at,
       snapshot_count = excluded.snapshot_count, progression_eligible = excluded.progression_eligible,
-      confirmed_banned = MAX(player_profiles.confirmed_banned, excluded.confirmed_banned)`);
+      confirmed_banned = MAX(player_profiles.confirmed_banned, excluded.confirmed_banned)
+    WHERE (nickname, profile_updated_at, last_access_at, lifetime_pvp_hours, experience,
+      pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc, first_seen_at,
+      last_seen_at, snapshot_count, progression_eligible, confirmed_banned)
+      IS NOT (excluded.nickname, excluded.profile_updated_at, excluded.last_access_at,
+        excluded.lifetime_pvp_hours, excluded.experience, excluded.pmc_raids, excluded.scav_raids,
+        excluded.pmc_survived, excluded.pmc_deaths, excluded.pmc_kills, excluded.killed_pmc,
+        excluded.first_seen_at, excluded.last_seen_at, excluded.snapshot_count, excluded.progression_eligible,
+        MAX(player_profiles.confirmed_banned, excluded.confirmed_banned))`);
     for (const { aid } of aids) {
       const history = historyQuery.all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
       snapshotCount += history.length;
@@ -119,7 +136,8 @@ export function materializePersistentProgression(
           intervalCount += 1;
         }
         const counters = parsed.counters ?? Object.fromEntries(KEYS.map((key) => [key, 0])) as Counters;
-        updateSnapshot.run(updatedAt, updatedAt, date, seriesId, ...KEYS.map((key) => counters[key]), row.id);
+        const normalized = [updatedAt, updatedAt, date, seriesId, ...KEYS.map((key) => counters[key])];
+        updateSnapshot.run(...normalized, row.id, ...normalized);
         previous = { row: { ...row, profile_updated_at: updatedAt }, counters: parsed.counters, valid: parsed.valid };
       }
       const latest = history.at(-1)!;
@@ -128,6 +146,14 @@ export function materializePersistentProgression(
         Number(latest.profile_updated_at || latest.upstream_updated_at), Number(latest.captured_at),
         Number.isFinite(parsed.hours) ? parsed.hours : null, ...KEYS.map((key) => parsed.counters![key]),
         Number(history[0].captured_at), Number(latest.captured_at), history.length, raidIntervals >= 2 ? 1 : 0, aid);
+      // Snapshot/profile triggers increment this revision for relevant changes.
+      // Save the post-normalization value in the same transaction as the rows.
+      db.prepare(`INSERT INTO progression_normalizations (mode, cycle_id, aid, revision, version)
+        VALUES (?, ?, ?, COALESCE((SELECT revision FROM progression_personal_revisions
+          WHERE mode = ? AND cycle_id = ? AND aid = ?), 0), ?)
+        ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET revision = excluded.revision, version = excluded.version
+        WHERE progression_normalizations.revision != excluded.revision OR progression_normalizations.version != excluded.version`)
+        .run(mode, PERSISTENT_CYCLE_ID, aid, mode, PERSISTENT_CYCLE_ID, aid, PERSISTENT_MATERIALIZATION_VERSION);
     }
     if (options.refreshAggregates !== false) {
       refreshSqliteProgressionAggregates(db, mode, PERSISTENT_CYCLE_ID, options.targetBucket);

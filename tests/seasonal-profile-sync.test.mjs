@@ -191,22 +191,13 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
   const directory = await mkdtemp(join(tmpdir(), "seasonal-profile-sync-feed-budget-"));
   const dbPath = join(directory, "progression.db");
   const feedLog = join(directory, "feed.log");
-  // The feed ladder is charged against the same budget as the capture ladder.
-  // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
-  // catch block has to refuse the wait and let the loop-top guard end the run
-  // on the first attempt. The budget is a real one, so the regression costs
-  // real seconds only when the clamp is missing.
-  const preload = join(directory, "stub-feed.mjs");
-  await writeFile(preload, `import { appendFileSync } from "node:fs";
-    globalThis.fetch = async (input, init) => {
-      appendFileSync(process.env.SEASONAL_TEST_FEED_LOG, "feed\\n");
-      return new Response("stuck", { status: 503 });
-    };`);
+  const waitLog = join(directory, "wait.log");
+  await writeFile(waitLog, "");
 
   const startedAt = Date.now();
   try {
     const { stdout, code } = await runCollectorReportingExit([
-      "--import", pathToFileURL(preload).href,
+      "--import", new URL("fixtures/feed-budget-clock.mjs", import.meta.url).href,
       "--experimental-strip-types",
       "--experimental-sqlite",
       "scripts/sync-seasonal-profiles.mjs",
@@ -229,26 +220,16 @@ test("Seasonal feed ladder stops at the run budget instead of sleeping past it",
         SEASONAL_FEED_MAX_RETRIES: "3",
         SEASONAL_FEED_MAX_RUN_MS: "60000",
         PROFILE_QUEUE_DEADLINE_MS: String(startedAt + 700),
-        SEASONAL_TEST_FEED_LOG: feedLog,
+        PROFILE_TEST_FEED_LOG: feedLog,
+        PROFILE_TEST_WAIT_LOG: waitLog,
       },
     });
     const feedRequests = (await readFile(feedLog, "utf8").catch(() => "")).split("\n").filter(Boolean);
-    const elapsedMs = Date.now() - startedAt;
     assert.equal(feedRequests.length, 1, "the feed ladder must stop instead of sleeping past the run budget");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
-    // The request count alone cannot see the regression: `await delay(backoff(1))`
-    // is the sleep that outlives the deadline, and the loop-top guard only runs
-    // once that sleep returns, so an unclamped collector still opens exactly one
-    // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms sits above the worst clean run measured here (428ms, 14
-    // runs under 12 CPU burners) and below the 1000 ms the first backoff must cost
-    // plus process start (1160-1174ms unclamped), so it cannot flake on a loaded
-    // worker and cannot miss the overshoot either.
-    assert.ok(
-      elapsedMs < 900,
-      `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
-    );
+    assert.equal(await readFile(waitLog, "utf8"), "",
+      "the feed ladder must refuse retry waits that exceed its remaining budget");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
     const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
@@ -440,8 +421,8 @@ test("Seasonal profile queue purges and skips moderation-excluded accounts", asy
   const preloadPath = join(directory, "feed-host-preload.cjs");
   await writeFile(preloadPath, FEED_HOST_PRELOAD);
   const cycleId = "excluded-test";
-  const startsAt = Date.parse("2026-01-01T00:00:00Z");
-  const feedUpdatedAt = startsAt + 1_000;
+  const startsAt = Date.now() - 30 * 86_400_000;
+  const feedUpdatedAt = Date.now() - 60_000;
 
   // Both accounts are queued while they are still allowed, then aid 22 is
   // banned: confirmManualBan writes only the tombstone, so the queue row and
@@ -474,7 +455,7 @@ test("Seasonal profile queue purges and skips moderation-excluded accounts", asy
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/pvp-season/updated.json")) {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ 21: feedUpdatedAt }));
+      response.end(JSON.stringify({ 21: feedUpdatedAt, 23: startsAt + 1000, 24: Date.now() + 3_600_000 }));
       return;
     }
     if (request.url !== "/api/operator/seasonal/profile-sync") {
@@ -551,7 +532,7 @@ test("Seasonal profile queue stops claiming an account banned mid-run", async ()
   const preloadPath = join(directory, "feed-host-preload.cjs");
   await writeFile(preloadPath, FEED_HOST_PRELOAD);
   const cycleId = "midrun-ban-test";
-  const startsAt = Date.parse("2026-01-01T00:00:00Z");
+  const startsAt = Date.now() - 60_000;
   const feedUpdatedAt = startsAt + 1_000;
 
   const db = new DatabaseSync(dbPath);

@@ -18,6 +18,8 @@ import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
+import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "@/lib/client-risk";
+import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 import {
   HOME_EXAMPLE_AIDS,
   homeProfilePrestige,
@@ -146,7 +148,8 @@ export default function HomePage() {
       try {
         const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force });
         const body = response.body;
-        if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode) return null;
+        if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode
+          || body.identity.cycleId !== (cycle ?? "persistent")) return null;
         if (mode === "arena") {
           const arena = toArenaProfile(body, aid);
           return arena?.aid === aid ? { profile: null, arena: {
@@ -175,6 +178,27 @@ export default function HomePage() {
     });
     return () => { cancelled = true; controller.abort(); };
   }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
+
+  useEffect(() => {
+    if (!snapshot || snapshot.mode !== mode || aid == null) return;
+    const arena = snapshot.arena;
+    if (mode === "arena") {
+      if (!arena || arena.profile.aid !== aid || arena.risk) return;
+      return scheduleArenaRiskPoll(aid, arena.profile.profileUpdatedAt, (risk) => {
+        setSnapshot((current) => current === snapshot ? { ...current, arena: { ...arena, risk } } : current);
+      });
+    }
+    const profile = snapshot.profile;
+    const cycleId = showcaseTimelineCycle(mode, seasonalCycleId);
+    if (!profile || profile.identity.aid !== aid || profile.identity.cycleId !== cycleId || !cycleId) return;
+    // A retained verdict can be unavailable or older while its replacement is computing.
+    if (isPlayerRiskCurrent(profile.risk, profile.viewModel.freshness.profileUpdatedAt ?? 0)) return;
+    return schedulePlayerRiskPoll({
+      aid, mode, cycleId, profileUpdatedAt: profile.viewModel.freshness.profileUpdatedAt ?? 0,
+    }, (risk) => {
+      setSnapshot((current) => current === snapshot ? { ...current, profile: { ...profile, risk } } : current);
+    });
+  }, [aid, mode, seasonalCycleId, snapshot]);
 
   // Stale-while-revalidate: keep the previous mode's card on screen while the
   // next mode loads. Wiping to the loading panel collapses the section and
@@ -268,7 +292,14 @@ export default function HomePage() {
           </dl>}
           <div className="home-profile-bottom">
             {view && <><div className="home-achievement-count"><strong>{n(view.progression.achievementsCount)}</strong><span>{t("metric.achv_count")}</span></div>
-            <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={t("home.achievement", { name: (lang === "ru" ? item.nameRu : null) || item.name || item.id })} />)}</div>
+            <div className="home-achievement-icons">{rarestAchievements(view.achievements.items.filter(achievementWithImage), ACHIEVEMENT_ICON_COUNT).map((item) => {
+              const name = (lang === "ru" ? item.nameRu : item.name)?.trim();
+              const isSlug = name ? /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) : false;
+              const alt = name && name !== item.id && !isSlug
+                ? t("home.achievement", { name })
+                : t("home.achievementIcon");
+              return <Image key={item.id} src={item.imageUrl} width={42} height={42} alt={alt} />;
+            })}</div>
             </>}
             <Link prefetch={false} className="home-text-link" href={`${href}#statistics`}>{t("home.allStats")}<span aria-hidden="true">→</span></Link>
           </div>

@@ -44,7 +44,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Helper session unavailable" }, { status: 503, headers: { ...noStore, ...headers } });
     }
   }
-  const response = NextResponse.json({ candidates: await store.candidates(helperId, requested) }, { headers: { ...noStore, ...headers } });
-  if (token) response.cookies.set(HELPER_COOKIE, token, helperCookieOptions());
-  return response;
+  try {
+    const response = NextResponse.json({ candidates: await store.candidates(helperId, requested) }, { headers: { ...noStore, ...headers } });
+    if (token) response.cookies.set(HELPER_COOKIE, token, helperCookieOptions());
+    return response;
+  } catch (error) {
+    console.error("ban-review claim failed", error);
+    return NextResponse.json({ error: "Storage unavailable" }, { status: 503, headers: { ...noStore, ...headers } });
+  }
 }

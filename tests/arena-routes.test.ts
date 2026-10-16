@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck -- Node's direct TypeScript runner needs explicit source hooks.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -28,15 +28,17 @@ registerHooks({
 const directory = mkdtempSync(join(tmpdir(), "tarkov-arena-routes-"));
 process.env.SQLITE_PATH = join(directory, "players.db");
 process.env.BANS_SQLITE_PATH = join(directory, "bans.db");
+process.env.ADMIN_ANALYTICS_SQLITE_PATH = ":memory:";
 
 const { getFavoritesStore, getStore } = await import("../lib/db.ts");
 const { parseArenaProfileStats } = await import("../lib/tarkov-api.ts");
-const { getArenaAverage } = await import("../lib/arena/service.ts");
+const { getArenaAverage, getArenaProfileRisk } = await import("../lib/arena/service.ts");
 const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
 const { GET: getCohort } = await import("../app/api/average/cohort/route.ts");
 const { GET: getBaselinesBatch } = await import("../app/api/average/cohort/batch/route.ts");
 const { GET: getProfile } = await import("../app/api/player/profile/route.ts");
+const { GET: getRisk } = await import("../app/api/player/risk/route.ts");
 const { GET: getFavoriteStats } = await import("../app/api/favorites/stats/route.ts");
 const { ARENA_METRIC_KEYS, toArenaPopulationCohort } = await import("../components/arena-ui.ts");
 const { NextRequest } = await import("next/server");
@@ -135,6 +137,49 @@ function profileRequest(aid, refresh = false, wait = false) {
     headers: { "x-forwarded-for": "198.51.100.90" },
   });
 }
+
+test("Arena risk polling reads the background result and rejects stale evaluations without fetching upstream", async (t) => {
+  const aid = 1265971;
+  t.after(() => {
+    for (const table of ["arena_mode_stats", "arena_mode_stats_history", "arena_risk_evaluations"]) {
+      db.prepare(`DELETE FROM ${table} WHERE aid = ?`).run(aid);
+    }
+  });
+  const updated = 1790132374435;
+  await storeArenaProfile(upstreamArenaProfile(aid, updated, "walker-BD1"));
+  const request = () => new NextRequest(`http://local/api/player/risk?aid=${aid}&mode=arena`, {
+    headers: { "x-forwarded-for": "198.51.100.91" },
+  });
+  await withFetch(() => { throw new Error("risk polling must not fetch upstream"); }, async () => {
+    const initial = await getProfile(profileRequest(aid));
+    assert.equal((await initial.json()).risk, null);
+    const pending = await getRisk(request());
+    assert.equal(pending.headers.get("cache-control"), "no-store");
+    assert.equal((await pending.json()).risk, null);
+
+    const computed = await getArenaProfileRisk(aid);
+    assert.ok(computed);
+    const ready = await getRisk(request());
+    assert.deepEqual(await ready.json(), {
+      identity: { aid, mode: "arena", cycleId: "persistent" },
+      risk: computed,
+    });
+
+    const stale = structuredClone(computed);
+    stale.freshness.evaluatedAt = Date.now() - 6 * 60 * 60 * 1000;
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(stale), aid);
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+
+    const wrongVersion = structuredClone(computed);
+    wrongVersion.version.calculation = 0;
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(wrongVersion), aid);
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+
+    db.prepare("UPDATE arena_risk_evaluations SET risk_json = ? WHERE aid = ?").run(JSON.stringify(computed), aid);
+    await storeArenaProfile(upstreamArenaProfile(aid, updated + 1, "walker-BD1"));
+    assert.equal((await (await getRisk(request())).json()).risk, null);
+  });
+});
 
 test("Arena average validates its isolated query contract and defaults to matches", async () => {
   const response = await getAverage(new NextRequest(
@@ -309,7 +354,7 @@ test("Arena mode baselines batch all five modes in one request", async () => {
     "http://local/api/average/cohort/batch?mode=arena&aid=1&statistic=trimmed_mean&purpose=comparison",
   ));
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "private, max-age=60");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   const body = await response.json();
   assert.equal(body.gameMode, "arena");
   assert.equal(body.schemaVersion, ARENA_PARSER_VERSION);
@@ -595,4 +640,40 @@ test("Arena favorite keeps its legacy snapshot offline until it is reparsed", as
     assert.equal(body.favorites[0].stats.nickname, "Favorite Legacy Arena");
   });
   assert.equal(fetches, 0);
+});
+
+
+test("Arena compare profile API supplies recovered metrics and TSR for the reported accounts", async () => {
+  const sources = JSON.parse(readFileSync("tests/fixtures/arena-compare-profiles.json", "utf8"));
+  const store = await getStore("arena");
+  for (const source of sources) {
+    await store.upsert(source.aid, parseArenaProfileStats(source), []);
+    const response = await getProfile(profileRequest(source.aid));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.identity.aid, source.aid);
+    assert.equal(body.arena.parserVersion, ARENA_PARSER_VERSION);
+    assert.ok(body.arena.overall.metrics.win_rate > 0);
+    assert.ok(body.arena.overall.metrics.headshot_rate > 0);
+    assert.equal(body.tsRating.overall.complete, true);
+    assert.equal(body.tsRating.overall.displayReady, true);
+    assert.ok(Number.isFinite(body.tsRating.overall.rating));
+    assert.equal(body.arena.overall.counters.current_win_streak, null);
+  }
+});
+
+test("profile API allows 120 requests per minute across modes and rejects request 121", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const modes = ["regular", "pve", "arena", "seasonal"];
+  const request = (index, ip = "198.51.100.120") => new NextRequest(
+    "http://local/api/player/profile?aid=invalid&mode=" + modes[index % modes.length],
+    { headers: { "x-real-ip": ip } },
+  );
+  for (let index = 0; index < 120; index++) {
+    assert.equal((await getProfile(request(index))).status, 400, "request " + (index + 1) + " must reach validation");
+  }
+  const limited = await getProfile(request(120));
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("cache-control"), "no-store");
+  assert.equal((await getProfile(request(0, "198.51.100.121"))).status, 400);
 });

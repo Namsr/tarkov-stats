@@ -15,8 +15,11 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (
     !body || body.evidence !== "tarkov_dev_name_search_absence" ||
-    !Number.isSafeInteger(body.runId) || !Number.isSafeInteger(body.taskId) ||
-    !Number.isSafeInteger(body.aid) || typeof body.owner !== "string" || typeof body.cycleId !== "string"
+    !Number.isSafeInteger(body.runId) || (body.runId as number) <= 0 ||
+    !Number.isSafeInteger(body.taskId) || (body.taskId as number) <= 0 ||
+    !Number.isSafeInteger(body.aid) || (body.aid as number) <= 0 ||
+    typeof body.owner !== "string" || body.owner.trim() === "" ||
+    typeof body.cycleId !== "string" || body.cycleId.trim() === ""
   ) {
     return Response.json({ error: "Invalid ban confirmation" }, { status: 400, headers });
   }
@@ -28,7 +31,11 @@ export async function POST(request: Request) {
     });
     return Response.json({ ok: true }, { headers });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "active ban-check lease not found" || message === "Seasonal profile not found") {
+      return Response.json({ error: "Ban confirmation failed" }, { status: 409, headers });
+    }
     console.error("operator Seasonal ban confirmation failed", error);
-    return Response.json({ error: "Ban confirmation failed" }, { status: 409, headers });
+    return Response.json({ error: "Ban confirmation failed" }, { status: 503, headers });
   }
 }

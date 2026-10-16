@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "../lib/client-risk.ts";
+import { showcaseTimelineCycle } from "../lib/home-showcase.ts";
 
 const read = (path) => readFile(path, "utf8");
 
@@ -112,7 +114,7 @@ test("home showcase shows the faction beside the mode instead of the empty squar
   assert.match(css, /\.home-player-side::before \{ content: "·"/);
 });
 
-test("home risk renders the stored showcase risk immediately", async () => {
+test("home risk renders current Regular risk and preserves PvE's stored-risk fallback", async () => {
   const [component, route] = await Promise.all([
     read("components/HomePage.tsx"),
     read("app/api/player/profile/route.ts"),
@@ -120,7 +122,12 @@ test("home risk renders the stored showcase risk immediately", async () => {
   assert.match(component, /<CheaterScore compact risk=\{display\?\.profile\?\.risk \?\? null\}[\s\S]*?mode=\{displayMode\}/);
   assert.match(route, /allowStaleRisk = request\.nextUrl\.searchParams\.get\("allowStaleRisk"\) === "1"/);
   assert.match(route, /scoreVersion === riskScoreVersion\("pve", cycleId\) \|\| allowStaleRisk/);
-  assert.match(route, /scoreVersion === riskScoreVersion\("regular", cycleId\) \|\| allowStaleRisk/);
+  const regularStart = route.indexOf("const storedStarted = timing.now();");
+  assert.ok(regularStart >= 0, "Regular stored-profile branch exists");
+  const regularRoute = route.slice(regularStart);
+  assert.match(regularRoute, /const publicRisk = riskIsFresh/);
+  assert.match(regularRoute, /const publicRiskView = riskIsFresh/);
+  assert.doesNotMatch(regularRoute, /allowStaleRisk/);
 });
 
 test("the showcase retry bypasses the profile response cache on every click", async () => {
@@ -162,3 +169,85 @@ test("home showcase achievement icons are the rarest unlocked ones", async () =>
   // The strip used to render the first five ids the profile API happened to send.
   assert.doesNotMatch(component, /slice\(0, 5\)/);
 });
+
+test("home achievement alt text does not expose untranslated slugs", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /const name = \(lang === "ru" \? item\.nameRu : item\.name\)\?\.trim\(\);/);
+  assert.match(component, /const isSlug = name \? \/\^\[a-z0-9\]\+\(\?:-\[a-z0-9\]\+\)\*\$\/\.test\(name\) : false;/);
+  assert.match(component, /name && name !== item\.id && !isSlug/);
+  assert.match(component, /t\("home\.achievementIcon"\)/);
+});
+
+
+test("home showcase polls missing risk and only updates its originating snapshot", async () => {
+  const component = await read("components/HomePage.tsx");
+  assert.match(component, /scheduleArenaRiskPoll\(aid, arena.profile.profileUpdatedAt/);
+  assert.match(component, /schedulePlayerRiskPoll\(\{/);
+  assert.match(component, /profileUpdatedAt: profile.viewModel.freshness.profileUpdatedAt/);
+  assert.match(component, /snapshot.mode !== mode/);
+  assert.match(component, /profile.identity.cycleId !== cycleId/);
+  assert.equal(component.match(/current === snapshot \?/g)?.length, 2);
+  assert.match(component, /body.identity.cycleId !== \(cycle \?\? "persistent"\)/);
+});
+
+
+for (const mode of ["regular", "pve", "seasonal"]) {
+  test(mode + " showcase polls unusable or stale existing risk and retains a fresh zero", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const component = await read("components/HomePage.tsx");
+    const start = component.indexOf("    if (!snapshot || snapshot.mode !== mode || aid == null) return;");
+    const end = component.indexOf("  }, [aid, mode, seasonalCycleId, snapshot]);", start);
+    assert.ok(start >= 0 && end > start, "showcase risk effect must exist");
+    const createEffect = new Function("snapshot", "mode", "aid", "seasonalCycleId", "showcaseTimelineCycle", "isPlayerRiskCurrent", "schedulePlayerRiskPoll", "scheduleArenaRiskPoll", "setSnapshot",
+      "return () => { " + component.slice(start, end) + " };"
+    );
+    const aid = 8045310;
+    const cycleId = showcaseTimelineCycle(mode, "kord-breach-s1");
+    const now = Date.now();
+    const fresh = { score: 0, available: true, availability: "available", profileUpdatedAt: 100, freshnessAt: now };
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return Response.json({ identity: { aid, mode, cycleId }, risk: fresh });
+    });
+    const cases = [
+      ["missing", null, true],
+      ["old unavailable", { ...fresh, score: null, available: false, availability: "unavailable", profileUpdatedAt: 99 }, true],
+      ["unavailable flag", { ...fresh, available: false }, true],
+      ["unavailable status", { ...fresh, availability: "unavailable" }, true],
+      ["no score", { ...fresh, score: null }, true],
+      ["non-finite score", { ...fresh, score: NaN }, true],
+      ["old profile", { ...fresh, score: 80, profileUpdatedAt: 99 }, true],
+      ["expired evaluation", { ...fresh, freshnessAt: now - 5 * 60 * 60 * 1000 }, true],
+      ["fresh zero", fresh, false],
+      ["fresh partial", { ...fresh, availability: "partial" }, false],
+    ];
+    for (const [name, risk, shouldPoll] of cases) {
+      calls = 0;
+      const profile = { identity: { aid, mode, cycleId }, viewModel: { freshness: { profileUpdatedAt: 100 } }, risk };
+      const snapshot = { mode, profile, arena: null };
+      let current = snapshot;
+      const effect = createEffect(snapshot, mode, aid, "kord-breach-s1", showcaseTimelineCycle, isPlayerRiskCurrent, schedulePlayerRiskPoll,
+        () => assert.fail("persistent showcase used Arena poller"), (update) => { current = update(current); });
+      const cleanup = effect();
+      t.mock.timers.tick(0);
+      await new Promise(setImmediate);
+      cleanup?.();
+      assert.equal(calls, shouldPoll ? 1 : 0, name);
+      assert.equal(current.profile.risk.score, shouldPoll ? 0 : risk.score, name);
+      if (shouldPoll) assert.notEqual(current, snapshot, name);
+      else assert.equal(current, snapshot, name);
+    }
+    // A completed request from the previous display cannot replace a newer snapshot.
+    const snapshot = { mode, profile: { identity: { aid, mode, cycleId }, viewModel: { freshness: { profileUpdatedAt: 100 } }, risk: null }, arena: null };
+    const replacement = { ...snapshot };
+    let current = replacement;
+    const cleanup = createEffect(snapshot, mode, aid, "kord-breach-s1", showcaseTimelineCycle, isPlayerRiskCurrent, schedulePlayerRiskPoll,
+      () => assert.fail("persistent showcase used Arena poller"), (update) => { current = update(current); })();
+    t.mock.timers.tick(0);
+    await new Promise(setImmediate);
+    cleanup?.();
+    assert.equal(current, replacement);
+    assert.equal(current.profile.risk, null);
+  });
+}

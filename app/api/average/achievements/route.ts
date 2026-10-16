@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
 import { getStore, type PlayerStore } from "@/lib/db";
 import { isSeasonalRolloutReady, loadSeasonalCycleConfig } from "@/lib/seasonal/config";
 import { getPublishedSeasonalAchievementBaseline } from "@/lib/seasonal/progression-db";
@@ -58,9 +59,8 @@ interface BaselineCache {
 // request (getAchievements has its own 6h success-cache), so a transient
 // Reference-data failure degrades a single response instead of poisoning a memoized
 // payload with id-as-name / 0% for the whole TTL.
-const memo = new Map<string, BaselineCache>();
-const baselineLoads = new Map<string, Promise<BaselineCache>>();
 const MEMO_TTL_MS = 5 * 60 * 1000;
+class AchievementBaselineUnavailableError extends Error {}
 
 // The client requests this URL with cache: "default", so a cacheable 404 would
 // be pinned in the browser and CDN after one transient failure. This is a
@@ -68,10 +68,10 @@ const MEMO_TTL_MS = 5 * 60 * 1000;
 const noStore = { "Cache-Control": "no-store" };
 
 async function loadBaseline(store: PlayerStore | null): Promise<Omit<BaselineCache, "ts">> {
-  if (!store) return { total: 0, rows: [], storage: "unavailable" };
+  if (!store) throw new AchievementBaselineUnavailableError("Achievement storage is unavailable");
 
   const baseline = await store.achievementBaseline();
-  if (!baseline) return { total: 0, rows: [], storage: "unavailable" };
+  if (!baseline) throw new AchievementBaselineUnavailableError("Achievement baseline is unavailable");
   const total = baseline.total;
   const rows: BaselineRow[] = baseline.achievements.map((a) => ({
     id: a.ach_id,
@@ -121,15 +121,11 @@ export async function GET(request: NextRequest) {
     }
     const now = Date.now();
     const memoKey = rawMode === "seasonal" ? `${rawMode}:${cycleId}` : rawMode;
-    let cached = memo.get(memoKey);
-    if (!cached || now - cached.ts >= MEMO_TTL_MS) {
-      memoStatus = "miss";
-      const baselineStarted = timing.now();
-      let load = baselineLoads.get(memoKey);
-      if (!load) {
-        load = (async () => {
+    const baselineStarted = timing.now();
+    const loaded = await loadDynamicAverage(`achievement-baseline:${memoKey}`, async () => {
           if (rawMode === "seasonal") {
             const baseline = await getPublishedSeasonalAchievementBaseline(cycleId!);
+            if (!baseline) throw new AchievementBaselineUnavailableError("Seasonal achievement baseline is unavailable");
             return {
               total: baseline?.eligibleN ?? 0,
               rows: (baseline?.achievements ?? []).map((a) => ({
@@ -149,26 +145,21 @@ export async function GET(request: NextRequest) {
           const store = await getStore(rawMode);
           storeOpenMs = timing.elapsedMs(storeOpenStarted);
           return { ...(await loadBaseline(store)), ts: now };
-        })();
-        baselineLoads.set(memoKey, load);
-      }
-      try {
-        cached = await load;
-      } finally {
-        if (baselineLoads.get(memoKey) === load) baselineLoads.delete(memoKey);
-      }
-      baselineMs = timing.elapsedMs(baselineStarted);
-      memo.set(memoKey, cached);
-    } else {
-      memoStatus = "hit";
-    }
+    }, now, { ttlMs: MEMO_TTL_MS });
+    const cached: BaselineCache = loaded.value;
+    memoStatus = loaded.cache;
+    baselineMs = timing.elapsedMs(baselineStarted);
     storage = cached.storage;
 
     // Cheap (own 6h cache); failure falls back to id-as-name and recovers next request.
     const metadataStarted = timing.now();
-    const meta = await getAchievements(rawMode === "seasonal" ? "seasonal" : "regular").catch(() => new Map()).finally(() => {
+    const metadata = await loadDynamicAverage(`achievement-metadata:${rawMode === "seasonal" ? memoKey : "regular"}`, async () =>
+      [...await getAchievements(rawMode === "seasonal" ? "seasonal" : "regular")], Date.now(), {
+        ttlMs: 6 * 60 * 60_000, accept: (entries) => entries.length > 0,
+      }).catch(() => null).finally(() => {
       metadataMs = timing.elapsedMs(metadataStarted);
     });
+    const meta = new Map(metadata?.value ?? []);
 
     const achievements: AchievementRow[] = cached.rows.map((r) => {
       const m = meta.get(r.id);
@@ -193,7 +184,7 @@ export async function GET(request: NextRequest) {
 
     const payload: Payload = { total: cached.total, achievements };
     const response = NextResponse.json(payload, {
-      headers: { "Cache-Control": "public, max-age=300, s-maxage=300, stale-while-revalidate=3600" },
+      headers: statisticsCacheHeaders({ stale: loaded.stale || metadata === null || metadata.stale, generatedAt: loaded.generatedAt }),
     });
     timing.finish({
       operation: "average_achievements", mode: rawMode, outcome: "success", status: 200,
@@ -206,6 +197,8 @@ export async function GET(request: NextRequest) {
       operation: "average_achievements", outcome: "error", status: 500,
       storage, memo: memoStatus, storeOpenMs, baselineMs, metadataMs,
     });
-    return NextResponse.json({ error: "Failed to compute achievement baseline" }, { status: 500, headers: noStore });
+    return NextResponse.json({ error: "Failed to compute achievement baseline" }, {
+      status: e instanceof AchievementBaselineUnavailableError ? 503 : 500, headers: noStore,
+    });
   }
 }

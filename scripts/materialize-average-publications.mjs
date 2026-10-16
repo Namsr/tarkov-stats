@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { computeAverage } from "../lib/average-compute.ts";
 import { MAX_HISTOGRAM_BINS } from "../lib/histogram.ts";
-import { getArenaAverage } from "../lib/arena/service.ts";
+import { getArenaAveragePublicationPayloads } from "../lib/arena/service.ts";
 import { getSeasonalAveragePublicationPayloads } from "../lib/seasonal/average-db.ts";
 import {
   averagePublicationDue,
@@ -10,15 +10,12 @@ import {
   getAveragePublicationStates,
   publishAverageScope,
   seasonalPublicationScope,
-  standardArenaVariant,
   standardAverageVariant,
 } from "../lib/average-publication.ts";
 import { STANDARD_AVERAGE_PERIODS, STANDARD_AVERAGE_STATISTICS } from "../lib/average-publication-variants.ts";
-import { ARENA_MODE_KEYS } from "../types/arena.ts";
 
 const statistics = STANDARD_AVERAGE_STATISTICS;
 const periods = STANDARD_AVERAGE_PERIODS;
-const arenaModes = ARENA_MODE_KEYS;
 const pollMs = 30_000;
 const scopePauseMs = 500;
 const arenaSyncLeaseMaxAgeMs = 30 * 60_000;
@@ -27,6 +24,7 @@ let stopping = false;
 // Scopes that failed to publish. Counted instead of thrown so the long-running
 // mode can keep retrying on its schedule, while the one-shot mode can report it.
 let failedScopes = 0;
+let deferred = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,6 +91,7 @@ async function seasonalPayloads(scope) {
     portraitRows: timings.portraitRows,
     portraitFetchMs: timings.portraitFetchMs,
     variants: timings.variants,
+    periods: timings.periods,
     sqlPhases: { portraitFetchMs: timings.portraitFetchMs },
     totalMs: Date.now() - startedAt,
   });
@@ -100,14 +99,8 @@ async function seasonalPayloads(scope) {
 }
 
 async function arenaPayloads() {
-  const payloads = new Map();
-  for (const statistic of statistics) {
-    for (const mode of arenaModes) {
-      const result = await getArenaAverage({ mode, statistic, dimension: "matches", metric: "players" });
-      if (!result) throw new Error("arena storage unavailable");
-      payloads.set(standardArenaVariant(mode, statistic), result);
-    }
-  }
+  const payloads = await getArenaAveragePublicationPayloads();
+  if (!payloads) throw new Error("arena storage unavailable");
   return payloads;
 }
 
@@ -130,12 +123,20 @@ async function materialize(scope, reason) {
 }
 
 async function runDue(reason, force = false) {
-  if (running || stopping || arenaProfileSyncActive()) return;
+  if (running || stopping) return;
+  if (arenaProfileSyncActive()) {
+    deferred = true;
+    return;
+  }
   running = true;
   try {
     const states = new Map((await getAveragePublicationStates()).map((state) => [state.scope, state]));
     for (const scope of scopes()) {
-      if (stopping || arenaProfileSyncActive()) break;
+      if (stopping) break;
+      if (arenaProfileSyncActive()) {
+        deferred = true;
+        break;
+      }
       if (force || averagePublicationDue(states.get(scope))) {
         await materialize(scope, reason);
         if (!stopping) await sleep(scopePauseMs);
@@ -151,13 +152,17 @@ process.once("SIGINT", () => { stopping = true; });
 
 const initialStates = await getAveragePublicationStates();
 const missing = scopes().some((scope) => !initialStates.some((state) => state.scope === scope && state.generation !== null));
-if (!missing) await sleep(30_000);
+if (!missing && process.env.AVERAGE_MATERIALIZE_ONCE !== "true") await sleep(30_000);
 await runDue("startup");
 // A one-shot run exists to be observed by an operator or CI: a scope that never
 // published must fail the run instead of reporting success. The exit code is only
 // ever raised, never forced, so a nonzero code set by a failure path survives.
 if (process.env.AVERAGE_MATERIALIZE_ONCE === "true") {
   if (failedScopes > 0) process.exitCode = 1;
+  else if (deferred) {
+    console.warn("average publication deferred: Arena profile sync lease is active");
+    process.exitCode = 75;
+  }
 } else {
   // The long-running mode stays lenient on purpose: runDue retries every failed
   // scope on the next scheduled pass, so a failure must not end the process.

@@ -168,16 +168,19 @@ test("PvE index validates a streamed payload and swaps it atomically", async () 
     await assert.rejects(launch(dbPath, url, "--force"), /appears truncated/);
     const afterRejected = new DatabaseSync(dbPath);
     assert.equal(afterRejected.prepare("SELECT COUNT(*) AS n FROM pve_player_index").get().n, 4);
+    afterRejected.exec("CREATE TABLE mode_players (mode TEXT, aid INTEGER); INSERT INTO mode_players VALUES ('pve', 43)");
     afterRejected.close();
 
     payload = JSON.stringify({ "42": "Changed", "46": "New" });
     etag = '"pve-v3"';
     await launch(dbPath, url, "--force");
     const after = new DatabaseSync(dbPath);
+    assert.equal(after.prepare("SELECT COUNT(*) AS n FROM pve_player_index_previous").get().n, 4);
     assert.deepEqual(after.prepare(
       "SELECT aid, nickname FROM pve_player_index ORDER BY aid"
     ).all().map((row) => ({ ...row })), [
       { aid: 42, nickname: "Changed" },
+      { aid: 43, nickname: "Second" },
       { aid: 46, nickname: "New" },
     ]);
     after.close();

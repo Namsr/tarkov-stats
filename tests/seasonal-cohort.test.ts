@@ -14,11 +14,69 @@ const databasePath = join(directory, "progression.db");
 const previousPath = process.env.PROGRESSION_SQLITE_PATH;
 process.env.PROGRESSION_SQLITE_PATH = databasePath;
 
+async function refreshedCohort(input) {
+  const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
+  let lookup = await querySeasonalComparisonCohort(input);
+  const deadline = Date.now() + 20_000;
+  while (lookup.stale && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    lookup = await querySeasonalComparisonCohort(input);
+  }
+  assert.equal(lookup.stale, false, "the new revision must replace the retained cohort");
+  return lookup;
+}
+
 test.after(() => {
   if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
   else process.env.PROGRESSION_SQLITE_PATH = previousPath;
   // Both tests share one file: the cohort module keeps a single SQLite adapter.
   try { rmSync(directory, { recursive: true, force: true }); } catch { /* SQLite may retain the adapter briefly. */ }
+});
+
+test("PMC kills per raid uses exact kills in the shared matched and population groups, including recorded zeros", async () => {
+  const db = new DatabaseSync(databasePath);
+  initializeSeasonalSchema(db);
+  const insert = db.prepare(`INSERT INTO player_profiles (
+    mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+    experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
+    pmc_killed_pmc, pvp_stats_version, first_seen_at, last_seen_at
+  ) VALUES ('seasonal', 'exact-kills', ?, 'peer', 1000, 1000, ?, 100, ?, 0, 10, 10, 200, ?, ?, ?, 1000, 1000)`);
+  db.exec("BEGIN");
+  try {
+    insert.run(1001, 100, 20, 9000, 9000, 1); // target must never contribute to its own mean
+    for (let i = 0; i < 20; i++) insert.run(1002 + i, 100, 20, 999, i < 10 ? 0 : 20, 1);
+    insert.run(1022, 100, 20, 9000, 9000, 0);
+    insert.run(1023, 100, 20, 9000, 9000, 2);
+    insert.run(1030, 100, 20, 9000, 9000, 1);
+    insert.run(1031, 100, 20, 9000, 9000, 1);
+    insert.run(1032, 100, 0, 9000, 9000, 1);
+    insert.run(1033, 100, 20, 9000, null, 1);
+    db.exec("UPDATE player_profiles SET confirmed_banned = 1 WHERE aid = 1030");
+    db.exec("INSERT INTO excluded_players (aid, reason, created_at) VALUES (1031, 'test', 1000)");
+    insert.run(1050, 1000, 200, 9000, null, 0);
+    db.exec("COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
+  db.close();
+  const { querySeasonalComparisonCohort } = await import("../lib/seasonal/comparison-cohort.ts");
+  const matched = await querySeasonalComparisonCohort({ aid: 1001, cycleId: "exact-kills" });
+  assert.equal(matched.result.strategy, "matched");
+  assert.equal(matched.result.n, 23);
+  assert.deepEqual(matched.result.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+  // Remove the original target before checking population fallback: its 450 kills/raid is an outlier.
+  const edit = new DatabaseSync(databasePath);
+  edit.prepare("UPDATE player_profiles SET pvp_stats_version = 0 WHERE cycle_id = 'exact-kills' AND aid = 1001").run();
+  edit.close();
+  const population = await querySeasonalComparisonCohort({ aid: 1050, cycleId: "exact-kills" });
+  assert.equal(population.result.strategy, "population");
+  assert.deepEqual(population.result.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+  const zeros = new DatabaseSync(databasePath);
+  zeros.prepare("UPDATE player_profiles SET pmc_killed_pmc = 0 WHERE cycle_id = 'exact-kills' AND aid BETWEEN 1002 AND 1021").run();
+  zeros.close();
+  const zeroAverage = await querySeasonalComparisonCohort({ aid: 1050, cycleId: "exact-kills", revision: "zeros" });
+  assert.equal(zeroAverage.stale, true);
+  assert.deepEqual(zeroAverage.result.averages.killed_pmc_per_raid, { value: 0.5, count: 20 });
+  const refreshedZeros = await refreshedCohort({ aid: 1050, cycleId: "exact-kills", revision: "zeros" });
+  assert.deepEqual(refreshedZeros.result.averages.killed_pmc_per_raid, { value: 0, count: 20 });
 });
 
 test("Seasonal cohort reads the latest snapshot only from the requested cycle", async () => {
@@ -126,13 +184,14 @@ const profile = db.prepare(`INSERT INTO player_profiles (
   });
   assert.equal(cachedMedian.cache, "hit");
 
-  // A manual profile refresh must not read the old five-minute cohort cache.
+  // A manual refresh returns the retained cohort while the new revision computes.
   const revisedMedian = await querySeasonalComparisonCohort({
     aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
   });
-  assert.equal(revisedMedian.cache, "miss");
+  assert.equal(revisedMedian.cache, "hit");
+  assert.equal(revisedMedian.stale, true);
   assert.deepEqual(revisedMedian.result, median.result);
-  const repeatedRevision = await querySeasonalComparisonCohort({
+  const repeatedRevision = await refreshedCohort({
     aid: 1, cycleId: "cycle-a", statistic: "median", now: 10_000, revision: "refresh-1",
   });
   assert.equal(repeatedRevision.cache, "hit");

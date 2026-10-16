@@ -1,5 +1,5 @@
-// 15min TTL is safe because per-aid cohort keys fan out behind a 30-min
-// unstable_cache layer, and entries are small JSON (bounded LRU below).
+import { readStatisticsResponse, writeStatisticsResponse } from "./average-publication.ts";
+
 const TTL_MS = 15 * 60_000;
 // Cohort keys are per-aid (high cardinality) but each entry is a small JSON
 // payload, so a 2048-entry LRU bounds memory without evicting hot averages.
@@ -39,66 +39,126 @@ function withComputeTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<
   });
 }
 
-type Entry<T> = { promise: Promise<T>; expiresAt: number };
-const entries = new Map<string, Entry<unknown>>();
+type Saved<T> = { key: string; value: T; generatedAt: number; expiresAt: number };
+type Entry<T> = {
+  saved?: Saved<T>;
+  restoring?: Promise<void>;
+  pending?: { key: string; promise: Promise<T> };
+  retryAt: number;
+  bytes?: number;
+};
+// Next can bundle this module separately for different route handlers. Share
+// the last successful answer and in-flight jobs across those bundles too.
+const cacheSymbol: unique symbol = Symbol.for("tarkov.statistics-response-cache.v1");
+const cacheGlobal = globalThis as typeof globalThis & { [cacheSymbol]?: Map<string, Entry<unknown>> };
+const entries = cacheGlobal[cacheSymbol] ??= new Map<string, Entry<unknown>>();
 
-function prune(now: number): void {
-  for (const [key, entry] of entries) {
-    if (entry.expiresAt <= now) entries.delete(key);
+function boundMemory(): void {
+  let bytes = 0;
+  for (const entry of entries.values()) bytes += entry.bytes ?? 0;
+  for (const [identity, entry] of entries) {
+    if (bytes <= 32 * 1024 * 1024 && entries.size <= MAX_KEYS) break;
+    entries.delete(identity);
+    bytes -= entry.bytes ?? 0;
   }
-  while (entries.size >= MAX_KEYS) entries.delete(entries.keys().next().value!);
+}
+
+export type StatisticsCacheOptions<T> = {
+  // The identity includes every user filter, but excludes scan/revision numbers.
+  fallbackKey?: string;
+  ttlMs?: number;
+  accept?: (value: T) => boolean;
+};
+
+export type StatisticsCacheResult<T> = {
+  value: T;
+  cache: "hit" | "miss";
+  stale: boolean;
+  generatedAt: number;
+};
+
+export function statisticsCacheHeaders(result: { stale: boolean; generatedAt: number }): Record<string, string> {
+  return {
+    "X-Statistics-Stale": result.stale ? "1" : "0",
+    "X-Statistics-Generated-At": String(result.generatedAt),
+    // Refresh polling must reach the server rather than replay a browser/CDN copy.
+    "Cache-Control": "no-store",
+    ...(result.stale ? { "Retry-After": "5" } : {}),
+  };
 }
 
 export async function loadDynamicAverage<T>(
   key: string,
   load: () => Promise<T>,
   now = Date.now(),
-): Promise<{ value: T; cache: "hit" | "miss" }> {
-  // Slow-compute guard lives here so every caller (average + cohort routes)
-  // shares it. Callers already map any error to 500/503, which covers
-  // DynamicComputeTimeoutError without route changes.
-  const timeoutMs = dynamicComputeTimeoutMs();
-  const existing = entries.get(key) as Entry<T> | undefined;
-  if (existing && existing.expiresAt > now) {
-    entries.delete(key);
-    entries.set(key, existing);
-    try {
-      return { value: await withComputeTimeout(existing.promise, timeoutMs), cache: "hit" };
-    } catch (error) {
-      // Timeout keeps the in-flight entry so its late result still warms the
-      // cache; a real failure evicts so the next caller retries.
-      if (error instanceof DynamicComputeTimeoutError) throw error;
-      if (entries.get(key) === (existing as unknown as Entry<unknown>)) entries.delete(key);
+  options: StatisticsCacheOptions<T> = {},
+): Promise<StatisticsCacheResult<T>> {
+  const identity = `statistics-v1:${options.fallbackKey ?? key}`;
+  let entry = entries.get(identity) as Entry<T> | undefined;
+  if (!entry) {
+    while (entries.size >= MAX_KEYS) entries.delete(entries.keys().next().value!);
+    entry = { retryAt: 0 };
+    entries.set(identity, entry);
+    const target = entry;
+    entry.restoring = readStatisticsResponse<Saved<T>>(identity).then((saved) => {
+      if (saved && saved.value != null && Number.isFinite(saved.generatedAt) && Number.isFinite(saved.expiresAt)) {
+        target.saved = saved;
+        target.bytes = Buffer.byteLength(JSON.stringify(saved));
+      }
+    });
+  }
+  await entry.restoring;
+  entries.delete(identity);
+  entries.set(identity, entry);
+  boundMemory();
+  const saved = entry.saved;
+  const fresh = saved && saved.key === key && saved.expiresAt > now;
+  if (fresh) return { value: saved.value, cache: "hit", stale: false, generatedAt: saved.generatedAt };
+
+  const shared = entry.pending?.key === key;
+  if (!shared && (!saved || entry.retryAt <= now)) {
+    const target = entry;
+    const started = Date.now();
+    // A microtask also catches synchronous loaders. A failed/null response
+    // never destroys the last successful one, and a superseded job cannot win.
+    const job = { key, promise: null as unknown as Promise<T> };
+    target.pending = job;
+    // Let the stale HTTP response finish its microtasks before a synchronous
+    // SQLite loader starts. Cold requests still await the same bounded job.
+    const compute = saved ? new Promise<T>((resolve, reject) => {
+      setImmediate(() => { Promise.resolve().then(load).then(resolve, reject); });
+    }) : Promise.resolve().then(load);
+    job.promise = compute.then(async (value) => {
+      const accepted = options.accept ? options.accept(value) : value != null;
+      if (accepted && target.pending === job && entries.get(identity) === target) {
+        const generatedAt = now + Math.max(0, Date.now() - started);
+        const next = { key, value, generatedAt, expiresAt: generatedAt + (options.ttlMs ?? TTL_MS) };
+        target.saved = next;
+        target.bytes = Buffer.byteLength(JSON.stringify(next));
+        boundMemory();
+        target.retryAt = 0;
+        await writeStatisticsResponse(identity, next, now);
+      } else if (!accepted) {
+        target.retryAt = now + 5_000;
+      }
+      return value;
+    }).catch((error: unknown) => {
+      if (target.pending === job) target.retryAt = now + Math.max(0, Date.now() - started) + 5_000;
       throw error;
-    }
+    }).finally(() => {
+      if (target.pending === job) target.pending = undefined;
+    });
+    job.promise.catch(() => undefined);
   }
-  prune(now);
-  let compute: Promise<T>;
+  // The update runs on the long-lived VPS process; cold callers alone await it.
+  if (saved) return { value: saved.value, cache: "hit", stale: true, generatedAt: saved.generatedAt };
   try {
-    compute = load();
+    const value = await withComputeTimeout(entry.pending!.promise, dynamicComputeTimeoutMs());
+    return { value, cache: shared ? "hit" : "miss", stale: false, generatedAt: entry.saved?.generatedAt ?? now };
   } catch (error) {
-    // Synchronous throw: nothing was cached, just propagate.
-    throw error;
-  }
-  const entry: Entry<T> = {
-    promise: compute,
-    expiresAt: now + TTL_MS,
-  };
-  entries.set(key, entry);
-  // If the awaiting caller times out first, this late-rejection handler evicts
-  // the entry so a rejected promise is never stuck in the cache until TTL, and
-  // it marks the original promise handled (no unhandled rejection). A late
-  // success intentionally stays cached to warm the next caller.
-  compute.then(undefined, () => {
-    if (entries.get(key) === (entry as unknown as Entry<unknown>)) entries.delete(key);
-  });
-  try {
-    return { value: await withComputeTimeout(entry.promise, timeoutMs), cache: "miss" };
-  } catch (error) {
-    // Timeout: keep the original entry cached for background warming.
-    // Normal compute error: evict the entry, rethrow (existing behavior).
-    if (error instanceof DynamicComputeTimeoutError) throw error;
-    if (entries.get(key) === (entry as unknown as Entry<unknown>)) entries.delete(key);
+    // Computation may have finished just before the deadline while its durable
+    // write is still pending. The ready memory answer is already usable.
+    if (entry.saved) return { value: entry.saved.value, cache: "hit", stale: entry.saved.key !== key, generatedAt: entry.saved.generatedAt };
     throw error;
   }
 }

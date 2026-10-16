@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 
 test("warmup time budget stops before another request without marking a signal stop", async () => {
   const dir = mkdtempSync(join(tmpdir(), "warmup-budget-"));
@@ -199,7 +201,7 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     CREATE TABLE arena_mode_stats(aid INTEGER,arena_mode TEXT,upstream_version INTEGER,parser_version INTEGER);
     INSERT INTO players VALUES (1,100),(2,200),(10,1000);
     INSERT INTO mode_players VALUES ('pve',3,0,'{"pvpStatsParserVersion":0}'),
-      ('pve',4,400,'{"pvpStatsParserVersion":1}'),('arena',5,500,'{}'),
+      ('pve',4,400,'{"pvpStatsParserVersion":2}'),('pve',11,1100,'{"pvpStatsParserVersion":1}'),('arena',5,500,'{}'),
       ('arena',6,600,'{}'),('arena',9,900,'{}');
     INSERT INTO arena_mode_stats VALUES
       (5,'overall',500,1),(5,'blastGang',500,1),(5,'teamFight',500,1),
@@ -214,16 +216,16 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     CREATE TABLE player_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,profile_updated_at INTEGER,
       pvp_stats_parser_version INTEGER,confirmed_banned INTEGER);
     CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
-    INSERT INTO progression_snapshots VALUES (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":0}'),
-      (2,'regular','persistent',2,200,'{"pvpStatsParserVersion":1}'),
-      (3,'regular','persistent',10,900,'{"pvpStatsParserVersion":1}');
+    INSERT INTO progression_snapshots VALUES (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":1}'),
+      (2,'regular','persistent',2,200,'{"pvpStatsParserVersion":2}'),
+      (3,'regular','persistent',10,900,'{"pvpStatsParserVersion":2}');
     INSERT INTO player_profiles VALUES ('seasonal','s1',7,700,0,0),('seasonal','s1',8,800,1,0);
   `);
   progression.close();
   players.prepare("ATTACH DATABASE ? AS progression_scan").run(progressionPath);
   const candidates = selectWarmupCandidates(players, "s1", new Map([[3, 300]]));
   assert.deepEqual(candidates.map(({ mode, aid }) => [mode, aid]), [
-    ["regular", 1], ["regular", 10], ["pve", 3], ["arena", 5], ["arena", 6], ["arena", 9], ["pvp-season", 7],
+    ["regular", 1], ["regular", 10], ["pve", 3], ["pve", 11], ["arena", 5], ["arena", 6], ["arena", 9], ["pvp-season", 7],
   ]);
   assert.deepEqual(selectWarmupCandidates(players, "s1", new Map(), ["arena"])
     .map(({ mode, aid }) => [mode, aid]), [["arena", 5], ["arena", 6], ["arena", 9]]);
@@ -246,7 +248,7 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
     request: async (candidate) => { requested.push(candidate.mode); return { kind: "completed", outcome: "ok" }; },
   });
   assert.equal(second.bounded, false);
-  assert.deepEqual(requested, ["regular", "regular", "pve", "arena", "arena", "arena", "pvp-season"]);
+  assert.deepEqual(requested, ["regular", "regular", "pve", "pve", "arena", "arena", "arena", "pvp-season"]);
 
   let stop = false;
   const stoppedRequests = [];
@@ -263,6 +265,61 @@ test("warmup selection uses parser generations and keeps modes sequential", asyn
   players.close();
 });
 
+test("warmup selection reads only a bounded identity page and resumes scans with no candidates", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, profile_updated_at INTEGER);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    ATTACH DATABASE ':memory:' AS progression_scan;
+    CREATE TABLE progression_scan.progression_snapshots
+      (id INTEGER PRIMARY KEY, mode TEXT, cycle_id TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    CREATE INDEX progression_scan.latest_snapshot ON progression_snapshots(mode,cycle_id,aid,profile_updated_at,id);`);
+  const insertPlayer = db.prepare("INSERT INTO players VALUES (?,100)");
+  const insertSnapshot = db.prepare("INSERT INTO progression_scan.progression_snapshots VALUES (?,'regular','persistent',?,100,?)");
+  for (let aid = 1; aid <= 1000; aid++) {
+    insertPlayer.run(aid);
+    insertSnapshot.run(aid, aid, JSON.stringify({ pvpStatsParserVersion: aid === 1 ? 1 : 2 }));
+  }
+  let reads = 0;
+  db.function("json_valid", (value) => { reads++; return typeof value === "string" ? 1 : 0; });
+  try {
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], { limitPerMode: 1 })
+      .map(row => row.aid), [1]);
+    assert.equal(reads, 1, "LIMIT must take effect before inspecting every saved JSON");
+    db.exec(`UPDATE progression_scan.progression_snapshots SET stats_json = '{"pvpStatsParserVersion":2}' WHERE aid = 1;
+      UPDATE progression_scan.progression_snapshots SET stats_json = '{"pvpStatsParserVersion":1}' WHERE aid = 3;`);
+    reads = 0;
+    let scanAid = 0;
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], {
+      shouldStop: () => reads >= 2, onProgress: (_mode, aid) => { scanAid = aid; },
+    }), []);
+    assert.equal(scanAid, 2);
+    assert.deepEqual(selectWarmupCandidates(db, null, new Map(), ["regular"], {
+      checkpoint: { modes: { regular: { scanAid } } }, limitPerMode: 1,
+    }).map(row => row.aid), [3]);
+  } finally { db.close(); }
+});
+
+test("skip checkpoints invalidate Regular and PvE parser 1 while retaining Seasonal parser 1", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-parser-modes-"));
+  const checkpointPath = join(dir, "state.json");
+  const candidates = [
+    { mode: "regular", aid: 1, sourceVersion: 100 },
+    { mode: "pve", aid: 2, sourceVersion: 200 },
+    { mode: "pvp-season", cycleId: "s1", aid: 3, sourceVersion: 300 },
+  ];
+  writeFileSync(checkpointPath, JSON.stringify({ version: 1, modes: {}, skipped: {
+    "regular:persistent:1:100:parser-1": { outcome: "not_found" },
+    "pve:persistent:2:200:parser-1": { outcome: "not_found" },
+    "pvp-season:s1:3:300:parser-1": { outcome: "not_found" },
+  } }));
+  const requested = [];
+  const result = await runWarmup({ candidates, checkpointPath, maxProfiles: 10,
+    request: async (candidate) => { requested.push(candidate.mode); return { kind: "completed", outcome: "ok" }; },
+  });
+  assert.deepEqual(requested, ["regular", "pve"]);
+  assert.equal(result.processed, 2);
+});
+
 test("one pacer allows at most two request starts per second", async () => {
   let now = 10_000;
   const waits = [];
@@ -273,6 +330,29 @@ test("one pacer allows at most two request starts per second", async () => {
   now += 1_500;
   assert.equal(await pace(), 12_000);
   assert.deepEqual(waits, [250]);
+});
+
+test("warmup deadline bounds retry waits and leaves an unprocessed candidate resumable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-retry-deadline-"));
+  const checkpointPath = join(dir, "state.json");
+  let requests = 0;
+  const options = { baseUrl: "http://web:3000", secret: "x".repeat(32), maxRetries: 3,
+    timeoutMs: 30_000, deadline: 500, now: () => 0, pace: async () => {},
+    sleep: async () => { throw new Error("retry wait exceeds the remaining budget"); },
+    fetch: async () => { requests++; return new Response("{}", { status: 409 }); } };
+  const candidate = { mode: "regular", aid: 1, sourceVersion: 100 };
+  try {
+    const result = await runWarmup({ candidates: [candidate], checkpointPath, maxProfiles: 10,
+      request: candidate => requestCandidate(candidate, options) });
+    assert.equal(result.bounded, true);
+    assert.equal(result.stopped, false);
+    assert.equal(result.processed, 0);
+    assert.equal(requests, 1);
+    assert.deepEqual(result.checkpoint.skipped, {});
+    const resumed = await runWarmup({ candidates: [candidate], checkpointPath, maxProfiles: 10,
+      request: async () => ({ kind: "completed", outcome: "ok" }) });
+    assert.equal(resumed.processed, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("mode filtering rejects typos and retains checkpoint state for other modes", async () => {
@@ -375,6 +455,259 @@ test("PvE feed retries a terminated partial stream without keeping partial versi
     request: async () => { calls += 1; return partial(); },
   }), /warmup updated feed failed after 2 attempts: TypeError: terminated/);
   assert.equal(calls, 2);
+});
+
+test("bounded scans honor rotated modes across consecutive runs", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY, profile_updated_at INTEGER);
+    CREATE TABLE mode_players(mode TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    ATTACH DATABASE ':memory:' AS progression_scan;
+    CREATE TABLE progression_scan.progression_snapshots
+      (id INTEGER PRIMARY KEY, mode TEXT, cycle_id TEXT, aid INTEGER, profile_updated_at INTEGER, stats_json TEXT);
+    INSERT INTO players VALUES (1,100),(2,100),(3,100),(4,100);
+    INSERT INTO progression_scan.progression_snapshots VALUES
+      (1,'regular','persistent',1,100,'{"pvpStatsParserVersion":2}'),
+      (2,'regular','persistent',2,100,'{"pvpStatsParserVersion":2}'),
+      (3,'regular','persistent',3,100,'{"pvpStatsParserVersion":2}'),
+      (4,'regular','persistent',4,100,'{"pvpStatsParserVersion":2}');
+    INSERT INTO mode_players VALUES ('pve',5,500,'{}');`);
+  let visited = 0;
+  const checkpoint = { modes: {}, nextMode: "regular" };
+  const selected = [];
+  try {
+    for (let run = 0; run < 4; run++) {
+      visited = 0;
+      const modes = checkpoint.nextMode === "pve" ? ["pve", "regular"] : ["regular", "pve"];
+      let lastMode;
+      const candidates = selectWarmupCandidates(db, null, new Map(), modes, {
+        checkpoint, limitPerMode: 1, shouldStop: () => visited >= 2,
+        onProgress: (mode, aid) => { visited++; checkpoint.modes[mode] = { scanAid: aid }; lastMode = mode; },
+      });
+      selected.push(...candidates.map(row => row.mode));
+      checkpoint.nextMode = candidates.length ? "regular" : modes[(modes.indexOf(lastMode) + 1) % modes.length];
+    }
+    assert.deepEqual(selected, ["pve", "pve"]);
+  } finally { db.close(); }
+});
+
+test("PvE feed bounds headers, partial bodies and retry backoff by the deadline", async (t) => {
+  for (const stage of ["headers", "body", "retry"]) {
+    await t.test(stage, async () => {
+      let calls = 0;
+      let cancelled = false;
+      const started = Date.now();
+      await assert.rejects(loadUpdatedVersions("http://feed.test", {
+        deadline: started + 100, timeoutMs: 30_000, maxRetries: 3,
+        request: async (_url, { signal }) => {
+          calls++;
+          if (stage === "headers") return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+          if (stage === "retry") return new Response("{}", { status: 503 });
+          return new Response(new ReadableStream({
+            start(controller) { controller.enqueue(new TextEncoder().encode('{"3":300,')); },
+            cancel() { cancelled = true; },
+          }));
+        },
+      }), { code: "WARMUP_BOUNDED" });
+      assert.equal(calls, 1);
+      assert.ok(Date.now() - started < 1000);
+      if (stage === "body") assert.equal(cancelled, true);
+    });
+  }
+});
+
+test("PvE feed signals interrupt a partial body and a pending retry delay", async (t) => {
+  for (const stage of ["body", "retry"]) {
+    await t.test(stage, async () => {
+      const controller = new AbortController();
+      let calls = 0;
+      const timer = setTimeout(() => controller.abort(), 50);
+      const started = Date.now();
+      try {
+        await assert.rejects(loadUpdatedVersions("http://feed.test", {
+          signal: controller.signal, maxRetries: 3, timeoutMs: 30_000,
+          request: async () => {
+            calls++;
+            return stage === "retry" ? new Response("{}", { status: 503 })
+              : new Response(new ReadableStream({
+                start(stream) { stream.enqueue(new TextEncoder().encode('{"3":300,')); },
+              }));
+          },
+        }), { code: "WARMUP_STOPPED" });
+        assert.equal(calls, 1);
+        assert.ok(Date.now() - started < 1000);
+      } finally { clearTimeout(timer); }
+    });
+  }
+});
+
+async function warmupCliFixture(t, handler) {
+  const dir = mkdtempSync(join(tmpdir(), "warmup-cli-"));
+  const playersPath = join(dir, "players.db");
+  const progressionPath = join(dir, "progression.db");
+  const checkpointPath = join(dir, "state.json");
+  const lockPath = join(dir, "warmup.lock");
+  const players = new DatabaseSync(playersPath);
+  players.exec(`CREATE TABLE players(aid INTEGER PRIMARY KEY,profile_updated_at INTEGER);
+    CREATE TABLE mode_players(mode TEXT,aid INTEGER,profile_updated_at INTEGER,stats_json TEXT);
+    CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+    INSERT INTO players VALUES (1,100);
+    INSERT INTO mode_players VALUES ('pve',2,0,'{}');`);
+  players.close();
+  const progression = new DatabaseSync(progressionPath);
+  progression.exec(`CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY,mode TEXT,cycle_id TEXT,aid INTEGER,
+    profile_updated_at INTEGER,stats_json TEXT);`);
+  progression.close();
+  const server = createServer(handler);
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { checkpointPath, lockPath, run: async (env = {}, { stopWhen } = {}) => {
+    const started = Date.now();
+    // Windows terminates a process on child.kill("SIGTERM") without running its
+    // handler. IPC delivers that same handler event there; Linux uses SIGTERM.
+    const ipcStop = stopWhen && process.platform === "win32";
+    const args = ["--experimental-strip-types", "--experimental-sqlite"];
+    if (ipcStop) args.push("--import", "data:text/javascript,process.once('message',()=>{process.emit('SIGTERM');process.disconnect();});");
+    args.push("scripts/warmup-leaderboard-profiles.mjs");
+    const child = spawn(process.execPath, args, { cwd: process.cwd(),
+      stdio: ipcStop ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], env: {
+        ...process.env, SQLITE_PATH: playersPath, PROGRESSION_SQLITE_PATH: progressionPath,
+        LEADERBOARD_WARMUP_CHECKPOINT: checkpointPath, LEADERBOARD_WARMUP_LOCK: lockPath,
+        PROFILE_REFRESH_SECRET: "x".repeat(32), LEADERBOARD_WARMUP_MODES: "regular,pve",
+        LEADERBOARD_WARMUP_MAX_RUN_MS: "1000", LEADERBOARD_WARMUP_MAX_PROFILES: "10",
+        LEADERBOARD_WARMUP_MAX_RETRIES: "3", LEADERBOARD_WARMUP_TIMEOUT_MS: "30000",
+        PROFILE_QUEUE_DEADLINE_MS: "", LEADERBOARD_WARMUP_BASE_URL: url,
+        PVE_PROFILE_UPDATED_URL: `${url}/updated.json`, ...env,
+      } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", data => { stdout += data; });
+    child.stderr.on("data", data => { stderr += data; });
+    stopWhen?.then(() => {
+      if (ipcStop) child.send("SIGTERM");
+      else child.kill("SIGTERM");
+    });
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    try {
+      const code = await new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      assert.equal(code, 0, stderr);
+      assert.equal(existsSync(lockPath), false, "CLI releases its lock");
+      return { result: JSON.parse(stdout.trim()), stderr, elapsed: Date.now() - started };
+    } finally { clearTimeout(timeout); }
+  } };
+}
+
+test("warmup CLI bounds a slow PvE index after processing the preceding mode", async (t) => {
+  const events = [];
+  const fixture = await warmupCliFixture(t, (request, response) => {
+    if (request.url.startsWith("/updated.json")) {
+      events.push("feed");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"2":200,'); // Leave the stream unfinished past the deadline.
+    } else {
+      events.push("regular");
+      response.end('{"state":"ok"}');
+    }
+  });
+  const { result, elapsed } = await fixture.run();
+  assert.deepEqual(events, ["regular", "feed"]);
+  assert.equal(result.processed, 1);
+  assert.equal(result.bounded, true);
+  assert.equal(result.stopped, false);
+  assert.ok(elapsed < 2000, `CLI exceeded its budget with cleanup/startup allowance: ${elapsed}ms`);
+  assert.deepEqual(JSON.parse(readFileSync(fixture.checkpointPath, "utf8")).skipped, {});
+});
+
+test("warmup CLI preserves the reset flag and rotates modes across bounded runs", async (t) => {
+  const events = [];
+  const fixture = await warmupCliFixture(t, (request, response) => {
+    if (request.url.startsWith("/updated.json")) response.end('{"2":200}');
+    else {
+      events.push(request.url.includes("/pve/") ? "pve" : "regular");
+      response.end('{"state":"ok"}');
+    }
+  });
+  writeFileSync(fixture.checkpointPath, "");
+  let previousModes = {};
+  for (let run = 0; run < 4; run++) {
+    const { result, stderr } = await fixture.run({ LEADERBOARD_WARMUP_MAX_PROFILES: "1" });
+    assert.equal(result.processed, 1);
+    assert.equal(result.checkpointReset, run === 0);
+    assert.equal(stderr.includes("unreadable leaderboard warmup checkpoint"), run === 0);
+    assert.equal(result.modes[0], run % 2 === 0 ? "regular" : "pve");
+    const checkpoint = JSON.parse(readFileSync(fixture.checkpointPath, "utf8"));
+    const otherMode = result.modes[0] === "regular" ? "pve" : "regular";
+    assert.deepEqual(checkpoint.modes[otherMode], previousModes[otherMode], "an unscanned mode keeps its completion state");
+    previousModes = checkpoint.modes;
+  }
+  assert.deepEqual(events, ["regular", "pve", "regular", "pve"]);
+});
+
+test("warmup CLI stops a partial profile response, releases its lock and resumes the profile", async (t) => {
+  let signalReady;
+  const stopWhen = new Promise(resolve => { signalReady = resolve; });
+  let requests = 0;
+  const fixture = await warmupCliFixture(t, (_request, response) => {
+    requests++;
+    if (requests === 1) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"state":');
+      signalReady();
+    } else response.end('{"state":"ok"}');
+  });
+  const { result, elapsed } = await fixture.run({ LEADERBOARD_WARMUP_MODES: "regular",
+    LEADERBOARD_WARMUP_MAX_RUN_MS: "60000", LEADERBOARD_WARMUP_MAX_PROFILES: "1" }, { stopWhen });
+  assert.equal(result.processed, 0);
+  assert.equal(result.stopped, true);
+  assert.equal(result.bounded, false);
+  assert.ok(elapsed < 2000, `stop must finish before the parent's five-second kill: ${elapsed}ms`);
+  const checkpoint = JSON.parse(readFileSync(fixture.checkpointPath, "utf8"));
+  assert.equal(checkpoint.modes.regular.attempted, 0);
+  assert.equal(checkpoint.modes.regular.completed, 0);
+  assert.deepEqual(checkpoint.skipped, {});
+  const resumed = await fixture.run({ LEADERBOARD_WARMUP_MODES: "regular", LEADERBOARD_WARMUP_MAX_PROFILES: "1" });
+  assert.equal(resumed.result.processed, 1);
+  assert.equal(resumed.result.stopped, false);
+  assert.equal(requests, 2, "the interrupted profile remains selectable without another request during shutdown");
+});
+
+test("profile stop signal interrupts headers, retry backoff and request pacing", async (t) => {
+  for (const stage of ["headers", "retry", "pace"]) {
+    await t.test(stage, async () => {
+      const controller = new AbortController();
+      let calls = 0;
+      const pace = createRequestPacer({ intervalMs: 30_000, signal: controller.signal });
+      if (stage === "pace") await pace();
+      const timer = setTimeout(() => controller.abort(), 50);
+      const started = Date.now();
+      try {
+        const result = await requestCandidate({ mode: "regular", aid: 1, sourceVersion: 100 }, {
+          baseUrl: "http://127.0.0.1:3000", secret: "x".repeat(32), maxRetries: 3, timeoutMs: 30_000,
+          signal: controller.signal, pace,
+          fetch: async (_url, { signal }) => {
+            calls++;
+            if (stage === "headers") return new Promise((_, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            });
+            return new Response("{}", { status: 503 });
+          },
+        });
+        assert.deepEqual(result, { kind: "stopped", outcome: "signal", attempts: stage === "pace" ? 0 : 1 });
+        assert.equal(calls, stage === "pace" ? 0 : 1);
+        assert.ok(Date.now() - started < 1000);
+      } finally { clearTimeout(timer); }
+    });
+  }
 });
 
 test("409 retries through the global pacer while an uncertain timeout stops the run", async () => {

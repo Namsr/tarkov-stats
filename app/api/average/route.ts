@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { unstable_cache } from "next/cache";
 import {
   parseAveragePeriod,
   parseAverageStatistic,
@@ -15,9 +14,7 @@ import { resolveY } from "@/lib/metrics";
 import { AverageComputeUnavailableError, computeAverageInBackground } from "@/lib/average-worker";
 import { isGameMode } from "@/types/seasonal";
 import {
-  AVERAGE_CACHE_CONTROL,
   AVERAGE_PUBLICATION_CACHE_CONTROL,
-  AVERAGE_CACHE_TTL_SECONDS,
 } from "@/lib/average-cache";
 import {
   arenaAverageCacheKey,
@@ -34,7 +31,9 @@ import {
   standardAverageVariant,
 } from "@/lib/average-publication";
 import { fakeAverageDashboard, isLocalFakeAverageEnabled } from "@/lib/local-fake-average";
-import { loadDynamicAverage } from "@/lib/average-dynamic-cache";
+import { loadDynamicAverage, statisticsCacheHeaders } from "@/lib/average-dynamic-cache";
+import { getClientIp } from "@/lib/client-ip";
+import { getRateLimitHeaders } from "@/lib/rate-limiter";
 
 export const runtime = "nodejs";
 
@@ -50,7 +49,7 @@ function isDynamicComputeTimeout(error: unknown): boolean {
     (error as { name?: unknown }).name === "DynamicComputeTimeoutError";
 }
 
-const loadCachedAverage = unstable_cache(
+const loadCachedAverage = (
   async (
     mode: CrossSectionMode,
     dimension: RangeDimension,
@@ -61,9 +60,7 @@ const loadCachedAverage = unstable_cache(
     min: number | null,
     max: number | null,
     maxInclusive: boolean,
-  ) => computeAverageInBackground(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive),
-  ["average-dashboard-v2"],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS },
+  ) => computeAverageInBackground(mode, dimension, metricKey, maxBins, statistic, period, min, max, maxInclusive)
 );
 
 function isArenaMode(value: string | null): value is ArenaModeKey {
@@ -141,7 +138,9 @@ async function arenaAverageResponse(
       ranges[2].value,
       ranges[3].value,
       cacheVersion,
-    )).finally(() => {
+    ), Date.now(), {
+      fallbackKey: JSON.stringify([ARENA_PARSER_VERSION, arenaAverageCacheKey(arenaMode, statistic, dimension, metric, ranges.map((range) => range.value), 0)]),
+    }).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
     const result = loaded.value;
@@ -153,7 +152,7 @@ async function arenaAverageResponse(
     return NextResponse.json({ mode: "arena", schemaVersion: ARENA_PARSER_VERSION, ...result }, {
       // The server cache is tagged and invalidated by the collector. Do not let
       // a browser or reverse proxy retain the first tiny backfill sample.
-      headers: { "Cache-Control": "no-store", "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
+      headers: { ...statisticsCacheHeaders(loaded), "X-Average-Cache": "next-data", "X-Average-Source": "dynamic" },
     });
   } catch (error) {
     console.error("Arena average stats failed", error);
@@ -180,6 +179,20 @@ function publicationHeaders(publication: { generation: number; generatedAt: numb
 export async function GET(request: NextRequest) {
   const timing = createRequestTiming();
   timing.setRequestContext({ host: request.headers.get("x-forwarded-host") ?? request.headers.get("host") });
+  // One browser minute here is never quiet: `AveragePageHeader` prefetches three
+  // standard variants, the page draws a chart plus a baseline, `AverageMetricOverlay`
+  // fires six metric requests, and every 503 is retried after `Retry-After`. That
+  // retry loop alone (~10 URLs x 12 retries) is ~120 requests a minute for a page
+  // parked on a warming cache, before any metric, range or mode switch. 300/minute
+  // covers that plus a full browsing session — `warm-average-cache.mjs`, 18 requests
+  // per sweep, fits many times over — and still caps one IP at 5 rps. The queue
+  // (16 slots, 25 s per job end-to-end) is the real ceiling; the limiter only stops
+  // one caller from spending it alone.
+  const { allowed, headers } = getRateLimitHeaders(getClientIp(request), { bucket: "average", max: 300 });
+  if (!allowed) {
+    timing.finish({ operation: "average", outcome: "rate_limited", status: 429 });
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { ...headers, "Cache-Control": "no-store" } });
+  }
   const params = request.nextUrl.searchParams;
   const rawMode = params.get("mode") ?? "regular";
   if (rawMode === "arena") return arenaAverageResponse(request, timing);
@@ -264,8 +277,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(publication.payload, { headers: publicationHeaders(publication) });
     }
     const dynamicKey = JSON.stringify([rawMode, dimension, metric.key, maxBins, statistic, period, parsedMin.value, parsedMax.value, true]);
+    const published = await readAveragePublication(rawMode, standardAverageVariant(statistic, period));
     const averagesStarted = timing.now();
-    const loaded = await loadDynamicAverage(dynamicKey, () => loadCachedAverage(
+    const loaded = await loadDynamicAverage(JSON.stringify([dynamicKey, published?.generation ?? 0]), () => loadCachedAverage(
       rawMode,
       dimension,
       metric.key,
@@ -275,13 +289,14 @@ export async function GET(request: NextRequest) {
       parsedMin.value,
       parsedMax.value,
       true,
-    )).finally(() => {
+    ), Date.now(), { fallbackKey: dynamicKey, accept: (result) => result.storage === "sqlite" }).finally(() => {
       averagesMs = timing.elapsedMs(averagesStarted);
     });
     const result = loaded.value;
+    if (result.storage !== "sqlite") throw new AverageComputeUnavailableError("Average storage is unavailable");
     const response = NextResponse.json(result.body, {
       headers: {
-        "Cache-Control": AVERAGE_CACHE_CONTROL,
+        ...statisticsCacheHeaders(loaded),
         "X-Average-Cache": "next-data",
         "X-Average-Source": "dynamic",
       },

@@ -14,6 +14,7 @@ import {
   feedCacheSlot,
   normalizeUpdatedAt,
   remainingRunBudget,
+  profileQueueSelector,
   snapshotTargetVersion,
   summarizeCoverage,
 } from "../scripts/regular-profile-sync-core.mjs";
@@ -62,24 +63,55 @@ test("regular sync 404 path records not_found without ban or player deletion", a
   assert.doesNotMatch(source, /confirmBanned|DELETE FROM players\b/);
 });
 
-test("bootstrap admits tracked updates but defers unknown accounts until the durable watermark exists", () => {
-  const version = 1_720_000_000_000;
-  assert.equal(classifyFeedEntry(0, version, null, 3_600_000), "updated");
-  assert.equal(classifyFeedEntry(version, version, null, 3_600_000), null);
-  assert.equal(classifyFeedEntry(undefined, version, null, 3_600_000), null);
+test("the first poll admits recent unknown accounts and newer tracked versions", () => {
+  const version = Date.now() - 60_000;
+  assert.equal(classifyFeedEntry(0, version), "updated");
+  assert.equal(classifyFeedEntry(version, version), null);
+  assert.equal(classifyFeedEntry(undefined, version), "new");
 });
 
-test("watermark overlap admits late new accounts without reopening old feed history", () => {
-  const watermark = 1_720_000_000_000;
-  assert.equal(classifyFeedEntry(undefined, watermark + 1, watermark, 3_600_000), "new");
-  assert.equal(classifyFeedEntry(undefined, watermark - 3_600_000, watermark, 3_600_000), "new");
-  assert.equal(classifyFeedEntry(undefined, watermark - 3_600_001, watermark, 3_600_000), null);
+test("all modes use an inclusive rolling day, reject future dates and preserve mode cutoffs", () => {
+  const now = Date.now();
+  const day = 24 * 60 * 60_000;
+  assert.equal(classifyFeedEntry(undefined, now - day, now), "new");
+  assert.equal(classifyFeedEntry(undefined, now - day - 1, now), null);
+  assert.equal(classifyFeedEntry(0, now - day - 1, now), null);
+  assert.equal(classifyFeedEntry(undefined, now + 1, now), null);
+  assert.equal(classifyFeedEntry(undefined, now - 1, now, now), null);
+  assert.equal(classifyFeedEntry(undefined, now, now, now), "new");
 });
 
 test("updated feed cache key changes once per fifteen-minute slot", () => {
   assert.equal(feedCacheSlot(0), 0);
   assert.equal(feedCacheSlot(899_999), 0);
   assert.equal(feedCacheSlot(900_000), 1);
+});
+
+test("fresh versions get priority while old queued profiles and errors keep a share of processing", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE regular_profile_sync_queue (aid INTEGER PRIMARY KEY, feed_updated_at INTEGER,
+      status TEXT, updated_at INTEGER, last_run_id TEXT);
+      CREATE TABLE progression_snapshots (aid INTEGER, profile_updated_at INTEGER);
+      INSERT INTO progression_snapshots VALUES (1, 10), (1, 20)`);
+    const now = Date.now();
+    const insert = db.prepare("INSERT INTO regular_profile_sync_queue VALUES (?, ?, ?, ?, NULL)");
+    for (let aid = 1; aid <= 6; aid++) insert.run(aid, now - aid * 1000, "pending", now);
+    insert.run(7, now - 30 * 86_400_000, "pending", 1);
+    insert.run(8, now - 1000, "error", 2);
+    const next = profileQueueSelector(db, `SELECT q.aid FROM regular_profile_sync_queue q
+      WHERE q.status IN ('pending', 'error') AND COALESCE(q.last_run_id, '') <> ? ORDER BY q.aid`);
+    const order = [];
+    for (;;) {
+      const row = next.get("run");
+      if (!row) break;
+      order.push(row.aid);
+      db.prepare("UPDATE regular_profile_sync_queue SET last_run_id = 'run' WHERE aid = ?").run(row.aid);
+    }
+    assert.deepEqual(order, [1, 2, 3, 4, 7, 5, 6, 8]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM regular_profile_sync_queue").get().n, 8);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+  } finally { db.close(); }
 });
 
 test("snapshot targets include player state and bootstrap missing legacy profiles", () => {
@@ -132,12 +164,13 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-"));
   const dbPath = join(directory, "players.db");
   const progressionDbPath = join(directory, "progression.db");
-  const initial = 1_720_000_000_000;
-  let feed = { 1: initial, 2: initial - 10_000 };
+  const initial = Date.now() - 60_000;
+  let feed = { 1: initial, 2: initial - 10_000, 10: initial - 25 * 3_600_000 };
   const calls = new Map();
   const orderedCalls = [];
   const failOnce = new Set();
   const failAlways = new Set();
+  const staleResponses = new Map();
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -171,6 +204,10 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     const { aid, expectedUpdatedAt } = JSON.parse(raw);
     calls.set(aid, (calls.get(aid) ?? 0) + 1);
     orderedCalls.push(aid);
+    if (staleResponses.has(aid)) {
+      response.writeHead(409, { "content-type": "application/json" }).end(JSON.stringify(staleResponses.get(aid)));
+      return;
+    }
     if (aid === 3) {
       response.writeHead(404).end();
       return;
@@ -221,7 +258,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     ).get().value, String(initial));
     assert.deepEqual(apiDb.prepare(
       "SELECT aid, status FROM regular_profile_sync_queue ORDER BY aid"
-    ).all().map((row) => ({ ...row })), [{ aid: 1, status: "completed" }]);
+    ).all().map((row) => ({ ...row })), [{ aid: 1, status: "completed" }, { aid: 2, status: "completed" }]);
 
     feed = { ...feed, 2: initial + 1_000 };
     await run();
@@ -243,6 +280,8 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     assert.equal(progressionDb.prepare(
       "SELECT MAX(profile_updated_at) AS version FROM progression_snapshots WHERE aid = 1"
     ).get().version, initial + 500);
+    assert.equal(progressionDb.prepare("SELECT COUNT(*) AS n FROM progression_snapshots WHERE aid = 1 AND profile_updated_at = ?").get(initial).n, 1,
+      "saving a newer profile must preserve its existing historical snapshot");
 
     apiDb.prepare("INSERT INTO players (aid, profile_updated_at) VALUES (?, ?)").run(6, initial + 5_000);
     await run();
@@ -301,12 +340,37 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     failAlways.add(8);
     orderedCalls.length = 0;
     const budgetRun = await run(0, preload, String(Date.now() + 30_000));
-    assert.deepEqual(orderedCalls, [8]);
+    assert.deepEqual(orderedCalls, [9]);
     assert.match(budgetRun.stdout, /"stopped":true/);
-    assert.equal(apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 9").get().status, "pending");
+    assert.equal(apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 8").get().status, "pending");
     orderedCalls.length = 0;
     await run();
-    assert.deepEqual(orderedCalls, [9, 8], "a recurring low-AID failure cannot starve older pending work");
+    assert.deepEqual(orderedCalls, [8], "unfinished work resumes after the newest version was saved");
+    failAlways.delete(8);
+    const oldTarget = Date.now() - 30 * 86_400_000;
+    const actual = oldTarget - 86_400_000;
+    for (const aid of [11, 12]) {
+      apiDb.prepare("INSERT INTO players VALUES (?, ?)").run(aid, actual);
+      progressionDb.prepare("INSERT INTO progression_snapshots (mode,cycle_id,aid,profile_updated_at) VALUES ('regular','persistent',?,?)").run(aid, actual);
+      apiDb.prepare(`INSERT INTO regular_profile_sync_queue (aid,feed_updated_at,status,updated_at)
+        VALUES (?,?,'pending',?)`).run(aid, oldTarget, oldTarget);
+    }
+    staleResponses.set(11, { state: "stale", actualUpdatedAt: actual });
+    staleResponses.set(12, { state: "busy" });
+    const deferred = await run();
+    assert.match(deferred.stdout, /"deferred":1/);
+    assert.equal(apiDb.prepare("SELECT stale_version FROM regular_profile_sync_queue WHERE aid=11").get().stale_version, actual);
+    assert.equal(apiDb.prepare("SELECT stale_version FROM regular_profile_sync_queue WHERE aid=12").get().stale_version, null);
+    const attempts = calls.get(11);
+    await run();
+    assert.equal(calls.get(11), attempts, "an unavailable expired version is not fetched again");
+    assert.equal(progressionDb.prepare("SELECT COUNT(*) n FROM progression_snapshots WHERE aid=11").get().n, 1, "history is preserved without fabricating the expected version");
+    staleResponses.clear();
+    feed = { ...feed, 11: Date.now() - 1000 };
+    await run();
+    const recovered = apiDb.prepare("SELECT status,stale_version FROM regular_profile_sync_queue WHERE aid=11").get();
+    assert.equal(recovered.status, "completed");
+    assert.equal(recovered.stale_version, null, "a new feed target reactivates the preserved task");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();
@@ -357,7 +421,7 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
   const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-304-"));
   const dbPath = join(directory, "players.db");
   const progressionDbPath = join(directory, "progression.db");
-  const initial = 1_720_000_000_000;
+  const initial = Date.now() - 60_000;
   const feed = { 1: initial };
   const ETAG = '"test-regular-etag-1"';
   const seen = { hits: 0, conditional: 0, bodies: 0 };
@@ -495,6 +559,19 @@ test("conditional feed requests skip the body on 304 but keep serving the queue"
     assert.deepEqual(syncCalls, [1]);
     assert.equal(third.attempted, 1);
     assert.equal(third.completed, 1);
+
+    // An existing validator belongs to the old admission policy. Reconsider
+    // the same representation once so newly eligible unknown AIDs are found.
+    feed[2] = initial - 1000;
+    feed[1] = Date.now() + 86_400_000;
+    apiDb.prepare("DELETE FROM regular_profile_sync_meta WHERE key = 'feed_policy'").run();
+    const upgraded = summaryFrom((await run()).stdout);
+    assert.equal(upgraded.feedHttpStatus, 200);
+    assert.equal(seen.bodies, 2);
+    assert.equal(upgraded.completed, 1);
+    assert.equal(apiDb.prepare("SELECT feed_updated_at FROM regular_profile_sync_queue WHERE aid = 1").get().feed_updated_at, initial,
+      "a future feed date must not reopen tracked profile repair work");
+    assert.equal(apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 2").get().status, "completed");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();
@@ -528,7 +605,7 @@ test("regular collector cuts the retry ladder when the run budget is spent", asy
   const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-budget-"));
   const dbPath = join(directory, "players.db");
   const progressionDbPath = join(directory, "progression.db");
-  const version = 1_720_000_000_000;
+  const version = Date.now() - 60_000;
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -636,23 +713,14 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
       UNIQUE(mode, cycle_id, aid, profile_updated_at)
     );
   `);
-  // The feed ladder is charged against the same budget as the capture ladder.
-  // With ~700 ms of budget left the 1s retry backoff no longer fits, so the
-  // catch block has to refuse the wait and let the loop-top guard end the run
-  // on the first attempt. The budget is a real one, so the regression costs
-  // real seconds only when the clamp is missing.
-  let feedRequests = 0;
-  const server = createServer((request, response) => {
-    if (!request.url?.startsWith("/profile/updated.json")) return response.writeHead(404).end();
-    feedRequests += 1;
-    response.writeHead(503).end("stuck");
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
+  const feedLog = join(directory, "feed.log");
+  const waitLog = join(directory, "wait.log");
+  await writeFile(waitLog, "");
 
   const startedAt = Date.now();
   try {
     const { stdout, code } = await runCollectorReportingExit([
+      "--import", new URL("fixtures/feed-budget-clock.mjs", import.meta.url).href,
       "--experimental-sqlite",
       "scripts/sync-regular-profiles.mjs",
     ], {
@@ -663,29 +731,21 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
         SQLITE_PATH: dbPath,
         PROGRESSION_SQLITE_PATH: progressionDbPath,
         PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
-        REGULAR_PROFILE_UPDATED_URL: `http://127.0.0.1:${port}/profile/updated.json`,
-        REGULAR_PROFILE_SYNC_BASE_URL: `http://127.0.0.1:${port}`,
+        REGULAR_PROFILE_UPDATED_URL: "http://127.0.0.1:9/profile/updated.json",
+        REGULAR_PROFILE_SYNC_BASE_URL: "http://127.0.0.1:9",
         REGULAR_PROFILE_SYNC_MAX_RETRIES: "3",
         REGULAR_PROFILE_SYNC_MAX_RUN_MS: "3000000",
         PROFILE_QUEUE_DEADLINE_MS: String(startedAt + 700),
+        PROFILE_TEST_FEED_LOG: feedLog,
+        PROFILE_TEST_WAIT_LOG: waitLog,
       },
     });
-    const elapsedMs = Date.now() - startedAt;
+    const feedRequests = (await readFile(feedLog, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
     assert.equal(feedRequests, 1, "the feed ladder must stop instead of sleeping past the run budget");
     assert.equal(code, 0, "a spent budget is a cut run, not a collector failure");
     assert.doesNotMatch(stdout, / FATAL /, "a spent budget is a cut run, not a collector failure");
-    // The request count alone cannot see the regression: `await delay(backoff(1))`
-    // is the sleep that outlives the deadline, and the loop-top guard only runs
-    // once that sleep returns, so an unclamped collector still opens exactly one
-    // request and still logs the same RUN_CUT. Only the wall clock separates the
-    // two shapes. 900 ms sits above the worst clean run measured here (224ms under
-    // 12 CPU burners) and below the 1000 ms the first backoff must cost plus
-    // process start (1146-1542ms unclamped), so it cannot flake on a loaded worker
-    // and cannot miss the overshoot either.
-    assert.ok(
-      elapsedMs < 900,
-      `the ladder must refuse the 1s backoff it cannot afford, not sleep it (was ${elapsedMs}ms)`,
-    );
+    assert.equal(await readFile(waitLog, "utf8"), "",
+      "the feed ladder must refuse retry waits that exceed its remaining budget");
     const cut = stdout.split(/\r?\n/).find((entry) => entry.includes(" RUN_CUT "));
     assert.ok(cut, "the cut is logged");
     const fields = JSON.parse(cut.slice(cut.indexOf(" RUN_CUT ") + " RUN_CUT ".length));
@@ -698,7 +758,6 @@ test("regular feed ladder stops at the run budget instead of sleeping past it", 
       "a feed that was never admitted queues nothing",
     );
   } finally {
-    await new Promise((resolve) => server.close(resolve));
     apiDb.close();
     progressionDb.close();
     await rm(directory, { recursive: true, force: true });
@@ -709,7 +768,7 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
   const directory = await mkdtemp(join(tmpdir(), "regular-profile-sync-rate-limit-"));
   const dbPath = join(directory, "players.db");
   const progressionDbPath = join(directory, "progression.db");
-  const version = 1_720_000_000_000;
+  const version = Date.now() - 60_000;
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -770,7 +829,7 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
         PROFILE_QUEUE_DEADLINE_MS: String(Date.now() + 1_200),
       },
     });
-    assert.deepEqual(syncCalls, [1], "the second profile waits for a spacing that no longer fits");
+    assert.deepEqual(syncCalls, [2], "the newest profile is saved before the older profile's spacing no longer fits");
     const line = stdout.split(/\r?\n/).find((entry) => entry.includes(" SUMMARY "));
     assert.ok(line, "collector writes a summary");
     const summary = JSON.parse(line.slice(line.indexOf(" SUMMARY ") + " SUMMARY ".length));
@@ -784,9 +843,9 @@ test("regular rate-limit wait is clamped to the run budget", async () => {
     );
     // A clamped timer can resume one millisecond before the wall-clock deadline.
     // The summary, elapsed bound and pending second profile still prove the cut.
-    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":[01],"phase":"rate_limit","aid":2,"attempt":1\}/);
+    assert.match(stdout, / RUN_CUT \{"stopReason":"max_run_ms","remainingMs":[01],"phase":"rate_limit","aid":1,"attempt":1\}/);
     assert.equal(
-      apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 2").get().status,
+      apiDb.prepare("SELECT status FROM regular_profile_sync_queue WHERE aid = 1").get().status,
       "pending",
       "the unclaimed profile stays queued for the next run",
     );

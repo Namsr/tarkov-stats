@@ -1,12 +1,9 @@
-import { unstable_cache } from "next/cache";
 import { getArenaBackend } from "@/lib/db";
 import {
-  ARENA_AVERAGE_CACHE_TAG,
-  AVERAGE_CACHE_TTL_SECONDS,
   arenaAverageCacheKey,
   arenaCohortCacheKey,
 } from "@/lib/average-cache";
-import { ARENA_PARSER_VERSION, getArenaAverage } from "@/lib/arena/service";
+import { computeCohortInBackground } from "@/lib/cohort-worker";
 import type { ArenaDimension, ArenaMetricKey, ArenaModeKey, ArenaStatistic } from "@/types/arena";
 
 export { arenaAverageCacheKey, arenaCohortCacheKey };
@@ -33,14 +30,9 @@ export async function arenaAverageCacheVersion(): Promise<number> {
   }
 }
 
-// The wrapped function below is byte-for-byte the one that used to sit in
-// app/api/average/route.ts. `unstable_cache` derives its storage key from
-// `cb.toString()`, which makes that key build-layout dependent rather than
-// guaranteed: a minified deploy reshuffles the body and retires the tagged
-// entries on most releases anyway, while an unminified one keeps them only
-// while the body stays byte-identical. Moving the function into this file left
-// the body, and so the key, unchanged.
-export const loadCachedArenaAverage = unstable_cache(
+// Fresh SQL belongs to the shared response cache; renewing its TTL with a
+// stale Next cache response would delay the background update again.
+export const loadCachedArenaAverage = (
   async (
     arenaMode: ArenaModeKey,
     statistic: ArenaStatistic,
@@ -53,8 +45,8 @@ export const loadCachedArenaAverage = unstable_cache(
     cacheVersion: number,
   ) => {
     void cacheVersion;
-    return getArenaAverage({ mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches });
-  },
-  ["arena-average-v2", String(ARENA_PARSER_VERSION)],
-  { revalidate: AVERAGE_CACHE_TTL_SECONDS, tags: [ARENA_AVERAGE_CACHE_TAG] },
+    return computeCohortInBackground({ kind: "arena_population", args: [{
+      mode: arenaMode, statistic, dimension, metric, minHours, maxHours, minMatches, maxMatches,
+    }] });
+  }
 );

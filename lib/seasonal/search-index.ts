@@ -18,19 +18,24 @@ function toResults(rows: Record<string, unknown>[]): PlayerIndexResult[] {
   });
 }
 
-function queries(includeProfileMetadata: boolean) {
+function queries(includeProfileMetadata: boolean, previous = false) {
+  const table = previous ? "seasonal_player_index_previous" : "seasonal_player_index";
   const profileSelect = includeProfileMetadata ? "p.profile_updated_at" : "NULL";
   const profileJoin = includeProfileMetadata
     ? " LEFT JOIN player_profiles AS p ON p.mode = 'seasonal' AND p.cycle_id = i.cycle_id AND p.aid = i.aid"
     : "";
   return {
     ready: "SELECT value FROM seasonal_player_index_meta WHERE cycle_id = ? AND key = 'synced_at'",
-    exact: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM seasonal_player_index AS i${profileJoin}
+    populated: `SELECT nickname_lower FROM ${table} WHERE cycle_id = ? LIMIT 1`,
+    byIds: (placeholders: string) => `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin}
+      WHERE i.cycle_id = ? AND i.aid IN (${placeholders})
+      AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone WHERE tombstone.aid = i.aid)`,
+    exact: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin}
       WHERE i.cycle_id = ? AND i.nickname_lower = ?
       AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone
         WHERE tombstone.aid = i.aid)
       ORDER BY i.aid LIMIT ?`,
-    prefix: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM seasonal_player_index AS i${profileJoin}
+    prefix: `SELECT i.aid, i.nickname AS name, ${profileSelect} AS updated_at FROM ${table} AS i${profileJoin}
       WHERE i.cycle_id = ? AND i.nickname_lower >= ? AND i.nickname_lower < ?
       AND NOT EXISTS (SELECT 1 FROM excluded_players tombstone
         WHERE tombstone.aid = i.aid)
@@ -60,22 +65,36 @@ function sqliteProfileMetadataAvailable(db: any): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sqliteStore(db: any, cycleId: string, includeProfileMetadata: boolean): PlayerIndexStore {
   const sql = queries(includeProfileMetadata);
+  const previousSql = queries(includeProfileMetadata, true);
+  function populated(source: typeof sql): boolean {
+    try { return Boolean(db.prepare(source.populated).get(cycleId)); } catch { return false; }
+  }
+  function ready(): boolean {
+    try { db.prepare(sql.populated).get(cycleId); return Boolean(db.prepare(sql.ready).get(cycleId)); } catch { return false; }
+  }
+  function read(readRows: (source: typeof sql) => PlayerIndexResult[]): PlayerIndexResult[] {
+    let failure: unknown;
+    for (const source of [sql, previousSql]) {
+      if (!populated(source) && !(source === sql && ready() && !populated(previousSql))) continue;
+      try { return readRows(source); } catch (error) { failure = error; }
+    }
+    throw failure ?? new Error("Seasonal nickname index is not available");
+  }
   return {
     async isReady() {
-      return Boolean(db.prepare(sql.ready).get(cycleId));
+      return populated(sql) || populated(previousSql) || ready();
     },
     async search(nickname, limit) {
       const query = nickname.trim().toLowerCase();
-      return merge(
-        toResults(db.prepare(sql.exact).all(cycleId, query, limit) as Record<string, unknown>[]),
-        toResults(db.prepare(sql.prefix).all(
-          cycleId,
-          query,
-          `${query}\uffff`,
-          limit * 2,
-        ) as Record<string, unknown>[]),
+      return read((source) => merge(
+        toResults(db.prepare(source.exact).all(cycleId, query, limit)),
+        toResults(db.prepare(source.prefix).all(cycleId, query, `${query}\uffff`, limit * 2)),
         limit,
-      );
+      ));
+    },
+    async byIds(aids) {
+      if (aids.length === 0) return [];
+      return read((source) => toResults(db.prepare(source.byIds(aids.map(() => "?").join(","))).all(cycleId, ...aids)));
     },
   };
 }

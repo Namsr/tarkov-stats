@@ -217,6 +217,7 @@ function AveragePageContent({
     loadAverageJson<AverageResponse>(`${endpoint}?${params.toString()}`, {
       signal: controller.signal,
       retryUnavailable: true,
+      onUpdate: (json) => { setData(json); setError(""); },
     })
       .then((json) => {
         if (controller.signal.aborted) return;
@@ -224,7 +225,7 @@ function AveragePageContent({
       })
       .catch((fetchError: unknown) => {
         if (fetchError instanceof Error && fetchError.name === "AbortError") return;
-        setError(fetchError instanceof Error ? fetchError.message : t("common.loadFailed"));
+        setError(t("common.loadFailed"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -246,6 +247,7 @@ function AveragePageContent({
     loadAverageJson<AverageResponse>(`${endpoint}?${params.toString()}`, {
       signal: controller.signal,
       retryUnavailable: true,
+      onUpdate: setBaseline,
     })
       .then((json) => {
         if (!controller.signal.aborted) setBaseline(json);

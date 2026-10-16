@@ -160,7 +160,7 @@ function metricValue(metrics: IntervalMetrics, metric: AnomalyMetric): number | 
 }
 
 export function buildProgressionPercentileDistributions(
-  intervals: readonly ProgressionDetailIntervalRow[],
+  intervals: Iterable<ProgressionDetailIntervalRow>,
 ): ProgressionPercentileDistributions {
   const distributions: ProgressionPercentileDistributions = {};
   for (const row of intervals) {
@@ -172,7 +172,7 @@ export function buildProgressionPercentileDistributions(
       if (PER_RAID_METRICS.has(metric) && row.changes.pmcRaids <= 0) continue;
       const value = metricValue(metrics, metric);
       if (value == null || !Number.isFinite(value)) continue;
-      daily[metric] = [...(daily[metric] ?? []), value];
+      (daily[metric] ??= []).push(value);
     }
     distributions[row.localDate] = daily;
   }

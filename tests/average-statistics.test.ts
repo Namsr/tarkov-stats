@@ -39,6 +39,7 @@ process.env.ADMIN_ANALYTICS_SQLITE_PATH = adminDatabasePath;
 process.env.REPORTS_SQLITE_PATH = join(directory, "community-reports.db");
 
 const { getStore, AVG_COLS } = await import("../lib/db.ts");
+const { referenceComparisonMetricsSql } = await import("./fixtures/reference-cohort-sql.mjs");
 const { getProgressionStore } = await import("../lib/progression-db.ts");
 const { resetDynamicAverageCacheForTests } = await import("../lib/average-dynamic-cache.ts");
 const { isLocalFakeAverageEnabled } = await import("../lib/local-fake-average.ts");
@@ -47,7 +48,7 @@ const {
   evaluateAndStoreRisk,
   riskScoreVersion,
 } = await import("../lib/admin/risk-service.ts");
-const { scoreCheater } = await import("../lib/cheater-score.ts");
+const { scoreRegularCheater } = await import("../lib/regular-risk-score.ts");
 const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { resolveTrackedProfilePayload } = await import("../lib/operator-profile.ts");
 const { GET: getAverage } = await import("../app/api/average/route.ts");
@@ -103,6 +104,21 @@ test("range averages read every metric from covering indexes in both persistent 
     }
   }
 });
+test("population averages cover PvE identity, recency and PvP filters without profile row reads", () => {
+  for (const metric of AVG_COLS) {
+    for (const recent of [false, true]) {
+      const plans = db.prepare(`EXPLAIN QUERY PLAN SELECT AVG(v) FROM (
+        SELECT ${metric} AS v FROM pve_players WHERE ${metric} IS NOT NULL
+          ${recent ? "AND profile_updated_at >= 1" : ""}
+          ${["pmc_kd_ratio", "killed_pmc"].includes(metric) ? "AND pvp_stats_known = 1" : ""}
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = pve_players.aid)
+          ORDER BY ${metric} LIMIT 100 OFFSET 5
+      )`).all().map((row) => String(row.detail));
+      assert.ok(plans.some((plan) => /mode_players USING COVERING INDEX/.test(plan)), `${metric}, recent=${recent}: ${plans}`);
+    }
+  }
+});
+
 const insert = db.prepare(`INSERT INTO players
   (aid, nickname, hours, pmc_raids, total_raids, kd_ratio, pmc_kd_ratio,
    kills_per_raid, pmc_survival_rate, longest_win_streak, level, fetched_at)
@@ -211,7 +227,7 @@ const range = (min, max, excludeAid) => ({
 
 test("SQLite median handles empty, odd, even, repeated, missing, and singleton values", async () => {
   reset();
-  const empty = await store.averages(range(0, 999), "median");
+  const empty = await store.averages(range(null, null), "median");
   assert.deepEqual(empty, {
     n: 0,
     metricCounts: Object.fromEntries([
@@ -240,22 +256,22 @@ test("SQLite median handles empty, odd, even, repeated, missing, and singleton v
   });
 
   add(1, { hours: 10, totalRaids: 1 });
-  assert.equal((await store.averages(range(10, 10), "median")).total_raids, 1);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 1);
 
   reset();
   add(1, { hours: 20, totalRaids: 1 });
   add(2, { hours: 20, totalRaids: 2 });
   add(3, { hours: 20, totalRaids: 100 });
-  assert.equal((await store.averages(range(20, 20), "median")).total_raids, 2);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 2);
   add(4, { hours: 20, totalRaids: 200 });
-  assert.equal((await store.averages(range(20, 20), "median")).total_raids, 51);
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 51);
 
   reset();
   add(1, { hours: 30, totalRaids: 5 });
   add(2, { hours: 30, totalRaids: 5 });
   add(3, { hours: 30, totalRaids: null });
   add(4, { hours: 30, totalRaids: 9 });
-  const missing = await store.averages(range(30, 30), "median");
+  const missing = await store.averages(range(null, null), "median");
   assert.equal(missing.total_raids, 5);
   assert.equal(missing.metricCounts.total_raids, 3);
 });
@@ -315,7 +331,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
   const prepare = DatabaseSync.prototype.prepare;
   const projections = [];
   DatabaseSync.prototype.prepare = function (sql) {
-    if (sql.startsWith("WITH cohort AS (")) {
+    if (sql.startsWith("WITH cohort AS")) {
       projections.push(sql.slice(0, sql.indexOf("FROM players")));
     }
     return prepare.call(this, sql);
@@ -328,6 +344,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
       assert.equal(cohort.n, 20);
       assert.equal(cohort.averages.kd_ratio.value, 10.5);
       assert.deepEqual(cohort.averages.pmc_survival_rate, { value: 50, count: 2 });
+      assert.deepEqual(cohort.averages.killed_pmc_per_raid, { value: null, count: 0 });
       assert.deepEqual(cohort.percentiles.kd_ratio, { percentile: null, count: 20, below: 0, equal: 0 });
       assert.deepEqual(cohort.percentiles.pmc_survival_rate, { percentile: null, count: 2, below: 0, equal: 0 });
       assert.ok(Object.values(cohort.percentiles).every((metric) => metric.percentile === null));
@@ -339,7 +356,7 @@ test("persistent two-axis cohort computes all radar metrics in the selected grou
     }
     assert.equal(projections.length, 2);
     for (const projection of projections) {
-      assert.doesNotMatch(projection, /\*|achievements_json|stats_json/);
+      assert.doesNotMatch(projection, /SELECT\s+(?:\w+\.)?\*|,\s*(?:\w+\.)?\*|achievements_json|stats_json/i);
       assert.match(projection, /hours, pmc_raids/);
     }
   } finally {
@@ -352,10 +369,12 @@ test("persistent two-axis cohort ranks verified metrics with midrank ties and th
   const values = [...Array(9).fill(1), ...Array(10).fill(2), 3];
   values.forEach((value, index) => add(index + 1, { hours: 100, raids: 100, value }));
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  db.exec("UPDATE players SET pvp_stats_version = 1, pmc_killed_pmc = kd_ratio * pmc_raids");
   const playerMetrics = {
     kd_ratio: 2,
     pmc_kd_ratio: 2,
     kills_per_raid: 2,
+    killed_pmc_per_raid: 2,
     pmc_survival_rate: 2,
     longest_win_streak: 2,
     level: 2,
@@ -384,6 +403,7 @@ test("persistent cohort route propagates stored profile metrics into percentiles
     add(aid, { hours: 100, raids: 100, value: aid <= 10 ? 1 : 2 });
   }
   db.prepare("UPDATE players SET pvp_stats_known = 1, profile_updated_at = ?").run(Date.now());
+  db.exec("UPDATE players SET pvp_stats_version = 1, pmc_killed_pmc = kd_ratio * pmc_raids");
   const progressionStore = await getProgressionStore("regular");
   assert.ok(progressionStore);
   const targetAid = 909;
@@ -392,6 +412,7 @@ test("persistent cohort route propagates stored profile metrics into percentiles
     stats: pveStats({
       hoursPlayed: 100,
       pmcRaids: 100,
+      pmcKilledPmc: 200,
       kdRatio: 2,
       pmcKdRatio: 2,
       killsPerRaid: 2,
@@ -440,7 +461,7 @@ test("PvE PMC K/D distributions and route percentiles exclude unknown PvP stats"
 
   db.prepare("UPDATE mode_players SET killed_pmc = aid WHERE mode = 'pve' AND aid <= 20").run();
   db.prepare("UPDATE mode_players SET killed_pmc = 1000 WHERE mode = 'pve' AND aid = 21").run();
-  const average = await pveStore.averages(range(0, 999), "median", "all");
+  const average = await pveStore.averages(range(null, null), "median", "all");
   assert.equal(average.metricCounts.pmc_kd_ratio, 20);
   assert.equal(average.metricCounts.killed_pmc, 20);
   assert.equal(average.pmc_kd_ratio, 10.5);
@@ -493,6 +514,40 @@ test("PvE PMC K/D distributions and route percentiles exclude unknown PvP stats"
     equal: 0,
   });
   assert.notEqual(body.percentiles.kd_ratio.percentile, null);
+});
+
+test("a cached in-flight PvE cohort timeout retains its phase and stable failure cause", async () => {
+  const aid = 919;
+  const version = 1_800_000_000_900;
+  const progression = await getProgressionStore("pve");
+  await progression.recordSnapshot({ aid, stats: pveStats({ hoursPlayed: 100, pmcRaids: 100 }),
+    achievementIds: [], upstreamUpdatedAt: version, capturedAt: version + 1 });
+  const { loadDynamicAverage } = await import("../lib/average-dynamic-cache.ts");
+  const { getAnalyticsStore } = await import("../lib/admin/analytics-db.ts");
+  const analytics = await getAnalyticsStore();
+  resetDynamicAverageCacheForTests();
+  const previous = process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
+  process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = "5";
+  const delayed = new Promise((resolve) => setTimeout(() => resolve({}), 200));
+  try {
+    await assert.rejects(loadDynamicAverage(JSON.stringify(["cohort", "persistent", "pve", aid, "median", "all"]), () => delayed), /timed out/);
+    const response = await getCohort(new NextRequest(`http://local/api/average/cohort?mode=pve&aid=${aid}&statistic=median`));
+    assert.equal(response.status, 503);
+    assert.match(response.headers.get("Server-Timing"), /cohort;dur=\d+/);
+    await new Promise(setImmediate);
+    const health = analytics.summary("15m", "all").health;
+    const issue = health.issues.find((item) => item.code === "average_cohort_response_timeout");
+    assert.ok(issue);
+    assert.equal(issue.stage, "dependency");
+    const slow = health.slowRequests.find((item) => item.code === issue.code);
+    assert.ok(slow.phases.cohort >= 1);
+    assert.equal(slow.cache, null, "a coalesced failed cache hit must not be invented as a miss");
+  } finally {
+    if (previous === undefined) delete process.env.DYNAMIC_COMPUTE_TIMEOUT_MS;
+    else process.env.DYNAMIC_COMPUTE_TIMEOUT_MS = previous;
+    await delayed;
+    resetDynamicAverageCacheForTests();
+  }
 });
 
 test("PvE two-axis averages select the first 10/15/20/30 percent window with 20 peers", async () => {
@@ -705,7 +760,7 @@ test("PvE risk uses the population fallback for 5 raids and returns zero for 0 r
   adminDb.close();
   assert.equal(storedVersion, ADMIN_RISK_SCORE_VERSIONS.pve);
   assert.equal(riskScoreVersion("pve", "persistent"), 2);
-  assert.equal(riskScoreVersion("regular", "persistent"), 2);
+  assert.equal(riskScoreVersion("regular", "persistent"), 4);
   assert.equal(riskScoreVersion("seasonal", "cycle-a"), 2);
   assert.throws(() => riskScoreVersion("seasonal"), /cycleId/);
 });
@@ -716,7 +771,7 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
   // averages on, every eligible row costs a table lookup inside a query that
   // blocks every other response.
   const COHORT_FILTER = ["hours", "pmc_raids", "pvp_stats_known", "profile_updated_at", "aid"];
-  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level"];
+  const RADAR = ["kd_ratio", "pmc_kd_ratio", "kills_per_raid", "pmc_survival_rate", "longest_win_streak", "level", "pvp_stats_version", "pmc_killed_pmc"];
   for (const name of ["idx_players_cohort", "idx_mode_players_cohort"]) {
     const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
     const ddl = String(row?.sql ?? "").replace(/\s+/g, " ").toLowerCase();
@@ -725,6 +780,28 @@ test("cohort indexes carry the filter and radar columns so those scans stay inde
       assert.ok(ddl.includes(column), `${name} must carry ${column}: ${ddl}`);
     }
   }
+});
+
+test("persistent cohort SQL reads the killed-PMC inputs from covering indexes in both modes", async () => {
+  const prepare = DatabaseSync.prototype.prepare;
+  const plans = [];
+  DatabaseSync.prototype.prepare = function (sql) {
+    const statement = prepare.call(this, sql);
+    if (!sql.startsWith("WITH cohort AS")) return statement;
+    const all = statement.all.bind(statement);
+    statement.all = (...params) => {
+      plans.push(prepare.call(this, `EXPLAIN QUERY PLAN ${sql}`).all(...params).map((row) => row.detail));
+      return all(...params);
+    };
+    return statement;
+  };
+  try {
+    for (const mode of ["regular", "pve"]) await (await getStore(mode)).cohort2d(1e6, 1e6, 999999, "hours", "median", "all");
+  } finally { DatabaseSync.prototype.prepare = prepare; }
+  assert.equal(plans.length, 2);
+  assert.ok(plans[0].some((detail) => /COVERING INDEX idx_players_cohort/.test(detail)), plans[0].join("\n"));
+  assert.ok(plans[1].some((detail) => /COVERING INDEX idx_mode_players_cohort/.test(detail)), plans[1].join("\n"));
+  for (const plan of plans) assert.equal(plan.filter((detail) => /(?:SEARCH|SCAN) (?:players|mode_players) USING/.test(detail)).length, 1, plan.join("\n"));
 });
 
 test("persistent cohort selects the first 10, 15, 20, or 30 percent two-dimensional window", async () => {
@@ -811,7 +888,7 @@ test("sparse persistent cohorts use the current eligible Regular population and 
   assert.equal(emptyPopulation.required, 20);
 });
 
-test("risk uses the two-dimensional population fallback for five raids, while zero raids score zero", async () => {
+test("Regular risk keeps sparse nearby references unavailable instead of using a population fallback", async () => {
   reset();
   for (let aid = 1; aid <= 9; aid += 1) add(aid, { hours: 100, raids: 100, value: aid });
   for (let aid = 20; aid <= 34; aid += 1) add(aid, { hours: 200, raids: 200, value: aid + 81 });
@@ -826,7 +903,8 @@ test("risk uses the two-dimensional population fallback for five raids, while ze
   db.prepare("INSERT OR IGNORE INTO excluded_players (aid, reason, created_at) VALUES (1000, 'test', ?)").run(now);
 
   const baseline = await store.riskBaseline(100, 5, 999);
-  assert.equal(baseline.n, 24);
+  assert.equal(baseline.n, 0);
+  assert.equal(baseline.strategy, "matched");
   const target = {
     hoursPlayed: 100,
     pmcRaids: 5,
@@ -835,9 +913,10 @@ test("risk uses the two-dimensional population fallback for five raids, while ze
     pmcSurvivalRate: 50,
     pmcKillsPerRaid: 1,
     longestWinStreak: 0,
+    regularRiskInputs: { raids: 5, deaths: 2, survived: 2, kills: 5, killedPmc: 4, streak: 0, prestige: 0 },
   };
-  assert.ok(scoreCheater(target, baseline).score > 0);
-  assert.equal(scoreCheater({ ...target, pmcRaids: 0 }, baseline).score, 0);
+  assert.equal(scoreRegularCheater(target, baseline).availability, "unavailable");
+  assert.equal(scoreRegularCheater({ ...target, regularRiskInputs: { ...target.regularRiskInputs, raids: 0 } }, baseline).availability, "unavailable");
 });
 
 test("regular PvP averages include explicit zeroes and exclude only unknown counters", async () => {
@@ -1054,7 +1133,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
   const medianBody = await medianResponse.json();
   assert.equal(
     medianResponse.headers.get("cache-control"),
-    "public, max-age=1800, s-maxage=1800, stale-while-revalidate=300",
+    "no-store",
   );
   assert.equal(medianResponse.headers.get("x-average-cache"), "next-data");
   assert.equal(medianBody.statistic, "median");
@@ -1117,7 +1196,7 @@ test("average and cohort API contracts default, echo median, and reject unknown 
       "http://local/api/average/cohort?aid=1&statistic=median&period=90d",
     ));
     assert.equal(unavailable.status, 200);
-    assert.equal(unavailable.headers.get("cache-control"), "private, max-age=60");
+    assert.equal(unavailable.headers.get("cache-control"), "no-store");
     assert.deepEqual(
       (({ statistic, period }) => ({ statistic, period }))(await unavailable.json()),
       { statistic: "median", period: "90d" },
@@ -1251,10 +1330,57 @@ test("baseline rejects a malformed playtime range instead of dropping the filter
   const route = await readFile(
     new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
   const validationStart = route.indexOf('"Invalid playtime range"');
-  const storeStart = route.indexOf("const store = await getStore(");
+  const storeStart = route.indexOf("loadDynamicAverage(");
   assert.ok(
     validationStart >= 0 && storeStart > validationStart,
     "the range check must precede the store open",
+  );
+});
+
+test("baseline caps anonymous bursts per IP and keeps the 429 out of shared caches", async () => {
+  reset();
+  add(1, { hours: 100, value: 2 });
+
+  // getClientIp reads only the header our own proxy sets, so the test has to send
+  // that name. A hardcoded "x-real-ip" would collapse into the shared "unknown"
+  // bucket whenever TRUSTED_IP_HEADER is overridden, and the burst below would
+  // silently start from another test's spend.
+  const trustedHeader = (process.env.TRUSTED_IP_HEADER || "x-real-ip").trim().toLowerCase();
+  const burst = async (ip, count) => {
+    const responses = [];
+    for (let index = 0; index < count; index += 1) {
+      responses.push(await getBaseline(new NextRequest(
+        "http://local/api/baseline?mode=regular",
+        { headers: { [trustedHeader]: ip } },
+      )));
+    }
+    return responses;
+  };
+
+  // The route is unauthenticated and recomputes the aggregate per request, so
+  // before the fix all 31 of these answered 200 and ran the SQL.
+  const MAX = 30;
+  const limited = await burst("203.0.113.51", MAX + 1);
+  assert.deepEqual(limited.slice(0, MAX).map((r) => r.status), Array(MAX).fill(200));
+  const rejected = limited[MAX];
+  assert.equal(rejected.status, 429);
+  assert.deepEqual(await rejected.json(), { error: "Rate limit exceeded" });
+  // The 200 path is `public, max-age=60`, so an uncached 429 would be replayed
+  // to every other visitor by the edge cache (#219).
+  assert.equal(rejected.headers.get("cache-control"), "no-store");
+
+  // The bucket key is the resolved IP, not a process-wide counter.
+  assert.equal((await burst("203.0.113.52", 1))[0].status, 200);
+
+  // The limiter has to precede the store open. After it, the request would only
+  // be rejected once the aggregate had already run.
+  const route = await readFile(
+    new URL("../app/api/baseline/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })') >= 0
+      && route.indexOf('getRateLimitHeaders(getClientIp(request), { bucket: "baseline", max: 30 })')
+        < route.indexOf("loadDynamicAverage("),
+    "the rate limiter must precede the store open",
   );
 });
 
@@ -1286,4 +1412,99 @@ test("the average route rejects the legacy minHours/maxHours pair instead of dro
   ));
   assert.equal(ranged.status, 200);
   assert.equal((await ranged.json()).averages.n, 1);
+});
+
+test("average counts and statistic windows share a snapshot during external commits", async () => {
+  db.exec("PRAGMA journal_mode = WAL");
+  for (const mode of ["regular", "pve"]) for (const statistic of ["median", "trimmed_mean"]) {
+    resetPve();
+    const selected = mode === "regular" ? store : pveStore;
+    const table = mode === "regular" ? "players" : "mode_players";
+    for (const [aid, value] of [[1, 1], [2, 10], [3, 100]]) {
+      if (mode === "regular") add(aid, { value });
+      else addMode(mode, aid, { value });
+    }
+    const prepare = DatabaseSync.prototype.prepare;
+    let committed = false;
+    DatabaseSync.prototype.prepare = function (sql) {
+      const stmt = prepare.call(this, sql);
+      if (!committed && (sql.startsWith("SELECT AVG(") || sql.startsWith("WITH ranked AS"))) {
+        committed = true;
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          prepare.call(db, `UPDATE ${table} SET total_raids = 1000 WHERE aid = 1`).run();
+          prepare.call(db, `DELETE FROM ${table} WHERE aid = 2`).run();
+          db.exec("COMMIT");
+        } catch (error) { db.exec("ROLLBACK"); throw error; }
+      }
+      return stmt;
+    };
+    try {
+      const result = await selected.averages(range(null, null), statistic);
+      assert.ok(committed, "the other connection must commit during the portrait calculation");
+      assert.equal(result.n, 3);
+      assert.equal(result.metricCounts.total_raids, 3);
+      assert.equal(result.total_raids, statistic === "median" ? 10 : 111 / 3);
+    } finally { DatabaseSync.prototype.prepare = prepare; }
+    const next = await selected.averages(range(null, null), statistic);
+    assert.equal(next.n, 2);
+    assert.equal(next.total_raids, 550);
+  }
+});
+
+test("a failed average releases its read transaction and the next calculation succeeds", async () => {
+  resetPve();
+  add(1, { value: 10 });
+  const prepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (sql.startsWith("SELECT AVG(") || sql.startsWith("WITH ranked AS")) throw new Error("fixture statistic failed");
+    return prepare.call(this, sql);
+  };
+  try {
+    await assert.rejects(store.averages(range(null, null), "median"), /fixture statistic failed/);
+  } finally { DatabaseSync.prototype.prepare = prepare; }
+  db.exec("UPDATE players SET total_raids = 20 WHERE aid = 1");
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 20);
+  reset();
+  assert.equal((await store.averages(range(null, null), "median")).n, 0);
+  add(1, { value: 30 });
+  assert.equal((await store.averages(range(null, null), "median")).total_raids, 30);
+});
+
+test("shared cohort summary preserves the complete response against previous ranked SQL", async (t) => {
+  db.exec("DELETE FROM players; DELETE FROM mode_players; DELETE FROM excluded_players");
+  for (const [table, mode] of [["players", ""], ["mode_players", "'pve',"]]) {
+    const seed = db.prepare(`INSERT INTO ${table} (${mode ? "mode," : ""}aid,nickname,hours,pmc_raids,total_raids,
+      kd_ratio,pmc_kd_ratio,kills_per_raid,pmc_survival_rate,longest_win_streak,level,
+      pvp_stats_known,pvp_stats_version,pmc_killed_pmc,profile_updated_at,fetched_at${mode ? ",stats_json" : ""})
+      VALUES (${mode} ?, 'fixture', ?, ?, 100, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1${mode ? ",'{}'" : ""})`);
+    for (let aid = 1; aid <= 81; aid++) seed.run(aid, 100 + (aid % 4) * 6 - 9, 100 + (aid % 5) * 7,
+      aid % 3 ? aid / 7 : null, aid % 4 ? 0.1 : 0, aid % 5 ? aid / 11 : 0,
+      aid % 6 ? aid % 100 : 0, aid % 7 ? 3 : null, aid % 10,
+      aid % 8 ? 1 : 0, aid % 9 ? 1 : 0, aid % 12 ? aid : null,
+      Date.now() - (aid % 11 ? 10 : 120) * 86400_000);
+  }
+  db.exec("INSERT INTO excluded_players(aid,reason,created_at) VALUES(7,'fixture',1)");
+  const prepare = DatabaseSync.prototype.prepare;
+  let useReference = false;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (useReference && sql.includes("summary AS MATERIALIZED")) {
+      const match = sql.match(/FROM (players|mode_players) INDEXED BY \w+ ([\s\S]*?)\n  \), summary AS MATERIALIZED/);
+      assert.ok(match, "capture actual cohort selection for the frozen reference");
+      const mode = match[1] === "players" ? "regular" : "pve";
+      const where = match[2].replace(/ AND mode = 'pve'$/, "").replace(/\bmode_players\./g, "players.");
+      sql = referenceComparisonMetricsSql(mode, where, sql.includes("rn IN (") ? "median" : "trimmed_mean");
+    }
+    return prepare.call(this, sql);
+  };
+  t.after(() => { DatabaseSync.prototype.prepare = prepare; });
+  for (const target of [store, pveStore]) for (const statistic of ["median", "trimmed_mean"]) {
+    for (const period of ["all", "90d"]) for (const center of [[100,100],[110,110],[120,130],[150,150],[1e6,1e6],[0,0]]) {
+      const args = [...center, 1, "hours", statistic, period, { kd_ratio: 2.5, pmc_survival_rate: 0, killed_pmc_per_raid: 0 }];
+      useReference = true;
+      const expected = await target.cohort2d(...args);
+      useReference = false;
+      assert.deepEqual(await target.cohort2d(...args), expected, JSON.stringify({mode: expected.mode, statistic, period, center}));
+    }
+  }
 });

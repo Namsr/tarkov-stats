@@ -40,10 +40,12 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-pve-profiles.mjs ./s
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-index.mjs ./scripts/sync-arena-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-arena-profiles.mjs ./scripts/sync-arena-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/regular-profile-sync-core.mjs ./scripts/regular-profile-sync-core.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-profile-queue.mjs ./scripts/run-profile-queue.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-regular-profiles.mjs ./scripts/sync-regular-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-profiles.mjs ./scripts/sync-seasonal-profiles.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-seasonal-index.mjs ./scripts/sync-seasonal-index.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/seasonal-profile-sync-core.mjs ./scripts/seasonal-profile-sync-core.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/import-ban-list.mjs ./scripts/import-ban-list.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-admin-risk.mjs ./scripts/backfill-admin-risk.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-seasonal-average.mjs ./scripts/backfill-seasonal-average.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-progression.mjs ./scripts/backfill-progression.mjs
@@ -54,6 +56,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/web-runtime-health.mjs ./
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-axis-league.mjs ./scripts/sync-axis-league.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-average-worker.mjs ./scripts/compute-average-worker.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-cohort-worker.mjs ./scripts/compute-cohort-worker.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-risk-worker.mjs ./scripts/compute-risk-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-leaderboards.mjs ./scripts/materialize-leaderboards.mjs

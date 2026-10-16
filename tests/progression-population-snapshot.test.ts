@@ -1,8 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initializeSeasonalSchema } from "../lib/seasonal/storage.ts";
-import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot } from "../lib/seasonal/progression-db.ts";
+import { assembleProgressionTimeline, materializeSqlitePopulationSnapshot, readPublishedSeasonalAchievementBaseline } from "../lib/seasonal/progression-db.ts";
+import { buildProgressionMetricSeries, buildProgressionPopulationMetric, type DailyRow } from "../lib/seasonal/progression.ts";
+import { PLAYTIME_RANGES } from "../lib/playtime-brackets.ts";
+import { buildPublishedProgressionAverage, readPublishedProgressionAverage } from "../lib/seasonal/progression-average-publication.ts";
+import { buildSeasonalAverageSeries, progressionDailySql, PROGRESSION_KINDS } from "../lib/seasonal/progression.ts";
+
+test("streamed population matches adaptive windows, repeated players, ties and every playtime band", () => {
+  const rows: DailyRow[] = [];
+  for (let bucket = 10; bucket <= 1210; bucket += 10) {
+    if (bucket > 250 && bucket < 710) continue;
+    for (let aid = 1; aid <= (bucket <= 30 ? 250 : 25); aid++) {
+      for (let version = 1; version <= 2; version++) rows.push({
+        aid, point_id: aid * 100 + version, raid_bucket: bucket, pmc_raids: bucket - 1,
+        value: aid * version, local_date: "2026-10-11", freshness_at: bucket + version,
+        observed_at: bucket + version, lifetime_hours: aid % 9 === 0 ? null : aid * 37,
+        confidence: version / 2, series_id: 1, level: aid % 60,
+      });
+    }
+  }
+  const identity = { mode: "regular" as const, cycleId: "persistent", aid: -1 };
+  for (const metric of ["xp", "xp_per_day"] as const) {
+    const actual = buildProgressionPopulationMetric(rows.values(), metric, PLAYTIME_RANGES);
+    const expected = buildProgressionMetricSeries(rows, identity, metric);
+    assert.deepEqual(actual.overall, expected.overall);
+    assert.equal(actual.freshnessAt, expected.freshnessAt);
+    const kind = metric === "xp" ? "cumulative" : "tempo";
+    const legacy = buildSeasonalAverageSeries(rows, 0, kind, []);
+    assert.deepEqual(buildProgressionPopulationMetric(rows.values(), metric, [], `${kind}:overall`).overall, legacy.overall);
+    for (const [i, range] of PLAYTIME_RANGES.entries()) {
+      const scoped = rows.filter(row => row.lifetime_hours != null && row.lifetime_hours >= range.min &&
+        (range.max == null || row.lifetime_hours < range.max));
+      assert.deepEqual(actual.byHours[i].points, buildProgressionMetricSeries(scoped, identity, metric).overall);
+    }
+  }
+});
 
 function seed(db: DatabaseSync, mode = "regular", cycleId = "persistent") {
   const profile = db.prepare(`INSERT INTO player_profiles (
@@ -44,12 +81,65 @@ test("SQLite population publication is atomic and preserves the last good genera
   assert.equal(payload.riskBaselines.find((band: { min: number }) => band.min === 100).baseline.metrics.pmc_kd_ratio.mean, 1);
   assert.equal(payload.achievementBaseline.achievements[0].stdHours, 0);
   assert.equal(payload.progressionPercentiles["2026-08-12"].pmcRaidsPerDay.length, 101);
+  assert.deepEqual(readPublishedProgressionAverage(db, "regular", "persistent", 100)?.value, payload.average);
 
   db.exec(`CREATE TRIGGER reject_population_publish BEFORE UPDATE ON progression_population_current
     BEGIN SELECT RAISE(ABORT, 'publish failed'); END`);
   assert.throws(() => materializeSqlitePopulationSnapshot(db, "regular", "persistent", 101), /publish failed/);
   assert.equal(db.prepare("SELECT generation FROM progression_population_current").get()!.generation, 100);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_population_generations").get()!.n, 1);
+  assert.deepEqual(readPublishedProgressionAverage(db, "regular", "persistent", 101)?.value, payload.average);
+});
+
+test("published averages preserve all three legacy series and keep modes and cycles isolated", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    for (const [mode, cycleId] of [["regular", "persistent"], ["pve", "persistent"], ["seasonal", "s1"]] as const) {
+      seed(db, mode, cycleId);
+      db.prepare(`INSERT INTO progression_intervals (
+        mode,cycle_id,aid,from_snapshot_id,to_snapshot_id,ended_at,local_date,elapsed_days,status,
+        experience,pmc_raids,scav_raids,pmc_survived,pmc_deaths,pmc_kills,killed_pmc,confidence)
+        SELECT mode,cycle_id,aid,id,id,100,'2026-08-12',1,'valid',1000,10,0,5,5,20,5,1
+        FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid > 1`).run(mode, cycleId);
+      db.prepare(`UPDATE progression_intervals SET tempo_score = 75, form_score = 125, score_sample_n = 20
+        WHERE mode = ? AND cycle_id = ?`).run(mode, cycleId);
+      if (mode === "seasonal") db.prepare(`INSERT INTO season_cycles (mode,cycle_id,starts_at,enabled) VALUES ('seasonal','s1',1,1)`).run();
+      const value = buildPublishedProgressionAverage(db, mode, cycleId, 100);
+      assert.ok(value);
+      assert.equal(value.mode, mode);
+      assert.equal(value.series.tempo.overall[0].value, 75);
+      assert.equal(value.series.form.overall[0].value, 125);
+      for (const kind of PROGRESSION_KINDS) {
+        const rows = db.prepare(progressionDailySql(kind)).all(mode, cycleId, mode, cycleId, -1) as unknown as DailyRow[];
+        assert.deepEqual(value.series[kind], buildSeasonalAverageSeries(rows, 1, kind, []));
+      }
+      materializeSqlitePopulationSnapshot(db, mode, cycleId, 100);
+      assert.deepEqual(readPublishedProgressionAverage(db, mode, cycleId, 100)?.value, value);
+      assert.equal(readPublishedProgressionAverage(db, mode, cycleId, 7 * 3600_000)?.stale, true);
+    }
+    assert.equal(readPublishedProgressionAverage(db, "seasonal", "s2"), null);
+    assert.equal(buildPublishedProgressionAverage(db, "seasonal", "s2", 100), null);
+  } finally { db.close(); }
+});
+
+test("a recent population from the previous release gains averages on the next publisher run", async () => {
+  const { materializeDuePopulations } = await import("../scripts/materialize-progression-population.mjs");
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    seed(db);
+    materializeSqlitePopulationSnapshot(db, "regular", "persistent", 100);
+    db.exec("UPDATE progression_population_generations SET payload = json_remove(payload, '$.average')");
+    assert.equal(readPublishedProgressionAverage(db, "regular", "persistent", 101), null);
+    const options = { now: 101, refresh: () => undefined };
+    const result = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], options);
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.published.length, 1);
+    assert.equal(readPublishedProgressionAverage(db, "regular", "persistent", 101)?.generatedAt, 101);
+    const skipped = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], { now: 102 });
+    assert.equal(skipped.published.length, 0);
+  } finally { db.close(); }
 });
 
 test("personal revisions change only for timeline-relevant updates of that identity", () => {
@@ -180,4 +270,99 @@ test("materialized percentiles prevent self-ranking and preserve achievement ris
   withoutAchievement[4].achievements = "[]";
   const plain = await assembleProgressionTimeline(...withoutAchievement);
   assert.ok(ready.risk.static > plain.risk.static, "materialized achievement baseline remains part of static risk");
+});
+
+
+test("materializer phase timings preserve skip, publication success and per-scope failure", async () => {
+  const { materializeDuePopulations, materializeDueAchievementBaselines } = await import("../scripts/materialize-progression-population.mjs");
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const now = 1_800_000_000_000;
+    const successOptions = { now, refresh: () => undefined, publish: () => ({ generation: now, generatedAt: now }) };
+    const success = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], successOptions);
+    assert.equal(success.published.length, 1); assert.equal(success.errors.length, 0);
+    assert.deepEqual(Object.keys(success.phases[0]), ["mode", "cycleId", "normalizeMs", "normalizedPlayers", "refreshMs", "publishMs", "totalMs"]);
+    assert.ok(success.phases[0].totalMs >= 0);
+    const failedOptions = { now, refresh: () => { throw new Error("fixture refresh"); } };
+    const failed = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], failedOptions);
+    assert.equal(failed.published.length, 0); assert.match(failed.errors[0].error, /fixture refresh/); assert.equal(failed.phases.length, 1);
+    db.prepare("INSERT INTO progression_population_current VALUES ('regular','persistent',?,?)").run(now,now);
+    db.prepare("INSERT INTO progression_population_generations VALUES ('regular','persistent',?,?,?)")
+      .run(now, now, JSON.stringify({ average: {} }));
+    const skipped = await materializeDuePopulations(db, [{ mode: "regular", cycleId: "persistent" }], { now });
+    assert.equal(skipped.phases.length, 0);
+    db.exec("CREATE TABLE players (aid INTEGER PRIMARY KEY,hours REAL,achievements TEXT);CREATE TABLE mode_players (mode TEXT,aid INTEGER,hours REAL,achievements TEXT)");
+    const baseline = materializeDueAchievementBaselines(db,{now});
+    assert.equal(baseline.published.length, 2); assert.equal(baseline.errors.length,0);
+    assert.equal(baseline.phases.filter(phase=>phase.phase==="baseline_publish").length, 2);
+    assert.deepEqual(materializeDueAchievementBaselines(db,{now}).phases, []);
+  } finally { db.close(); }
+});
+
+test("Seasonal display baseline reuses only unchanged publication data and isolates caller mutations", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    const payload = { metrics: {}, riskBaselines: [], achievementBaseline: { eligibleN: 30,
+      achievements: [{ id: "a", owners: 12, samplePct: 40, meanHours: 100, stdHours: 2, earlyHours: 0, unlockHours: 0 }] } };
+    db.prepare("INSERT INTO progression_population_generations VALUES ('seasonal','s1',1,1,?)").run(JSON.stringify(payload));
+    db.exec("INSERT INTO progression_population_current VALUES ('seasonal','s1',1,1)");
+    let reads = 0;
+    const reader = { prepare(sql: string) { if (sql.includes("g.payload")) reads++; return db.prepare(sql); } };
+    const first = readPublishedSeasonalAchievementBaseline(reader, "s1")!;
+    assert.equal(first.achievements[0].earlyHours, 0);
+    const expected = structuredClone(first);
+    first.achievements[0].owners = 999;
+    first.achievements.length = 0;
+    assert.deepEqual(readPublishedSeasonalAchievementBaseline(reader, "s1"), expected);
+    assert.equal(reads, 1);
+    payload.achievementBaseline.eligibleN = 31;
+    db.prepare("UPDATE progression_population_generations SET payload = ?").run(JSON.stringify(payload));
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+    assert.equal(reads, 2);
+    db.exec("DELETE FROM progression_population_generations");
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1"), null);
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "missing"), null);
+    db.prepare("INSERT INTO progression_population_generations VALUES ('seasonal','s1',2,2,?)").run(JSON.stringify(payload));
+    db.exec("UPDATE progression_population_current SET generation = 2, generated_at = 2");
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+    for (const bad of ['broken', '{}', '{"metrics":false,"riskBaselines":[],"achievementBaseline":{}}', '{"metrics":{},"riskBaselines":{}}']) {
+      db.prepare("UPDATE progression_population_generations SET payload = ?").run(bad);
+      assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1"), null);
+    }
+    // Preserve JSON.parse's last-key-wins semantics for a legacy publication.
+    db.prepare("UPDATE progression_population_generations SET payload = ?").run(`{"metrics":{},"riskBaselines":[],"achievementBaseline":null,"achievementBaseline":${JSON.stringify(payload.achievementBaseline)}}`);
+    assert.equal(readPublishedSeasonalAchievementBaseline(reader, "s1")?.eligibleN, 31);
+  } finally { db.close(); }
+});
+
+test("Seasonal display baseline invalidates external writes and isolates cycles and database handles", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seasonal-baseline-cache-"));
+  const path = join(directory, "fixture.db");
+  const db = new DatabaseSync(path);
+  let writer: DatabaseSync | undefined;
+  const other = new DatabaseSync(":memory:");
+  try {
+    initializeSeasonalSchema(db);
+    initializeSeasonalSchema(other);
+    const payload = (eligibleN: number) => JSON.stringify({ metrics: {}, riskBaselines: [], achievementBaseline: { eligibleN, achievements: [] } });
+    const publish = (target: DatabaseSync, cycleId: string, n: number) => {
+      target.prepare("INSERT INTO progression_population_generations VALUES ('seasonal',?,1,1,?)").run(cycleId, payload(n));
+      target.prepare("INSERT INTO progression_population_current VALUES ('seasonal',?,1,1)").run(cycleId);
+    };
+    publish(db, "s1", 1); publish(db, "s2", 2); publish(other, "s1", 3);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1")?.eligibleN, 1);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s2")?.eligibleN, 2);
+    assert.equal(readPublishedSeasonalAchievementBaseline(other, "s1")?.eligibleN, 3);
+    writer = new DatabaseSync(path);
+    writer.prepare("UPDATE progression_population_generations SET payload = ? WHERE cycle_id = 's1'").run(payload(4));
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1")?.eligibleN, 4);
+    writer.exec("DELETE FROM progression_population_current WHERE cycle_id = 's1'");
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s1"), null);
+    assert.equal(readPublishedSeasonalAchievementBaseline(db, "s2")?.eligibleN, 2);
+  } finally {
+    writer?.close(); db.close(); other.close();
+    unlinkSync(path); rmdirSync(directory);
+  }
 });

@@ -4,19 +4,17 @@ import { loadSeasonalCycleConfig } from "./config.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { buildSeasonalAverageSeries, LIFETIME_BAND_DISTRIBUTION_SQL, lifetimeBandDistribution, progressionDailySql, SEASONAL_POPULATION_SQL, seasonalPopulationArgs, seasonalPopulationSummary, type DailyRow, type LifetimeBandCountRow, type SeasonalPopulationRow } from "./progression.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { initializeSeasonalSchema, parseSeasonalAchievementUnlocks, upsertSqliteSeasonCycle } from "./storage.ts";
+import { initializeSeasonalSchema, upsertSqliteSeasonCycle } from "./storage.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { ProgressionKind, SeasonalAverageResponse } from "../../types/seasonal.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { resolveY } from "../metrics.ts";
+import { resolveY, AVERAGE_OVERLAY_METRICS } from "../metrics.ts";
+import type { AverageMetricSeriesResponse } from "../average-metric-series";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { achievementUnlockHours } from "../achievement-unlock-hours.ts";
-// @ts-ignore Node's strip-types test runner requires the explicit extension.
-import { percentile20 } from "./analytics.ts";
+import { prepareSeasonalRiskAchievements } from "./risk-achievement-population.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -125,6 +123,7 @@ export interface SeasonalPublicationVariantTimings {
   variant: string;
   period: AveragePeriod;
   statistic: AverageStatistic;
+  /** Variant construction after shared period preparation. */
   computeMs: number;
 }
 
@@ -134,6 +133,7 @@ export interface SeasonalPublicationTimings {
   portraitRows: number;
   totalMs: number;
   variants: SeasonalPublicationVariantTimings[];
+  periods: { period: AveragePeriod; sharedComputeMs: number }[];
 }
 
 const SEASONAL_PORTRAIT_COLUMNS = [
@@ -181,17 +181,17 @@ function finiteOrNull(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
-function averageNumbers(values: number[], statistic: AverageStatistic): number | null {
+function averageNumbers(values: number[], statistic: AverageStatistic, preparedSorted?: number[]): number | null {
   if (values.length === 0) return null;
   if (statistic === "median") {
-    const sorted = [...values].sort((left, right) => left - right);
+    const sorted = preparedSorted ?? [...values].sort((left, right) => left - right);
     const n = sorted.length;
     if (n % 2 === 1) return sorted[(n - 1) / 2] ?? null;
     return ((sorted[n / 2 - 1] ?? 0) + (sorted[n / 2] ?? 0)) / 2;
   }
   const { off, limit } = trimWindow(values.length);
   if (off === 0) return values.reduce((sum, value) => sum + value, 0) / values.length;
-  const sorted = [...values].sort((left, right) => left - right);
+  const sorted = preparedSorted ?? [...values].sort((left, right) => left - right);
   const window = sorted.slice(off, off + limit);
   if (window.length === 0) return null;
   return window.reduce((sum, value) => sum + value, 0) / window.length;
@@ -215,18 +215,18 @@ export function seasonalHoursBucket(value: number): { lo: number; hi: number | n
  */
 export function buildSeasonalCrossSectionFromRows(
   rows: readonly Record<string, unknown>[],
-  input: {
-    cycleId: string;
-    period: AveragePeriod;
-    statistic: AverageStatistic;
-    dimension: SeasonalAverageDimension;
-    metric: string;
-    min: number | null;
-    max: number | null;
-    now?: number;
-  },
+  input: SeasonalAverageCrossSectionInput,
 ): SeasonalAverageCrossSectionResponse {
-  const now = input.now ?? Date.now();
+  return buildSeasonalCrossSectionsFromRows(rows, input, [input.statistic]).variants[0].response;
+}
+
+function buildSeasonalCrossSectionsFromRows(
+  rows: readonly Record<string, unknown>[],
+  input: Omit<SeasonalAverageCrossSectionInput, "statistic">,
+  statistics: readonly AverageStatistic[],
+) {
+  const startedAt = Date.now();
+  const now = input.now ?? startedAt;
   const metric = resolveY(input.metric).key;
   const dimensionColumn = input.dimension === "hours" ? "hours" : "pmc_raids";
   const cutoff = input.period === "90d" ? Math.floor(now - 90 * 86_400_000) : null;
@@ -242,67 +242,106 @@ export function buildSeasonalCrossSectionFromRows(
   };
   const scopedRows = periodRows.filter(inRange);
   const total = periodRows.length;
-  const averages = { n: scopedRows.length } as NonNullable<AverageDashboardResponse["averages"]>;
-  const metricCounts: Record<string, number> = {};
+  const portraits = statistics.map((statistic) => ({
+    statistic,
+    averages: { n: scopedRows.length } as NonNullable<AverageDashboardResponse["averages"]>,
+    metricCounts: {} as Record<string, number>,
+  }));
   for (const column of SEASONAL_AVG_COLS) {
     const values: number[] = [];
     for (const row of scopedRows) {
       const value = finiteOrNull(row[column]);
       if (value != null) values.push(value);
     }
-    metricCounts[column] = values.length;
-    averages[column] = averageNumbers(values, input.statistic);
+    // Retain one metric array at a time. The median and trimmed mean reuse its
+    // sorted order, but small trimmed samples still sum the original row order.
+    const sorted = statistics.length > 1 ? [...values].sort((left, right) => left - right) : undefined;
+    for (const portrait of portraits) {
+      portrait.metricCounts[column] = values.length;
+      portrait.averages[column] = averageNumbers(values, portrait.statistic, sorted);
+    }
   }
   // Buckets ignore the requested range: the histogram spans the whole period so
   // the page can draw the full domain and highlight the selected slice. A row
   // whose range metric is null is excluded from its bucket entirely, which is
   // what the SQL counted, and for a median bucket the sum carries
   // median * n so the client still recovers median from sum / n.
+  const preparedBuckets = prepareSeasonalBuckets(periodRows, input.dimension, metric);
+  const { boundLo, boundHi } = preparedBuckets;
+  const sharedComputeMs = Date.now() - startedAt;
+  const variants = portraits.map(({ statistic, averages, metricCounts }) => {
+    const variantStartedAt = Date.now();
+    const buckets = seasonalMetricBuckets(preparedBuckets, statistic);
+    const response: SeasonalAverageCrossSectionResponse = {
+      mode: "seasonal",
+      cycleId: input.cycleId,
+      period: input.period,
+      statistic,
+      total,
+      averages: total === 0 ? null : averages,
+      metricCounts,
+      buckets,
+      bounds: boundLo == null || boundHi == null
+        ? DEFAULT_BOUNDS[input.dimension]
+        : { min: Math.max(0, Math.floor(boundLo)), max: Math.ceil(boundHi) },
+      dimension: input.dimension,
+      metric,
+    };
+    return { response, computeMs: Date.now() - variantStartedAt };
+  });
+  return { variants, sharedComputeMs };
+}
+
+function prepareSeasonalBuckets(periodRows: readonly Record<string, unknown>[], dimension: SeasonalAverageDimension, metric: string) {
   const metricDef = resolveY(metric);
   const rangeColumn = metricDef.agg === "count" ? null : (metricDef.column ?? metric);
-  const medianBucket = input.statistic === "median" && rangeColumn != null;
   const grouped = new Map<string, { lo: number; hi: number | null; n: number; values: number[] }>();
   let boundLo: number | null = null;
   let boundHi: number | null = null;
   for (const row of periodRows) {
-    const value = finiteOrNull(row[dimensionColumn]);
+    const value = finiteOrNull(row[dimension === "hours" ? "hours" : "pmc_raids"]);
     if (value == null) continue;
     if (boundLo == null || value < boundLo) boundLo = value;
     if (boundHi == null || value > boundHi) boundHi = value;
     const metricValue = rangeColumn == null ? null : finiteOrNull(row[rangeColumn]);
     if (rangeColumn != null && metricValue == null) continue;
-    const bucket = seasonalBucket(input.dimension, value);
+    const bucket = seasonalBucket(dimension, value);
     const key = `${bucket.lo}:${bucket.hi ?? ""}`;
     const entry = grouped.get(key) ?? { lo: bucket.lo, hi: bucket.hi, n: 0, values: [] as number[] };
     entry.n += 1;
     if (metricValue != null) entry.values.push(metricValue);
     grouped.set(key, entry);
   }
-  const buckets = [...grouped.values()]
-    .sort((left, right) => left.lo - right.lo)
-    .map((entry) => ({
-      lo: entry.lo,
-      hi: entry.hi,
-      n: entry.n,
-      sum: medianBucket
-        ? (averageNumbers(entry.values, "median") ?? 0) * entry.n
-        : entry.values.reduce((total, value) => total + value, 0),
-    }));
-  return {
-    mode: "seasonal",
-    cycleId: input.cycleId,
-    period: input.period,
-    statistic: input.statistic,
-    total,
-    averages: total === 0 ? null : averages,
-    metricCounts,
-    buckets,
-    bounds: boundLo == null || boundHi == null
-      ? DEFAULT_BOUNDS[input.dimension]
-      : { min: Math.max(0, Math.floor(boundLo)), max: Math.ceil(boundHi) },
-    dimension: input.dimension,
-    metric,
-  };
+  const orderedBuckets = [...grouped.values()].sort((left, right) => left.lo - right.lo);
+  return { orderedBuckets, rangeColumn, boundLo, boundHi };
+}
+
+function seasonalMetricBuckets(prepared: ReturnType<typeof prepareSeasonalBuckets>, statistic: AverageStatistic) {
+  return prepared.orderedBuckets.map((entry) => ({
+    lo: entry.lo,
+    hi: entry.hi,
+    n: entry.n,
+    sum: statistic === "median" && prepared.rangeColumn != null
+      ? (averageNumbers(entry.values, "median") ?? 0) * entry.n
+      : entry.values.reduce((total, value) => total + value, 0),
+  }));
+}
+
+/** Bucket-only overlay: one normalized scan, no portrait statistics or bounds queries. */
+export async function computeSeasonalMetricSeries(cycleId: string, period: AveragePeriod, statistic: AverageStatistic, now = Date.now()): Promise<AverageMetricSeriesResponse | null> {
+  const backend = await openSeasonalAverageBackend();
+  if (!backend) return null;
+  // Preserve the existing portrait projection and row order for exact floating sum parity.
+  const rows = await backendRows(backend,
+    `${PORTRAIT_CTE} SELECT ${SEASONAL_PORTRAIT_COLUMNS.join(", ")} FROM normalized`,
+    [cycleId, cycleId, cycleId],
+  );
+  const cutoff = period === "90d" ? Math.floor(now - 90 * 86_400_000) : null;
+  const periodRows = cutoff == null ? rows : rows.filter((row) => Number(row.profile_updated_at) >= cutoff);
+  const series = Object.fromEntries(AVERAGE_OVERLAY_METRICS.map((metric) => [metric,
+    seasonalMetricBuckets(prepareSeasonalBuckets(periodRows, "pmc_raids", metric), statistic),
+  ])) as AverageMetricSeriesResponse["series"];
+  return { mode: "seasonal", cycleId, statistic, period, series };
 }
 
 /**
@@ -337,13 +376,14 @@ export async function getSeasonalAveragePublicationPayloads(
   const portraitFetchMs = Date.now() - portraitFetchStartedAt;
   const payloads = new Map<string, SeasonalAverageCrossSectionResponse>();
   const variants: SeasonalPublicationVariantTimings[] = [];
-  for (const statistic of SEASONAL_PUBLICATION_STATISTICS) {
-    for (const period of SEASONAL_PUBLICATION_PERIODS) {
-      const computeStartedAt = Date.now();
-      const response = buildSeasonalCrossSectionFromRows(rows, {
-        cycleId, period, statistic, dimension: "hours", metric: "players", min: null, max: null, now,
-      });
-      const computeMs = Date.now() - computeStartedAt;
+  const periods: SeasonalPublicationTimings["periods"] = [];
+  for (const period of SEASONAL_PUBLICATION_PERIODS) {
+    const batch = buildSeasonalCrossSectionsFromRows(rows, {
+      cycleId, period, dimension: "hours", metric: "players", min: null, max: null, now,
+    }, SEASONAL_PUBLICATION_STATISTICS);
+    periods.push({ period, sharedComputeMs: batch.sharedComputeMs });
+    for (const { response, computeMs } of batch.variants) {
+      const statistic = response.statistic;
       const variant = standardSeasonalVariant(statistic, period);
       payloads.set(variant, response);
       variants.push({ variant, period, statistic, computeMs });
@@ -356,22 +396,34 @@ export async function getSeasonalAveragePublicationPayloads(
       portraitRows: rows.length,
       totalMs: Date.now() - totalStartedAt,
       variants,
+      periods,
     },
   };
 }
 
+export interface SeasonalAverageCrossSectionInput {
+  cycleId: string;
+  period: AveragePeriod;
+  statistic: AverageStatistic;
+  dimension: SeasonalAverageDimension;
+  metric: string;
+  min: number | null;
+  max: number | null;
+  now?: number;
+}
+
+/**
+ * `available: false` mirrors the query adapter being absent (no readable
+ * backend), which the route answers 503; `result: null` keeps the
+ * not-found answer the adapter could already produce.
+ */
+export type SeasonalAverageCrossSectionLookup =
+  | { available: false; result: null }
+  | { available: true; result: SeasonalAverageCrossSectionResponse | null };
+
 /** Query adapter for the Seasonal cross-section; it never opens the regular player store. */
 export async function getSeasonalAverageCrossSectionQuery(): Promise<
-  ((input: {
-    cycleId: string;
-    period: AveragePeriod;
-    statistic: AverageStatistic;
-    dimension: SeasonalAverageDimension;
-    metric: string;
-    min: number | null;
-    max: number | null;
-    now?: number;
-  }) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
+  ((input: SeasonalAverageCrossSectionInput) => Promise<SeasonalAverageCrossSectionResponse | null>) | null
 > {
   try {
     const backend = await openSeasonalAverageBackend();
@@ -405,6 +457,20 @@ export async function getSeasonalAverageCrossSectionQuery(): Promise<
     console.warn("seasonal cross-section query unavailable: " + (error as Error).message);
     return null;
   }
+}
+
+/**
+ * Worker entry point for the cross-section. The SQL is synchronous
+ * `node:sqlite`, so it has to run in the cohort child: on the HTTP process one
+ * request blocked the event loop for the whole scan and the 25 s route timer
+ * could not interrupt it.
+ */
+export async function computeSeasonalAverageCrossSection(
+  input: SeasonalAverageCrossSectionInput,
+): Promise<SeasonalAverageCrossSectionLookup> {
+  const query = await getSeasonalAverageCrossSectionQuery();
+  if (!query) return { available: false, result: null };
+  return { available: true, result: await query(input) };
 }
 
 export interface SeasonalAchievementBaselineEntry {
@@ -470,16 +536,22 @@ export function selectSeasonalRiskPercent(
   ) ?? 30;
 }
 
-function summary(values: number[]): { mean: number; std: number; early: number } {
-  if (values.length === 0) return { mean: 0, std: 0, early: 0 };
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-  return {
-    mean,
-    std: Math.sqrt(Math.max(0, variance)),
-    early: percentile20(values) ?? mean,
-  };
-}
+// One prepared population, invalidated by either external commits or writes
+// through this handle. A worker can score distinct players without rebuilding
+// JSON and order statistics; excluding the target remains exact per owner.
+let riskAchievementPopulation: {
+  db: AverageBackend["db"];
+  cycleId: string;
+  version: number;
+  changes: number;
+  baseline: ReturnType<typeof prepareSeasonalRiskAchievements>;
+} | null = null;
+
+const LATEST_RISK_SNAPSHOT_JOIN = `JOIN progression_snapshots latest ON latest.id = (
+  SELECT current.id FROM progression_snapshots current
+  WHERE current.mode = p.mode AND current.cycle_id = p.cycle_id AND current.aid = p.aid
+  ORDER BY current.profile_updated_at DESC, current.id DESC LIMIT 1
+)`;
 
 export async function getSeasonalAchievementBaseline(
   cycleId: string,
@@ -494,80 +566,25 @@ export async function getSeasonalAchievementBaseline(
       [cycleId],
     );
     const seasonStartsAt = finiteValue(cycle?.starts_at);
-    const rows = await backendRows(backend, `WITH latest AS (
-      SELECT s.* FROM progression_snapshots s
-      JOIN (
-        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
-        FROM progression_snapshots
-        WHERE mode = 'seasonal' AND cycle_id = ?
-        GROUP BY aid, cycle_id
-      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
-        AND current.profile_updated_at = s.profile_updated_at
-      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-    ) SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.achievements,
-        cycle.starts_at
+    const version = Number(backend.db.prepare("PRAGMA data_version").get().data_version);
+    const changes = Number(backend.db.prepare("SELECT total_changes() AS n").get().n);
+    if (riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
+        riskAchievementPopulation.cycleId === cycleId &&
+        riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
+      return riskAchievementPopulation.baseline(excludeAid);
+    }
+    const rows = await backendRows(backend, `SELECT p.aid, p.lifetime_pvp_hours AS hours,
+        latest.achievements, cycle.starts_at
       FROM player_profiles p
-      JOIN latest ON latest.aid = p.aid
-        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
-      JOIN season_cycles cycle ON cycle.mode = 'seasonal' AND cycle.cycle_id = ?
+      ${LATEST_RISK_SNAPSHOT_JOIN}
+      JOIN season_cycles cycle ON cycle.mode = p.mode AND cycle.cycle_id = p.cycle_id
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
         AND latest.pmc_raids >= 1
-        ${excludeAid == null ? "" : "AND p.aid != ?"}
-        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`,
-      [cycleId, cycleId, cycleId, cycleId, ...(excludeAid == null ? [] : [excludeAid])]);
-
-    const eligible = rows.flatMap((row) => {
-      const achievements = parseSeasonalAchievementUnlocks(row.achievements);
-      if (achievements === null) return [];
-      return [{
-        aid: Number(row.aid),
-        hours: finiteValue(row.hours),
-        startsAt: finiteValue(row.starts_at),
-        achievements,
-      }];
-    });
-    const byAchievement = new Map<string, {
-      hours: number[];
-      unlockDays: number[];
-      owners: Set<number>;
-    }>();
-    for (const owner of eligible) {
-      const aid = owner.aid;
-      for (const achievement of owner.achievements) {
-        const entry = byAchievement.get(achievement.id) ?? {
-          hours: [], unlockDays: [], owners: new Set<number>(),
-        };
-        entry.owners.add(aid);
-        if (owner.hours !== null && owner.hours >= 0) entry.hours.push(owner.hours);
-        if (achievement.unlockedAt !== null && owner.startsAt !== null) {
-          const day = (achievement.unlockedAt - owner.startsAt) / 86_400_000;
-          if (Number.isFinite(day) && day >= 0) entry.unlockDays.push(day);
-        }
-        byAchievement.set(achievement.id, entry);
-      }
-    }
-    const eligibleN = eligible.length;
-    return {
-      total: eligibleN,
-      eligibleN,
-      seasonStartsAt,
-      achievements: [...byAchievement.entries()].map(([ach_id, value]) => {
-        const hours = summary(value.hours);
-        return {
-          ach_id,
-          owners: value.owners.size,
-          eligibleN,
-          prevalencePct: eligibleN > 0 ? value.owners.size / eligibleN * 100 : 0,
-          meanHours: hours.mean,
-          stdHours: hours.std,
-          earlyHours: hours.early,
-          unlockHours: achievementUnlockHours(value.hours) ?? hours.mean,
-          unlockDayP20: percentile20(value.unlockDays),
-          timestampOwners: value.unlockDays.length,
-        };
-      }).sort((left, right) => left.prevalencePct - right.prevalencePct || left.ach_id.localeCompare(right.ach_id)),
-    };
+        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`, [cycleId]);
+    const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
+    riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
+    return baseline(excludeAid);
   } catch (error) {
     console.warn("seasonal achievement baseline unavailable: " + (error as Error).message);
     return null;
@@ -592,23 +609,12 @@ export async function getSeasonalRiskBaseline(
   try {
     const backend = await openSeasonalAverageBackend();
     if (!backend) return null;
-    const population = `WITH latest AS (
-      SELECT s.* FROM progression_snapshots s
-      JOIN (
-        SELECT aid, cycle_id, MAX(profile_updated_at) AS profile_updated_at
-        FROM progression_snapshots
-        WHERE mode = 'seasonal' AND cycle_id = ?
-        GROUP BY aid, cycle_id
-      ) current ON current.aid = s.aid AND current.cycle_id = s.cycle_id
-        AND current.profile_updated_at = s.profile_updated_at
-      WHERE s.mode = 'seasonal' AND s.cycle_id = ?
-    ), eligible AS (
+    const population = `WITH eligible AS (
       SELECT p.aid, p.lifetime_pvp_hours AS hours, latest.pmc_raids,
         latest.pmc_survived, latest.pmc_deaths, latest.pmc_kills,
         latest.killed_pmc, latest.longest_win_streak, latest.prestige
       FROM player_profiles p
-      JOIN latest ON latest.aid = p.aid
-        AND latest.mode = p.mode AND latest.cycle_id = p.cycle_id
+      ${LATEST_RISK_SNAPSHOT_JOIN}
       WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
         AND p.lifetime_pvp_hours > 0 AND latest.pmc_raids > 0
@@ -632,7 +638,7 @@ export async function getSeasonalRiskBaseline(
       `${population} SELECT ${SEASONAL_RISK_COHORT_PERCENTAGES.map((percent, index) =>
         `SUM(CASE WHEN ${countConditions[index].sql} THEN 1 ELSE 0 END) AS count_${percent}`
       ).join(", ")} FROM eligible ${widest.where}`,
-      [cycleId, cycleId, cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
+      [cycleId, ...countConditions.flatMap((condition) => condition.params), ...widest.params],
     );
     const counts = Object.fromEntries(SEASONAL_RISK_COHORT_PERCENTAGES.map((percent) => [
       percent, finiteRiskCount(countRow?.[`count_${percent}`]),
@@ -646,7 +652,7 @@ export async function getSeasonalRiskBaseline(
       `${population} SELECT pmc_raids, pmc_survived, pmc_deaths,
         pmc_kills, killed_pmc, longest_win_streak, prestige
       FROM eligible ${selected.where}`,
-      [cycleId, cycleId, cycleId, ...selected.params],
+      [cycleId, ...selected.params],
     );
     const metrics: Record<string, number[]> = {
       pmc_survival_rate: [], pmc_kd_ratio: [], pmc_kills_per_raid: [],

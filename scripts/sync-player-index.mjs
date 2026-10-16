@@ -327,15 +327,26 @@ async function consumeIndex(db, response, syncedAt, dryRun, previousRows) {
 function swapImportTable(db, meta) {
   db.exec("BEGIN IMMEDIATE");
   try {
+    const previous = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_index'").get();
+    if (previous && db.prepare("SELECT 1 FROM player_index LIMIT 1").get()) {
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'players'").get()) {
+        db.exec(`INSERT OR IGNORE INTO player_index_next (aid, nickname, nickname_lower, synced_at)
+          SELECT i.aid, i.nickname, i.nickname_lower, i.synced_at FROM player_index i
+          WHERE EXISTS (SELECT 1 FROM players p WHERE p.aid = i.aid)`);
+      }
+      db.exec(`DROP TABLE IF EXISTS player_index_previous;
+        ALTER TABLE player_index RENAME TO player_index_previous;
+        DROP INDEX IF EXISTS idx_player_index_nickname_lower;
+        CREATE INDEX idx_player_index_previous_nickname_lower ON player_index_previous(nickname_lower);`);
+    } else if (previous) db.exec("DROP TABLE player_index");
     db.exec(`
-DROP TABLE IF EXISTS player_index;
 ALTER TABLE player_index_next RENAME TO player_index;
 CREATE INDEX IF NOT EXISTS idx_player_index_nickname_lower
   ON player_index(nickname_lower);
 `);
     setMeta(db, "synced_at", String(meta.syncedAt));
     setMeta(db, "source_url", meta.url);
-    setMeta(db, "row_count", String(meta.inserted));
+    setMeta(db, "row_count", String(currentRowCount(db)));
     setMeta(db, "source_rows", String(meta.sourceRows));
     setMeta(db, "skipped", String(meta.skipped));
     setMeta(db, "bytes", String(meta.bytes));
@@ -367,6 +378,8 @@ async function main() {
 
   const resolved = path.resolve(file);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  // Index replacement can exceed the worker's /tmp tmpfs; use the writable data volume.
+  process.env.SQLITE_TMPDIR ||= path.dirname(resolved);
   const db = new DatabaseSync(resolved);
   db.exec("PRAGMA busy_timeout = 30000");
   db.exec("PRAGMA journal_mode = WAL");

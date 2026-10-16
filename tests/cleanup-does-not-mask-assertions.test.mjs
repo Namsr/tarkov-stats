@@ -682,6 +682,7 @@ test("a body the scan cannot see into is still guarded when it guards itself", (
 const suitesWhoseDeleteNeedsAGuard = [
   "tests/arena-index-sync.test.mjs",
   "tests/average-publication.test.ts",
+  "tests/ban-import.test.ts",
   "tests/home-showcase-config-api.test.mjs",
   "tests/leaderboard-cli.test.mjs",
   "tests/operator-seasonal-run-outcome.test.mjs",
@@ -710,6 +711,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/arena-profile-sync.test.mjs",
   "tests/average-materialize-once.test.mjs",
   "tests/backup-db.test.mjs",
+  // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
+  "tests/background-isolation.test.mjs",
   "tests/caddy-overload.test.mjs",
   "tests/deploy-wrapper.test.mjs",
   "tests/leaderboard-publication.test.ts",

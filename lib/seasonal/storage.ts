@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+import { retrySqliteStore } from "../sqlite-busy-retry.ts";
 import type {
   CaptureSnapshotResult,
   PlayerProfileRecord,
@@ -18,6 +19,7 @@ import type {
 import type { WeaponMasteryProgress } from "@/types/tarkov";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { reissueEditedTriggers, sqliteTrigger } from "../sqlite-trigger-ddl.ts";
+import { seasonalPrestige } from "./prestige.ts";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
 // the existing progression store already relies on. Keeping schema ownership in
@@ -72,6 +74,16 @@ BEGIN
 END;
 `;
 
+const PROGRESSION_NORMALIZATION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS progression_normalizations (
+  mode TEXT NOT NULL,
+  cycle_id TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  PRIMARY KEY (mode, cycle_id, aid)
+);`;
+
 export const SEASONAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS excluded_players (
   aid INTEGER PRIMARY KEY,
@@ -87,6 +99,16 @@ CREATE TABLE IF NOT EXISTS season_cycles (
   upstream_contract TEXT CHECK (upstream_contract IN ('game_mode', 'profile_section', 'direct_profile')),
   PRIMARY KEY (mode, cycle_id)
 );
+CREATE TABLE IF NOT EXISTS seasonal_player_index (
+  cycle_id TEXT NOT NULL,
+  aid INTEGER NOT NULL,
+  nickname TEXT NOT NULL,
+  nickname_lower TEXT NOT NULL,
+  synced_at INTEGER NOT NULL,
+  PRIMARY KEY (cycle_id, aid)
+);
+CREATE INDEX IF NOT EXISTS idx_seasonal_player_index_name
+  ON seasonal_player_index(cycle_id, nickname_lower, aid);
 CREATE TABLE IF NOT EXISTS player_profiles (
   mode TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -253,6 +275,7 @@ CREATE TABLE IF NOT EXISTS progression_population_generations (
   payload TEXT NOT NULL,
   PRIMARY KEY (mode, cycle_id, generation)
 );
+${PROGRESSION_NORMALIZATION_SCHEMA}
 CREATE TABLE IF NOT EXISTS progression_population_current (
   mode TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
@@ -449,7 +472,7 @@ function columns(db: SqliteDatabase, table: string): Set<string> {
 }
 
 const CURRENT_SCHEMA_OBJECTS = [
-  "excluded_players", "season_cycles", "player_profiles", "idx_player_profiles_cycle_access",
+  "excluded_players", "season_cycles", "seasonal_player_index", "idx_seasonal_player_index_name", "player_profiles", "idx_player_profiles_cycle_access",
   "idx_player_profiles_progression_hours", "idx_player_profiles_average_freshness",
   "idx_player_profiles_comparison",
   "upstream_ban_confirmations", "idx_upstream_ban_confirmations_aid", "progression_snapshots",
@@ -504,8 +527,15 @@ export function initializeSeasonalLeaderboardChangeJournal(db: SqliteDatabase): 
 }
 
 export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean } {
-  db.exec("PRAGMA busy_timeout = 30000");
+  // Opening a foreground store sets a short wait. Reusing the schema must not
+  // turn that wait back into a 30-second synchronous pause of the HTTP process.
+  if (!Number(db.prepare("PRAGMA busy_timeout").get()?.timeout)) db.exec("PRAGMA busy_timeout = 30000");
   if (currentSeasonalSchema(db)) {
+    // Add only the small normalization journal to an otherwise current
+    // database; do not replay the expensive historical portrait backfill.
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'progression_normalizations'").get()) {
+      db.exec(PROGRESSION_NORMALIZATION_SCHEMA);
+    }
     // A current database already has every object in SEASONAL_LEADERBOARD_CHANGE_SCHEMA
     // — all of them are in CURRENT_SCHEMA_OBJECTS — so exec'ing that schema here would
     // be a no-op. The four journal triggers still need the body-drift check though:
@@ -1039,19 +1069,25 @@ export function toProfile(
     const survivedRaids = nullableNumber(snapshot.survived);
     const totalKills = nullableNumber(snapshot.total_kills);
     const deaths = nullableNumber(snapshot.deaths);
+    const prestige = seasonalPrestige(nullableNumber(snapshot.prestige), achievements?.map((achievement) => achievement.id) ?? []);
+    // Older snapshots stored omitted Runner counters as NULL. Infer zero only
+    // when the recorded total outcomes already account for every raid.
+    const runThrough = nullableNumber(snapshot.run_through) ?? (
+      totalRaids !== null && survivedRaids !== null && deaths !== null && survivedRaids + deaths === totalRaids ? 0 : null
+    );
     profile.seasonalStats = {
       totalRaids,
       survivedRaids,
       totalKills,
       deaths,
-      runThrough: nullableNumber(snapshot.run_through),
+      runThrough,
       survivalRate: percentage(survivedRaids, totalRaids),
       kdRatio: quotient(totalKills, deaths),
       pmcKdRatio: quotient(profile.counters.killedPmc, profile.counters.pmcDeaths),
       killsPerRaid: quotient(totalKills, totalRaids),
       pmcSurvivalRate: percentage(profile.counters.pmcSurvived, profile.counters.pmcRaids),
       level: nullableNumber(snapshot.level),
-      prestige: nullableNumber(snapshot.prestige),
+      prestige,
       longestWinStreak: nullableNumber(snapshot.longest_win_streak),
       achievementsCount: nullableNumber(snapshot.achv_count) ?? (achievements === null ? null : achievements.length),
     };
@@ -1059,7 +1095,7 @@ export function toProfile(
     profile.commonSkills = commonSkills;
     profile.weaponMastery = weaponMastery;
     profile.staticSignals = {
-      prestige: nullableNumber(snapshot.prestige) ?? 0,
+      prestige: prestige ?? 0,
       longestWinStreak: nullableNumber(snapshot.longest_win_streak) ?? 0,
       achievementIds: achievements?.map((achievement) => achievement.id) ?? [],
     };
@@ -1110,9 +1146,10 @@ export function validateTaskPriority(priority: ScanTaskPriority): void {
 }
 
 export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
+  db.exec("PRAGMA busy_timeout = 250");
   initializeSeasonalSchema(db);
   const identityWhere = "mode = ? AND cycle_id = ? AND aid = ?";
-  return {
+  return retrySqliteStore<SeasonalStore>({
     async getCycle(cycleId) {
       const row = db.prepare("SELECT * FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) as Record<string, unknown> | undefined;
       return row ? {
@@ -1129,61 +1166,85 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
     },
     async upsertProfile(profile, observedAt = Date.now()) {
       validateProfile(profile);
-      db.prepare(`
-        INSERT INTO player_profiles (
-          mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
-          ${COUNTER_COLUMNS.join(", ")}, ${PROFILE_PORTRAIT_COLUMNS.join(", ")},
-          pmc_killed_pmc, pvp_stats_version, pvp_stats_parser_version, leaderboard_activity_at,
-          first_seen_at, last_seen_at, confirmed_banned
-        ) VALUES (${Array.from({ length: 26 }, () => "?").join(", ")},
-          EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
-        ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
-          nickname = excluded.nickname,
-          profile_updated_at = MAX(player_profiles.profile_updated_at, excluded.profile_updated_at),
-          last_access_at = MAX(player_profiles.last_access_at, excluded.last_access_at),
-          lifetime_pvp_hours = COALESCE(player_profiles.lifetime_pvp_hours, excluded.lifetime_pvp_hours),
-          experience = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.experience ELSE player_profiles.experience END,
-          pmc_raids = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
-            (excluded.profile_updated_at = player_profiles.profile_updated_at AND
-              (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
-            THEN excluded.pmc_raids ELSE player_profiles.pmc_raids END,
-          scav_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.scav_raids ELSE player_profiles.scav_raids END,
-          pmc_survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_survived ELSE player_profiles.pmc_survived END,
-          pmc_deaths = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
-            (excluded.profile_updated_at = player_profiles.profile_updated_at AND
-              (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
-            THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
-          pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
-          killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
-          pmc_killed_pmc = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
-            (excluded.profile_updated_at = player_profiles.profile_updated_at AND
-              (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
-            THEN excluded.pmc_killed_pmc ELSE player_profiles.pmc_killed_pmc END,
-          pvp_stats_version = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
-            (excluded.profile_updated_at = player_profiles.profile_updated_at AND
-              (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
-            THEN excluded.pvp_stats_version ELSE player_profiles.pvp_stats_version END,
-          pvp_stats_parser_version = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at
-            THEN MAX(player_profiles.pvp_stats_parser_version, excluded.pvp_stats_parser_version)
-            ELSE player_profiles.pvp_stats_parser_version END,
-          leaderboard_activity_at = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at
-            THEN COALESCE(excluded.leaderboard_activity_at, player_profiles.leaderboard_activity_at)
-            ELSE player_profiles.leaderboard_activity_at END,
-          total_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_raids ELSE player_profiles.total_raids END,
-          survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.survived ELSE player_profiles.survived END,
-          deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.deaths ELSE player_profiles.deaths END,
-          total_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_kills ELSE player_profiles.total_kills END,
-          longest_win_streak = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.longest_win_streak ELSE player_profiles.longest_win_streak END,
-          level = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.level ELSE player_profiles.level END,
-          last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
-          confirmed_banned = CASE
-            WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
-            ELSE player_profiles.confirmed_banned END
-      `).run(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
-        profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), ...profilePortraitArgs(profile),
-        ...leaderboardProfileArgs(profile), observedAt, observedAt,
-        profile.aid);
-      return toProfile(db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(profile.mode, profile.cycleId, profile.aid));
+      db.exec("SAVEPOINT seasonal_profile_write");
+      try {
+        db.prepare(`
+          INSERT INTO player_profiles (
+            mode, cycle_id, aid, nickname, profile_updated_at, last_access_at, lifetime_pvp_hours,
+            ${COUNTER_COLUMNS.join(", ")}, ${PROFILE_PORTRAIT_COLUMNS.join(", ")},
+            pmc_killed_pmc, pvp_stats_version, pvp_stats_parser_version, leaderboard_activity_at,
+            first_seen_at, last_seen_at, confirmed_banned
+          ) VALUES (${Array.from({ length: 26 }, () => "?").join(", ")},
+            EXISTS(SELECT 1 FROM excluded_players WHERE aid = ?))
+          ON CONFLICT(mode, cycle_id, aid) DO UPDATE SET
+            nickname = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at
+              THEN excluded.nickname ELSE player_profiles.nickname END,
+            profile_updated_at = MAX(player_profiles.profile_updated_at, excluded.profile_updated_at),
+            last_access_at = MAX(player_profiles.last_access_at, excluded.last_access_at),
+            lifetime_pvp_hours = COALESCE(player_profiles.lifetime_pvp_hours, excluded.lifetime_pvp_hours),
+            experience = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.experience ELSE player_profiles.experience END,
+            pmc_raids = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
+              (excluded.profile_updated_at = player_profiles.profile_updated_at AND
+                (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
+              THEN excluded.pmc_raids ELSE player_profiles.pmc_raids END,
+            scav_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.scav_raids ELSE player_profiles.scav_raids END,
+            pmc_survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_survived ELSE player_profiles.pmc_survived END,
+            pmc_deaths = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
+              (excluded.profile_updated_at = player_profiles.profile_updated_at AND
+                (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
+              THEN excluded.pmc_deaths ELSE player_profiles.pmc_deaths END,
+            pmc_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.pmc_kills ELSE player_profiles.pmc_kills END,
+            killed_pmc = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.killed_pmc ELSE player_profiles.killed_pmc END,
+            pmc_killed_pmc = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
+              (excluded.profile_updated_at = player_profiles.profile_updated_at AND
+                (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
+              THEN excluded.pmc_killed_pmc ELSE player_profiles.pmc_killed_pmc END,
+            pvp_stats_version = CASE WHEN excluded.profile_updated_at > player_profiles.profile_updated_at OR
+              (excluded.profile_updated_at = player_profiles.profile_updated_at AND
+                (player_profiles.pvp_stats_version < 1 OR excluded.pvp_stats_version >= player_profiles.pvp_stats_version))
+              THEN excluded.pvp_stats_version ELSE player_profiles.pvp_stats_version END,
+            pvp_stats_parser_version = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at
+              THEN MAX(player_profiles.pvp_stats_parser_version, excluded.pvp_stats_parser_version)
+              ELSE player_profiles.pvp_stats_parser_version END,
+            leaderboard_activity_at = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at
+              THEN COALESCE(excluded.leaderboard_activity_at, player_profiles.leaderboard_activity_at)
+              ELSE player_profiles.leaderboard_activity_at END,
+            total_raids = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_raids ELSE player_profiles.total_raids END,
+            survived = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.survived ELSE player_profiles.survived END,
+            deaths = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.deaths ELSE player_profiles.deaths END,
+            total_kills = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.total_kills ELSE player_profiles.total_kills END,
+            longest_win_streak = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.longest_win_streak ELSE player_profiles.longest_win_streak END,
+            level = CASE WHEN excluded.profile_updated_at >= player_profiles.profile_updated_at THEN excluded.level ELSE player_profiles.level END,
+            last_seen_at = MAX(player_profiles.last_seen_at, excluded.last_seen_at),
+            confirmed_banned = CASE
+              WHEN EXISTS(SELECT 1 FROM excluded_players WHERE aid = excluded.aid) THEN 1
+              ELSE player_profiles.confirmed_banned END
+        `).run(profile.mode, profile.cycleId, profile.aid, profile.nickname, profile.profileUpdatedAt,
+          profile.lastAccessAt, profile.lifetimePvpHours, ...counterArgs(profile.counters), ...profilePortraitArgs(profile),
+          ...leaderboardProfileArgs(profile), observedAt, observedAt,
+          profile.aid);
+        const saved = toProfile(db.prepare(`SELECT * FROM player_profiles WHERE ${identityWhere}`).get(profile.mode, profile.cycleId, profile.aid));
+        if (saved.mode === "seasonal") {
+          // A single captured profile must not displace the complete reserve.
+          if (!db.prepare("SELECT 1 FROM seasonal_player_index WHERE cycle_id = ? LIMIT 1").get(saved.cycleId) &&
+            db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seasonal_player_index_previous'").get()) {
+            db.prepare(`INSERT INTO seasonal_player_index (cycle_id, aid, nickname, nickname_lower, synced_at)
+              SELECT cycle_id, aid, nickname, nickname_lower, synced_at
+              FROM seasonal_player_index_previous WHERE cycle_id = ?`).run(saved.cycleId);
+          }
+          db.prepare(`INSERT INTO seasonal_player_index (cycle_id, aid, nickname, nickname_lower, synced_at)
+            SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM excluded_players WHERE aid = ?)
+            ON CONFLICT(cycle_id, aid) DO UPDATE SET nickname = excluded.nickname,
+              nickname_lower = excluded.nickname_lower, synced_at = excluded.synced_at`)
+            .run(saved.cycleId, saved.aid, saved.nickname, saved.nickname.trim().toLowerCase(), observedAt, saved.aid);
+        }
+        db.exec("RELEASE seasonal_profile_write");
+        return saved;
+      } catch (error) {
+        db.exec("ROLLBACK TO seasonal_profile_write");
+        db.exec("RELEASE seasonal_profile_write");
+        throw error;
+      }
     },
     async captureSnapshot(profile, capturedAt = Date.now()) {
       validateProfile(profile);
@@ -1387,7 +1448,7 @@ export function createSqliteSeasonalStore(db: SqliteDatabase): SeasonalStore {
         throw error;
       }
     },
-  };
+  });
 }
 
 export function identityObject(profile: SeasonalProfile): ProfileIdentity {

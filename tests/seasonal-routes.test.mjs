@@ -12,6 +12,18 @@ test("one catch-all route serves both legacy and canonical player URLs", async (
   assert.equal(await exists("app/player/[mode]/[aid]/page.tsx"), false);
 });
 
+test("the unthrottled general progression route stays removed", async () => {
+  // `/api/progression` answered `?mode=regular|pve|seasonal&aid=` with no rate limiter.
+  // `progressionDailySql` ranks the whole `(mode, cycle_id)` population before the
+  // outer `WHERE ... OR r.aid = ?` narrows anything, so each distinct `aid` pays a
+  // full synchronous `DatabaseSync` scan and blocks the event loop. Nothing in the
+  // first-party UI, the warm-up scripts or the ops layer called it: the UI reads
+  // `/api/progression/timeline` and `/api/progression/average`, and the legacy
+  // Seasonal surface stays on `/api/seasonal/progression`. Deleting it is the fix;
+  // a limiter would only cap one of the two remaining paths to the same SQL.
+  assert.equal(await exists("app/api/progression/route.ts"), false);
+});
+
 test("every direct Seasonal page and API entry point uses the full rollout gate", async () => {
   const populationAverage = await readFile("app/population/[mode]/page.tsx", "utf8");
   assert.match(populationAverage, /@\/app\/average\/\[mode\]\/page/);
@@ -100,17 +112,17 @@ test("the player risk route gates Seasonal on the active cycle, not just on synt
   // that the two cases are answered differently, not how the source is spelled.
   assert.match(
     risk,
-    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle\) \{\s*return NextResponse\.json\(\{ error: "Seasonal risk unavailable" \}, \{ status: 404, headers: noStore \}\);/,
+    /if \(!isSeasonalRolloutReady\(\) \|\| !cycle\) \{\s*return respond\(\{ error: "Seasonal risk unavailable" \}, 404\);/,
   );
   assert.match(
     risk,
-    /if \(cycleId !== cycle\.cycleId\) \{\s*return NextResponse\.json\(\{ error: "Invalid or missing cycle" \}, \{ status: 400, headers: noStore \}\);/,
+    /if \(cycleId !== cycle\.cycleId\) \{\s*return respond\(\{ error: "Invalid or missing cycle" \}, 400\);/,
   );
   // Do not fold the mismatch back onto the gate line: that is the original defect.
   assert.doesNotMatch(risk, /!isSeasonalRolloutReady\(\) \|\| !cycle \|\|/);
   // The gate has to run before storage is opened.
   assert.ok(
-    risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("getRiskEvaluation("),
+    risk.indexOf("isSeasonalRolloutReady()") < risk.indexOf("readRiskEvaluation("),
     "the rollout gate must precede the risk read",
   );
 });
@@ -228,7 +240,6 @@ test("every SQLite-backed API route declares the nodejs runtime", async () => {
   // Guard the guard: a scan that resolves nothing would otherwise pass vacuously.
   for (const known of [
     "app/api/seasonal/progression/route.ts",
-    "app/api/progression/route.ts",
     "app/api/progression/timeline/route.ts",
     "app/api/progression/average/route.ts",
     "app/api/player/profile/route.ts",

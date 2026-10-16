@@ -52,6 +52,8 @@ async function fixture(scenario) {
     df() {
       echo 'Filesystem 1024-blocks Used Available Capacity Mounted'
       if [ "$SCENARIO" = disk-full ]; then echo 'fixture 1000 999 1 99% volume'
+      elif [ "$SCENARIO" = snapshot-only-space ]; then echo 'fixture 2000000 1 1048587 48% volume'
+      elif [ "$SCENARIO" = below-reserve ]; then echo 'fixture 2000000 1 1048575 48% volume'
       else echo 'fixture 100000000 1 99999999 1% volume'; fi
     }
     gzip() {
@@ -68,17 +70,24 @@ async function fixture(scenario) {
           while [ "$#" -gt 0 ] && [ "$1" != -e ]; do shift; done
           [ "$#" -ge 3 ] || return 99
           shift
+          if [ "$SCENARIO" = gzip-fail ]; then return 1; fi
           "$TEST_NODE" --experimental-sqlite -e "$1" "$2";;
         *) return 99;;
       esac
     }
+    runner() {
+      echo "runner $*" >> calls
+      docker exec "$@"
+    }
   `;
   const script = source.replace('DIR=/opt/tarkovstats/backups', `DIR='${backups.replaceAll('\\', '/')}'\n${mock}`)
+    .replace('/usr/local/sbin/tarkovstats-run-background', 'runner')
     .replace('exec 8>/run/tarkovstats-data-sync.lock', 'exec 8>"$DIR/../data-sync.lock"')
     .replace('exec 7>/run/tarkovstats-leaderboard.lock', 'exec 7>"$DIR/../leaderboard.lock"')
     .replace('const source = `/data/${name}.db`;', 'const source = `${process.env.TEST_VOLUME}/${name}.db`;')
-    .replace('const target = "/data/.tarkovstats-backup.db";', 'const target = `${process.env.TEST_VOLUME}/.tarkovstats-backup.db`;');
-  for (const path of ['/opt/tarkovstats/backups', '/run/tarkovstats-data-sync.lock', '/run/tarkovstats-leaderboard.lock', '/data/']) {
+    .replace('const target = "/data/.tarkovstats-backup.db";', 'const target = `${process.env.TEST_VOLUME}/.tarkovstats-backup.db`;')
+    .replace('const space = fs.statfsSync(target);', 'const space = process.env.SCENARIO === "compression-full" ? { bavail: 0, bsize: 4096 } : fs.statfsSync(target);');
+  for (const path of ['/opt/tarkovstats/backups', '/run/tarkovstats-data-sync.lock', '/run/tarkovstats-leaderboard.lock', '/usr/local/sbin/tarkovstats-run-background', '/data/']) {
     assert.ok(!script.includes(path), `backup sandbox left production path ${path}`);
   }
   const file = join(dir, 'backup.sh');
@@ -88,13 +97,14 @@ async function fixture(scenario) {
   } };
 }
 
-test('backup publishes exactly one restorable set and retains the last good set on failure', { timeout: 60_000 }, async () => {
-  for (const scenario of ['success', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'compression-full', 'invalid-volume']) {
+  test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {
       const result = spawnSync(shell, [f.file], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
       assert.ifError(result.error);
-      assert.equal(result.status === 0, scenario === 'success', `${scenario}: ${result.stderr}`);
+      const success = ['success', 'snapshot-only-space'].includes(scenario);
+      assert.equal(result.status === 0, success, `${scenario}: ${result.stderr}`);
       const entries = await readdir(f.backups);
       const sets = entries.filter((name) => name.startsWith('backup-'));
       const calls = await readFile(join(f.dir, 'calls'), 'utf8');
@@ -103,9 +113,9 @@ test('backup publishes exactly one restorable set and retains the last good set 
       assert.ok(calls.indexOf('flock 8') < calls.indexOf('flock 7'));
       assert.ok(calls.indexOf('flock 7') < calls.indexOf('docker volume'));
       assert.equal(await readFile(join(f.backups, 'source-before.tar.gz'), 'utf8'), 'unrelated operator archive');
-      if (scenario === 'success') {
+      if (success) {
         assert.equal(sets.length, 1);
-        assert.match(calls, /docker exec tarkovstats-web-1 nice -n 19 ionice -c 3 node/);
+        assert.match(calls, /runner worker nice -n 19 ionice -c 3 node/);
         assert.doesNotMatch(sets[0], /old/);
         assert.equal((await readdir(join(f.backups, sets[0]))).length, databases.length + 1);
         for (const name of databases) {
@@ -127,9 +137,10 @@ test('backup publishes exactly one restorable set and retains the last good set 
       }
       await assert.rejects(access(join(f.backups, '.tarkovstats-backup-pending')), { code: 'ENOENT' });
       await assert.rejects(access(join(f.volume, '.tarkovstats-backup.db')), { code: 'ENOENT' });
+      await assert.rejects(access(join(f.volume, '.tarkovstats-backup.db.gz')), { code: 'ENOENT' });
     } finally { await rm(f.dir, { recursive: true, force: true }); }
-  }
-});
+  });
+}
 
 test('backup waits for the shared sync lock before creating snapshots', { timeout: 20_000 }, async () => {
   const f = await fixture('sync-wait');

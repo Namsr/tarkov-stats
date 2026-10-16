@@ -1,8 +1,9 @@
 [Unit]
-Description=Tarkov sequential profile updates
+Description=Standalone daily Tarkov profile updates (disable with daily-cycle)
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 02:00:00 Europe/Moscow
+AccuracySec=1s
 Persistent=true
 
 [Install]

@@ -1,0 +1,17 @@
+[Unit]
+Description=TarkovStats daily indexes, one-hour profiles and publications
+After=docker.service network-online.target tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
+Wants=network-online.target
+ConditionPathExists=/usr/local/sbin/tarkovstats-daily-cycle
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
+# Do not take data-sync.lock here: each sequential child service owns it.
+ExecStart=/usr/local/sbin/tarkovstats-daily-cycle
+TimeoutStartSec=infinity
+TimeoutStopSec=90s
+# A failed child is reported, but never replays today's profile scan.
+Restart=no

@@ -178,7 +178,9 @@ export default function SeasonalProgressionChart({
               className={visible[key] ? "is-active" : ""}
             >
               <span style={{ background: COLORS[key] }} aria-hidden="true" />
-              {t((persistent ? "progression.series." : "seasonal.series.") + key)}
+              {t(key === "overall" && mode === "pve"
+                ? "progression.series.overall.pve"
+                : (persistent ? "progression.series." : "seasonal.series.") + key)}
             </button>
           ))}
         </div>

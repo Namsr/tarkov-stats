@@ -113,6 +113,10 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     };
     addRiskPlayer(5, "s1", 100, 5);
     for (let aid = 100; aid <= 134; aid += 1) addRiskPlayer(aid, "s1", 1_000, 100);
+    // Insert older data after newer data: identity lookup must order by version,
+    // not row id, and must not count both snapshots in the fallback cohort.
+    riskSnapshot.run("seasonal", "s1", 100, now - 2_000, now - 2_000, now, 100, 5, 5, 0,
+      1, 1, 1, 500, 500, 500, 500, 0, 10, 10, 500, 1, '["older-only"]');
     addRiskPlayer(200, "s1", 100, 5, 1);
     addRiskPlayer(201, "s1", 100, 5);
     addRiskPlayer(202, "s2", 100, 5);
@@ -135,6 +139,16 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     }
     const riskAchievementBaseline = await getSeasonalAchievementBaseline("s1", 5);
     assert.equal(riskAchievementBaseline?.eligibleN, 37);
+    // Repeated targets reuse the population but retain exact self exclusion.
+    assert.equal((await getSeasonalAchievementBaseline("s1", 1))?.achievements[0]?.owners, 1);
+    assert.equal((await getSeasonalAchievementBaseline("s1"))?.achievements[0]?.owners, 2);
+    const changed = new DatabaseSync(databasePath);
+    changed.prepare("UPDATE progression_snapshots SET achievements = '[]' WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 2").run();
+    changed.close();
+    assert.equal((await getSeasonalAchievementBaseline("s1"))?.achievements[0]?.owners, 1);
+    assert.deepEqual((await getSeasonalAchievementBaseline("s1", 1))?.achievements, []);
+    assert.equal((await getSeasonalAchievementBaseline("s2"))?.eligibleN, 2);
+    assert.equal((await getSeasonalAchievementBaseline("s1"))?.eligibleN, 38);
     const targetStats = {
       pmcRaids: 5,
       hoursPlayed: 100,

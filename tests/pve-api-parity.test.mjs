@@ -36,7 +36,9 @@ test("PvE averages and cohorts accept all and 90d without client supplied center
   assert.match(persistentBranch, /getPublicProfile\(aid, \{ mode \}\)/);
   assert.match(persistentBranch, /source = "stored"/);
   assert.match(persistentBranch, /getStore\(mode\)/);
-  assert.match(persistentBranch, /store\.cohort2d\(/);
+  assert.match(persistentBranch, /computeCohortInBackground\(\{\s*kind: "persistent", mode,/);
+  assert.match(persistentBranch, /args: \[centerHours, centerPmcRaids, aid, "hours", statistic, period, playerMetrics\]/);
+  assert.doesNotMatch(persistentBranch, /store\.cohort2d\(/);
   assert.match(persistentBranch, /loadDynamicAverage\(/);
   assert.doesNotMatch(persistentBranch, /params\.get\("center"\)/);
   assert.match(db, /mode: Extract<CrossSectionMode, "regular" \| "pve">/);
@@ -52,8 +54,8 @@ test("shared radar accepts explicit population strategy and one-value population
   assert.doesNotMatch(radar, /average\.value > 0/);
 });
 
-test("PvE average progression has a separate mode cache", () => {
-  assert.match(progressionAverage, /getPersistentProgressionAverage\("pve"\)/);
-  assert.match(progressionAverage, /\["average-progression-pve-v1"\]/);
+test("PvE average progression reads its own published mode", () => {
+  assert.match(progressionAverage, /getPublishedProgressionAverage\(mode, "persistent"\)/);
+  assert.doesNotMatch(progressionAverage, /computeCohortInBackground/);
   assert.match(progressionAverage, /mode !== "regular" && mode !== "pve"/);
 });

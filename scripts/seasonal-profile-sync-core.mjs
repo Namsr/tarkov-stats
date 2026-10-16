@@ -259,8 +259,20 @@ function replaceStringIndex(db, mode, metadata, beforeWrite) {
   beforeWrite?.();
   db.exec("BEGIN IMMEDIATE");
   try {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mode_players'").get()) {
+      db.exec(`INSERT OR IGNORE INTO ${mode}_player_index_next (mode, aid, nickname, nickname_lower, synced_at)
+        SELECT i.mode, i.aid, i.nickname, i.nickname_lower, i.synced_at FROM ${mode}_player_index i
+        WHERE EXISTS (SELECT 1 FROM mode_players p WHERE p.mode = '${mode}' AND p.aid = i.aid)`);
+    }
+    if (db.prepare(`SELECT 1 FROM ${mode}_player_index LIMIT 1`).get()) db.exec(`
+      DROP TABLE IF EXISTS ${mode}_player_index_previous;
+      ALTER TABLE ${mode}_player_index RENAME TO ${mode}_player_index_previous;
+      DROP INDEX IF EXISTS idx_${mode}_player_index_nickname_lower;
+      CREATE INDEX idx_${mode}_player_index_previous_nickname_lower
+        ON ${mode}_player_index_previous(mode, nickname_lower, aid);
+    `);
+    else db.exec(`DROP TABLE ${mode}_player_index`);
     db.exec(`
-      DROP TABLE ${mode}_player_index;
       ALTER TABLE ${mode}_player_index_next RENAME TO ${mode}_player_index;
       CREATE INDEX idx_${mode}_player_index_nickname_lower
         ON ${mode}_player_index(mode, nickname_lower, aid);
@@ -268,7 +280,7 @@ function replaceStringIndex(db, mode, metadata, beforeWrite) {
     for (const [key, value] of Object.entries({
       synced_at: metadata.syncedAt,
       source_url: metadata.url,
-      row_count: metadata.inserted,
+      row_count: currentStringIndexRowCount(db, mode),
       source_rows: metadata.sourceRows,
       skipped: metadata.skipped,
       bytes: metadata.bytes,

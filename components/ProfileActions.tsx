@@ -24,7 +24,7 @@ export default function ProfileActions({ aid, mode, cycleId, nickname }: {
     <CheaterReportButton aid={aid} mode={mode} cycle={cycleId} />
     <FavoriteButton aid={aid} nickname={nickname} identity={{ mode, cycleId }} iconOnly />
     <div className="profile-action">
-      <button type="button" className="ghost-button profile-icon-button" aria-label={t("profile.share")} onClick={() => void share()}>
+      <button type="button" className="ghost-button profile-icon-button" aria-label={t("profile.share")} title={t("profile.share")} onClick={() => void share()}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M5 12v8h14v-8" /></svg>
       </button>
       {message && <span className="profile-action__status" role="status">{message}</span>}

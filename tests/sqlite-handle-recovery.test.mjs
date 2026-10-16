@@ -45,7 +45,8 @@ const previousEnvironment = Object.fromEntries(
 );
 Object.assign(process.env, environment);
 
-const { getArenaBackend } = await import("../lib/db.ts");
+const { getArenaBackend, getStore } = await import("../lib/db.ts");
+const { parseProfileStats } = await import("../lib/tarkov-api.ts");
 const { getSeasonalStore } = await import("../lib/seasonal/storage.ts");
 const { getHelperStore } = await import("../lib/seasonal/helper-storage.ts");
 const { openLeaderboardDatabase } = await import("../lib/leaderboard/publication.ts");
@@ -106,6 +107,30 @@ test("the player database opener retries initialization instead of serving a poi
     .map((row) => row.name);
   assert.ok(tables.includes("arena_mode_stats"), "the arena schema was applied on the retry");
   assert.ok(tables.includes("players"), "the player schema was applied on the retry");
+});
+
+test("a profile write yields during a real competing SQLite writer and then saves atomically", async () => {
+  const store = await getStore();
+  assert.ok(store);
+  const writer = new DatabaseSync(playersPath);
+  writer.exec("BEGIN IMMEDIATE");
+  let released = false;
+  const release = setTimeout(() => { writer.exec("COMMIT"); released = true; }, 10);
+  try {
+    const stats = parseProfileStats({ aid: 101, updated: 1_800_000_000_000,
+      info: { nickname: "busy-fixture" }, achievements: {},
+      pmcStats: { eft: { totalInGameTime: 360000, overAllCounters: { Items: [] } } } });
+    await store.upsert(101, stats, ["fixture-achievement"]);
+    assert.equal(released, true, "the competing writer gets an event-loop turn before the retry");
+    assert.equal(writer.prepare("SELECT nickname FROM players WHERE aid = 101").get().nickname, "busy-fixture");
+    assert.equal(writer.prepare("SELECT COUNT(*) n FROM regular_risk_achievement_owners WHERE aid = 101").get().n, 1);
+    assert.equal((await getArenaBackend()).db.prepare("PRAGMA busy_timeout").get().timeout, 5000,
+      "the short profile attempt must not change other operations' lock policy");
+  } finally {
+    clearTimeout(release);
+    if (writer.isTransaction) writer.exec("ROLLBACK");
+    writer.close();
+  }
 });
 
 test("the seasonal store opener retries initialization instead of serving a poisoned handle", async () => {

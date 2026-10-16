@@ -24,7 +24,8 @@ import {
 } from "@/types/arena";
 import type { PlayerProfile } from "@/types/tarkov";
 import { ARENA_PARSER_VERSION, ARENA_RISK_UPSERT_SQL, arenaRiskValues, isArenaMode } from "@/lib/arena/storage";
-import { markAveragePublicationDirty } from "@/lib/average-publication";
+import { markAveragePublicationDirty, standardArenaVariant } from "@/lib/average-publication";
+import { STANDARD_AVERAGE_STATISTICS } from "@/lib/average-publication-variants";
 import { singleFlight } from "@/lib/seasonal/progression-flight";
 
 export { ARENA_PARSER_VERSION } from "@/lib/arena/storage";
@@ -84,7 +85,7 @@ function nonNegative(value: unknown): number | null {
   return number !== null && number >= 0 ? number : null;
 }
 
-async function all(backend: Backend, sql: string, params: unknown[] = []): Promise<Row[]> {
+function all(backend: Backend, sql: string, params: unknown[] = []): Row[] {
   return backend.db.prepare(sql).all(...params) as Row[];
 }
 
@@ -195,15 +196,15 @@ function arenaWhere(input: {
   return { where: `WHERE ${where.join(" AND ")}`, params };
 }
 
-async function arenaRows(backend: Backend, input: Parameters<typeof arenaWhere>[0]): Promise<Row[]> {
+function arenaRows(backend: Backend, input: Parameters<typeof arenaWhere>[0]): Row[] {
   const condition = arenaWhere(input);
   return all(backend, `SELECT aid, hours, games_count, kd_ratio, win_rate, headshot_rate,
     kills_per_match, damage_per_match, upstream_version, parser_version, fetched_at
     FROM arena_mode_stats ${condition.where}`, condition.params);
 }
 
-async function arenaPopulation(backend: Backend): Promise<ArenaAverageResult["population"]> {
-  const rows = await all(backend, `SELECT arena_mode,
+function arenaPopulation(backend: Backend): ArenaAverageResult["population"] {
+  const rows = all(backend, `SELECT arena_mode,
       COUNT(DISTINCT CASE WHEN arena_mode = 'overall' THEN aid END) AS scanned_accounts,
       COUNT(DISTINCT CASE WHEN arena_mode <> 'overall'
         AND typeof(games_count) = 'integer' AND games_count >= 1 THEN aid END) AS played_accounts
@@ -265,6 +266,14 @@ export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAv
     arenaRows(backend, { ...filterIdentity, eligible: true }),
     arenaPopulation(backend),
   ]);
+  return buildArenaAverage(rows, population, filterIdentity);
+}
+
+function buildArenaAverage(
+  rows: Row[],
+  population: ArenaAverageResult["population"],
+  filterIdentity: ReturnType<typeof averageIdentity>,
+): ArenaAverageResult {
   const metrics = metricSummary(rows, filterIdentity.statistic);
   const matchValues = rows.map((row) => numberOrNull(row.games_count)).filter((value): value is number => value !== null && value >= 0);
   return {
@@ -280,6 +289,29 @@ export async function getArenaAverage(input: ArenaAverageInput): Promise<ArenaAv
     buckets: averageBuckets(rows, filterIdentity.dimension, filterIdentity.statistic),
     population,
   };
+}
+
+/** One read snapshot per publication, with only one mode's rows retained at a time. */
+export async function getArenaAveragePublicationPayloads(): Promise<Map<string, ArenaAverageResult> | null> {
+  const backend = await getArenaBackend();
+  if (!backend) return null;
+  const payloads = new Map<string, ArenaAverageResult>();
+  backend.db.exec("BEGIN");
+  try {
+    const population = arenaPopulation(backend);
+    for (const mode of ARENA_MODE_KEYS) {
+      const rows = arenaRows(backend, { mode, eligible: true });
+      for (const statistic of STANDARD_AVERAGE_STATISTICS) {
+        const identity = averageIdentity({ mode, statistic, dimension: "matches", metric: "players" });
+        payloads.set(standardArenaVariant(mode, statistic), buildArenaAverage(rows, population, identity));
+      }
+    }
+    backend.db.exec("COMMIT");
+    return payloads;
+  } catch (error) {
+    backend.db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function proportionalBounds(center: number, percent: 10 | 15 | 20 | 30): ArenaRangeBounds {

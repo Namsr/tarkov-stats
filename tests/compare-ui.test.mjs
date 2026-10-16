@@ -1,6 +1,128 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
+import { createRequire } from "node:module";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { dict } from "../lib/i18n/dictionary.ts";
+import { previewRatio } from "../lib/leaderboard-preview.ts";
+
+test("average captions render both languages, both directions, equality and zero baselines", async () => {
+  const require = createRequire(import.meta.url);
+  const source = await readFile("components/AverageComparison.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  for (const lang of ["ru", "en"]) {
+    const exports = {};
+    const mockedRequire = id => id === "@/lib/i18n/context" ? { useI18n: () => ({ lang,
+      t: (key, vars) => dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name]),
+    }) } : id === "@/lib/leaderboard-preview" ? { previewRatio } : require(id);
+    new Function("require", "exports", compiled)(mockedRequire, exports);
+    const render = (value, average) => renderToStaticMarkup(createElement(exports.default, { value, average }));
+    assert.match(render(2, 1), /data-direction="above"/);
+    assert.match(render(1, 2), /data-direction="below"/);
+    assert.ok(render(2, 1).includes(lang === "ru" ? "Выше среднего в 2×" : "2× above average"));
+    assert.ok(render(1, 2).includes(lang === "ru" ? "Ниже среднего в 2×" : "2× below average"));
+    assert.ok(render(0, 0).includes(dict[lang]["common.atAverage"]));
+    for (const [value, average, key] of [[2, 0, "common.aboveAverage"], [0, 2, "common.belowAverage"]]) {
+      const html = render(value, average);
+      assert.ok(html.includes(dict[lang][key]));
+      assert.doesNotMatch(html, /Infinity|NaN|×/);
+    }
+    assert.equal(render(null, 2), "");
+    assert.equal(render(2, null), "");
+  }
+});
+
+async function riskPollingHarness({ score = 16, responseIdentity, existingRisk, mode = "seasonal", withView = true } = {}) {
+  const source = (await readFile("components/ComparePage.tsx", "utf8")).replace(/\r\n/g, "\n");
+  const start = source.indexOf("  useEffect(() => {\n    const data = state.data;");
+  const end = source.indexOf("  const refresh = useCallback", start);
+  assert.ok(start > 0 && end > start);
+  const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const scope = { mode, cycleId: "s1", arenaMode: null }, scopeKey = `${mode}:s1:null`, aid = 42;
+  const identity = { aid, mode, cycleId: "s1" };
+  const payload = { identity, risk: existingRisk ?? null, ...(withView ? { viewModel: { identity, risk: existingRisk ?? null } } : {}) };
+  let current = { aid, scopeKey, data: { profile: {}, payload } };
+  const state = current, generation = { current: 1 }, timers = [], requests = [];
+  let cleanup;
+  const run = new Function("useEffect", "state", "scope", "scopeKey", "aid", "requestGeneration", "record", "comparisonDossier", "storedProfile", "setState", "fetch", "setTimeout", "clearTimeout", compiled);
+  run(callback => { cleanup = callback(); }, state, scope, scopeKey, aid, generation,
+    value => value && typeof value === "object" ? value : null,
+    (_, __, body) => ({ risk: body.viewModel?.risk ?? body.risk }),
+    (profile, body) => ({ profile, payload: body }),
+    update => { current = update(current); },
+    async (url, init) => {
+      requests.push({ url, init });
+      return { ok: true, json: async () => ({ identity: responseIdentity ?? identity, risk: requests.length === 1 ? null : { score } }) };
+    },
+    callback => { timers.push(callback); return callback; },
+    timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); });
+  return { requests, generation, state: () => current, cleanup: () => cleanup?.(),
+    tick: async () => { timers.shift()?.(); await new Promise(setImmediate); } };
+}
+
+test("deferred comparison risk replaces both payload risk fields and preserves a zero score", async () => {
+  for (const score of [16, 0]) {
+    const poll = await riskPollingHarness({ score });
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk, null);
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk.score, score);
+    assert.equal(poll.state().data.payload.viewModel.risk.score, score);
+    assert.equal(poll.requests.length, 2);
+    assert.equal(poll.requests[0].url, "/api/player/risk?aid=42&mode=seasonal&cycle=s1");
+    poll.cleanup();
+  }
+});
+
+test("comparison risk polling rejects another account, mode or cycle and cancels superseded loads", async () => {
+  for (const change of [{ aid: 99 }, { mode: "pve" }, { cycleId: "s2" }]) {
+    const poll = await riskPollingHarness({ responseIdentity: { aid: 42, mode: "seasonal", cycleId: "s1", ...change } });
+    await poll.tick();
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk, null);
+    poll.cleanup();
+  }
+  const superseded = await riskPollingHarness();
+  await superseded.tick();
+  superseded.generation.current++;
+  await superseded.tick();
+  assert.equal(superseded.requests.length, 1);
+  assert.equal(superseded.state().data.payload.risk, null);
+  superseded.cleanup();
+  assert.equal(superseded.requests[0].init.signal.aborted, true);
+  const cancelled = await riskPollingHarness();
+  cancelled.cleanup();
+  await cancelled.tick();
+  assert.equal(cancelled.requests.length, 0);
+});
+
+test("comparison risk polling skips available zero risk and Arena and supports regular payloads", async () => {
+  for (const options of [{ existingRisk: { score: 0 } }, { mode: "arena" }]) {
+    const poll = await riskPollingHarness(options);
+    await poll.tick();
+    assert.equal(poll.requests.length, 0);
+    poll.cleanup();
+  }
+  const regular = await riskPollingHarness({ mode: "regular", withView: false });
+  await regular.tick();
+  await regular.tick();
+  assert.equal(regular.state().data.payload.risk.score, 16);
+  assert.equal(regular.state().data.payload.viewModel, undefined);
+  regular.cleanup();
+});
+
+test("comparison polls deferred risk for each persistent profile and cancels obsolete requests", async () => {
+  const source = await readFile("components/ComparePage.tsx", "utf8");
+  assert.match(source, /scope.mode === "arena"/);
+  assert.match(source, /comparisonDossier\(scope, aid, data.payload\)\?\.risk/);
+  assert.match(source, /fetch\(`\/api\/player\/risk\?\$\{params\}`, \{ cache: "no-store", signal: controller.signal \}/);
+  assert.match(source, /identity\?\.aid !== aid \|\| identity.mode !== scope.mode \|\| identity.cycleId !== scope.cycleId/);
+  assert.match(source, /current.data === data && current.scopeKey === scopeKey && current.aid === aid/);
+  assert.match(source, /viewModel: \{ \.\.\.viewModel, risk: body.risk \}/);
+  assert.match(source, /clearTimeout\(timer\); controller.abort\(\)/);
+});
 
 test("global navigation points to compare and only marks its root active", async () => {
   const source = await readFile("components/AverageNavButton.tsx", "utf8");
@@ -139,10 +261,93 @@ test("each profile refresh reloads its own cohort for the new revision", async (
   assert.match(source, /function cohortRevisionRequestUrl\([\s\S]*url\.searchParams\.set\("revision", revision\)/);
   assert.match(source, /revision\.current = \{ scopeKey, aid, value: nextRevision \}/);
   assert.match(source, /const currentRevision = revision\.current\?\.scopeKey === scopeKey && revision\.current\.aid === aid/);
-  assert.match(source, /fetch\(cohortRevisionRequestUrl\(scope, aid, nextRevision\), \{\s*cache: "no-store",\s*signal: controller\.signal,/);
+  assert.match(source, /loadAverageJson<unknown>\(cohortRevisionRequestUrl\(scope, aid, nextRevision\), \{\s*signal: controller\.signal, forceRefresh: true, retryUnavailable: true, onUpdate: apply,/);
   assert.match(source, /const primary = useComparisonProfile\(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController\.reload\)/);
   assert.match(source, /const secondary = useComparisonProfile\(profileScope, profileScopeKey, secondaryAid, activeModeLabel, t, secondaryCohortController\.reload\)/);
   assert.match(source, /if \(active\(\)\) await onRefreshedRef\.current\?\.\(next\)/);
+});
+
+async function statisticsHookHarness(name) {
+  const file = name === "useComparisonCohort" ? "ComparePage" : "CompareProgressionSection";
+  const source = (await readFile(`components/${file}.tsx`, "utf8")).replace(/\r\n/g, "\n");
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf(name === "useComparisonCohort" ? "export default function ComparePage" : "function TimelineSlot", start);
+  const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const requests = await import("../lib/client-average-request.ts");
+  let state, cleanup;
+  const factory = new Function("useState", "useRef", "useEffect", "useCallback", "loadAverageJson",
+    "comparisonCohortRequestUrl", "cohortRevisionRequestUrl", "profileRevision", "adaptComparisonCohort", "validTimelineResponse",
+    `${compiled}; return ${name};`);
+  const hook = factory(initial => {
+    state = typeof initial === "function" ? initial() : initial;
+    return [state, next => { state = typeof next === "function" ? next(state) : next; }];
+  }, initial => ({ current: initial }), effect => { cleanup = effect(); }, callback => callback,
+  requests.loadAverageJson, (_, aid) => `/cohort?aid=${aid}`, (_, aid, revision) => `/cohort?aid=${aid}&revision=${revision}`,
+  profile => String(profile.updatedAt), (scope, aid, body) => body.identity?.aid === aid && body.identity?.mode === scope.mode ? body : null,
+  (body, expected) => body.identity?.aid === expected.aid && body.identity?.mode === expected.mode && body.identity?.cycleId === expected.cycleId);
+  const scope = { mode: "regular", cycleId: "persistent", arenaMode: null };
+  const result = name === "useComparisonCohort" ? hook(scope, "regular:persistent", 42, key => key)
+    : hook({ aid: 42, nickname: "Player", updatedAt: 1 }, "regular", "persistent");
+  await new Promise(setImmediate);
+  return { state: () => state, cleanup: () => cleanup?.(), result, reset: requests.resetAverageResponseCacheForTests };
+}
+
+test("mounted comparison cohorts and timelines refresh stale answers and cancel on unmount", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const name of ["useComparisonCohort", "useProgressionTimeline"]) {
+      let calls = 0;
+      globalThis.fetch = async (_, options) => {
+        if (name === "useProgressionTimeline") assert.equal(options.cache, "no-store");
+        return new Response(JSON.stringify({ identity: {
+        aid: 42, mode: calls === 2 ? "pve" : "regular", cycleId: "persistent",
+        }, n: ++calls }), { headers: { "X-Statistics-Stale": calls === 1 ? "1" : "0", "X-Statistics-Generated-At": String(calls) } });
+      };
+      const harness = await statisticsHookHarness(name);
+      const value = () => harness.state()[name === "useComparisonCohort" ? "data" : "timeline"];
+      assert.equal(value().n, 1);
+      t.mock.timers.tick(5000); await new Promise(setImmediate);
+      assert.equal(value().n, 2);
+      t.mock.timers.tick(60000); await new Promise(setImmediate);
+      assert.equal(calls, 3);
+      assert.equal(value().n, 2, "a background response for another mode must not replace the answer");
+      harness.cleanup();
+      t.mock.timers.tick(120000); await new Promise(setImmediate);
+      assert.equal(calls, 3);
+      harness.reset();
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("a manual comparison refresh retains polling ownership until navigation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const signals = [];
+  globalThis.fetch = async (_, options) => {
+    signals.push(options.signal);
+    calls++;
+    if (calls === 4) return new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    return new Response(JSON.stringify({ identity: { aid: 42, mode: "regular", cycleId: "persistent" }, n: calls }), {
+      headers: { "X-Statistics-Stale": "1", "X-Statistics-Generated-At": String(calls) },
+    });
+  };
+  const harness = await statisticsHookHarness("useComparisonCohort");
+  try {
+    await harness.result.reload({ updatedAt: 2 });
+    assert.equal(harness.state().data.n, 2);
+    t.mock.timers.tick(5000); await new Promise(setImmediate);
+    assert.equal(calls, 3, "only the refreshed revision must still poll");
+    assert.equal(harness.state().data.n, 3);
+    t.mock.timers.tick(5000); await new Promise(setImmediate);
+    assert.equal(calls, 4);
+    harness.cleanup();
+    assert.ok(signals.at(-1).aborted, "navigation aborts a pending background request");
+    t.mock.timers.tick(120000); await new Promise(setImmediate);
+    assert.equal(calls, 4);
+    assert.equal(harness.state().data.n, 3);
+  } finally { harness.cleanup(); harness.reset(); globalThis.fetch = originalFetch; }
 });
 
 test("profile and cohort generations isolate mode and player switches", async () => {

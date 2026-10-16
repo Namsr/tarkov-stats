@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -139,6 +138,113 @@ function stats(experience: number, pmcRaids: number) {
     pmcSurvived: pmcRaids, pmcDeaths: 0, pmcKills: pmcRaids, killedPmc: pmcRaids,
   });
 }
+
+test("foreground capture yields while SQLite is locked, then persists exactly once", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "progression-busy-"));
+  const file = join(directory, "progression.db");
+  const db = new DatabaseSync(file);
+  const store = createSqliteProgressionStore(db);
+  const locker = new DatabaseSync(file);
+  let ticks = 0;
+  const heartbeat = setInterval(() => { ticks += 1; }, 50);
+  let unlock;
+  try {
+    db.exec("PRAGMA journal_mode = WAL");
+    locker.exec("BEGIN IMMEDIATE");
+    unlock = setTimeout(() => locker.exec("ROLLBACK"), 800);
+    const input = { aid: 42, upstreamUpdatedAt: day, capturedAt: day + 1,
+      achievementIds: [], stats: JSON.parse(stats(100, 10)) };
+    const result = await store.recordSnapshot(input);
+    assert.equal(result.inserted, true);
+    assert.ok(ticks >= 2, "HTTP timers must run before the database lock is released");
+    assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 250);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM progression_snapshots").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM player_profiles").get().n, 1);
+  } finally {
+    clearTimeout(unlock); clearInterval(heartbeat);
+    if (locker.isTransaction) locker.exec("ROLLBACK");
+    locker.close(); db.close(); rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rechecking already-normalized history performs no database writes", async () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    const store = createSqliteProgressionStore(db);
+    for (const n of [1, 2, 3]) await store.recordSnapshot({ aid: 42, upstreamUpdatedAt: n * day,
+      capturedAt: n * day + 1, achievementIds: [], stats: JSON.parse(stats(n * 100, n * 10)) });
+    const changes = Number(db.prepare("SELECT total_changes() n").get().n);
+    materializeRegularProgression(db, 42, { refreshAggregates: false });
+    assert.equal(Number(db.prepare("SELECT total_changes() n").get().n), changes,
+      "daily rechecks must not rewrite unchanged snapshots, intervals or profiles");
+  } finally { db.close(); }
+});
+
+for (const mode of ["regular", "pve"] as const) {
+  for (const [column, corrupt] of [["stats_json", "{broken"], ["stats_json", "null"],
+    ["stats_json", "[]"], ["stats_json", '{"experience":{}}'], ["stats_json", '{"pmcKills":"oops"}'],
+    ["achievements", "null"], ["achievements", '[42]']] as const) {
+    test(`${mode} repairs corrupt ${column}=${corrupt} without admitting stale or duplicate versions`, async (t) => {
+      t.mock.method(console, "warn", () => {});
+      const db = new DatabaseSync(":memory:");
+      t.after(() => db.close());
+      const store = createSqliteProgressionStore(db, mode);
+      const capture = (updatedAt) => ({ aid: 42, upstreamUpdatedAt: updatedAt, capturedAt: updatedAt + 1,
+        achievementIds: ["first"], stats: JSON.parse(stats(updatedAt / day * 100, updatedAt / day * 10)) });
+      await store.recordSnapshot(capture(day));
+      await store.recordSnapshot(capture(2 * day));
+      db.prepare(`UPDATE progression_snapshots SET ${column} = ?
+        WHERE mode = ? AND aid = 42 AND upstream_updated_at = ?`).run(corrupt, mode, 2 * day);
+      assert.equal((await store.latest(42)).upstreamUpdatedAt, day);
+      assert.deepEqual((await store.history(42)).map((row) => row.upstreamUpdatedAt), [day]);
+      const stale = await store.recordSnapshot(capture(1.5 * day));
+      assert.equal(stale.status, "stale");
+      assert.equal(stale.previousUpdatedAt, 2 * day);
+      assert.equal(stale.inserted, false);
+      assert.equal((await store.recordSnapshot(capture(2 * day))).status, "duplicate");
+      assert.equal((await store.latest(42)).upstreamUpdatedAt, 2 * day);
+      assert.equal((await store.history(42)).length, 2);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+      assert.equal((await store.recordSnapshot(capture(3 * day))).status, "progression");
+    });
+  }
+
+  test(`${mode} starts an anomaly after corrupt JSON and recovers normal capture`, async (t) => {
+    t.mock.method(console, "warn", () => {});
+    const db = new DatabaseSync(":memory:");
+    t.after(() => db.close());
+    const store = createSqliteProgressionStore(db, mode);
+    const capture = (updatedAt) => ({ aid: 42, upstreamUpdatedAt: updatedAt, capturedAt: updatedAt + 1,
+      achievementIds: [], stats: JSON.parse(stats(updatedAt / day * 100, updatedAt / day * 10)) });
+    await store.recordSnapshot(capture(day));
+    db.exec("UPDATE progression_snapshots SET stats_json = 'null'");
+    assert.equal(await store.latest(42), null);
+    assert.deepEqual(await store.history(42), []);
+    const fresh = await store.recordSnapshot(capture(2 * day));
+    assert.equal(fresh.status, "schema_anomaly");
+    assert.equal(fresh.previousUpdatedAt, day);
+    assert.equal(fresh.delta, null);
+    assert.equal((await store.latest(42)).upstreamUpdatedAt, 2 * day);
+    assert.equal((await store.recordSnapshot(capture(3 * day))).status, "progression");
+  });
+}
+
+test("corrupt snapshot repair rolls back when interval materialization fails", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  const store = createSqliteProgressionStore(db);
+  const capture = { aid: 42, upstreamUpdatedAt: day, capturedAt: day + 1,
+    achievementIds: [], stats: JSON.parse(stats(100, 10)) };
+  await store.recordSnapshot(capture);
+  db.exec(`UPDATE progression_snapshots SET stats_json = 'null';
+    CREATE TRIGGER fail_repair BEFORE INSERT ON player_profiles
+    BEGIN SELECT RAISE(ABORT, 'repair materialization failed'); END`);
+  await assert.rejects(store.recordSnapshot(capture), /repair materialization failed/);
+  assert.equal(db.prepare("SELECT stats_json FROM progression_snapshots").get().stats_json, "null");
+  db.exec("DROP TRIGGER fail_repair");
+  assert.equal((await store.recordSnapshot(capture)).status, "duplicate");
+});
 
 test("banned persistent accounts keep personal history without entering the average", async () => {
   for (const mode of ["regular", "pve"] as const) {
@@ -503,48 +609,41 @@ test("the progression backfill leaves a published restore point at a taken name 
   }
 });
 
-test("the progression backfill keeps a sound backup when a writer moves the source", async () => {
+test("the progression backfill keeps a sound backup when a writer moves the source", () => {
   // The counts are only decidable against a source `data_version` proves unchanged, because
   // a commit landing after the copy can shrink the source below the copy -- `daily_aggregates`
   // is rewritten on this same database by the population materializer -- and a sound restore
-  // point then holds more rows than the source. The writer below commits the moment the copy
-  // appears, which `VACUUM INTO` does only after it has fixed its snapshot, so the run really
-  // does read a source that moved and must publish the copy rather than delete it.
+  // point then holds more rows than the source. The preload commits on a separate
+  // connection after VACUUM completes, before the script reads the source again.
   const directory = mkdtempSync(join(tmpdir(), "backfill-writer-"));
   const path = join(directory, "progression.db");
   const target = join(directory, stampedBackupName);
-  const writer = new Worker(`
-    const { parentPort, workerData } = require("node:worker_threads");
-    const { existsSync } = require("node:fs");
-    const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync(workerData.path);
-    while (!existsSync(workerData.target)) {}
-    db.exec("BEGIN IMMEDIATE");
-    db.exec("DELETE FROM t WHERE x > 195");
-    db.exec("COMMIT");
-    db.close();
-    parentPort.postMessage("committed");
-  `, { eval: true, workerData: { path, target } });
   try {
     const seed = new DatabaseSync(path);
     seed.exec("PRAGMA journal_mode = WAL");
     seed.exec("CREATE TABLE t (x INTEGER)");
-    seed.exec("CREATE TABLE bulk (x INTEGER)");
-    // A large table keeps the run busy between the copy and the read of the source, so the
-    // writer's single commit lands inside that window on a loaded machine too.
-    seed.exec(`WITH RECURSIVE series(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM series WHERE x < 49999)
-      INSERT INTO bulk (x) SELECT x FROM series`);
     seed.exec(`WITH RECURSIVE series(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM series WHERE x < 200)
       INSERT INTO t (x) SELECT x FROM series`);
     seed.close();
 
-    // The status is asserted before the worker's message is awaited: a run that aborts before
-    // the copy leaves the `.bak` the writer waits for unwritten, and `node --test` has no
-    // default per-test timeout, so awaiting first would hang the suite instead of failing it.
-    const committed = new Promise((resolve) => writer.once("message", resolve));
-    const result = runBackfill(path, writeFrozenClock(directory));
+    const preload = writeFrozenClock(directory);
+    writeFileSync(preload, `
+      import { DatabaseSync } from "node:sqlite";
+      const prepare = DatabaseSync.prototype.prepare;
+      DatabaseSync.prototype.prepare = function(sql, ...args) {
+        const statement = prepare.call(this, sql, ...args);
+        if (sql !== "VACUUM INTO ?") return statement;
+        return { run(...params) {
+          const result = statement.run(...params);
+          const writer = new DatabaseSync(process.argv[2]);
+          try { writer.exec("DELETE FROM t WHERE x > 195"); }
+          finally { writer.close(); }
+          return result;
+        } };
+      };
+    `, { flag: "a" });
+    const result = runBackfill(path, preload);
     assert.equal(result.status, 0, `the run must succeed while a writer commits: ${result.stderr}`);
-    assert.deepEqual(await committed, "committed");
 
     const summary = JSON.parse(result.stdout);
     assert.equal(summary.backupSourceUnchanged, false, "the writer must have moved the source");
@@ -568,7 +667,6 @@ test("the progression backfill keeps a sound backup when a writer moves the sour
       source.close();
     }
   } finally {
-    await writer.terminate();
     rmSync(directory, { recursive: true, force: true, maxRetries: 3 });
   }
 });
@@ -591,4 +689,39 @@ test("the regular progression backfill refuses a missing database instead of cre
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+test("full aggregate rebuild stages intervals once, preserves targeted rebuilds and cleans up on failure", async (t) => {
+  const { refreshSqliteProgressionAggregates } = await import("../lib/seasonal/daily-aggregates.ts");
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  materializeRegularProgression(db);
+  const insert = db.prepare(`INSERT INTO progression_snapshots
+    (mode,cycle_id,aid,profile_updated_at,upstream_updated_at,captured_at,local_date,stats_json)
+    VALUES ('regular','persistent',?,?,?,?, 'x',?)`);
+  for (const aid of [1,2,3]) for (const [i,raids] of [1,10,11,20,21].entries()) {
+    insert.run(aid,(i+1)*day,(i+1)*day,(i+1)*day,stats((i+1)*100+aid,raids));
+  }
+  materializeRegularProgression(db);
+  const prepare = db.prepare.bind(db);
+  const sql=[];
+  t.mock.method(db,"prepare",(query)=>{sql.push(query);return prepare(query);});
+  const content=()=>({daily:prepare("SELECT * FROM daily_aggregates ORDER BY kind,bucket_min").all(),
+    scores:prepare("SELECT id,tempo_score,form_score,score_sample_n FROM progression_intervals ORDER BY id").all()});
+  const clean=()=>assert.equal(prepare("SELECT COUNT(*) AS n FROM sqlite_temp_master WHERE name LIKE 'progression_%'").get().n,0);
+  refreshSqliteProgressionAggregates(db,"regular","persistent");
+  const full=content(); clean();
+  assert.equal(sql.filter(query=>query.includes("json_extract")&&query.includes("FROM progression_intervals i")).length,1);
+  sql.length=0;
+  refreshSqliteProgressionAggregates(db,"regular","persistent",10);
+  assert.deepEqual(content(),full); clean();
+  assert.equal(sql.some(query=>query.includes("CREATE TEMP TABLE progression_interval_source")),false);
+  const beforeGeneration=prepare("SELECT generation FROM progression_materializations WHERE mode='regular'").get().generation;
+  db.exec("CREATE TRIGGER reject_daily BEFORE INSERT ON daily_aggregates BEGIN SELECT RAISE(ABORT,'reject daily'); END");
+  assert.throws(()=>refreshSqliteProgressionAggregates(db,"regular","persistent"),/reject daily/);
+  assert.deepEqual(content(),full); clean();
+  assert.equal(prepare("SELECT generation FROM progression_materializations WHERE mode='regular'").get().generation,beforeGeneration);
+  db.exec("DROP TRIGGER reject_daily");
+  refreshSqliteProgressionAggregates(db,"regular","persistent"); assert.deepEqual(content(),full); clean();
 });

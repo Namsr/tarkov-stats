@@ -160,6 +160,15 @@ html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color:
 .profile-chart-legend i { display: block; width: 22px; height: 0; border-top: 2px solid var(--foreground); }
 .profile-chart-legend i.is-other { border-color: var(--profile-other); border-top-style: dashed; }
 .profile-radar { position: relative; min-width: 0; }
+.profile-comparison-rate { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.profile-average-comparison { display: block; font-size: 13px; margin-top: 7px; overflow-wrap: anywhere; color: var(--muted); }
+.profile-average-comparison[data-direction="above"] { color: var(--success); }
+.profile-average-comparison[data-direction="below"] { color: var(--danger); }
+.profile-comparison-rate__favorite { grid-column: 1 / -1; }
+.profile-comparison-rate > div:has(> .profile-average-comparison[data-direction="above"]) .metric-card__value,
+.dossier-cell:has(> .profile-average-comparison[data-direction="above"]) .dossier-value { color: var(--success); }
+.profile-comparison-rate > div:has(> .profile-average-comparison[data-direction="below"]) .metric-card__value,
+.dossier-cell:has(> .profile-average-comparison[data-direction="below"]) .dossier-value { color: var(--danger); }
 .profile-radar svg { display: block; width: 100%; }
 .profile-radar-label { fill: var(--muted); font-size: 13px; font-family: inherit; }
 .profile-radar-hit { cursor: crosshair; touch-action: pan-y; outline: none; }

@@ -6,6 +6,7 @@ import {
   type PersistentProgressionMode,
 } from "@/lib/regular-progression";
 import { raidBucket } from "@/lib/seasonal/progression";
+import { retrySqliteStore } from "./sqlite-busy-retry.ts";
 export { seedPveProgressionBaselines, type PveProgressionSeedResult } from "./pve-progression-seed-core.ts";
 
 export type SnapshotStatus = "baseline" | "progression" | "reset" | "schema_anomaly" | "duplicate" | "stale" | "banned";
@@ -95,16 +96,33 @@ interface SnapshotRow {
 
 function toSnapshot(row: SnapshotRow | undefined): ProgressionSnapshot | null {
   if (!row) return null;
-  return {
-    id: Number(row.id),
-    mode: String(row.mode) as PersistentProgressionMode,
-    aid: Number(row.aid),
-    upstreamUpdatedAt: Number(row.upstream_updated_at),
-    capturedAt: Number(row.captured_at),
-    seriesId: Number(row.series_id),
-    stats: JSON.parse(row.stats_json) as PlayerSnapshotInput["stats"],
-    achievementIds: JSON.parse(row.achievements) as string[],
-  };
+  try {
+    const stats = JSON.parse(row.stats_json) as unknown;
+    const achievementIds = JSON.parse(row.achievements) as unknown;
+    if (!stats || typeof stats !== "object" || Array.isArray(stats) ||
+      !Array.isArray(achievementIds) || !achievementIds.every((id) => typeof id === "string")) {
+      throw new Error("invalid snapshot JSON structure");
+    }
+    for (const field of [...CUMULATIVE_FIELDS, "pmcSurvived", "pmcKills"]) {
+      const value = (stats as Record<string, unknown>)[field];
+      if (value != null && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+        throw new Error(`invalid snapshot counter ${field}`);
+      }
+    }
+    return {
+      id: Number(row.id),
+      mode: String(row.mode) as PersistentProgressionMode,
+      aid: Number(row.aid),
+      upstreamUpdatedAt: Number(row.upstream_updated_at),
+      capturedAt: Number(row.captured_at),
+      seriesId: Number(row.series_id),
+      stats: stats as PlayerSnapshotInput["stats"],
+      achievementIds,
+    };
+  } catch (error) {
+    console.warn(`progression store: skipping corrupt snapshot id=${row.id} aid=${row.aid}`, error);
+    return null;
+  }
 }
 
 function compare(previous: ProgressionSnapshot, input: PlayerSnapshotInput) {
@@ -138,6 +156,7 @@ async function getSqliteDb(): Promise<any | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sqlite = (await import("node:sqlite" as string)) as any;
     const db = new sqlite.DatabaseSync(progressionPath);
+    db.exec("PRAGMA busy_timeout = 250");
     // Initialize before caching, so a failed schema init cannot leave a
     // half-initialized handle behind: the cache stays empty, every later request
     // would reopen one, and each of those would leak a descriptor.
@@ -163,14 +182,36 @@ export function createSqliteProgressionStore(
   db: any,
   mode: PersistentProgressionMode = "regular",
 ): ProgressionStore {
+  db.exec("PRAGMA busy_timeout = 250");
   initializeSeasonalSchema(db);
-  return {
+  return retrySqliteStore<ProgressionStore>({
     async recordSnapshot(input) {
       validate(input);
-      const previous = toSnapshot(db.prepare(
+      const previousRow = db.prepare(
         "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(mode, PERSISTENT_CYCLE_ID, input.aid) as SnapshotRow | undefined);
-      if (previous && input.upstreamUpdatedAt === previous.upstreamUpdatedAt) {
+      ).get(mode, PERSISTENT_CYCLE_ID, input.aid) as SnapshotRow | undefined;
+      const previous = toSnapshot(previousRow);
+      const previousUpdatedAt = previousRow ? Number(previousRow.upstream_updated_at) : null;
+      if (previousRow && input.upstreamUpdatedAt === previousUpdatedAt) {
+        if (!previous) {
+          // The row still owns its version even when its JSON cannot be read.
+          // Repair it in place and rebuild its intervals in one transaction.
+          db.exec("SAVEPOINT repair_persistent_snapshot");
+          try {
+            db.prepare(`UPDATE progression_snapshots SET stats_json = ?, achievements = ?, captured_at = ?
+              WHERE id = ?`).run(JSON.stringify(input.stats), JSON.stringify(input.achievementIds), input.capturedAt, previousRow.id);
+            materializePersistentProgression(db, mode, input.aid, { refreshAggregates: false });
+            db.exec("RELEASE repair_persistent_snapshot");
+          } catch (error) {
+            db.exec("ROLLBACK TO repair_persistent_snapshot");
+            db.exec("RELEASE repair_persistent_snapshot");
+            throw error;
+          }
+          return {
+            inserted: false, status: "duplicate", previousUpdatedAt,
+            currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],
+          };
+        }
         // Older excluded accounts may have snapshots but no personal timeline profile.
         if (!db.prepare("SELECT 1 FROM player_profiles WHERE mode = ? AND cycle_id = ? AND aid = ?")
           .get(mode, PERSISTENT_CYCLE_ID, input.aid)) {
@@ -187,9 +228,9 @@ export function createSqliteProgressionStore(
           currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],
         };
       }
-      if (previous && input.upstreamUpdatedAt < previous.upstreamUpdatedAt) {
+      if (previousUpdatedAt !== null && input.upstreamUpdatedAt < previousUpdatedAt) {
         return {
-          inserted: false, status: "stale", previousUpdatedAt: previous.upstreamUpdatedAt,
+          inserted: false, status: "stale", previousUpdatedAt,
           currentUpdatedAt: input.upstreamUpdatedAt, delta: null, resetFields: [],
         };
       }
@@ -200,7 +241,7 @@ export function createSqliteProgressionStore(
         comparison.resetFields.includes("pmcRaids")
       );
       const isAnomaly = Boolean(comparison?.resetFields.length) && !isReset;
-      const seriesId = previous ? previous.seriesId + (isReset ? 1 : 0) : 1;
+      const seriesId = previous ? previous.seriesId + (isReset ? 1 : 0) : previousRow ? Number(previousRow.series_id) + 1 : 1;
       db.exec("SAVEPOINT record_persistent_snapshot");
       try {
         db.prepare(INSERT_SQL).run(...args(input, mode, seriesId));
@@ -214,17 +255,24 @@ export function createSqliteProgressionStore(
       }
       return {
         inserted: true,
-        status: previous ? (isReset ? "reset" : isAnomaly ? "schema_anomaly" : "progression") : "baseline",
-        previousUpdatedAt: previous?.upstreamUpdatedAt ?? null,
+        status: previous ? (isReset ? "reset" : isAnomaly ? "schema_anomaly" : "progression") : previousRow ? "schema_anomaly" : "baseline",
+        previousUpdatedAt,
         currentUpdatedAt: input.upstreamUpdatedAt,
         delta: comparison?.delta ?? null,
         resetFields: comparison?.resetFields ?? [],
       };
     },
     async latest(aid) {
-      return toSnapshot(db.prepare(
-        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY upstream_updated_at DESC LIMIT 1"
-      ).get(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow | undefined);
+      // Persistent captures keep profile/upstream versions equal. Use the
+      // indexed version so finding a readable row does not sort all raw JSON.
+      const rows = db.prepare(
+        "SELECT * FROM progression_snapshots WHERE mode = ? AND cycle_id = ? AND aid = ? ORDER BY profile_updated_at DESC"
+      ).iterate(mode, PERSISTENT_CYCLE_ID, aid) as Iterable<SnapshotRow>;
+      for (const row of rows) {
+        const snapshot = toSnapshot(row);
+        if (snapshot) return snapshot;
+      }
+      return null;
     },
     async history(aid) {
       const rows = db.prepare(
@@ -232,7 +280,7 @@ export function createSqliteProgressionStore(
       ).all(mode, PERSISTENT_CYCLE_ID, aid) as SnapshotRow[];
       return rows.map((row) => toSnapshot(row)).filter((row): row is ProgressionSnapshot => row != null);
     },
-  };
+  });
 }
 
 export async function getProgressionStore(

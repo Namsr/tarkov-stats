@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { remainingRunBudget } from "./regular-profile-sync-core.mjs";
+import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -31,6 +31,9 @@ const { markAveragePublicationDirty } = await import("../lib/average-publication
 // app's @/ alias; ARENA_PARSER_VERSION comes from the storage import above.
 const ARENA_V2_PARSER_VERSION = 2;
 const ARENA_V3_PARSER_VERSION = 3;
+const ARENA_V4_PARSER_VERSION = 4;
+const ARENA_V4_MIGRATION_KEY = "offline_v4_to_v5_complete";
+const ARENA_V4_PUBLICATION_KEY = "offline_v4_to_v5_publication_pending";
 const ARENA_V2_MIGRATION_KEY = "offline_v2_to_v4_complete";
 const ARENA_V2_PUBLICATION_KEY = "offline_v2_to_v4_publication_pending";
 const ARENA_V3_MIGRATION_KEY = "offline_v3_to_v4_complete";
@@ -39,7 +42,7 @@ const ARENA_DYNAMIC_CACHE_VERSION_KEY = "dynamic_cache_version";
 const ARENA_MIGRATION_BATCH_SIZE = 500;
 const INDEX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
 
-const runId = randomUUID();
+const runId = process.env.ARENA_PROFILE_SYNC_RUN_ID || randomUUID();
 const config = {
   dbPath: process.env.SQLITE_PATH || "/data/players.db",
   updatedUrl: process.env.ARENA_PROFILE_UPDATED_URL || "https://players.tarkov.dev/arena/updated.json",
@@ -133,6 +136,13 @@ async function main() {
   if (migrationV2.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const migrationV3 = await migrateOfflineArenaV3Profiles(startedAt);
   if (migrationV3.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
+  const migrationV4 = await migrateOfflineArenaProfiles(startedAt, {
+    parserVersion: ARENA_V4_PARSER_VERSION,
+    migrationKey: ARENA_V4_MIGRATION_KEY,
+    publicationKey: ARENA_V4_PUBLICATION_KEY,
+    classify: (rows) => classifyArenaRows(rows, ARENA_V4_PARSER_VERSION),
+  });
+  if (migrationV4.status === "interrupted" || stopping || runBudgetExpired(startedAt)) return;
   const index = await refreshIndexIfDue(startedAt);
   if (stopping || runBudgetExpired(startedAt)) return;
   let feed;
@@ -169,6 +179,7 @@ async function main() {
     migrations: {
       v2: migrationV2,
       v3: migrationV3,
+      v4: migrationV4,
     },
     index,
     ...feed,
@@ -637,6 +648,12 @@ async function loadFeed(startedAt) {
   if (runBudgetExpired(startedAt)) throw runBudgetError();
   await writeTransaction(() => {
     const queuedAt = Date.now();
+    // Legacy jobs still represent unfinished captures. Fetch their available
+    // payload with the current parser without changing stored profile history.
+    counters.upgradedLegacyTasks = Number(db.prepare(`UPDATE arena_profile_sync_queue
+      SET schema_version = ?, last_run_id = NULL
+      WHERE status IN ('pending', 'error') AND schema_version < ?`)
+      .run(config.schemaVersion, config.schemaVersion).changes);
     if (getMeta("verified_not_found_v1") !== "1") {
       counters.requeuedUnverifiedNotFound = Number(db.prepare(`UPDATE arena_profile_sync_queue
         SET status = 'pending', attempts = 0, http_status = NULL, error = NULL,
@@ -688,6 +705,7 @@ async function loadFeed(startedAt) {
       // No accepted representation in this run: leave validators untouched.
     } else {
       setMeta("feed_source_url", config.updatedUrl);
+      setMeta("feed_policy", PROFILE_FEED_POLICY);
       if (feed.notModified) {
         // Keep the accepted validators; only the 304 poll itself is recorded.
       } else if (feed.etag) {
@@ -749,7 +767,7 @@ async function processQueue(startedAt) {
   const counters = { attempted: 0, completed: 0, notFound: 0, stale: 0, errors: 0 };
   let admitted = 0;
   let inFlight = 0;
-  const next = db.prepare(`SELECT q.aid, q.feed_updated_at, q.schema_version FROM arena_profile_sync_queue q
+  const next = profileQueueSelector(db, `SELECT q.aid, q.feed_updated_at, q.schema_version FROM arena_profile_sync_queue q
     WHERE q.status IN ('pending', 'error')
       AND q.schema_version = ?
       AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = q.aid)
@@ -842,6 +860,7 @@ async function processQueue(startedAt) {
         else counters.errors += 1;
         if (result.kind !== "completed") admitted -= 1;
         await heartbeat();
+        log("PROFILE_RESULT", { mode: "arena", aid, expectedUpdatedAt, outcome: result.kind, httpStatus: result.status });
         if (config.maxCompleted !== null && counters.completed >= config.maxCompleted) {
           stopping = true;
           stopReason = "max_completed";
@@ -880,6 +899,7 @@ async function syncProfile(aid, expectedUpdatedAt, schemaVersion, startedAt) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(config.requestTimeoutMs, remainingMs));
     try {
+      log("PROFILE_REQUEST", { mode: "arena", runId, aid, expectedUpdatedAt, schemaVersion, attempt });
       const response = await fetch(config.endpoint, {
         method: "POST",
         headers: {
@@ -953,7 +973,7 @@ async function syncProfile(aid, expectedUpdatedAt, schemaVersion, startedAt) {
 }
 
 async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
-  const useValidators = getMeta("feed_source_url") === config.updatedUrl;
+  const useValidators = getMeta("feed_source_url") === config.updatedUrl && getMeta("feed_policy") === PROFILE_FEED_POLICY;
   const savedEtag = useValidators ? getMeta("feed_etag") : null;
   const savedModified = useValidators ? getMeta("feed_last_modified") : null;
   let lastError;
@@ -1039,13 +1059,10 @@ async function loadUpdatedFeedWithRetry(url, tracked, excluded, startedAt) {
         const snapshot = tracked.get(aid);
         if (snapshot === undefined) counters.unknownInFeed += 1;
         else counters.trackedInFeed += 1;
-        if (snapshot && snapshot.schemaVersion < config.schemaVersion) {
-          counters.deferredOldParser += 1;
-          return;
-        }
-        if (snapshot !== undefined && snapshot.updatedAt >= feedUpdatedAt) return;
+        const kind = classifyFeedEntry(snapshot === undefined ? undefined
+          : snapshot.schemaVersion < config.schemaVersion ? 0 : snapshot.updatedAt, feedUpdatedAt, startedAt);
+        if (kind === null) return;
         counters.eligible += 1;
-        const kind = snapshot === undefined ? "new" : "updated";
         if (kind === "new") counters.newProfiles += 1;
         else counters.updatedProfiles += 1;
         const pending = pendingVersions.get(aid);

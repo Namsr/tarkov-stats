@@ -415,33 +415,81 @@ function overallPoints(
     bucketIndex = buckets.findIndex((bucket) => bucket > end);
     if (bucketIndex === -1) bucketIndex = buckets.length;
     if (members.length < PROGRESSION_MIN_SAMPLE) continue;
-    const values = members.map((row) => row.value);
-    const value = quantile(values, 0.5);
-    if (value == null) continue;
-    const confidence = members.reduce((sum, row) => sum + row.confidence, 0) / members.length
-      * Math.min(1, members.length / (scored ? SCORE_PRELIMINARY_SAMPLE_N : PROGRESSION_TARGET_SAMPLE));
-      const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
-    const levels = members
-      .map((row) => row.level == null ? null : Number(row.level))
-      .filter((value): value is number => value != null && Number.isFinite(value));
-    const level = levels.length ? Math.floor(quantile(levels, 0.5) ?? 0) : null;
-    const raidMin = start - PROGRESSION_BASE_RAID_STEP + 1;
-    points.push(progressionPoint({
-      pointId: aggregatePointId(pointPrefix, raidMin, end),
-      date: latest.local_date,
-      observedAt: latest.observed_at ?? latest.freshness_at,
-      pmcRaids: end,
-      value,
-      values,
-      n: values.length,
-      confidence,
-      seriesId: null,
-      sampleN: scored ? values.length : null,
-      raidRange: { min: raidMin, max: end },
-      level,
-    }));
+    const point = populationPoint(members, start, end, scored, pointPrefix);
+    if (point) points.push(point);
   }
   return points;
+}
+
+function populationPoint(members: DailyRow[], start: number, end: number, scored: boolean, pointPrefix: string): ProgressionPoint | null {
+  const values = members.map((row) => row.value);
+  const value = quantile(values, 0.5);
+  if (value == null) return null;
+  const confidence = members.reduce((sum, row) => sum + row.confidence, 0) / members.length
+    * Math.min(1, members.length / (scored ? SCORE_PRELIMINARY_SAMPLE_N : PROGRESSION_TARGET_SAMPLE));
+  const latest = members.reduce((current, row) => row.freshness_at > current.freshness_at ? row : current);
+  const levels = members
+    .map((row) => row.level == null ? null : Number(row.level))
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  const level = levels.length ? Math.floor(quantile(levels, 0.5) ?? 0) : null;
+  const raidMin = start - PROGRESSION_BASE_RAID_STEP + 1;
+  return progressionPoint({
+    pointId: aggregatePointId(pointPrefix, raidMin, end),
+    date: latest.local_date,
+    observedAt: latest.observed_at ?? latest.freshness_at,
+    pmcRaids: end,
+    value,
+    values,
+    n: values.length,
+    confidence,
+    seriesId: null,
+    sampleN: scored ? values.length : null,
+    raidRange: { min: raidMin, max: end },
+    level,
+  });
+}
+
+/** Ordered SQLite rows retain only the current adaptive raid window, not all history. */
+export function buildProgressionPopulationMetric(
+  rows: Iterable<DailyRow>, metric: ProgressionMetricKey,
+  ranges: readonly { min: number; max: number | null }[],
+  pointPrefix = `${metric}:overall`,
+) {
+  const scored = !["xp", "survival", "pvp_kd", "ai_kd"].includes(metric);
+  const states = [null, ...ranges].map(range => ({ range, start: 0, end: 0,
+    members: new Map<number, DailyRow>(), points: [] as ProgressionPoint[] }));
+  let freshnessAt: number | null = null;
+  const flush = (state: typeof states[number]) => {
+    if (state.members.size >= PROGRESSION_MIN_SAMPLE) {
+      const end = state.members.size >= PROGRESSION_TARGET_SAMPLE ? state.end
+        : state.start + PROGRESSION_MAX_RAID_WIDTH - PROGRESSION_BASE_RAID_STEP;
+      const point = populationPoint([...state.members.values()], state.start, end, scored, pointPrefix);
+      if (point) state.points.push(point);
+    }
+    state.members.clear();
+    state.start = 0;
+  };
+  let previousBucket = 0;
+  for (const row of rows) {
+    if (!Number.isFinite(row.value) || row.raid_bucket <= 0) continue;
+    if (row.raid_bucket < previousBucket) throw new Error("Population rows must be ordered by raid bucket");
+    previousBucket = row.raid_bucket;
+    freshnessAt = freshnessAt == null ? row.freshness_at : Math.max(freshnessAt, row.freshness_at);
+    for (const state of states) {
+      if (state.range && (row.lifetime_hours == null || row.lifetime_hours < state.range.min ||
+        (state.range.max != null && row.lifetime_hours >= state.range.max))) continue;
+      if (state.start && row.raid_bucket > state.end &&
+        (state.members.size >= PROGRESSION_TARGET_SAMPLE || row.raid_bucket >= state.start + PROGRESSION_MAX_RAID_WIDTH)) flush(state);
+      if (!state.start) state.start = row.raid_bucket;
+      state.end = row.raid_bucket;
+      const current = state.members.get(row.aid);
+      if (!current || row.freshness_at > current.freshness_at) state.members.set(row.aid, row);
+    }
+  }
+  for (const state of states) flush(state);
+  return { overall: states[0].points, freshnessAt,
+    byHours: states.slice(1).map(state => ({ ...state.range!, points: state.points,
+      n: state.points.at(-1)?.n ?? 0, confidence: state.points.at(-1)?.confidence ?? 0 })) };
 }
 
 export function buildSeasonalAverageSeries(

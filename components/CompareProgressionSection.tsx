@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import ProgressionTimelineChart from "@/components/ProgressionTimelineChart";
 import { useI18n } from "@/lib/i18n/context";
+import { loadAverageJson } from "@/lib/client-average-request";
 import { comparisonTimelineBenchmark } from "@/lib/comparison-dossier";
 import {
   timelineHasPlayerHistory,
@@ -65,16 +66,15 @@ function useProgressionTimeline(
           mode,
           cycle: cycleId,
         });
-        const response = await fetch(`/api/progression/timeline?${params}`, {
-          signal: controller.signal,
-          cache: "no-store",
+        const apply = (result: unknown) => {
+          if (!active || controller.signal.aborted) return;
+          if (!validTimelineResponse(result, { aid, mode, cycleId })) throw new Error();
+          setState({ key, timeline: result, loading: false, error: false });
+        };
+        const result = await loadAverageJson<unknown>(`/api/progression/timeline?${params}`, {
+          signal: controller.signal, forceRefresh: true, retryUnavailable: true, onUpdate: apply,
         });
-        const result: unknown = await response.json();
-        if (!response.ok || !validTimelineResponse(result, { aid, mode, cycleId })) {
-          throw new Error();
-        }
-        if (!active || controller.signal.aborted) return;
-        setState({ key, timeline: result, loading: false, error: false });
+        apply(result);
       } catch (caught: unknown) {
         if (!active || controller.signal.aborted || (caught instanceof Error && caught.name === "AbortError")) return;
         setState({ key, timeline: null, loading: false, error: true });

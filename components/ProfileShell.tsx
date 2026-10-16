@@ -13,6 +13,10 @@ import "@/components/profile.css";
 const SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "achievements", "mastering", "skills"] as const;
 const LEGACY_SECTION_IDS = ["overview", "progression", "risk", "comparison", "statistics", "skills"] as const;
 
+export function ProfileErrorNotice({ children }: { children: ReactNode }) {
+  return <div className="data-panel mt-5 p-5 text-center text-[var(--danger)]" role="alert">{children}</div>;
+}
+
 export function ProfileSlotPlaceholder({ className = "min-h-44" }: { className?: string }) {
   return <div className={`data-panel ${className} skeleton rounded-xl`} aria-hidden="true" />;
 }

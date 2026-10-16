@@ -26,10 +26,13 @@ type TimingInput = {
   baselineMs?: number;
   metadataMs?: number;
   masteryMs?: number;
+  queueMs?: number;
+  achievementsMs?: number;
+  workerMs?: number;
 };
 
 export type RequestTimingInput = TimingInput & {
-  operation: "player_profile" | "player_search" | "average" | "average_cohort" | "baseline" | "average_achievements";
+  operation: "player_profile" | "player_search" | "player_risk" | "risk_evaluation" | "average" | "average_cohort" | "baseline" | "average_achievements";
   mode?: Mode;
   outcome: Outcome;
   status: number;
@@ -40,6 +43,7 @@ export type RequestTimingInput = TimingInput & {
   memo?: Memo;
   failureStage?: FailureStage;
   errorCode?: string;
+  riskStatus?: "ready" | "missing" | "read_error" | "snapshot_read_error" | "expired" | "profile_stale" | "parser_stale" | "version_stale";
 };
 
 type Options = {
@@ -48,10 +52,14 @@ type Options = {
   now?: () => number;
   sampleRate?: number;
   nodeEnv?: string;
+  /** Read-only poll endpoints must not introduce synchronous analytics writes. */
+  recordAnalytics?: boolean;
 };
 
 type RequestContext = {
   aid?: number;
+  aidState?: "missing" | "empty" | "invalid" | "valid";
+  requestId?: string | null;
   nickname?: string | null;
   host?: string | null;
   cycleId?: string | null;
@@ -76,6 +84,12 @@ const SERVER_TIMING_PHASES: [keyof TimingInput, string][] = [
   ["masteryMs", "mastery"],
   ["averagesMs", "averages"],
   ["cohortMs", "cohort"],
+  ["queueMs", "queue"],
+  ["achievementsMs", "achievements"],
+  ["workerMs", "worker"],
+  ["levelsMs", "levels"],
+  ["bucketAggregateMs", "bucketaggregate"],
+  ["rangeBoundsMs", "rangebounds"],
 ];
 
 const defaultNow = () => performance.now();
@@ -123,11 +137,29 @@ export function createRequestTiming(options: Options = {}) {
   let finished = false;
   let context: RequestContext = {};
   let lastInput: RequestTimingInput | null = null;
+  let profileStarted = false;
+  const profileIdentity = () => ({
+    aid: Number.isSafeInteger(context.aid) && context.aid! > 0 ? context.aid : null,
+    aid_state: context.aidState ?? (context.aid == null ? "missing" : "valid"),
+    ...(context.cycleId == null ? {} : { cycle: context.cycleId }),
+    ...(context.requestId && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(context.requestId)
+      ? { request_id: context.requestId } : {}),
+  });
 
   return {
     now,
     setRequestContext(input: RequestContext) {
       context = { ...context, ...input };
+    },
+    startProfileRequest(mode?: Mode) {
+      if (profileStarted) return;
+      profileStarted = true;
+      try {
+        (options.logger ?? console.log)(JSON.stringify({
+          event: "profile_request_v1", at: Date.now(), pid: process.pid,
+          ...profileIdentity(), ...(mode === undefined ? {} : { mode }),
+        }));
+      } catch { /* Logging must never prevent a profile request. */ }
     },
     elapsedMs(started: number) {
       return roundedMs(now() - started);
@@ -154,7 +186,7 @@ export function createRequestTiming(options: Options = {}) {
       lastInput = input;
       const totalMs = roundedMs(input.totalMs ?? now() - startedAt);
       const diagnostic = failureDiagnostic(input);
-      void recordRequestEvent({
+      if (options.recordAnalytics !== false) void recordRequestEvent({
         operation: input.operation,
         aid: context.aid,
         nickname: context.nickname,
@@ -179,13 +211,29 @@ export function createRequestTiming(options: Options = {}) {
         storeReadMs: input.storeReadMs,
         storeWriteMs: input.storeWriteMs,
         averagesMs: input.averagesMs,
+        queueMs: input.queueMs,
+        achievementsMs: input.achievementsMs,
+        storeOpenMs: input.storeOpenMs,
+        workerMs: input.workerMs,
+        seasonalMs: input.seasonalMs,
+        levelsMs: input.levelsMs,
+        parseMs: input.parseMs,
+        bucketAggregateMs: input.bucketAggregateMs,
+        rangeBoundsMs: input.rangeBoundsMs,
+        requestId: context.requestId,
       });
       const slow = totalMs >= 1_000;
-      if (!sampled && !slow) return;
+      // Account lookups must be checkable even for fast cache hits or throttles.
+      // Population averages/search timing retain their existing sampling.
+      const accountRequest = input.operation === "player_profile" || input.operation === "average_cohort";
+      const riskRequest = input.operation === "player_risk" || input.operation === "risk_evaluation";
+      if (!sampled && !slow && !accountRequest && !riskRequest) return;
       const event = {
         event: "request_timing_v1",
-        ...(slow ? { slow: true, at: Date.now(), pid: process.pid } : {}),
-        entry: "api",
+        ...(slow ? { slow: true } : {}),
+        ...(slow || accountRequest || riskRequest ? { at: Date.now(), pid: process.pid } : {}),
+        ...(accountRequest ? profileIdentity() : {}),
+        entry: input.operation === "risk_evaluation" ? "background" : "api",
         operation: input.operation,
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         outcome: input.outcome,
@@ -213,6 +261,10 @@ export function createRequestTiming(options: Options = {}) {
         ...(input.baselineMs === undefined ? {} : { baseline_ms: roundedMs(input.baselineMs) }),
         ...(input.metadataMs === undefined ? {} : { metadata_ms: roundedMs(input.metadataMs) }),
         ...(input.masteryMs === undefined ? {} : { mastery_ms: roundedMs(input.masteryMs) }),
+        ...(input.queueMs === undefined ? {} : { queue_ms: roundedMs(input.queueMs) }),
+        ...(input.workerMs === undefined ? {} : { worker_ms: roundedMs(input.workerMs) }),
+        ...(input.achievementsMs === undefined ? {} : { achievements_ms: roundedMs(input.achievementsMs) }),
+        ...(input.riskStatus === undefined ? {} : { risk_status: input.riskStatus }),
       };
       try {
         (options.logger ?? console.log)(JSON.stringify(event));

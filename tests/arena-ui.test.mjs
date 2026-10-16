@@ -16,7 +16,9 @@ async function loadArenaUi() {
     importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove,
   };
   const typesUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(read("types/arena.ts"), { compilerOptions }).outputText)}`;
-  const source = read("components/arena-ui.ts").replaceAll("@/types/arena", typesUrl);
+  const requestsUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(read("lib/client-average-request.ts"), { compilerOptions }).outputText)}`;
+  const source = read("components/arena-ui.ts").replaceAll("@/types/arena", typesUrl)
+    .replaceAll("../lib/client-average-request.ts", requestsUrl);
   const moduleUrl = `data:text/javascript,${encodeURIComponent(ts.transpileModule(source, { compilerOptions }).outputText)}`;
   arenaUiModule = await import(moduleUrl);
   return arenaUiModule;
@@ -120,7 +122,12 @@ test("Arena profile only claims missing data when the server says the mode is un
   // A failed or aborted request sets `error`, not `unavailable`. Reporting
   // "Arena profile unavailable" for those sends the user to tarkov.dev for a
   // profile that is already stored.
-  assert.match(guard, /unavailable \? t\("arena\.profile\.unavailable"\) : error \|\| t\("arena\.profile\.error"\)/);
+  assert.match(guard, /error \|\| t\(unavailable \? "player\.modeUnavailable" : "arena\.profile\.error"\)/);
+  assert.match(guard, /<ProfileHeader/);
+  assert.match(guard, /missing=\{unavailable\}/);
+  assert.match(guard, /className="profile-metrics"/);
+  assert.match(guard, /<ProfileErrorNotice>\{notice\}<\/ProfileErrorNotice>/);
+  assert.doesNotMatch(guard, /<RefreshButton/);
   assert.doesNotMatch(guard, /t\("arena\.profile\.unavailable"\)\}\s*<\/p>/);
   assert.match(profile, /setUnavailable\(true\)/);
   assert.match(profile, /body\.code === "mode_profile_unavailable"/);

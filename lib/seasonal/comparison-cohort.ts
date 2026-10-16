@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-ignore Node's strip-types test runner requires explicit extensions.
 import { initializeSeasonalSchema } from "./storage.ts";
+// @ts-ignore Node's strip-types runtime requires the explicit extension.
+import { computeCohortInBackground } from "../cohort-worker.ts";
+import { loadDynamicAverage } from "../average-dynamic-cache.ts";
 import type { AveragePeriod, AverageStatistic } from "../db";
 import {
   COMPARISON_COHORT_PERCENTAGES,
@@ -22,10 +25,7 @@ type SqliteDatabase = any;
 type Row = Record<string, unknown>;
 
 const COHORT_CACHE_TTL_MS = 5 * 60_000;
-const COHORT_CACHE_MAX = 512;
 type SeasonalComparisonCohortValue = Omit<SeasonalComparisonCohortLookup, "cache">;
-const cohortCache = new Map<string, { expiresAt: number; value: SeasonalComparisonCohortValue }>();
-const cohortLoads = new Map<string, Promise<SeasonalComparisonCohortValue>>();
 let sqliteDatabase: SqliteDatabase | null = null;
 
 const NORMALIZED_CTE = `
@@ -38,7 +38,9 @@ WITH normalized AS (
       WHEN deaths > 0 THEN 1.0 * total_kills / deaths ELSE total_kills END AS kd_ratio,
     CASE WHEN pmc_deaths > 0 THEN 1.0 * killed_pmc / pmc_deaths ELSE killed_pmc END AS pmc_kd_ratio,
     CASE WHEN total_raids > 0 THEN 1.0 * total_kills / total_raids END AS kills_per_raid,
-    CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate
+    CASE WHEN pmc_raids > 0 THEN 100.0 * pmc_survived / pmc_raids END AS pmc_survival_rate,
+    CASE WHEN pvp_stats_version = 1 AND pmc_raids > 0
+      THEN 1.0 * pmc_killed_pmc / pmc_raids END AS killed_pmc_per_raid
   FROM player_profiles
   WHERE mode = 'seasonal' AND cycle_id = ? AND confirmed_banned = 0
     AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = player_profiles.aid)
@@ -142,6 +144,8 @@ export interface SeasonalComparisonCohortLookup {
   available: boolean;
   result: ComparisonCohortResult | null;
   cache: "hit" | "miss";
+  stale?: boolean;
+  generatedAt?: number;
 }
 
 function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
@@ -150,19 +154,7 @@ function cacheKey(input: SeasonalComparisonCohortInput, now: number): string {
     input.revision ?? ""].join(":");
 }
 
-function cacheResult(key: string, value: SeasonalComparisonCohortValue, now: number): void {
-  for (const [cachedKey, entry] of cohortCache) {
-    if (entry.expiresAt <= now) cohortCache.delete(cachedKey);
-  }
-  while (cohortCache.size >= COHORT_CACHE_MAX) {
-    const oldest = cohortCache.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    cohortCache.delete(oldest);
-  }
-  cohortCache.set(key, { expiresAt: now + COHORT_CACHE_TTL_MS, value });
-}
-
-async function computeSeasonalComparisonCohort(
+export async function computeSeasonalComparisonCohort(
   input: SeasonalComparisonCohortInput,
   now: number,
 ): Promise<SeasonalComparisonCohortValue> {
@@ -256,20 +248,11 @@ export async function querySeasonalComparisonCohort(
 ): Promise<SeasonalComparisonCohortLookup> {
   const now = input.now ?? Date.now();
   const key = cacheKey(input, now);
-  const cached = cohortCache.get(key);
-  if (cached && cached.expiresAt > now) {
-    cohortCache.delete(key);
-    cohortCache.set(key, cached);
-    return { ...cached.value, cache: "hit" };
-  }
-  const existing = cohortLoads.get(key);
-  if (existing) return { ...await existing, cache: "hit" };
-  const load = computeSeasonalComparisonCohort(input, now).then((value) => {
-    cacheResult(key, value, now);
-    return value;
-  }).finally(() => {
-    if (cohortLoads.get(key) === load) cohortLoads.delete(key);
-  });
-  cohortLoads.set(key, load);
-  return { ...await load, cache: "miss" };
+  const loaded = await loadDynamicAverage<SeasonalComparisonCohortValue>(key,
+    () => computeCohortInBackground({ kind: "seasonal", args: [input, now] }), now, {
+      fallbackKey: `seasonal-cohort:${cacheKey({ ...input, revision: undefined }, 0)}`,
+      ttlMs: COHORT_CACHE_TTL_MS,
+      accept: (value) => value.available && value.result !== null,
+    });
+  return { ...loaded.value, cache: loaded.cache, stale: loaded.stale, generatedAt: loaded.generatedAt };
 }

@@ -2,12 +2,105 @@
 // @ts-nocheck -- Node's direct TypeScript test runner requires explicit .ts imports.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { schedulePlayerRiskPoll } from "../lib/client-risk.ts";
+import { scheduleArenaRiskPoll } from "../lib/arena/client-risk.ts";
 import {
   getCachedPlayerProfileResponse,
   loadPlayerProfileResponse,
   PlayerProfileResponseError,
   playerProfileRequestKey,
 } from "../lib/client-profile-request.ts";
+
+const flushPoll = () => new Promise<void>((resolve) => setImmediate(resolve));
+const arenaRiskResponse = (risk = { aid: 1265971, score: 0, version: { upstream: 100 } }, identity = { aid: 1265971, mode: "arena", cycleId: "persistent" }) => Response.json({ identity, risk });
+
+test("Arena polling gets a zero score after a pending response and stops after success", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const received = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "/api/player/risk?aid=1265971&mode=arena");
+    assert.equal(options.cache, "no-store");
+    calls++;
+    return calls === 1 ? arenaRiskResponse(null) : arenaRiskResponse();
+  });
+  const stop = scheduleArenaRiskPoll(1265971, 100, (risk) => received.push(risk));
+  t.after(stop);
+  t.mock.timers.tick(1_500);
+  await flushPoll();
+  assert.equal(calls, 1);
+  assert.equal(received.length, 0);
+  t.mock.timers.tick(3_000);
+  await flushPoll();
+  assert.equal(received[0].score, 0);
+  t.mock.timers.tick(30_000);
+  await flushPoll();
+  assert.equal(calls, 2);
+  assert.equal(received.length, 1);
+});
+
+test("Arena polling bounds retries across network, HTTP and stale-result failures", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    if (calls === 1) throw new Error("network");
+    if (calls === 2) return new Response(null, { status: 503 });
+    return arenaRiskResponse({ aid: 1265971, score: 20, version: { upstream: 99 } });
+  });
+  const received = [];
+  const stop = scheduleArenaRiskPoll(1265971, 100, (risk) => received.push(risk));
+  t.after(stop);
+  for (const delay of [1_500, 3_000, 5_000, 30_000]) {
+    t.mock.timers.tick(delay);
+    await flushPoll();
+  }
+  assert.equal(calls, 3);
+  assert.deepEqual(received, []);
+});
+
+test("Arena polling never applies another account, mode or cycle", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const identity of [
+    { aid: 1, mode: "arena", cycleId: "persistent" },
+    { aid: 1265971, mode: "regular", cycleId: "persistent" },
+    { aid: 1265971, mode: "arena", cycleId: "other" },
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => arenaRiskResponse(undefined, identity));
+    const stop = scheduleArenaRiskPoll(1265971, 100, () => assert.fail("wrong identity applied"));
+    t.mock.timers.tick(1_500);
+    await flushPoll();
+    stop();
+  }
+});
+
+test("leaving Arena cancels its timer and ignores an in-flight response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let release;
+  let signal;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", (_url, options) => {
+    calls++;
+    signal = options.signal;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const onRisk = () => assert.fail("unmounted page updated");
+  const cancelBeforeFetch = scheduleArenaRiskPoll(1265971, 100, onRisk);
+  cancelBeforeFetch();
+  t.mock.timers.tick(1_500);
+  await flushPoll();
+  assert.equal(calls, 0);
+
+  const cancelInFlight = scheduleArenaRiskPoll(1265971, 100, onRisk);
+  t.mock.timers.tick(1_500);
+  cancelInFlight();
+  assert.equal(signal.aborted, true);
+  release(arenaRiskResponse());
+  await flushPoll();
+  t.mock.timers.tick(30_000);
+  await flushPoll();
+  assert.equal(calls, 1);
+});
 
 test("twelve rapid mode returns share one automatic profile request", async () => {
   const plainUrl = "/api/player/profile?aid=9000001&mode=regular";
@@ -205,4 +298,100 @@ test("a throttled forced request is not cached, so the next retry reaches the ne
   assert.equal(calls, 2);
   assert.equal(recovered.body.identity.aid, 9000011);
   assert.equal(getCachedPlayerProfileResponse<{ identity: { aid: number } }>(url)?.body.identity.aid, 9000011);
+});
+
+
+for (const mode of ["regular", "pve", "seasonal"] as const) {
+  test(`${mode} showcase risk recovers from pending, stale and expired results, including zero`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const input = { aid: 8045310, mode, cycleId: mode === "seasonal" ? "kord-breach-s1" : "persistent", profileUpdatedAt: 100 };
+    const identity = { aid: input.aid, mode, cycleId: input.cycleId };
+    let calls = 0;
+    const received = [];
+    t.mock.method(globalThis, "fetch", async (url, options) => {
+      assert.equal(url, `/api/player/risk?aid=8045310&mode=${mode}&cycle=${input.cycleId}`);
+      assert.equal(options.cache, "no-store");
+      calls++;
+      return Response.json({ identity, risk: calls === 1 ? null : { score: 0, availability: "partial", profileUpdatedAt: calls === 2 ? 99 : 100, freshnessAt: calls === 3 ? Date.now() - 5 * 60 * 60 * 1000 : Date.now() } });
+    });
+    const stop = schedulePlayerRiskPoll(input, (risk) => received.push(risk));
+    t.after(stop);
+    for (const delay of [0, 500, 1_000, 2_000, 30_000]) {
+      t.mock.timers.tick(delay);
+      await flushPoll();
+    }
+    assert.equal(calls, 4);
+    assert.equal(received.length, 1);
+    assert.equal(received[0].score, 0);
+  });
+}
+
+test("showcase risk rejects mismatched account, mode and cycle", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const input = { aid: 8045310, mode: "seasonal", cycleId: "kord-breach-s1", profileUpdatedAt: 100 };
+  for (const identity of [
+    { aid: 1, mode: input.mode, cycleId: input.cycleId },
+    { aid: input.aid, mode: "regular", cycleId: input.cycleId },
+    { aid: input.aid, mode: input.mode, cycleId: "old-cycle" },
+  ]) {
+    let calls = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return Response.json({ identity, risk: { score: 80, profileUpdatedAt: 100 } });
+    });
+    const stop = schedulePlayerRiskPoll(input, () => assert.fail("wrong identity applied"));
+    t.mock.timers.tick(0);
+    await flushPoll();
+    t.mock.timers.tick(30_000);
+    await flushPoll();
+    assert.equal(calls, 1);
+    stop();
+  }
+});
+
+test("showcase risk bounds retries after network, HTTP and unavailable results", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const input = { aid: 8045310, mode: "regular", cycleId: "persistent", profileUpdatedAt: 100 };
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    if (calls === 1) throw new Error("network");
+    if (calls === 2) return new Response(null, { status: 503 });
+    return Response.json({ identity: input, risk: { score: 0, available: false, profileUpdatedAt: 100 } });
+  });
+  const stop = schedulePlayerRiskPoll(input, () => assert.fail("unavailable risk applied"));
+  t.after(stop);
+  for (const delay of [0, 500, 1_000, 2_000, 4_000, 8_000, 30_000]) {
+    t.mock.timers.tick(delay);
+    await flushPoll();
+  }
+  assert.equal(calls, 6);
+});
+
+test("leaving the showcase cancels timers and ignores an in-flight risk response", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const input = { aid: 8045310, mode: "regular", cycleId: "persistent", profileUpdatedAt: 100 };
+  let release;
+  let signal;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", (_url, options) => {
+    calls++;
+    signal = options.signal;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const onRisk = () => assert.fail("old showcase updated");
+  const cancelBeforeFetch = schedulePlayerRiskPoll(input, onRisk);
+  cancelBeforeFetch();
+  t.mock.timers.tick(0);
+  await flushPoll();
+  assert.equal(calls, 0);
+  const cancelInFlight = schedulePlayerRiskPoll(input, onRisk);
+  t.mock.timers.tick(0);
+  cancelInFlight();
+  assert.equal(signal.aborted, true);
+  release(Response.json({ identity: input, risk: { score: 80, profileUpdatedAt: 100 } }));
+  await flushPoll();
+  t.mock.timers.tick(30_000);
+  await flushPoll();
+  assert.equal(calls, 1);
 });

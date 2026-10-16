@@ -4,16 +4,16 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 
-// `waitForWeb()` probes the same path the sweep opens with, so the harness
-// answers the first request per case and stalls the second: that puts the stall
-// inside the sweep, where one hung request blocks every later path.
-function stalledServer() {
+// The cheap health probe succeeds; only the first average stalls so the test
+// can verify that every later warmup path still completes.
+function stalledServer(requests) {
   const seen = new Map();
   return createServer((request, response) => {
     const prefix = request.url?.startsWith("/trickle") ? "/trickle" : "/silent";
     const count = (seen.get(prefix) ?? 0) + 1;
     seen.set(prefix, count);
-    if (count === 1) {
+    requests.push(request.url);
+    if (count !== 2) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end("{}");
       return;
@@ -42,6 +42,7 @@ async function collectWarmupRun(prefix, port) {
       // The seam exists so this case costs a second instead of the production
       // 30s; the script still keeps 30_000 as its default.
       AVERAGE_WARM_TIMEOUT_MS: "1000",
+      SEASONAL_ENABLED: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -70,11 +71,13 @@ async function collectWarmupRun(prefix, port) {
   } finally {
     cancelBackstop();
     child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
   }
 }
 
 test("a stalled average warmup response is bounded instead of wedging the sweep", async (t) => {
-  const server = stalledServer();
+  const requests = [];
+  const server = stalledServer(requests);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   t.after(async () => {
@@ -86,5 +89,39 @@ test("a stalled average warmup response is bounded instead of wedging the sweep"
     const output = await collectWarmupRun(`/${name}`, port);
     assert.match(output, /average cache warm failed \(startup\)/, `${name}: the warm run must fail, not hang`);
     assert.match(output, /abort|timed out|TimeoutError/i, `${name}: the failure must name the abort`);
+    assert.match(output, /21\/22 requests succeeded/);
+    const seen = requests.filter((url) => url.startsWith(`/${name}`));
+    assert.equal(seen.length, 23);
+    assert.equal(seen[0], `/${name}/healthz`);
+    assert.ok(seen.some((url) => url.includes("/api/progression/average?mode=pve")));
+    assert.ok(seen.some((url) => url.includes("/api/average/achievements?mode=pve")));
   }
+});
+
+test("an unavailable regular publication does not gate other warmup paths", async (t) => {
+  const requests = [];
+  let active = 0;
+  let peak = 0;
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    active += 1;
+    peak = Math.max(peak, active);
+    response.on("finish", () => { active -= 1; });
+    const unavailable = request.url.startsWith("/api/average?") && request.url.includes("mode=regular");
+    response.writeHead(unavailable ? 503 : 200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const output = await collectWarmupRun("", server.address().port);
+  assert.equal(requests[0], "/healthz");
+  assert.equal(requests.length, 23);
+  assert.ok(requests.some((url) => url.includes("mode=pve")));
+  assert.ok(requests.some((url) => url.includes("mode=arena")));
+  assert.ok(requests.some((url) => url.includes("/api/progression/average?mode=regular")));
+  assert.match(output, /18\/22 requests succeeded/);
+  assert.equal(peak, 1, "background warming must stay sequential");
 });

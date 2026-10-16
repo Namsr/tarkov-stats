@@ -9,7 +9,7 @@ import {
 }
 from "../../types/arena.ts";
 
-export const ARENA_PARSER_VERSION = 4;
+export const ARENA_PARSER_VERSION = 5;
 
 export const ARENA_STORAGE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS arena_mode_stats (

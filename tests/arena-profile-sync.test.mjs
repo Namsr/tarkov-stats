@@ -50,7 +50,7 @@ function migrationSummaryFrom(stdout) {
 test("Arena profile sync queues index gaps and updated-feed accounts without a total cap", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-"));
   const dbPath = join(directory, "players.db");
-  const initial = 1_800_000_000_000;
+  const initial = Date.now() - 60_000;
   const players = new DatabaseSync(dbPath);
   players.exec(`
     CREATE TABLE mode_players (
@@ -89,7 +89,7 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     insertIndex.run(aid, nickname, nickname.toLowerCase(), Date.now());
   }
 
-  let feed = { 2: initial + 100, 3: initial + 200, 5: initial + 300 };
+  let feed = { 2: initial + 100, 3: initial + 200, 5: initial + 300, 99: initial - 25 * 3_600_000 };
   const calls = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/arena/updated.json")) {
@@ -155,8 +155,8 @@ test("Arena profile sync queues index gaps and updated-feed accounts without a t
     feed = { ...feed, 6: initial + 400 };
     const secondRun = await launch(dbPath, baseUrl, feedUrl);
     const secondSummary = summaryFrom(secondRun.stdout);
-    assert.deepEqual(calls.slice(callsAfterFirstRun), [6]);
-    assert.equal(secondSummary.deferredOldParser, 2);
+    assert.deepEqual(calls.slice(callsAfterFirstRun), [6, 2]);
+    assert.equal(secondSummary.deferredOldParser, 1);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = 3"
     ).get().status, "not_found");
@@ -407,7 +407,7 @@ test("Arena profile sync caps successful completions, not errors, and resumes", 
     const resumedSummary = summaryFrom(resumedRun.stdout);
     assert.equal(resumedSummary.completed, 2);
     assert.equal(resumedSummary.stopReason, "max_completed");
-    assert.deepEqual(calls.slice(3), [1, 4]);
+    assert.deepEqual(calls.slice(3), [4, 1]);
     assert.deepEqual(players.prepare(
       "SELECT aid, status FROM arena_profile_sync_queue ORDER BY aid"
     ).all().map((row) => ({ aid: Number(row.aid), status: row.status })), [
@@ -582,7 +582,7 @@ test("Arena collector waits for every worker after a fatal error", async () => {
   }
 });
 
-test("Arena collector migrates recoverable v3 profiles offline and networks only unrecoverable rows", async () => {
+test("Arena collector migrates recoverable v3 profiles offline and resumes legacy capture tasks", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v3-migration-"));
   const dbPath = join(directory, "players.db");
   const players = new DatabaseSync(dbPath);
@@ -659,7 +659,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       }
     }
   };
-  const timestamp = 1_800_000_000_000;
+  const timestamp = Date.now() - 60_000;
   const equivalent = parseArenaProfileStats(profile(1, timestamp, zeroGroups())).arenaProfile;
   const changed = parseArenaProfileStats(profile(2, timestamp, {
     UnrankedOverall: group(10, false),
@@ -698,7 +698,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     INSERT INTO arena_profile_sync_queue
       (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
     VALUES (8, ?, 3, 'pending', 0, NULL, NULL, NULL, ?)
-  `).run(timestamp, Date.now());
+  `).run(timestamp - 30 * 86_400_000, Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -738,9 +738,10 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       stale: 0,
       network: 2,
     });
-    assert.deepEqual(calls, [4, 5]);
-    assert.equal(summary.attempted, 2);
-    assert.equal(summary.completed, 2);
+    assert.deepEqual(calls, [4, 5, 8]);
+    assert.equal(summary.attempted, 3);
+    assert.equal(summary.completed, 3);
+    assert.equal(summary.upgradedLegacyTasks, 1);
     assert.equal(summary.deferredOldParser, 1);
     assert.equal(summary.indexCurrent, 1);
     assert.equal(players.prepare(
@@ -748,10 +749,10 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     ).get().n, 6);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = 8"
-    ).get().status, "pending");
+    ).get().status, "completed");
     for (const aid of [1, 2, 3, 4, 5]) {
       assert.equal(players.prepare(
-        "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
+        `SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = ${ARENA_PARSER_VERSION}`
       ).get(aid).n, 6);
     }
     assert.equal(players.prepare(
@@ -761,7 +762,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
       "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 2 AND parser_version = 3"
     ).get().n, 6);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 2 AND parser_version = 4"
+      `SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = 2 AND parser_version = ${ARENA_PARSER_VERSION}`
     ).get().n, 6);
     assert.deepEqual({ ...players.prepare(
       "SELECT games_count, arena_wins, arena_losses, win_rate FROM arena_mode_stats WHERE aid = 2 AND arena_mode = 'overall'"
@@ -780,7 +781,8 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     const second = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
     assert.equal(second.migration.status, "already_complete");
     assert.equal(second.attempted, 0);
-    assert.deepEqual(calls, [4, 5]);
+    assert.equal(second.upgradedLegacyTasks, 0);
+    assert.deepEqual(calls, [4, 5, 8]);
 
     const lateChanged = parseArenaProfileStats(profile(7, timestamp, {
       UnrankedOverall: group(10, false),
@@ -802,7 +804,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
     const failedMigration = migrationSummaryFrom(failed.stdout);
     assert.equal(failedMigration.status, "interrupted", `${JSON.stringify(failedMigration)}\n${failed.stderr}`);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 7 AND parser_version = 4"
+      `SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = 7 AND parser_version = ${ARENA_PARSER_VERSION}`
     ).get().n, 6);
     assert.equal(players.prepare(
       "SELECT value FROM arena_profile_sync_meta WHERE key = 'offline_v3_to_v4_publication_pending'"
@@ -834,7 +836,7 @@ test("Arena collector migrates recoverable v3 profiles offline and networks only
   }
 });
 
-test("Arena collector migrates v2 profiles offline, targets only invalid rows, and keeps legacy queues isolated", async () => {
+test("Arena collector migrates v2 profiles offline and finishes old queued captures without rewriting history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-v2-migration-"));
   const dbPath = join(directory, "players.db");
   const players = new DatabaseSync(dbPath);
@@ -860,7 +862,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     );
   `);
 
-  const timestamp = 1_800_000_000_000;
+  const timestamp = Date.now() - 60_000;
   const fetchedAt = timestamp - 1000;
   const group = (counters) => ({ Counters: counters });
   const groups = {
@@ -925,8 +927,8 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
   players.prepare(`
     INSERT INTO arena_profile_sync_queue
       (aid, feed_updated_at, schema_version, status, attempts, http_status, error, last_run_id, updated_at)
-    VALUES (?, ?, 3, 'pending', 0, NULL, NULL, NULL, ?)
-  `).run(oldQueueAid, timestamp, Date.now());
+    VALUES (?, ?, 3, 'error', 2, 503, 'old attempt', 'old-run', ?)
+  `).run(oldQueueAid, timestamp - 30 * 86_400_000, Date.now());
 
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -960,12 +962,13 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(first.migrations.v2.invalid, 1);
     assert.equal(first.migrations.v2.network, 1);
     assert.equal(first.migrations.v3.status, "complete");
-    assert.deepEqual(calls, [invalidAid]);
-    assert.equal(first.attempted, 1);
-    assert.equal(first.completed, 1);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
+    assert.equal(first.attempted, 2);
+    assert.equal(first.completed, 2);
+    assert.equal(first.upgradedLegacyTasks, 1);
     assert.equal(first.deferredOldParser, 2);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 4"
+      `SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = ${ARENA_PARSER_VERSION}`
     ).get(validAid).n, 6);
     assert.deepEqual({ ...players.prepare(`
       SELECT games_count, arena_wins, arena_losses, win_rate, fetched_at, parser_version
@@ -976,20 +979,24 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
       arena_losses: 20,
       win_rate: 74.35897435897436,
       fetched_at: fetchedAt,
-      parser_version: 4,
+      parser_version: ARENA_PARSER_VERSION,
     });
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = ? AND parser_version = 2"
     ).get(validAid).n, 6);
     assert.equal(players.prepare(
-      "SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = ? AND parser_version = 4"
+      `SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = ? AND parser_version = ${ARENA_PARSER_VERSION}`
     ).get(validAid).n, 6);
     assert.equal(players.prepare(
       "SELECT schema_version, status FROM arena_profile_sync_queue WHERE aid = ?"
-    ).get(invalidAid).schema_version, 4);
+    ).get(invalidAid).schema_version, ARENA_PARSER_VERSION);
     assert.equal(players.prepare(
       "SELECT status FROM arena_profile_sync_queue WHERE aid = ?"
-    ).get(oldQueueAid).status, "pending");
+    ).get(oldQueueAid).status, "completed");
+    assert.equal(players.prepare("SELECT schema_version FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).schema_version, ARENA_PARSER_VERSION);
+    assert.equal(players.prepare("SELECT attempts, feed_updated_at FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).attempts, 3,
+      "an old error keeps its attempt history when its parser target is upgraded");
+    assert.equal(players.prepare("SELECT feed_updated_at FROM arena_profile_sync_queue WHERE aid = ?").get(oldQueueAid).feed_updated_at, timestamp - 30 * 86_400_000);
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_mode_stats WHERE aid = ? AND parser_version = 1"
     ).get(legacyAid).n, 6);
@@ -998,7 +1005,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(second.migrations.v2.status, "already_complete");
     assert.equal(second.migrations.v3.status, "already_complete");
     assert.equal(second.attempted, 0);
-    assert.deepEqual(calls, [invalidAid]);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
 
     players.prepare("INSERT INTO excluded_players (aid) VALUES (?)").run(invalidAid);
     players.prepare("DELETE FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v4_complete'").run();
@@ -1033,7 +1040,7 @@ test("Arena collector migrates v2 profiles offline, targets only invalid rows, a
     assert.equal(players.prepare(
       "SELECT COUNT(*) AS n FROM arena_profile_sync_meta WHERE key = 'offline_v2_to_v4_publication_pending'"
     ).get().n, 0);
-    assert.deepEqual(calls, [invalidAid]);
+    assert.deepEqual(calls, [invalidAid, oldQueueAid]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     players.close();
@@ -1088,7 +1095,7 @@ test("Arena collector uses the JSON helper, two-request default, and an isolated
   assert.ok((await readFile("lib/arena/storage.ts", "utf8")).length > 0);
   assert.ok((await readFile("types/arena.ts", "utf8")).length > 0);
   assert.match(service, /flock -n \/run\/tarkovstats-data-sync\.lock/);
-  assert.match(service, /exec -T -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 web/);
+  assert.match(service, /tarkovstats-run-background -e ARENA_PROFILE_SYNC_RPS=2 -e ARENA_PROFILE_SYNC_MAX_RUN_MS=720000 worker nice -n 19 node/);
   assert.match(service, /scripts\/sync-arena-profiles\.mjs/);
   assert.match(timer, /Description=Hourly TarkovStats Arena profile sync/);
   assert.match(timer, /OnCalendar=\*-\*-\* \*:50:00 Europe\/Moscow/);
@@ -1137,7 +1144,7 @@ test("Arena publication failures and deadline writes remain retryable", async ()
 test("Arena conditional feed requests skip the body on 304 but keep index backfill", async () => {
   const directory = await mkdtemp(join(tmpdir(), "arena-profile-sync-304-"));
   const dbPath = join(directory, "players.db");
-  const initial = 1_800_000_000_000;
+  const initial = Date.now() - 60_000;
   const players = new DatabaseSync(dbPath);
   players.exec(`
     CREATE TABLE mode_players (
@@ -1249,6 +1256,71 @@ test("Arena conditional feed requests skip the body on 304 but keep index backfi
   } finally {
     await new Promise((resolve) => server.close(resolve));
     players.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("Arena collector reparses v4 compare profiles offline and preserves their saved snapshots", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "arena-compare-v5-"));
+  const dbPath = join(directory, "players.db");
+  const db = new DatabaseSync(dbPath);
+  db.exec(`CREATE TABLE mode_players (mode TEXT NOT NULL, aid INTEGER NOT NULL,
+    profile_updated_at INTEGER DEFAULT 0, fetched_at INTEGER NOT NULL, stats_json TEXT NOT NULL,
+    achievements TEXT, PRIMARY KEY (mode, aid));
+    CREATE TABLE excluded_players (aid INTEGER PRIMARY KEY);
+    CREATE TABLE arena_player_index (mode TEXT NOT NULL, aid INTEGER NOT NULL, nickname TEXT NOT NULL,
+      nickname_lower TEXT NOT NULL, synced_at INTEGER NOT NULL, PRIMARY KEY (mode, aid));`);
+  initializeArenaSchema(db);
+  const sources = JSON.parse(await readFile("tests/fixtures/arena-compare-profiles.json", "utf8"));
+  const fetchedAt = Date.now() - 1000;
+  for (const source of sources) {
+    const parsed = parseArenaProfileStats(source).arenaProfile;
+    parsed.parserVersion = 4;
+    if (source.aid === 7788) {
+      parsed.modes.blastGang.counters.matches = null;
+      Object.assign(parsed.overall.counters, { matches: 5, wins: null, losses: null, kills: 122, deaths: 80,
+        assists: null, headshots: null, round_mvp: null, match_mvp: null });
+      Object.assign(parsed.overall.metrics, { kd_ratio: 1.525, win_rate: null, headshot_rate: null,
+        kills_per_match: 24.4, damage_per_match: 7759.6 });
+      parsed.overall.source = "upstream";
+    }
+    upsertArenaSqlite(db, parsed, fetchedAt);
+  }
+  const calls = [];
+  const server = createServer((request, response) => {
+    calls.push(request.url);
+    response.setHeader("content-type", "application/json");
+    response.end("{}");
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const first = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
+    assert.deepEqual(first.migrations.v4, { status: "complete", candidates: 2, migrated: 2,
+      invalid: 0, mixed: 0, stale: 0, network: 0 });
+    assert.equal(first.attempted, 0);
+    assert.ok(!calls.some(url => url.includes("/api/operator/")));
+    for (const source of sources) {
+      const current = db.prepare("SELECT * FROM arena_mode_stats WHERE aid = ? AND arena_mode = 'overall'").get(source.aid);
+      const expected = parseArenaProfileStats(source).arenaProfile.overall;
+      assert.equal(current.parser_version, ARENA_PARSER_VERSION);
+      assert.equal(current.fetched_at, fetchedAt);
+      assert.equal(current.upstream_version, source.updated);
+      assert.equal(current.games_count, expected.counters.matches);
+      assert.equal(current.win_rate, expected.metrics.win_rate);
+      assert.equal(current.headshot_rate, expected.metrics.headshot_rate);
+      const raw = JSON.parse(current.raw_json);
+      assert.deepEqual(raw.sourceCounters, source.stat.arenaOverAllCounters.UnrankedOverall);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = ? AND parser_version = 4").get(source.aid).n, 6);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM arena_mode_stats_history WHERE aid = ? AND parser_version = ?").get(source.aid, ARENA_PARSER_VERSION).n, 6);
+    }
+    const second = summaryFrom((await launch(dbPath, baseUrl, `${baseUrl}/arena/updated.json`)).stdout);
+    assert.equal(second.migrations.v4.status, "already_complete");
+    assert.equal(second.attempted, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    db.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

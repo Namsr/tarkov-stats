@@ -64,42 +64,47 @@ export function scoreIntervals(rows: IntervalRow[]): ScoreUpdate[] {
   }
   const updates: ScoreUpdate[] = [];
   for (const rowsInBucket of byBucket.values()) {
-    const latest = new Map<number, IntervalRow>();
-    for (const row of rowsInBucket) {
-      if (!isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids))) continue;
-      const current = latest.get(Number(row.aid));
-      if (!current || Number(row.ended_at) > Number(current.ended_at) ||
-        (Number(row.ended_at) === Number(current.ended_at) && Number(row.id) > Number(current.id))) {
-        latest.set(Number(row.aid), row);
-      }
-    }
-    const population = [...latest.values()].filter((row) =>
-      isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids)));
-    const sampleN = population.length;
-    const metrics = population.map(intervalMetrics);
-    const ranks = Object.fromEntries(Object.keys(intervalMetrics(rowsInBucket[0])).map((key) => [
-      key, createPercentileRank(metrics.map((entry) => entry[key as keyof typeof entry])),
-    ]));
-    for (const row of rowsInBucket) {
-      const metric = intervalMetrics(row);
-      const scoreable = isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids));
-      const tempo = scoreable ? tempoScore({
-        xpPerDay: ranks.xpDay(metric.xpDay) ?? 50,
-        pmcRaidsPerDay: ranks.raidsDay(metric.raidsDay) ?? 50,
-        killedPmcPerDay: ranks.pvpDay(metric.pvpDay) ?? 50,
-        nonPmcKillsPerDay: ranks.nonPmcDay(metric.nonPmcDay) ?? 50,
-      }) : null;
-      const form = scoreable ? formScore({
-        survivalRate: ranks.survival(metric.survival) ?? 50,
-        pvpKd: ranks.pvpKd(metric.pvpKd) ?? 50,
-        aiScavKd: ranks.aiKd(metric.aiKd) ?? 50,
-        killedPmcPerRaid: ranks.pvpRaid(metric.pvpRaid) ?? 50,
-        nonPmcKillsPerRaid: ranks.nonPmcRaid(metric.nonPmcRaid) ?? 50,
-      }) : null;
-      updates.push({ id: Number(row.id), tempo, form, sampleN: scoreable ? sampleN : null });
-    }
+    const score = intervalScorer(rowsInBucket);
+    for (const row of rowsInBucket) updates.push(score(row));
   }
   return updates;
+}
+
+function intervalScorer(rowsInBucket: Iterable<IntervalRow>): (row: IntervalRow) => ScoreUpdate {
+  const latest = new Map<number, IntervalRow>();
+  for (const row of rowsInBucket) {
+    if (!isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids))) continue;
+    const current = latest.get(Number(row.aid));
+    if (!current || Number(row.ended_at) > Number(current.ended_at) ||
+      (Number(row.ended_at) === Number(current.ended_at) && Number(row.id) > Number(current.id))) {
+      latest.set(Number(row.aid), row);
+    }
+  }
+  const population = [...latest.values()].filter((row) =>
+    isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids)));
+  const sampleN = population.length;
+  const metrics = population.map(intervalMetrics);
+  const ranks = Object.fromEntries(["xpDay", "raidsDay", "pvpDay", "nonPmcDay", "survival", "pvpKd", "aiKd", "pvpRaid", "nonPmcRaid"].map((key) => [
+    key, createPercentileRank(metrics.map((entry) => entry[key as keyof typeof entry])),
+  ]));
+  return (row) => {
+    const metric = intervalMetrics(row);
+    const scoreable = isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids));
+    const tempo = scoreable ? tempoScore({
+      xpPerDay: ranks.xpDay(metric.xpDay) ?? 50,
+      pmcRaidsPerDay: ranks.raidsDay(metric.raidsDay) ?? 50,
+      killedPmcPerDay: ranks.pvpDay(metric.pvpDay) ?? 50,
+      nonPmcKillsPerDay: ranks.nonPmcDay(metric.nonPmcDay) ?? 50,
+    }) : null;
+    const form = scoreable ? formScore({
+      survivalRate: ranks.survival(metric.survival) ?? 50,
+      pvpKd: ranks.pvpKd(metric.pvpKd) ?? 50,
+      aiScavKd: ranks.aiKd(metric.aiKd) ?? 50,
+      killedPmcPerRaid: ranks.pvpRaid(metric.pvpRaid) ?? 50,
+      nonPmcKillsPerRaid: ranks.nonPmcRaid(metric.nonPmcRaid) ?? 50,
+    }) : null;
+    return { id: Number(row.id), tempo, form, sampleN: scoreable ? sampleN : null };
+  };
 }
 
 function latestPoints(rows: IntervalRow[], updates: ScoreUpdate[], kind: "tempo" | "form"): AggregatePoint[] {
@@ -197,11 +202,11 @@ function cumulativeSql(targetBucket?: number): string {
         ORDER BY s.profile_updated_at DESC, s.id DESC
       ) rank
       FROM progression_snapshots s WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0
+        ${targetBucket == null ? "" : "AND s.pmc_raids > (? - 10) AND s.pmc_raids <= ?"}
     ) SELECT r.aid, r.local_date, r.experience AS value, r.pmc_raids AS dimension_raids,
       r.profile_updated_at AS freshness_at, p.lifetime_pvp_hours
     FROM ranked r JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid
       AND p.confirmed_banned = 0 WHERE r.rank = 1
-      ${targetBucket == null ? "" : "AND ((r.pmc_raids - 1) / 10 + 1) * 10 = ?"}
     ORDER BY r.pmc_raids, r.aid`;
 }
 
@@ -218,58 +223,101 @@ export function refreshSqliteProgressionAggregates(
   targetBucket?: number,
 ): { intervals: number; aggregates: number; generation: number } {
   initializeSeasonalSchema(db);
-  const intervalArgs = targetBucket == null ? [mode, cycleId] : [mode, cycleId, targetBucket];
-  const cumulativeArgs = targetBucket == null ? [mode, cycleId, mode, cycleId] : [mode, cycleId, mode, cycleId, targetBucket];
-  const intervals = targetBucket === 0
-    ? []
-    : db.prepare(intervalSql(targetBucket)).all(...intervalArgs) as IntervalRow[];
-  const cumulative = targetBucket === 0
-    ? []
-    : cumulativePoints(db.prepare(cumulativeSql(targetBucket)).all(...cumulativeArgs) as Record<string, unknown>[]);
-  const updates = scoreIntervals(intervals);
-  const aggregates = materializeRows(cycleId, {
-    cumulative, tempo: latestPoints(intervals, updates, "tempo"), form: latestPoints(intervals, updates, "form"),
-  }, mode);
-  db.exec("SAVEPOINT refresh_progression_aggregates");
+  // Stage scores outside the main database's writer transaction. JS retains
+  // only one bucket's latest players; SQLite spills its temporary table to disk.
+  db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
+  db.exec("CREATE TEMP TABLE progression_score_stage (id INTEGER PRIMARY KEY, tempo REAL, form REAL, sample_n INTEGER)");
+  const stage = db.prepare("INSERT INTO progression_score_stage VALUES (?, ?, ?, ?)");
+  const aggregates: DailyAggregateRecord[] = [];
+  let intervalCount = 0;
   try {
-    if (targetBucket === 0) {
-      db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL,
-        score_sample_n = NULL WHERE 0`).run();
-    } else if (targetBucket == null) {
-      db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL,
-        score_sample_n = NULL WHERE mode = ? AND cycle_id = ?`).run(mode, cycleId);
-    } else {
-      db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL,
-        score_sample_n = NULL WHERE mode = ? AND cycle_id = ? AND to_snapshot_id IN (
-          SELECT s.id FROM progression_snapshots s
-          WHERE s.mode = ? AND s.cycle_id = ? AND ((s.pmc_raids - 1) / 10 + 1) * 10 = ?
-        )`).run(mode, cycleId, mode, cycleId, targetBucket);
-    }
-    const update = db.prepare("UPDATE progression_intervals SET tempo_score = ?, form_score = ?, score_sample_n = ?, score_version = ? WHERE id = ?");
-    for (const item of updates) update.run(item.tempo, item.form, item.sampleN, ANALYTICS_SCORE_VERSION, item.id);
     if (targetBucket == null) {
-      db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ?").run(mode, cycleId);
-    } else {
-      db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ? AND bucket_min = ?")
-        .run(mode, cycleId, targetBucket - 10);
+      db.prepare(`CREATE TEMP TABLE progression_interval_source AS
+        SELECT source.*, ((dimension_raids - 1) / 10 + 1) * 10 AS bucket
+        FROM (${intervalSql()}) source`).run(mode, cycleId);
+      db.exec("CREATE INDEX progression_interval_source_bucket ON progression_interval_source (bucket, dimension_raids, aid, ended_at, id)");
     }
-    const insert = db.prepare(`INSERT INTO daily_aggregates (mode, cycle_id, local_date, kind, dimension,
-      bucket_min, bucket_max, mean, p25, p75, n, confidence, freshness_at, score_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    for (const row of aggregates) insert.run(row.mode, row.cycleId, row.localDate, row.kind, row.dimension, row.bucketMin,
-      row.bucketMax, row.mean, row.p25, row.p75, row.n, row.confidence, row.freshnessAt, row.scoreVersion);
-    const generation = Number((db.prepare(`INSERT INTO progression_materializations
-      (mode, cycle_id, generation, materialized_at, score_version)
-      VALUES (?, ?, COALESCE((SELECT generation + 1 FROM progression_materializations WHERE mode = ? AND cycle_id = ?), 1), ?, ?)
-      ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = progression_materializations.generation + 1,
-        materialized_at = excluded.materialized_at, score_version = excluded.score_version
-      RETURNING generation`).get(mode, cycleId, mode, cycleId, Date.now(), ANALYTICS_SCORE_VERSION) as { generation: number }).generation);
-    db.exec("RELEASE refresh_progression_aggregates");
-    return { intervals: updates.length, aggregates: aggregates.length, generation };
-  } catch (error) {
-    db.exec("ROLLBACK TO refresh_progression_aggregates");
-    db.exec("RELEASE refresh_progression_aggregates");
-    throw error;
+    const buckets = targetBucket === 0 ? [] : targetBucket == null
+      ? db.prepare(`SELECT DISTINCT ((pmc_raids - 1) / 10 + 1) * 10 AS bucket
+          FROM progression_snapshots WHERE mode = ? AND cycle_id = ? ORDER BY bucket`).all(mode, cycleId)
+          .map((row: { bucket: number }) => Number(row.bucket))
+      : [targetBucket];
+    for (const bucket of buckets) {
+      const args = targetBucket == null ? [bucket] : [mode, cycleId, bucket];
+      const query = db.prepare(targetBucket == null
+        ? "SELECT * FROM progression_interval_source WHERE bucket = ? ORDER BY dimension_raids, aid, ended_at, id"
+        : intervalSql(bucket));
+      const latest = new Map<number, IntervalRow>();
+      for (const row of query.iterate(...args) as Iterable<IntervalRow>) {
+        if (!isRaidProgressionInterval(row.status ?? "valid", Number(row.pmc_raids))) continue;
+        const current = latest.get(Number(row.aid));
+        if (!current || Number(row.ended_at) > Number(current.ended_at) ||
+          (Number(row.ended_at) === Number(current.ended_at) && Number(row.id) > Number(current.id))) latest.set(Number(row.aid), row);
+      }
+      const rows = [...latest.values()];
+      const score = intervalScorer(rows);
+      const updates = rows.map(score);
+      const cumulative = cumulativePoints(db.prepare(cumulativeSql(bucket))
+        .all(mode, cycleId, bucket, bucket, mode, cycleId) as Record<string, unknown>[]);
+      aggregates.push(...materializeRows(cycleId, { cumulative,
+        tempo: latestPoints(rows, updates, "tempo"), form: latestPoints(rows, updates, "form") }, mode));
+      db.exec("SAVEPOINT stage_progression_scores");
+      try {
+        for (const row of query.iterate(...args) as Iterable<IntervalRow>) {
+          const item = score(row);
+          stage.run(item.id, item.tempo, item.form, item.sampleN);
+          intervalCount += 1;
+        }
+        db.exec("RELEASE stage_progression_scores");
+      } catch (error) {
+        db.exec("ROLLBACK TO stage_progression_scores");
+        db.exec("RELEASE stage_progression_scores");
+        throw error;
+      }
+    }
+    db.exec("SAVEPOINT refresh_progression_aggregates");
+    try {
+      const scope = targetBucket == null ? "" : ` AND to_snapshot_id IN (
+        SELECT id FROM progression_snapshots WHERE mode = ? AND cycle_id = ?
+          AND ((pmc_raids - 1) / 10 + 1) * 10 = ?)`;
+      const scopeArgs = targetBucket == null ? [mode, cycleId] : [mode, cycleId, mode, cycleId, targetBucket];
+      if (targetBucket !== 0) {
+        db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL, score_sample_n = NULL
+          WHERE mode = ? AND cycle_id = ?${scope} AND id NOT IN (SELECT id FROM progression_score_stage)
+            AND (tempo_score IS NOT NULL OR form_score IS NOT NULL OR score_sample_n IS NOT NULL)`).run(...scopeArgs);
+        db.prepare(`UPDATE progression_intervals AS i SET tempo_score = s.tempo, form_score = s.form,
+          score_sample_n = s.sample_n, score_version = ? FROM progression_score_stage s
+          WHERE i.id = s.id AND (i.tempo_score IS NOT s.tempo OR i.form_score IS NOT s.form
+            OR i.score_sample_n IS NOT s.sample_n OR i.score_version IS NOT ?)`)
+          .run(ANALYTICS_SCORE_VERSION, ANALYTICS_SCORE_VERSION);
+      }
+      if (targetBucket == null) {
+        db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ?").run(mode, cycleId);
+      } else {
+        db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ? AND bucket_min = ?")
+          .run(mode, cycleId, targetBucket - 10);
+      }
+      const insert = db.prepare(`INSERT INTO daily_aggregates (mode, cycle_id, local_date, kind, dimension,
+        bucket_min, bucket_max, mean, p25, p75, n, confidence, freshness_at, score_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const row of aggregates) insert.run(row.mode, row.cycleId, row.localDate, row.kind, row.dimension, row.bucketMin,
+        row.bucketMax, row.mean, row.p25, row.p75, row.n, row.confidence, row.freshnessAt, row.scoreVersion);
+      const generation = Number((db.prepare(`INSERT INTO progression_materializations
+        (mode, cycle_id, generation, materialized_at, score_version)
+        VALUES (?, ?, COALESCE((SELECT generation + 1 FROM progression_materializations WHERE mode = ? AND cycle_id = ?), 1), ?, ?)
+        ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = progression_materializations.generation + 1,
+          materialized_at = excluded.materialized_at, score_version = excluded.score_version
+        RETURNING generation`).get(mode, cycleId, mode, cycleId, Date.now(), ANALYTICS_SCORE_VERSION) as { generation: number }).generation);
+      db.exec("RELEASE refresh_progression_aggregates");
+      return { intervals: intervalCount, aggregates: aggregates.length, generation };
+    } catch (error) {
+      db.exec("ROLLBACK TO refresh_progression_aggregates");
+      db.exec("RELEASE refresh_progression_aggregates");
+      throw error;
+    }
+  } finally {
+    db.exec("DROP TABLE IF EXISTS temp.progression_interval_source");
+    db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
   }
 }
 

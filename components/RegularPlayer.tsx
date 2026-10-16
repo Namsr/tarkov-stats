@@ -18,7 +18,7 @@ import { useI18n } from "@/lib/i18n/context";
 import { isReload } from "@/lib/is-reload";
 import ProfileHeader from "@/components/ProfileHeader";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
-import ProfileShell, { ProfileShellLoading } from "@/components/ProfileShell";
+import ProfileShell, { ProfileErrorNotice, ProfileShellLoading } from "@/components/ProfileShell";
 import type { CrossSectionMode } from "@/lib/db";
 import { isProfileStale } from "@/lib/profile-refresh-policy";
 import type { PublicRiskView } from "@/types/profile-view";
@@ -30,6 +30,30 @@ import {
 } from "@/lib/client-profile-request";
 import ArenaPlayer from "@/components/ArenaPlayer";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
+
+async function pollRegularRisk(input: {
+  aid: number;
+  profileUpdatedAt: number;
+  isCurrent: () => boolean;
+  onRisk: (risk: PublicRiskView) => void;
+}) {
+  for (const delay of [0, 500, 1_000, 2_000, 4_000, 8_000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!input.isCurrent()) return;
+    try {
+      const response = await fetch(`/api/player/risk?aid=${input.aid}&mode=regular&cycle=persistent`, { cache: "no-store" });
+      if (!response.ok) continue;
+      const body = await response.json() as { identity?: { aid?: number; mode?: string; cycleId?: string }; risk?: PublicRiskView | null };
+      if (!input.isCurrent()) return;
+      if (body.identity?.aid !== input.aid || body.identity.mode !== "regular" || body.identity.cycleId !== "persistent") return;
+      if (!body.risk || (body.risk.profileUpdatedAt ?? 0) < input.profileUpdatedAt) continue;
+      input.onRisk(body.risk);
+      return;
+    } catch {
+      continue;
+    }
+  }
+}
 
 interface Props {
   aid: string;
@@ -60,6 +84,12 @@ interface RegularProfileResponse {
   identity?: { aid?: number; mode?: string; cycleId?: string };
   risk?: PublicRiskView | null;
   viewModel?: ProfileCollectionsViewModel;
+}
+
+function matchesCachedProfileIdentity(response: RegularProfileResponse | undefined, aid: string, mode: CrossSectionMode): boolean {
+  return response?.identity?.aid === Number(aid) &&
+    response.identity.mode === mode &&
+    response.identity.cycleId === "persistent";
 }
 
 function viewModelAchievementItems(viewModel: ProfileCollectionsViewModel | null | undefined): unknown[] | null {
@@ -121,7 +151,8 @@ function LegacyPlayer({
   const radarDemoParam = Array.isArray(radarDemoValue) ? radarDemoValue[0] : radarDemoValue;
   const radarDemo = process.env.NODE_ENV === "development" && radarDemoParam === "1";
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode })}`;
-  const initialResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+  const cachedResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+  const initialResponse = matchesCachedProfileIdentity(cachedResponse, aid, mode) ? cachedResponse : null;
   const initialUpdatedAt = initialResponse?.profileUpdatedAt ?? null;
   const [profile, setProfile] = useState<PlayerProfile | null>(initialResponse?.profile ?? null);
   const [stats, setStats] = useState<ParsedPlayerStats | null>(initialResponse?.stats ?? null);
@@ -158,7 +189,8 @@ function LegacyPlayer({
     let cancelled = false;
     requestGeneration.current += 1;
     refreshPromise.current = null;
-    const cached = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+    const cachedResponse = getCachedPlayerProfileResponse<RegularProfileResponse>(profileRequestUrl)?.body;
+    const cached = matchesCachedProfileIdentity(cachedResponse, aid, mode) ? cachedResponse : null;
     setLoading(!cached?.stats);
     setError("");
     setModeUnavailable(false);
@@ -183,7 +215,7 @@ function LegacyPlayer({
     loadPlayerProfileResponse<RegularProfileResponse>(`/api/player/profile?${requestParams}`, {
       force: forceRefresh,
     })
-      .then(({ ok, body: data }) => {
+      .then(({ ok, status, body: data }) => {
         if (!ok || !data.stats) {
           const unavailable = data.code === "mode_profile_unavailable";
           if (unavailable) {
@@ -193,7 +225,7 @@ function LegacyPlayer({
             }
             return null;
           }
-          throw new Error(data.error ?? translate.current("player.loadError"));
+          throw new Error(status === 429 ? translate.current("player.rateLimited") : translate.current("player.loadError"));
         }
         if ((mode === "regular" || mode === "pve") && (
           data.identity?.aid !== Number(aid) ||
@@ -221,9 +253,10 @@ function LegacyPlayer({
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof PlayerProfileResponseError
-            ? translate.current("player.loadError")
-            : err instanceof Error ? err.message : translate.current("player.loadError"));
+          const message = err instanceof Error ? err.message : "";
+          setError(message === translate.current("player.rateLimited")
+            ? message
+            : translate.current("player.loadError"));
         }
       })
       .finally(() => {
@@ -235,6 +268,22 @@ function LegacyPlayer({
     };
     // `t` is read through `translate` so a language switch cannot re-run this effect.
   }, [aid, mode, profileRequestUrl]);
+
+  useEffect(() => {
+    if (mode !== "regular" || !stats) return;
+    // The profile/poll envelope validates AID; its public risk may omit that field.
+    if (serverRisk && (serverRisk.aid == null || serverRisk.aid === Number(aid)) && serverRisk.mode === "regular" && serverRisk.cycleId === "persistent" &&
+      (serverRisk.profileUpdatedAt ?? 0) >= (Number(stats.profileUpdatedAt) || 0) &&
+      Date.now() - (serverRisk.freshnessAt ?? 0) < 5 * 60 * 60 * 1000) return;
+    let cancelled = false;
+    void pollRegularRisk({
+      aid: Number(aid),
+      profileUpdatedAt: Number(stats.profileUpdatedAt) || 0,
+      isCurrent: () => !cancelled,
+      onRisk: setServerRisk,
+    });
+    return () => { cancelled = true; };
+  }, [aid, mode, stats, serverRisk]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
@@ -249,15 +298,16 @@ function LegacyPlayer({
       `/api/player/profile?${requestParams}`,
       { force: true },
     )
-      .then(({ ok, body: data }): Promise<RefreshCheckResult> | RefreshCheckResult => {
+      .then(({ ok, status, body: data }): Promise<RefreshCheckResult> | RefreshCheckResult => {
         if (generation !== requestGeneration.current) return "unchanged";
         if (!ok || !data.stats) {
           if (data.code === "mode_profile_unavailable") {
             setModeUnavailable(true);
             setProfileSummary(data.profileSummary ?? null);
+            setError("");
             return "unchanged";
           }
-          throw new Error(data.error ?? t("player.loadError"));
+          throw new Error(status === 429 ? t("player.rateLimited") : t("player.loadError"));
         }
 
         if ((mode === "regular" || mode === "pve") && (
@@ -291,8 +341,14 @@ function LegacyPlayer({
         return changed ? "updated" : "unchanged";
       })
       .catch((error: unknown) => {
-        if (error instanceof PlayerProfileResponseError) throw new Error(t("player.loadError"));
-        throw error;
+        const failure = error instanceof PlayerProfileResponseError ? new Error(t("player.loadError")) : error;
+        const message = failure instanceof Error ? failure.message : "";
+        if (generation === requestGeneration.current) {
+          setError(message === t("player.rateLimited") || message === t("player.refreshStatus.error")
+            ? message
+            : t("player.loadError"));
+        }
+        throw failure;
       })
       .finally(() => {
         if (refreshPromise.current === request) refreshPromise.current = null;
@@ -337,7 +393,7 @@ function LegacyPlayer({
           risk={undefined}
           comparison={undefined}
           statistics={undefined}
-          statusNotice={<div className="data-panel mt-5 p-5 text-center text-[var(--danger)]">{t("player.modeUnavailable")}</div>}
+          statusNotice={<ProfileErrorNotice>{error || t("player.modeUnavailable")}</ProfileErrorNotice>}
         />
       );
     }
@@ -393,7 +449,7 @@ function LegacyPlayer({
     );
   }
 
-  if (error || !stats) {
+  if (!stats) {
     if (mode === "regular" || mode === "pve") {
       return (
         <ProfileShell
@@ -414,7 +470,7 @@ function LegacyPlayer({
           risk={undefined}
           comparison={undefined}
           statistics={undefined}
-          statusNotice={<div className="data-panel mt-5 p-5 text-center">{error || t("player.unknownError")}</div>}
+          statusNotice={<ProfileErrorNotice>{error || t("player.unknownError")}</ProfileErrorNotice>}
         />
       );
     }
@@ -527,7 +583,7 @@ function LegacyPlayer({
         ]
       : [
           { label: t("player.pmcKd"), value: pvpStatsKnown ? stats.pmcKdRatio : t("common.notAvailable") },
-          { label: t("player.survivalRate"), value: pvpStatsKnown ? stats.pmcSurvivalRate : t("common.notAvailable"), suffix: pvpStatsKnown ? "%" : undefined },
+          { label: t("player.survivalRate"), value: stats.regularRiskInputs?.survived === null ? t("common.notAvailable") : stats.pmcSurvivalRate, suffix: stats.regularRiskInputs?.survived === null ? undefined : "%" },
           { label: t("player.pmcRaids"), value: stats.pmcRaids },
           { label: t("metric.hours"), value: stats.hoursPlayed.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
         ];
@@ -575,6 +631,7 @@ function LegacyPlayer({
         actions={<ProfilePrimaryActions aid={Number(aid)} mode={mode} cycleId="persistent" nickname={stats.nickname} />}
         activity={<ProfileActivity aid={Number(aid)} mode={mode} updatedAt={profileUpdatedAt} lastPlayedAt={lastPlayedAt} onCheck={refreshProfile} />}
         overviewCards={regularOverviewCards}
+        statusNotice={error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
         progression={<ProgressionPanel
           aid={Number(aid)}
           hours={stats.hoursPlayed}
@@ -586,7 +643,7 @@ function LegacyPlayer({
           forceRefresh={forceProgressionRefresh}
           onRiskChange={setProgressionRisk}
         />}
-        risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" statsKnown={mode === "regular" ? pvpStatsKnown : true} /><p>{t("cheater.disclaimer")}</p></div></div>}
+        risk={<div className="profile-risk"><h2 className="section-heading">{t("cheater.heading")}</h2><div className="profile-risk__reading"><CheaterScore compact risk={mode === "regular" ? serverRisk : serverRisk ?? progressionRisk} mode={mode} cycleId="persistent" /><p>{t("cheater.disclaimer")}</p></div></div>}
         comparison={<PlayerRadarComparison aid={Number(aid)} stats={stats} mode={mode} cycleId="persistent" demo={radarDemo} />}
         statistics={regularStatistics}
         achievements={

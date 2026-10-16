@@ -135,6 +135,7 @@ test("comparison profile adapter enforces identity, source precedence, and Arena
     kd_ratio: 0,
     pmc_kd_ratio: null,
     kills_per_raid: 1.5,
+    killed_pmc_per_raid: null,
     pmc_survival_rate: 0,
     longest_win_streak: 0,
     level: null,
@@ -183,6 +184,7 @@ test("comparison cohort adapter normalizes endpoint shapes and capability", () =
     "kd_ratio",
     "pmc_kd_ratio",
     "kills_per_raid",
+    "killed_pmc_per_raid",
     "pmc_survival_rate",
     "longest_win_streak",
     "level",
@@ -212,6 +214,7 @@ test("comparison cohort adapter normalizes endpoint shapes and capability", () =
   };
   const cohort = adaptComparisonCohort(regular, 42, persistentPayload);
   assert.equal(cohort?.benchmarks.kd_ratio.value, 0);
+  assert.equal(cohort?.benchmarks.killed_pmc_per_raid.value, 2);
   assert.equal(cohort?.percentiles.kd_ratio.percentile, 50);
   assert.deepEqual(cohort?.actualRanges.hours, { min: 90, max: 110 });
   const unavailable = adaptComparisonCohort(regular, 42, {
@@ -261,4 +264,17 @@ test("comparison cohort adapter normalizes endpoint shapes and capability", () =
   assert.equal(arenaCohort?.benchmarks.kd_ratio.value, 0);
   assert.equal(arenaCohort?.percentiles, null);
   assert.deepEqual(arenaCohort?.actualRanges, { hours: null, pmcRaids: null, raids: null });
+});
+
+test("comparison profile adapter carries exact PMC kills per raid and preserves known zero", () => {
+  const scope = { mode: "pve", cycleId: "persistent", arenaMode: null };
+  const identity = { aid: 42, ...scope };
+  const stats = { pmcRaids: 10, pmcKilledPmc: 5, killedPmc: 999, pmcKillsPerRaid: 99, pvpStatsVersion: 1 };
+  assert.equal(adaptComparisonProfile(scope, 42, { identity, stats }).metrics.killed_pmc_per_raid, .5);
+  for (const [patch, expected] of [[{ pmcKilledPmc: 0 }, 0], [{ pmcKilledPmc: null }, null],
+    [{ pvpStatsVersion: 0 }, null], [{ pmcRaids: 0 }, null]]) {
+    assert.equal(adaptComparisonProfile(scope, 42, { identity, stats: { ...stats, ...patch } }).metrics.killed_pmc_per_raid, expected);
+  }
+  assert.equal(adaptComparisonProfile(scope, 42, { identity, comparisonStats: { killedPmcPerRaid: 0 } }).metrics.killed_pmc_per_raid, 0);
+  assert.equal(adaptComparisonProfile(scope, 42, { identity, comparisonStats: { killedPmcPerRaid: null }, stats }).metrics.killed_pmc_per_raid, null);
 });

@@ -21,11 +21,13 @@ import {
 } from "../types/comparison";
 import { normalizeCycleId } from "../types/seasonal";
 import { ARENA_MODE_KEYS, type ArenaStoredMode } from "../types/arena";
+import { killedPmcPerRaid } from "./killed-pmc-per-raid.ts";
 
 const PERSISTENT_PROFILE_FIELDS = {
   kd_ratio: "kdRatio",
   pmc_kd_ratio: "pmcKdRatio",
   kills_per_raid: "killsPerRaid",
+  killed_pmc_per_raid: "killedPmcPerRaid",
   pmc_survival_rate: "pmcSurvivalRate",
   longest_win_streak: "longestWinStreak",
   level: "level",
@@ -184,9 +186,10 @@ function persistentMetrics(source: UnknownRecord): PersistentComparisonMetrics |
   const pvpStatsKnown = source.pvpStatsKnown !== false;
   const output = {} as PersistentComparisonMetrics;
   for (const key of PERSISTENT_COMPARISON_METRIC_KEYS) {
-    const parsed = metricValue(source[PERSISTENT_PROFILE_FIELDS[key]], true);
+    const parsed = metricValue(key === "killed_pmc_per_raid" && !("killedPmcPerRaid" in source)
+      ? killedPmcPerRaid(source) : source[PERSISTENT_PROFILE_FIELDS[key]], true);
     if (!parsed.ok) return null;
-    output[key] = pvpStatsKnown || key !== "pmc_kd_ratio"
+    output[key] = pvpStatsKnown || (key !== "pmc_kd_ratio" && key !== "killed_pmc_per_raid")
       ? parsed.value
       : null;
   }
