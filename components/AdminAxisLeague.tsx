@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { AxisAvatar } from "@/components/AxisPlayerIdentity";
+import { cacheAxisLeague } from "@/lib/client-axis-league";
 import AxisLeagueEditors from "@/components/AxisLeagueEditors";
 import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
@@ -44,7 +45,8 @@ function ProfileEditor({ player, onChange, endpoint }: { player: AxisPlayer; onC
         body: JSON.stringify({ discordId: player.id, profile }) });
       const body = await response.json() as { ok?: boolean; data: AxisLeagueResponse };
       if (!response.ok || !body.ok) { setMessage(t(response.status === 400 ? "axis.admin.conflict" : "admin.error.save")); return; }
-      onChange(body.data as AxisLeagueResponse);
+      cacheAxisLeague(body.data);
+      onChange(body.data);
       setMessage(t("axis.admin.saved"));
     } catch { setMessage(t("admin.error.save")); }
     finally { setBusy(false); }
