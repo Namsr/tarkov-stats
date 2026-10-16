@@ -120,7 +120,9 @@ test("KDA writes validate access, origin, roster and counters, and detect lost u
   assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal((await statsPost(request(body))).status, 409);
   assert.deepEqual(globalThis.axisStore.readSeasonHistory(1, "current").matches[0].teams[0].players[0].kda, kda);
+  assert.deepEqual((await (await publicGet()).json()).players[0].combatStats, { ...kda, matches: 1 });
   assert.equal((await statsPost(request({ ...body, players: [{ discordId: id, kda: null, expected: kda }] }))).status, 200);
+  assert.equal((await (await publicGet()).json()).players[0].combatStats, null);
 });
 
 test("only full admins can manage editors or use admin profile-link endpoints", async (t) => {

@@ -1,3 +1,4 @@
+import type { AxisKda } from "./axis-kda";
 import type { GameMode } from "../types/seasonal";
 import { parsePlayerInput } from "./player-id.ts";
 
@@ -10,6 +11,7 @@ export const AXIS_API_URL = `https://api.neatqueue.com/api/v2/leaderboard/${AXIS
 
 export interface AxisProfile { aid: number; mode: GameMode }
 export interface AxisPlayer {
+  combatStats?: (AxisKda & { matches: number }) | null;
   id: string;
   name: string;
   avatarUrl?: string | null;

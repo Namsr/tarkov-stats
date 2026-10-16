@@ -184,13 +184,28 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const players: AxisPlayer[] = row.payload == null ? [] : JSON.parse(row.payload);
       const links = profileLinks();
       const currentSeason = readSeasons()[0];
+      // Aggregate saved match rows by stable Discord ID, independent of page/name changes.
+      // Missing K/D/A remains unknown; only completed matches in the current AXIS season count.
+      const combatStats = new Map<string, NonNullable<AxisPlayer["combatStats"]>>();
+      for (const stats of db.prepare(`
+        SELECT k.discord_id, SUM(k.kills) AS kills, SUM(k.deaths) AS deaths,
+          SUM(k.assists) AS assists, COUNT(*) AS matches
+        FROM axis_match_kda k JOIN axis_archive_matches m ON m.number=k.match_number
+        WHERE json_extract(m.payload, '$.queueId')=? AND json_extract(m.payload, '$.time')>=?
+          AND (json_extract(m.payload, '$.winner')>=0 OR json_extract(m.payload, '$.winner')=-2)
+          AND EXISTS (SELECT 1 FROM json_each(m.payload, '$.teams') team, json_each(team.value, '$.players') player
+            WHERE json_extract(player.value, '$.id')=k.discord_id)
+        GROUP BY k.discord_id
+      `).all(AXIS_CHANNEL_ID, currentSeason.startsAt)) {
+        combatStats.set(stats.discord_id, { kills: stats.kills, deaths: stats.deaths, assists: stats.assists, matches: stats.matches });
+      }
       const archive = this.archiveState();
       // A partial head proves the current total only after it reaches the previous season.
       const knownSeason = archive.complete || db.prepare("SELECT 1 FROM (SELECT payload FROM axis_archive_matches ORDER BY number DESC LIMIT ?) WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')<? LIMIT 1")
         .get(AXIS_HISTORY_PAGE_SIZE, AXIS_CHANNEL_ID, currentSeason.startsAt);
       const games = archive.updated_at == null || !knownSeason ? null : db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=? AND (json_extract(payload, '$.winner')>=0 OR json_extract(payload, '$.winner')=-2)")
         .get(AXIS_CHANNEL_ID, currentSeason.startsAt).n;
-      return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred, games }, players: players.map((player) => ({ ...player, profile: links.get(player.id) ?? null })),
+      return { currentSeason: { startsAt: currentSeason.startsAt, inferred: currentSeason.inferred, games }, players: players.map((player) => ({ ...player, combatStats: combatStats.get(player.id) ?? null, profile: links.get(player.id) ?? null })),
         updatedAt: row.updated_at, available: row.payload != null,
         stale: Boolean(row.last_error) || (row.updated_at != null && now - row.updated_at > AXIS_REFRESH_MS * 2) };
     },

@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useState } from "react";
 import { LeaderboardPreviewLink, LeaderboardPreviewProvider } from "@/components/LeaderboardPreview";
 import { useI18n } from "@/lib/i18n/context";
+import type { AxisKda } from "@/lib/axis-kda";
 import { axisProfileHref, type AxisPlayer } from "@/lib/axis-league";
 
 export function AxisAvatar({ name, url }: { name: string; url?: string | null }) {
@@ -15,7 +16,7 @@ export function AxisAvatar({ name, url }: { name: string; url?: string | null })
   </span>;
 }
 
-export default function AxisPlayerIdentity({ player, mmr }: { player: Pick<AxisPlayer, "name" | "avatarUrl" | "profile"> & Partial<Pick<AxisPlayer, "position" | "games" | "wins" | "losses" | "winrate" | "peakMmr" | "streak" | "peakStreak">> & { kda?: { kills: number; deaths: number; assists: number } | null }; mmr: number | null }) {
+export default function AxisPlayerIdentity({ player, mmr }: { player: Pick<AxisPlayer, "name" | "avatarUrl" | "profile"> & Partial<Pick<AxisPlayer, "combatStats" | "position" | "games" | "wins" | "losses" | "winrate" | "peakMmr" | "streak" | "peakStreak">> & { kda?: AxisKda | null }; mmr: number | null }) {
   const { t, lang } = useI18n();
   const portrait = <AxisAvatar name={player.name} url={player.avatarUrl} />;
   return <LeaderboardPreviewProvider detailsLabel={t("axis.title")} meta={{ mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 }}>
@@ -33,6 +34,14 @@ export default function AxisPlayerIdentity({ player, mmr }: { player: Pick<AxisP
             <dt>{t("axis.column." + key)}</dt><dd>{key === "position" ? `#${player[key].toLocaleString(lang)}` : player[key].toLocaleString(lang)}</dd>
           </div>)}
         </dl>}
+        {player.games != null && <div className="axis-preview-combat">
+          <dl className="leaderboard-preview__totals">
+            {(["kills", "deaths", "assists"] as const).map((key) => <div key={key}>
+              <dd>{player.combatStats?.[key].toLocaleString(lang) ?? "—"}</dd><dt>{t("arena.counter." + key)}</dt>
+            </div>)}
+          </dl>
+          <p>{player.combatStats ? t("axis.kda.coverage", { n: player.combatStats.matches.toLocaleString(lang) }) : t("axis.kda.empty")}</p>
+        </div>}
         {player.kda && <dl className="axis-preview-metrics">
           <div><dt>{t("axis.kda.short")}</dt><dd>{player.kda.kills} / {player.kda.deaths} / {player.kda.assists}</dd></div>
         </dl>}

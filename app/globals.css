@@ -830,6 +830,9 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-preview-rating small { font-size: .7rem; color: var(--muted); }
 .axis-preview-rating p { flex-basis: 100%; color: var(--muted); }
 .axis-preview-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; margin: 8px 0; }
+.axis-preview-combat { width: 100%; border-top: 1px solid var(--card-border); }
+.axis-preview-combat .leaderboard-preview__totals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.axis-preview-combat > p { margin-top: 8px; font-size: .65rem; }
 .axis-preview-metrics--secondary { padding-top: 12px; border-top: 1px solid var(--card-border); }
 .axis-preview-metrics dt { color: var(--muted); font-size: .65rem; }
 .axis-preview-metrics dd { margin-top: 4px; font-size: 1rem; font-weight: 700; }

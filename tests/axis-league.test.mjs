@@ -45,7 +45,16 @@ test("AXIS previews keep league statistics separate and request Arena regardless
   }
   assert.match(details, />-2</);
   assert.match(details, />0\s%</);
-  assert.doesNotMatch(details, /axis.column.peakMmr|arena\.|HS%|NaN|undefined/);
+  assert.doesNotMatch(details, /axis.column.peakMmr|arena.metric|HS%|NaN|undefined/);
+  assert.match(details, /axis.kda.empty/);
+  const filled = identityModule.exports.default({ player: { name: "Player", profile: null, games: 5,
+    combatStats: { kills: 42, deaths: 0, assists: 8, matches: 3 } }, mmr: 1000 });
+  const filledDetails = renderToStaticMarkup(filled.props.children.props.details);
+  assert.match(filledDetails, /<dd>42<\/dd><dt>arena.counter.kills/);
+  assert.match(filledDetails, /<dd>0<\/dd><dt>arena.counter.deaths/);
+  assert.match(filledDetails, /<dd>8<\/dd><dt>arena.counter.assists/);
+  assert.match(filledDetails, /axis.kda.coverage/);
+  assert.doesNotMatch(filledDetails, /axis.kda.empty/);
   const match = identityModule.exports.default({ player: { name: "Player", profile: null, kda: { kills: 0, deaths: 2, assists: 3 } }, mmr: null });
   const matchDetails = renderToStaticMarkup(match.props.children.props.details);
   assert.match(matchDetails, /0 \/ 2 \/ 3/);
@@ -121,6 +130,42 @@ test("manual KDA stays with a match and Discord identity across refreshes, renam
   assert.equal(db.readHistory(1).matches[0].teams[0].players[0].kda, null);
   db.setMatchStats(100, [{ discordId: "1", kda: { kills: 0, deaths: 0, assists: 0 }, expected: null }]);
   assert.deepEqual(db.readHistory(1).matches[0].teams[0].players[0].kda, { kills: 0, deaths: 0, assists: 0 });
+});
+
+test("standings sum saved KDA across current-season completed matches and track edits by Discord ID", (t) => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  let db = createAxisLeagueStore(sql);
+  db.publish(parseAxisPage(page([row("1", "New name"), row("2"), row("3")])).players);
+  const matches = Array.from({ length: 29 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i));
+  matches.push(seasonMatch(30, AXIS_CURRENT_SEASON_START - 1),
+    seasonMatch(31, AXIS_CURRENT_SEASON_START + 31, 1100, "other"), seasonMatch(32, null));
+  matches[27].winner = -1; // Cancelled.
+  matches[28].winner = null; // No result.
+  const drawn = seasonMatch(33, AXIS_CURRENT_SEASON_START + 33); drawn.winner = -2; matches.push(drawn);
+  const snapshot = { page: 1, pages: 2, total: matches.length, matches };
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  const kda = { kills: 12, deaths: 3, assists: 5 }, zero = { kills: 0, deaths: 0, assists: 0 };
+  const second = { kills: 8, deaths: 4, assists: 2 };
+  for (const [number, stats] of [[1, kda], [2, zero], [27, second], [28, kda], [29, kda], [30, kda], [31, kda], [32, kda], [33, { kills: 3, deaths: 1, assists: 4 }]]) {
+    db.setMatchStats(number, [{ discordId: "1", kda: stats, expected: null }]);
+  }
+  db.setMatchStats(1, [{ discordId: "3", kda: zero, expected: null }]);
+  // Reimports and overlapping history pages cannot duplicate saved match totals.
+  db.publishArchive(snapshot); db.publishHistory({ ...snapshot, page: 2 });
+  db = createAxisLeagueStore(sql);
+  const stats = () => db.read().players.find(player => player.id === "1").combatStats;
+  assert.deepEqual(stats(), { kills: 23, deaths: 8, assists: 11, matches: 4 });
+  assert.equal(db.read().players.find(player => player.id === "2").combatStats, null);
+  assert.deepEqual(db.read().players.find(player => player.id === "3").combatStats, { ...zero, matches: 1 });
+  const edited = { kills: 2, deaths: 1, assists: 0 };
+  db.setMatchStats(1, [{ discordId: "1", kda: edited, expected: kda }]);
+  assert.deepEqual(stats(), { kills: 13, deaths: 6, assists: 6, matches: 4 });
+  db.setMatchStats(27, [{ discordId: "1", kda: null, expected: second }]);
+  assert.deepEqual(stats(), { kills: 5, deaths: 2, assists: 4, matches: 3 });
+  // Corrected upstream rosters must not attribute stale KDA to a former participant.
+  matches[0].teams[0].players = matches[0].teams[0].players.filter(player => player.id !== "1");
+  db.publishArchive(snapshot);
+  assert.deepEqual(stats(), { kills: 3, deaths: 1, assists: 4, matches: 2 });
 });
 
 test("KDA batches reject stale edits atomically and cannot edit people outside a match", (t) => {

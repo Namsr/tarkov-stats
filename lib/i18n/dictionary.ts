@@ -32,6 +32,8 @@ const en: Dict = {
   "axis.profiles.title": "Profile links",
   "axis.profiles.accessDenied": "Sign in with an account that has AXIS League editor access to manage profile links.",
 
+  "axis.kda.coverage": "Matches with K/D/A this season: {n}",
+  "axis.kda.empty": "No match K/D/A recorded this season",
   "axis.kda.short": "K/D/A",
   "axis.kda.manual": "K/D/A entered by admin",
   "axis.kda.value": "Kills: {kills}; deaths: {deaths}; assists: {assists}",
@@ -1787,6 +1789,8 @@ const ru: Dict = {
   "axis.profiles.title": "Привязки профилей",
   "axis.profiles.accessDenied": "Чтобы управлять привязками профилей, войдите в аккаунт с правами редактора AXIS League.",
 
+  "axis.kda.coverage": "Матчей с K/D/A в текущем сезоне: {n}",
+  "axis.kda.empty": "В текущем сезоне пока нет заполненных K/D/A",
   "axis.kda.short": "K/D/A",
   "axis.kda.manual": "K/D/A введено вручную",
   "axis.kda.value": "Убийства: {kills}; смерти: {deaths}; ассисты: {assists}",
