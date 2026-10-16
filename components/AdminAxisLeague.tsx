@@ -11,6 +11,9 @@ export default function AdminAxisLeague({ data, onChange, editorOnly = false }: 
   const { t } = useI18n();
   const [search, setSearch] = useState("");
   const players = (data?.players ?? []).filter((player) => `${player.name} ${player.id} ${player.profile?.aid ?? ""}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const unlinked = players.filter((player) => !player.profile);
+  const linked = players.filter((player) => player.profile);
+  const profileEditor = (player: AxisPlayer) => <ProfileEditor key={`${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`} player={player} onChange={onChange} endpoint={editorOnly ? "/api/axis-league/profiles" : "/api/admin/axis-league"} />;
   return <section className="data-panel admin-panel" aria-label={t("axis.title")}>
     <div className="axis-heading"><h2 className="section-heading">{t(editorOnly ? "axis.profiles.title" : "axis.title")}</h2>{!editorOnly && <Link href="/axis-league" className="ghost-button">{t("axis.admin.open")}</Link>}</div>
     {!editorOnly && <><Link href="/axis-league?view=history" className="ghost-button axis-admin-history">{t("axis.kda.openHistory")}</Link><AxisLeagueEditors /></>}
@@ -18,7 +21,11 @@ export default function AdminAxisLeague({ data, onChange, editorOnly = false }: 
     {(data?.stale || !data?.available) && <p className="admin-notice" role="status">{t(data?.available ? "axis.stale" : "axis.error")}</p>}
     <div className="admin-moderation axis-admin-search"><label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label></div>
     <p className="leaderboard-meta">{t("axis.results", { n: players.length })}</p>
-    <ul className="axis-admin-players">{players.map((player) => <ProfileEditor key={`${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`} player={player} onChange={onChange} endpoint={editorOnly ? "/api/axis-league/profiles" : "/api/admin/axis-league"} />)}</ul>
+    {unlinked.length > 0 && <ul className="axis-admin-players">{unlinked.map(profileEditor)}</ul>}
+    {linked.length > 0 && <details className="admin-monitoring-table axis-admin-linked">
+      <summary>{t("axis.admin.linkedAccounts", { n: linked.length })}</summary>
+      <ul className="axis-admin-players">{linked.map(profileEditor)}</ul>
+    </details>}
     {data?.available && players.length === 0 && <p className="admin-empty">{t(data.players.length ? "axis.noResults" : "axis.empty")}</p>}
   </section>;
 }
