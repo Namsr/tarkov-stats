@@ -12,6 +12,8 @@ services:
       - .env.private
     environment:
       WEB_BACKGROUND_WORKERS: "false"
+    depends_on:
+      - axis-league
     restart: unless-stopped
     expose:
       - "3000"
@@ -50,7 +52,7 @@ services:
 
   # One-shot jobs share the deployed image and data, never HTTP's cgroup.
   # Install/start ops/systemd/tarkovstats-background.slice before enabling jobs.
-  worker:
+  worker: &background-worker
     image: ${TARKOVSTATS_WORKER_IMAGE:-tarkovstats-web:latest}
     pull_policy: never
     profiles: ["background"]
@@ -90,6 +92,14 @@ services:
         labels: org.opencontainers.image.revision
         mode: non-blocking
         max-buffer-size: "1m"
+
+  # Keep the league fresh without page visits and outside HTTP's memory budget.
+  # The shared background slice still caps the aggregate of all offline jobs.
+  axis-league:
+    <<: *background-worker
+    profiles: []
+    command: ["node", "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-axis-league.mjs"]
+    restart: unless-stopped
 
   caddy:
     image: caddy:2-alpine

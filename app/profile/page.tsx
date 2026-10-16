@@ -31,12 +31,14 @@ export default function ProfilePage() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [canEditAxisKda, setCanEditAxisKda] = useState(false);
+  const [accountId, setAccountId] = useState("");
 
   useEffect(() => {
     if (!enabled) return;
     fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => response.json() as Promise<{ isAdmin?: boolean }>)
-      .then((data) => setIsAdmin(data.isAdmin === true))
+      .then((response) => response.json() as Promise<{ isAdmin?: boolean; canEditAxisKda?: boolean; user?: { sub?: string } | null }>)
+      .then((data) => { setIsAdmin(data.isAdmin === true); setCanEditAxisKda(data.canEditAxisKda === true); setAccountId(data.user?.sub ?? ""); })
       .catch(() => setIsAdmin(false));
   }, [enabled]);
 
@@ -125,9 +127,13 @@ export default function ProfilePage() {
           {t("common.back")}
         </Link>
         <p className="page-kicker">{t("nav.profile")}</p>
-        <h1 className="page-title">{t("profile.title")}</h1>
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
+          <h1 className="page-title">{t("profile.title")}</h1>
+          {accountId && <code className="axis-profile-access" aria-label={t("profile.accountId")}>{accountId}</code>}
+        </div>
         </div>
         {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
+        {!isAdmin && canEditAxisKda && <Link href="/axis-league?view=history" className="tactical-button">{t("axis.editor.profileLink")}</Link>}
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}

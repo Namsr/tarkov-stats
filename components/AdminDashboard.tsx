@@ -13,10 +13,12 @@ import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
 import ShowcasePanel from "@/components/AdminShowcase";
 import AdminSupport from "@/components/AdminSupport";
+import AdminAxisLeague from "@/components/AdminAxisLeague";
+import type { AxisLeagueResponse } from "@/lib/axis-league";
 import type { ShowcaseGroup } from "@/lib/admin/showcase-db";
 import type { FundraisingGoal, SupportNotification } from "@/lib/admin/support-db";
 
-type Tab = "overview" | "showcase" | "support" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
+type Tab = "overview" | "showcase" | "axis" | "support" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
@@ -41,7 +43,7 @@ type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedByte
 type SystemMetricSnapshot = SystemMetricPoint & { memoryTotalBytes: number; swapTotalBytes: number; diskTotalBytes: number; diskAvailableBytes: number };
 type SystemMetrics = { available: boolean; configured: boolean; reason?: string; latest: SystemMetricSnapshot | null; points: SystemMetricPoint[]; sampleCount?: number; from?: number; to?: number };
 
-const tabs: Tab[] = ["overview", "showcase", "support", "traffic", "accounts", "suspicious", "health", "monitoring"];
+const tabs: Tab[] = ["overview", "showcase", "axis", "support", "traffic", "accounts", "suspicious", "health", "monitoring"];
 const periods: AdminPeriod[] = ["15m", "24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
@@ -86,6 +88,7 @@ export default function AdminDashboard() {
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
   const [showcase, setShowcase] = useState<{ groups: ShowcaseGroup[]; available: boolean } | null>(null);
+  const [axis, setAxis] = useState<AxisLeagueResponse | null>(null);
   const [support, setSupport] = useState<{ notifications: SupportNotification[]; goals: FundraisingGoal[]; available: boolean } | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [healthSignal, setHealthSignal] = useState<HealthSignal | null>(null);
@@ -152,6 +155,10 @@ export default function AdminDashboard() {
         const nextSupport = await getJson<{ notifications: SupportNotification[]; goals: FundraisingGoal[]; available: boolean }>("/api/admin/support", { signal: request.signal });
         if (stale()) return;
         setSupport(nextSupport);
+      } else if (tab === "axis") {
+        const nextAxis = await getJson<AxisLeagueResponse>("/api/admin/axis-league", { signal: request.signal });
+        if (stale()) return;
+        setAxis(nextAxis);
       } else if (tab === "traffic") {
         const nextTraffic = await getJson<Traffic>(`/api/admin/traffic?${params}`, { signal: request.signal });
         if (stale()) return;
@@ -229,7 +236,7 @@ export default function AdminDashboard() {
         {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} onClick={() => chooseTab(item)}><span>{t("admin.tab." + item)}</span>{item === "health" && healthSignal && (healthSignal.activeIssueCount > 0 || healthSignal.storageAvailable === false) && <span className={`admin-tab-alert admin-tab-alert--${healthSignal.status}`} aria-label={t("admin.health.tabAlert", { n: healthSignal.activeIssueCount })}>{healthSignal.activeIssueCount || "!"}</span>}</button>)}
       </div>
 
-      {tab !== "showcase" && tab !== "support" && <section className="admin-filters" aria-label={t("admin.filters") }>
+      {tab !== "showcase" && tab !== "support" && tab !== "axis" && <section className="admin-filters" aria-label={t("admin.filters") }>
         <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>
         {tab !== "monitoring" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
         {(tab === "accounts" || tab === "suspicious") && <>
@@ -245,6 +252,7 @@ export default function AdminDashboard() {
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
+      {!error && !loading && tab === "axis" && <AdminAxisLeague data={axis} onChange={setAxis} />}
       {!error && !loading && tab === "support" && (
         <AdminSupport
           notifications={support?.notifications ?? []}

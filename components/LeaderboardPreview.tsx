@@ -10,14 +10,14 @@ import { LEADERBOARD_PREVIEW_DELAY_MS, LEADERBOARD_PREVIEW_CLOSE_MS, previewRati
 import type { LeaderboardMeta } from "@/types/leaderboard";
 import type { LeaderboardPreview } from "@/types/leaderboard-preview";
 
-type Target = { id: string; aid: number; nickname: string; href: string; element: HTMLAnchorElement; focus?: boolean };
+type Target = { id: string; aid: number | null; nickname: string; href: string | null; portrait?: ReactNode; details?: ReactNode; element: HTMLAnchorElement; focus?: boolean };
 type PreviewContext = { id: string; active: string | null; enter: (target: Target, immediate?: boolean) => void; leave: (sourceId?: string) => void; close: (restore?: boolean) => void };
 const Context = createContext<PreviewContext | null>(null);
 // Bounded session cache; closing cancels an in-flight request and never stores partial results.
 const cache = new Map<string, { expiresAt: number; value: LeaderboardPreview }>();
 const finePointer = () => window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
-export function LeaderboardPreviewProvider({ meta, children }: { meta: LeaderboardMeta; children: ReactNode }) {
+export function LeaderboardPreviewProvider({ meta, children }: { meta: Pick<LeaderboardMeta, "mode" | "cycleId" | "arenaMode" | "generation">; children: ReactNode }) {
   const { t, lang } = useI18n();
   const id = useId();
   const [target, setTarget] = useState<Target | null>(null);
@@ -72,6 +72,7 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Leaderboa
       setError(false);
       setTouch(!finePointer());
       setTarget(next);
+      if (next.aid == null) return;
       const params = new URLSearchParams({ aid: String(next.aid), mode: meta.mode });
       if (meta.cycleId) params.set("cycle", meta.cycleId);
       if (meta.arenaMode) params.set("arenaMode", meta.arenaMode);
@@ -196,17 +197,18 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Leaderboa
         onBlur={(event) => { if (!touch && !event.currentTarget.contains(event.relatedTarget)) leave(); }}>
         <button className="leaderboard-preview__close" type="button" aria-label={t("common.close")} onClick={() => close(true)}>×</button>
         <div className="leaderboard-preview__identity">
-          <ProfilePortrait key={`${mode}:${target.aid}`} aid={target.aid} mode={mode} cycleId={meta.cycleId ?? undefined} nickname={target.nickname} />
-          <div><div className="leaderboard-preview__name"><h2 id={`${id}-name`} title={data?.nickname ?? target.nickname}>{data?.nickname ?? target.nickname}</h2>
+          {target.portrait ?? (target.aid != null && <ProfilePortrait key={`${mode}:${target.aid}`} aid={target.aid} mode={mode} cycleId={meta.cycleId ?? undefined} nickname={target.nickname} />)}
+          <div><div className="leaderboard-preview__name"><h2 id={`${id}-name`} title={target.portrait ? target.nickname : data?.nickname ?? target.nickname}>{target.portrait ? target.nickname : data?.nickname ?? target.nickname}</h2>
             {data?.prestige != null && Number.isSafeInteger(data.prestige) && data.prestige > 0 && <Image src={`https://assets.tarkov.dev/prestige-${data.prestige}-icon.webp`} width={24} height={24} unoptimized referrerPolicy="no-referrer" alt={t("player.prestigeLabel", { n: data.prestige })} onError={(event) => { event.currentTarget.style.display = "none"; }} />}
           </div><div className="leaderboard-preview__meta">
-            {meta.mode === "arena" && meta.arenaMode && <span className="leaderboard-preview__mode">{t("fav.mode.arena")} · {t("arena.mode." + meta.arenaMode)}</span>}
+            {target.aid != null && meta.mode === "arena" && meta.arenaMode && <span className="leaderboard-preview__mode">{t("fav.mode.arena")} · {t("arena.mode." + meta.arenaMode)}</span>}
             {data?.side && <span>{data.side}</span>}
             {data?.level != null && <span>{t("leaderboard.preview.level", { n: data.level })}</span>}
             {data?.updatedAt != null && data.updatedAt > 0 && <span>{t("leaderboard.preview.updated", { date: new Date(data.updatedAt).toLocaleDateString(lang, { day: "numeric", month: "short" }) })}</span>}
           </div></div>
         </div>
-        {!data ? <p className="leaderboard-preview__status" role="status">{t(error ? "leaderboard.preview.unavailable" : "common.loading")}</p> : <>
+        {target.details}
+        {target.aid == null ? null : !data ? <p className="leaderboard-preview__status" role="status">{t(error ? "leaderboard.preview.unavailable" : "common.loading")}</p> : <>
           {meta.mode === "arena" ? <div className="leaderboard-preview__activity leaderboard-preview__activity--arena">
             <span>{t("leaderboard.hoursValue", { v: format(data.hours, 1) })}<small>{t("arena.account.hours")}</small></span>
             <span>{format(data.raids)}<small>{t("arena.counter.matches")}</small></span>
@@ -221,28 +223,28 @@ export function LeaderboardPreviewProvider({ meta, children }: { meta: Leaderboa
           })}</dl>
           <dl className="leaderboard-preview__totals">{data.totals.map((total) => <div key={total.label}><dd>{format(total.value)}</dd><dt>{t(total.label)}</dt></div>)}</dl>
         </>}
-        <div className="leaderboard-preview__footer"><Link href={target.href} prefetch={false}>{t("home.openProfile")} <span aria-hidden="true">↗</span></Link></div>
+        {target.href && <div className="leaderboard-preview__footer"><Link href={target.href} prefetch={false}>{t("home.openProfile")} <span aria-hidden="true">↗</span></Link></div>}
       </div>
     </>, document.body)}
   </Context.Provider>;
 }
 
-export function LeaderboardPreviewLink({ aid, nickname, href, className }: { aid: number; nickname: string; href: string; className: string }) {
+export function LeaderboardPreviewLink({ aid, nickname, href, className, portrait, details, children }: { aid: number | null; nickname: string; href: string | null; className: string; portrait?: ReactNode; details?: ReactNode; children?: ReactNode }) {
   const context = useContext(Context);
   const linkId = useId();
   const pointerType = useRef("mouse");
-  return <Link href={href} prefetch={false} className={className} aria-haspopup="dialog"
+  return <Link href={href ?? "#"} role={href ? undefined : "button"} prefetch={false} className={className} aria-haspopup="dialog"
     aria-expanded={context?.active === linkId} aria-controls={context?.active === linkId ? context.id : undefined}
     onPointerDown={(event) => { pointerType.current = event.pointerType; }}
-    onPointerEnter={(event) => { if (event.pointerType === "mouse" && finePointer()) context?.enter({ id: linkId, aid, nickname, href, element: event.currentTarget }); }}
+    onPointerEnter={(event) => { if (event.pointerType === "mouse" && finePointer()) context?.enter({ id: linkId, aid, nickname, href, portrait, details, element: event.currentTarget }); }}
     onPointerLeave={() => { if (finePointer()) context?.leave(linkId); }}
-    onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) context?.enter({ id: linkId, aid, nickname, href, element: event.currentTarget }); }}
+    onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) context?.enter({ id: linkId, aid, nickname, href, portrait, details, element: event.currentTarget }); }}
     onBlur={() => { if (finePointer()) context?.leave(linkId); }}
     onClick={(event) => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (pointerType.current === "touch" || !finePointer()) { event.preventDefault(); context?.enter({ id: linkId, aid, nickname, href, element: event.currentTarget, focus: true }, true); }
+      if (href && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+      if (!href || pointerType.current === "touch" || !finePointer()) { event.preventDefault(); context?.enter({ id: linkId, aid, nickname, href, portrait, details, element: event.currentTarget, focus: true }, true); }
       else context?.close();
-    }} onKeyDown={(event) => { if (event.key === "ArrowDown") { event.preventDefault(); context?.enter({ id: linkId, aid, nickname, href, element: event.currentTarget, focus: true }, true); } }}>
-    {nickname || `#${aid}`}
+    }} onKeyDown={(event) => { if (event.key === "ArrowDown" || !href && event.key === " ") { event.preventDefault(); context?.enter({ id: linkId, aid, nickname, href, portrait, details, element: event.currentTarget, focus: true }, true); } }}>
+    {children ?? (nickname || `#${aid}`)}
   </Link>;
 }

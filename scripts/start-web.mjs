@@ -13,11 +13,15 @@ const averageMaterializer = backgroundEnabled ? superviseWorker("average", [
   "--experimental-strip-types", "--experimental-sqlite", "--experimental-loader",
   "./scripts/ts-alias-loader.mjs", "scripts/materialize-average-publications.mjs",
 ]) : undefined;
+const axisLeagueSync = backgroundEnabled ? superviseWorker("axis-league", [
+  "--experimental-strip-types", "--experimental-sqlite", "scripts/sync-axis-league.mjs",
+]) : undefined;
 function stop(signal) {
   if (stopping) return;
   stopping = true;
   progressionMaterializer?.stop(signal);
   averageMaterializer?.stop(signal);
+  axisLeagueSync?.stop(signal);
   server.kill(signal);
 }
 process.on("SIGTERM", () => stop("SIGTERM"));

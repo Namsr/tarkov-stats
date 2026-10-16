@@ -7,8 +7,8 @@ export const ADMIN_NO_STORE_HEADERS = {
   "Referrer-Policy": "no-referrer",
 };
 
-export async function rejectInvalidAdminMutation(request: Request): Promise<Response | null> {
-  const auth = await requireAdmin();
+export async function rejectInvalidAdminMutation(request: Request, authorize: typeof requireAdmin = requireAdmin): Promise<Response | null> {
+  const auth = await authorize();
   if (!auth.ok) {
     return Response.json(
       { error: auth.status === 401 ? "Unauthorized" : "Forbidden" },
