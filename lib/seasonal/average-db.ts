@@ -15,6 +15,9 @@ import type { AverageMetricSeriesResponse } from "../average-metric-series";
 import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { prepareSeasonalRiskAchievements } from "./risk-achievement-population.ts";
+import { performance } from "node:perf_hooks";
+// @ts-ignore Node's strip-types test runner requires the explicit extension.
+import { logSampledTiming } from "../observability/sample-rate.ts";
 
 export type SeasonalAverageDimension = "hours" | "pmc_raids";
 
@@ -553,10 +556,39 @@ const LATEST_RISK_SNAPSHOT_JOIN = `JOIN progression_snapshots latest ON latest.i
   ORDER BY current.profile_updated_at DESC, current.id DESC LIMIT 1
 )`;
 
+export interface SeasonalRiskAchievementTiming {
+  event: "risk_achievement_baseline_v1";
+  mode: "seasonal";
+  outcome: "success" | "error";
+  cache: "unavailable" | "hit" | "miss";
+  invalidation: "cold" | "database" | "cycle" | "external_commit" | "local_write" | null;
+  populationRows: number | null;
+  metadataMs: number;
+  populationSqlMs: number;
+  prepareMs: number;
+  lookupMs: number;
+  totalMs: number;
+}
+
 export async function getSeasonalAchievementBaseline(
   cycleId: string,
   excludeAid?: number,
+  observe: (timing: SeasonalRiskAchievementTiming) => void = logSampledTiming,
 ): Promise<SeasonalAchievementBaseline | null> {
+  const started = performance.now();
+  const timing: SeasonalRiskAchievementTiming = { event: "risk_achievement_baseline_v1", mode: "seasonal",
+    outcome: "error", cache: "unavailable", invalidation: null, populationRows: null,
+    metadataMs: 0, populationSqlMs: 0, prepareMs: 0, lookupMs: 0, totalMs: 0 };
+  // Wall-clock phases include any interleaved work in a caller's process.
+  // Production risk jobs read these synchronous SQLite paths sequentially.
+  let phase: "metadataMs" | "populationSqlMs" | "prepareMs" | "lookupMs" | null = "metadataMs";
+  let phaseStarted = started;
+  const nextPhase = (next: typeof phase) => {
+    const now = performance.now();
+    if (phase) timing[phase] += now - phaseStarted;
+    phase = next;
+    phaseStarted = now;
+  };
   try {
     const backend = await openSeasonalAverageBackend();
     if (!backend) return null;
@@ -571,8 +603,19 @@ export async function getSeasonalAchievementBaseline(
     if (riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
         riskAchievementPopulation.cycleId === cycleId &&
         riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
-      return riskAchievementPopulation.baseline(excludeAid);
+      timing.cache = "hit";
+      nextPhase("lookupMs");
+      const baseline = riskAchievementPopulation.baseline(excludeAid);
+      nextPhase(null);
+      timing.outcome = "success";
+      return baseline;
     }
+    timing.cache = "miss";
+    timing.invalidation = !riskAchievementPopulation ? "cold"
+      : riskAchievementPopulation.db !== backend.db ? "database"
+      : riskAchievementPopulation.cycleId !== cycleId ? "cycle"
+      : riskAchievementPopulation.version !== version ? "external_commit" : "local_write";
+    nextPhase("populationSqlMs");
     const rows = await backendRows(backend, `SELECT p.aid, p.lifetime_pvp_hours AS hours,
         latest.achievements, cycle.starts_at
       FROM player_profiles p
@@ -582,12 +625,25 @@ export async function getSeasonalAchievementBaseline(
         AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
         AND latest.pmc_raids >= 1
         AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`, [cycleId]);
+    timing.populationRows = rows.length;
+    nextPhase("prepareMs");
     const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
     riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
-    return baseline(excludeAid);
+    nextPhase("lookupMs");
+    const result = baseline(excludeAid);
+    nextPhase(null);
+    timing.outcome = "success";
+    return result;
   } catch (error) {
     console.warn("seasonal achievement baseline unavailable: " + (error as Error).message);
     return null;
+  } finally {
+    nextPhase(null);
+    timing.totalMs = performance.now() - started;
+    for (const field of ["metadataMs", "populationSqlMs", "prepareMs", "lookupMs", "totalMs"] as const) {
+      timing[field] = Number.isFinite(timing[field]) ? Math.max(0, Math.round(timing[field] * 100) / 100) : 0;
+    }
+    try { observe(timing); } catch { /* Diagnostics must not affect risk scoring. */ }
   }
 }
 

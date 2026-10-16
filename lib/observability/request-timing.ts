@@ -1,5 +1,7 @@
 import type { GameMode } from "@/types/seasonal";
 import { recordRequestEvent } from "../admin/request-events.ts";
+import { getObservabilitySampleRate } from "./sample-rate.ts";
+export { getObservabilitySampleRate } from "./sample-rate.ts";
 
 type Mode = GameMode;
 type Outcome = "success" | "error" | "invalid" | "not_found" | "rate_limited" | "unavailable";
@@ -93,16 +95,6 @@ const SERVER_TIMING_PHASES: [keyof TimingInput, string][] = [
 ];
 
 const defaultNow = () => performance.now();
-
-export function getObservabilitySampleRate(
-  value: string | undefined = process.env.OBSERVABILITY_SAMPLE_RATE,
-  nodeEnv: string | undefined = process.env.NODE_ENV,
-): number {
-  const fallback = nodeEnv === "production" ? 0.05 : 0;
-  if (value == null || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : fallback;
-}
 
 function roundedMs(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;

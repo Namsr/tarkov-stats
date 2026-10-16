@@ -6,12 +6,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createRequestTiming, getObservabilitySampleRate } from "../lib/observability/request-timing.ts";
+import { logSampledTiming } from "../lib/observability/sample-rate.ts";
 
 // Recording is asynchronous, but uses synchronous SQLite once opened. Keep
 // these real writes off runtime databases even when a local /data exists.
 const directory = mkdtempSync(join(tmpdir(), "request-timing-"));
 process.env.ADMIN_ANALYTICS_SQLITE_PATH = join(directory, "analytics.db");
 process.env.PROGRESSION_SQLITE_PATH = join(directory, "absent-progression.db");
+
+test("internal phase logging samples successes and always retains slow calls and errors", () => {
+  const previous = process.env.OBSERVABILITY_SAMPLE_RATE;
+  const originalLog = console.log;
+  const output: string[] = [];
+  console.log = (event) => output.push(event);
+  try {
+    process.env.OBSERVABILITY_SAMPLE_RATE = "0";
+    logSampledTiming({ outcome: "success", totalMs: 999 });
+    assert.equal(output.length, 0);
+    logSampledTiming({ outcome: "success", totalMs: 1000 });
+    logSampledTiming({ outcome: "error", totalMs: 0 });
+    assert.equal(output.length, 2);
+    process.env.OBSERVABILITY_SAMPLE_RATE = "1";
+    logSampledTiming({ outcome: "success", totalMs: 0 });
+    assert.equal(output.length, 3);
+  } finally {
+    console.log = originalLog;
+    if (previous === undefined) delete process.env.OBSERVABILITY_SAMPLE_RATE;
+    else process.env.OBSERVABILITY_SAMPLE_RATE = previous;
+  }
+});
 
 test("sampling defaults, validates, and clamps its configured rate", () => {
   assert.equal(getObservabilitySampleRate(undefined, "production"), 0.05);

@@ -32,7 +32,7 @@ const { getArenaBackend } = await import("../lib/db.ts");
 const { getArenaCohort, getArenaProfileRisk } = await import("../lib/arena/service.ts");
 const { ARENA_PARSER_VERSION } = await import("../lib/arena/storage.ts");
 const backend = await getArenaBackend();
-assert.equal(backend?.kind, "sqlite");
+assert.ok(backend?.db);
 const db = backend.db;
 try {
   const modes = ["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"];

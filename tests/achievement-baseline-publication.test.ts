@@ -166,3 +166,33 @@ test("risk achievement tombstone membership preserves exact moments, owner order
     }
   } finally { db.close(); }
 });
+
+test("risk owner diagnostics separate SQL passes without changing results or exposing identities", () => {
+  const db = fixture();
+  try {
+    materializeAchievementBaseline(db, "regular", 1);
+    const events: Record<string, unknown>[] = [];
+    const actual = readRegularRiskAchievementBaseline(db, ["a", "a", "b"], 1, (event) => events.push({ ...event }));
+    const expected = readRegularRiskAchievementBaseline(db, ["a", "b"], 1, () => { throw new Error("logger unavailable"); });
+    assert.deepEqual(actual, expected);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].requestedIds, 2);
+    assert.equal(events[0].referenceAvailable, true);
+    assert.equal(events[0].outcome, "success");
+    assert.ok(Number(events[0].aggregateMs) >= 0);
+    assert.ok(Number(events[0].percentileMs) >= 0);
+    assert.ok(Number(events[0].totalMs) >= 0);
+    assert.equal("aid" in events[0], false);
+    assert.equal("ownedIds" in events[0], false);
+    const serialized: string[] = [];
+    readRegularRiskAchievementBaseline(db, ["private-achievement-slug-unique"], 987654321,
+      (event) => serialized.push(JSON.stringify(event)));
+    assert.equal(serialized.length, 1);
+    assert.ok(!serialized[0].includes("private-achievement-slug-unique"));
+    assert.ok(!serialized[0].includes("987654321"));
+    const error = new Error("storage unavailable");
+    assert.throws(() => readRegularRiskAchievementBaseline({ prepare() { throw error; } }, ["a"], 1,
+      (event) => events.push({ ...event })), (caught) => caught === error);
+    assert.equal(events[1].outcome, "error");
+  } finally { db.close(); }
+});

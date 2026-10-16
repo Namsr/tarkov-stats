@@ -57,13 +57,13 @@ export async function evaluateAndStoreRisk(input: {
     let achievementBaseline: AchievementBaseline | SeasonalAchievementBaseline | null = null;
     if (canScore && input.mode === "seasonal") {
       if (!input.cycleId) throw new TypeError("seasonal risk requires cycleId");
-      [baseline, achievementBaseline] = await Promise.all([
-        measure("cohortMs", () => getSeasonalRiskBaseline(input.cycleId!, {
+      // Both paths execute synchronous SQLite/JS in this worker. Sequential
+      // timing keeps each phase from counting the other path's work.
+      baseline = await measure("cohortMs", () => getSeasonalRiskBaseline(input.cycleId!, {
           hours: input.stats.hoursPlayed,
           pmcRaids: input.stats.pmcRaids,
-        }, input.aid)),
-        measure("achievementsMs", () => getSeasonalAchievementBaseline(input.cycleId!, input.aid)),
-      ]);
+        }, input.aid));
+      achievementBaseline = await measure("achievementsMs", () => getSeasonalAchievementBaseline(input.cycleId!, input.aid));
     } else if (canScore || input.mode === "regular") {
       const baselineMode: CrossSectionMode = input.mode === "pve" ? "pve" : "regular";
       const store = input.playerStore === undefined ? await measure("storeOpenMs", () => getStore(baselineMode)) : input.playerStore;

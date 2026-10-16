@@ -129,44 +129,27 @@ export function failLeaderboardPublication(db: any, scope: string, error: unknow
 /**
  * Reassign dense ranks 1..N for each of `sorts` in one pass.
  *
- * The unique index on (scope, generation, sort, ordinal) cannot be maintained
- * here: ranks are permuted, so a row's new value collides with a row that has
- * not moved yet. The previous form worked around that by blanking every ordinal
- * in the partition first, which rewrote the whole partition twice per sort, and
- * then filled the ordinals through a correlated subquery that resolved one
- * lookup per row. `UPDATE ... FROM` replaces the per-row lookups with a single
- * join.
- *
- * `permuting` says whether the partition already holds non-null ordinals. NULLs
- * do not collide in a SQLite unique index, so a fresh publication can keep the
- * index in place and skip the rebuild. A re-rank has to drop it, because letting
- * rows swap positions is the only way through.
- *
- * Measured on the ordinal block alone, 100k members across 6 sorts, ordinals
- * compared against the previous implementation and against a JS reference:
- * a fresh publication 13.5s -> 3.8s, a re-rank 15.4s -> 2.0s, both byte-identical.
- * A fresh publication keeps the index and still gains, because the win there is
- * the join replacing 600k correlated lookups rather than the index rebuild.
- *
- * SQLite DDL is transactional, so a failure anywhere below restores the index on
- * ROLLBACK. Dropping it mid-transaction is safe for concurrent readers because
- * they hold their own connection, and an uncommitted schema change is not
- * published to them: they keep the index until this transaction commits.
+ * Keep the global unique index: rebuilding it for one scope rewrites every
+ * other scope and retained generation too. Only changed ranks are cleared to
+ * NULL before assignment, so permutations cannot collide. Unchanged ranks are
+ * already their own unique destinations and need no writes. The caller's
+ * transaction keeps intermediate NULLs invisible to other connections.
  */
 function reassignOrdinals(db: any, scope: string, generation: number, sorts: Iterable<string>, permuting: boolean): void {
-  if (permuting) db.exec("DROP INDEX IF EXISTS idx_leaderboard_order_ordinal");
   db.exec("DROP TABLE IF EXISTS temp.leaderboard_rank_work");
   db.exec("CREATE TEMP TABLE leaderboard_rank_work(row_id INTEGER PRIMARY KEY, ordinal INTEGER NOT NULL)");
   for (const sort of sorts) {
     db.prepare(`INSERT INTO leaderboard_rank_work
       SELECT rowid,ROW_NUMBER() OVER (ORDER BY k1 DESC,k2 DESC,k3 DESC,k4 DESC,k5 DESC,stable_key DESC)
       FROM leaderboard_order WHERE scope=? AND generation=? AND sort=?`).run(scope, generation, sort);
+    if (permuting) db.exec(`UPDATE leaderboard_order AS target SET ordinal=NULL
+      FROM leaderboard_rank_work AS work
+      WHERE target.rowid=work.row_id AND target.ordinal IS NOT work.ordinal`);
     db.exec(`UPDATE leaderboard_order AS target SET ordinal=work.ordinal
-      FROM leaderboard_rank_work AS work WHERE target.rowid=work.rowid`);
+      FROM leaderboard_rank_work AS work WHERE target.rowid=work.row_id AND target.ordinal IS NULL`);
     db.exec("DELETE FROM leaderboard_rank_work");
   }
   db.exec("DROP TABLE leaderboard_rank_work");
-  if (permuting) db.exec("CREATE UNIQUE INDEX idx_leaderboard_order_ordinal ON leaderboard_order(scope,generation,sort,ordinal)");
 }
 
 export function publishLeaderboardScope(
