@@ -137,17 +137,32 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     ] as const) {
       assert.equal(selectSeasonalRiskPercent(counts), expected);
     }
-    const riskAchievementBaseline = await getSeasonalAchievementBaseline("s1", 5);
+    const diagnostics = [];
+    const observe = (event) => diagnostics.push(event);
+    const riskAchievementBaseline = await getSeasonalAchievementBaseline("s1", 5, observe);
     assert.equal(riskAchievementBaseline?.eligibleN, 37);
     // Repeated targets reuse the population but retain exact self exclusion.
-    assert.equal((await getSeasonalAchievementBaseline("s1", 1))?.achievements[0]?.owners, 1);
-    assert.equal((await getSeasonalAchievementBaseline("s1"))?.achievements[0]?.owners, 2);
+    assert.equal((await getSeasonalAchievementBaseline("s1", 1, observe))?.achievements[0]?.owners, 1);
+    assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 2);
+    assert.equal(diagnostics.at(-1).cache, "hit");
+    assert.equal(diagnostics.at(-1).invalidation, null);
+    assert.equal(diagnostics.at(-1).populationSqlMs, 0);
+    assert.equal(diagnostics.at(-1).prepareMs, 0);
     const changed = new DatabaseSync(databasePath);
     changed.prepare("UPDATE progression_snapshots SET achievements = '[]' WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 2").run();
     changed.close();
-    assert.equal((await getSeasonalAchievementBaseline("s1"))?.achievements[0]?.owners, 1);
+    assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 1);
+    assert.equal(diagnostics.at(-1).cache, "miss");
+    assert.equal(diagnostics.at(-1).invalidation, "external_commit");
     assert.deepEqual((await getSeasonalAchievementBaseline("s1", 1))?.achievements, []);
-    assert.equal((await getSeasonalAchievementBaseline("s2"))?.eligibleN, 2);
+    assert.equal((await getSeasonalAchievementBaseline("s2", undefined, observe))?.eligibleN, 2);
+    assert.equal(diagnostics.at(-1).invalidation, "cycle");
+    assert.ok(diagnostics.every((event) => event.outcome === "success" && !('aid' in event)));
+    assert.ok(diagnostics.every((event) => Object.entries(event).every(([key, value]) =>
+      !key.endsWith("Ms") || typeof value === "number" && Number.isFinite(value) && value >= 0)));
+    assert.ok(!JSON.stringify(diagnostics).includes('"cycleId"'));
+    assert.ok(!JSON.stringify(diagnostics).includes('"achievements"'));
+    assert.equal((await getSeasonalAchievementBaseline("s2", undefined, () => { throw new Error("logger unavailable"); }))?.eligibleN, 2);
     assert.equal((await getSeasonalAchievementBaseline("s1"))?.eligibleN, 38);
     const targetStats = {
       pmcRaids: 5,
@@ -227,6 +242,13 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     update.close();
     const afterEnrichment = await getSeasonalRiskBaseline("s1", { hours: 100, pmcRaids: 5 }, 5);
     assert.equal(afterEnrichment?.metrics.pmc_survival_rate?.mean, riskBaseline?.metrics.pmc_survival_rate?.mean);
+    // The established unavailable fallback must still emit a bounded error diagnostic.
+    const broken = new DatabaseSync(databasePath);
+    broken.exec("DROP TABLE progression_snapshots");
+    broken.close();
+    assert.equal(await getSeasonalAchievementBaseline("s1", undefined, observe), null);
+    assert.equal(diagnostics.at(-1).outcome, "error");
+    assert.ok(!JSON.stringify(diagnostics.at(-1)).includes("progression_snapshots"));
   } finally {
     if (previousPath === undefined) delete process.env.PROGRESSION_SQLITE_PATH;
     else process.env.PROGRESSION_SQLITE_PATH = previousPath;

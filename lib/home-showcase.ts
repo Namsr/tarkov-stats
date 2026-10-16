@@ -78,12 +78,16 @@ export function showcaseProfileRequest(mode: GameMode, aid: number, seasonalCycl
 
 function cohortQuery(aid: number, mode: GameMode, cycle: string): string {
   return new URLSearchParams({
-    aid: String(aid), mode, cycle, statistic: "trimmed_mean", period: "all",
+    aid: String(aid), cycle, mode, statistic: "trimmed_mean", period: "all",
   }).toString();
 }
 
-export function homeCohort(payload: unknown): HomeCohort | null {
+export function homeCohort(payload: unknown, expected?: { aid: number; mode: GameMode; cycleId: string }): HomeCohort | null {
   if (payload == null || typeof payload !== "object") return null;
+  if (expected) {
+    const identity = (payload as { identity?: Partial<typeof expected> }).identity;
+    if (identity?.aid !== expected.aid || identity.mode !== expected.mode || identity.cycleId !== expected.cycleId) return null;
+  }
   const { quality, strategy, averages } = payload as { quality?: unknown; strategy?: unknown; averages?: unknown };
   if (typeof quality !== "string" || averages == null || typeof averages !== "object") return null;
   const source = averages as Record<string, unknown>;

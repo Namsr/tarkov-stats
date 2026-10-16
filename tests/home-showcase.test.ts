@@ -82,18 +82,18 @@ test("showcaseTimelineCycle and showcaseCohortRequest encode the section capabil
   assert.equal(showcaseTimelineCycle("seasonal", null), null);
   assert.equal(
     showcaseCohortRequest("regular", 42, null),
-    "/api/average/cohort?aid=42&mode=regular&cycle=persistent&statistic=trimmed_mean&period=all",
+    "/api/average/cohort?aid=42&cycle=persistent&mode=regular&statistic=trimmed_mean&period=all",
   );
   assert.equal(
     showcaseCohortRequest("pve", 42, null),
-    "/api/average/cohort?aid=42&mode=pve&cycle=persistent&statistic=trimmed_mean&period=all",
+    "/api/average/cohort?aid=42&cycle=persistent&mode=pve&statistic=trimmed_mean&period=all",
   );
   // Arena cohorts carry match metrics, not the six raid axes of this radar.
   assert.equal(showcaseCohortRequest("arena", 42, null), null);
   // Seasonal keeps its own route and needs the active cycle.
   assert.equal(
     showcaseCohortRequest("seasonal", 42, "cycle-1"),
-    "/api/seasonal/cohort?aid=42&mode=seasonal&cycle=cycle-1&statistic=trimmed_mean&period=all",
+    "/api/seasonal/cohort?aid=42&cycle=cycle-1&mode=seasonal&statistic=trimmed_mean&period=all",
   );
   assert.equal(showcaseCohortRequest("seasonal", 42, null), null);
 });
@@ -166,6 +166,16 @@ test("homeCohort keeps radar averages and rejects foreign payloads", () => {
   assert.deepEqual(population?.averages.kd_ratio, { value: 0, count: 1 });
   const negative = homeCohort({ quality: "sufficient", averages: { kd_ratio: { value: -1, count: 20 } } });
   assert.deepEqual(negative?.averages.kd_ratio, { value: null, count: 20 });
+});
+
+test("homeCohort rejects another player, mode or cycle before stripping identity", () => {
+  const identity = { aid: 42, mode: "seasonal" as const, cycleId: "s1" };
+  const body = { identity, quality: "sufficient", averages: { kd_ratio: { value: 2, count: 30 } } };
+  assert.deepEqual(homeCohort(body, identity), homeCohort(body));
+  assert.equal(homeCohort({ ...body, identity: undefined }, identity), null);
+  for (const other of [{ ...identity, aid: 43 }, { ...identity, mode: "regular" }, { ...identity, cycleId: "s2" }]) {
+    assert.equal(homeCohort({ ...body, identity: other }, identity), null);
+  }
 });
 
 test("homeProfileSide reads the faction from every mode payload shape", () => {

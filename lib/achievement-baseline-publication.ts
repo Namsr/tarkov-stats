@@ -1,4 +1,6 @@
 import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE, firstFiniteHours } from "./achievement-unlock-hours.ts";
+import { performance } from "node:perf_hooks";
+import { logSampledTiming } from "./observability/sample-rate.ts";
 
 export type PublishedAchievementMode = "regular" | "pve";
 
@@ -69,40 +71,76 @@ export function materializeRegularRiskAchievementOwners(
   }
 }
 
+export interface RegularRiskAchievementTiming {
+  event: "risk_achievement_baseline_v1";
+  mode: "regular";
+  outcome: "success" | "error";
+  requestedIds: number;
+  referenceAvailable: boolean;
+  metadataMs: number;
+  aggregateMs: number;
+  percentileMs: number;
+  totalMs: number;
+}
+
 /** Indexed owner samples; no per-profile expansion of players.achievements. */
 export function readRegularRiskAchievementBaseline(
   db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined } },
   ownedIds: readonly string[],
   excludeAid: number,
+  observe: (timing: RegularRiskAchievementTiming) => void = logSampledTiming,
 ): { total: number; achievements: PublishedAchievementStat[] } {
-  const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'regular_risk_reference_state'").get();
-  const state = hasState ? db.prepare("SELECT total FROM regular_risk_reference_state WHERE id = 1").get() : undefined;
-  // The owner state already contains the total; avoid parsing the display publication.
-  const total = state?.total ?? readPublishedAchievementBaseline(db, "regular")?.total ?? 0;
-  const achievements: PublishedAchievementStat[] = [];
+  const started = performance.now();
   const ids = new Set(ownedIds);
-  if (!ids.size) return { total: Math.max(0, Number(total) - 1), achievements };
-  // Read-only backfills can run before the web store migrates an older database.
-  const identityIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_players_risk_identity'").get()
-    ? " INDEXED BY idx_players_risk_identity" : "";
-  const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
-      AND EXISTS (SELECT 1 FROM players p${identityIndex}
-        WHERE p.aid = regular_risk_achievement_owners.aid)
-      AND aid NOT IN (SELECT aid FROM excluded_players)`;
-  const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
-      FROM regular_risk_achievement_owners ${where}`);
-  const percentile = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}
-      ORDER BY hours, aid LIMIT 1 OFFSET ?`);
-  for (const id of ids) {
-    const row = aggregate.get(id, excludeAid);
-    const n = Number(row?.n ?? 0);
-    const mean = Number(row?.mean ?? 0);
-    const p20 = n ? percentile.get(id, excludeAid, Math.ceil(n * 0.2) - 1) : undefined;
-    achievements.push({ ach_id: id, owners: n, hoursOwners: n, meanHours: mean,
-      stdHours: Math.sqrt(Math.max(0, Number(row?.square ?? 0) - mean * mean)),
-      earlyHours: Number(p20?.hours ?? 0), unlockHours: Number(p20?.hours ?? 0) });
+  const timing: RegularRiskAchievementTiming = { event: "risk_achievement_baseline_v1", mode: "regular",
+    outcome: "error", requestedIds: ids.size, referenceAvailable: false, metadataMs: 0, aggregateMs: 0, percentileMs: 0, totalMs: 0 };
+  const measured = <T>(phase: "aggregateMs" | "percentileMs", read: () => T): T => {
+    const before = performance.now();
+    try { return read(); } finally { timing[phase] += performance.now() - before; }
+  };
+  try {
+    const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'regular_risk_reference_state'").get();
+    const state = hasState ? db.prepare("SELECT total FROM regular_risk_reference_state WHERE id = 1").get() : undefined;
+    timing.referenceAvailable = Boolean(state);
+    // The owner state already contains the total; avoid parsing the display publication.
+    const total = state?.total ?? readPublishedAchievementBaseline(db, "regular")?.total ?? 0;
+    const achievements: PublishedAchievementStat[] = [];
+    if (!ids.size) {
+      timing.metadataMs = performance.now() - started;
+      timing.outcome = "success";
+      return { total: Math.max(0, Number(total) - 1), achievements };
+    }
+    // Read-only backfills can run before the web store migrates an older database.
+    const identityIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_players_risk_identity'").get()
+      ? " INDEXED BY idx_players_risk_identity" : "";
+    const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
+        AND EXISTS (SELECT 1 FROM players p${identityIndex}
+          WHERE p.aid = regular_risk_achievement_owners.aid)
+        AND aid NOT IN (SELECT aid FROM excluded_players)`;
+    const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
+        FROM regular_risk_achievement_owners ${where}`);
+    const percentile = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}
+        ORDER BY hours, aid LIMIT 1 OFFSET ?`);
+    timing.metadataMs = performance.now() - started;
+    for (const id of ids) {
+      const row = measured("aggregateMs", () => aggregate.get(id, excludeAid));
+      const n = Number(row?.n ?? 0);
+      const mean = Number(row?.mean ?? 0);
+      const p20 = n ? measured("percentileMs", () => percentile.get(id, excludeAid, Math.ceil(n * 0.2) - 1)) : undefined;
+      achievements.push({ ach_id: id, owners: n, hoursOwners: n, meanHours: mean,
+        stdHours: Math.sqrt(Math.max(0, Number(row?.square ?? 0) - mean * mean)),
+        earlyHours: Number(p20?.hours ?? 0), unlockHours: Number(p20?.hours ?? 0) });
+    }
+    timing.outcome = "success";
+    return { total: Math.max(0, Number(total) - 1), achievements };
+  } finally {
+    timing.totalMs = performance.now() - started;
+    if (timing.metadataMs === 0) timing.metadataMs = timing.totalMs - timing.aggregateMs - timing.percentileMs;
+    for (const field of ["metadataMs", "aggregateMs", "percentileMs", "totalMs"] as const) {
+      timing[field] = Number.isFinite(timing[field]) ? Math.max(0, Math.round(timing[field] * 100) / 100) : 0;
+    }
+    try { observe(timing); } catch { /* Diagnostics must not affect risk scoring. */ }
   }
-  return { total: Math.max(0, Number(total) - 1), achievements };
 }
 
 const BASELINE_SELECT_SQL = `WITH expanded AS (

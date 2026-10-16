@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 const { DatabaseSync } = await import("node:sqlite");
 const publication = await import("../lib/leaderboard/publication.ts");
@@ -45,10 +45,8 @@ function createPublicationDatabase() {
 let db = createPublicationDatabase();
 test.beforeEach(() => { db.close(); db = createPublicationDatabase(); });
 
-// A re-rank drops idx_leaderboard_order_ordinal and rebuilds it inside one transaction, and no
-// query plan in the suite looks for it, so without this a build that never recreates the index
-// would look identical from the outside. Presence alone is not enough: a plain index would pass
-// it, so the check also has to fail on a duplicate ordinal.
+// Presence alone is not enough: a plain index would also pass, so require the
+// ordinal constraint to reject an actual duplicate after every permutation.
 function assertOrdinalIndexEnforces() {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_leaderboard_order_ordinal'").get());
   assert.throws(() => db.prepare(`INSERT INTO leaderboard_order
@@ -322,7 +320,9 @@ test("incremental failure rolls back member, order, publication token, and curso
   assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
 });
 
-test("a re-rank that permutes ordinals rebuilds the unique ordinal index", () => {
+test("a re-rank permutes ordinals without rebuilding the global unique index", () => {
+  const schema = db.prepare("SELECT rootpage,sql FROM sqlite_master WHERE name='idx_leaderboard_order_ordinal'").get();
+  const schemaVersion = db.prepare("PRAGMA schema_version").get();
   const current = db.prepare("SELECT generation FROM leaderboard_current WHERE scope='regular'").get()!;
   const candidate = materializeCandidate({ ...source(63, 40_000), sourceUpdatedAt: 2 }, { config, formula });
   const updated = publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
@@ -330,18 +330,86 @@ test("a re-rank that permutes ordinals rebuilds the unique ordinal index", () =>
   assert.ok(updated.touchedSorts > 0);
   assert.equal(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=63").get()!.ordinal, 1);
   assertOrdinalIndexEnforces();
+  assert.deepEqual(db.prepare("SELECT rootpage,sql FROM sqlite_master WHERE name='idx_leaderboard_order_ordinal'").get(), schema);
+  assert.deepEqual(db.prepare("PRAGMA schema_version").get(), schemaVersion);
 });
 
-test("a failure between the ordinal index drop and its rebuild rolls the index back", () => {
+test("rank swaps, ties, insertions and removals preserve other generations, scopes and sorts", () => {
+  const initial = generation([source(1, 100), source(2, 50), source(3, 50)]);
+  const metadata = { formulaVersion: 2, params: { ...config, formula }, meta: {} };
+  publication.publishLeaderboardScope(db, "regular", metadata, initial.members, initial.orders, 90, 200);
+  publication.publishLeaderboardScope(db, "other", metadata, initial.members, initial.orders, 90, 300);
+  const untouched = () => db.prepare(`SELECT * FROM leaderboard_order
+    WHERE scope!='regular' OR generation!=200 OR sort='hours' ORDER BY scope,generation,sort,aid`).all();
+  const before = untouched();
+  const candidates = [
+    { aid: 1, ...materializeCandidate({ ...source(1, 50), sourceUpdatedAt: 2 }, { config, formula }) },
+    { aid: 2, ...materializeCandidate({ ...source(2, 100), sourceUpdatedAt: 2 }, { config, formula }) },
+  ];
+  publication.updateLeaderboardScope(db, "regular", 200, metadata, candidates);
+  assert.deepEqual(db.prepare(`SELECT aid,ordinal FROM leaderboard_order
+    WHERE scope='regular' AND generation=200 AND sort='kills' ORDER BY ordinal`).all().map((row) => [row.aid, row.ordinal]),
+  [[2, 1], [1, 2], [3, 3]]);
+  assert.deepEqual(untouched(), before);
+  publication.updateLeaderboardScope(db, "regular", 200, metadata, [
+    { aid: 2, member: null, orders: [] },
+    { aid: 4, ...materializeCandidate({ ...source(4, 75), sourceUpdatedAt: 3 }, { config, formula }) },
+  ]);
+  assert.deepEqual(db.prepare(`SELECT aid,ordinal FROM leaderboard_order
+    WHERE scope='regular' AND generation=200 AND sort='kills' ORDER BY ordinal`).all().map((row) => [row.aid, row.ordinal]),
+  [[4, 1], [1, 2], [3, 3]]);
+  assert.equal(db.prepare("SELECT 1 FROM leaderboard_order WHERE ordinal IS NULL").get(), undefined);
+  assertOrdinalIndexEnforces();
+});
+
+test("concurrent readers never observe intermediate NULL ranks", () => {
+  const directory = mkdtempSync(join(tmpdir(), "leaderboard-rank-reader-"));
+  const path = join(directory, "publication.db");
+  const writer = new DatabaseSync(path);
+  writer.exec("PRAGMA journal_mode=WAL");
+  publication.initializeLeaderboardSchema(writer);
+  const initial = generation([source(1), source(2), source(3)]);
+  const metadata = { formulaVersion: 2, params: { ...config, formula }, meta: {} };
+  publication.publishLeaderboardScope(writer, "regular", metadata, initial.members, initial.orders, 90, 100);
+  const reader = new DatabaseSync(path, { readOnly: true });
+  const read = () => reader.prepare("SELECT aid,ordinal FROM leaderboard_order WHERE sort='kills' ORDER BY ordinal").all();
+  const before = read();
+  let intermediateChecks = 0;
+  const wrapped = new Proxy(writer, {
+    get(target, property) {
+      if (property === "exec") return (sql: string) => {
+        const result = target.exec(sql);
+        if (sql.startsWith("UPDATE leaderboard_order AS target SET ordinal=")) {
+          intermediateChecks++;
+          assert.deepEqual(read(), before);
+        }
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    publication.updateLeaderboardScope(wrapped, "regular", 100, metadata, [
+      { aid: 3, ...materializeCandidate({ ...source(3, 500), sourceUpdatedAt: 2 }, { config, formula }) },
+    ]);
+    assert.ok(intermediateChecks >= 2);
+    assert.equal(read()[0].aid, 3);
+    assert.ok(read().every((row) => row.ordinal !== null));
+  } finally {
+    reader.close(); writer.close();
+    assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
+    assert.ok(basename(directory).startsWith("leaderboard-rank-reader-"));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const phase of ["clearing", "assignment"]) test(`a failure during ordinal ${phase} rolls back the publication`, () => {
   const current = db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get()!;
   const candidate = materializeCandidate({ ...source(64, 50_000), sourceUpdatedAt: 2 }, { config, formula });
-  // reassignOrdinals drops the index, fills the temp table, then swaps ordinals in with this
-  // UPDATE and only then recreates the index. Nothing runs on leaderboard_order before that swap
-  // in updateLeaderboardScope, so the trigger lands inside the window the rollback has to cover.
-  // The WHEN clause is the assertion that it really is that window: while the index is still
-  // present the trigger stays silent and the swap fails on the unique constraint instead.
+  const before = db.prepare("SELECT * FROM leaderboard_order ORDER BY scope,generation,sort,aid").all();
   db.exec(`CREATE TRIGGER fail_ordinal_swap BEFORE UPDATE OF ordinal ON leaderboard_order
-    WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name='idx_leaderboard_order_ordinal')
+    WHEN NEW.ordinal IS ${phase === "clearing" ? "NULL" : "NOT NULL"}
     BEGIN SELECT RAISE(ABORT,'ordinal swap fixture failure'); END`);
   try {
     assert.throws(() => publication.updateLeaderboardScope(db, config.scope, Number(current.generation),
@@ -353,6 +421,7 @@ test("a failure between the ordinal index drop and its rebuild rolls the index b
   assert.equal(db.prepare("SELECT generation,generated_at FROM leaderboard_current WHERE scope='regular'").get()!.generated_at, current.generated_at);
   // 50k kills would have taken the top primary rank if the swap had committed.
   assert.ok(Number(db.prepare("SELECT ordinal FROM leaderboard_order WHERE scope='regular' AND sort='primary' AND aid=64").get()!.ordinal) > 1);
+  assert.deepEqual(db.prepare("SELECT * FROM leaderboard_order ORDER BY scope,generation,sort,aid").all(), before);
   assert.equal(db.prepare("SELECT 1 FROM temp.sqlite_temp_master WHERE name='leaderboard_rank_work'").get(), undefined);
   assertOrdinalIndexEnforces();
 });

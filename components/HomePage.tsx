@@ -18,6 +18,8 @@ import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
+import { loadAverageJson } from "@/lib/client-average-request";
+import { validTimelineResponse } from "@/lib/progression-timeline-response";
 import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "@/lib/client-risk";
 import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 import {
@@ -144,9 +146,12 @@ export default function HomePage() {
     const controller = new AbortController();
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
+    const identity = { aid, mode, cycleId: cycle ?? "persistent" };
+    let refreshedTimeline: ProgressionTimelineResponse | null = null;
+    let refreshedCohort: HomeCohort | null = null;
     const loadProfile = async (): Promise<Pick<ShowcaseSnapshot, "profile" | "arena"> | null> => {
       try {
-        const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force });
+        const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force, signal: controller.signal });
         const body = response.body;
         if (!response.ok || body.identity?.aid !== aid || body.identity.mode !== mode
           || body.identity.cycleId !== (cycle ?? "persistent")) return null;
@@ -161,20 +166,37 @@ export default function HomePage() {
         return "viewModel" in body && body.viewModel ? { profile: body, arena: null } : null;
       } catch { return null; }
     };
-    async function load<T>(url: string): Promise<T | null> {
+    async function load<T>(url: string, validate: (body: unknown) => T | null, onUpdate: (body: T) => void): Promise<T | null> {
       try {
-        const response = await fetch(url, { signal: controller.signal });
-        return response.ok ? await response.json() as T : null;
+        const body = await loadAverageJson<unknown>(url, {
+          signal: controller.signal, forceRefresh: force, retryUnavailable: true,
+          onUpdate: (payload) => {
+            const next = validate(payload);
+            if (!cancelled && next !== null) onUpdate(next);
+          },
+        });
+        return validate(body);
       } catch { return null; }
     }
     void Promise.all([
       loadProfile(),
       cycle == null ? Promise.resolve(null)
-        : load<ProgressionTimelineResponse>(`/api/progression/timeline?aid=${aid}&mode=${mode}&cycle=${cycle}`),
+        : load(`/api/progression/timeline?${new URLSearchParams({ mode, cycle, aid: String(aid) })}`,
+          (body) => validTimelineResponse(body, identity) ? body : null,
+          (timeline) => {
+            refreshedTimeline = timeline;
+            setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
+              ? { ...current, timeline } : current);
+          }),
       cohortUrl == null ? Promise.resolve(null)
-        : load<unknown>(cohortUrl).then(homeCohort),
+        : load(cohortUrl, (body) => homeCohort(body, identity), (cohort) => {
+          refreshedCohort = cohort;
+          setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
+            ? { ...current, cohort } : current);
+        }),
     ]).then(([profileData, timeline, cohortData]) => {
-      if (!cancelled) setSnapshot({ mode, profile: profileData?.profile ?? null, arena: profileData?.arena ?? null, timeline, cohort: cohortData });
+      if (!cancelled) setSnapshot({ mode, profile: profileData?.profile ?? null, arena: profileData?.arena ?? null,
+        timeline: refreshedTimeline ?? timeline, cohort: refreshedCohort ?? cohortData });
     });
     return () => { cancelled = true; controller.abort(); };
   }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
