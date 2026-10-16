@@ -12,7 +12,7 @@ type RoundDraft = { a: string; b: string; expected: AxisRoundScore | null };
 export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved, onConflict }: {
   match: AxisMatch;
   canEdit: boolean;
-  children: (state: { teams: AxisMatch["teams"]; renderInputs: (id: string) => ReactNode; rounds: ReactNode }) => ReactNode;
+  children: (state: { teams: AxisMatch["teams"]; renderInputs: (id: string) => ReactNode; rounds: ReactNode; editing: boolean }) => ReactNode;
   onSaved: (players: { discordId: string; kda: AxisKda | null }[], rounds?: AxisRoundScore | null) => void;
   onConflict: () => void;
 }) {
@@ -94,7 +94,7 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
       <button type="button" className="axis-kda-clear" disabled={busy} aria-label={t("axis.rounds.clear")} onClick={() => { setMessage(""); setRoundDraft((previous) => previous ? { ...previous, a: "", b: "" } : previous); }}><span aria-hidden="true">×</span></button>
     </div> : <strong>{match.rounds ? `${match.rounds.a} : ${match.rounds.b}` : "— : —"}</strong>}
   </div> : null;
-  const content = children({ teams, renderInputs, rounds });
+  const content = children({ teams, renderInputs, rounds, editing: canEdit && draft !== null });
   if (!canEdit) return content;
   return <form className="axis-match-edit-form" onSubmit={(event) => { event.preventDefault(); void save(); }} aria-label={t("axis.kda.form", { n: match.number })}>
     {content}
