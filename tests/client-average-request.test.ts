@@ -2,6 +2,7 @@
 // @ts-nocheck -- the fixture provides the small browser surface used by the module.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { showcaseCohortRequest } from "../lib/home-showcase.ts";
 
 const browser = {
   setTimeout,
@@ -19,6 +20,23 @@ const nextTurn = () => new Promise(setImmediate);
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
   requests.resetAverageResponseCacheForTests();
+});
+
+test("home and profile share cohort responses without conflating mode or cycle", async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return Response.json({ url });
+  };
+  for (const [mode, cycle] of [["regular", "persistent"], ["pve", "persistent"], ["seasonal", "s1"], ["seasonal", "s2"]]) {
+    const homeUrl = showcaseCohortRequest(mode, 42, cycle);
+    const params = new URLSearchParams({ aid: "42", cycle, mode, statistic: "trimmed_mean", period: "all" });
+    const profileUrl = `${mode === "seasonal" ? "/api/seasonal/cohort" : "/api/average/cohort"}?${params}`;
+    assert.equal(homeUrl, profileUrl);
+    const initial = await requests.loadAverageJson(homeUrl);
+    assert.equal(await requests.loadAverageJson(profileUrl), initial);
+  }
+  assert.equal(calls.length, 4);
 });
 
 test("stale statistics display immediately, share refresh polling, and stop on the last abort", async (t) => {

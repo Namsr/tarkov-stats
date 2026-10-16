@@ -349,14 +349,15 @@ function emptyCohort(aid: number, mode: ArenaStoredMode, statistic: ArenaStatist
   };
 }
 
-type MetricSamples = { sampleN: number; values: Map<ArenaMetricKey, number[]> };
+type SampleMetric = ArenaMetricKey | "games_count";
+type MetricSamples = { sampleN: number; values: Map<SampleMetric, number[]> };
 
 /** Stream narrow rows into numeric columns, without retaining a peer object graph. */
 async function arenaMetricSamples(
-  backend: Backend, sql: string, params: unknown[], metrics: readonly ArenaMetricKey[],
+  backend: Backend, sql: string, params: unknown[], metrics: readonly SampleMetric[],
 ): Promise<Map<string, MetricSamples>> {
   const result = new Map<string, MetricSamples>();
-  const append = (mode: string, read: (index: number, metric: ArenaMetricKey) => unknown) => {
+  const append = (mode: string, read: (index: number, metric: SampleMetric) => unknown) => {
     let group = result.get(mode);
     if (!group) {
       group = { sampleN: 0, values: new Map(metrics.map((metric) => [metric, []])) };
@@ -385,9 +386,10 @@ async function arenaCohortSummary(
   kind: ArenaStatistic,
 ): Promise<{ sampleN: number; metrics: Record<ArenaMetricKey, ArenaMetricValue>; averageMatches: ArenaAverageResult["averageMatches"] }> {
   const condition = arenaWhere(input);
+  const columns = [...ARENA_METRIC_KEYS, "games_count"] as const;
   const groups = await arenaMetricSamples(backend,
-    `SELECT arena_mode, ${ARENA_METRIC_KEYS.join(", ")} FROM arena_mode_stats ${condition.where}`,
-    condition.params, ARENA_METRIC_KEYS);
+    `SELECT arena_mode, ${columns.join(", ")} FROM arena_mode_stats ${condition.where}`,
+    condition.params, columns);
   const group = groups.get(input.mode);
   const metrics = emptyMetrics();
   for (const metric of ARENA_METRIC_KEYS) {
@@ -397,12 +399,8 @@ async function arenaCohortSummary(
       reason: values.length === 0 ? "no_valid_values" : values.length >= 20 ? null : "insufficient_values",
     };
   }
-  const matchCondition = arenaWhere(input);
-  const matchRows = await all(backend,
-    `SELECT games_count FROM arena_mode_stats ${matchCondition.where}`,
-    matchCondition.params);
-  const matchValues = matchRows.map((row) => numberOrNull(row.games_count)).filter((value): value is number => value !== null && value >= 0);
-  return { sampleN: group?.sampleN ?? matchRows.length, metrics, averageMatches: matchesSummaryFromValues(matchValues, kind) };
+  const matchValues = (group?.values.get("games_count") ?? []).filter((value) => value >= 0);
+  return { sampleN: group?.sampleN ?? 0, metrics, averageMatches: matchesSummaryFromValues(matchValues, kind) };
 }
 
 function arenaRangeCountQuery(aid: number, mode: ArenaStoredMode, hours: number, matches: number) {

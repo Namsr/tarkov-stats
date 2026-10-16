@@ -61,7 +61,10 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   assert.match(component, /cohortUrl == null \? Promise\.resolve\(null\)/);
   // The cohort payload is normalized at the boundary, so a mismatched shape
   // (arena metrics, error bodies) degrades instead of crashing the block.
-  assert.match(component, /load<unknown>\(cohortUrl\)\.then\(homeCohort\)/);
+  assert.match(component, /load\(cohortUrl, \(body\) => homeCohort\(body, identity\)/);
+  assert.match(component, /loadAverageJson<unknown>\(url, \{/);
+  assert.match(component, /signal: controller\.signal, forceRefresh: force, retryUnavailable: true/);
+  assert.match(component, /validTimelineResponse\(body, identity\)/);
 });
 
 test("home comparison block follows the displayed game mode", async () => {
@@ -153,7 +156,7 @@ test("the showcase retry bypasses the profile response cache on every click", as
   // spending a rate-limit slot on a load nobody requested.
   assert.match(component, /const force = forceUrl\.current === profileUrl;/);
   assert.match(component, /if \(!force\) forceUrl\.current = null;/);
-  assert.match(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(profileUrl, \{ force \}\)/);
+  assert.match(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(profileUrl, \{ force, signal: controller\.signal \}\)/);
   assert.doesNotMatch(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(`\/api\/player\/profile\?\$\{params\}`\)/);
   // The favorite panel has no retry button, so the user action that triggers the
   // request is the only way past a cached mismatched body.
