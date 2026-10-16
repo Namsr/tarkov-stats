@@ -7,24 +7,23 @@ import { useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { axisProfileHref, parseAxisProfile, type AxisLeagueResponse, type AxisPlayer } from "@/lib/axis-league";
 
-export default function AdminAxisLeague({ data, onChange }: { data: AxisLeagueResponse | null; onChange: (data: AxisLeagueResponse) => void }) {
+export default function AdminAxisLeague({ data, onChange, editorOnly = false }: { data: AxisLeagueResponse | null; onChange: (data: AxisLeagueResponse) => void; editorOnly?: boolean }) {
   const { t } = useI18n();
   const [search, setSearch] = useState("");
   const players = (data?.players ?? []).filter((player) => `${player.name} ${player.id} ${player.profile?.aid ?? ""}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return <section className="data-panel admin-panel" aria-label={t("axis.title")}>
-    <div className="axis-heading"><h2 className="section-heading">{t("axis.title")}</h2><Link href="/axis-league" className="ghost-button">{t("axis.admin.open")}</Link></div>
-    <Link href="/axis-league?view=history" className="ghost-button axis-admin-history">{t("axis.kda.openHistory")}</Link>
-    <AxisLeagueEditors />
+    <div className="axis-heading"><h2 className="section-heading">{t(editorOnly ? "axis.profiles.title" : "axis.title")}</h2>{!editorOnly && <Link href="/axis-league" className="ghost-button">{t("axis.admin.open")}</Link>}</div>
+    {!editorOnly && <><Link href="/axis-league?view=history" className="ghost-button axis-admin-history">{t("axis.kda.openHistory")}</Link><AxisLeagueEditors /></>}
     <p className="admin-chart-description">{t("axis.admin.description")}</p>
     {(data?.stale || !data?.available) && <p className="admin-notice" role="status">{t(data?.available ? "axis.stale" : "axis.error")}</p>}
     <div className="admin-moderation axis-admin-search"><label><span>{t("axis.search")}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("axis.searchPlaceholder")} /></label></div>
     <p className="leaderboard-meta">{t("axis.results", { n: players.length })}</p>
-    <ul className="axis-admin-players">{players.map((player) => <ProfileEditor key={`${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`} player={player} onChange={onChange} />)}</ul>
+    <ul className="axis-admin-players">{players.map((player) => <ProfileEditor key={`${player.id}:${player.profile?.mode ?? ""}:${player.profile?.aid ?? ""}`} player={player} onChange={onChange} endpoint={editorOnly ? "/api/axis-league/profiles" : "/api/admin/axis-league"} />)}</ul>
     {data?.available && players.length === 0 && <p className="admin-empty">{t(data.players.length ? "axis.noResults" : "axis.empty")}</p>}
   </section>;
 }
 
-function ProfileEditor({ player, onChange }: { player: AxisPlayer; onChange: (data: AxisLeagueResponse) => void }) {
+function ProfileEditor({ player, onChange, endpoint }: { player: AxisPlayer; onChange: (data: AxisLeagueResponse) => void; endpoint: string }) {
   const { t } = useI18n();
   const initial = player.profile ? axisProfileHref(player.profile) : "";
   const [draft, setDraft] = useState(initial);
@@ -34,7 +33,7 @@ function ProfileEditor({ player, onChange }: { player: AxisPlayer; onChange: (da
     if (profile !== null && !parseAxisProfile(profile)) { setMessage(t("axis.admin.invalid")); return; }
     setBusy(true); setMessage("");
     try {
-      const response = await fetch("/api/admin/axis-league", { method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store", signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({ discordId: player.id, profile }) });
       const body = await response.json() as { ok?: boolean; data: AxisLeagueResponse };
       if (!response.ok || !body.ok) { setMessage(t(response.status === 400 ? "axis.admin.conflict" : "admin.error.save")); return; }

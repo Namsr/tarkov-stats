@@ -11,7 +11,7 @@ export async function canEditAxisKda(user: SessionUser | null): Promise<boolean>
   catch { return false; }
 }
 
-/** This permission never grants access to the dashboard, profiles or role assignment. */
+/** Allows AXIS match statistics and league profile links, never the dashboard or role assignment. */
 export async function requireAxisKdaEditor(): Promise<AdminAccess> {
   const user = await getSession();
   if (!user) return { ok: false, status: 401 };

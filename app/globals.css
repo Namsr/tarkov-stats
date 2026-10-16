@@ -797,6 +797,7 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-season-live { display: inline-flex; align-items: center; gap: 8px; color: var(--foreground); font-weight: 700; }
 .axis-season-live > span { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; }
 .axis-season-count { margin-left: auto; }
+.axis-page .axis-view-switch { flex-wrap: wrap; overflow: visible; }
 .axis-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; }
 .axis-heading .page-title { margin: 0; }
 .axis-description { margin-top: 16px; max-width: 720px; color: var(--muted-strong); font-size: .9rem; line-height: 1.65; }

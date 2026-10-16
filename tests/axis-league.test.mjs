@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers } from "../lib/axis-league.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
@@ -12,6 +14,28 @@ import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
 function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
 }
+
+test("AXIS hover previews always request Arena stats regardless of the linked profile mode", async () => {
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript");
+  const source = await readFile("components/AxisPlayerIdentity.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
+  const identityModule = { exports: {} };
+  const stubs = {
+    "next/image": () => null,
+    "@/components/LeaderboardPreview": { LeaderboardPreviewLink: () => null, LeaderboardPreviewProvider: () => null },
+    "@/lib/i18n/context": { useI18n: () => ({ lang: "ru", t: (key) => key }) },
+    "@/lib/axis-league": { axisProfileHref },
+  };
+  new Function("require", "module", "exports", compiled)((name) => stubs[name] ?? require(name), identityModule, identityModule.exports);
+  for (const mode of ["regular", "pve", "seasonal", "arena"]) {
+    const identity = identityModule.exports.default({ player: { name: "Discord player", profile: { aid: 12345, mode } }, mmr: 1000 });
+    assert.deepEqual(identity.props.meta, { mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 });
+    assert.equal(identity.props.children.props.aid, 12345);
+  }
+  const unlinked = identityModule.exports.default({ player: { name: "Discord player", profile: null }, mmr: null });
+  assert.equal(unlinked.props.children.props.aid, null);
+});
 function page(rows = [row()], total = rows.length, pages = 1) {
   return { server_id: AXIS_SERVER_ID, channel_id: AXIS_CHANNEL_ID, display: "players",
     months: [{ month: "alltime", data: rows, pagination: { total_items: total, total_pages: pages } }] };
