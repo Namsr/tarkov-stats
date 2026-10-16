@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers } from "../lib/axis-league.ts";
+import { AXIS_SERVER_ID, AXIS_CHANNEL_ID, AXIS_REFRESH_MS, parseAxisPage, parseAxisProfile, axisProfileHref, axisAvatarUrl, sortAxisPlayers, axisKdaRatio, axisMatchHref } from "../lib/axis-league.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts";
 import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory, sortAxisMatchPlayers } from "../lib/axis-history.ts";
@@ -15,9 +15,10 @@ function row(id = "95520357670191104", name = "Player") {
   return { id, name, stats: { current_rank: 1, mmr: 1425, peak_mmr: 1500, totalgames: 29, wins: 23, losses: 6, winrate: 23 / 29, streak: -2, peak_streak: 6 } };
 }
 
-test("AXIS hover previews always request Arena stats regardless of the linked profile mode", async () => {
+test("AXIS previews keep league statistics separate and request Arena regardless of the linked mode", async () => {
   const require = createRequire(import.meta.url);
   const ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
   const source = await readFile("components/AxisPlayerIdentity.tsx", "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
   const identityModule = { exports: {} };
@@ -25,16 +26,34 @@ test("AXIS hover previews always request Arena stats regardless of the linked pr
     "next/image": () => null,
     "@/components/LeaderboardPreview": { LeaderboardPreviewLink: () => null, LeaderboardPreviewProvider: () => null },
     "@/lib/i18n/context": { useI18n: () => ({ lang: "ru", t: (key) => key }) },
-    "@/lib/axis-league": { axisProfileHref },
+    "@/lib/axis-league": { axisProfileHref, axisKdaRatio, axisMatchHref },
   };
   new Function("require", "module", "exports", compiled)((name) => stubs[name] ?? require(name), identityModule, identityModule.exports);
   for (const mode of ["regular", "pve", "seasonal", "arena"]) {
     const identity = identityModule.exports.default({ player: { name: "Discord player", profile: { aid: 12345, mode } }, mmr: 1000 });
     assert.deepEqual(identity.props.meta, { mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 });
     assert.equal(identity.props.children.props.aid, 12345);
+    assert.equal(identity.props.detailsLabel, "axis.title");
   }
   const unlinked = identityModule.exports.default({ player: { name: "Discord player", profile: null }, mmr: null });
   assert.equal(unlinked.props.children.props.aid, null);
+  const player = { name: "Player", profile: null, position: 1, games: 5, wins: 3, losses: 2,
+    winrate: .6, peakMmr: 1240, combatStats: { kills: 42, deaths: 0, assists: 8, matches: 3 },
+    recentMatches: [{ number: 123, time: 1000, kills: 0, deaths: 0, assists: 0, won: false },
+      { number: 124, time: 2000, kills: 12, deaths: 3, assists: 3, won: true }] };
+  const filled = identityModule.exports.default({ player, mmr: 1025, averageKda: 2.5 });
+  const header = renderToStaticMarkup(filled.props.detailsHeader("preview-name"));
+  assert.match(header, /#1/); assert.match(header, /1\s025/); assert.match(header, /1\s240/);
+  assert.match(header, /id="preview-name"/);
+  const details = renderToStaticMarkup(filled.props.children.props.details);
+  assert.match(details, /href="\/axis-league\?view=history&amp;match=123#axis-match-123"/);
+  assert.match(details, /data-result="loss"/); assert.match(details, /data-result="win"/);
+  assert.match(details, /50,00/); // Zero deaths uses a denominator of one.
+  assert.doesNotMatch(details, /HS%|arena.metric.kd_ratio|NaN|undefined|axis.kda.coverage/);
+  const empty = identityModule.exports.default({ player: { name: "Player", profile: null, games: 0, winrate: null }, mmr: null });
+  assert.match(renderToStaticMarkup(empty.props.children.props.details), /axis.kda.empty/);
+  assert.equal(axisKdaRatio({ kills: 0, deaths: 0, assists: 0 }), 0);
+
 });
 function page(rows = [row()], total = rows.length, pages = 1) {
   return { server_id: AXIS_SERVER_ID, channel_id: AXIS_CHANNEL_ID, display: "players",
@@ -106,6 +125,45 @@ test("manual KDA stays with a match and Discord identity across refreshes, renam
   assert.equal(db.readHistory(1).matches[0].teams[0].players[0].kda, null);
   db.setMatchStats(100, [{ discordId: "1", kda: { kills: 0, deaths: 0, assists: 0 }, expected: null }]);
   assert.deepEqual(db.readHistory(1).matches[0].teams[0].players[0].kda, { kills: 0, deaths: 0, assists: 0 });
+});
+
+test("standings sum saved KDA across current-season completed matches and track edits by Discord ID", (t) => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  let db = createAxisLeagueStore(sql);
+  db.publish(parseAxisPage(page([row("1", "New name"), row("2"), row("3")])).players);
+  const matches = Array.from({ length: 29 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i));
+  matches.push(seasonMatch(30, AXIS_CURRENT_SEASON_START - 1),
+    seasonMatch(31, AXIS_CURRENT_SEASON_START + 31, 1100, "other"), seasonMatch(32, null));
+  matches[27].winner = -1; // Cancelled.
+  matches[28].winner = null; // No result.
+  const drawn = seasonMatch(33, AXIS_CURRENT_SEASON_START + 33); drawn.winner = -2; matches.push(drawn);
+  const snapshot = { page: 1, pages: 2, total: matches.length, matches };
+  db.publishArchive(snapshot); db.publishHistory(snapshot);
+  const kda = { kills: 12, deaths: 3, assists: 5 }, zero = { kills: 0, deaths: 0, assists: 0 };
+  const second = { kills: 8, deaths: 4, assists: 2 };
+  for (const [number, stats] of [[1, kda], [2, zero], [27, second], [28, kda], [29, kda], [30, kda], [31, kda], [32, kda], [33, { kills: 3, deaths: 1, assists: 4 }]]) {
+    db.setMatchStats(number, [{ discordId: "1", kda: stats, expected: null }]);
+  }
+  db.setMatchStats(1, [{ discordId: "3", kda: zero, expected: null }]);
+  // Reimports and overlapping history pages cannot duplicate saved match totals.
+  db.publishArchive(snapshot); db.publishHistory({ ...snapshot, page: 2 });
+  db = createAxisLeagueStore(sql);
+  const stats = () => db.read().players.find(player => player.id === "1").combatStats;
+  assert.deepEqual(stats(), { kills: 23, deaths: 8, assists: 11, matches: 4 });
+  assert.deepEqual(db.read().players[0].recentMatches.map(match => match.number), [1, 2, 27, 33]);
+  assert.deepEqual(db.read().players[0].recentMatches.map(match => match.won), [true, true, true, null]);
+  assert.ok(Math.abs(db.read().averageKda - (17 / 3 + 2.5 + 7) / 5) < 1e-9);
+  assert.equal(db.read().players.find(player => player.id === "2").combatStats, null);
+  assert.deepEqual(db.read().players.find(player => player.id === "3").combatStats, { ...zero, matches: 1 });
+  const edited = { kills: 2, deaths: 1, assists: 0 };
+  db.setMatchStats(1, [{ discordId: "1", kda: edited, expected: kda }]);
+  assert.deepEqual(stats(), { kills: 13, deaths: 6, assists: 6, matches: 4 });
+  db.setMatchStats(27, [{ discordId: "1", kda: null, expected: second }]);
+  assert.deepEqual(stats(), { kills: 5, deaths: 2, assists: 4, matches: 3 });
+  // Corrected upstream rosters must not attribute stale KDA to a former participant.
+  matches[0].teams[0].players = matches[0].teams[0].players.filter(player => player.id !== "1");
+  db.publishArchive(snapshot);
+  assert.deepEqual(stats(), { kills: 3, deaths: 1, assists: 4, matches: 2 });
 });
 
 test("KDA batches reject stale edits atomically and cannot edit people outside a match", (t) => {
@@ -533,4 +591,54 @@ test("sorting keeps the upstream place, uses stable ties and puts unavailable st
   assert.deepEqual(sortAxisPlayers(players, "peakMmr", "desc").map((p) => p.position), [1, 3, 2]);
   assert.deepEqual(sortAxisPlayers(players, "peakMmr", "asc").map((p) => p.position), [1, 3, 2]);
   assert.deepEqual(players.map((p) => p.position), [1, 2, 3]);
+});
+
+
+test("preview cache skips repeated and unrelated reads, caps history, and invalidates across SQLite handles", async (t) => {
+  const { join } = await import("node:path"), { tmpdir } = await import("node:os");
+  const { randomUUID } = await import("node:crypto"), { existsSync, unlinkSync } = await import("node:fs");
+  const path = join(tmpdir(), `axis-preview-${randomUUID()}.db`);
+  const first = new DatabaseSync(path), second = new DatabaseSync(path);
+  t.after(() => { second.close(); first.close(); for (const suffix of ["", "-wal", "-shm", "-journal"]) if (existsSync(path + suffix)) unlinkSync(path + suffix); });
+  let aggregateQueries = 0;
+  const traced = { exec: sql => first.exec(sql), prepare: sql => { if (sql.includes("WITH recorded AS")) aggregateQueries++; return first.prepare(sql); } };
+  const db = createAxisLeagueStore(traced), writer = createAxisLeagueStore(second);
+  db.publish(parseAxisPage(page([row("1")])).players);
+  const matches = Array.from({ length: 8 }, (_, i) => seasonMatch(i + 1, AXIS_CURRENT_SEASON_START + i));
+  db.publishArchive({ matches, page: 1, pages: 1, total: 8 });
+  const zero = { kills: 0, deaths: 0, assists: 0 };
+  for (const match of matches) db.setMatchStats(match.number, [{ discordId: "1", kda: zero, expected: null }]);
+  assert.deepEqual(db.read().players[0].recentMatches.map(match => match.number), [3, 4, 5, 6, 7, 8]);
+  assert.equal(db.read().averageKda, 0);
+  for (let i = 0; i < 100; i++) db.read();
+  assert.equal(aggregateQueries, 1);
+  first.exec("CREATE TABLE unrelated(value INTEGER); INSERT INTO unrelated VALUES(1)");
+  writer.failRefresh(); db.read();
+  assert.equal(aggregateQueries, 1, "unrelated writes must not invalidate match statistics");
+  writer.setMatchStats(8, [{ discordId: "1", kda: { kills: 7, deaths: 0, assists: 2 }, expected: zero }]);
+  assert.equal(db.read().players[0].recentMatches.at(-1).kills, 7);
+  assert.equal(aggregateQueries, 2);
+  assert.equal(db.read().averageKda, 9 / 8);
+  // Raw writes simulate an already-running worker that predates the application cache.
+  second.prepare("UPDATE axis_match_kda SET kills=11 WHERE match_number=8 AND discord_id='1'").run();
+  assert.equal(db.read().players[0].combatStats.kills, 11);
+  assert.equal(aggregateQueries, 3);
+  second.prepare("DELETE FROM axis_match_kda WHERE match_number=8 AND discord_id='1'").run();
+  assert.deepEqual(db.read().players[0].recentMatches.map(match => match.number), [2, 3, 4, 5, 6, 7]);
+  assert.equal(aggregateQueries, 4);
+});
+
+
+test("preview outcomes follow the recorded player's team rather than assuming the first team won", (t) => {
+  const db = store(t);
+  db.publish(parseAxisPage(page([row("1"), row("6")])).players);
+  const match = seasonMatch(90, AXIS_CURRENT_SEASON_START + 90);
+  const roster = match.teams[0].players;
+  match.teams = [{ name: null, players: roster.slice(0, 5) }, { name: null, players: roster.slice(5) }];
+  match.winner = 1;
+  db.publishArchive({ matches: [match], page: 1, pages: 1, total: 1 });
+  const kda = { kills: 12, deaths: 3, assists: 2 };
+  db.setMatchStats(90, [{ discordId: "1", kda, expected: null }, { discordId: "6", kda, expected: null }]);
+  assert.equal(db.read().players[0].recentMatches[0].won, false);
+  assert.equal(db.read().players[1].recentMatches[0].won, true);
 });

@@ -7,5 +7,6 @@ export function previewRatio(value: number | null, average: number | null): { di
   return { direction, ratio: lower > 0 ? Math.max(value, average) / lower : null };
 }
 
+export const AXIS_PREVIEW_DELAY_MS = 180;
 export const LEADERBOARD_PREVIEW_DELAY_MS = 400;
 export const LEADERBOARD_PREVIEW_CLOSE_MS = 220;

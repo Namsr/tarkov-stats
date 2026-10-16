@@ -1,3 +1,4 @@
+import type { AxisKda } from "./axis-kda";
 import type { GameMode } from "../types/seasonal";
 import { parsePlayerInput } from "./player-id.ts";
 
@@ -8,8 +9,21 @@ export const AXIS_CHANNEL_ID = "1343726040421367842";
 export const AXIS_SOURCE_URL = `https://www.neatqueue.com/leaderboard/${AXIS_SERVER_ID}/${AXIS_CHANNEL_ID}?display=players`;
 export const AXIS_API_URL = `https://api.neatqueue.com/api/v2/leaderboard/${AXIS_SERVER_ID}/${AXIS_CHANNEL_ID}`;
 
+export interface AxisRecentMatch extends AxisKda {
+  number: number;
+  time: number;
+  won: boolean | null;
+}
+export function axisKdaRatio(stats: AxisKda): number {
+  return (stats.kills + stats.assists) / Math.max(1, stats.deaths);
+}
+export function axisMatchHref(number: number): string {
+  return `/axis-league?view=history&match=${number}#axis-match-${number}`;
+}
 export interface AxisProfile { aid: number; mode: GameMode }
 export interface AxisPlayer {
+  recentMatches?: AxisRecentMatch[];
+  combatStats?: (AxisKda & { matches: number }) | null;
   id: string;
   name: string;
   avatarUrl?: string | null;
@@ -25,6 +39,7 @@ export interface AxisPlayer {
   profile: AxisProfile | null;
 }
 export interface AxisLeagueResponse {
+  averageKda?: number | null;
   currentSeason?: { startsAt: number; inferred: boolean; games: number | null };
   players: AxisPlayer[];
   updatedAt: number | null;
