@@ -41,6 +41,7 @@ interface Props {
   radarDemo?: string | string[];
   axisIdentity?: AxisIdentity | null;
   axisHours?: number | null;
+  axisHoursFetchedAt?: number | null;
   initialAxis?: boolean;
 }
 
@@ -241,7 +242,7 @@ function ArenaLegacyIncomplete({
   );
 }
 
-export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null, initialAxis = false }: Props) {
+export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null, axisHoursFetchedAt = null, initialAxis = false }: Props) {
   const { lang, t } = useI18n();
   const numericAid = Number(aid);
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode: "arena" })}`;
@@ -452,7 +453,12 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
     window.history.replaceState(null, "", url);
   };
   const scopes = <ArenaScopes selected={selectedMode} axis={axisSelected} linked={axisIdentity != null} onMode={changeMode} onAxis={selectAxis} />;
-  const hours = axisHours ?? profile?.overall.hours ?? (legacyBody ? legacyNumber(legacyBody, "hoursPlayed") : null);
+  const clientHours = profile?.overall.hours ?? (legacyBody ? legacyNumber(legacyBody, "hoursPlayed") : null);
+  const clientHoursFetchedAt = profile
+    ? profile.fetchedAt ?? profile.profileUpdatedAt
+    : legacyBody?.freshness?.fetchedAt ?? legacyBody?.freshness?.updatedAt ?? legacyBody?.profileUpdatedAt ?? 0;
+  const hours = clientHours != null && (axisHours == null || clientHoursFetchedAt >= (axisHoursFetchedAt ?? 0))
+    ? clientHours : axisHours;
 
   if (axisSelected) return <main className="page-frame profile-page min-h-screen" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>

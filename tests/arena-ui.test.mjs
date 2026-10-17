@@ -57,6 +57,32 @@ async function loadRangeSlider() {
   return rangeSliderModule;
 }
 
+test("Axis header chooses hours from the newest available Arena snapshot", () => {
+  const source = read("components/ArenaPlayer.tsx");
+  const start = source.indexOf("  const clientHours =");
+  const end = source.indexOf("  if (axisSelected)", start);
+  assert.ok(start >= 0 && end > start);
+  const chooseHours = new Function("profile", "legacyBody", "axisHours", "axisHoursFetchedAt", `
+    const legacyNumber = (body, key) => body.stats[key] ?? null;
+    ${source.slice(start, end)}
+    return hours;
+  `);
+  const snapshot = (hours, fetchedAt, profileUpdatedAt = 1) => ({ overall: { hours }, fetchedAt, profileUpdatedAt });
+  // A successful refresh must supersede the server-rendered fallback, even
+  // when upstream's version did not change. A stale client cache must not.
+  assert.equal(chooseHours(snapshot(200, 3), null, 100, 2), 200);
+  assert.equal(chooseHours(snapshot(100, 1), null, 200, 2), 200);
+  assert.equal(chooseHours(snapshot(150, 2), null, 100, 2), 150);
+  assert.equal(chooseHours(snapshot(200, null, 3), null, 100, 2), 200);
+  assert.equal(chooseHours(snapshot(null, 3), null, 100, 2), 100);
+  assert.equal(chooseHours(snapshot(0, 3), null, 100, 2), 0);
+  assert.equal(chooseHours(null, null, 100, 2), 100);
+  assert.equal(chooseHours(snapshot(200, 1), null, null, null), 200);
+  assert.equal(chooseHours(null, null, null, null), null);
+  assert.equal(chooseHours(null, { stats: { hoursPlayed: 200 }, freshness: { fetchedAt: 3 } }, 100, 2), 200);
+  assert.equal(chooseHours(null, { stats: { hoursPlayed: 100 }, freshness: { fetchedAt: 1 } }, 200, 2), 200);
+});
+
 test("Arena UI keeps the five modes in a fixed sequential order", () => {
   const average = read("components/ArenaAverage.tsx");
   const profile = read("components/ArenaPlayer.tsx");

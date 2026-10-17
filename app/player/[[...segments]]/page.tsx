@@ -46,11 +46,16 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   if (mode !== "seasonal") {
     let axisIdentity: AxisIdentity | null = null;
     let axisHours: number | null = null;
+    let axisHoursFetchedAt: number | null = null;
     if (mode === "arena") {
       try { axisIdentity = (await getAxisLeagueStore()).readPlayerIdentity(parsedAid); }
       catch (error) { console.warn("Axis identity unavailable", error); }
       if (axisIdentity) {
-        try { axisHours = (await getArenaProfile(parsedAid))?.overall.hours ?? null; }
+        try {
+          const profile = await getArenaProfile(parsedAid);
+          axisHours = profile?.overall.hours ?? null;
+          axisHoursFetchedAt = profile ? profile.fetchedAt ?? profile.profileUpdatedAt : null;
+        }
         catch (error) { console.warn("Axis Arena hours unavailable", error); }
       }
     }
@@ -62,6 +67,7 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
         mode={mode}
         axisIdentity={axisIdentity}
         axisHours={axisHours}
+        axisHoursFetchedAt={axisHoursFetchedAt}
         initialAxis={mode === "arena" && query.arenaMode === "axis"}
       />
     );
