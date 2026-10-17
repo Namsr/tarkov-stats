@@ -28,7 +28,7 @@ export default function ProfileCompareButton({ aid, mode, cycleId, arenaMode = "
     router.push(`/compare?${params}`);
   }
 
-  return <button type="button" className="ghost-button" disabled={!scope} onClick={compare}>
-    {t("compare.button")}
+  return <button type="button" className="ghost-button profile-icon-button" aria-label={t("compare.button")} title={t("compare.button")} disabled={!scope} onClick={compare}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4" /></svg>
   </button>;
 }

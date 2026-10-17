@@ -364,7 +364,10 @@ test("the profile button carries its player, mode, seasonal cycle and Arena subm
       new Function("require", "exports", compiled)(mockedRequire, exports);
       const button = exports.default(props);
       assert.equal(button.props.type, "button");
-      assert.equal(button.props.children, dict[lang]["compare.button"]);
+      assert.equal(button.props["aria-label"], dict[lang]["compare.button"]);
+      assert.equal(button.props.title, dict[lang]["compare.button"]);
+      assert.equal(button.props.children.type, "svg");
+      assert.equal(button.props.children.props["aria-hidden"], "true");
       assert.equal(button.props.disabled, false);
       button.props.onClick();
       assert.equal(destination, `/compare?${query}`);

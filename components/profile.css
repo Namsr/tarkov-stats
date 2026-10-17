@@ -274,6 +274,7 @@ html[data-theme="light"] .profile-risk__reading .home-risk-status--high { color:
   .profile-page .profile-header__meta { font-size: 13px; gap: 8px 12px; }
   .profile-page .profile-header__controls, .profile-actions { width: 100%; }
   .profile-actions { gap: 9px; }
+  .profile-header__actions > .profile-actions { width: auto; min-width: 0; flex: 1; }
   .profile-actions > .profile-action:first-child { flex: 1; }
   .profile-page .profile-report-button { font-size: 13px !important; padding-inline: 10px; }
   .profile-header__bar { margin-top: 22px; padding-bottom: 17px; gap: 17px; }
