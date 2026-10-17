@@ -28,7 +28,7 @@
 .axis-personal-card[data-kind="with"] { background: color-mix(in srgb,var(--profile-positive) 4%,var(--card-bg)); }
 .axis-personal-card[data-kind="against"] { background: color-mix(in srgb,var(--profile-report) 4%,var(--card-bg)); }
 a.axis-personal-card:hover { border-color: var(--muted); }
-.axis-personal-card-label { margin-bottom: 18px; font-size: 12px; color: var(--muted); }
+.axis-personal-card-label { display: inline-flex; align-items: center; gap: 9px; margin-bottom: 18px; font-size: 12px; color: var(--muted); }
 .axis-personal-card .axis-personal-name { font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
 .axis-personal-card-value { font-size: 14px; font-weight: 500; margin: 16px 0 7px; }
 .axis-personal-card small { color: var(--muted); font-size: 12px; }
@@ -44,8 +44,11 @@ a.axis-personal-card:hover { border-color: var(--muted); }
 a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-underline-offset: 4px; }
 .axis-personal .axis-avatar { flex-shrink: 0; }
 .axis-personal-peer-tabs { margin-top: 22px; margin-bottom: 10px; }
-.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 95px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
+.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 125px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
 .axis-personal-peer-row > span { text-align: right; font-variant-numeric: tabular-nums; }
+.axis-personal-peer-winrate { display: inline-flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.axis-personal-peer-bar { display: block; width: 48px; height: 4px; flex-shrink: 0; overflow: hidden; border-radius: 3px; background: var(--input-bg); }
+.axis-personal-peer-bar > span { display: block; height: 100%; background: var(--profile-positive); }
 .axis-personal-peer-head { min-height: 42px; padding: 10px 0; color: var(--muted); font-size: 12px; }
 .axis-personal-peer-head > span:first-child { text-align: left; }
 .axis-personal-history-head,.axis-personal-match summary { display: grid; grid-template-columns: 100px minmax(100px,1fr) 90px 120px 75px; gap: 16px; align-items: center; padding: 18px 5px; font-size: 13px; }
@@ -75,7 +78,7 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
 @media(max-width:900px) {
   .axis-personal-cards { grid-template-columns: 1fr; }
   .axis-personal-card { padding: 20px; }
-  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 70px; gap: 10px; font-size: 13px; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 110px; gap: 10px; font-size: 13px; }
   .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 80px minmax(90px,1fr) 60px 95px 55px; gap: 10px; }
 }
 @media(max-width:600px) {
@@ -89,6 +92,8 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
   .axis-personal .profile-segments { flex-wrap: wrap; }
   .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 32px 72px 56px; gap: 6px; font-size: 12px; }
   .axis-personal-peer-head { font-size: 11px; }
+  .axis-personal-peer-winrate { flex-direction: column; align-items: flex-end; gap: 5px; }
+  .axis-personal-peer-bar { width: 40px; }
   .axis-personal-peer-row .axis-avatar { width: 26px; height: 26px; }
   .axis-personal-peer-row .axis-personal-name { gap: 7px; }
   .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 65px minmax(0,1fr) 45px 45px; gap: 7px; font-size: 12px; }

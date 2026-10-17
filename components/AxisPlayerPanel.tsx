@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/context";
 import { AxisAvatar } from "@/components/AxisPlayerIdentity";
+import AxisIcon from "@/components/AxisIcon";
 import { arenaBarPositionFromRatio } from "@/components/arena-ui";
 import { axisKdaRatio, axisMatchHref, type AxisProfile } from "@/lib/axis-league";
 import { axisPlayerHref, axisPlayerResult, AXIS_PEER_MIN_MATCHES, type AxisPeer } from "@/lib/axis-player-profile";
@@ -67,7 +68,7 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
   }
   function card(title: string, peer: AxisPeer | null, kind: "with" | "against") {
     const content = <>
-      <span className="axis-personal-card-label">{title}</span>
+      <span className="axis-personal-card-label"><AxisIcon name={kind === "with" ? "handshake" : "swords"} />{title}</span>
       {peer ? <><PlayerName player={peer} link={false} /><strong className="axis-personal-card-value">{t(kind === "with" ? "axis.profile.withWinrate" : "axis.profile.againstWinrate", { n: percent(peer.winrate) })}</strong><small>{record(peer, kind === "against")}</small></>
         : <p className="axis-personal-empty">{t("axis.profile.insufficient", { n: AXIS_PEER_MIN_MATCHES })}</p>}
     </>;
@@ -136,14 +137,14 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
     <section id="axis-player-peers" className="axis-personal-section profile-anchor-section">
       <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.profile.connections")}</h2><span className="axis-personal-note">{t("axis.profile.minimum", { n: AXIS_PEER_MIN_MATCHES })}</span></div>
       <div className="axis-personal-cards">{card(t("axis.profile.bestTeammate"), data.highlights.teammate, "with")}{card(t("axis.profile.nemesis"), data.highlights.opponent, "against")}
-        {(() => { const content = <><span className="axis-personal-card-label">{t("axis.profile.betterWith")}</span>{ally ? <><PlayerName player={ally.with} link={false} /><div className="axis-personal-split"><span><small>{t("axis.profile.with")}</small><strong>{percent(ally.with.winrate)}</strong></span><span><small>{t("axis.profile.against")}</small><strong>{percent(ally.against.winrate)}</strong></span></div><small>{t("axis.profile.dualCount", { with: ally.with.wins + ally.with.losses, against: ally.against.wins + ally.against.losses })}</small></> : <p className="axis-personal-empty">{t("axis.profile.insufficient", { n: AXIS_PEER_MIN_MATCHES })}</p>}</>;
+        {(() => { const content = <><span className="axis-personal-card-label"><AxisIcon name="split" />{t("axis.profile.betterWith")}</span>{ally ? <><PlayerName player={ally.with} link={false} /><div className="axis-personal-split"><span><small>{t("axis.profile.with")}</small><strong>{percent(ally.with.winrate)}</strong></span><span><small>{t("axis.profile.against")}</small><strong>{percent(ally.against.winrate)}</strong></span></div><small>{t("axis.profile.dualCount", { with: ally.with.wins + ally.with.losses, against: ally.against.wins + ally.against.losses })}</small></> : <p className="axis-personal-empty">{t("axis.profile.insufficient", { n: AXIS_PEER_MIN_MATCHES })}</p>}</>;
           return ally?.with.profile ? <Link className="axis-personal-card" href={axisPlayerHref(ally.with.profile)} prefetch={false}>{content}</Link> : <article className="axis-personal-card">{content}</article>; })()}
       </div>
       <div className="profile-segments axis-personal-peer-tabs" role="group" aria-label={t("axis.profile.connections")}>
         {(["teammates", "opponents"] as const).map(view => <button key={view} type="button" aria-pressed={peerView === view} onClick={() => setPeerView(view)}>{t("axis.profile." + view)}</button>)}
       </div>
       <div className="axis-personal-peer-table"><div className="axis-personal-peer-row axis-personal-peer-head"><span>{t("axis.profile.player")}</span><span>{t("axis.column.games")}</span><span>{t("axis.profile.record")}</span><span>{t("axis.column.winrate")}</span></div>
-        {peers.length ? peers.map(peer => <div className="axis-personal-peer-row" key={peer.id}><PlayerName player={peer} /><span>{number(peer.games)}</span><span>{number(peer.wins)} / {number(peer.losses)}</span><span>{percent(peer.winrate)}</span></div>) : <p className="axis-personal-note">{t("axis.profile.noPeers")}</p>}
+        {peers.length ? peers.map(peer => <div className="axis-personal-peer-row" key={peer.id}><PlayerName player={peer} /><span>{number(peer.games)}</span><span>{number(peer.wins)} / {number(peer.losses)}</span><span className="axis-personal-peer-winrate"><span>{percent(peer.winrate)}</span>{peer.winrate != null && <span className="axis-personal-peer-bar" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(1, peer.winrate)) * 100}%` }} /></span>}</span></div>) : <p className="axis-personal-note">{t("axis.profile.noPeers")}</p>}
       </div>
     </section>
     <section id="axis-player-history" className="axis-personal-section profile-anchor-section">

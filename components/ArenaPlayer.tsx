@@ -10,6 +10,7 @@ import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import ProfileHeader from "@/components/ProfileHeader";
+import AxisIcon from "@/components/AxisIcon";
 import { ProfileErrorNotice } from "@/components/ProfileShell";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import StatCard from "@/components/StatCard";
@@ -51,7 +52,7 @@ function ArenaScopes({ selected, axis, linked, onMode, onAxis }: {
   const { t } = useI18n();
   return <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>
     {(["overall", ...ARENA_MODE_KEYS] as const).map(mode => <button key={mode} type="button" aria-pressed={!axis && selected === mode} onClick={() => onMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}
-    {(linked || axis) && <button type="button" aria-pressed={axis} onClick={onAxis}>{t("axis.profile.tab")}</button>}
+    {(linked || axis) && <button type="button" className="inline-flex items-center justify-center gap-2" aria-pressed={axis} onClick={onAxis}><AxisIcon name="swords" />{t("axis.profile.tab")}</button>}
   </div>;
 }
 
