@@ -143,6 +143,14 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.equal(normal.headers.server, undefined);
   assert.match(normal.headers['strict-transport-security'], /max-age=31536000/);
   t.diagnostic('ordinary request and client IP handling passed');
+  const beforeIdlePost = received;
+  assert.equal((await request('/', 'tarkovstats.ru', 'POST')).status, 200);
+  await delay(5200);
+  assert.equal((await request('/', 'tarkovstats.ru', 'POST')).status, 200);
+  assert.equal(received, beforeIdlePost + 2, 'POST after upstream idle timeout must be handled exactly once');
+  const beforePostReset = received;
+  assert.equal((await request('/reset', 'tarkovstats.ru', 'POST')).status, 502);
+  assert.equal(received, beforePostReset + 1, 'a POST accepted by upstream must never be retried after reset');
   const beforeEmpty = received;
   const emptyPaths = ['/api/player/profile', '/api/player/profile?aid=',
     '/api/player/profile?mode=pve', '/api/player/profile?%61id=',
@@ -223,9 +231,11 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   }
   const before = received;
   t.diagnostic('32 pending requests accepted across both sites');
+  const overflowStarted = Date.now();
   const rejected = await Promise.all(Array.from({ length: 64 }, (_, i) =>
     request('/', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru')));
   assert.ok(rejected.every((r) => r.status === 503), 'overflow must fail promptly');
+  assert.ok(Date.now() - overflowStarted < 1500, 'admission control must reject excess requests without a retry queue');
   assert.equal(received, before, 'overflow must never reach the backend');
   assert.equal(peak, 32, 'both domains must share the upstream budget');
   t.diagnostic('64 excess requests rejected without reaching the backend');
