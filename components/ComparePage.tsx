@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { comparisonSelectionParams, readComparisonSelection, saveComparisonSelection } from "@/lib/comparison-selection";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CompareProgressionSection from "@/components/CompareProgressionSection";
@@ -414,6 +415,20 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   const activeModeLabel = modeLabel(scope?.mode ?? visibleMode);
   const primaryAid = parseAid(searchParams.get("aid"));
   const secondaryAid = parseAid(searchParams.get("vs"));
+  useEffect(() => {
+    // Explicit comparison URLs always take precedence over the saved selection.
+    if (!["mode", "cycle", "arenaMode", "aid", "vs"].some(key => searchParams.has(key))) {
+      const saved = readComparisonSelection();
+      if (saved) {
+        const params = comparisonSelectionParams(saved);
+        if (comparisonScopeFromSearchParams(params, seasonalCycleId ?? null).status === "available") {
+          router.replace(`/compare?${params}`, { scroll: false });
+        }
+      }
+      return;
+    }
+    if (scope) saveComparisonSelection({ scope, primary: primaryAid, secondary: secondaryAid });
+  }, [primaryAid, secondaryAid, scope, searchParams, seasonalCycleId, router]);
   const cohortController = useComparisonCohort(scope, scopeKey, primaryAid, t);
   const primary = useComparisonProfile(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
   const secondaryCohortController = useComparisonCohort(scope, scopeKey, secondaryAid, t);

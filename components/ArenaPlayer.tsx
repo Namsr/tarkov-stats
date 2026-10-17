@@ -513,6 +513,7 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
   return <main className="page-frame profile-page" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>
     <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={profile.nickname || t("arena.account.unknown")}
+      comparisonArenaMode={selectedMode}
       leaderboardArenaMode={selectedMode === "overall" ? "blastGang" : selectedMode}
       leaderboardRevision={`${profile.profileUpdatedAt}:${profile.fetchedAt ?? "unknown"}:${profile.parserVersion}`}
       meta={<div className="profile-header__meta"><span>{t("fav.mode.arena")}</span>{profile.overall.bestArp != null && <span>{t("arena.bestArp")}: {number(profile.overall.bestArp)}</span>}<span>{t("metric.hours")}: {number(profile.overall.hours)} {t("unit.h")}</span></div>}
