@@ -9,6 +9,7 @@ import { fetchAxisPlayers, refreshAxisLeague } from "../lib/axis-league-sync.ts"
 import { AXIS_HISTORY_PAGE_SIZE, parseAxisHistory, sortAxisMatchPlayers } from "../lib/axis-history.ts";
 import { refreshAxisArchive } from "../lib/axis-history-sync.ts";
 import { AXIS_CURRENT_SEASON_START, detectAxisSeasons } from "../lib/axis-seasons.ts";
+import { axisPlayerHref } from "../lib/axis-player-profile.ts";
 import { AxisKdaConflict, parseAxisKdaChanges } from "../lib/axis-kda.ts";
 
 function row(id = "95520357670191104", name = "Player") {
@@ -27,16 +28,19 @@ test("AXIS previews keep league statistics separate and request Arena regardless
     "@/components/LeaderboardPreview": { LeaderboardPreviewLink: () => null, LeaderboardPreviewProvider: () => null },
     "@/lib/i18n/context": { useI18n: () => ({ lang: "ru", t: (key) => key }) },
     "@/lib/axis-league": { axisProfileHref, axisKdaRatio, axisMatchHref },
+    "@/lib/axis-player-profile": { axisPlayerHref },
   };
   new Function("require", "module", "exports", compiled)((name) => stubs[name] ?? require(name), identityModule, identityModule.exports);
   for (const mode of ["regular", "pve", "seasonal", "arena"]) {
     const identity = identityModule.exports.default({ player: { name: "Discord player", profile: { aid: 12345, mode } }, mmr: 1000 });
     assert.deepEqual(identity.props.meta, { mode: "arena", cycleId: null, arenaMode: "blastGang", generation: 0 });
     assert.equal(identity.props.children.props.aid, 12345);
+    assert.equal(identity.props.children.props.href, "/player/arena/12345?arenaMode=axis");
     assert.equal(identity.props.detailsLabel, "axis.title");
   }
   const unlinked = identityModule.exports.default({ player: { name: "Discord player", profile: null }, mmr: null });
   assert.equal(unlinked.props.children.props.aid, null);
+  assert.equal(unlinked.props.children.props.href, null);
   const player = { name: "Player", profile: null, position: 1, games: 5, wins: 3, losses: 2,
     winrate: .6, peakMmr: 1240, combatStats: { kills: 42, deaths: 0, assists: 8, matches: 3 },
     recentMatches: [{ number: 123, time: 1000, kills: 0, deaths: 0, assists: 0, won: false },
