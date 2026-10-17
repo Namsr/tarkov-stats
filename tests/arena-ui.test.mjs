@@ -99,7 +99,8 @@ test("Arena profile shares the profile header and selects an overall or mode sco
   assert.match(profile, /<ProfileSectionNav/);
   assert.match(profile, /arenaModeFromUrl/);
   assert.match(profile, /useState<ArenaStoredMode>\("overall"\)/);
-  assert.match(profile, /aria-pressed=\{selectedMode === mode\}/);
+  assert.match(profile, /aria-pressed=\{!axis && selected === mode\}/);
+  assert.match(profile, /<ArenaScopes selected=\{selectedMode\}/);
   assert.match(profile, /mode=\{selectedMode\}/);
   assert.match(profile, /<ArenaModeBars/);
   assert.match(profile, /favorite=\{favoriteStats\}/);

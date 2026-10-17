@@ -20,6 +20,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 const { GET, POST } = await import("../app/api/admin/axis-league/route.ts");
 const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
+const { GET: playerGet } = await import("../app/api/axis-league/player/route.ts");
 const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
 const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
 const { POST: profilesPost } = await import("../app/api/axis-league/profiles/route.ts");
@@ -43,6 +44,23 @@ function setupStats(t) {
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ number: 5, time: Date.now(), queueId: "1343726040421367842", queue: "Arena League", maps: [], winner: 0,
     teams: [{ name: null, players: [{ id, name: "Player", mmr: 1000, change: 25, profile: null }] }, { name: null, players: [] }] }] });
 }
+
+test("player profiles read locally and validate identity, season, pagination and result", async t => {
+  setupStats(t);
+  globalThis.axisStore.setProfile(id, { aid: 12345, mode: "arena" });
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = () => { throw new Error("player requests must not call upstream"); };
+  const get = query => playerGet(new Request("https://tarkovstats.ru/api/axis-league/player?" + query));
+  const response = await get("aid=12345");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal((await response.json()).identity.id, id);
+  assert.equal((await get("aid=99999")).status, 404);
+  for (const query of ["aid=0", "aid=12345&page=0", "aid=12345&page=100001", "aid=12345&result=draw", "aid=12345&season=bad", "aid=12345&season=match-999"]) {
+    assert.equal((await get(query)).status, 400, query);
+  }
+});
 
 test("saved standings return before a blocked upstream refresh; both history URLs stay local", async (t) => {
   setupStats(t);

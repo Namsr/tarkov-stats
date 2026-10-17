@@ -4,6 +4,7 @@ import type { AxisHistoryPage, AxisHistoryResponse } from "../axis-history";
 import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
 import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
+import { axisLeagueAverages, buildAxisPlayerSummary, AXIS_PLAYER_PAGE_SIZE, type AxisIdentity, type AxisPlayerSummary, type AxisPlayerProfileResponse } from "../axis-player-profile.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
 type SqliteDatabase = any;
@@ -56,6 +57,56 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         BEGIN UPDATE axis_preview_state SET revision=revision+1 WHERE id=1; END`);
     }
   }
+  db.exec("CREATE TABLE IF NOT EXISTS axis_player_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0); INSERT OR IGNORE INTO axis_player_state(id) VALUES(1)");
+  for (const table of ["axis_match_kda", "axis_archive_matches", "axis_league_profiles", "axis_league_snapshot"]) {
+    for (const event of ["INSERT", "UPDATE", "DELETE"]) {
+      const contentUpdate = table === "axis_league_snapshot" && event === "UPDATE";
+      db.exec(`CREATE TRIGGER IF NOT EXISTS player_${table}_${event} AFTER ${contentUpdate ? "UPDATE OF payload" : event} ON ${table}
+        ${contentUpdate ? "WHEN NEW.payload IS NOT OLD.payload" : ""}
+        BEGIN UPDATE axis_player_state SET revision=revision+1 WHERE id=1; END`);
+    }
+  }
+  const playerVersion = db.prepare("SELECT revision FROM axis_player_state WHERE id=1");
+  // Profile reads use an indexed membership lookup, not a scan of every match's JSON.
+  db.exec(`CREATE TABLE IF NOT EXISTS axis_match_participants (
+    match_number INTEGER NOT NULL, discord_id TEXT NOT NULL, team_index INTEGER NOT NULL,
+    PRIMARY KEY(match_number,discord_id)
+  );
+  CREATE INDEX IF NOT EXISTS axis_participant_player ON axis_match_participants(discord_id,match_number DESC);
+  CREATE INDEX IF NOT EXISTS axis_kda_player ON axis_match_kda(discord_id,match_number);
+  CREATE TABLE IF NOT EXISTS axis_participant_migration (id INTEGER PRIMARY KEY CHECK(id=1), ready INTEGER NOT NULL DEFAULT 0);
+  INSERT OR IGNORE INTO axis_participant_migration(id) VALUES(1);
+  CREATE TRIGGER IF NOT EXISTS axis_participant_insert AFTER INSERT ON axis_archive_matches BEGIN
+    INSERT OR IGNORE INTO axis_match_participants SELECT NEW.number,json_extract(player.value,'$.id'),CAST(team.key AS INTEGER)
+      FROM json_each(NEW.payload,'$.teams') team,json_each(team.value,'$.players') player;
+  END;
+  CREATE TRIGGER IF NOT EXISTS axis_participant_update AFTER UPDATE ON axis_archive_matches BEGIN
+    DELETE FROM axis_match_participants WHERE match_number=OLD.number;
+    INSERT OR IGNORE INTO axis_match_participants SELECT NEW.number,json_extract(player.value,'$.id'),CAST(team.key AS INTEGER)
+      FROM json_each(NEW.payload,'$.teams') team,json_each(team.value,'$.players') player;
+  END;
+  CREATE TRIGGER IF NOT EXISTS axis_participant_delete AFTER DELETE ON axis_archive_matches BEGIN
+    DELETE FROM axis_match_participants WHERE match_number=OLD.number;
+  END;`);
+  // Called only by the worker/import transaction, never from a profile read.
+  function backfillParticipants() {
+    if (!db.prepare("SELECT ready FROM axis_participant_migration WHERE id=1").get().ready) {
+      db.exec(`INSERT OR IGNORE INTO axis_match_participants
+        SELECT m.number,json_extract(player.value,'$.id'),CAST(team.key AS INTEGER)
+        FROM axis_archive_matches m,json_each(m.payload,'$.teams') team,json_each(team.value,'$.players') player;
+        UPDATE axis_participant_migration SET ready=1 WHERE id=1`);
+    }
+  }
+  let parsedSnapshot: { payload: string | null; players: AxisPlayer[] } | null = null;
+  function readSnapshotPlayers(): AxisPlayer[] {
+    const payload = db.prepare("SELECT payload FROM axis_league_snapshot WHERE id=1").get().payload as string | null;
+    if (parsedSnapshot?.payload === payload) return parsedSnapshot.players;
+    const players = payload == null ? [] : JSON.parse(payload) as AxisPlayer[];
+    parsedSnapshot = { payload, players };
+    return players;
+  }
+  const playerSummaries = new Map<string, { version: string; summary: AxisPlayerSummary }>();
+  const periodAverages = new Map<string, { version: number; averages: AxisPlayerSummary["averages"]; kda: number | null; recentKda: number | null }>();
   let previewCache: {
     version: string;
     players: Map<string, { combatStats: NonNullable<AxisPlayer["combatStats"]>; recentMatches: AxisRecentMatch[] }>;
@@ -150,6 +201,91 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) }));
   }
   return {
+    preparePlayerProfiles() {
+      if (db.prepare("SELECT ready FROM axis_participant_migration WHERE id=1").get().ready
+        && db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload != null) return;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        backfillParticipants();
+        if (db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload == null) updateSeasons();
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+    },
+    readPlayerIdentity(aid: number): AxisIdentity | null {
+      const mappings = db.prepare("SELECT discord_id,mode FROM axis_league_profiles WHERE aid=? ORDER BY mode='arena' DESC,discord_id").all(aid);
+      const link = mappings.find((entry: { mode: string }) => entry.mode === "arena") ?? (mappings.length === 1 ? mappings[0] : null);
+      if (!link) return null;
+      let player: Pick<AxisPlayer, "name" | "avatarUrl"> | undefined = readSnapshotPlayers().find(entry => entry.id === link.discord_id);
+      if (!player) {
+        const row = db.prepare("SELECT m.payload FROM axis_match_participants p JOIN axis_archive_matches m ON m.number=p.match_number WHERE p.discord_id=? AND json_extract(m.payload,'$.queueId')=? ORDER BY p.match_number DESC LIMIT 1").get(link.discord_id, AXIS_CHANNEL_ID);
+        if (row) player = (JSON.parse(row.payload) as AxisHistoryPage["matches"][number]).teams.flatMap(team => team.players).find(entry => entry.id === link.discord_id);
+      }
+      return { id: link.discord_id, name: player?.name ?? link.discord_id, avatarUrl: player?.avatarUrl ?? null, profile: { aid, mode: "arena" } };
+    },
+    readPlayerProfile(aid: number, season = "current", page = 1, result = "all", now = Date.now()): AxisPlayerProfileResponse | null {
+      const identity = this.readPlayerIdentity(aid);
+      if (!identity) return null;
+      const savedSeasons = db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload;
+      if (savedSeasons == null || !db.prepare("SELECT ready FROM axis_participant_migration WHERE id=1").get().ready) throw new Error("Axis profile preparation pending");
+      const archive = this.archiveState(), seasons = JSON.parse(savedSeasons) as AxisSeason[];
+      const selected = seasons.find(entry => entry.id === season);
+      if (season !== "all" && !selected) throw new RangeError("Unknown AXIS season");
+      const conditions = "json_extract(m.payload,'$.queueId')=?" + (selected ? " AND json_extract(m.payload,'$.time')>=?" + (selected.endsAt == null ? "" : " AND json_extract(m.payload,'$.time')<?") : "");
+      const bounds = [AXIS_CHANNEL_ID, ...(selected ? [selected.startsAt, ...(selected.endsAt == null ? [] : [selected.endsAt])] : [])];
+      const revision = playerVersion.get().revision as number;
+      const version = `${revision}:${selected?.startsAt ?? "all"}:${selected?.endsAt ?? ""}:${Boolean(archive.complete)}`;
+      const key = `${identity.id}:${season}`;
+      let cached = playerSummaries.get(key);
+      if (cached?.version !== version) {
+        const players = readSnapshotPlayers();
+        let baseline = periodAverages.get(season);
+        if (baseline?.version !== revision) {
+          const valid = " AND (json_extract(m.payload,'$.winner')>=0 OR json_extract(m.payload,'$.winner')=-2)";
+          const average = selected?.current ? axisLeagueAverages(players) : db.prepare(`SELECT AVG(games) AS games,AVG(wins) AS wins,AVG(losses) AS losses,AVG(winrate) AS winrate FROM (
+            SELECT p.discord_id,COUNT(*) AS games,SUM(json_extract(m.payload,'$.winner')=p.team_index) AS wins,
+              SUM(json_extract(m.payload,'$.winner')>=0 AND json_extract(m.payload,'$.winner')<>p.team_index) AS losses,
+              SUM(json_extract(m.payload,'$.winner')=p.team_index)*1.0/NULLIF(SUM(json_extract(m.payload,'$.winner')>=0),0) AS winrate
+            FROM axis_match_participants p JOIN axis_archive_matches m ON m.number=p.match_number
+            WHERE ${conditions}${valid} GROUP BY p.discord_id)`).get(...bounds);
+          const kda = db.prepare(`WITH ranked AS (
+            SELECT p.match_number,p.discord_id,ROW_NUMBER() OVER (PARTITION BY p.discord_id ORDER BY p.match_number DESC) AS recent_rank
+            FROM axis_match_participants p JOIN axis_archive_matches m ON m.number=p.match_number WHERE ${conditions}${valid}
+          ) SELECT AVG((k.kills+k.assists)*1.0/MAX(k.deaths,1)) AS value,
+            AVG(CASE WHEN r.recent_rank<=10 THEN (k.kills+k.assists)*1.0/MAX(k.deaths,1) END) AS recent
+            FROM ranked r JOIN axis_match_kda k ON k.match_number=r.match_number AND k.discord_id=r.discord_id`).get(...bounds);
+          baseline = { version: revision, averages: average, kda: kda.value, recentKda: kda.recent };
+          if (periodAverages.size >= 16) periodAverages.delete(periodAverages.keys().next().value!);
+          periodAverages.set(season, baseline);
+        }
+        const links = profileLinks();
+        const recorded = new Map<number, AxisKda>(db.prepare("SELECT match_number,kills,deaths,assists FROM axis_match_kda WHERE discord_id=?").all(identity.id)
+          .map((row: AxisKda & { match_number: number }) => [row.match_number, { kills: row.kills, deaths: row.deaths, assists: row.assists }]));
+        const matches = db.prepare(`SELECT m.payload FROM axis_match_participants p JOIN axis_archive_matches m ON m.number=p.match_number
+          WHERE p.discord_id=? AND ${conditions} ORDER BY m.number DESC`).all(identity.id, ...bounds)
+          .map((row: { payload: string }) => {
+            const match = JSON.parse(row.payload) as AxisHistoryPage["matches"][number];
+            for (const team of match.teams) for (const player of team.players) {
+              player.profile = links.get(player.id) ?? null;
+              if (player.id === identity.id) player.kda = recorded.get(match.number) ?? null;
+            }
+            return match;
+          });
+        cached = { version, summary: { ...buildAxisPlayerSummary(identity, matches, players, Boolean(selected?.current), baseline.averages, baseline.kda), averageRecentKda: baseline.recentKda } };
+        if (playerSummaries.size >= 32) playerSummaries.delete(playerSummaries.keys().next().value!);
+        playerSummaries.set(key, cached);
+      }
+      const resultSql = result === "win" ? " AND json_extract(m.payload,'$.winner')=p.team_index" : result === "loss" ? " AND json_extract(m.payload,'$.winner')>=0 AND json_extract(m.payload,'$.winner')<>p.team_index" : "";
+      const where = ` FROM axis_match_participants p JOIN axis_archive_matches m ON m.number=p.match_number WHERE p.discord_id=? AND ${conditions}${resultSql}`;
+      const total = db.prepare("SELECT COUNT(*) AS n" + where).get(identity.id, ...bounds).n as number;
+      const matches = db.prepare("SELECT m.payload" + where + " ORDER BY m.number DESC LIMIT ? OFFSET ?")
+        .all(identity.id, ...bounds, AXIS_PLAYER_PAGE_SIZE, (page - 1) * AXIS_PLAYER_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
+      const state = db.prepare("SELECT updated_at,last_error FROM axis_league_snapshot WHERE id=1").get();
+      const updatedAt = archive.updated_at ?? state.updated_at;
+      const stale = Boolean(archive.last_error || state.last_error) || updatedAt != null && now - updatedAt > AXIS_REFRESH_MS * 2;
+      return { ...cached.summary, aid, season, updatedAt, stale, history: { page, pages: Math.max(1, Math.ceil(total / AXIS_PLAYER_PAGE_SIZE)), total,
+        matches: decorateMatches(matches), season, seasons: archive.complete ? seasons : seasons.filter(entry => entry.current),
+        archiveComplete: Boolean(archive.complete), updatedAt: archive.updated_at, available: archive.updated_at != null, stale } };
+    },
     listKdaEditors(): string[] { return db.prepare("SELECT google_sub FROM axis_kda_editors ORDER BY google_sub").all().map((row: { google_sub: string }) => row.google_sub); },
     isKdaEditor(subject: string): boolean { return Boolean(db.prepare("SELECT 1 FROM axis_kda_editors WHERE google_sub=?").get(subject)); },
     setKdaEditor(subject: string, enabled: boolean) {
@@ -210,6 +346,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       db.exec("BEGIN IMMEDIATE");
       try {
         const previous = this.archiveState();
+        backfillParticipants();
         let changed = false;
         for (const match of data.matches) if (statement.run(match.number, JSON.stringify(match)).changes) changed = true;
         if (changed || db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload == null) updateSeasons();
