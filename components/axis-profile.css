@@ -1,0 +1,104 @@
+.axis-personal { display: grid; gap: 36px; margin-top: 28px; }
+.axis-personal-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
+.axis-personal-heading .section-heading { margin: 0; }
+.axis-personal .section-kicker { margin-bottom: 5px; }
+.axis-personal .profile-select { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.axis-personal .profile-select select { min-width: 190px; }
+.axis-personal-summary { padding: 24px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card-bg); }
+.axis-personal-average-label { text-align: right; margin-bottom: 20px; color: var(--muted); font-size: 12px; }
+.axis-personal-primary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 22px; }
+.axis-personal-primary dt,.axis-personal-secondary dt { color: var(--muted); font-size: 13px; margin-bottom: 9px; }
+.axis-personal-primary dd { font-size: 34px; line-height: 1.2; font-weight: 550; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.axis-personal-secondary { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 18px; border-top: 1px solid var(--card-border); margin-top: 24px; padding-top: 20px; }
+.axis-personal-secondary dt { font-size: 12px; }
+.axis-personal-secondary dd { font-size: 20px; font-variant-numeric: tabular-nums; }
+.axis-personal-delta { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.axis-personal-delta[data-positive="true"] { color: var(--profile-positive); }
+.axis-personal-note,.axis-personal-source { color: var(--muted); font-size: 13px; line-height: 1.65; }
+.axis-personal-note strong { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.axis-personal-state { padding: 28px 0; color: var(--muted); }
+.axis-personal-state button { margin-top: 16px; }
+.axis-personal-recent { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+.axis-personal-recent > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.axis-personal-recent a { display: grid; place-items: center; min-width: 26px; height: 28px; padding: 4px; border-radius: 4px; color: var(--profile-positive); background: color-mix(in srgb,var(--profile-positive) 13%,var(--card-bg)); font-size: 11px; }
+.axis-personal-recent a[data-result="loss"] { color: var(--profile-report); background: color-mix(in srgb,var(--profile-report) 12%,var(--card-bg)); }
+.axis-personal-recent a[data-result="draw"] { color: var(--muted); background: var(--input-bg); }
+.axis-personal-cards { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+.axis-personal-card { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 22px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--card-bg); }
+.axis-personal-card[data-kind="with"] { background: color-mix(in srgb,var(--profile-positive) 4%,var(--card-bg)); }
+.axis-personal-card[data-kind="against"] { background: color-mix(in srgb,var(--profile-report) 4%,var(--card-bg)); }
+a.axis-personal-card:hover { border-color: var(--muted); }
+.axis-personal-card-label { margin-bottom: 18px; font-size: 12px; color: var(--muted); }
+.axis-personal-card .axis-personal-name { font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
+.axis-personal-card-value { font-size: 14px; font-weight: 500; margin: 16px 0 7px; }
+.axis-personal-card small { color: var(--muted); font-size: 12px; }
+.axis-personal-card[data-kind="with"] .axis-personal-card-label,.axis-personal-card[data-kind="with"] .axis-personal-card-value { color: var(--profile-positive); }
+.axis-personal-card[data-kind="against"] .axis-personal-card-label,.axis-personal-card[data-kind="against"] .axis-personal-card-value { color: var(--profile-report); }
+.axis-personal-split { display: flex; gap: 24px; margin: 13px 0 9px; }
+.axis-personal-split small { display: block; margin-bottom: 3px; }
+.axis-personal-split strong { color: var(--profile-positive); font-size: 18px; font-weight: 500; }
+.axis-personal-split > span:last-child strong { color: var(--profile-report); }
+.axis-personal-empty { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.axis-personal-name { display: inline-flex; align-items: center; gap: 11px; min-width: 0; }
+.axis-personal-name > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-underline-offset: 4px; }
+.axis-personal .axis-avatar { flex-shrink: 0; }
+.axis-personal-peer-tabs { margin-top: 22px; margin-bottom: 10px; }
+.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 95px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
+.axis-personal-peer-row > span { text-align: right; font-variant-numeric: tabular-nums; }
+.axis-personal-peer-head { min-height: 42px; padding: 10px 0; color: var(--muted); font-size: 12px; }
+.axis-personal-peer-head > span:first-child { text-align: left; }
+.axis-personal-history-head,.axis-personal-match summary { display: grid; grid-template-columns: 100px minmax(100px,1fr) 90px 120px 75px; gap: 16px; align-items: center; padding: 18px 5px; font-size: 13px; }
+.axis-personal-history-head { color: var(--muted); font-size: 12px; padding-top: 0; padding-bottom: 12px; }
+.axis-personal-history-head > :nth-child(n+3),.axis-personal-match summary > :nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+.axis-personal-match { border-top: 1px solid var(--card-border); scroll-margin-top: 20px; }
+.axis-personal-match:last-of-type { border-bottom: 1px solid var(--card-border); }
+.axis-personal-match summary { cursor: pointer; list-style: none; }
+.axis-personal-match summary::-webkit-details-marker { display: none; }
+.axis-personal-match summary:hover { background: var(--input-bg); }
+.axis-personal-match summary strong { display: block; font-weight: 500; }
+.axis-personal-match summary small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.axis-personal-result { color: var(--muted); }
+.axis-personal-result[data-result="win"] { color: var(--profile-positive); }
+.axis-personal-result[data-result="loss"] { color: var(--profile-report); }
+.axis-personal-rosters { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 28px; padding: 10px 16px 24px; }
+.axis-personal-rosters h3 { color: var(--muted); font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+.axis-personal-roster-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 12px; }
+.axis-personal-roster-row > span { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.axis-personal-roster-row .axis-avatar { width: 28px; height: 28px; }
+.axis-personal-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 18px; font-size: 12px; color: var(--muted); }
+.axis-personal-maps { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 32px; margin-top: 15px; }
+.axis-personal-maps > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 18px; padding: 17px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
+.axis-personal-maps strong { font-weight: 500; }
+.axis-personal-maps span { color: var(--muted); font-size: 12px; }
+.axis-personal-source { padding-top: 18px; border-top: 1px solid var(--card-border); font-size: 12px; }
+@media(max-width:900px) {
+  .axis-personal-cards { grid-template-columns: 1fr; }
+  .axis-personal-card { padding: 20px; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 70px; gap: 10px; font-size: 13px; }
+  .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 80px minmax(90px,1fr) 60px 95px 55px; gap: 10px; }
+}
+@media(max-width:600px) {
+  .axis-personal { gap: 30px; }
+  .axis-personal-summary { padding: 18px; }
+  .axis-personal-primary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 23px; }
+  .axis-personal-primary dd { font-size: 30px; }
+  .axis-personal-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; }
+  .axis-personal-heading { align-items: flex-start; }
+  .axis-personal .section-heading { font-size: 25px; }
+  .axis-personal .profile-segments { flex-wrap: wrap; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 32px 72px 56px; gap: 6px; font-size: 12px; }
+  .axis-personal-peer-head { font-size: 11px; }
+  .axis-personal-peer-row .axis-avatar { width: 26px; height: 26px; }
+  .axis-personal-peer-row .axis-personal-name { gap: 7px; }
+  .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 65px minmax(0,1fr) 45px 45px; gap: 7px; font-size: 12px; }
+  .axis-personal-history-head .axis-personal-history-kda { display: none; }
+  .axis-personal-match summary > :nth-child(3) { grid-column: 3; grid-row: 1; }
+  .axis-personal-match summary > :nth-child(5) { grid-column: 4; grid-row: 1; }
+  .axis-personal-match summary .axis-personal-history-kda { grid-column: 2 / -1; grid-row: 2; text-align: left; color: var(--muted); }
+  .axis-personal-rosters,.axis-personal-maps { grid-template-columns: 1fr; }
+  .axis-personal-rosters { padding-inline: 5px; }
+  .axis-personal-pagination > span { order: -1; width: 100%; }
+}
+@media(pointer:coarse) { .axis-personal button,.axis-personal-name,.axis-personal-recent a { min-height: 44px; } }
+@media(prefers-reduced-motion:reduce) { .axis-personal .arena-comparison-fill { transition: none; } }

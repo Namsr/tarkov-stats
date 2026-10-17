@@ -10,10 +10,12 @@ import { cumulativeLevelBands } from "@/lib/seasonal/ui";
 import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";
 import { parsePlayerId } from "@/lib/player-id";
 import { gameModeFromAppRoute } from "@/types/seasonal";
+import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
+import type { AxisIdentity } from "@/lib/axis-player-profile";
 
 interface Props {
   params: Promise<{ segments?: string[] }>;
-  searchParams: Promise<{ cycle?: string | string[]; radarDemo?: string | string[] }>;
+  searchParams: Promise<{ cycle?: string | string[]; radarDemo?: string | string[]; arenaMode?: string | string[] }>;
 }
 
 function SeasonalPlayerRoute({ aid, cycleId }: { aid: number; cycleId: string }) {
@@ -41,12 +43,19 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   const parsedAid = parsePlayerId(aid);
   if (parsedAid === null) notFound();
   if (mode !== "seasonal") {
+    let axisIdentity: AxisIdentity | null = null;
+    if (mode === "arena") {
+      try { axisIdentity = (await getAxisLeagueStore()).readPlayerIdentity(parsedAid); }
+      catch (error) { console.warn("Axis identity unavailable", error); }
+    }
     return (
       <RegularPlayer
         key={`${mode}:${aid}`}
         aid={aid}
         radarDemo={query.radarDemo}
         mode={mode}
+        axisIdentity={axisIdentity}
+        initialAxis={mode === "arena" && query.arenaMode === "axis"}
       />
     );
   }

@@ -19,6 +19,8 @@ export default function ProfileHeader({
   actions,
   activity,
   children,
+  portrait,
+  hideLeaderboardRank = false,
 }: {
   aid: number;
   mode: GameMode;
@@ -32,13 +34,15 @@ export default function ProfileHeader({
   actions: ReactNode;
   activity?: ReactNode;
   children: ReactNode;
+  portrait?: ReactNode;
+  hideLeaderboardRank?: boolean;
 }) {
   const leaderboardMode = mode === "seasonal" ? "pvp-season" : mode;
   return (
     <section id="overview" tabIndex={-1} className="profile-header surface profile-anchor-section">
       <div className="profile-header__top">
         <div className="profile-header__person">
-          {title && (
+          {portrait ?? (title && (
             <ProfilePortrait
               key={`${mode}:${seasonalCycleId}:${aid}`}
               aid={aid}
@@ -46,7 +50,7 @@ export default function ProfileHeader({
               cycleId={seasonalCycleId}
               nickname={title}
             />
-          )}
+          ))}
           <div className="profile-header__identity">
             <p className="page-kicker">{kicker}</p>
             {title ? (
@@ -55,13 +59,13 @@ export default function ProfileHeader({
                   <h1 className="page-title break-words">{title}</h1>
                   <ProfilePrestige level={prestige} />
                 </div>
-                <LeaderboardRankLink
+                {!hideLeaderboardRank && <LeaderboardRankLink
                   aid={aid}
                   mode={leaderboardMode}
                   arenaMode={leaderboardArenaMode}
                   cycleId={seasonalCycleId}
                   revision={leaderboardRevision}
-                />
+                />}
               </div>
             ) : null}
             {meta}

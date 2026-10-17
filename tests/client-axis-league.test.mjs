@@ -2,6 +2,43 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { AXIS_REFRESH_MS } from "../lib/axis-league.ts";
+import { axisPlayerRequest, cachedAxisPlayer, loadAxisPlayer } from "../lib/client-axis-player.ts";
+
+const playerBody = (aid, page = 1) => ({ aid, season: "current", identity: {}, stats: {}, averages: {}, highlights: {}, recent: [], teammates: [], opponents: [], maps: [], history: { page, matches: [] } });
+test("Axis player requests coalesce, isolate cancellation, cache revisits and separate history pages", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0, finish, networkSignal;
+  globalThis.fetch = (_url, options) => { calls++; networkSignal = options.signal; return new Promise(resolve => { finish = resolve; }); };
+  const url = axisPlayerRequest(98761, "current", 1, "all"), first = new AbortController(), second = new AbortController();
+  const abandoned = loadAxisPlayer(url, first.signal);
+  const abandonedCheck = assert.rejects(abandoned, { name: "AbortError" });
+  const retained = loadAxisPlayer(url, second.signal);
+  first.abort();
+  assert.equal(networkSignal.aborted, false);
+  finish(Response.json(playerBody(98761)));
+  await abandonedCheck;
+  assert.equal((await retained).aid, 98761);
+  assert.equal(calls, 1);
+  assert.equal((await loadAxisPlayer(url, new AbortController().signal)).aid, 98761);
+  assert.equal(calls, 1);
+  assert.ok(cachedAxisPlayer(url));
+  globalThis.fetch = async () => { calls++; return Response.json(playerBody(98761, 2)); };
+  await loadAxisPlayer(axisPlayerRequest(98761, "current", 2, "all"), new AbortController().signal);
+  assert.equal(calls, 2);
+});
+
+test("Axis player malformed cached responses are not exposed and explicit retry recovers", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const url = axisPlayerRequest(98762, "current", 1, "all");
+  globalThis.fetch = async () => Response.json({ aid: 98762, season: "current", history: { page: 1, matches: [] } });
+  await assert.rejects(loadAxisPlayer(url, new AbortController().signal));
+  assert.equal(cachedAxisPlayer(url), null);
+  globalThis.fetch = async () => Response.json(playerBody(98762));
+  await loadAxisPlayer(url, new AbortController().signal, true);
+  assert.ok(cachedAxisPlayer(url));
+});
 
 let sequence = 0;
 async function setup(t) {

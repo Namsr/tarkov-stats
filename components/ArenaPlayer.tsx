@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
+import type { AxisIdentity } from "@/lib/axis-player-profile";
 import ArenaOverallComparison from "@/components/ArenaOverallComparison";
 import ArenaCombatSummary from "@/components/ArenaCombatSummary";
 import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
@@ -36,6 +38,21 @@ import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 interface Props {
   aid: string;
   radarDemo?: string | string[];
+  axisIdentity?: AxisIdentity | null;
+  initialAxis?: boolean;
+}
+
+const AxisPlayerPanel = dynamic(() => import("@/components/AxisPlayerPanel"));
+const AxisAvatar = dynamic(() => import("@/components/AxisPlayerIdentity").then(module => module.AxisAvatar));
+
+function ArenaScopes({ selected, axis, linked, onMode, onAxis }: {
+  selected: ArenaStoredMode; axis: boolean; linked: boolean; onMode: (mode: ArenaStoredMode) => void; onAxis: () => void;
+}) {
+  const { t } = useI18n();
+  return <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>
+    {(["overall", ...ARENA_MODE_KEYS] as const).map(mode => <button key={mode} type="button" aria-pressed={!axis && selected === mode} onClick={() => onMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}
+    {(linked || axis) && <button type="button" aria-pressed={axis} onClick={onAxis}>{t("axis.profile.tab")}</button>}
+  </div>;
 }
 
 interface ArenaResponse {
@@ -123,10 +140,11 @@ function ArenaProfileActions({
   );
 }
 
-export function ArenaProfileLoading() {
+export function ArenaProfileLoading({ children }: { children?: ReactNode } = {}) {
   const { t } = useI18n();
   return (
-    <main className="page-frame profile-page" aria-label={t("arena.profile.loading")}>
+    <main className="page-frame profile-page min-h-screen" aria-label={t("arena.profile.loading")}>
+      {children}
       <div className="surface p-5 sm:p-6">
         <div className="h-3 w-16 skeleton rounded" />
         <div className="mt-4 h-12 w-56 skeleton rounded" />
@@ -147,11 +165,13 @@ function ArenaLegacyIncomplete({
   body,
   error,
   onCheck,
+  scopes,
 }: {
   aid: number;
   body: ArenaResponse;
   error: string;
   onCheck: () => Promise<RefreshCheckResult>;
+  scopes?: ReactNode;
 }) {
   const { t } = useI18n();
   const nickname = legacyNickname(body) || t("arena.account.unknown");
@@ -175,6 +195,7 @@ function ArenaLegacyIncomplete({
         meta={<p className="text-sm text-[var(--muted)]">{t("arena.profile.legacyTitle")}</p>}
         actions={<ArenaProfileActions aid={aid} nickname={nickname} stale={stale} onCheck={onCheck} />}
       >
+        {scopes}
         <div className="px-[18px] pb-5 sm:px-6 sm:pb-6">
           <p className="mb-4 max-w-3xl text-sm leading-relaxed text-[var(--muted)]">{t("arena.profile.legacyDescription")}</p>
           <div className="detail-grid detail-grid--compact">
@@ -218,7 +239,7 @@ function ArenaLegacyIncomplete({
   );
 }
 
-export default function ArenaPlayer({ aid }: Props) {
+export default function ArenaPlayer({ aid, axisIdentity = null, initialAxis = false }: Props) {
   const { lang, t } = useI18n();
   const numericAid = Number(aid);
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode: "arena" })}`;
@@ -239,12 +260,14 @@ export default function ArenaPlayer({ aid }: Props) {
   const [unavailable, setUnavailable] = useState(false);
   const [statistic, setStatistic] = useState<ArenaStatistic>("trimmed_mean");
   const [selectedMode, setSelectedMode] = useState<ArenaStoredMode>("overall");
+  const [axisSelected, setAxisSelected] = useState(initialAxis);
   const refreshPromise = useRef<Promise<RefreshCheckResult> | null>(null);
   const { authStatus, favorites } = useFavorites();
 
   useEffect(() => {
     const onPopState = () => {
       setStatistic(statisticFromUrl());
+      setAxisSelected(new URLSearchParams(window.location.search).get("arenaMode") === "axis");
       const mode = arenaModeFromUrl();
       setSelectedMode(mode ?? "overall");
     };
@@ -254,6 +277,7 @@ export default function ArenaPlayer({ aid }: Props) {
   }, []);
 
   useEffect(() => {
+    if (axisSelected || new URLSearchParams(window.location.search).get("arenaMode") === "axis") return;
     let cancelled = false;
     const force = isReload();
     const params = new URLSearchParams({ aid, mode: "arena" });
@@ -305,12 +329,12 @@ export default function ArenaPlayer({ aid }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [aid, initialProfile, numericAid, t]);
+  }, [aid, initialProfile, numericAid, t, axisSelected]);
 
   useEffect(() => {
-    if (loading || !profile || profile.aid !== numericAid || risk) return;
+    if (axisSelected || loading || !profile || profile.aid !== numericAid || risk) return;
     return scheduleArenaRiskPoll(numericAid, profile.profileUpdatedAt, setRisk);
-  }, [loading, profile, numericAid, risk]);
+  }, [loading, profile, numericAid, risk, axisSelected]);
 
   const refreshProfile = useCallback(() => {
     if (refreshPromise.current) return refreshPromise.current;
@@ -379,7 +403,7 @@ export default function ArenaPlayer({ aid }: Props) {
   const [favoriteError, setFavoriteError] = useState(false);
 
   useEffect(() => {
-    if (!showFavorite || authStatus !== "authenticated" || effectiveFavoriteAid == null) {
+    if (axisSelected || !showFavorite || authStatus !== "authenticated" || effectiveFavoriteAid == null) {
       setFavoriteProfile(null);
       setFavoriteError(false);
       return;
@@ -412,10 +436,35 @@ export default function ArenaPlayer({ aid }: Props) {
       active = false;
       controller.abort();
     };
-  }, [authStatus, effectiveFavoriteAid, showFavorite]);
+  }, [authStatus, effectiveFavoriteAid, showFavorite, axisSelected]);
 
-  if (loading && !profile && !legacyBody) return <ArenaProfileLoading />;
-  if (legacyBody) return <ArenaLegacyIncomplete aid={numericAid} body={legacyBody} error={error} onCheck={refreshProfile} />;
+  const changeMode = (mode: ArenaStoredMode) => {
+    setAxisSelected(false); setSelectedMode(mode);
+    const params = new URLSearchParams(window.location.search);
+    if (mode === "overall") params.delete("arenaMode"); else params.set("arenaMode", mode);
+    window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
+  };
+  const selectAxis = () => {
+    setAxisSelected(true);
+    const url = new URL(window.location.href); url.searchParams.set("arenaMode", "axis"); url.hash = "";
+    window.history.replaceState(null, "", url);
+  };
+  const scopes = <ArenaScopes selected={selectedMode} axis={axisSelected} linked={axisIdentity != null} onMode={changeMode} onAxis={selectAxis} />;
+
+  if (axisSelected) return <main className="page-frame profile-page min-h-screen" data-profile-shell-mode="arena">
+    <Link href="/" className="profile-back">{t("common.back")}</Link>
+    <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={axisIdentity?.name ?? profile?.nickname}
+      portrait={axisIdentity ? <div className="profile-portrait axis-profile-portrait"><AxisAvatar name={axisIdentity.name} url={axisIdentity.avatarUrl} /></div> : undefined}
+      hideLeaderboardRank meta={<div className="profile-header__meta"><span>{t("axis.title")}</span></div>}
+      actions={<ProfilePrimaryActions aid={numericAid} mode="arena" cycleId="persistent" nickname={axisIdentity?.name} />}>
+      <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "axis-player-overview", label: t("profile.section.overview") }, { id: "axis-player-peers", label: t("axis.profile.connections") }, { id: "axis-player-history", label: t("axis.history.title") }]} />
+      {scopes}
+    </ProfileHeader>
+    {axisIdentity ? <AxisPlayerPanel aid={numericAid} /> : <p className="profile-chart-notice" role="status">{t("axis.profile.unlinked")}</p>}
+  </main>;
+
+  if (loading && !profile && !legacyBody) return <ArenaProfileLoading>{axisIdentity && scopes}</ArenaProfileLoading>;
+  if (legacyBody) return <ArenaLegacyIncomplete aid={numericAid} body={legacyBody} error={error} onCheck={refreshProfile} scopes={scopes} />;
   if (unavailable || !profile) {
     // Only a mode_profile_unavailable response means "no Arena data". Any other
     // failure (including an aborted request) must not be reported as missing
@@ -430,6 +479,7 @@ export default function ArenaPlayer({ aid }: Props) {
           kicker={`#${aid}`}
           actions={<ArenaProfileActions aid={numericAid} stale={false} missing={unavailable} onCheck={refreshProfile} />}
         >
+          {scopes}
           <div className="profile-metrics">
             {["arena.account.hours", "arena.counter.kills", "arena.counter.deaths", "arena.metric.kd_ratio"].map((key) => (
               <dl key={key} className="profile-metric">
@@ -451,13 +501,6 @@ export default function ArenaPlayer({ aid }: Props) {
   const comparedFavorite = showFavorite && canCompareFavorite && favoriteProfile?.aid === effectiveFavoriteAid ? favoriteProfile : null;
   const favoriteStats = selectedMode === "overall" ? comparedFavorite?.overall : comparedFavorite?.modes[selectedMode];
   const number = (value: number | null, digits = 0) => value == null || !Number.isFinite(value) ? "—" : value.toLocaleString(lang, { maximumFractionDigits: digits });
-  const changeMode = (mode: ArenaStoredMode) => {
-    setSelectedMode(mode);
-    const params = new URLSearchParams(window.location.search);
-    if (mode === "overall") params.delete("arenaMode");
-    else params.set("arenaMode", mode);
-    window.history.replaceState(null, "", `${window.location.pathname}${params.toString() ? `?${params}` : ""}${window.location.hash}`);
-  };
   return <main className="page-frame profile-page" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>
     <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={profile.nickname || t("arena.account.unknown")}
@@ -467,7 +510,7 @@ export default function ArenaPlayer({ aid }: Props) {
       actions={<ProfilePrimaryActions aid={numericAid} mode="arena" cycleId="persistent" nickname={profile.nickname} />}
       activity={<ProfileActivity aid={numericAid} mode="arena" updatedAt={profile.profileUpdatedAt} onCheck={refreshProfile} />}>
       <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "arena-overview", label: t("profile.section.overview") }, { id: "arena-comparison", label: t("profile.section.statistics") }, { id: "statistics", label: t("arena.combat.details") }, { id: "arena-modes", label: t("arena.byMode") }]} />
-      <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>{(["overall", ...ARENA_MODE_KEYS] as const).map((mode) => <button key={mode} type="button" aria-pressed={selectedMode === mode} onClick={() => changeMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}</div>
+      {scopes}
     </ProfileHeader>
     {error && <ProfileErrorNotice>{error}</ProfileErrorNotice>}
     <div className="profile-content">

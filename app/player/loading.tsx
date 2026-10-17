@@ -3,6 +3,7 @@
 import { usePathname, useSearchParams } from "next/navigation";
 import { ProfileShellLoading } from "@/components/ProfileShell";
 import RegularPlayer from "@/components/RegularPlayer";
+import { ArenaProfileLoading } from "@/components/ArenaPlayer";
 import SeasonalPlayer from "@/components/SeasonalPlayer";
 import { parsePlayerId } from "@/lib/player-id";
 import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";
@@ -17,6 +18,8 @@ export default function Loading() {
   const aidValue = segments.length === 1 ? segments[0] : segments[1];
   const mode = gameModeFromAppRoute(routeMode) ?? "regular";
   const aid = aidValue ? parsePlayerId(aidValue) ?? undefined : undefined;
+
+  if (mode === "arena" && searchParams.get("arenaMode") === "axis") return <ArenaProfileLoading />;
 
   if (aid != null && mode !== "seasonal") {
     return (

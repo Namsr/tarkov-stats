@@ -6,6 +6,7 @@ import { refreshAxisArchive } from "../lib/axis-history-sync.ts";
 async function sync() {
   try {
     const store = await getAxisLeagueStore();
+    store.preparePlayerProfiles();
     await Promise.all([refreshAxisLeague(store), refreshAxisArchive(store)]);
   }
   catch (error) { console.warn("AXIS League worker: " + error.message); }

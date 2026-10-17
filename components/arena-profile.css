@@ -1,4 +1,6 @@
 .profile-page[data-profile-shell-mode="arena"] .profile-content { margin-top: 28px; gap: 42px; }
+.axis-profile-portrait .axis-avatar { width: 100%; height: 100%; border: 0; border-radius: inherit; }
+.axis-profile-portrait .axis-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .arena-combat-scope { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 16px; color: var(--muted); font-size: 13px; }
 .arena-combat-scope strong { font-weight: 550; color: var(--foreground); }
 .arena-combat-gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
