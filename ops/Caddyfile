@@ -14,6 +14,31 @@
 	}
 }
 
+(web_upstream) {
+	# Shared across both sites because they use the same upstream address.
+	# Reject excess requests with 503 instead of retaining an unbounded queue.
+	unhealthy_request_count 32
+	# One upstream: do not quarantine both sites after one failed request.
+	fail_duration 0
+	transport http {
+		# Next.js closes idle sockets after 5s; retire pooled sockets first.
+		keepalive 4s
+		response_header_timeout 20s
+		read_timeout 25s
+	}
+	# Only trusted proxies may supply the original client address.
+	header_up X-Real-IP {client_ip}
+	header_up X-Request-ID {http.request.uuid}
+}
+
+(response_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+		-Via
+	}
+}
+
 (hardening) {
 	# Profile access logs include proxy failures and early rejections. Keep only
 	# allowlisted identity fields; never log cookies, arbitrary queries or URLs.
@@ -79,11 +104,7 @@
 		Cache-Control no-store
 	}
 	respond @emptyProfile `{"error":"Invalid account ID. Paste a numeric id or a tarkov.dev profile link."}` 400
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		-Server
-		-Via
-	}
+	import response_headers
 	request_body {
 		max_size 256KB
 	}
@@ -92,20 +113,27 @@
 	@privateFiles path_regexp privateFiles (?i)(^|/)(\.env([./_-]|$)|\.(git|svn|hg|aws|ssh|terraform)(/|$)|wp-config\.php($|[./])|terraform\.tfstate($|[./])|docker-compose[^/]*\.ya?ml$)
 	respond @privateFiles 404
 	reverse_proxy web:3000 {
-		# Shared across both sites because they use the same upstream address.
-		# Reject excess requests with 503 instead of retaining an unbounded queue.
-		unhealthy_request_count 32
-		# One upstream: do not quarantine both sites after one failed request.
-		fail_duration 0
-		transport http {
-			# Next.js closes idle sockets after 5s; retire pooled sockets first.
-			keepalive 4s
-			response_header_timeout 20s
-			read_timeout 25s
+		import web_upstream
+	}
+	# Only a refused TCP dial proves the application has not accepted the request.
+	# Ordinary overload (503), read resets and timeouts never enter this retry pool.
+	handle_errors {
+		import response_headers
+		@refused expression `{err.status_code} == 502 && {err.message}.matches('^dial tcp .*: (connect: connection refused|connectex: .*actively refused it.*)$')`
+		handle @refused {
+			reverse_proxy web:3000 {
+				import web_upstream
+				lb_try_duration 4s
+				lb_try_interval 100ms
+				# Never replay a request after a successful connection, including GET.
+				lb_retry_match {
+					expression false
+				}
+			}
 		}
-		# Only trusted proxies may supply the original client address.
-		header_up X-Real-IP {client_ip}
-		header_up X-Request-ID {http.request.uuid}
+		handle {
+			respond "" {err.status_code}
+		}
 	}
 }
 

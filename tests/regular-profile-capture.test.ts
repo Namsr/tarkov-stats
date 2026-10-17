@@ -173,13 +173,5 @@ test("every branch of the per-account favorites stats route stays no-store", () 
   assert.doesNotMatch(source, /\{ favorites: \[\] \}, \{ headers \}/);
 });
 
-test("favorites keep parsed stats when snapshot construction fails synchronously", () => {
-  const source = readFileSync(resolve("app/api/favorites/stats/route.ts"), "utf8");
-  const start = source.indexOf("const stats = parseProfileStats");
-  const end = source.indexOf("// Only on a fresh upstream hit", start);
-  assert.ok(start >= 0 && end > start);
-  const persistence = source.slice(start, end);
-  assert.match(persistence, /try \{\s*await persistRegularProfileSnapshot\(\s*makePlayerSnapshot/);
-  assert.match(persistence, /catch \{\s*\/\/ A missing upstream version must not hide otherwise valid profile stats\./);
-  assert.doesNotMatch(persistence, /\.catch\(/);
-});
+// The favorites route's synchronous snapshot-construction failure is exercised
+// behaviorally by tests/favorites-stats.test.mjs, including the actual response.

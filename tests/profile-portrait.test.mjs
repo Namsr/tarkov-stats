@@ -21,6 +21,7 @@ registerHooks({
   },
 });
 
+const { cachedPortraitImage, PortraitCooldownError, resetPortraitImageCacheForTests } = await import("../lib/portrait-image-cache.ts");
 const { GET } = await import("../app/api/player/portrait/route.ts");
 const { NextRequest } = await import("next/server");
 const customization = {
@@ -46,6 +47,9 @@ test("portrait render carries the character and equipment, excluding unrelated p
 });
 
 test("portrait route isolates and caches modes, validates cycles, and handles upstream failure", async (t) => {
+  resetPortraitImageCacheForTests();
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const calls = [];
   const renders = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
@@ -112,10 +116,14 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
   assert.deepEqual(renders, ["/player/42.webp"], "the image bytes must be cached too");
 
   for (const [aid, failure] of [[95, "HTTP 500"], [96, "network failure"], [97, "body read failure"], [98, "HTML response"], [99, "empty image"]]) {
-    await t.test(`${failure} does not cache a missing portrait and recovers on the next request`, async () => {
+    await t.test(`${failure} cools down without a cached missing portrait and recovers`, async () => {
       const fallback = await request(`aid=${aid}&mode=regular`);
-      assert.equal(fallback.status, 307);
-      assert.equal(new URL(fallback.headers.get("location")).hostname, "imagemagic.tarkov.dev");
+      assert.equal(fallback.status, 503);
+      assert.equal(fallback.headers.get("location"), null);
+      assert.equal(fallback.headers.get("retry-after"), "30");
+      assert.equal((await request(`aid=${aid}&mode=regular`)).status, 503);
+      assert.equal(renders.filter((path) => path === `/player/${aid}.webp`).length, 1);
+      now += 30_001;
       assert.match(fallback.headers.get("cache-control"), /no-store/);
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -137,4 +145,76 @@ test("portrait route isolates and caches modes, validates cycles, and handles up
     if (cacheable) assert.match(cacheControl, /max-age=300/);
     assert.equal(response.headers.get("location"), null);
   }
+});
+
+
+test("portrait cache shares in-flight image work and isolates exact equipment URLs", async (t) => {
+  resetPortraitImageCacheForTests();
+  let calls = 0;
+  let finish;
+  const gate = new Promise((resolve) => { finish = resolve; });
+  const load = async () => { calls++; await gate; return "image"; };
+  const waiting = Array.from({ length: 8 }, () => cachedPortraitImage("https://renderer/a?data=equipment-one", load));
+  await new Promise(setImmediate);
+  assert.equal(calls, 1);
+  finish();
+  assert.deepEqual(await Promise.all(waiting), Array.from({ length: 8 }, () => ({ image: "image", stale: false })));
+  assert.deepEqual(await cachedPortraitImage("https://renderer/a?data=equipment-two", async () => "other"), { image: "other", stale: false });
+  assert.deepEqual(await cachedPortraitImage("https://renderer/a?data=equipment-one", async () => assert.fail("fresh image refetched")), { image: "image", stale: false });
+  t.after(resetPortraitImageCacheForTests);
+});
+
+test("portrait retry retains only exact last-good bytes, expires cooldown and bounds stale age", async (t) => {
+  resetPortraitImageCacheForTests();
+  t.after(resetPortraitImageCacheForTests);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const url = "https://renderer/stale?data=one";
+  assert.deepEqual(await cachedPortraitImage(url, async () => "good"), { image: "good", stale: false });
+  now += 10 * 60_000 + 1;
+  assert.deepEqual(await cachedPortraitImage(url, async () => { throw new Error("503"); }), { image: "good", stale: true });
+  assert.deepEqual(await cachedPortraitImage(url, async () => assert.fail("cooldown must skip upstream")), { image: "good", stale: true });
+  await assert.rejects(cachedPortraitImage(url + "different-cycle-equipment", async () => { throw new Error("503"); }), /503/);
+  await assert.rejects(cachedPortraitImage(url + "different-cycle-equipment", async () => assert.fail("negative cooldown refetched")), PortraitCooldownError);
+  await new Promise(setImmediate);
+  now += 30_001;
+  assert.deepEqual(await cachedPortraitImage(url, async () => "new"), { image: "good", stale: true });
+  await new Promise(setImmediate);
+  assert.deepEqual(await cachedPortraitImage(url, async () => assert.fail("fresh retry refetched")), { image: "new", stale: false });
+  now += 60 * 60_000 + 1;
+  await assert.rejects(cachedPortraitImage(url, async () => { throw new Error("still offline"); }), /still offline/);
+});
+
+test("portrait cache evicts old identities and does not retain oversized images", async () => {
+  resetPortraitImageCacheForTests();
+  try {
+    for (let i = 0; i < 140; i++) await cachedPortraitImage("https://renderer/" + i, async () => "image");
+    let retried = false;
+    await cachedPortraitImage("https://renderer/0", async () => { retried = true; return "fresh"; });
+    assert.equal(retried, true);
+    let loads = 0;
+    for (let i = 0; i < 2; i++) await cachedPortraitImage("https://renderer/large", async () => { loads++; return "x".repeat(2 * 1024 * 1024 + 1); });
+    assert.equal(loads, 2);
+  } finally { resetPortraitImageCacheForTests(); }
+});
+
+
+test("stale portraits stay visible during one unresolved renderer refresh", async (t) => {
+  resetPortraitImageCacheForTests();
+  t.after(resetPortraitImageCacheForTests);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const url = "https://renderer/stale-while-refresh";
+  await cachedPortraitImage(url, async () => "good");
+  now += 10 * 60_000 + 1;
+  let finish;
+  let loads = 0;
+  const gate = new Promise((resolve) => { finish = resolve; });
+  const refresh = async () => { loads++; await gate; return "new"; };
+  const results = await Promise.all(Array.from({ length: 8 }, () => cachedPortraitImage(url, refresh)));
+  assert.ok(results.every((result) => result.image === "good" && result.stale));
+  assert.equal(loads, 1, "stale calls must resolve before releasing the renderer gate");
+  finish();
+  await new Promise(setImmediate);
+  assert.deepEqual(await cachedPortraitImage(url, async () => assert.fail("refetched fresh portrait")), { image: "new", stale: false });
 });

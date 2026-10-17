@@ -28,12 +28,20 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   let received = 0;
   let lastUpstreamSocket;
   const upstream = http.createServer((req, res) => {
+    res.setHeader("Server", "test-upstream");
+    res.setHeader("Via", "test-upstream");
     received++;
     lastUpstreamSocket = req.socket;
     active++;
     peak = Math.max(peak, active);
     res.once('close', () => { active--; held.delete(res); });
     if (req.url === '/reset') req.socket.destroy();
+    else if (req.url === '/echo') {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => res.end(body));
+    }
     else if (req.url === '/hold' || req.url === '/stall') held.add(res);
     else {
       res.setHeader('Content-Type', 'application/json');
@@ -62,6 +70,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   const port = portProbe.address().port;
   await new Promise((resolve) => portProbe.close(resolve));
 
+  const upstreamPort = upstream.address().port;
   // Adapt the actual production source first; only network addresses and the
   // certificate issuer change for the local test. Keep all proxy limits intact.
   const source = await readFile('ops/Caddyfile', 'utf8');
@@ -76,7 +85,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     auto_https disable_redirects
     default_bind 127.0.0.1`)
     .replace('servers {', 'servers {\n        protocols h1 h2')
-    .replace('web:3000', `127.0.0.1:${upstream.address().port}`)
+    .replaceAll('web:3000', `127.0.0.1:${upstream.address().port}`)
     .replace(/^tarkovstats\.ru, www\.tarkovstats\.ru \{/m,
       `https://tarkovstats.ru:${port}, https://www.tarkovstats.ru:${port} {`)
     .replace(/^tarkovstats\.online, www\.tarkovstats\.online \{/m,
@@ -126,20 +135,20 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
       await delay(100);
     }
   }
-  function request(path = '/', host = 'tarkovstats.ru', method = 'GET') {
+  function request(path = '/', host = 'tarkovstats.ru', method = 'GET', body) {
     return new Promise((resolve, reject) => {
       const stream = client.request({ ':path': path, ':authority': `${host}:${port}`, ':method': method,
         authorization: 'Bearer private-test-token', cookie: 'session=private-test-cookie',
         'x-request-id': 'forged-private-request-id',
         'x-real-ip': '203.0.113.7', 'cf-connecting-ip': '203.0.113.8' });
       let headers;
-      let body = '';
+      let responseBody = '';
       stream.on('response', (value) => { headers = value; });
       stream.setEncoding('utf8');
-      stream.on('data', (chunk) => { body += chunk; });
+      stream.on('data', (chunk) => { responseBody += chunk; });
       stream.on('error', (error) => reject(new Error(`${host}${path}: ${logs.slice(-3000)}`, { cause: error })));
-      stream.on('end', () => resolve({ status: headers?.[':status'], headers, body }));
-      stream.end();
+      stream.on('end', () => resolve({ status: headers?.[':status'], headers, body: responseBody }));
+      stream.end(body);
     });
   }
   const normal = await request();
@@ -247,6 +256,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   const rejected = await Promise.all(Array.from({ length: 64 }, (_, i) =>
     request('/', i % 2 ? 'tarkovstats.online' : 'tarkovstats.ru')));
   assert.ok(rejected.every((r) => r.status === 503), 'overflow must fail promptly');
+  assert.ok(rejected.every((r) => /max-age=31536000/.test(r.headers['strict-transport-security'])));
   assert.ok(Date.now() - overflowStarted < 1500, 'admission control must reject excess requests without a retry queue');
   assert.equal(received, before, 'overflow must never reach the backend');
   assert.equal(peak, 32, 'both domains must share the upstream budget');
@@ -258,7 +268,36 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   const started = Date.now();
   const stalled = await request('/stall');
   assert.equal(stalled.status, 504, 'an upstream withholding headers must time out');
+  assert.match(stalled.headers['strict-transport-security'], /max-age=31536000/);
   assert.ok(Date.now() - started >= 19_000 && Date.now() - started < 25_000);
   const afterTimeout = await Promise.all([request(), request('/', 'tarkovstats.online')]);
   assert.ok(afterTimeout.every((r) => r.status === 200), 'a timed-out request must release capacity without blocking either site');
+  // Reproduce a Compose replacement gap without stopping the proxy. A POST body
+  // must remain intact and reach the application only once after TCP can connect.
+  let stopped = new Promise((resolve) => upstream.close(resolve));
+  upstream.closeAllConnections();
+  await stopped;
+  const beforeRecovery = received;
+  const recoveryStarted = Date.now();
+  const restart = setTimeout(() => upstream.listen(upstreamPort, '127.0.0.1'), 650);
+  try {
+    const payload = 'profile-update-body-'.repeat(2048);
+    const recovered = await Promise.all([request(), request('/echo', 'tarkovstats.online', 'POST', payload)]);
+    assert.ok(recovered.every((response) => response.status === 200), 'refused dials must recover when the listener returns');
+    assert.ok(recovered.every((response) => response.headers.server === undefined && response.headers.via === undefined));
+    assert.ok(recovered.every((response) => /max-age=31536000/.test(response.headers['strict-transport-security'])));
+    assert.equal(recovered[1].body, payload, 'a retried dial must preserve the complete POST body');
+    assert.equal(received, beforeRecovery + 2, 'each recovered request must reach upstream exactly once');
+    assert.ok(Date.now() - recoveryStarted >= 500 && Date.now() - recoveryStarted < 4500);
+  } finally { clearTimeout(restart); }
+  stopped = new Promise((resolve) => upstream.close(resolve));
+  upstream.closeAllConnections();
+  await stopped;
+  const refusedStarted = Date.now();
+  assert.equal((await request()).status, 502, 'a listener that stays absent must still fail');
+  assert.ok(Date.now() - refusedStarted < 5000, 'dial-only recovery must remain bounded');
+  await new Promise((resolve) => upstream.listen(upstreamPort, '127.0.0.1', resolve));
+  assert.equal((await request()).status, 200);
+  t.diagnostic('refused-dial recovery preserved POST bodies, single delivery and bounded failure');
+
 });

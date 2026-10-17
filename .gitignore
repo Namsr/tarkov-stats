@@ -76,6 +76,8 @@ GEMINI.md
 !/ops/materialize-publications.sh
 !/ops/systemd/
 /ops/systemd/*
+!/ops/systemd/tarkovstats-backup.service
+!/ops/systemd/tarkovstats-backup.timer
 !/ops/systemd/tarkovstats-deploy.service
 !/ops/systemd/tarkovstats-deploy.timer
 !/ops/systemd/tarkovstats-deploy-limited-builder.conf

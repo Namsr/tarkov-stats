@@ -17,7 +17,7 @@ const directory = mkdtempSync(join(tmpdir(), "cohort-worker-"));
 for (const [key, name] of Object.entries({ SQLITE_PATH: "players", BANS_SQLITE_PATH: "bans", PROGRESSION_SQLITE_PATH: "progression",
   ADMIN_ANALYTICS_SQLITE_PATH: "admin", REPORTS_SQLITE_PATH: "reports" })) process.env[key] = join(directory, `${name}.db`);
 process.env.COHORT_WORKER_TEST_MARKER = join(directory, "busy");
-const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
+const { CohortComputeWorker, computeCohortInBackground } = await import("../lib/cohort-worker.ts");
 const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
 const { computeCohort } = await import("../lib/cohort-compute.ts");
 const { getStore, getArenaBackend } = await import("../lib/db.ts");
@@ -243,4 +243,23 @@ test("surviving queued cohorts retain their original request deadline", async (t
   await second;
   const elapsed = performance.now() - queuedAt;
   assert.ok(elapsed >= 2800 && elapsed < 4500, "queued deadline took " + elapsed + "ms");
+});
+
+
+test("cohort diagnostics identify the job kind and timing without leaking account inputs", async (t) => {
+  const logs = [];
+  t.mock.method(console, "info", (message) => logs.push(JSON.parse(message)));
+  t.mock.method(CohortComputeWorker.prototype, "computeObserved", async (_args, observe) => {
+    observe({ queueMs: 120, workerMs: 30 });
+    return { n: 0 };
+  });
+  const result = await computeCohortInBackground({ kind: "persistent", mode: "regular", args: [0, 0, 987654321] });
+  assert.ok(result);
+  const event = logs.find((row) => row.event === "cohort_job_v1");
+  assert.ok(event);
+  assert.equal(event.kind, "persistent");
+  assert.equal(event.outcome, "success");
+  assert.ok(event.queue_ms >= 0 && event.worker_ms >= 0 && event.elapsed_ms >= 0);
+  assert.deepEqual(Object.keys(event).sort(), ["at", "elapsed_ms", "event", "kind", "outcome", "queue_ms", "worker_ms"]);
+  assert.doesNotMatch(JSON.stringify(event), /987654321|regular|args|aid/);
 });

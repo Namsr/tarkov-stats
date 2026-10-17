@@ -152,3 +152,39 @@ test("yesterday's publication remains readable in every mode during a failed dai
     assert.equal(stored?.stale, true);
   }
 });
+
+
+test("dirty markers yield to HTTP while a writer holds the database and preserve publisher timeout", async () => {
+  await publication.markAveragePublicationDirty("regular", 1000);
+  const writer = new DatabaseSync(publicationPath);
+  writer.exec("BEGIN IMMEDIATE");
+  let released = false;
+  let heartbeatBeforeRelease = false;
+  const started = Date.now();
+  const release = setTimeout(() => {
+    heartbeatBeforeRelease = Date.now() - started < 1000;
+    writer.exec("ROLLBACK");
+    released = true;
+  }, 20);
+  try {
+    assert.equal(await publication.markAveragePublicationDirty("regular", 2000), true);
+    assert.equal(released, true);
+    assert.equal(heartbeatBeforeRelease, true, "a synchronous five-second busy wait must not block the timer");
+    const row = writer.prepare("SELECT dirty_at FROM average_publication_state WHERE scope = 'regular'").get();
+    assert.equal(row.dirty_at, 2000);
+    // Track the actual cached publisher connection rather than this independent writer.
+    const originalPrepare = DatabaseSync.prototype.prepare;
+    let timeout;
+    DatabaseSync.prototype.prepare = function (sql) {
+      if (String(sql).startsWith("SELECT s.scope")) timeout = originalPrepare.call(this, "PRAGMA busy_timeout").get().timeout;
+      return originalPrepare.call(this, sql);
+    };
+    try { await publication.getAveragePublicationStates(); }
+    finally { DatabaseSync.prototype.prepare = originalPrepare; }
+    assert.equal(timeout, 5000);
+  } finally {
+    clearTimeout(release);
+    if (!released) writer.exec("ROLLBACK");
+    writer.close();
+  }
+});

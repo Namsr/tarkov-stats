@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile, utimes, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -165,4 +165,42 @@ test('backup waits for the shared sync lock before creating snapshots', { timeou
     await closed;
     await rm(f.dir, { recursive: true, force: true });
   }
+});
+
+
+test('backup age probe detects missing and stale complete sets without starting a worker', async () => {
+  const f = await fixture('success');
+  try {
+    const check = () => spawnSync(shell, [f.file, '--check-age'], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(check().status, 0);
+    const old = new Date(Date.now() - 40 * 60 * 60_000);
+    for (const set of ['backup-old-1', 'backup-old-2']) await utimes(join(f.backups, set, '.complete'), old, old);
+    const stale = check();
+    assert.equal(stale.status, 1);
+    assert.match(stale.stdout, /BACKUP_STATUS at=\d+ latest_completed=\d+ age_seconds=\d+/);
+    const calls = await readFile(join(f.dir, 'calls'), 'utf8').catch(() => '');
+    assert.doesNotMatch(calls, /docker|runner|flock/);
+    for (const set of ['backup-old-1', 'backup-old-2']) await unlink(join(f.backups, set, '.complete'));
+    const missing = check();
+    assert.equal(missing.status, 1);
+    assert.match(missing.stdout, /latest_completed=0/);
+    assert.equal((await readdir(f.backups)).filter((name) => name.startsWith('backup-')).length, 2);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('backup failure diagnostics expose the storage budget and service retries are bounded', async () => {
+  const f = await fixture('disk-full');
+  try {
+    const result = spawnSync(shell, [f.file], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /BACKUP_SPACE at=\d+ database=players db_bytes=\d+ wal_bytes=0 available_kb=1 required_kb=\d+/);
+    assert.match(result.stderr, /retaining previous set/);
+    const service = await readFile('ops/systemd/tarkovstats-backup.service', 'utf8');
+    const timer = await readFile('ops/systemd/tarkovstats-backup.timer', 'utf8');
+    assert.match(service, /StartLimitIntervalSec=1d/);
+    assert.match(service, /StartLimitBurst=3/);
+    assert.match(service, /Restart=on-failure\r?\nRestartSec=1h/);
+    assert.match(service, /ExecStartPost=.* --check-age/);
+    assert.match(timer, /OnCalendar=\*-\*-\* 04:10:00 UTC/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
