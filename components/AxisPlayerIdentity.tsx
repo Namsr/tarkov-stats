@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useEffect, useState, type CSSProperties } from "react";
 import { LeaderboardPreviewLink, LeaderboardPreviewProvider } from "@/components/LeaderboardPreview";
 import { useI18n } from "@/lib/i18n/context";
-import { axisKdaRatio, axisMatchHref, axisProfileHref, type AxisPlayer } from "@/lib/axis-league";
+import { axisKdaRatio, axisMatchHref, type AxisPlayer } from "@/lib/axis-league";
+
+import { axisPlayerHref } from "@/lib/axis-player-profile";
 
 type PreviewPlayer = Pick<AxisPlayer, "name" | "avatarUrl" | "profile"> & Partial<Omit<AxisPlayer, "mmr">>;
 
@@ -108,7 +110,7 @@ export default function AxisPlayerIdentity({ player, mmr, averageKda = null, sho
       <div className="axis-form__ratings"><span>{t("axis.column.mmr")} <strong>{number(mmr)}</strong></span><span>{t("axis.column.peakMmr")} <strong>{number(player.peakMmr)}</strong></span></div>
     </>}>
     <LeaderboardPreviewLink aid={player.profile?.aid ?? null} nickname={player.name}
-      href={player.profile ? axisProfileHref(player.profile) : null} className={`axis-player${showArenaNickname ? " axis-player--editing" : ""}`}
+      href={player.profile ? axisPlayerHref(player.profile) : null} className={`axis-player${showArenaNickname ? " axis-player--editing" : ""}`}
       portrait={portrait} details={<AxisLeagueStats player={player} averageKda={averageKda} />}>
       {portrait}<span className="axis-player__name">{player.name}{showArenaNickname && player.profile && <ArenaNickname key={player.profile.aid} aid={player.profile.aid} />}</span>
     </LeaderboardPreviewLink>
