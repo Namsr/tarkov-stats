@@ -12,6 +12,7 @@ import { parsePlayerId } from "@/lib/player-id";
 import { gameModeFromAppRoute } from "@/types/seasonal";
 import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import type { AxisIdentity } from "@/lib/axis-player-profile";
+import { getArenaProfile } from "@/lib/arena/service";
 
 interface Props {
   params: Promise<{ segments?: string[] }>;
@@ -44,9 +45,14 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
   if (parsedAid === null) notFound();
   if (mode !== "seasonal") {
     let axisIdentity: AxisIdentity | null = null;
+    let axisHours: number | null = null;
     if (mode === "arena") {
       try { axisIdentity = (await getAxisLeagueStore()).readPlayerIdentity(parsedAid); }
       catch (error) { console.warn("Axis identity unavailable", error); }
+      if (axisIdentity) {
+        try { axisHours = (await getArenaProfile(parsedAid))?.overall.hours ?? null; }
+        catch (error) { console.warn("Axis Arena hours unavailable", error); }
+      }
     }
     return (
       <RegularPlayer
@@ -55,6 +61,7 @@ export default async function CanonicalPlayerPage({ params, searchParams }: Prop
         radarDemo={query.radarDemo}
         mode={mode}
         axisIdentity={axisIdentity}
+        axisHours={axisHours}
         initialAxis={mode === "arena" && query.arenaMode === "axis"}
       />
     );

@@ -4,7 +4,7 @@ import test from "node:test";
 import { AXIS_REFRESH_MS } from "../lib/axis-league.ts";
 import { axisPlayerRequest, cachedAxisPlayer, loadAxisPlayer } from "../lib/client-axis-player.ts";
 
-const playerBody = (aid, page = 1) => ({ aid, season: "current", identity: {}, stats: {}, averages: {}, highlights: {}, recent: [], teammates: [], opponents: [], maps: [], history: { page, matches: [] } });
+const playerBody = (aid, page = 1) => ({ aid, season: "current", identity: {}, stats: {}, averages: {}, highlights: {}, story: {}, recent: [], teammates: [], opponents: [], maps: [], history: { page, matches: [] } });
 test("Axis player requests coalesce, isolate cancellation, cache revisits and separate history pages", async t => {
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });

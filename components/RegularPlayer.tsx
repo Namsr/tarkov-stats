@@ -60,6 +60,7 @@ interface Props {
   aid: string;
   radarDemo?: string | string[];
   axisIdentity?: AxisIdentity | null;
+  axisHours?: number | null;
   initialAxis?: boolean;
 }
 
@@ -849,6 +850,6 @@ function LegacyPlayer({
 }
 
 export default function RegularPlayer(props: Props & { mode?: CrossSectionMode }) {
-  if (props.mode === "arena") return <ArenaPlayer aid={props.aid} radarDemo={props.radarDemo} axisIdentity={props.axisIdentity} initialAxis={props.initialAxis} />;
+  if (props.mode === "arena") return <ArenaPlayer aid={props.aid} radarDemo={props.radarDemo} axisIdentity={props.axisIdentity} axisHours={props.axisHours} initialAxis={props.initialAxis} />;
   return <LegacyPlayer {...props} />;
 }

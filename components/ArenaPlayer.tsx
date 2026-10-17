@@ -40,6 +40,7 @@ interface Props {
   aid: string;
   radarDemo?: string | string[];
   axisIdentity?: AxisIdentity | null;
+  axisHours?: number | null;
   initialAxis?: boolean;
 }
 
@@ -240,7 +241,7 @@ function ArenaLegacyIncomplete({
   );
 }
 
-export default function ArenaPlayer({ aid, axisIdentity = null, initialAxis = false }: Props) {
+export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null, initialAxis = false }: Props) {
   const { lang, t } = useI18n();
   const numericAid = Number(aid);
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode: "arena" })}`;
@@ -451,12 +452,13 @@ export default function ArenaPlayer({ aid, axisIdentity = null, initialAxis = fa
     window.history.replaceState(null, "", url);
   };
   const scopes = <ArenaScopes selected={selectedMode} axis={axisSelected} linked={axisIdentity != null} onMode={changeMode} onAxis={selectAxis} />;
+  const hours = axisHours ?? profile?.overall.hours ?? (legacyBody ? legacyNumber(legacyBody, "hoursPlayed") : null);
 
   if (axisSelected) return <main className="page-frame profile-page min-h-screen" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>
     <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={axisIdentity?.name ?? profile?.nickname}
       portrait={axisIdentity ? <div className="profile-portrait axis-profile-portrait"><AxisAvatar name={axisIdentity.name} url={axisIdentity.avatarUrl} /></div> : undefined}
-      hideLeaderboardRank meta={<div className="profile-header__meta"><span>{t("axis.title")}</span></div>}
+      hideLeaderboardRank meta={<div className="profile-header__meta"><span>{t("axis.title")}</span><span>{t("metric.hours")}: {hours == null ? "—" : hours.toLocaleString(lang, { maximumFractionDigits: 0 })}{hours != null && <> {t("unit.h")}</>}</span></div>}
       actions={<ProfilePrimaryActions aid={numericAid} mode="arena" cycleId="persistent" nickname={axisIdentity?.name} />}>
       <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "axis-player-overview", label: t("profile.section.overview") }, { id: "axis-player-peers", label: t("axis.profile.connections") }, { id: "axis-player-history", label: t("axis.history.title") }]} />
       {scopes}

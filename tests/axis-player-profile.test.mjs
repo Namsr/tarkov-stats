@@ -31,6 +31,14 @@ function setup(t, traced) {
   return { db, store };
 }
 function publish(store, matches) { store.publishArchive({ matches: [...matches].reverse(), total: matches.length, pages: 1, page: 1 }); }
+function storyMatch(i, result, map = "Bowl") {
+  const entry = match(i, { maps: [map] }), own = i % 2;
+  const roster = id => ({ id, name: `Player ${id}`, profile: null, mmr: 1000, change: 25 });
+  entry.teams[own].players = [roster("1"), roster("3")];
+  entry.teams[1 - own].players = [roster("2")];
+  entry.winner = result === "win" ? own : result === "loss" ? 1 - own : result === "draw" ? -2 : -1;
+  return entry;
+}
 
 test("profile summary uses the player's team, exact relationship records, linked avatars, maps and nullable last-ten KDA", t => {
   const { store } = setup(t);
@@ -170,4 +178,54 @@ test("identity fallback is limited to the Axis queue", t => {
   publish(store, [match(0), match(1, { queueId: "other", teams: [{ players: [{ id: "1", name: "Wrong queue", mmr: 0, change: 0, profile: null }] }] })]);
   store.publish([player("2"), player("3")]);
   assert.equal(store.readPlayerIdentity(12345).name, "Player 1");
+});
+
+test("season stories distinguish most shared wins from highest win rate and ignore tiny map samples", t => {
+  const { store } = setup(t);
+  const matches = Array.from({ length: 30 }, (_, i) => {
+    const entry = storyMatch(i, i < 10 ? i < 9 ? "win" : "loss" : i < 20 ? "win" : "loss", i < 10 ? "Bowl" : "Fort");
+    if (i < 10) {
+      entry.teams[i % 2].players[1].id = "2";
+      entry.teams[1 - i % 2].players[0].id = "3";
+    }
+    return entry;
+  });
+  matches.push(storyMatch(30, "win", "One match"), storyMatch(31, "draw"));
+  publish(store, matches);
+  const data = store.readPlayerProfile(12345);
+  assert.equal(data.highlights.teammate.id, "2", "highest win rate remains the existing highlight");
+  assert.equal(data.story.mostWinsWith.id, "3");
+  assert.equal(data.story.mostWinsWith.wins, 11);
+  assert.equal(data.story.bestMap.name, "Bowl");
+  assert.equal(data.story.bestMap.games, 11);
+  assert.equal(data.story.bestMap.winrate, .9, "draws do not become losses");
+  assert.deepEqual(store.readPlayerProfile(12345, "current", 2, "loss").story, data.story, "history filters and pages cannot alter the season story");
+});
+
+test("revenge requires three consecutive losses to the same opponent and links the latest qualifying win", t => {
+  const { store } = setup(t);
+  publish(store, ["loss", "loss", "loss", "loss", "win", "loss", "loss", "loss", "win"].map((result, i) => storyMatch(i, result)));
+  const revenge = store.readPlayerProfile(12345).story.revenge;
+  assert.equal(revenge.opponent.id, "2");
+  assert.equal(revenge.matchNumber, 108);
+  assert.equal(revenge.losses, 3, "the older four-loss recovery cannot replace a newer event");
+  store.publishArchive({ page: 1, pages: 2, total: 100, matches: [storyMatch(8, "win")] });
+  assert.equal(store.readPlayerProfile(12345).story.revenge, null, "a partial archive cannot prove consecutive head-to-head losses");
+});
+
+test("draws and wins break a revenge loss streak; empty and short periods do not invent facts", t => {
+  const { store, db } = setup(t);
+  assert.deepEqual(store.readPlayerProfile(12345).story, { mostWinsWith: null, revenge: null, bestMap: null });
+  for (const results of [["loss", "loss", "draw", "loss", "win"], ["loss", "loss", "win", "loss", "win"]]) {
+    db.exec("DELETE FROM axis_archive_matches");
+    publish(store, results.map((result, i) => storyMatch(i, result)));
+    assert.equal(store.readPlayerProfile(12345).story.revenge, null);
+  }
+  db.exec("DELETE FROM axis_archive_matches");
+  const matches = ["loss", "loss", "loss", "win"].map((result, i) => storyMatch(i, result));
+  matches.slice(0, 3).forEach((entry, i) => { entry.time = AXIS_CURRENT_SEASON_START - (3 - i) * 60_000; });
+  publish(store, matches);
+  assert.equal(store.readPlayerProfile(12345).story.revenge, null, "current season never borrows older defeats");
+  assert.equal(store.readPlayerProfile(12345).story.bestMap, null);
+  assert.equal(store.readPlayerProfile(12345, "all").story.revenge.losses, 3);
 });

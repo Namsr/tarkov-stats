@@ -12,7 +12,7 @@ function validPlayer(body: AxisPlayerProfileResponse | null, url: string): body 
   const query = new URL(url, "https://local").searchParams;
   return body?.aid === Number(query.get("aid")) && body.season === query.get("season")
     && body.history?.page === Number(query.get("page")) && Array.isArray(body.history.matches)
-    && body.identity != null && body.stats != null && body.averages != null && body.highlights != null
+    && body.identity != null && body.stats != null && body.averages != null && body.highlights != null && body.story != null
     && Array.isArray(body.recent) && Array.isArray(body.teammates) && Array.isArray(body.opponents) && Array.isArray(body.maps);
 }
 export async function loadAxisPlayer(url: string, signal: AbortSignal, force = false): Promise<AxisPlayerProfileResponse> {
