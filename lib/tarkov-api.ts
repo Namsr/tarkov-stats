@@ -312,7 +312,9 @@ export async function loadPlayerLevels(
   request: typeof fetchTarkovJson = fetchTarkovJson
 ): Promise<PlayerLevel[]> {
   try {
-    const response = await request(ITEMS_URL, { cache: "no-store" });
+    const response = await request(ITEMS_URL, {
+      cache: "no-store", signal: AbortSignal.timeout(8_000),
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const levels = parsePlayerLevels(await response.json());
     console.info("tarkov reference", { reference: "playerLevels", source: "json" });

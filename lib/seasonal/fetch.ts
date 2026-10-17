@@ -45,7 +45,7 @@ export async function fetchSeasonalPayload(
   const request = options.request ?? fetchTarkovJson;
   const response = await request(
     seasonalProfileCacheUrl(url, options.expectedUpdatedAt, Date.now(), options.force),
-    { cache: "no-store" },
+    { cache: "no-store", signal: AbortSignal.timeout(8_000) },
   );
   if (!response.ok) throw new SeasonalFetchError(response.status);
   return response.json();
