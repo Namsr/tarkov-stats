@@ -1,3 +1,5 @@
+import { retrySqliteBusy } from "./sqlite-busy-retry.ts";
+
 export const AVERAGE_PUBLICATION_DEBOUNCE_MS = 5 * 60_000;
 export const AVERAGE_PUBLICATION_MIN_INTERVAL_MS = 15 * 60_000;
 export const AVERAGE_PUBLICATION_FORCE_INTERVAL_MS = 6 * 60 * 60_000;
@@ -224,9 +226,15 @@ export async function markAveragePublicationDirty(
   if (!averagePublicationsEnabled()) return true;
   try {
     const db = await openDatabase();
-    db.prepare(`INSERT INTO average_publication_state (scope, dirty_at) VALUES (?, ?)
-      ON CONFLICT(scope) DO UPDATE SET dirty_at = MAX(COALESCE(average_publication_state.dirty_at, 0), excluded.dirty_at)`)
-      .run(scope, dirtyAt);
+    await retrySqliteBusy(() => {
+      const previousTimeout = Number(db.prepare("PRAGMA busy_timeout").get().timeout);
+      db.exec("PRAGMA busy_timeout = 250");
+      try {
+        db.prepare(`INSERT INTO average_publication_state (scope, dirty_at) VALUES (?, ?)
+          ON CONFLICT(scope) DO UPDATE SET dirty_at = MAX(COALESCE(average_publication_state.dirty_at, 0), excluded.dirty_at)`)
+          .run(scope, dirtyAt);
+      } finally { db.exec(`PRAGMA busy_timeout = ${previousTimeout}`); }
+    }, 5_000);
     return true;
   } catch (error) {
     console.warn("average publication dirty marker failed: " + safeError(error));

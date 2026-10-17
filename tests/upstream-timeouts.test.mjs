@@ -5,7 +5,7 @@ import { registerHooks } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { fetchTarkovJson, loadPlayerLevels, expToLevel } from "../lib/tarkov-api.ts";
+import { fetchTarkovJson, loadPlayerLevels, expToLevel, getPublicProfile } from "../lib/tarkov-api.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -98,4 +98,31 @@ test("Seasonal timeout leaves versioned refresh requests and HTTP error classifi
       request: async () => new Response(null, { status }),
     }), (error) => error instanceof SeasonalFetchError && error.status === status);
   }
+});
+
+
+test("a favorites caller deadline cancels public-profile response-body reads", { timeout: 3000 }, async (t) => {
+  let observed;
+  const received = new Promise((resolve) => { observed = resolve; });
+  const server = http.createServer((request, response) => {
+    assert.equal(request.headers["user-agent"], "tarkovstats.ru");
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.write('{"aid":79123456,');
+    observed();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    const closed = new Promise((resolve) => server.close(resolve));
+    server.closeAllConnections();
+    await closed;
+  });
+  const nativeFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (_url, options) => nativeFetch(`http://127.0.0.1:${server.address().port}`, options));
+  const controller = new AbortController();
+  const pending = getPublicProfile(79123456, { force: true, signal: controller.signal });
+  await received;
+  await new Promise(setImmediate);
+  controller.abort();
+  await assert.rejects(pending, (error) => error.name === "AbortError");
 });

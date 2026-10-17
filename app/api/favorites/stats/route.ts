@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { getFavoritesStore, getStore, type Favorite } from "@/lib/db";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
@@ -9,6 +9,7 @@ import { makePlayerSnapshot } from "@/lib/ban-db";
 import { persistRegularProfileSnapshot } from "@/lib/regular-profile-capture";
 import { getArenaProfile, persistArenaProfile } from "@/lib/arena/service";
 import type { ArenaProfile } from "@/types/arena";
+import { getProgressionStore } from "@/lib/progression-db";
 
 export const runtime = "nodejs";
 
@@ -46,84 +47,93 @@ export async function GET(request: NextRequest) {
   const favorites = await favStore.list(user.sub, null);
   if (favorites.length === 0) return NextResponse.json({ favorites: [] }, { headers: noStore });
 
-  const hasRegularFavorite = favorites.some((favorite) => favorite.mode === "regular");
-  const [levels, playerStore] = hasRegularFavorite
-    ? await Promise.all([getPlayerLevels().catch(() => []), getStore()])
-    : [[], null];
-
-  // Sequential on purpose: avoids bursting players.tarkov.dev from the VPS (the
-  // public profile fetch is in-process cached, so repeat loads are cheap).
+  const progression = favorites.some((favorite) => favorite.mode === "regular")
+    ? await getProgressionStore("regular").catch(() => null) : null;
   const enriched: FavoriteWithStats[] = [];
-  for (const fav of favorites) {
-    if (fav.mode === "arena") {
-      let arena = await getArenaProfile(fav.aid).catch(() => null);
-      const stored = arena ? null : await (await getStore("arena"))?.stored(fav.aid).catch(() => null);
-      try {
-        if (force) {
-          const fetched = await getPublicProfile(fav.aid, { force: true, mode: "arena" });
-          if (fetched.profile) {
-            await persistArenaProfile(fetched.profile);
-            arena = await getArenaProfile(fav.aid) ?? arena;
-            if (arena?.nickname && arena.nickname !== fav.nickname) {
-              await favStore.updateNickname(user.sub, fav.aid, arena.nickname, {
-                mode: fav.mode,
-                cycleId: fav.cycleId,
-              }).catch(() => {});
-              fav.nickname = arena.nickname;
-            }
+  for (const favorite of favorites) {
+    if (favorite.mode === "regular") {
+      const snapshot = await progression?.latest(favorite.aid).catch(() => null);
+      enriched.push({ ...favorite, stats: snapshot?.stats ?? null });
+    } else if (favorite.mode === "arena") {
+      const arena = await getArenaProfile(favorite.aid).catch(() => null);
+      const store = arena ? null : await getStore("arena").catch(() => null);
+      const stored = await store?.stored(favorite.aid).catch(() => null);
+      enriched.push(arena ? { ...favorite, stats: null, arena }
+        : stored ? { ...favorite, stats: stored.stats, arena: null, arenaStatus: "legacy_incomplete" }
+          : { ...favorite, stats: null, arena: null });
+    } else if (favorite.mode === "pve") {
+      const store = await getStore("pve").catch(() => null);
+      const stored = await store?.stored(favorite.aid).catch(() => null);
+      enriched.push({ ...favorite, stats: stored?.stats ?? null });
+    } else enriched.push({ ...favorite, stats: null });
+  }
+
+  const indexes = favorites.flatMap((favorite, index) =>
+    (favorite.mode === "regular" && (force || !enriched[index].stats)) || (favorite.mode === "arena" && force)
+      ? [index] : []);
+  if (indexes.length > 0) {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, request.signal]);
+    let levels: ReturnType<typeof getPlayerLevels> | undefined;
+    let playerStore: ReturnType<typeof getStore> | undefined;
+    let next = 0;
+    const refresh = async () => {
+      while (!signal.aborted && next < indexes.length) {
+        const index = indexes[next++];
+        const favorite = favorites[index];
+        try {
+          const fetched = await getPublicProfile(favorite.aid, { force, mode: favorite.mode === "arena" ? "arena" : "regular", signal });
+          if (signal.aborted) break;
+          if (!fetched.profile) {
+            // Preserve the existing explicit Regular 404 semantics. Transient
+            // errors below retain the stored snapshot prepared for every row.
+            if (favorite.mode === "regular") enriched[index] = { ...favorite, stats: null };
+            continue;
           }
-        }
-      } catch {
-        // Keep the prior normalized snapshot when the forced public refresh fails.
-      }
-      enriched.push(arena
-        ? { ...fav, stats: null, arena }
-        : stored
-          ? { ...fav, stats: stored.stats, arena: null, arenaStatus: "legacy_incomplete" }
-          : { ...fav, stats: null, arena: null });
-      continue;
-    }
-    if (fav.mode === "pve") {
-      const stored = await (await getStore(fav.mode))?.stored(fav.aid).catch(() => null);
-      enriched.push({ ...fav, stats: stored?.stats ?? null });
-      continue;
-    }
-    if (fav.mode !== "regular") {
-      enriched.push({ ...fav, stats: null });
-      continue;
-    }
-    try {
-      const { profile, fromCache } = await getPublicProfile(fav.aid, { force });
-      if (!profile) {
-        enriched.push({ ...fav, stats: null });
-        continue;
-      }
-      const stats = parseProfileStats(profile, levels);
-      const ids = profile.achievements ? Object.keys(profile.achievements) : [];
-      try {
-        await persistRegularProfileSnapshot(
-          makePlayerSnapshot(fav.aid, stats, ids, Number(stats.profileUpdatedAt)),
-          { upsertPlayer: !fromCache, playerStore },
-        );
-      } catch {
-        // A missing upstream version must not hide otherwise valid profile stats.
-      }
-      // Only on a fresh upstream hit: refresh the stored nickname snapshot if it drifted.
-      if (!fromCache) {
-        if (stats.nickname && stats.nickname !== fav.nickname) {
-          await favStore.updateNickname(
-            user.sub,
-            fav.aid,
-            stats.nickname,
-            { mode: fav.mode, cycleId: fav.cycleId }
-          ).catch(() => {});
-          fav.nickname = stats.nickname;
+          let nickname: string | undefined;
+          if (favorite.mode === "arena") {
+            await persistArenaProfile(fetched.profile);
+            const arena = await getArenaProfile(favorite.aid);
+            if (arena) {
+              enriched[index] = { ...favorite, stats: null, arena };
+              nickname = arena.nickname;
+            }
+          } else {
+            levels ??= getPlayerLevels().catch(() => []);
+            const stats = parseProfileStats(fetched.profile, await levels);
+            if (signal.aborted) break;
+            enriched[index] = { ...favorite, stats };
+            nickname = stats.nickname;
+            const ids = fetched.profile.achievements ? Object.keys(fetched.profile.achievements) : [];
+            try {
+              playerStore ??= getStore();
+              await persistRegularProfileSnapshot(
+                makePlayerSnapshot(favorite.aid, stats, ids, Number(stats.profileUpdatedAt)),
+                { upsertPlayer: !fetched.fromCache, playerStore: await playerStore },
+              );
+            } catch { /* A capture failure must not hide parsed stats or a fresh nickname. */ }
+          }
+          if (!fetched.fromCache && nickname && nickname !== favorite.nickname) {
+            await favStore.updateNickname(user.sub, favorite.aid, nickname, {
+              mode: favorite.mode, cycleId: favorite.cycleId,
+            }).catch(() => {});
+            enriched[index].nickname = nickname;
+          }
+        } catch {
+          // Each identity keeps its stored data if refresh fails or times out.
         }
       }
-      enriched.push({ ...fav, stats });
-    } catch {
-      enriched.push({ ...fav, stats: null });
-    }
+    };
+    // Two refreshes at a time avoid an upstream burst. Bound response waiting,
+    // including persistence; an already-started atomic capture finishes in after().
+    const work = Promise.all([refresh(), refresh()]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<false>((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve(false); }, 10_000);
+    });
+    const complete = await Promise.race([work.then(() => true), budget]);
+    if (timer) clearTimeout(timer);
+    if (!complete) after(async () => { await work; });
   }
 
   return NextResponse.json({ favorites: enriched }, { headers: noStore });

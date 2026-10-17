@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily TarkovStats backup with bounded failure retries
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 UTC
+# On initial installation after 04:10 UTC, check the successful recovery backup
+# and initialize this timer's stamp before enabling to avoid an immediate duplicate.
+Persistent=true
+Unit=tarkovstats-backup.service
+
+[Install]
+WantedBy=timers.target

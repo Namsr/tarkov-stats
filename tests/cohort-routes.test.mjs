@@ -541,12 +541,12 @@ test("the Seasonal average route answers from the worker and throttles one clien
     const { CohortComputeWorker } = await import("../lib/cohort-worker.ts");
     const { ComputeUnavailableError } = await import("../lib/compute-worker.ts");
     const client = await import("../lib/client-average-request.ts");
-    const realCompute = CohortComputeWorker.prototype.compute;
+    const realComputeObserved = CohortComputeWorker.prototype.computeObserved;
     let unavailable = true;
-    t.mock.method(CohortComputeWorker.prototype, "compute", function (job) {
+    t.mock.method(CohortComputeWorker.prototype, "computeObserved", function (jobs, observe) {
       return unavailable
         ? Promise.reject(new ComputeUnavailableError("Comparison cohort queue is full"))
-        : realCompute.call(this, job);
+        : realComputeObserved.call(this, jobs, observe);
     });
 
     // Only the browser retry waits use fake timers; worker deadlines keep their
@@ -719,7 +719,7 @@ test("progression averages serve publications without entering a saturated cohor
   const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
   const { materializeSqlitePopulationSnapshot } = await import("../lib/seasonal/progression-db.ts");
   t.mock.method(console, "warn", () => {});
-  const enqueue = t.mock.method(CohortComputeWorker.prototype, "compute", () => { throw new Error("queue full"); });
+  const enqueue = t.mock.method(CohortComputeWorker.prototype, "computeObserved", () => { throw new Error("queue full"); });
   const db = new DatabaseSync(process.env.PROGRESSION_SQLITE_PATH);
   t.after(() => db.close());
   initializeSeasonalSchema(db);

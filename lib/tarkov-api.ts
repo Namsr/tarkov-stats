@@ -128,7 +128,7 @@ function profileUpdatedAt(value: unknown): number | null {
  */
 export async function getPublicProfile(
   aid: number,
-  opts: { force?: boolean; mode?: PublicProfileMode; expectedUpdatedAt?: number } = {}
+  opts: { force?: boolean; mode?: PublicProfileMode; expectedUpdatedAt?: number; signal?: AbortSignal } = {}
 ): Promise<PublicProfileResult> {
   const now = Date.now();
   const mode = opts.mode ?? "regular";
@@ -167,7 +167,8 @@ export async function getPublicProfile(
     try {
       res = await fetchTarkovJson(url, {
         cache: opts.force ? "no-store" : "force-cache",
-        signal: AbortSignal.timeout(PUBLIC_PROFILE_TIMEOUT_MS),
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(PUBLIC_PROFILE_TIMEOUT_MS)])
+          : AbortSignal.timeout(PUBLIC_PROFILE_TIMEOUT_MS),
       });
     } catch (error) {
       if (!opts.force && stale) {

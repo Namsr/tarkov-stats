@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchTarkovJson } from "@/lib/tarkov-api";
 import { parsePlayerId } from "@/lib/player-id";
 import { profilePortraitUrl } from "@/lib/profile-portrait";
+import { cachedPortraitImage, PortraitCooldownError } from "@/lib/portrait-image-cache";
 import { getClientIp } from "@/lib/client-ip";
 import { getRateLimitHeaders } from "@/lib/rate-limiter";
 import { isGameMode } from "@/types/seasonal";
@@ -18,7 +19,7 @@ const loadPortrait = unstable_cache(async (url: string, aid: number) => {
 
 // Cache the image itself so the browser does not repeat our render request.
 // Throw on failures: a renderer error must not become a cached missing portrait.
-const loadPortraitImage = unstable_cache(async (url: string) => {
+const loadPortraitImage = (url: string) => cachedPortraitImage(url, async () => {
   const response = await fetchTarkovJson(url, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!response.ok) {
     await response.body?.cancel();
@@ -30,9 +31,9 @@ const loadPortraitImage = unstable_cache(async (url: string) => {
   }
   const image = Buffer.from(await response.arrayBuffer());
   if (image.length === 0) throw new Error("Portrait renderer returned an empty image");
-  // unstable_cache persists JSON, so encode the binary body losslessly.
+  // The bounded process cache stores complete images as base64 strings.
   return image.toString("base64");
-}, ["player-portrait-image-v1"], { revalidate: 600 });
+});
 
 /** A negative answer is stable, so let the browser and CDN remember it. */
 const notAvailableHeaders = { "Cache-Control": "public, max-age=300, s-maxage=300" };
@@ -73,21 +74,25 @@ export async function GET(request: NextRequest) {
     const url = await loadPortrait(upstream, aid);
     if (!url) return notAvailable();
     try {
-      const image = await loadPortraitImage(url);
+      const { image, stale } = await loadPortraitImage(url);
       return new NextResponse(Buffer.from(image, "base64"), {
         headers: {
           "Content-Type": "image/webp",
-          "Cache-Control": "public, max-age=300, s-maxage=300",
+          "Cache-Control": stale ? "no-store" : "public, max-age=300, s-maxage=300",
+          ...(stale ? { "Retry-After": "30" } : {}),
           "X-Content-Type-Options": "nosniff",
         },
       });
     } catch (error) {
-      // Include body-read failures and timeouts. The browser can still try the
-      // renderer, and no-store lets the next visit retry our cached image path.
-      console.warn("player portrait render fetch failed", {
+      // A transient renderer failure must not become a missing portrait, nor
+      // send the browser back to the same failing renderer on every visit.
+      if (!(error instanceof PortraitCooldownError)) console.warn("player portrait render fetch failed", {
         aid, mode, message: error instanceof Error ? error.message : String(error),
       });
-      return NextResponse.redirect(url, { status: 307, headers: { "Cache-Control": "no-store" } });
+      return new NextResponse(null, { status: 503, headers: {
+        "Cache-Control": "no-store",
+        "Retry-After": String(error instanceof PortraitCooldownError ? error.retryAfter : 30),
+      } });
     }
   } catch (error) {
     // The upstream status used to be discarded here, which turned every

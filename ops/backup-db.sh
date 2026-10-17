@@ -5,6 +5,22 @@ umask 077
 DIR=/opt/tarkovstats/backups
 DATABASES='players bans progression community-reports admin-analytics'
 
+# Read-only age probe for operators and the backup service's postcondition.
+latest=0
+for marker in "$DIR"/backup-*/.complete; do
+  [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+  completed=$(stat -c %Y "$marker")
+  [ "$completed" -le "$latest" ] || latest=$completed
+done
+now=$(date +%s)
+age=$(( now - latest ))
+printf 'BACKUP_STATUS at=%s latest_completed=%s age_seconds=%s\n' "$now" "$latest" "$age"
+if [ "${1:-}" = --check-age ]; then
+  [ "$latest" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -le 129600 ]
+  exit $?
+fi
+[ "$#" -eq 0 ] || { echo 'unknown backup argument' >&2; exit 64; }
+
 # Children on the host inherit the lowest CPU and idle I/O priorities.
 renice -n 19 -p "$$" >/dev/null
 ionice -c 3 -p "$$"
@@ -41,14 +57,18 @@ cleanup
 mkdir "$STAGE"
 
 for NAME in $DATABASES; do
-  source_bytes=$(stat -c %s "$VOL/$NAME.db")
+  database_bytes=$(stat -c %s "$VOL/$NAME.db")
+  wal_bytes=0
+  source_bytes=$database_bytes
   if [ -f "$VOL/$NAME.db-wal" ]; then
-    source_bytes=$(( source_bytes + $(stat -c %s "$VOL/$NAME.db-wal") ))
+    wal_bytes=$(stat -c %s "$VOL/$NAME.db-wal")
+    source_bytes=$(( source_bytes + wal_bytes ))
   fi
   available_kb=$(df -Pk "$VOL" | awk 'NR == 2 { print $4 }')
   # Reserve the snapshot first. Compression checks actual free space on every
   # output chunk rather than rejecting a small archive as another full database.
   required_kb=$(( (source_bytes + 1023) / 1024 + 1048576 ))
+  printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s available_kb=%s required_kb=%s\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$available_kb" "$required_kb"
   if [ "$available_kb" -lt "$required_kb" ]; then
     echo "insufficient free space for $NAME backup; retaining previous set" >&2
     exit 1

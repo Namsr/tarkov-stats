@@ -29,9 +29,18 @@ jobs:
       - run: npm run i18n:check
       - run: npm run lint
       - run: npm run typecheck
+      - name: Install the production Caddy for proxy integration tests
+        run: |
+          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+            --output "$RUNNER_TEMP/caddy.tar.gz" \
+            https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz
+          printf '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9  %s\n' "$RUNNER_TEMP/caddy.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/caddy-bin"
+          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP/caddy-bin" caddy
+          echo "CADDY_BIN=$RUNNER_TEMP/caddy-bin/caddy" >> "$GITHUB_ENV"
       - run: npm test
       - run: npm audit --omit=dev
-      - run: systemd-analyze verify ops/systemd/tarkovstats-background.slice
+      - run: systemd-analyze verify ops/systemd/tarkovstats-background.slice ops/systemd/tarkovstats-backup.service ops/systemd/tarkovstats-backup.timer
   build:
     needs: checks
     runs-on: ubuntu-24.04

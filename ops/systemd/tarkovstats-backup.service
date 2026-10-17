@@ -1,0 +1,21 @@
+[Unit]
+Description=TarkovStats verified database backup
+After=docker.service tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
+ConditionPathExists=/opt/tarkovstats/backup-db.sh
+# At most the daily attempt plus two retries; manual starts count too.
+# After exhaustion, the next timer/operator starts a new attempt when the window allows.
+StartLimitIntervalSec=1d
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/tarkovstats/backup-db.sh
+ExecStartPost=/bin/sh /opt/tarkovstats/backup-db.sh --check-age
+Nice=19
+IOSchedulingClass=idle
+# Includes waiting for the wrapper's data-sync/leaderboard locks.
+TimeoutStartSec=2h
+TimeoutStopSec=90s
+Restart=on-failure
+RestartSec=1h
