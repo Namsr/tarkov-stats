@@ -30,6 +30,11 @@ export interface AxisPlayerSummary {
   opponents: AxisPeer[];
   highlights: { teammate: AxisPeer | null; opponent: AxisPeer | null; ally: { with: AxisPeer; against: AxisPeer } | null };
   maps: (AxisRecord & { name: string })[];
+  story: {
+    mostWinsWith: AxisPeer | null;
+    revenge: { opponent: AxisPeer; matchNumber: number; losses: number } | null;
+    bestMap: (AxisRecord & { name: string }) | null;
+  };
 }
 export interface AxisPlayerProfileResponse extends AxisPlayerSummary {
   aid: number;
@@ -40,6 +45,7 @@ export interface AxisPlayerProfileResponse extends AxisPlayerSummary {
 }
 export const AXIS_PEER_MIN_MATCHES = 10;
 export const AXIS_PLAYER_PAGE_SIZE = 10;
+export const AXIS_STORY_MAP_MIN_MATCHES = 5;
 
 export function axisPlayerHref(profile: AxisProfile): string {
   return `/player/arena/${profile.aid}?arenaMode=axis`;
@@ -68,13 +74,15 @@ export function axisLeagueAverages(players: AxisPlayer[]): AxisPlayerSummary["av
 
 /** Newest first; cancelled/pending games stay in history but cannot become wins or zero K/D/A. */
 export function buildAxisPlayerSummary(identity: AxisIdentity, matches: AxisMatch[], players: AxisPlayer[], current: boolean,
-  averages: AxisPlayerSummary["averages"], averageKda: number | null): AxisPlayerSummary {
+  averages: AxisPlayerSummary["averages"], averageKda: number | null, archiveComplete: boolean): AxisPlayerSummary {
   const league = new Map(players.map(player => [player.id, player]));
   const teammates = new Map<string, AxisPeer>(), opponents = new Map<string, AxisPeer>();
   const maps = new Map<string, AxisRecord & { name: string }>();
   const record = emptyRecord(), recent: AxisPersonalMatch[] = [];
   const combat = { kills: 0, deaths: 0, assists: 0, matches: 0 };
   const outcomes: boolean[] = [];
+  const revengeRuns = new Map<string, { win: number; losses: number }>();
+  let revenge: AxisPlayerSummary["story"]["revenge"] = null;
   let peakMmr: number | null = null, mmr: number | null = null;
   for (const match of matches) {
     const ownTeam = match.teams.findIndex(team => team.players.some(player => player.id === identity.id));
@@ -105,6 +113,21 @@ export function buildAxisPlayerSummary(identity: AxisIdentity, matches: AxisMatc
         peers.set(player.id, peer);
       }
       add(peer, result);
+      if (archiveComplete && index !== ownTeam) {
+        if (result === "win") revengeRuns.set(player.id, { win: match.number, losses: 0 });
+        else if (result === "draw") revengeRuns.delete(player.id);
+        else {
+          const run = revengeRuns.get(player.id);
+          if (run) {
+            run.losses++;
+            if (run.losses >= 3 && (!revenge || run.win > revenge.matchNumber
+              || run.win === revenge.matchNumber && (run.losses > revenge.losses
+                || run.losses === revenge.losses && peer.id.localeCompare(revenge.opponent.id) < 0))) {
+              revenge = { opponent: peer, matchNumber: run.win, losses: run.losses };
+            }
+          }
+        }
+      }
     }));
     // A multi-map match has one result: keep the combination instead of inventing per-map wins.
     const name = [...new Set(match.maps)].join(" / ");
@@ -125,6 +148,9 @@ export function buildAxisPlayerSummary(identity: AxisIdentity, matches: AxisMatc
     return enemy && eligible(enemy) && peer.winrate! > enemy.winrate! ? [{ with: peer, against: enemy }] : [];
   }).sort((a, b) => (b.with.winrate! - b.against.winrate!) - (a.with.winrate! - a.against.winrate!) || byGames(a.with, b.with))[0] ?? null;
   const standing = current ? league.get(identity.id) : null;
+  const mostWinsWith = withPlayers.filter(peer => peer.wins > 0).sort((a, b) => b.wins - a.wins || byGames(a, b))[0] ?? null;
+  const bestMap = [...maps.values()].filter(map => map.wins + map.losses >= AXIS_STORY_MAP_MIN_MATCHES)
+    .sort((a, b) => b.winrate! - a.winrate! || b.games - a.games || a.name.localeCompare(b.name))[0] ?? null;
   return {
     identity, stats: standing ? { position: standing.position, mmr: standing.mmr, peakMmr: standing.peakMmr, games: standing.games,
       wins: standing.wins, losses: standing.losses, winrate: standing.winrate, streak: standing.streak, peakStreak: standing.peakStreak }
@@ -132,5 +158,6 @@ export function buildAxisPlayerSummary(identity: AxisIdentity, matches: AxisMatc
     averages, combat: combat.matches ? combat : null, recent, averageKda, averageRecentKda: null, archivedGames: record.games,
     teammates: withPlayers.slice(0, 50), opponents: againstPlayers.slice(0, 50), highlights: { teammate, opponent, ally },
     maps: [...maps.values()].sort((a, b) => b.games - a.games || a.name.localeCompare(b.name)),
+    story: { mostWinsWith, revenge, bestMap },
   };
 }

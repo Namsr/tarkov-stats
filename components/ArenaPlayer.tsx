@@ -10,6 +10,7 @@ import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
 import FavoriteButton from "@/components/FavoriteButton";
 import CheaterReportButton from "@/components/CheaterReportButton";
 import ProfileHeader from "@/components/ProfileHeader";
+import AxisIcon from "@/components/AxisIcon";
 import { ProfileErrorNotice } from "@/components/ProfileShell";
 import ProfileSectionNav from "@/components/ProfileSectionNav";
 import StatCard from "@/components/StatCard";
@@ -39,6 +40,8 @@ interface Props {
   aid: string;
   radarDemo?: string | string[];
   axisIdentity?: AxisIdentity | null;
+  axisHours?: number | null;
+  axisHoursFetchedAt?: number | null;
   initialAxis?: boolean;
 }
 
@@ -51,7 +54,7 @@ function ArenaScopes({ selected, axis, linked, onMode, onAxis }: {
   const { t } = useI18n();
   return <div className="profile-arena-scopes" role="group" aria-label={t("arena.modePicker.label")}>
     {(["overall", ...ARENA_MODE_KEYS] as const).map(mode => <button key={mode} type="button" aria-pressed={!axis && selected === mode} onClick={() => onMode(mode)}>{t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode)}</button>)}
-    {(linked || axis) && <button type="button" aria-pressed={axis} onClick={onAxis}>{t("axis.profile.tab")}</button>}
+    {(linked || axis) && <button type="button" className="inline-flex items-center justify-center gap-2" aria-pressed={axis} onClick={onAxis}><AxisIcon name="swords" />{t("axis.profile.tab")}</button>}
   </div>;
 }
 
@@ -239,7 +242,7 @@ function ArenaLegacyIncomplete({
   );
 }
 
-export default function ArenaPlayer({ aid, axisIdentity = null, initialAxis = false }: Props) {
+export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null, axisHoursFetchedAt = null, initialAxis = false }: Props) {
   const { lang, t } = useI18n();
   const numericAid = Number(aid);
   const profileRequestUrl = `/api/player/profile?${new URLSearchParams({ aid, mode: "arena" })}`;
@@ -450,12 +453,18 @@ export default function ArenaPlayer({ aid, axisIdentity = null, initialAxis = fa
     window.history.replaceState(null, "", url);
   };
   const scopes = <ArenaScopes selected={selectedMode} axis={axisSelected} linked={axisIdentity != null} onMode={changeMode} onAxis={selectAxis} />;
+  const clientHours = profile?.overall.hours ?? (legacyBody ? legacyNumber(legacyBody, "hoursPlayed") : null);
+  const clientHoursFetchedAt = profile
+    ? profile.fetchedAt ?? profile.profileUpdatedAt
+    : legacyBody?.freshness?.fetchedAt ?? legacyBody?.freshness?.updatedAt ?? legacyBody?.profileUpdatedAt ?? 0;
+  const hours = clientHours != null && (axisHours == null || clientHoursFetchedAt >= (axisHoursFetchedAt ?? 0))
+    ? clientHours : axisHours;
 
   if (axisSelected) return <main className="page-frame profile-page min-h-screen" data-profile-shell-mode="arena">
     <Link href="/" className="profile-back">{t("common.back")}</Link>
     <ProfileHeader aid={numericAid} mode="arena" kicker={`#${aid}`} title={axisIdentity?.name ?? profile?.nickname}
       portrait={axisIdentity ? <div className="profile-portrait axis-profile-portrait"><AxisAvatar name={axisIdentity.name} url={axisIdentity.avatarUrl} /></div> : undefined}
-      hideLeaderboardRank meta={<div className="profile-header__meta"><span>{t("axis.title")}</span></div>}
+      hideLeaderboardRank meta={<div className="profile-header__meta"><span>{t("axis.title")}</span><span>{t("metric.hours")}: {hours == null ? "—" : hours.toLocaleString(lang, { maximumFractionDigits: 0 })}{hours != null && <> {t("unit.h")}</>}</span></div>}
       actions={<ProfilePrimaryActions aid={numericAid} mode="arena" cycleId="persistent" nickname={axisIdentity?.name} />}>
       <ProfileSectionNav label={t("profile.sectionNav")} items={[{ id: "axis-player-overview", label: t("profile.section.overview") }, { id: "axis-player-peers", label: t("axis.profile.connections") }, { id: "axis-player-history", label: t("axis.history.title") }]} />
       {scopes}

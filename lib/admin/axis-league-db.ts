@@ -270,7 +270,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             }
             return match;
           });
-        cached = { version, summary: { ...buildAxisPlayerSummary(identity, matches, players, Boolean(selected?.current), baseline.averages, baseline.kda), averageRecentKda: baseline.recentKda } };
+        cached = { version, summary: { ...buildAxisPlayerSummary(identity, matches, players, Boolean(selected?.current), baseline.averages, baseline.kda, Boolean(archive.complete)), averageRecentKda: baseline.recentKda } };
         if (playerSummaries.size >= 32) playerSummaries.delete(playerSummaries.keys().next().value!);
         playerSummaries.set(key, cached);
       }

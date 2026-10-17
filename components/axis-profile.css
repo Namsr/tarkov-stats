@@ -18,8 +18,9 @@
 .axis-personal-note strong { font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
 .axis-personal-state { padding: 28px 0; color: var(--muted); }
 .axis-personal-state button { margin-top: 16px; }
-.axis-personal-recent { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
-.axis-personal-recent > div { display: flex; gap: 6px; flex-wrap: wrap; }
+.axis-personal-recent { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+.axis-personal-recent > div { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.axis-personal-recent-summary { text-align: right; }
 .axis-personal-recent a { display: grid; place-items: center; min-width: 26px; height: 28px; padding: 4px; border-radius: 4px; color: var(--profile-positive); background: color-mix(in srgb,var(--profile-positive) 13%,var(--card-bg)); font-size: 11px; }
 .axis-personal-recent a[data-result="loss"] { color: var(--profile-report); background: color-mix(in srgb,var(--profile-report) 12%,var(--card-bg)); }
 .axis-personal-recent a[data-result="draw"] { color: var(--muted); background: var(--input-bg); }
@@ -28,7 +29,7 @@
 .axis-personal-card[data-kind="with"] { background: color-mix(in srgb,var(--profile-positive) 4%,var(--card-bg)); }
 .axis-personal-card[data-kind="against"] { background: color-mix(in srgb,var(--profile-report) 4%,var(--card-bg)); }
 a.axis-personal-card:hover { border-color: var(--muted); }
-.axis-personal-card-label { margin-bottom: 18px; font-size: 12px; color: var(--muted); }
+.axis-personal-card-label { display: inline-flex; align-items: center; gap: 9px; margin-bottom: 18px; font-size: 12px; color: var(--muted); }
 .axis-personal-card .axis-personal-name { font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
 .axis-personal-card-value { font-size: 14px; font-weight: 500; margin: 16px 0 7px; }
 .axis-personal-card small { color: var(--muted); font-size: 12px; }
@@ -44,8 +45,11 @@ a.axis-personal-card:hover { border-color: var(--muted); }
 a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-underline-offset: 4px; }
 .axis-personal .axis-avatar { flex-shrink: 0; }
 .axis-personal-peer-tabs { margin-top: 22px; margin-bottom: 10px; }
-.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 95px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
+.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 125px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
 .axis-personal-peer-row > span { text-align: right; font-variant-numeric: tabular-nums; }
+.axis-personal-peer-winrate { display: inline-flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.axis-personal-peer-bar { display: block; width: 48px; height: 4px; flex-shrink: 0; overflow: hidden; border-radius: 3px; background: var(--input-bg); }
+.axis-personal-peer-bar > span { display: block; height: 100%; background: var(--profile-positive); }
 .axis-personal-peer-head { min-height: 42px; padding: 10px 0; color: var(--muted); font-size: 12px; }
 .axis-personal-peer-head > span:first-child { text-align: left; }
 .axis-personal-history-head,.axis-personal-match summary { display: grid; grid-template-columns: 100px minmax(100px,1fr) 90px 120px 75px; gap: 16px; align-items: center; padding: 18px 5px; font-size: 13px; }
@@ -63,8 +67,9 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
 .axis-personal-result[data-result="loss"] { color: var(--profile-report); }
 .axis-personal-rosters { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 28px; padding: 10px 16px 24px; }
 .axis-personal-rosters h3 { color: var(--muted); font-size: 13px; font-weight: 500; margin-bottom: 8px; }
-.axis-personal-roster-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 12px; }
-.axis-personal-roster-row > span { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.axis-personal-roster-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px; border-radius: 6px; font-size: 12px; }
+.axis-personal-roster-row[data-self="true"] { background: color-mix(in srgb,var(--profile-positive) 9%,var(--card-bg)); }
+.axis-personal-roster-row > span:last-child { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .axis-personal-roster-row .axis-avatar { width: 28px; height: 28px; }
 .axis-personal-pagination { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 18px; font-size: 12px; color: var(--muted); }
 .axis-personal-maps { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 32px; margin-top: 15px; }
@@ -72,10 +77,21 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
 .axis-personal-maps strong { font-weight: 500; }
 .axis-personal-maps span { color: var(--muted); font-size: 12px; }
 .axis-personal-source { padding-top: 18px; border-top: 1px solid var(--card-border); font-size: 12px; }
+.axis-personal-bottom { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 36px; }
+.axis-personal-bottom .axis-personal-maps { grid-template-columns: 1fr; }
+.axis-personal-story article { padding: 17px 0; border-bottom: 1px solid var(--card-border); }
+.axis-personal-story h3 { margin-bottom: 10px; color: var(--muted); font-size: 13px; font-weight: 400; }
+.axis-personal-story .axis-personal-name,.axis-personal-story strong { font-size: 14px; font-weight: 500; }
+.axis-personal-story p { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.axis-personal-story p a { text-decoration: underline; text-underline-offset: 3px; }
 @media(max-width:900px) {
+  .axis-personal-recent { grid-template-columns: 1fr 1fr; }
+  .axis-personal-recent > div { grid-column: 1 / -1; grid-row: 2; }
+  .axis-personal-recent-summary { grid-column: 2; grid-row: 1; }
+  .axis-personal-bottom { grid-template-columns: 1fr; }
   .axis-personal-cards { grid-template-columns: 1fr; }
   .axis-personal-card { padding: 20px; }
-  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 70px; gap: 10px; font-size: 13px; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 110px; gap: 10px; font-size: 13px; }
   .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 80px minmax(90px,1fr) 60px 95px 55px; gap: 10px; }
 }
 @media(max-width:600px) {
@@ -89,6 +105,8 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
   .axis-personal .profile-segments { flex-wrap: wrap; }
   .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 32px 72px 56px; gap: 6px; font-size: 12px; }
   .axis-personal-peer-head { font-size: 11px; }
+  .axis-personal-peer-winrate { flex-direction: column; align-items: flex-end; gap: 5px; }
+  .axis-personal-peer-bar { width: 40px; }
   .axis-personal-peer-row .axis-avatar { width: 26px; height: 26px; }
   .axis-personal-peer-row .axis-personal-name { gap: 7px; }
   .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 65px minmax(0,1fr) 45px 45px; gap: 7px; font-size: 12px; }
