@@ -37,6 +37,15 @@ test('the parent releases only its dead Arena child lease, including a forced st
 
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
+
+test('daytime catch-up reuses the bounded queue without replaying ticks during the nightly cycle', async () => {
+  const timer = await readFile('ops/systemd/tarkovstats-profile-catchup.timer', 'utf8');
+  assert.match(timer, /^OnCalendar=\*-\*-\* 09\.\.23:00:00 Europe\/Moscow$/m);
+  assert.match(timer, /^Unit=tarkovstats-profile-queue\.service$/m);
+  assert.match(timer, /^Persistent=false$/m);
+  const queue = await readFile('ops/systemd/tarkovstats-profile-queue.service', 'utf8');
+  assert.match(queue, /flock \/run\/tarkovstats-data-sync\.lock/);
+});
 const done = () => ({ code: 0, summary: { feedHttpStatus: 200, backlog: 0, attempted: 1, errors: 0 } });
 function harness(handler, totalMs = 3_600_000, controller) {
   let clock = 1_000_000;

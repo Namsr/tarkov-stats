@@ -278,3 +278,162 @@ test("comparison profile adapter carries exact PMC kills per raid and preserves 
   assert.equal(adaptComparisonProfile(scope, 42, { identity, comparisonStats: { killedPmcPerRaid: 0 } }).metrics.killed_pmc_per_raid, 0);
   assert.equal(adaptComparisonProfile(scope, 42, { identity, comparisonStats: { killedPmcPerRaid: null }, stats }).metrics.killed_pmc_per_raid, null);
 });
+
+
+const selectionStore = await import("../lib/comparison-selection.ts");
+
+test("profile comparison fills slots, avoids duplicates, and replaces only the second full slot", () => {
+  const regular = { mode: "regular", cycleId: "persistent", arenaMode: null };
+  const { addComparisonPlayer } = selectionStore;
+  const first = addComparisonPlayer(regular, 42, null);
+  assert.deepEqual(first, { scope: regular, primary: 42, secondary: null });
+  assert.deepEqual(addComparisonPlayer(regular, 42, first), first);
+  const pair = addComparisonPlayer(regular, 43, first);
+  assert.deepEqual(pair, { scope: regular, primary: 42, secondary: 43 });
+  assert.deepEqual(addComparisonPlayer(regular, 43, pair), pair);
+  assert.deepEqual(addComparisonPlayer(regular, 44, pair), { ...pair, secondary: 44 });
+  assert.deepEqual(addComparisonPlayer(regular, 44, { ...pair, primary: null }), { ...pair, primary: 44 });
+  for (const aid of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => addComparisonPlayer(regular, aid, first), TypeError);
+  }
+});
+
+test("comparison cookies round-trip each profile scope and preserve IDs across the clicked mode", () => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+  let cookie = "";
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { get cookie() { return cookie; }, set cookie(value) { cookie = value; } } });
+  Object.defineProperty(globalThis, "location", { configurable: true, value: { protocol: "https:" } });
+  try {
+    const { addComparisonPlayer, readComparisonSelection, saveComparisonSelection, comparisonSelectionParams } = selectionStore;
+    let saved = null;
+    const scopes = [
+      { mode: "regular", cycleId: "persistent", arenaMode: null },
+      { mode: "pve", cycleId: "persistent", arenaMode: null },
+      { mode: "seasonal", cycleId: "season-2026", arenaMode: null },
+      ...["overall", "teamFight", "lastHero", "checkpoint", "blastGang", "shootOutDuo"].map(arenaMode => ({ mode: "arena", cycleId: "persistent", arenaMode })),
+    ];
+    for (const [index, scope] of scopes.entries()) {
+      saved = addComparisonPlayer(scope, 42 + index, saved);
+      saveComparisonSelection(saved);
+      assert.match(cookie, /Max-Age=15552000; Path=\/; SameSite=Lax; Secure$/);
+      assert.deepEqual(readComparisonSelection(), saved);
+      const params = comparisonSelectionParams(saved);
+      assert.deepEqual(parseComparisonScope(params, scope.mode === "seasonal" ? scope.cycleId : null).scope, scope);
+      assert.equal(params.get("aid"), "42");
+      assert.equal(params.get("vs"), index === 0 ? null : String(42 + index));
+    }
+    for (const query of ["mode=unknown&aid=42", "mode=seasonal&cycle=persistent&aid=42", "mode=regular&aid=-1", "mode=regular&aid=1e2", "mode=regular&aid=9007199254740992", "mode=regular&aid=42&aid=43", "mode=arena&arenaMode=axis&aid=42", "mode=pve&vs=NaN", "x".repeat(513)]) {
+      cookie = `comparison_selection=${encodeURIComponent(query)}`;
+      assert.equal(readComparisonSelection(), null, query);
+    }
+    cookie = "comparison_selection=%broken";
+    assert.equal(readComparisonSelection(), null);
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { get cookie() { throw new Error("blocked"); }, set cookie(_) { throw new Error("blocked"); } } });
+    assert.equal(readComparisonSelection(), null);
+    assert.doesNotThrow(() => saveComparisonSelection(saved));
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument); else delete globalThis.document;
+    if (previousLocation) Object.defineProperty(globalThis, "location", previousLocation); else delete globalThis.location;
+  }
+});
+
+test("the profile button carries its player, mode, seasonal cycle and Arena submode into navigation", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { createRequire } = await import("node:module");
+  const { default: ts } = await import("typescript");
+  const { dict } = await import("../lib/i18n/dictionary.ts");
+  const require = createRequire(import.meta.url);
+  const source = await readFile("components/ProfileCompareButton.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const cases = [
+    [{ aid: 42, mode: "regular" }, "mode=regular&aid=42"],
+    [{ aid: 42, mode: "pve" }, "mode=pve&aid=42"],
+    [{ aid: 42, mode: "seasonal", cycleId: "season-2026" }, "mode=seasonal&cycle=season-2026&aid=42"],
+    [{ aid: 42, mode: "arena", arenaMode: "teamFight" }, "mode=arena&arenaMode=teamFight&aid=42"],
+  ];
+  for (const lang of ["ru", "en"]) {
+    for (const [props, query] of cases) {
+      let destination;
+      let saved;
+      const exports = {};
+      const mockedRequire = id => id === "next/navigation" ? { useRouter: () => ({ push: url => { destination = url; } }) }
+        : id === "@/lib/i18n/context" ? { useI18n: () => ({ t: key => dict[lang][key] }) }
+          : id === "@/lib/comparison-selection" ? { ...selectionStore, readComparisonSelection: () => null, saveComparisonSelection: value => { saved = value; } }
+            : require(id);
+      new Function("require", "exports", compiled)(mockedRequire, exports);
+      const button = exports.default(props);
+      assert.equal(button.props.type, "button");
+      assert.equal(button.props["aria-label"], dict[lang]["compare.button"]);
+      assert.equal(button.props.title, dict[lang]["compare.button"]);
+      assert.equal(button.props.children.type, "svg");
+      assert.equal(button.props.children.props["aria-hidden"], "true");
+      assert.equal(button.props.disabled, false);
+      button.props.onClick();
+      assert.equal(destination, `/compare?${query}`);
+      assert.equal(saved.primary, 42);
+      assert.equal(saved.scope.mode, props.mode);
+      const unavailable = exports.default({ aid: 42, mode: "seasonal" });
+      assert.equal(unavailable.props.disabled, true);
+    }
+  }
+});
+
+
+test("unchanged comparison selections do not rewrite cookies, but changes and cookie removal do", () => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  let cookie = "other_preference=1";
+  let writes = 0;
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    get cookie() { return cookie; },
+    set cookie(value) { writes++; cookie = value.split(";")[0]; },
+  } });
+  try {
+    const selection = { scope: { mode: "regular", cycleId: "persistent", arenaMode: null }, primary: 42, secondary: 43 };
+    selectionStore.saveComparisonSelection(selection);
+    selectionStore.saveComparisonSelection(selection);
+    assert.equal(writes, 1, "button click and comparison mount must share one cookie write");
+    const changed = { ...selection, secondary: 44 };
+    selectionStore.saveComparisonSelection(changed);
+    assert.equal(writes, 2);
+    assert.deepEqual(selectionStore.readComparisonSelection(), changed);
+    cookie = "";
+    selectionStore.saveComparisonSelection(changed);
+    assert.equal(writes, 3, "an externally removed cookie must be recreated");
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument); else delete globalThis.document;
+  }
+});
+
+test("restoring comparison only updates local history and explicit or stale Seasonal URLs remain authoritative", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { comparisonScopeFromSearchParams } = await import("../lib/comparison-adapter.ts");
+  const source = await readFile("components/ComparePage.tsx", "utf8");
+  const start = source.indexOf("  useEffect(() => {", source.indexOf("  const secondaryAid ="));
+  const end = source.indexOf("\n  }, [primaryAid", start);
+  assert.ok(start > 0 && end > start);
+  const body = source.slice(start + "  useEffect(() => {".length, end);
+  const run = new Function("searchParams", "seasonalCycleId", "scope", "primaryAid", "secondaryAid",
+    "readComparisonSelection", "comparisonSelectionParams", "comparisonScopeFromSearchParams", "saveComparisonSelection", "window", body);
+  const regular = { mode: "regular", cycleId: "persistent", arenaMode: null };
+  const saved = { scope: regular, primary: 42, secondary: 43 };
+  const restore = (query, stored, cycle = null) => {
+    const params = new URLSearchParams(query);
+    const scope = parseComparisonScope(params, cycle).scope;
+    const history = [];
+    const writes = [];
+    let reads = 0;
+    run(params, cycle, scope, params.has("aid") ? Number(params.get("aid")) : null,
+      params.has("vs") ? Number(params.get("vs")) : null,
+      () => { reads++; return stored; }, selectionStore.comparisonSelectionParams,
+      comparisonScopeFromSearchParams, selection => writes.push(selection),
+      { history: { replaceState: (...args) => history.push(args) } });
+    return { history, writes, reads };
+  };
+  assert.deepEqual(restore("", saved), { history: [[null, "", "/compare?mode=regular&aid=42&vs=43"]], writes: [], reads: 1 });
+  assert.deepEqual(restore("", null), { history: [], writes: [], reads: 1 });
+  assert.deepEqual(restore("mode=pve&aid=99", saved), { history: [], writes: [{ scope: { mode: "pve", cycleId: "persistent", arenaMode: null }, primary: 99, secondary: null }], reads: 0 });
+  const stale = { ...saved, scope: { mode: "seasonal", cycleId: "old-season", arenaMode: null } };
+  assert.deepEqual(restore("", stale, "current-season"), { history: [], writes: [], reads: 1 });
+  assert.deepEqual(restore("mode=seasonal&cycle=old-season&aid=99", saved, "current-season"), { history: [], writes: [], reads: 0 });
+});

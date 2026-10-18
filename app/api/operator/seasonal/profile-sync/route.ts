@@ -63,7 +63,7 @@ export async function POST(request: Request) {
           seasonEndsAt: currentCycle.endsAt,
         }),
         fetchPayload: ({ aid: profileAid, expectedUpdatedAt: version }) =>
-          fetchSeasonalPayload(profileAid, { expectedUpdatedAt: version }),
+          fetchSeasonalPayload(profileAid, { expectedUpdatedAt: version, force: true }),
         getStore: getSeasonalStore,
         afterCapture: async ({ cycle: currentCycle, profile, capture, observedAt }) => {
           await recordSeasonalCaptureLifecycle(currentCycle, profile, capture, "task", observedAt);

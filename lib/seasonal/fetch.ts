@@ -3,9 +3,9 @@ import { seasonalUpstreamMode } from "@/lib/seasonal/config";
 import { seasonalProfileCacheUrl } from "@/lib/seasonal/profile-cache-key";
 
 export interface SeasonalFetchOptions {
-  /** Feed version used to make a CDN/proxy cache key deterministic. */
+  /** Minimum expected version; also a deterministic cache key unless forced. */
   expectedUpdatedAt?: number;
-  /** Explicit user refresh; bypass the normal fifteen-minute cache slot. */
+  /** Fetch the latest JSON, bypassing both a delayed feed key and the normal slot. */
   force?: boolean;
   request?: typeof fetchTarkovJson;
 }
