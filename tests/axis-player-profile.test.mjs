@@ -230,7 +230,7 @@ test("draws and wins break a revenge loss streak; empty and short periods do not
   assert.equal(store.readPlayerProfile(12345, "all").story.revenge.losses, 3);
 });
 
-test("toughest opponent requires twice as many losses as wins and ranks loss rate without a match-count cutoff", () => {
+test("toughest opponent requires twice as many losses as wins and prioritizes decided match count", () => {
   const identity = { id: "1", name: "Profile owner", avatarUrl: null, profile: { aid: 12345, mode: "arena" } };
   let serial = 0;
   const games = (id, results) => results.map(result => {
@@ -260,8 +260,18 @@ test("toughest opponent requires twice as many losses as wins and ranks loss rat
   const swept = games("eight", Array(8).fill("loss"));
   const moreLosses = games("many", [...Array(3).fill("win"), ...Array(9).fill("loss")]);
   const toughest = summary([...shaw, ...recer, ...short, ...draws, ...tie, ...swept, ...moreLosses]).highlights.opponent;
-  assert.equal(toughest.id, "eight", "0-8 beats a lower loss rate and wins a 100% loss-rate tie by loss count");
-  assert.equal(toughest.wins, 0);
-  assert.equal(toughest.losses, 8);
-  assert.equal(toughest.winrate, 0);
+  assert.equal(toughest.id, "many", "a sustained losing matchup outranks a shorter sweep");
+  assert.equal(toughest.wins, 3);
+  assert.equal(toughest.losses, 9);
+  assert.equal(toughest.winrate, .25);
+  const two = games("two", ["loss", "loss"]);
+  const six = games("six", [...Array(2).fill("win"), ...Array(4).fill("loss")]);
+  const nine = games("nine", [...Array(3).fill("win"), ...Array(6).fill("loss")]);
+  assert.equal(summary([...two, ...six, ...nine]).highlights.opponent.id, "nine", "3-6 outranks 0-2 and 2-4");
+  const ten = games("ten", [...Array(2).fill("win"), ...Array(8).fill("loss")]);
+  assert.equal(summary([...nine, ...ten, ...close, ...shaw]).highlights.opponent.id, "ten", "2-8 outranks 3-6; close records remain ineligible");
+  const equalGames = games("equal", [...Array(2).fill("win"), ...Array(7).fill("loss")]);
+  assert.equal(summary([...nine, ...equalGames]).highlights.opponent.id, "equal", "higher loss rate breaks equal decided-match counts");
+  const drawnSweep = games("drawn", ["loss", "loss", ...Array(20).fill("draw")]);
+  assert.equal(summary([...drawnSweep, ...nine]).highlights.opponent.id, "nine", "draws cannot inflate the matchup sample");
 });

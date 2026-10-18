@@ -142,7 +142,8 @@ export function buildAxisPlayerSummary(identity: AxisIdentity, matches: AxisMatc
   const eligible = (peer: AxisPeer) => peer.wins + peer.losses >= AXIS_PEER_MIN_MATCHES;
   const withPlayers = [...teammates.values()].sort(byGames), againstPlayers = [...opponents.values()].sort(byGames);
   const teammate = withPlayers.filter(eligible).sort((a, b) => b.winrate! - a.winrate! || b.wins - a.wins || byGames(a, b))[0] ?? null;
-  const opponent = againstPlayers.filter(peer => peer.losses > 0 && peer.losses >= 2 * peer.wins).sort((a, b) => a.winrate! - b.winrate! || b.losses - a.losses || byGames(a, b))[0] ?? null;
+  const opponent = againstPlayers.filter(peer => peer.losses > 0 && peer.losses >= 2 * peer.wins)
+    .sort((a, b) => (b.wins + b.losses) - (a.wins + a.losses) || a.winrate! - b.winrate! || a.id.localeCompare(b.id))[0] ?? null;
   const ally = withPlayers.filter(eligible).flatMap(peer => {
     const enemy = opponents.get(peer.id);
     return enemy && eligible(enemy) && peer.winrate! > enemy.winrate! ? [{ with: peer, against: enemy }] : [];
