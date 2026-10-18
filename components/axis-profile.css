@@ -44,8 +44,10 @@ a.axis-personal-card:hover { border-color: var(--muted); }
 .axis-personal-name > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-underline-offset: 4px; }
 .axis-personal .axis-avatar { flex-shrink: 0; }
+.axis-personal-heading + .axis-personal-note { margin-bottom: 16px; }
+.axis-personal-cards + .axis-personal-note { margin-top: 16px; }
 .axis-personal-peer-tabs { margin-top: 22px; margin-bottom: 10px; }
-.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 145px 125px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
+.axis-personal-peer-row { display: grid; grid-template-columns: minmax(0,1fr) 70px 75px 85px 125px; align-items: center; gap: 16px; min-height: 64px; padding: 14px 0; border-bottom: 1px solid var(--card-border); font-size: 14px; }
 .axis-personal-peer-row > span { text-align: right; font-variant-numeric: tabular-nums; }
 .axis-personal-peer-winrate { display: inline-flex; justify-content: flex-end; align-items: center; gap: 10px; }
 .axis-personal-peer-bar { display: block; width: 48px; height: 4px; flex-shrink: 0; overflow: hidden; border-radius: 3px; background: var(--input-bg); }
@@ -91,7 +93,7 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
   .axis-personal-bottom { grid-template-columns: 1fr; }
   .axis-personal-cards { grid-template-columns: 1fr; }
   .axis-personal-card { padding: 20px; }
-  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 105px 110px; gap: 10px; font-size: 13px; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 50px 65px 75px 110px; gap: 10px; font-size: 13px; }
   .axis-personal-history-head,.axis-personal-match summary { grid-template-columns: 80px minmax(90px,1fr) 60px 95px 55px; gap: 10px; }
 }
 @media(max-width:600px) {
@@ -103,7 +105,7 @@ a.axis-personal-name:hover > span:last-child { text-decoration: underline; text-
   .axis-personal-heading { align-items: flex-start; }
   .axis-personal .section-heading { font-size: 25px; }
   .axis-personal .profile-segments { flex-wrap: wrap; }
-  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 32px 72px 56px; gap: 6px; font-size: 12px; }
+  .axis-personal-peer-row { grid-template-columns: minmax(0,1fr) 32px 42px 52px 56px; gap: 6px; font-size: 12px; }
   .axis-personal-peer-head { font-size: 11px; }
   .axis-personal-peer-winrate { flex-direction: column; align-items: flex-end; gap: 5px; }
   .axis-personal-peer-bar { width: 40px; }
