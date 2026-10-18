@@ -13,6 +13,8 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "axis.photo.heading": "Game result screenshots",
+  "axis.photo.pasteHint": "Click this area and press Ctrl+V to paste a screenshot. Then save the match statistics.",
   "axis.photo.title": "Photo for match #{n}",
   "axis.photo.alt": "Score screenshot for match #{n}",
   "axis.photo.open": "Open photo for match #{n}",
@@ -1849,6 +1851,8 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "axis.photo.heading": "Скриншоты результатов игры",
+  "axis.photo.pasteHint": "Нажмите на этот блок и вставьте скриншот через Ctrl+V. Затем сохраните статистику матча.",
   "axis.photo.title": "Фото матча №{n}",
   "axis.photo.alt": "Снимок счёта матча №{n}",
   "axis.photo.open": "Открыть фото матча №{n}",
