@@ -66,4 +66,3 @@ export function isComparisonScope(value: unknown): value is ComparisonScope {
     ? normalizeCycleId(scope.cycleId, "seasonal") === scope.cycleId
     : scope.cycleId === "persistent";
 }
-
