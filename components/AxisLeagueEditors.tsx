@@ -5,7 +5,7 @@ import { useI18n } from "@/lib/i18n/context";
 
 export default function AxisLeagueEditors() {
   const { t } = useI18n();
-  const [editors, setEditors] = useState<string[] | null>(null);
+  const [editors, setEditors] = useState<{ subject: string; name: string | null }[] | null>(null);
   const [subject, setSubject] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -41,8 +41,8 @@ export default function AxisLeagueEditors() {
     {error && <p className="admin-notice" role="status">{t(error)} <button type="button" disabled={busy} className="ghost-button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button></p>}
     {editors === null && !error && <p role="status">{t("common.loading")}</p>}
     {editors?.length === 0 && <p className="axis-editor-empty">{t("axis.editor.empty")}</p>}
-    {!!editors?.length && <ul className="axis-editor-list">{editors.map((id) => <li key={id}><code>{id}</code>
-      <button type="button" className="ghost-button" disabled={busy} aria-label={t("axis.editor.revokeUser", { id })} onClick={() => void change(id, false)}>{t("axis.editor.revoke")}</button>
+    {!!editors?.length && <ul className="axis-editor-list">{editors.map((editor) => <li key={editor.subject}><div className="axis-editor-identity"><strong>{editor.name ?? t("axis.editor.namePending")}</strong><code>{editor.subject}</code></div>
+      <button type="button" className="ghost-button" disabled={busy} aria-label={t("axis.editor.revokeUser", { id: editor.name ? `${editor.name} (${editor.subject})` : editor.subject })} onClick={() => void change(editor.subject, false)}>{t("axis.editor.revoke")}</button>
     </li>)}</ul>}
   </section>;
 }

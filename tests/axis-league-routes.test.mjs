@@ -156,7 +156,7 @@ test("only full admins can manage editors or use admin profile-link endpoints", 
   assert.equal((await POST(request({ discordId: id, profile: "12345" }))).status, 403);
   globalThis.axisAccess = { ok: true, user: { sub: "admin" } };
   assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: true }))).status, 200);
-  assert.deepEqual((await (await editorsGet()).json()).editors, ["limited-editor"]);
+  assert.deepEqual((await (await editorsGet()).json()).editors, [{ subject: "limited-editor", name: null }]);
   assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), true);
   assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: false }))).status, 200);
   assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), false);
@@ -423,4 +423,60 @@ test("one statistics save commits photo, score and KDA atomically and rolls ever
   assert.equal((await statsPost(request({ ...stalePhoto, photo: { expected: photo.revision, data: replacement } }))).status, 200);
   match = globalThis.axisStore.readMatchHistory(5).matches[0]; assert.deepEqual(match.teams[0].players[0].kda, nextKda); assert.deepEqual(match.rounds, { a: 8, b: 6 });
   assert.notEqual(globalThis.axisStore.readMatchPhotoMetadata(5).revision, photo.revision);
+});
+
+
+test("Google names resolve IDs before and after granting access without changing editor roles", async t => {
+  setupStats(t);
+  const { recordGoogleIdentity, googleDisplayName } = await import("../lib/auth/google-identity.ts");
+  const account = { sub: "google-editor", name: "  Редактор AXIS  ", email: "private@example.test", picture: "" };
+  await recordGoogleIdentity(account);
+  assert.equal(globalThis.axisStore.isKdaEditor(account.sub), false);
+  // A client-supplied alias is ignored: the directory comes only from verified identities.
+  const granted = await editorsPost(request({ subject: account.sub, enabled: true, name: "Forged" }));
+  assert.deepEqual((await granted.json()).editors, [{ subject: account.sub, name: "Редактор AXIS" }]);
+  await editorsPost(request({ subject: "pending-editor", enabled: true }));
+  let editors = (await (await editorsGet()).json()).editors;
+  assert.deepEqual(editors.find(editor => editor.subject === "pending-editor"), { subject: "pending-editor", name: null });
+  await recordGoogleIdentity({ ...account, sub: "pending-editor" });
+  await recordGoogleIdentity({ ...account, name: "New Google name" });
+  editors = (await (await editorsGet()).json()).editors;
+  assert.equal(editors.find(editor => editor.subject === account.sub).name, "New Google name");
+  assert.equal(editors.find(editor => editor.subject === "pending-editor").name, "Редактор AXIS");
+  assert.equal(googleDisplayName({ ...account, name: account.email }), null, "never publish Google's email fallback");
+  assert.equal(googleDisplayName({ ...account, name: " " }), null);
+  globalThis.axisStore = { rememberGoogleAccount() { throw Error("offline"); } };
+  await assert.doesNotReject(recordGoogleIdentity(account), "identity persistence must not break sign-in");
+});
+
+test("match attribution uses the signed editor, survives refresh and revocation, and keeps private IDs out of public history", async t => {
+  setupStats(t);
+  const actor = { sub: "real-google-sub", name: "Настоящее имя", email: "private@example.test", picture: "" };
+  globalThis.axisKdaAccess = { ok: true, user: actor };
+  const score = { a: 7, b: 5 };
+  const body = { matchNumber: 5, players: [], rounds: { expected: null, score }, edited: { name: "Forged", at: 1 }, user: { sub: "fake", name: "Forged" } };
+  const response = await statsPost(request(body));
+  assert.equal(response.status, 200);
+  const edit = (await response.json()).edited;
+  assert.equal(edit.name, actor.name); assert.ok(edit.at > 1);
+  const saved = globalThis.axisStore.readMatchHistory(5).matches[0];
+  assert.deepEqual(saved.edited, edit);
+  globalThis.axisStore.setKdaEditor(actor.sub, true);
+  assert.equal(globalThis.axisStore.listKdaEditors()[0].name, actor.name);
+  globalThis.axisStore.setKdaEditor(actor.sub, false);
+  globalThis.axisStore.rememberGoogleAccount(actor.sub, "Renamed later");
+  globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ ...saved, edited: { name: "Upstream forgery", at: 1 } }] });
+  globalThis.axisKdaAccess = { ok: true, user: { ...actor, sub: "another-editor", name: "Another editor" } };
+  assert.equal((await statsPost(request(body))).status, 409);
+  assert.equal((await statsPost(request({ ...body, rounds: { expected: score, score } }))).status, 200);
+  const publicMatch = (await (await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?match=5&season=all"))).json()).matches[0];
+  assert.deepEqual(publicMatch.edited, edit, "conflicts, imports, renames and no-op saves must preserve the last real edit");
+  assert.doesNotMatch(JSON.stringify(publicMatch), /real-google-sub|private@example.test|Forged|Upstream forgery/);
+  const next = await statsPost(request({ matchNumber: 5, players: [{ discordId: id, expected: null, kda: { kills: 2, deaths: 1, assists: 3 } }] }));
+  assert.equal((await next.json()).edited.name, "Another editor");
+  const beforePhoto = globalThis.axisStore.readMatchHistory(5).matches[0].edited;
+  globalThis.axisKdaAccess = { ok: true, user: { ...actor, name: actor.email } };
+  const photo = await statsPost(request({ matchNumber: 5, players: [], photo: { expected: null, data: (await imageFixture()).toString("base64") } }));
+  assert.equal(photo.status, 200); assert.equal((await photo.json()).edited.name, null);
+  assert.ok(globalThis.axisStore.readMatchHistory(5).matches[0].edited.at >= beforePhoto.at);
 });

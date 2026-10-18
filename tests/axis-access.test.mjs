@@ -8,6 +8,8 @@ import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 
 const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") return mock("export const NextResponse = Response; export function after() {}");
+  if (specifier === "@/lib/admin/request-events") return mock("export async function recordAuthActivity() {}");
   if (specifier === "server-only") return mock("");
   if (specifier === "@/lib/auth/session") return mock("export async function getSession() { return globalThis.axisUser; }");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { if (globalThis.axisStoreFailure) throw Error('offline'); return globalThis.axisRoleStore; }");
@@ -92,4 +94,26 @@ test("photo metadata and files require a current editor role, including after re
   globalThis.axisRoleStore.setKdaEditor("editor", false);
   assert.equal((await get()).status, 403); assert.equal((await get("v=" + "a".repeat(64))).status, 403);
   globalThis.axisUser = { ...globalThis.axisUser, sub: "full-admin" }; assert.equal((await get()).status, 200);
+});
+
+
+test("existing signed sessions populate Google names without granting editor access and tolerate directory failures", async t => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  const { GET: me } = await import("../app/api/auth/me/route.ts");
+  globalThis.axisRoleStore = createAxisLeagueStore(db);
+  globalThis.axisStoreFailure = false;
+  globalThis.axisUser = { sub: "returning-user", email: "private@example.test", name: "Имя Google", picture: "" };
+  const response = await me();
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).canEditAxisKda, false);
+  globalThis.axisRoleStore.setKdaEditor(globalThis.axisUser.sub, true);
+  assert.equal(globalThis.axisRoleStore.listKdaEditors()[0].name, "Имя Google");
+  globalThis.axisUser = { ...globalThis.axisUser, name: "Новое имя" };
+  assert.equal((await (await me()).json()).canEditAxisKda, true);
+  assert.equal(globalThis.axisRoleStore.listKdaEditors()[0].name, "Новое имя");
+  globalThis.axisStoreFailure = true;
+  const offline = await me();
+  assert.equal(offline.status, 200); assert.equal((await offline.json()).user.sub, "returning-user");
+  globalThis.axisUser = null;
+  assert.equal((await (await me()).json()).user, null);
 });

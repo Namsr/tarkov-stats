@@ -685,3 +685,52 @@ test("private match photos survive reopening and imports without entering public
   assert.throws(() => store.setMatchPhoto(7, null, null), AxisKdaConflict);
   assert.deepEqual(Buffer.from(store.readMatchPhoto(7).data), data);
 });
+
+
+test("old editor tables gain Google names and atomic match attribution that survives reopening", t => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  db.exec("CREATE TABLE axis_kda_editors (google_sub TEXT PRIMARY KEY); INSERT INTO axis_kda_editors VALUES('existing-editor')");
+  const saved = createAxisLeagueStore(db);
+  assert.deepEqual(saved.listKdaEditors().map(row => ({ ...row })), [{ subject: "existing-editor", name: null }]);
+  const match = { number: 10, time: Date.now(), queueId: AXIS_CHANNEL_ID, maps: [], teams: [{ players: [{ id: "123", name: "Player", profile: null }] }, { players: [] }], winner: 0 };
+  saved.publishArchive({ page: 1, pages: 1, total: 1, matches: [match] });
+  assert.equal(saved.readMatchHistory(10).matches[0].edited, null);
+  const actor = { sub: "existing-editor", name: "Google Name" };
+  saved.setMatchStats(10, [], { expected: null, score: { a: 7, b: 3 } }, undefined, actor);
+  const edit = saved.readMatchHistory(10).matches[0].edited;
+  const reopened = createAxisLeagueStore(db);
+  assert.deepEqual(reopened.listKdaEditors().map(row => ({ ...row })), [{ subject: actor.sub, name: actor.name }]);
+  assert.deepEqual(reopened.readMatchHistory(10).matches[0].edited, edit);
+  assert.deepEqual(reopened.readSeasonHistory(1, "current").matches[0].edited, edit);
+  saved.publishHistory({ page: 1, pages: 1, total: 1, matches: [match] });
+  assert.deepEqual(reopened.readHistory(1).matches[0].edited, edit);
+  db.exec("CREATE TRIGGER fail_attribution BEFORE UPDATE ON axis_match_edits BEGIN SELECT RAISE(ABORT,'write failed'); END");
+  assert.throws(() => reopened.setMatchStats(10, [{ discordId: "123", expected: null, kda: { kills: 9, deaths: 1, assists: 4 } }], { expected: { a: 7, b: 3 }, score: { a: 8, b: 4 } }, undefined, { sub: "other", name: "Other" }), /write failed/);
+  const rolledBack = reopened.readMatchHistory(10).matches[0];
+  assert.deepEqual(rolledBack.edited, edit); assert.deepEqual(rolledBack.rounds, { a: 7, b: 3 });
+  assert.equal(rolledBack.teams[0].players[0].kda, null);
+  assert.equal(db.prepare("SELECT 1 FROM axis_google_accounts WHERE google_sub='other'").get(), undefined);
+});
+
+
+test("match attribution renders Google names safely in both languages and hides unknown historical authors", async () => {
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript"), { renderToStaticMarkup } = require("react-dom/server");
+  const component = ts.transpileModule(await readFile(new URL("../components/AxisMatchAttribution.tsx", import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText;
+  const dictionary = { exports: {} };
+  const translated = ts.transpileModule(await readFile(new URL("../lib/i18n/dictionary.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  new Function("exports", translated)(dictionary.exports);
+  for (const lang of ["ru", "en"]) {
+    const attributionModule = { exports: {} };
+    const t = (key, vars = {}) => dictionary.exports.dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? `{${name}}`);
+    new Function("require", "module", "exports", component)((name) => name === "@/lib/i18n/context" ? { useI18n: () => ({ lang, t }) } : require(name), attributionModule, attributionModule.exports);
+    const Attribution = attributionModule.exports.default;
+    assert.equal(renderToStaticMarkup(Attribution({ edited: null })), "");
+    const html = renderToStaticMarkup(Attribution({ edited: { name: "<b>Google Name</b>", at: 1000 } }));
+    assert.match(html, /&lt;b&gt;Google Name&lt;\/b&gt;/); assert.match(html, /dateTime="1970-01-01T00:00:01.000Z"/i);
+    assert.match(html, lang === "ru" ? /Матч отредактирован:/ : /Match edited by/);
+    assert.match(renderToStaticMarkup(Attribution({ edited: { name: null, at: 1000 } })), lang === "ru" ? /редактор/ : /editor/);
+  }
+});
