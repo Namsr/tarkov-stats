@@ -1,12 +1,12 @@
 [Unit]
-Description=Daytime Tarkov profile catch-up after the nightly data cycle
+Description=Temporary daytime Tarkov profile backlog recovery
 
 [Timer]
-OnCalendar=*-*-* 09..23:00:00 Europe/Moscow
+OnCalendar=*-*-* 09..21:00:00 Europe/Moscow
 AccuracySec=1s
 # Do not replay a missed daytime tick during nightly indexes/publications.
 Persistent=false
-Unit=tarkovstats-profile-queue.service
+Unit=tarkovstats-profile-catchup.service
 
 [Install]
 WantedBy=timers.target

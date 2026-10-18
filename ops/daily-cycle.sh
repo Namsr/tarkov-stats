@@ -33,7 +33,7 @@ for mode in player seasonal pve arena; do
 done
 
 wait_until 02:00:00
-# This is the only profile invocation. A deadline or error must not replay it.
+# One resumable nightly pass, up to five hours. Errors do not replay the cycle.
 run_service profile-queue
 
 wait_until 04:20:00

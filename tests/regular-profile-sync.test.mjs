@@ -119,6 +119,41 @@ test("fresh versions get priority while old queued profiles and errors keep a sh
   } finally { db.close(); }
 });
 
+test("queue selection streams its priority indexes instead of sorting the whole backlog for each profile", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE test_profile_sync_queue (aid INTEGER PRIMARY KEY, feed_updated_at INTEGER,
+      status TEXT, updated_at INTEGER, last_run_id TEXT);
+      CREATE INDEX idx_test_profile_sync_queue_status ON test_profile_sync_queue(status, aid)`);
+    const now = Date.now();
+    const insert = db.prepare("INSERT INTO test_profile_sync_queue VALUES (?, ?, 'pending', ?, NULL)");
+    db.exec('BEGIN');
+    for (let aid = 1; aid <= 10_000; aid++) insert.run(aid, now - aid, aid);
+    insert.run(10_001, now - 30 * 86_400_000, 0);
+    db.exec('COMMIT');
+    const plans = [];
+    const next = profileQueueSelector({
+      exec: sql => db.exec(sql),
+      prepare(sql) {
+        plans.push(db.prepare('EXPLAIN QUERY PLAN ' + sql).all('run', now - 86_400_000));
+        return db.prepare(sql);
+      },
+    }, `SELECT q.aid FROM test_profile_sync_queue q
+      WHERE q.status IN ('pending', 'error') AND COALESCE(q.last_run_id, '') <> ? ORDER BY q.aid`);
+    for (const [index, lane] of ['fresh', 'debt'].entries()) {
+      const details = plans[index].map(row => row.detail).join('\n');
+      assert.match(details, new RegExp('USING INDEX idx_test_profile_sync_queue_' + lane));
+      assert.doesNotMatch(details, /TEMP B-TREE FOR ORDER BY/);
+    }
+    const order = [];
+    for (let i = 0; i < 5; i++) {
+      const row = next.get('run'); order.push(row.aid);
+      db.prepare("UPDATE test_profile_sync_queue SET last_run_id = 'run' WHERE aid = ?").run(row.aid);
+    }
+    assert.deepEqual(order, [1, 2, 3, 4, 10_001]);
+  } finally { db.close(); }
+});
+
 test("snapshot targets include player state and bootstrap missing legacy profiles", () => {
   assert.equal(snapshotTargetVersion(200, 100, null), 200);
   assert.equal(snapshotTargetVersion(100, 200, 50), 200);

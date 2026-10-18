@@ -1,5 +1,5 @@
 [Unit]
-Description=Tarkov sequential profile queue
+Description=Tarkov nightly sequential profile queue
 After=docker.service tarkovstats-background.slice
 Requires=docker.service tarkovstats-background.slice
 ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml

@@ -1,0 +1,15 @@
+[Unit]
+Description=Temporary one-hour Tarkov profile backlog recovery
+After=docker.service tarkovstats-background.slice
+Requires=docker.service tarkovstats-background.slice
+ConditionPathExists=/opt/tarkovstats-auto/docker-compose.vps.yml
+ConditionPathExists=/usr/local/sbin/tarkovstats-profile-queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tarkovstats-auto
+ExecCondition=/bin/sh -c '! /usr/bin/docker container inspect tarkovstats-public-profile-importer >/dev/null 2>&1'
+ExecStart=/usr/bin/flock /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-profile-queue catchup
+TimeoutStartSec=infinity
+TimeoutStopSec=90s
+Restart=no

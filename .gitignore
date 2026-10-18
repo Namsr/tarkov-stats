@@ -85,6 +85,7 @@ GEMINI.md
 !/ops/systemd/tarkovstats-profile-queue.service
 !/ops/systemd/tarkovstats-profile-queue.timer
 !/ops/systemd/tarkovstats-profile-catchup.timer
+!/ops/systemd/tarkovstats-profile-catchup.service
 !/ops/systemd/tarkovstats-profile-queue-no-restart.conf
 !/ops/systemd/tarkovstats-daily-cycle.service
 !/ops/systemd/tarkovstats-daily-cycle.timer

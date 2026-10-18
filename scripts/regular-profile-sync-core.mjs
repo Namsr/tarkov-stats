@@ -139,8 +139,12 @@ export function profileQueueSelector(db, query) {
     CREATE INDEX IF NOT EXISTS idx_${table}_debt ON ${table}(updated_at, aid) WHERE status IN ('pending', 'error')`);
   const base = query.slice(0, query.lastIndexOf("ORDER BY"));
   const freshPredicate = "q.status = 'pending' AND q.feed_updated_at >= ?";
-  const fresh = db.prepare(`${base} AND (${freshPredicate}) ORDER BY q.feed_updated_at DESC, q.aid LIMIT 1`);
-  const debt = db.prepare(`${base} AND NOT (${freshPredicate}) ORDER BY q.updated_at, q.aid LIMIT 1`);
+  // The status index otherwise wins on real queues, sorting every eligible row
+  // (including its snapshot checks) again for each individual profile.
+  const indexed = (lane) => base.replace(`FROM ${table} q`,
+    `FROM ${table} q INDEXED BY idx_${table}_${lane}`);
+  const fresh = db.prepare(`${indexed("fresh")} AND (${freshPredicate}) ORDER BY q.feed_updated_at DESC, q.aid LIMIT 1`);
+  const debt = db.prepare(`${indexed("debt")} AND NOT (${freshPredicate}) ORDER BY q.updated_at, q.aid LIMIT 1`);
   let selected = 0;
   return {
     get(...args) {

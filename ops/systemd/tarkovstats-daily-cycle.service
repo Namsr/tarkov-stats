@@ -1,5 +1,5 @@
 [Unit]
-Description=TarkovStats daily indexes, one-hour profiles and publications
+Description=TarkovStats daily indexes, nightly profiles and publications
 After=docker.service network-online.target tarkovstats-background.slice
 Requires=docker.service tarkovstats-background.slice
 Wants=network-online.target

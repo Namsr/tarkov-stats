@@ -38,13 +38,18 @@ test('the parent releases only its dead Arena child lease, including a forced st
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
 
-test('daytime catch-up reuses the bounded queue without replaying ticks during the nightly cycle', async () => {
+test('temporary daytime catch-up uses one-hour jobs from 09 through 21 without replaying missed ticks', async () => {
   const timer = await readFile('ops/systemd/tarkovstats-profile-catchup.timer', 'utf8');
-  assert.match(timer, /^OnCalendar=\*-\*-\* 09\.\.23:00:00 Europe\/Moscow$/m);
-  assert.match(timer, /^Unit=tarkovstats-profile-queue\.service$/m);
+  assert.match(timer, /^OnCalendar=\*-\*-\* 09\.\.21:00:00 Europe\/Moscow$/m);
+  assert.match(timer, /^Unit=tarkovstats-profile-catchup\.service$/m);
   assert.match(timer, /^Persistent=false$/m);
-  const queue = await readFile('ops/systemd/tarkovstats-profile-queue.service', 'utf8');
-  assert.match(queue, /flock \/run\/tarkovstats-data-sync\.lock/);
+  for (const name of ['queue', 'catchup']) {
+    const unit = await readFile(`ops/systemd/tarkovstats-profile-${name}.service`, 'utf8');
+    assert.match(unit, /flock \/run\/tarkovstats-data-sync\.lock/);
+    assert.match(unit, /ExecCondition=.*tarkovstats-public-profile-importer/);
+    assert.doesNotMatch(unit, /^OnSuccess=|^OnFailure=/m, 'a skipped ExecCondition cannot retire recovery');
+    if (name === 'catchup') assert.match(unit, /sbin\/tarkovstats-profile-queue catchup$/m);
+  }
 });
 const done = () => ({ code: 0, summary: { feedHttpStatus: 200, backlog: 0, attempted: 1, errors: 0 } });
 function harness(handler, totalMs = 3_600_000, controller) {
@@ -89,6 +94,20 @@ test('one shared hour bounds every slice and unfinished modes remain reported', 
   assert.ok(h.events.filter(x => x.event === 'MODE_START').every(x => x.budgetMs <= 300_000));
   assert.ok(Object.values(result.modes).every(x => !x.complete && x.backlog === 10));
   assert.ok(!h.calls.includes('warmup'));
+});
+
+test('a busy night can finish beyond the first hour without repeating completed modes', async () => {
+  let arenaTime = 0;
+  const h = harness((mode, budget) => {
+    if (mode.name === 'warmup') return { code: 0, summary: { bounded: false, stopped: false, processed: 0 } };
+    if (mode.name !== 'arena') return done();
+    arenaTime += budget;
+    return { ...done(), elapsed: budget, summary: { ...done().summary, backlog: arenaTime >= 90 * 60_000 ? 0 : 10 } };
+  }, 18_000_000);
+  assert.equal((await h.run()).ok, true);
+  assert.ok(h.now() - h.start > 3_600_000);
+  assert.ok(h.now() - h.start < 18_000_000);
+  for (const mode of ['regular', 'pve', 'seasonal']) assert.equal(h.calls.filter(name => name === mode).length, 1);
 });
 
 test('obsolete upstream targets stay visible as deferred in the completed queue', async () => {
@@ -182,21 +201,44 @@ test('real child reports are parsed and a child that ignores termination is reap
   } finally { await rm(file, {force:true}); }
 });
 
-test('the host wrapper keeps one-hour deadline, isolation, nice priority and writer lock', async () => {
+test('host budgets stop the night at 07:00 and allow one recovery hour with isolation and writer lock', async () => {
   const source = await readFile('ops/profile-queue.sh','utf8');
   const dir = await mkdtemp(join(tmpdir(),'round-queue-wrapper-'));
   try {
     const path = dir.replaceAll('\\','/');
     const script = source.replace('cd /opt/tarkovstats-auto || exit 1',`cd '${path}' || exit 1`)
-      .replace('exec /usr/local/sbin/tarkovstats-run-background','printf \'%s\\n\'');
-    const file = join(dir,'queue.sh'); await writeFile(file,script);
-    const before = Date.now();
-    const result = spawnSync(shell,[file],{encoding:'utf8',timeout:10_000});
-    assert.ifError(result.error); assert.equal(result.status,0,result.stderr);
-    const deadline = Number(/PROFILE_QUEUE_DEADLINE_MS=(\d+)/.exec(result.stdout)[1]);
-    assert.ok(deadline >= before+3_600_000-2000 && deadline <= Date.now()+3_600_000);
-    assert.match(result.stdout,/worker\nnice\n-n\n19\nnode/);
-    assert.match(result.stdout,/scripts\/run-profile-queue.mjs/);
+      .replace('/usr/local/sbin/tarkovstats-run-background','printf \'%s\\n\'')
+      .replaceAll('/usr/bin/systemctl', 'systemctl');
+    const file = join(dir,'queue.sh');
+    const nightStart = Date.UTC(2026, 9, 17, 23) / 1000; // 02:00 Moscow
+    const nightEnd = nightStart + 5 * 3600;
+    for (const [args, now, seconds, status] of [
+      [[], nightStart, 18000, 0], [['nightly'], nightStart, 18000, 0],
+      [['nightly'], nightStart + 2 * 3600, 10800, 0],
+      [['nightly'], nightEnd, 0, 75], [['nightly'], nightEnd + 3600, 0, 75],
+      [['catchup'], nightEnd + 2 * 3600, 3600, 0], [['invalid'], nightStart, 0, 2],
+    ]) {
+      const mock = `date() {
+        if [ "$*" = +%s ]; then printf '%s\\n' ${now}; else
+          [ "$TZ" = Europe/Moscow ] || return 92
+          [ "$*" = '-d today 07:00:00 +%s' ] || return 93
+          printf '%s\\n' ${nightEnd}
+        fi
+      }
+      systemctl() { [ "$1" != is-enabled ] || return 1; }
+`;
+      await writeFile(file, mock + script);
+      const result = spawnSync(shell,[file, ...args],{encoding:'utf8',timeout:10_000});
+      assert.ifError(result.error); assert.equal(result.status,status,result.stderr);
+      if (status !== 0) {
+        assert.doesNotMatch(result.stdout, /PROFILE_QUEUE_DEADLINE_MS/);
+        continue;
+      }
+      const deadline = Number(/PROFILE_QUEUE_DEADLINE_MS=(\d+)/.exec(result.stdout)[1]);
+      assert.equal(deadline, (now + seconds) * 1000);
+      assert.match(result.stdout,/worker\nnice\n-n\n19\nnode/);
+      assert.match(result.stdout,/scripts\/run-profile-queue.mjs/);
+    }
   } finally { await rm(dir,{recursive:true,force:true}); }
   const service = await readFile('ops/systemd/tarkovstats-profile-queue.service','utf8');
   assert.match(service,/flock \/run\/tarkovstats-data-sync\.lock/);
@@ -205,7 +247,30 @@ test('the host wrapper keeps one-hour deadline, isolation, nice priority and wri
   assert.match(await readFile('Dockerfile','utf8'),/COPY.*scripts\/run-profile-queue\.mjs/);
 });
 
-async function dailyCycle({ indexSeconds = 300, profileSeconds = 3600, failures = [] } = {}) {
+test('only a successful worker disables recovery; a failed run leaves the timer enabled', async () => {
+  const source = await readFile('ops/profile-queue.sh', 'utf8');
+  const dir = await mkdtemp(join(tmpdir(), 'profile-recovery-complete-'));
+  try {
+    const file = join(dir, 'queue.sh');
+    for (const [workerCode, enabled, disables] of [[0, true, true], [1, true, false], [0, false, false]]) {
+      const mock = `worker() { return ${workerCode}; }
+        systemctl() {
+          printf 'SYSTEMCTL %s\\n' "$*"
+          if [ "$1" = is-enabled ]; then return ${enabled ? 0 : 1}; fi
+        }\n`;
+      await writeFile(file, mock + source
+        .replace('cd /opt/tarkovstats-auto || exit 1', `cd '${dir.replaceAll('\\','/')}' || exit 1`)
+        .replace('/usr/local/sbin/tarkovstats-run-background', 'worker')
+        .replaceAll('/usr/bin/systemctl', 'systemctl'));
+      const result = spawnSync(shell, [file, 'catchup'], { encoding: 'utf8', timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, workerCode, result.stderr);
+      assert.equal(result.stdout.includes('SYSTEMCTL disable --now tarkovstats-profile-catchup.timer'), disables);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+async function dailyCycle({ indexSeconds = 300, profileSeconds = 18000, failures = [] } = {}) {
   const source = await readFile('ops/daily-cycle.sh', 'utf8');
   const directory = await mkdtemp(join(tmpdir(), 'daily-cycle-'));
   const midnight = Date.UTC(2026, 9, 7, 21) / 1000;
@@ -254,19 +319,27 @@ test('one daily cycle completes all indexes before the 02:00 shared scan and pub
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
   assert.equal(result.calls[4].start, 2 * 3600);
-  assert.equal(result.calls[4].end, 3 * 3600);
-  assert.equal(result.calls[5].start, 4 * 3600 + 20 * 60);
-  assert.equal(result.calls[6].start, 5 * 3600 + 30 * 60);
+  assert.equal(result.calls[4].end, 7 * 3600);
+  assert.equal(result.calls[5].start, 7 * 3600);
+  assert.equal(result.calls[6].start, 7 * 3600 + 120);
   assert.match(result.stdout, /CYCLE_SUMMARY status=0/);
 });
 
-test('late indexes move one full profile hour and publications forward without overlapping or waiting until tomorrow', async () => {
+test('an empty night queue exits early and retains the original publication times', async () => {
+  const result = await dailyCycle({ profileSeconds: 30 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.calls[4].end, 2 * 3600 + 30);
+  assert.equal(result.calls[5].start, 4 * 3600 + 20 * 60);
+  assert.equal(result.calls[6].start, 5 * 3600 + 30 * 60);
+});
+
+test('late indexes move the nightly profile budget and publications forward without overlapping or waiting until tomorrow', async () => {
   for (const indexSeconds of [3150, 5400]) {
     const result = await dailyCycle({ indexSeconds });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
     assert.equal(result.calls[4].start, indexSeconds * 4);
-    assert.equal(result.calls[4].end - result.calls[4].start, 3600);
+    assert.equal(result.calls[4].end - result.calls[4].start, 18000);
     for (let index = 1; index < result.calls.length; index++) {
       assert.ok(result.calls[index].start >= result.calls[index - 1].end, result.calls[index].unit);
     }
@@ -275,7 +348,7 @@ test('late indexes move one full profile hour and publications forward without o
   }
 });
 
-test('failed indexes, an unfinished profile hour and a failed leaderboard do not replay the scan or skip later publications', async () => {
+test('failed indexes, an unfinished nightly pass and a failed leaderboard do not replay the scan or skip later publications', async () => {
   const result = await dailyCycle({ failures: [dailyUnits[0], dailyUnits[4], dailyUnits[5]] });
   assert.equal(result.status, 1);
   assert.deepEqual(result.calls.map(call => call.unit), dailyUnits);
