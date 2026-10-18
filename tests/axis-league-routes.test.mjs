@@ -1,3 +1,6 @@
+import sharp from "sharp";
+import { AXIS_PHOTO_MAX_BODY, AXIS_PHOTO_MAX_BYTES, AxisPhotoInputError } from "../lib/axis-match-photo.ts";
+import { normalizeAxisPhoto, readAxisPhotoBody } from "../lib/axis-photo-upload.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { resolve } from "node:path";
@@ -21,6 +24,7 @@ const { GET, POST } = await import("../app/api/admin/axis-league/route.ts");
 const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
 const { GET: playerGet } = await import("../app/api/axis-league/player/route.ts");
+const { GET: photoGet, POST: photoPost } = await import("../app/api/axis-league/match-photo/route.ts");
 const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
 const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
 const { POST: profilesPost } = await import("../app/api/axis-league/profiles/route.ts");
@@ -307,4 +311,92 @@ test("direct match links read the indexed archive entry and reject invalid or mi
   for (const query of ["match=0", "match=-1", "match=01", "match=1.5", "match=1000000000", "match=5&page=2", "match=5&season=current"]) {
     assert.equal((await historyGet(request(query))).status, 400, query);
   }
+});
+
+const photoRequest = (body, headers = {}) => new Request("https://tarkovstats.ru/api/axis-league/match-photo", {
+  method: "POST", headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+});
+const imageFixture = async (color = "#125599") => sharp({ create: { width: 128, height: 72, channels: 3, background: color } }).png().toBuffer();
+
+test("match photos validate access, origin and input, stay independent of stats, and detect simultaneous edits", async t => {
+  setupStats(t);
+  const data = (await imageFixture()).toString("base64");
+  const input = { matchNumber: 5, expected: null, data };
+  for (const status of [401, 403]) {
+    globalThis.axisKdaAccess = { ok: false, status };
+    assert.equal((await photoPost(photoRequest(input))).status, status);
+  }
+  globalThis.axisAccess = { ok: false, status: 403 };
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  assert.equal((await photoPost(photoRequest(input, { origin: "https://evil.test" }))).status, 403);
+  assert.equal((await photoPost(photoRequest(input, { "content-type": "text/plain" }))).status, 415);
+  for (const invalid of [null, {}, { ...input, matchNumber: 0 }, { ...input, matchNumber: 999 }, { ...input, expected: "bad" }, { ...input, data: "not base64!" }, { ...input, data: "aGVsbG8=" }]) {
+    assert.equal((await photoPost(photoRequest(invalid))).status, 400, JSON.stringify(invalid));
+  }
+  assert.equal((await photoPost(photoRequest(input, { "content-length": String(AXIS_PHOTO_MAX_BODY + 1) }))).status, 413);
+  const response = await photoPost(photoRequest(input));
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  const saved = (await response.json()).photo;
+  assert.equal(saved.width, 128); assert.equal(saved.height, 72); assert.match(saved.revision, /^[a-f0-9]{64}$/);
+  assert.equal("data" in saved, false);
+  assert.equal((await photoPost(photoRequest(input))).status, 409);
+  const history = await (await historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?match=5&season=all"))).json();
+  assert.equal(history.matches[0].photo, undefined, "public history must not disclose photo metadata");
+  assert.deepEqual(globalThis.axisStore.readMatchPhotoMetadata(5), saved);
+  assert.equal(history.matches[0].rounds, null); assert.equal(history.matches[0].teams[0].players[0].kda, null);
+  for (const status of [401, 403]) {
+    globalThis.axisKdaAccess = { ok: false, status };
+    assert.equal((await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=5&v=${saved.revision}`))).status, status);
+    assert.equal((await photoGet(new Request("https://tarkovstats.ru/api/axis-league/match-photo?match=5&meta=1"))).status, status);
+  }
+  globalThis.axisKdaAccess = { ok: true, user: { sub: "limited-editor" } };
+  const metadata = await photoGet(new Request("https://tarkovstats.ru/api/axis-league/match-photo?match=5&meta=1"));
+  assert.deepEqual((await metadata.json()).photo, saved);
+  const photo = await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=5&v=${saved.revision}`));
+  assert.equal(photo.status, 200); assert.equal(photo.headers.get("content-type"), "image/png");
+  assert.equal(photo.headers.get("x-content-type-options"), "nosniff");
+  const decoded = await sharp(Buffer.from(await photo.arrayBuffer())).metadata();
+  assert.equal(decoded.width, 128); assert.equal(decoded.height, 72);
+  assert.equal((await photoGet(new Request("https://tarkovstats.ru/api/axis-league/match-photo?match=5"))).status, 400);
+  assert.equal((await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=6&v=${saved.revision}`))).status, 404);
+  // Re-importing the upstream match must retain the locally attached picture.
+  globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: history.matches });
+  assert.deepEqual(globalThis.axisStore.readMatchPhotoMetadata(5), saved);
+  const replacement = { ...input, expected: saved.revision, data: (await imageFixture("#884422")).toString("base64") };
+  assert.equal((await photoPost(photoRequest(replacement))).status, 200);
+  assert.equal((await photoPost(photoRequest({ ...input, expected: saved.revision, data: null }))).status, 409, "stale deletion cannot remove a replacement");
+  assert.equal((await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=5&v=${saved.revision}`))).status, 404);
+  const current = globalThis.axisStore.readMatchPhotoMetadata(5);
+  assert.equal((await photoPost(photoRequest({ ...input, expected: current.revision, data: null }))).status, 200);
+  assert.equal(globalThis.axisStore.readMatchPhoto(5), null);
+});
+
+test("photo uploads decode only static raster images, preserve pixels and orientation, and strip metadata", async () => {
+  for (const format of ["jpeg", "webp", "png"]) {
+    const data = await sharp({ create: { width: 20, height: 10, channels: 3, background: "red" } })[format]().withMetadata({ orientation: 6 }).toBuffer();
+    const photo = await normalizeAxisPhoto(data.toString("base64"));
+    assert.equal(photo.width, 10); assert.equal(photo.height, 20);
+    const metadata = await sharp(photo.data).metadata();
+    assert.equal(metadata.format, "png"); assert.equal(metadata.exif, undefined); assert.equal(metadata.orientation, undefined);
+  }
+  const original = await imageFixture();
+  const normalized = await normalizeAxisPhoto(original.toString("base64"));
+  assert.deepEqual(await sharp(normalized.data).raw().toBuffer(), await sharp(original).raw().toBuffer());
+  for (const data of [Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>'),
+    await sharp(original).gif().toBuffer(), original.subarray(0, 40)]) {
+    await assert.rejects(normalizeAxisPhoto(data.toString("base64")), AxisPhotoInputError);
+  }
+  await assert.rejects(normalizeAxisPhoto(Buffer.alloc(AXIS_PHOTO_MAX_BYTES + 1).toString("base64")), error => error.status === 413);
+  const tooManyPixels = await sharp({ create: { width: 6000, height: 4001, channels: 3, background: "white" } }).png().toBuffer();
+  await assert.rejects(normalizeAxisPhoto(tooManyPixels.toString("base64")), AxisPhotoInputError);
+  const data = (await imageFixture()).toString("base64");
+  assert.equal((await normalizeAxisPhoto(data)).revision, (await normalizeAxisPhoto(data)).revision);
+});
+
+test("photo request streaming enforces the byte limit even without Content-Length", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(AXIS_PHOTO_MAX_BODY)); controller.enqueue(new Uint8Array(1)); }, cancel() { cancelled = true; } });
+  await assert.rejects(readAxisPhotoBody(new Request("http://localhost/", { method: "POST", body: stream, duplex: "half" })), error => error.status === 413);
+  assert.equal(cancelled, true);
+  assert.deepEqual(await readAxisPhotoBody(new Request("http://localhost/", { method: "POST", body: '{"data":null}' })), { data: null });
 });

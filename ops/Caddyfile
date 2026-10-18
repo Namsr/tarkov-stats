@@ -105,7 +105,21 @@
 	}
 	respond @emptyProfile `{"error":"Invalid account ID. Paste a numeric id or a tarkov.dev profile link."}` 400
 	import response_headers
-	request_body {
+	# Photo JSON includes base64; all other mutations retain their small body cap.
+	@matchPhoto {
+		method POST
+		path /api/axis-league/match-photo
+	}
+	request_body @matchPhoto {
+		max_size 14MB
+	}
+	@smallBody {
+		not {
+			method POST
+			path /api/axis-league/match-photo
+		}
+	}
+	request_body @smallBody {
 		max_size 256KB
 	}
 	# These files are never public application routes. Reject scans before Next.

@@ -2,6 +2,7 @@
 
 import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import AxisMatchPhoto from "@/components/AxisMatchPhoto";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
@@ -114,7 +115,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
             {rounds}
           {teams.length === 0 ? <p className="axis-empty">{t("axis.history.noTeams")}</p> : <div className="axis-match-teams">{teams.map((team, teamIndex) => <section key={teamIndex} className={`axis-match-team${match.winner === teamIndex ? " axis-match-team--winner" : ""}`}>
             <div className="axis-match-team-heading"><h3>{teamName(match, teamIndex)}</h3>{match.winner === teamIndex && <span>{t("axis.history.won")}</span>}</div>
-            <p className="axis-match-mmr-label">{t("axis.kda.manual")} · {t("axis.history.mmr")}</p>
+            <p className="axis-match-mmr-label">{t("axis.kda.short")} · {t("axis.history.mmr")}</p>
             <ul>{team.players.map((player) => <li key={player.id}>
               <AxisPlayerIdentity player={leaguePlayers.get(player.id) ?? player} mmr={leaguePlayers.get(player.id)?.mmr ?? null} averageKda={averageKda} showArenaNickname={editing} />
               <div className="axis-match-values">
@@ -129,6 +130,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
               </div>
             </li>)}</ul>
           </section>)}</div>}
+          {editing && <AxisMatchPhoto matchNumber={match.number} />}
           </>}</AxisMatchStatsEditor>
         </details>)}</div>}
     </>}
