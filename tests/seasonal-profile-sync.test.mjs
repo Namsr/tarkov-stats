@@ -414,6 +414,95 @@ globalThis.fetch = (input, init) => {
 };
 `;
 
+test("delayed tracked Seasonal versions recover once, replay old validators and skip satisfied tasks", async () => {
+  const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
+  const directory = await mkdtemp(join(tmpdir(), "seasonal-delayed-feed-"));
+  const dbPath = join(directory, "progression.db");
+  const preloadPath = join(directory, "feed-host-preload.cjs");
+  await writeFile(preloadPath, FEED_HOST_PRELOAD);
+  const now = Date.now();
+  const day = 86_400_000;
+  const startsAt = now - 30 * day;
+  const delayed = now - 26 * 3_600_000;
+  const latest = now - 60_000;
+  const cycleId = "delayed-feed";
+  const db = new DatabaseSync(dbPath);
+  initializeSeasonalSchema(db);
+  const snapshot = db.prepare(`INSERT INTO progression_snapshots
+    (mode, cycle_id, aid, profile_updated_at, upstream_updated_at, captured_at, local_date)
+    VALUES ('seasonal', ?, ?, ?, ?, ?, '2026-10-18')`);
+  for (const [aid, version] of [[7, now - 8 * day], [8, delayed], [9, latest], [13, now - 8 * day], [16, latest]]) {
+    snapshot.run(cycleId, aid, version, version, now);
+  }
+  snapshot.run("other-cycle", 14, now - 8 * day, now - 8 * day, now);
+  db.prepare("INSERT INTO excluded_players (aid, reason, created_at) VALUES (13, 'admin_manual', ?)").run(now);
+  db.exec(`
+    CREATE TABLE seasonal_profile_sync_meta (cycle_id TEXT, key TEXT, value TEXT, PRIMARY KEY(cycle_id, key));
+    CREATE TABLE seasonal_profile_sync_queue (
+      cycle_id TEXT, aid INTEGER, feed_updated_at INTEGER, status TEXT,
+      attempts INTEGER DEFAULT 0, http_status INTEGER, error TEXT, last_run_id TEXT, updated_at INTEGER,
+      PRIMARY KEY(cycle_id, aid, feed_updated_at)
+    );
+  `);
+  const meta = db.prepare("INSERT INTO seasonal_profile_sync_meta VALUES (?, ?, ?)");
+  for (const [key, value] of [["feed_policy", "recent-24h-v1"], ["feed_etag", '"old"'],
+    ["feed_source_url", "https://players.tarkov.dev/pvp-season/updated.json"]]) meta.run(cycleId, key, value);
+  db.prepare("INSERT INTO seasonal_profile_sync_queue (cycle_id,aid,feed_updated_at,status,updated_at) VALUES (?,?,?,'pending',?)")
+    .run(cycleId, 16, delayed, now);
+
+  const posted = [];
+  const validators = [];
+  const server = createServer(async (request, response) => {
+    if (request.url?.startsWith("/pvp-season/updated.json")) {
+      validators.push(request.headers["if-none-match"] ?? null);
+      if (validators.length === 3) { response.writeHead(304).end(); return; }
+      response.setHeader("etag", '"current"');
+      response.end(JSON.stringify({ 7: delayed, 8: delayed, 9: delayed, 10: delayed,
+        11: now + day, 12: startsAt - 1, 13: delayed, 14: delayed, 16: delayed }));
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    posted.push(body);
+    snapshot.run(cycleId, body.aid, latest, latest, Date.now());
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ profileUpdatedAt: latest, capture: { inserted: true } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (let pass = 0; pass < 3; pass += 1) {
+      await execFileAsync(process.execPath, ["--require", preloadPath, "--experimental-strip-types",
+        "--experimental-sqlite", "scripts/sync-seasonal-profiles.mjs"], {
+        cwd: process.cwd(),
+        env: { ...process.env, NODE_NO_WARNINGS: "1", SEASONAL_TEST_FEED_ORIGIN: origin,
+          PROGRESSION_SQLITE_PATH: dbPath, PROFILE_REFRESH_SECRET: "test-secret-that-is-at-least-32-characters",
+          SEASONAL_PROFILE_SYNC_BASE_URL: origin, SEASONAL_FEED_RPS: "20", SEASONAL_FEED_MAX_RETRIES: "0",
+          SEASONAL_CYCLE_ID: cycleId, SEASONAL_STARTS_AT: String(startsAt),
+          SEASONAL_UPSTREAM_CONTRACT: "direct_profile", SEASONAL_COLLECTION_SOURCE: "json_feed",
+          SEASONAL_UPSTREAM_FIXTURE_CONFIRMED: "true",
+          SEASONAL_PROFILE_URL_TEMPLATE: "https://players.tarkov.dev/pvp-season/{aid}.json",
+          SEASONAL_PROFILE_UPDATED_URL: "https://players.tarkov.dev/pvp-season/updated.json",
+          SEASONAL_PROFILE_INDEX_URL: "https://players.tarkov.dev/pvp-season/index.json" },
+      });
+    }
+    assert.deepEqual(validators, [null, '"current"', '"current"'], "an upgrade must replay the previously filtered feed before reusing validators");
+    assert.deepEqual(posted, [{ aid: 7, cycleId, expectedUpdatedAt: delayed }], "only the lagging tracked account needs a download across 200/200/304 polls");
+    assert.deepEqual(db.prepare("SELECT aid,status,attempts FROM seasonal_profile_sync_queue ORDER BY aid").all()
+      .map((row) => ({ ...row })), [
+      { aid: 7, status: "superseded", attempts: 1 },
+      { aid: 16, status: "superseded", attempts: 0 },
+    ]);
+    assert.equal(db.prepare("SELECT MAX(profile_updated_at) AS version FROM progression_snapshots WHERE cycle_id=? AND aid=7")
+      .get(cycleId).version, latest, "a response newer than the delayed feed becomes the latest snapshot");
+  } finally {
+    db.close();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Seasonal profile queue purges and skips moderation-excluded accounts", async () => {
   const { initializeSeasonalSchema } = await import("../lib/seasonal/storage.ts");
   const directory = await mkdtemp(join(tmpdir(), "seasonal-profile-excluded-"));

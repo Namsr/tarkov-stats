@@ -76,7 +76,7 @@ test("public profile fetch uses the mode-specific static cache path", async () =
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.equal(urls[0], "https://players.tarkov.dev/pve/5869253.json");
+  assert.match(urls[0] ?? "", /^https:\/\/players\.tarkov\.dev\/pve\/5869253\.json\?v=\d+$/);
   assert.match(urls[1] ?? "", /^https:\/\/players\.tarkov\.dev\/arena\/5869253\.json\?v=\d+$/);
   assert.deepEqual(userAgents, ["tarkovstats.ru", "tarkovstats.ru"]);
 });
@@ -145,6 +145,7 @@ test("public profile fetch falls back to an expired cached profile when upstream
 
 test("regular forced fetch cache-busts upstream and rejects an older profile version", async () => {
   const originalFetch = globalThis.fetch;
+  const before = Date.now();
   let requestedUrl = "";
   globalThis.fetch = async (input) => {
     requestedUrl = String(input);
@@ -162,7 +163,36 @@ test("regular forced fetch cache-busts upstream and rejects an older profile ver
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.equal(requestedUrl, "https://players.tarkov.dev/profile/5869254.json?v=1800000000000");
+  const url = new URL(requestedUrl);
+  assert.equal(url.pathname, "/profile/5869254.json");
+  assert.ok(Number(url.searchParams.get("v")) >= before);
+  assert.ok(Number(url.searchParams.get("v")) <= Date.now());
+});
+
+test("all forced mode captures fetch a newer JSON even when the feed cache key is old", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const now = 1_800_000_000_000;
+  const delayedVersion = now - 3 * 86_400_000;
+  const latestVersion = now - 60_000;
+  Date.now = () => now;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.searchParams.get("v"), String(now));
+    assert.equal(init?.cache, "no-store");
+    return Response.json({ ...base, aid: 7978003, updated: latestVersion,
+      pmcStats: { eft: {} }, skills: { Common: [] }, stat: { arenaOverAllCounters: {} } });
+  };
+  try {
+    for (const mode of ["regular", "pve", "arena"] as const) {
+      const result = await getPublicProfile(7978003, { mode, force: true, expectedUpdatedAt: delayedVersion });
+      assert.equal(result.profile?.updated, latestVersion);
+      assert.equal(result.fromCache, false);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
 });
 
 test("regular profile version accepts one-second feed skew but rejects anything older", async () => {

@@ -70,12 +70,17 @@ test("the first poll admits recent unknown accounts and newer tracked versions",
   assert.equal(classifyFeedEntry(undefined, version), "new");
 });
 
-test("all modes use an inclusive rolling day, reject future dates and preserve mode cutoffs", () => {
+test("all modes admit delayed tracked versions, bound unknown discovery and preserve cutoffs", () => {
   const now = Date.now();
   const day = 24 * 60 * 60_000;
   assert.equal(classifyFeedEntry(undefined, now - day, now), "new");
   assert.equal(classifyFeedEntry(undefined, now - day - 1, now), null);
-  assert.equal(classifyFeedEntry(0, now - day - 1, now), null);
+  assert.equal(classifyFeedEntry(0, now - day - 1, now), "updated");
+  assert.equal(classifyFeedEntry(now - 10 * day, now - 3 * day, now), "updated");
+  assert.equal(classifyFeedEntry(now - 3 * day, now - 3 * day, now), null);
+  assert.equal(classifyFeedEntry(now - day, now - 3 * day, now), null);
+  assert.equal(classifyFeedEntry(0, now + 1, now), null);
+  assert.equal(classifyFeedEntry(0, now - 1, now, now), null);
   assert.equal(classifyFeedEntry(undefined, now + 1, now), null);
   assert.equal(classifyFeedEntry(undefined, now - 1, now, now), null);
   assert.equal(classifyFeedEntry(undefined, now, now, now), "new");

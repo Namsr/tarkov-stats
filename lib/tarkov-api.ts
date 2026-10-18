@@ -145,9 +145,10 @@ export async function getPublicProfile(
 
   const canonicalUrl = `${PUBLIC_PROFILE_BASE}/${PUBLIC_PROFILE_PATH[mode]}/${aid}.json`;
   const expectedUpdatedAt = profileUpdatedAt(opts.expectedUpdatedAt);
-  const cacheBust = expectedUpdatedAt ?? now;
-  const url = opts.force && (mode === "regular" || mode === "arena" || expectedUpdatedAt !== null)
-    ? `${canonicalUrl}?v=${cacheBust}`
+  // The feed can lag behind the profile JSON. Its version is a lower bound,
+  // not a cache identity for the latest snapshot requested by a forced fetch.
+  const url = opts.force
+    ? `${canonicalUrl}?v=${now}`
     : canonicalUrl;
   const edgeCache = opts.force ? null : getEdgeProfileCache();
   const edgeRequest = edgeCache ? new Request(canonicalUrl) : null;

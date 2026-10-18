@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { backoff, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError, PROFILE_FEED_WINDOW_MS, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
+import { backoff, classifyFeedEntry, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -51,6 +51,11 @@ db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA synchronous = NORMAL");
 initializeSeasonalSchema(db);
 initSyncSchema();
+const latestSnapshot = db.prepare(`
+  SELECT profile_updated_at FROM progression_snapshots
+  WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?
+  ORDER BY profile_updated_at DESC LIMIT 1
+`);
 
 let leaseHeld = false;
 let stopping = false;
@@ -204,6 +209,8 @@ async function loadFeed(startedAt) {
     excluded: 0,
     queuedVersions: 0,
     preCycleIgnored: 0,
+    oldUnknownIgnored: 0,
+    upToDate: 0,
     maxFeedUpdatedAt: 0,
     polledAt: 0,
     feedNotModified: false,
@@ -239,12 +246,24 @@ async function loadFeed(startedAt) {
         return;
       }
       counters.maxFeedUpdatedAt = Math.max(counters.maxFeedUpdatedAt, updatedAt);
-      if (updatedAt < Math.max(cycle.startsAt, startedAt - PROFILE_FEED_WINDOW_MS) || updatedAt > startedAt) {
+      if (updatedAt < cycle.startsAt || updatedAt > startedAt) {
         counters.preCycleIgnored += 1;
         return;
       }
       if (excluded.has(aid)) {
         counters.excluded += 1;
+        return;
+      }
+      const savedUpdatedAt = latestSnapshot.get(cycle.cycleId, aid)?.profile_updated_at;
+      if (savedUpdatedAt !== undefined && Number(savedUpdatedAt) >= updatedAt) {
+        counters.upToDate += 1;
+        return;
+      }
+      // updated.json can arrive a day late. A newer version of a tracked
+      // profile remains work regardless of age; only unknown accounts keep
+      // the recent-feed admission window (the full index handles missing ones).
+      if (classifyFeedEntry(savedUpdatedAt, updatedAt, startedAt, cycle.startsAt) === null) {
+        counters.oldUnknownIgnored += 1;
         return;
       }
       counters.queuedVersions += Number(insert.run(cycle.cycleId, aid, updatedAt, Date.now()).changes);
@@ -402,6 +421,17 @@ async function processQueue(startedAt) {
 }
 
 async function syncProfile(aid, expectedUpdatedAt, startedAt) {
+  // A manual refresh or an earlier queued version may have already captured
+  // this target. Settle the old task without another upstream request.
+  const savedUpdatedAt = Number(latestSnapshot.get(cycle.cycleId, aid)?.profile_updated_at) || 0;
+  if (savedUpdatedAt >= expectedUpdatedAt) {
+    return {
+      kind: savedUpdatedAt === expectedUpdatedAt ? "completed" : "superseded",
+      attempts: 0,
+      status: 200,
+      snapshotInserted: false,
+    };
+  }
   let lastError;
   let attempts = 0;
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
