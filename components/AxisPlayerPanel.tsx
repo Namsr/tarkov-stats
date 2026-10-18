@@ -27,7 +27,26 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
   const request = axisPlayerRequest(aid, season, page, filter);
   const [saved, setSaved] = useState(() => ({ request, data: cachedAxisPlayer(request) }));
   const handledRetry = useRef(0);
-  const data = saved.request === request ? saved.data : null;
+  const historyRef = useRef<HTMLElement>(null);
+  // Keep this player and season mounted while only the history query changes.
+  const cached = cachedAxisPlayer(request);
+  const data = cached ?? (saved.data?.aid === aid && saved.data.season === season ? saved.data : null);
+  const historyPending = !cached && saved.request !== request;
+  const hasData = data != null;
+  useEffect(() => {
+    if (!hasData || !historyRef.current) return;
+    const controller = new AbortController();
+    // Warm filters only as the history approaches the viewport, after the profile has loaded.
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      observer.disconnect();
+      for (const result of ["all", "win", "loss"]) {
+        void loadAxisPlayer(axisPlayerRequest(aid, season, 1, result), controller.signal).catch(() => {});
+      }
+    }, { rootMargin: "800px 0px" });
+    observer.observe(historyRef.current);
+    return () => { observer.disconnect(); controller.abort(); };
+  }, [aid, season, hasData]);
   useEffect(() => {
     const controller = new AbortController();
     let running = false;
@@ -158,10 +177,11 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
         {peers.length ? peers.map(peer => <div className="axis-personal-peer-row" key={peer.id}><PlayerName player={peer} /><span>{number(peer.games)}</span><span>{number(peer.wins)}</span><span>{number(peer.losses)}</span><span className="axis-personal-peer-winrate"><span>{percent(peer.winrate)}</span>{peer.winrate != null && <span className="axis-personal-peer-bar" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(1, peer.winrate)) * 100}%` }} /></span>}</span></div>) : <p className="axis-personal-note">{t("axis.profile.noPeers")}</p>}
       </div>
     </section>
-    <section id="axis-player-history" className="axis-personal-section profile-anchor-section">
+    <section id="axis-player-history" ref={historyRef} className="axis-personal-section profile-anchor-section" aria-busy={historyPending && !failed}>
       <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.history.title")}</h2><div className="profile-segments" role="group" aria-label={t("axis.profile.result")}>
         {(["all", "win", "loss"] as const).map(result => <button key={result} type="button" aria-pressed={filter === result} onClick={() => { setPage(1); setFilter(result); setFailed(false); }}>{t(result === "all" ? "axis.profile.all" : result === "win" ? "axis.column.wins" : "axis.column.losses")}</button>)}
       </div></div>
+      {historyPending && <p className={failed ? "profile-chart-notice" : "sr-only"} role="status">{t(failed ? "axis.profile.error" : "common.loading")}{failed && <> <button type="button" className="ghost-button" onClick={() => { setFailed(false); setRetry(value => value + 1); }}>{t("admin.retry")}</button></>}</p>}
       <div className="axis-personal-history-head"><span>{t("axis.profile.result")}</span><span>{t("axis.profile.mapMatch")}</span><span>{t("axis.rounds.label")}</span><span className="axis-personal-history-kda">{t("axis.kda.short")}</span><span>{t("axis.column.mmr")}</span></div>
       {data.history.matches.length ? data.history.matches.map(match => {
         const own = match.teams.flatMap(team => team.players).find(player => player.id === data.identity.id);
@@ -173,7 +193,7 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
           <span className="axis-personal-result" data-result={own?.change != null && own.change > 0 ? "win" : own?.change != null && own.change < 0 ? "loss" : "draw"}>{own?.change != null && own.change > 0 ? "+" : ""}{number(own?.change)}</span>
         </summary><div className="axis-personal-rosters">{match.teams.map((team, index) => <section key={index}><h3>{t("axis.history.team", { n: String.fromCharCode(65 + index) })}</h3>{sortAxisMatchPlayers(team.players, lang).map(player => <div className="axis-personal-roster-row" data-self={player.id === data.identity.id || undefined} key={player.id}><PlayerName player={player} /><span>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</span></div>)}</section>)}</div></details>;
       }) : <p className="axis-personal-note">{t("axis.history.empty")}</p>}
-      <nav className="axis-personal-pagination" aria-label={t("axis.history.pagination")}><button type="button" className="ghost-button" disabled={page === 1} onClick={() => setPage(value => value - 1)}>{t("axis.history.previous")}</button><span role="status">{t("axis.history.page", { page: number(page), pages: number(data.history.pages), n: number(data.history.total) })}</span><button type="button" className="ghost-button" disabled={page >= data.history.pages} onClick={() => setPage(value => value + 1)}>{t("axis.history.next")}</button></nav>
+      <nav className="axis-personal-pagination" aria-label={t("axis.history.pagination")}><button type="button" className="ghost-button" disabled={historyPending || page === 1} onClick={() => setPage(value => value - 1)}>{t("axis.history.previous")}</button><span role="status">{t("axis.history.page", { page: number(data.history.page), pages: number(data.history.pages), n: number(data.history.total) })}</span><button type="button" className="ghost-button" disabled={historyPending || page >= data.history.pages} onClick={() => setPage(value => value + 1)}>{t("axis.history.next")}</button></nav>
     </section>
     <div className="axis-personal-bottom">
       {data.maps.length > 0 && <section className="axis-personal-section"><h2 className="section-heading">{t("axis.profile.maps")}</h2><div className="axis-personal-maps">{data.maps.map(map => <div key={map.name}><strong>{map.name}</strong><span>{t("axis.profile.mapRecord", { n: map.games, wins: map.wins })}</span><strong>{percent(map.winrate)}</strong></div>)}</div></section>}

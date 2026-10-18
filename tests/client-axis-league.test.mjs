@@ -28,6 +28,29 @@ test("Axis player requests coalesce, isolate cancellation, cache revisits and se
   assert.equal(calls, 2);
 });
 
+test("Axis history filter preloads stay separate and clicks reuse cached or in-flight first pages", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const calls = [], finish = new Map();
+  globalThis.fetch = url => {
+    calls.push(url);
+    return new Promise(resolve => finish.set(url, () => resolve(Response.json({ ...playerBody(98763), filter: new URL(url, "http://local").searchParams.get("result") }))));
+  };
+  const urls = ["all", "win", "loss"].map(result => axisPlayerRequest(98763, "current", 1, result));
+  const preload = urls.map(url => loadAxisPlayer(url, new AbortController().signal));
+  const click = loadAxisPlayer(urls[1], new AbortController().signal);
+  assert.equal(calls.length, 3, "clicking during preload shares the existing request");
+  urls.forEach(url => finish.get(url)());
+  await Promise.all([...preload, click]);
+  for (const [index, filter] of ["all", "win", "loss"].entries()) {
+    assert.equal(cachedAxisPlayer(urls[index]).filter, filter, "each filter can render its cached first page immediately");
+    await loadAxisPlayer(urls[index], new AbortController().signal);
+  }
+  assert.equal(calls.length, 3, "switching between warm filters makes no additional requests");
+  assert.equal(cachedAxisPlayer(axisPlayerRequest(98763, "all", 1, "win")), null, "preload cannot leak into another season");
+  assert.equal(cachedAxisPlayer(axisPlayerRequest(98764, "current", 1, "win")), null, "preload cannot leak into another player");
+});
+
 test("Axis player malformed cached responses are not exposed and explicit retry recovers", async t => {
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });
