@@ -32,7 +32,9 @@ export function ArenaCombatCards({ stats, score, item, hasRating, scope, riskId,
 }) {
   const { t, lang } = useI18n();
   const number = (value: number | null | undefined, digits = 0) => value == null ? t("common.notAvailable") : value.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-  const tier = score == null ? null : score < 20 ? "low" : score < 45 ? "medium" : score < 70 ? "high" : "severe";
+  const hasRisk = score != null && Number.isFinite(score);
+  const riskScore = hasRisk ? score : 0;
+  const tier = !hasRisk ? null : riskScore < 20 ? "low" : riskScore < 45 ? "medium" : riskScore < 70 ? "high" : "severe";
   const value = item?.displayReady ? item.rating : null;
   const winRate = stats.metrics.win_rate;
   const ratingNote = item?.reason
@@ -43,7 +45,7 @@ export function ArenaCombatCards({ stats, score, item, hasRating, scope, riskId,
   return <>
       <article id={riskId} className="arena-combat-card" data-gauge="risk" data-risk-tier={tier ?? "unavailable"} aria-label={label("arena.combat.risk")}>
         <h2>{t("arena.combat.risk")}</h2>
-        <ArenaRing value={score} max={100} text={number(score)} unit={t("arena.combat.outOf100")} label={t("arena.combat.risk")} />
+        <ArenaRing value={riskScore} max={100} text={number(riskScore)} unit={t("arena.combat.outOf100")} label={t("arena.combat.risk")} />
         <strong className="arena-combat-status">{tier ? t("arena.combat.risk." + tier) : t("arena.risk.unavailable")}</strong>
         <p className="arena-combat-note">{t("arena.combat.riskNote")}</p>
       </article>

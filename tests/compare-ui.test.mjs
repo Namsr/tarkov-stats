@@ -34,15 +34,16 @@ test("average captions render both languages, both directions, equality and zero
   }
 });
 
-async function riskPollingHarness({ score = 16, responseIdentity, existingRisk, mode = "seasonal", withView = true } = {}) {
+async function riskPollingHarness({ score = 16, responseIdentity, responseRisk, existingRisk, mode = "seasonal", withView = true } = {}) {
   const source = (await readFile("components/ComparePage.tsx", "utf8")).replace(/\r\n/g, "\n");
   const start = source.indexOf("  useEffect(() => {\n    const data = state.data;");
   const end = source.indexOf("  const refresh = useCallback", start);
   assert.ok(start > 0 && end > start);
   const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const scope = { mode, cycleId: "s1", arenaMode: null }, scopeKey = `${mode}:s1:null`, aid = 42;
-  const identity = { aid, mode, cycleId: "s1" };
-  const payload = { identity, risk: existingRisk ?? null, ...(withView ? { viewModel: { identity, risk: existingRisk ?? null } } : {}) };
+  const cycleId = mode === "arena" ? "persistent" : "s1";
+  const scope = { mode, cycleId, arenaMode: mode === "arena" ? "overall" : null }, scopeKey = `${mode}:${cycleId}:${scope.arenaMode}`, aid = 42;
+  const identity = { aid, mode, cycleId };
+  const payload = { identity, risk: existingRisk ?? null, ...(mode === "arena" ? { arena: { profileUpdatedAt: 100 } } : {}), ...(withView ? { viewModel: { identity, risk: existingRisk ?? null } } : {}) };
   let current = { aid, scopeKey, data: { profile: {}, payload } };
   const state = current, generation = { current: 1 }, timers = [], requests = [];
   let cleanup;
@@ -54,7 +55,8 @@ async function riskPollingHarness({ score = 16, responseIdentity, existingRisk, 
     update => { current = update(current); },
     async (url, init) => {
       requests.push({ url, init });
-      return { ok: true, json: async () => ({ identity: responseIdentity ?? identity, risk: requests.length === 1 ? null : { score } }) };
+      return { ok: true, json: async () => ({ identity: responseIdentity ?? identity, risk: requests.length === 1 ? null
+        : responseRisk ?? (mode === "arena" ? { aid, score, overall: { score }, version: { upstream: 100 } } : { score }) }) };
     },
     callback => { timers.push(callback); return callback; },
     timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); });
@@ -98,8 +100,8 @@ test("comparison risk polling rejects another account, mode or cycle and cancels
   assert.equal(cancelled.requests.length, 0);
 });
 
-test("comparison risk polling skips available zero risk and Arena and supports regular payloads", async () => {
-  for (const options of [{ existingRisk: { score: 0 } }, { mode: "arena" }]) {
+test("comparison risk polling skips available zero risk and supports regular payloads", async () => {
+  for (const options of [{ existingRisk: { score: 0 } }, { mode: "arena", existingRisk: { score: 0, overall: { score: 0 } } }]) {
     const poll = await riskPollingHarness(options);
     await poll.tick();
     assert.equal(poll.requests.length, 0);
@@ -111,6 +113,71 @@ test("comparison risk polling skips available zero risk and Arena and supports r
   assert.equal(regular.state().data.payload.risk.score, 16);
   assert.equal(regular.state().data.payload.viewModel, undefined);
   regular.cleanup();
+});
+
+test("Arena comparisons load background risk including zero and reject stale or foreign results", async () => {
+  for (const score of [24, 0]) {
+    const poll = await riskPollingHarness({ mode: "arena", withView: false, score });
+    await poll.tick();
+    await poll.tick();
+    assert.equal(poll.requests[0].url, "/api/player/risk?aid=42&mode=arena&cycle=persistent");
+    assert.equal(poll.state().data.payload.risk.overall.score, score);
+    poll.cleanup();
+  }
+  for (const options of [
+    { responseIdentity: { aid: 99, mode: "arena", cycleId: "persistent" } },
+    { responseIdentity: { aid: 42, mode: "regular", cycleId: "persistent" } },
+    { responseIdentity: { aid: 42, mode: "arena", cycleId: "other" } },
+    { responseRisk: { aid: 99, score: 24, version: { upstream: 100 } } },
+    { responseRisk: { aid: 42, score: 24, version: { upstream: 99 } } },
+    { responseRisk: { aid: 42, score: 24 } },
+  ]) {
+    const poll = await riskPollingHarness({ mode: "arena", withView: false, ...options });
+    await poll.tick();
+    await poll.tick();
+    assert.equal(poll.state().data.payload.risk, null);
+    poll.cleanup();
+  }
+  const cancelled = await riskPollingHarness({ mode: "arena", withView: false });
+  await cancelled.tick();
+  cancelled.generation.current++;
+  await cancelled.tick();
+  assert.equal(cancelled.state().data.payload.risk, null);
+  cancelled.cleanup();
+  assert.equal(cancelled.requests[0].init.signal.aborted, true);
+});
+
+test("Arena risk cards always render a number while other missing metrics stay unavailable in both languages", async () => {
+  const require = createRequire(import.meta.url);
+  const files = ["ArenaCombatSummary", "ArenaDetailedStatistics"];
+  const sources = await Promise.all(files.map(name => readFile(`components/${name}.tsx`, "utf8")));
+  for (const lang of ["ru", "en"]) {
+    const loaded = sources.map(source => {
+      const exports = {};
+      const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+      const mockedRequire = id => id === "@/lib/i18n/context" ? { useI18n: () => ({ lang, t: key => dict[lang][key] }) }
+        : id === "@/lib/arena/ts-rating" ? { ARENA_TSR_WEIGHTS: {} }
+        : id === "@/types/arena" ? { ARENA_MODE_KEYS: [], ARENA_METRIC_KEYS: [] }
+        : id === "@/components/arena-ui" ? { ARENA_METRIC_DECIMALS: {} }
+        : id === "@/components/StatCard" ? { default: ({ label, value }) => createElement("div", { "data-label": label }, value) }
+        : require(id);
+      new Function("require", "exports", compiled)(mockedRequire, exports);
+      return exports;
+    });
+    const stats = { metrics: { win_rate: null }, counters: { matches: null, wins: null, losses: null } };
+    for (const score of [null, 0, 24, NaN]) {
+      const html = renderToStaticMarkup(createElement(loaded[0].ArenaCombatCards, { stats, score, item: null, hasRating: false, scope: "overall" }));
+      const riskCard = html.slice(0, html.indexOf("</article>"));
+      assert.ok(riskCard.includes(`<strong>${Number.isFinite(score) ? score : 0}</strong>`));
+      assert.ok(!riskCard.includes(dict[lang]["common.notAvailable"]));
+      assert.ok(html.slice(html.indexOf("</article>")).includes(dict[lang]["common.notAvailable"]));
+    }
+    for (const score of [null, 0, 24]) {
+      const html = renderToStaticMarkup(createElement(loaded[1].default, { profile: { overall: stats }, scope: "overall", rating: null,
+        risk: score === null ? null : { overall: { score } } }));
+      assert.ok(html.includes(`data-label="${dict[lang]["arena.combat.risk"]}">${score ?? 0}</div>`));
+    }
+  }
 });
 
 test("comparison polls deferred risk for each persistent profile and cancels obsolete requests", async () => {
