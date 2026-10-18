@@ -5,7 +5,7 @@ import test from "node:test";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { AXIS_CHANNEL_ID, axisKdaRatio } from "../lib/axis-league.ts";
 import { AXIS_CURRENT_SEASON_START } from "../lib/axis-seasons.ts";
-import { axisPlayerHref } from "../lib/axis-player-profile.ts";
+import { axisPlayerHref, buildAxisPlayerSummary } from "../lib/axis-player-profile.ts";
 
 const avatar = id => `https://cdn.discordapp.com/avatars/${id}/abc.png?size=128`;
 function player(id, overrides = {}) {
@@ -228,4 +228,50 @@ test("draws and wins break a revenge loss streak; empty and short periods do not
   assert.equal(store.readPlayerProfile(12345).story.revenge, null, "current season never borrows older defeats");
   assert.equal(store.readPlayerProfile(12345).story.bestMap, null);
   assert.equal(store.readPlayerProfile(12345, "all").story.revenge.losses, 3);
+});
+
+test("toughest opponent requires twice as many losses as wins and prioritizes decided match count", () => {
+  const identity = { id: "1", name: "Profile owner", avatarUrl: null, profile: { aid: 12345, mode: "arena" } };
+  let serial = 0;
+  const games = (id, results) => results.map(result => {
+    const entry = storyMatch(serial++, result);
+    entry.teams.flatMap(team => team.players).find(player => player.id === "2").id = id;
+    return entry;
+  });
+  const summary = matches => buildAxisPlayerSummary(identity, matches.reverse(), [], false, {}, null, true);
+  const shaw = games("shaw", [...Array(9).fill("win"), ...Array(7).fill("loss"), "draw"]);
+  const recer = games("recer", [...Array(6).fill("win"), "loss"]);
+  const data = summary([...shaw, ...recer]);
+  assert.equal(data.highlights.opponent, null, "a 9-7 record cannot be described as a losing matchup");
+  const peer = data.opponents.find(player => player.id === "shaw");
+  assert.equal(peer.winrate, 9 / 16);
+  assert.equal(peer.draws, 1);
+  assert.equal(data.opponents.find(player => player.id === "recer").winrate, 6 / 7, "wins belong to the profile owner");
+  const draws = games("draws", Array(10).fill("draw"));
+  assert.equal(summary(draws).highlights.opponent, null, "draws cannot create a losing matchup");
+  const short = games("short", ["loss", "draw"]);
+  assert.equal(summary(short).highlights.opponent.id, "short", "there is no arbitrary minimum number of matches");
+  const tie = games("tie", [...Array(4).fill("win"), ...Array(4).fill("loss")]);
+  assert.equal(summary(tie).highlights.opponent, null, "a tied record is not a losing matchup");
+  const close = games("close", [...Array(4).fill("win"), ...Array(5).fill("loss")]);
+  assert.equal(summary(close).highlights.opponent, null, "4-5 is too close to call a tough matchup");
+  const boundary = games("boundary", ["win", "loss", "loss"]);
+  assert.equal(summary(boundary).highlights.opponent.id, "boundary", "exactly two losses per win qualifies");
+  const swept = games("eight", Array(8).fill("loss"));
+  const moreLosses = games("many", [...Array(3).fill("win"), ...Array(9).fill("loss")]);
+  const toughest = summary([...shaw, ...recer, ...short, ...draws, ...tie, ...swept, ...moreLosses]).highlights.opponent;
+  assert.equal(toughest.id, "many", "a sustained losing matchup outranks a shorter sweep");
+  assert.equal(toughest.wins, 3);
+  assert.equal(toughest.losses, 9);
+  assert.equal(toughest.winrate, .25);
+  const two = games("two", ["loss", "loss"]);
+  const six = games("six", [...Array(2).fill("win"), ...Array(4).fill("loss")]);
+  const nine = games("nine", [...Array(3).fill("win"), ...Array(6).fill("loss")]);
+  assert.equal(summary([...two, ...six, ...nine]).highlights.opponent.id, "nine", "3-6 outranks 0-2 and 2-4");
+  const ten = games("ten", [...Array(2).fill("win"), ...Array(8).fill("loss")]);
+  assert.equal(summary([...nine, ...ten, ...close, ...shaw]).highlights.opponent.id, "ten", "2-8 outranks 3-6; close records remain ineligible");
+  const equalGames = games("equal", [...Array(2).fill("win"), ...Array(7).fill("loss")]);
+  assert.equal(summary([...nine, ...equalGames]).highlights.opponent.id, "equal", "higher loss rate breaks equal decided-match counts");
+  const drawnSweep = games("drawn", ["loss", "loss", ...Array(20).fill("draw")]);
+  assert.equal(summary([...drawnSweep, ...nine]).highlights.opponent.id, "nine", "draws cannot inflate the matchup sample");
 });
