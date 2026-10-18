@@ -24,7 +24,7 @@ const { GET, POST } = await import("../app/api/admin/axis-league/route.ts");
 const { GET: publicGet } = await import("../app/api/axis-league/route.ts");
 const { GET: historyGet } = await import("../app/api/axis-league/history/route.ts");
 const { GET: playerGet } = await import("../app/api/axis-league/player/route.ts");
-const { GET: photoGet, POST: photoPost } = await import("../app/api/axis-league/match-photo/route.ts");
+const { GET: photoGet } = await import("../app/api/axis-league/match-photo/route.ts");
 const { POST: statsPost } = await import("../app/api/admin/axis-league/match-stats/route.ts");
 const { GET: editorsGet, POST: editorsPost } = await import("../app/api/admin/axis-league/editors/route.ts");
 const { POST: profilesPost } = await import("../app/api/axis-league/profiles/route.ts");
@@ -313,8 +313,9 @@ test("direct match links read the indexed archive entry and reject invalid or mi
   }
 });
 
-const photoRequest = (body, headers = {}) => new Request("https://tarkovstats.ru/api/axis-league/match-photo", {
-  method: "POST", headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+const photoPost = statsPost;
+const photoRequest = (body, headers = {}) => new Request("https://tarkovstats.ru/api/admin/axis-league/match-stats", {
+  method: "POST", headers: { origin: "https://tarkovstats.ru", "content-type": "application/json", ...headers }, body: JSON.stringify(body && { matchNumber: body.matchNumber, players: [], photo: { expected: body.expected, data: body.data } }),
 });
 const imageFixture = async (color = "#125599") => sharp({ create: { width: 128, height: 72, channels: 3, background: color } }).png().toBuffer();
 
@@ -399,4 +400,27 @@ test("photo request streaming enforces the byte limit even without Content-Lengt
   await assert.rejects(readAxisPhotoBody(new Request("http://localhost/", { method: "POST", body: stream, duplex: "half" })), error => error.status === 413);
   assert.equal(cancelled, true);
   assert.deepEqual(await readAxisPhotoBody(new Request("http://localhost/", { method: "POST", body: '{"data":null}' })), { data: null });
+});
+
+
+test("one statistics save commits photo, score and KDA atomically and rolls everything back on conflicts", async t => {
+  setupStats(t);
+  const data = (await imageFixture()).toString("base64");
+  const kda = { kills: 8, deaths: 3, assists: 2 };
+  const first = { matchNumber: 5, players: [{ discordId: id, expected: null, kda }], rounds: { expected: null, score: { a: 7, b: 5 } }, photo: { expected: null, data } };
+  const saved = await statsPost(request(first)); assert.equal(saved.status, 200);
+  const photo = (await saved.json()).photo;
+  const nextKda = { kills: 20, deaths: 10, assists: 4 };
+  const replacement = (await imageFixture("#aabbcc")).toString("base64");
+  const stalePhoto = { ...first, players: [{ discordId: id, expected: kda, kda: nextKda }], rounds: { expected: { a: 7, b: 5 }, score: { a: 8, b: 6 } }, photo: { expected: null, data: replacement } };
+  assert.equal((await statsPost(request(stalePhoto))).status, 409);
+  let match = globalThis.axisStore.readMatchHistory(5).matches[0];
+  assert.deepEqual(match.teams[0].players[0].kda, kda); assert.deepEqual(match.rounds, { a: 7, b: 5 });
+  assert.deepEqual(globalThis.axisStore.readMatchPhotoMetadata(5), photo);
+  const staleKda = { ...stalePhoto, players: [{ discordId: id, expected: null, kda: nextKda }], photo: { expected: photo.revision, data: replacement } };
+  assert.equal((await statsPost(request(staleKda))).status, 409);
+  assert.deepEqual(globalThis.axisStore.readMatchPhotoMetadata(5), photo);
+  assert.equal((await statsPost(request({ ...stalePhoto, photo: { expected: photo.revision, data: replacement } }))).status, 200);
+  match = globalThis.axisStore.readMatchHistory(5).matches[0]; assert.deepEqual(match.teams[0].players[0].kda, nextKda); assert.deepEqual(match.rounds, { a: 8, b: 6 });
+  assert.notEqual(globalThis.axisStore.readMatchPhotoMetadata(5).revision, photo.revision);
 });

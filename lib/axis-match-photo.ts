@@ -4,6 +4,8 @@ export const AXIS_PHOTO_MAX_BODY = Math.ceil(AXIS_PHOTO_MAX_BYTES / 3) * 4 + 102
 export const AXIS_PHOTO_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 export interface AxisMatchPhoto { revision: string; width: number; height: number }
+export interface AxisPhotoUpload { expected: string | null; data: string | null }
+export interface AxisPhotoChange { expected: string | null; photo: AxisStoredPhoto | null }
 export interface AxisStoredPhoto extends AxisMatchPhoto { data: Uint8Array }
 
 export class AxisPhotoInputError extends Error {

@@ -1,15 +1,20 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ClipboardEvent } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type ClipboardEvent, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n/context";
-import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, AXIS_PHOTO_TYPES, axisPhotoUrl, type AxisMatchPhoto } from "@/lib/axis-match-photo";
+import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, AXIS_PHOTO_TYPES, axisPhotoUrl, type AxisMatchPhoto, type AxisPhotoUpload } from "@/lib/axis-match-photo";
+
+export interface AxisMatchPhotoHandle {
+  paste: (event: ClipboardEvent) => void;
+  getChange: () => AxisPhotoUpload | undefined | false;
+  conflict: () => void;
+}
 
 type PhotoPreview = { src: string; width: number; height: number };
 
 function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; matchNumber: number; onClose: () => void }) {
   const { t } = useI18n();
-  const titleId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 1, height: 1 });
@@ -38,16 +43,15 @@ function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; mat
     }
     setZoom(next);
   }
-  return createPortal(<dialog ref={dialog} className="axis-photo-dialog" aria-labelledby={titleId} onClose={() => { if (!dialog.current?.open) onClose(); }}
+  return createPortal(<dialog ref={dialog} className="axis-photo-dialog" aria-label={t("axis.photo.title", { n: matchNumber })} onClose={() => { if (!dialog.current?.open) onClose(); }}
     onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
     <div className="axis-photo-dialog__content">
-      <div className="axis-photo-dialog__header"><h2 id={titleId}>{t("axis.photo.title", { n: matchNumber })}</h2>
-        <button type="button" className="ghost-button" onClick={() => dialog.current?.close()}>{t("common.close")}</button></div>
+      <div className="axis-photo-dialog__header"><button type="button" className="ghost-button" aria-label={t("common.close")} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span></button></div>
       <div className="axis-photo-tools" role="group" aria-label={t("axis.photo.zoom")}>
         <button type="button" className="ghost-button" aria-label={t("axis.photo.zoomOut")} disabled={zoom <= 0.5} onClick={() => changeZoom(Math.max(0.5, zoom / 1.5))}><span aria-hidden="true">−</span></button>
         <output aria-live="polite" aria-label={t("axis.photo.zoom")}>{Math.round(fit * zoom * 100)}%</output>
         <button type="button" className="ghost-button" aria-label={t("axis.photo.zoomIn")} disabled={zoom >= maxZoom} onClick={() => changeZoom(Math.min(maxZoom, zoom * 1.5))}><span aria-hidden="true">+</span></button>
-        <button type="button" className="ghost-button" onClick={() => { changeZoom(1); viewport.current?.scrollTo(0, 0); }}>{t("axis.photo.fit")}</button>
+        <button type="button" className="ghost-button" aria-label={t("axis.photo.fit")} title={t("axis.photo.fit")} onClick={() => { changeZoom(1); viewport.current?.scrollTo(0, 0); }}><span aria-hidden="true">↔</span></button>
       </div>
       <div ref={viewport} className="axis-photo-viewport" tabIndex={0} role="region" aria-label={t("axis.photo.pan")}>
         {failed ? <p className="admin-notice" role="alert">{t("axis.photo.loadError")}</p> :
@@ -62,18 +66,16 @@ function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; mat
 }
 
 /** Mounted only inside the authorized match statistics editor. */
-export default function AxisMatchPhoto({ matchNumber }: { matchNumber: number }) {
+export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber: number; busy: boolean; ref: Ref<AxisMatchPhotoHandle> }) {
   const { t } = useI18n();
   const [photo, setPhoto] = useState<AxisMatchPhoto | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [retry, setRetry] = useState(0);
-  const input = useRef<HTMLInputElement>(null);
   const selection = useRef(0);
-  const saving = useRef(false);
+  const metadataRequest = useRef<Promise<AxisMatchPhoto | null | undefined>>(Promise.resolve(undefined));
   const [draft, setDraft] = useState<PhotoPreview | null>();
   const [expected, setExpected] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [message, setMessage] = useState("");
@@ -88,21 +90,24 @@ export default function AxisMatchPhoto({ matchNumber }: { matchNumber: number })
         if (!response.ok) throw new Error("Photo unavailable");
         const body = await response.json();
         if (body.matchNumber !== matchNumber || body.photo !== null && (!/^[a-f0-9]{64}$/.test(body.photo?.revision) || !(body.photo?.width > 0) || !(body.photo?.height > 0))) throw new Error("Invalid photo metadata");
-        if (!controller.signal.aborted) { setPhoto(body.photo); setLoaded(true); setLoadFailed(false); }
+        if (!controller.signal.aborted) { setPhoto(body.photo); setLoaded(true); setLoadFailed(false); return body.photo as AxisMatchPhoto | null; }
       } catch { if (!controller.signal.aborted) setLoadFailed(true); }
+      return undefined;
     }
-    void load();
+    metadataRequest.current = load();
     return () => controller.abort();
   }, [matchNumber, retry]);
 
   async function select(file: File) {
-    if (!loaded || loadFailed || saving.current) return;
+    if (loadFailed || busy) return;
     const version = ++selection.current;
     setMessage(""); setReading(false);
     if (!AXIS_PHOTO_TYPES.includes(file.type)) { setMessage(t("axis.photo.invalid")); return; }
     if (!file.size || file.size > AXIS_PHOTO_MAX_BYTES) { setMessage(t("axis.photo.tooLarge")); return; }
     setReading(true);
     try {
+      const currentPhoto = await metadataRequest.current;
+      if (currentPhoto === undefined || version !== selection.current) return;
       const src = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
@@ -112,55 +117,38 @@ export default function AxisMatchPhoto({ matchNumber }: { matchNumber: number })
       const image = new Image(); image.src = src; await image.decode();
       if (image.naturalWidth * image.naturalHeight > AXIS_PHOTO_MAX_PIXELS) throw new Error("Image too large");
       if (version !== selection.current) return;
-      setExpected(photo?.revision ?? null); setConflict(false);
+      setExpected(currentPhoto?.revision ?? null); setConflict(false);
       setDraft({ src, width: image.naturalWidth, height: image.naturalHeight });
     } catch { if (version === selection.current) setMessage(t("axis.photo.invalid")); }
     finally { if (version === selection.current) setReading(false); }
   }
   function paste(event: ClipboardEvent) {
-    if (!loaded || loadFailed || busy || reading) return;
+    if (loadFailed || busy || reading) return;
     const file = Array.from(event.clipboardData.files).find(file => file.type.startsWith("image/"));
     if (file) { event.preventDefault(); void select(file); }
   }
-  async function save() {
-    if (draft === undefined || saving.current || reading || conflict || !loaded || loadFailed) return;
-    saving.current = true; setBusy(true); setMessage("");
-    try {
-      const response = await fetch("/api/axis-league/match-photo", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ matchNumber, expected, data: draft === null ? null : draft.src.slice(draft.src.indexOf(",") + 1) }), signal: AbortSignal.timeout(30_000) });
-      if (response.status === 409) { setConflict(true); setRetry(value => value + 1); setMessage(t("axis.photo.conflict")); return; }
-      if (!response.ok) { setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : response.status === 400 ? "axis.photo.invalid" : "admin.error.save")); return; }
-      const body = await response.json();
-      if (!body.ok || body.matchNumber !== matchNumber || body.photo !== null && (!/^[a-f0-9]{64}$/.test(body.photo?.revision) || !(body.photo?.width > 0) || !(body.photo?.height > 0))) throw new Error("Invalid photo response");
-      setPhoto(body.photo); setDraft(undefined); setMessage(t("admin.saved"));
-    } catch { setMessage(t("admin.error.save")); }
-    finally { saving.current = false; setBusy(false); }
-  }
-  if (!loaded || loadFailed) return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
+  useImperativeHandle(ref, () => ({
+    paste,
+    getChange() {
+      if (reading || conflict) return false;
+      return draft === undefined ? undefined : { expected, data: draft === null ? null : draft.src.slice(draft.src.indexOf(",") + 1) };
+    },
+    conflict() { setConflict(true); setRetry(value => value + 1); setMessage(t("axis.kda.conflict")); },
+  }));
+  if (!loaded && !loadFailed) return null;
+  if (loadFailed) return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
     <p role="status">{t(loadFailed ? "axis.photo.loadError" : "common.loading")}</p>
     {loadFailed && <button type="button" className="ghost-button" onClick={() => { setLoadFailed(false); setRetry(value => value + 1); }}>{t("admin.retry")}</button>}
   </section>;
-  return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })} onPaste={paste}>
-    <h3>{t("axis.photo.label")}</h3>
+  if (!preview && !message && !reading) return null;
+  return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
     {preview && <button type="button" className="axis-photo-thumbnail" onClick={() => setViewer(preview)} aria-label={t("axis.photo.open", { n: matchNumber })}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={preview.src} alt={t("axis.photo.alt", { n: matchNumber })} loading="lazy" width={preview.width} height={preview.height} />
-      <span>{t("axis.photo.view")}</span>
     </button>}
-    <div className="axis-photo-upload">
-        <button type="button" className="axis-photo-paste" disabled={busy || reading} aria-keyshortcuts="Control+V Meta+V" onClick={(event) => event.currentTarget.focus()}>{t("axis.photo.paste")}</button>
-        <button type="button" className="ghost-button" disabled={busy || reading} onClick={() => input.current?.click()}>{t("axis.photo.choose")}</button>
-        <input ref={input} type="file" hidden accept={AXIS_PHOTO_TYPES.join(",")} aria-label={t("axis.photo.choose")} onChange={(event) => {
-          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void select(file);
-        }} />
-        {preview && <button type="button" className="ghost-button" disabled={busy || reading} onClick={() => { setExpected(photo?.revision ?? null); setDraft(null); setConflict(false); setMessage(""); }}>{t("axis.photo.remove")}</button>}
-      </div>
-      <p className="axis-kda-hint">{t("axis.photo.hint")}</p>
-      {draft !== undefined && <div className="axis-kda-actions">
-        <button type="button" className="tactical-button" disabled={busy || reading || conflict} onClick={() => void save()}>{t(busy ? "common.loading" : "axis.photo.save")}</button>
-        <button type="button" className="ghost-button" disabled={busy} onClick={() => { selection.current++; setReading(false); setDraft(undefined); setConflict(false); setMessage(""); }}>{t("axis.kda.cancel")}</button>
-      </div>}
-      {(reading || message) && <p className="admin-notice" role="status">{reading ? t("common.loading") : message}</p>}
+    {preview && <button type="button" className="axis-photo-remove" disabled={busy || reading} aria-label={t("axis.photo.remove")}
+      onClick={() => { setExpected(photo?.revision ?? null); setDraft(null); setConflict(false); setMessage(""); }}><span aria-hidden="true">×</span></button>}
+    {(reading || message) && <p className="admin-notice" role="status">{reading ? t("common.loading") : message}</p>}
     {viewer && <PhotoViewer image={viewer} matchNumber={matchNumber} onClose={() => setViewer(null)} />}
   </section>;
 }

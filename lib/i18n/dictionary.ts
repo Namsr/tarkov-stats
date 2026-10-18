@@ -13,19 +13,12 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
-  "axis.photo.label": "Match photo",
   "axis.photo.title": "Photo for match #{n}",
   "axis.photo.alt": "Score screenshot for match #{n}",
   "axis.photo.open": "Open photo for match #{n}",
-  "axis.photo.view": "Open photo",
-  "axis.photo.paste": "Click here, then paste a photo with Ctrl+V",
-  "axis.photo.choose": "Choose photo",
   "axis.photo.remove": "Remove photo",
-  "axis.photo.save": "Save photo",
-  "axis.photo.hint": "One photo per match. PNG, JPEG or WebP, up to 10 MB and 24 megapixels. Save to attach or replace the photo.",
   "axis.photo.invalid": "Choose a valid PNG, JPEG or WebP image up to 24 megapixels.",
   "axis.photo.tooLarge": "The photo is too large. Choose an image up to 10 MB.",
-  "axis.photo.conflict": "Another moderator changed this photo. Cancel your changes and select the photo again.",
   "axis.photo.zoom": "Photo zoom",
   "axis.photo.zoomIn": "Zoom in",
   "axis.photo.zoomOut": "Zoom out",
@@ -1856,19 +1849,12 @@ const en: Dict = {
 };
 
 const ru: Dict = {
-  "axis.photo.label": "Фото матча",
   "axis.photo.title": "Фото матча №{n}",
   "axis.photo.alt": "Снимок счёта матча №{n}",
   "axis.photo.open": "Открыть фото матча №{n}",
-  "axis.photo.view": "Открыть фото",
-  "axis.photo.paste": "Нажмите сюда, затем вставьте фото через Ctrl+V",
-  "axis.photo.choose": "Выбрать фото",
   "axis.photo.remove": "Удалить фото",
-  "axis.photo.save": "Сохранить фото",
-  "axis.photo.hint": "Одно фото на матч. PNG, JPEG или WebP, до 10 МБ и 24 мегапикселей. Нажмите «Сохранить фото», чтобы прикрепить или заменить снимок.",
   "axis.photo.invalid": "Выберите изображение PNG, JPEG или WebP размером до 24 мегапикселей.",
   "axis.photo.tooLarge": "Фото слишком большое. Выберите изображение размером до 10 МБ.",
-  "axis.photo.conflict": "Другой модератор изменил фото. Отмените свои изменения и выберите снимок заново.",
   "axis.photo.zoom": "Масштаб фото",
   "axis.photo.zoomIn": "Увеличить",
   "axis.photo.zoomOut": "Уменьшить",

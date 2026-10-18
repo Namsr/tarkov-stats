@@ -2,7 +2,6 @@
 
 import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
-import AxisMatchPhoto from "@/components/AxisMatchPhoto";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
@@ -130,7 +129,6 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
               </div>
             </li>)}</ul>
           </section>)}</div>}
-          {editing && <AxisMatchPhoto matchNumber={match.number} />}
           </>}</AxisMatchStatsEditor>
         </details>)}</div>}
     </>}
