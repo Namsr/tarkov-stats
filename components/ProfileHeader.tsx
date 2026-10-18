@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
+import ProfileCompareButton from "@/components/ProfileCompareButton";
 import LeaderboardRankLink from "@/components/LeaderboardRankLink";
 import ProfileModeSwitch from "@/components/ProfileModeSwitch";
 import ProfilePortrait from "@/components/ProfilePortrait";
 import ProfilePrestige from "@/components/ProfilePrestige";
-import type { ArenaModeKey } from "@/types/arena";
+import type { ArenaModeKey, ArenaStoredMode } from "@/types/arena";
 import type { GameMode } from "@/types/seasonal";
 
 export default function ProfileHeader({
@@ -14,6 +15,7 @@ export default function ProfileHeader({
   title,
   prestige,
   leaderboardArenaMode,
+  comparisonArenaMode,
   leaderboardRevision,
   meta,
   actions,
@@ -29,6 +31,7 @@ export default function ProfileHeader({
   title?: string;
   prestige?: number | null;
   leaderboardArenaMode?: ArenaModeKey;
+  comparisonArenaMode?: ArenaStoredMode;
   leaderboardRevision?: string | number | null;
   meta?: ReactNode;
   actions: ReactNode;
@@ -72,8 +75,9 @@ export default function ProfileHeader({
           </div>
         </div>
         <div className="profile-header__controls">
-          <div className="profile-header__actions" aria-live="polite">
+          <div className="profile-header__actions profile-actions flex-wrap" aria-live="polite">
             {actions}
+            <ProfileCompareButton aid={aid} mode={mode} cycleId={seasonalCycleId} arenaMode={comparisonArenaMode} />
           </div>
         </div>
       </div>

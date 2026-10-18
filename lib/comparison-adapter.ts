@@ -1,3 +1,5 @@
+import { isComparisonScope, parseComparisonScope } from "./comparison-scope.ts";
+export { parseComparisonScope } from "./comparison-scope.ts";
 import {
   ARENA_COMPARISON_METRIC_KEYS,
   PERSISTENT_COMPARISON_METRIC_KEYS,
@@ -14,13 +16,10 @@ import {
   type ComparisonProfileUrlOptions,
   type ComparisonRange,
   type ComparisonScope,
-  type ComparisonScopeResolution,
   type PersistentComparisonBenchmarks,
   type PersistentComparisonMetrics,
   type PersistentComparisonPercentiles,
 } from "../types/comparison";
-import { normalizeCycleId } from "../types/seasonal";
-import { ARENA_MODE_KEYS, type ArenaStoredMode } from "../types/arena";
 import { killedPmcPerRaid } from "./killed-pmc-per-raid.ts";
 
 const PERSISTENT_PROFILE_FIELDS = {
@@ -34,7 +33,6 @@ const PERSISTENT_PROFILE_FIELDS = {
 } as const;
 
 const COHORT_PERCENTS = new Set([10, 15, 20, 30]);
-const ARENA_SCOPES = new Set<string>(["overall", ...ARENA_MODE_KEYS]);
 const COHORT_REASONS = new Set<ComparisonCohortReason>([
   "no_activity",
   "target_unavailable",
@@ -48,10 +46,6 @@ function record(value: unknown): UnknownRecord | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as UnknownRecord
     : null;
-}
-
-function unavailableScope(): ComparisonScopeResolution {
-  return { status: "unavailable", scope: null };
 }
 
 function validAid(value: unknown): value is number {
@@ -70,58 +64,6 @@ function countValue(value: unknown): number | null {
 
 function textValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function uniqueSearchParams(input: string | URLSearchParams): URLSearchParams | null {
-  const params = typeof input === "string" ? new URLSearchParams(input) : new URLSearchParams(input);
-  for (const key of ["mode", "cycle", "arenaMode"]) {
-    if (params.getAll(key).length > 1) return null;
-  }
-  return params;
-}
-
-function validPinnedCycle(value: string | null): value is string {
-  return value !== null && normalizeCycleId(value, "seasonal") === value;
-}
-
-export function parseComparisonScope(
-  input: string | URLSearchParams,
-  seasonalCycleId: string | null,
-): ComparisonScopeResolution {
-  const params = uniqueSearchParams(input);
-  if (!params) return unavailableScope();
-  const rawMode = params.get("mode");
-  const mode = rawMode === null ? "regular" : rawMode;
-  const rawCycle = params.get("cycle");
-  const rawArenaMode = params.get("arenaMode");
-
-  if (mode === "regular" || mode === "pve") {
-    if (rawCycle !== null && rawCycle !== "persistent") return unavailableScope();
-    if (rawArenaMode !== null) return unavailableScope();
-    return { status: "available", scope: { mode, cycleId: "persistent", arenaMode: null } };
-  }
-  if (mode === "arena") {
-    if (rawCycle !== null && rawCycle !== "persistent") return unavailableScope();
-    if (rawArenaMode !== null && !ARENA_SCOPES.has(rawArenaMode)) return unavailableScope();
-    return { status: "available", scope: { mode: "arena", cycleId: "persistent", arenaMode: (rawArenaMode ?? "overall") as ArenaStoredMode } };
-  }
-  if (mode !== "seasonal" || !validPinnedCycle(seasonalCycleId)) return unavailableScope();
-  if (rawCycle !== null && rawCycle !== seasonalCycleId) return unavailableScope();
-  if (rawArenaMode !== null) return unavailableScope();
-  return { status: "available", scope: { mode: "seasonal", cycleId: seasonalCycleId, arenaMode: null } };
-}
-
-function isComparisonScope(value: unknown): value is ComparisonScope {
-  const scope = record(value);
-  if (!scope) return false;
-  if (scope.mode === "arena") {
-    return scope.cycleId === "persistent" && typeof scope.arenaMode === "string" && ARENA_SCOPES.has(scope.arenaMode);
-  }
-  if (scope.mode !== "regular" && scope.mode !== "pve" && scope.mode !== "seasonal") return false;
-  if (scope.arenaMode !== null || typeof scope.cycleId !== "string") return false;
-  return scope.mode === "seasonal"
-    ? normalizeCycleId(scope.cycleId, "seasonal") === scope.cycleId
-    : scope.cycleId === "persistent";
 }
 
 function requireScope(scope: ComparisonScope): void {
