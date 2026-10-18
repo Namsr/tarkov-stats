@@ -273,15 +273,15 @@ test("all standalone profile collectors lower Node priority inside the container
   }
 });
 
-test("sync units and the hourly coordinator cover the same modes within their available budgets", async () => {
+test("sync units and the nightly coordinator cover the same modes within their available budgets", async () => {
   const { PROFILE_QUEUE_MODES, PROFILE_QUEUE_MAX_RUN_MS, PROFILE_QUEUE_SLICE_MS } = await import("../scripts/run-profile-queue.mjs");
-  assert.equal(PROFILE_QUEUE_MAX_RUN_MS, 3_600_000);
+  assert.equal(PROFILE_QUEUE_MAX_RUN_MS, 18_000_000);
   assert.equal(PROFILE_QUEUE_SLICE_MS, 300_000);
   for (const { name, script, budget, budgetMs } of (await readSyncUnits()).filter(unit => unit.budget)) {
     const mode = PROFILE_QUEUE_MODES.find(mode => script.endsWith(mode.script));
     assert.ok(mode, name + " is missing from the circular queue");
     assert.equal(mode.budget, budget.name, name);
-    assert.ok(budgetMs <= PROFILE_QUEUE_MAX_RUN_MS, name + " exceeds the shared hour");
+    assert.ok(budgetMs <= PROFILE_QUEUE_MAX_RUN_MS, name + " exceeds the shared night");
   }
 });
 

@@ -15,6 +15,7 @@ import {
   normalizeUpdatedAt,
   remainingRunBudget,
   profileQueueSelector,
+  profileRetryDayStart,
   snapshotTargetVersion,
   summarizeCoverage,
 } from "../scripts/regular-profile-sync-core.mjs";
@@ -86,6 +87,13 @@ test("all modes admit delayed tracked versions, bound unknown discovery and pres
   assert.equal(classifyFeedEntry(undefined, now, now, now), "new");
 });
 
+test("deferred profile retries change day at Moscow midnight", () => {
+  const boundary = Date.parse("2026-10-18T00:00:00+03:00");
+  assert.equal(profileRetryDayStart(boundary - 1), boundary - 86_400_000);
+  assert.equal(profileRetryDayStart(boundary), boundary);
+  assert.equal(profileRetryDayStart(boundary + 23 * 3_600_000), boundary);
+});
+
 test("updated feed cache key changes once per fifteen-minute slot", () => {
   assert.equal(feedCacheSlot(0), 0);
   assert.equal(feedCacheSlot(899_999), 0);
@@ -116,6 +124,41 @@ test("fresh versions get priority while old queued profiles and errors keep a sh
     assert.deepEqual(order, [1, 2, 3, 4, 7, 5, 6, 8]);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM regular_profile_sync_queue").get().n, 8);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM progression_snapshots").get().n, 2);
+  } finally { db.close(); }
+});
+
+test("queue selection streams its priority indexes instead of sorting the whole backlog for each profile", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE test_profile_sync_queue (aid INTEGER PRIMARY KEY, feed_updated_at INTEGER,
+      status TEXT, updated_at INTEGER, last_run_id TEXT);
+      CREATE INDEX idx_test_profile_sync_queue_status ON test_profile_sync_queue(status, aid)`);
+    const now = Date.now();
+    const insert = db.prepare("INSERT INTO test_profile_sync_queue VALUES (?, ?, 'pending', ?, NULL)");
+    db.exec('BEGIN');
+    for (let aid = 1; aid <= 10_000; aid++) insert.run(aid, now - aid, aid);
+    insert.run(10_001, now - 30 * 86_400_000, 0);
+    db.exec('COMMIT');
+    const plans = [];
+    const next = profileQueueSelector({
+      exec: sql => db.exec(sql),
+      prepare(sql) {
+        plans.push(db.prepare('EXPLAIN QUERY PLAN ' + sql).all('run', now - 86_400_000));
+        return db.prepare(sql);
+      },
+    }, `SELECT q.aid FROM test_profile_sync_queue q
+      WHERE q.status IN ('pending', 'error') AND COALESCE(q.last_run_id, '') <> ? ORDER BY q.aid`);
+    for (const [index, lane] of ['fresh', 'debt'].entries()) {
+      const details = plans[index].map(row => row.detail).join('\n');
+      assert.match(details, new RegExp('USING INDEX idx_test_profile_sync_queue_' + lane));
+      assert.doesNotMatch(details, /TEMP B-TREE FOR ORDER BY/);
+    }
+    const order = [];
+    for (let i = 0; i < 5; i++) {
+      const row = next.get('run'); order.push(row.aid);
+      db.prepare("UPDATE test_profile_sync_queue SET last_run_id = 'run' WHERE aid = ?").run(row.aid);
+    }
+    assert.deepEqual(order, [1, 2, 3, 4, 10_001]);
   } finally { db.close(); }
 });
 
@@ -176,6 +219,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   const failOnce = new Set();
   const failAlways = new Set();
   const staleResponses = new Map();
+  let unchangedFeed = false;
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -196,6 +240,8 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
 
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/profile/updated.json")) {
+      if (unchangedFeed && request.headers['if-none-match'] === '"regular-feed"') return response.writeHead(304).end();
+      response.setHeader('etag', '"regular-feed"');
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify(feed));
       return;
@@ -371,11 +417,14 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     assert.equal(calls.get(11), attempts, "an unavailable expired version is not fetched again");
     assert.equal(progressionDb.prepare("SELECT COUNT(*) n FROM progression_snapshots WHERE aid=11").get().n, 1, "history is preserved without fabricating the expected version");
     staleResponses.clear();
-    feed = { ...feed, 11: Date.now() - 1000 };
-    await run();
+    unchangedFeed = true;
+    apiDb.prepare("UPDATE regular_profile_sync_queue SET updated_at=0 WHERE aid=11").run();
+    const retried = await run();
+    assert.match(retried.stdout, /"feedHttpStatus":304/);
+    assert.equal(calls.get(11), attempts + 1, "the next day retries an unchanged target even on feed 304");
     const recovered = apiDb.prepare("SELECT status,stale_version FROM regular_profile_sync_queue WHERE aid=11").get();
     assert.equal(recovered.status, "completed");
-    assert.equal(recovered.stale_version, null, "a new feed target reactivates the preserved task");
+    assert.equal(recovered.stale_version, null, "a previously deferred target recovers without a new feed version");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();

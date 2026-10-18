@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
+import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, profileRetryDayStart, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -735,6 +735,9 @@ async function loadFeed(startedAt) {
           AND SUM(CASE WHEN p.upstream_version >= arena_profile_sync_queue.feed_updated_at THEN 1 ELSE 0 END) = 6
           AND SUM(CASE WHEN p.parser_version >= arena_profile_sync_queue.schema_version THEN 1 ELSE 0 END) = 6)`).run(Date.now());
   });
+  await writeTransaction(() => db.prepare(`UPDATE arena_profile_sync_queue
+    SET status = 'pending', schema_version = MAX(schema_version, ?), last_run_id = NULL
+    WHERE status = 'stale' AND updated_at < ?`).run(config.schemaVersion, profileRetryDayStart()));
   await heartbeat();
   return counters;
 }

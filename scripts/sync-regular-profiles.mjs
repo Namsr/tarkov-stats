@@ -9,6 +9,7 @@ import {
   backoff,
   classifyFeedEntry,
   profileQueueSelector,
+  profileRetryDayStart,
   PROFILE_FEED_POLICY,
   PROFILE_FEED_WINDOW_MS,
   createTimestampObjectParser,
@@ -458,6 +459,8 @@ async function loadFeed(startedAt) {
         AND s.profile_updated_at >= regular_profile_sync_queue.feed_updated_at
     )
   `).run(Date.now());
+  db.prepare(`UPDATE regular_profile_sync_queue SET stale_version = NULL, last_run_id = NULL
+    WHERE status = 'error' AND stale_version IS NOT NULL AND updated_at < ?`).run(profileRetryDayStart());
   const coverage = { total: 0, missing: 0, lagging: 0, current: 0 };
   for (const [aid, profile] of tracked) {
     if (excluded.has(aid)) continue;

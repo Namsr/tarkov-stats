@@ -476,8 +476,8 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
       players.prepare(`INSERT INTO mode_players VALUES ('pve', ?, ?, ?, ?, '[]')`)
         .run(aid, recent + 1_000, recent + 1_001, stats);
       players.prepare(`INSERT INTO pve_profile_sync_queue
-        (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, 1)`)
-        .run(aid, recent + 1_000, status);
+        (aid, feed_updated_at, status, updated_at) VALUES (?, ?, ?, ?)`)
+        .run(aid, recent + 1_000, status, Date.now());
     }
     players.prepare(`INSERT INTO mode_players VALUES ('pve', 23, ?, ?, ?, '[]')`)
       .run(cutoff - 1, recent, stats);
@@ -494,6 +494,12 @@ test("PvE conditional feed requests skip the body on 304 but keep serving the qu
     assert.equal(seen.bodies, 1);
     assert.deepEqual(players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid BETWEEN 20 AND 22 ORDER BY aid")
       .all().map((row) => row.status), ["skipped", "stale", "not_found"]);
+    players.prepare("UPDATE pve_profile_sync_queue SET updated_at=0 WHERE aid=21").run();
+    syncCalls.length = 0;
+    const recovered = summaryFrom((await runCollector(dbPath, progressionDbPath, port)).stdout);
+    assert.equal(recovered.feedHttpStatus, 304);
+    assert.equal(recovered.completed, 1);
+    assert.deepEqual(syncCalls, [21], "yesterday's version conflict retries without redoing genuine terminal outcomes");
     assert.equal(players.prepare("SELECT aid FROM pve_profile_sync_queue WHERE aid = 23").get(), undefined);
     assert.equal(
       players.prepare("SELECT status FROM pve_profile_sync_queue WHERE aid = 99").get().status,

@@ -131,6 +131,13 @@ export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, now = Date.now(
   return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
 }
 
+// Deferred upstream conflicts get one new attempt per Moscow calendar day,
+// independently of feed ETags and without retrying every five-minute slice.
+export function profileRetryDayStart(now = Date.now()) {
+  const offset = 3 * 60 * 60_000;
+  return Math.floor((now + offset) / PROFILE_FEED_WINDOW_MS) * PROFILE_FEED_WINDOW_MS - offset;
+}
+
 /** Fresh versions get four turns, then debt gets one; either lane can use idle turns. */
 export function profileQueueSelector(db, query) {
   const table = /FROM ([a-z_]+) q\b/.exec(query)?.[1];
@@ -139,8 +146,12 @@ export function profileQueueSelector(db, query) {
     CREATE INDEX IF NOT EXISTS idx_${table}_debt ON ${table}(updated_at, aid) WHERE status IN ('pending', 'error')`);
   const base = query.slice(0, query.lastIndexOf("ORDER BY"));
   const freshPredicate = "q.status = 'pending' AND q.feed_updated_at >= ?";
-  const fresh = db.prepare(`${base} AND (${freshPredicate}) ORDER BY q.feed_updated_at DESC, q.aid LIMIT 1`);
-  const debt = db.prepare(`${base} AND NOT (${freshPredicate}) ORDER BY q.updated_at, q.aid LIMIT 1`);
+  // The status index otherwise wins on real queues, sorting every eligible row
+  // (including its snapshot checks) again for each individual profile.
+  const indexed = (lane) => base.replace(`FROM ${table} q`,
+    `FROM ${table} q INDEXED BY idx_${table}_${lane}`);
+  const fresh = db.prepare(`${indexed("fresh")} AND (${freshPredicate}) ORDER BY q.feed_updated_at DESC, q.aid LIMIT 1`);
+  const debt = db.prepare(`${indexed("debt")} AND NOT (${freshPredicate}) ORDER BY q.updated_at, q.aid LIMIT 1`);
   let selected = 0;
   return {
     get(...args) {

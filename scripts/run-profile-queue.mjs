@@ -13,7 +13,7 @@ export const PROFILE_QUEUE_MODES = [
   { name: "pve", script: "sync-pve-profiles.mjs", budget: "PVE_PROFILE_SYNC_MAX_RUN_MS", env: { PVE_PROFILE_SYNC_RPS: "1" } },
   { name: "seasonal", script: "sync-seasonal-profiles.mjs", budget: "SEASONAL_FEED_MAX_RUN_MS", env: { SEASONAL_FEED_RPS: "1" } },
 ];
-export const PROFILE_QUEUE_MAX_RUN_MS = 60 * 60_000;
+export const PROFILE_QUEUE_MAX_RUN_MS = 5 * 60 * 60_000;
 export const PROFILE_QUEUE_SLICE_MS = 5 * 60_000;
 
 export function summaryComplete(result) {
