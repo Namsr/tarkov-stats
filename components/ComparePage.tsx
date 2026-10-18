@@ -422,13 +422,13 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
       if (saved) {
         const params = comparisonSelectionParams(saved);
         if (comparisonScopeFromSearchParams(params, seasonalCycleId ?? null).status === "available") {
-          router.replace(`/compare?${params}`, { scroll: false });
+          window.history.replaceState(null, "", `/compare?${params}`);
         }
       }
       return;
     }
     if (scope) saveComparisonSelection({ scope, primary: primaryAid, secondary: secondaryAid });
-  }, [primaryAid, secondaryAid, scope, searchParams, seasonalCycleId, router]);
+  }, [primaryAid, secondaryAid, scope, searchParams, seasonalCycleId]);
   const cohortController = useComparisonCohort(scope, scopeKey, primaryAid, t);
   const primary = useComparisonProfile(profileScope, profileScopeKey, primaryAid, activeModeLabel, t, cohortController.reload);
   const secondaryCohortController = useComparisonCohort(scope, scopeKey, secondaryAid, t);

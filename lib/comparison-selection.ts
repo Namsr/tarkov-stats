@@ -1,4 +1,4 @@
-import { parseComparisonScope } from "./comparison-adapter.ts";
+import { parseComparisonScope } from "./comparison-scope.ts";
 import type { ComparisonScope } from "../types/comparison";
 
 export const COMPARISON_COOKIE = "comparison_selection";
@@ -34,12 +34,18 @@ export function addComparisonPlayer(scope: ComparisonScope, aid: number, saved: 
   return primary === null ? { scope, primary: aid, secondary } : { scope, primary, secondary: aid };
 }
 
+function readCookieValue(): string | null {
+  const prefix = `${COMPARISON_COOKIE}=`;
+  const cookie = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith(prefix));
+  return cookie ? cookie.slice(prefix.length) : null;
+}
+
 export function readComparisonSelection(): ComparisonSelection | null {
   if (typeof document === "undefined") return null;
   try {
-    const cookie = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith(`${COMPARISON_COOKIE}=`));
-    if (!cookie) return null;
-    const value = decodeURIComponent(cookie.slice(COMPARISON_COOKIE.length + 1));
+    const cookie = readCookieValue();
+    if (cookie === null) return null;
+    const value = decodeURIComponent(cookie);
     if (value.length > 512) return null;
     const params = new URLSearchParams(value);
     const resolution = parseComparisonScope(params, params.get("cycle"));
@@ -60,6 +66,7 @@ export function saveComparisonSelection(selection: ComparisonSelection): void {
   if (typeof document === "undefined") return;
   try {
     const value = encodeURIComponent(comparisonSelectionParams(selection).toString());
+    if (readCookieValue() === value) return;
     const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
     document.cookie = `${COMPARISON_COOKIE}=${value}; Max-Age=${MAX_AGE}; Path=/; SameSite=Lax${secure}`;
   } catch { /* Navigation still carries the selection when cookies are unavailable. */ }

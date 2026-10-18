@@ -378,3 +378,62 @@ test("the profile button carries its player, mode, seasonal cycle and Arena subm
     }
   }
 });
+
+
+test("unchanged comparison selections do not rewrite cookies, but changes and cookie removal do", () => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  let cookie = "other_preference=1";
+  let writes = 0;
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    get cookie() { return cookie; },
+    set cookie(value) { writes++; cookie = value.split(";")[0]; },
+  } });
+  try {
+    const selection = { scope: { mode: "regular", cycleId: "persistent", arenaMode: null }, primary: 42, secondary: 43 };
+    selectionStore.saveComparisonSelection(selection);
+    selectionStore.saveComparisonSelection(selection);
+    assert.equal(writes, 1, "button click and comparison mount must share one cookie write");
+    const changed = { ...selection, secondary: 44 };
+    selectionStore.saveComparisonSelection(changed);
+    assert.equal(writes, 2);
+    assert.deepEqual(selectionStore.readComparisonSelection(), changed);
+    cookie = "";
+    selectionStore.saveComparisonSelection(changed);
+    assert.equal(writes, 3, "an externally removed cookie must be recreated");
+  } finally {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument); else delete globalThis.document;
+  }
+});
+
+test("restoring comparison only updates local history and explicit or stale Seasonal URLs remain authoritative", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { comparisonScopeFromSearchParams } = await import("../lib/comparison-adapter.ts");
+  const source = await readFile("components/ComparePage.tsx", "utf8");
+  const start = source.indexOf("  useEffect(() => {", source.indexOf("  const secondaryAid ="));
+  const end = source.indexOf("\n  }, [primaryAid", start);
+  assert.ok(start > 0 && end > start);
+  const body = source.slice(start + "  useEffect(() => {".length, end);
+  const run = new Function("searchParams", "seasonalCycleId", "scope", "primaryAid", "secondaryAid",
+    "readComparisonSelection", "comparisonSelectionParams", "comparisonScopeFromSearchParams", "saveComparisonSelection", "window", body);
+  const regular = { mode: "regular", cycleId: "persistent", arenaMode: null };
+  const saved = { scope: regular, primary: 42, secondary: 43 };
+  const restore = (query, stored, cycle = null) => {
+    const params = new URLSearchParams(query);
+    const scope = parseComparisonScope(params, cycle).scope;
+    const history = [];
+    const writes = [];
+    let reads = 0;
+    run(params, cycle, scope, params.has("aid") ? Number(params.get("aid")) : null,
+      params.has("vs") ? Number(params.get("vs")) : null,
+      () => { reads++; return stored; }, selectionStore.comparisonSelectionParams,
+      comparisonScopeFromSearchParams, selection => writes.push(selection),
+      { history: { replaceState: (...args) => history.push(args) } });
+    return { history, writes, reads };
+  };
+  assert.deepEqual(restore("", saved), { history: [[null, "", "/compare?mode=regular&aid=42&vs=43"]], writes: [], reads: 1 });
+  assert.deepEqual(restore("", null), { history: [], writes: [], reads: 1 });
+  assert.deepEqual(restore("mode=pve&aid=99", saved), { history: [], writes: [{ scope: { mode: "pve", cycleId: "persistent", arenaMode: null }, primary: 99, secondary: null }], reads: 0 });
+  const stale = { ...saved, scope: { mode: "seasonal", cycleId: "old-season", arenaMode: null } };
+  assert.deepEqual(restore("", stale, "current-season"), { history: [], writes: [], reads: 1 });
+  assert.deepEqual(restore("mode=seasonal&cycle=old-season&aid=99", saved, "current-season"), { history: [], writes: [], reads: 0 });
+});
