@@ -212,20 +212,28 @@ test('host budgets stop the night at 07:00 and allow one recovery hour with isol
     const file = join(dir,'queue.sh');
     const nightStart = Date.UTC(2026, 9, 17, 23) / 1000; // 02:00 Moscow
     const nightEnd = nightStart + 5 * 3600;
+    const dayStart = nightStart + 7 * 3600;
+    const dayEnd = nightStart + 20 * 3600;
     for (const [args, now, seconds, status] of [
       [[], nightStart, 18000, 0], [['nightly'], nightStart, 18000, 0],
       [['nightly'], nightStart + 2 * 3600, 10800, 0],
       [['nightly'], nightEnd, 0, 75], [['nightly'], nightEnd + 3600, 0, 75],
-      [['catchup'], nightEnd + 2 * 3600, 3600, 0], [['invalid'], nightStart, 0, 2],
+      [['catchup'], dayStart, 3600, 0], [['catchup'], dayStart - 1, 0, 75],
+      [['catchup'], dayEnd - 1800, 1800, 0], [['catchup'], dayEnd, 0, 75],
+      [['invalid'], nightStart, 0, 2],
     ]) {
       const mock = `date() {
         if [ "$*" = +%s ]; then printf '%s\\n' ${now}; else
           [ "$TZ" = Europe/Moscow ] || return 92
-          [ "$*" = '-d today 07:00:00 +%s' ] || return 93
-          printf '%s\\n' ${nightEnd}
+          case "$*" in
+            '-d today 07:00:00 +%s') printf '%s\\n' ${nightEnd} ;;
+            '-d today 09:00:00 +%s') printf '%s\\n' ${dayStart} ;;
+            '-d today 22:00:00 +%s') printf '%s\\n' ${dayEnd} ;;
+            *) return 93 ;;
+          esac
         fi
       }
-      systemctl() { [ "$1" != is-enabled ] || return 1; }
+      systemctl() { return 1; }
 `;
       await writeFile(file, mock + script);
       const result = spawnSync(shell,[file, ...args],{encoding:'utf8',timeout:10_000});
@@ -252,12 +260,22 @@ test('only a successful worker disables recovery; a failed run leaves the timer 
   const dir = await mkdtemp(join(tmpdir(), 'profile-recovery-complete-'));
   try {
     const file = join(dir, 'queue.sh');
-    for (const [workerCode, enabled, disables] of [[0, true, true], [1, true, false], [0, false, false]]) {
-      const mock = `worker() { return ${workerCode}; }
+    for (const [workerCode, enabled, active, disables] of [
+      [0, true, true, true], [1, true, true, false], [0, false, false, false], [0, false, true, true],
+    ]) {
+      const mock = `date() {
+          case "$*" in
+            +%s|'-d today 09:00:00 +%s') printf '10000\\n' ;;
+            *) printf '13600\\n' ;;
+          esac
+        }
+        worker() { return ${workerCode}; }
         systemctl() {
           printf 'SYSTEMCTL %s\\n' "$*"
           if [ "$1" = is-enabled ]; then return ${enabled ? 0 : 1}; fi
-        }\n`;
+          if [ "$1" = is-active ]; then return ${active ? 0 : 1}; fi
+        }
+`;
       await writeFile(file, mock + source
         .replace('cd /opt/tarkovstats-auto || exit 1', `cd '${dir.replaceAll('\\','/')}' || exit 1`)
         .replace('/usr/local/sbin/tarkovstats-run-background', 'worker')

@@ -12,7 +12,14 @@ case "${1:-nightly}" in
     [ "$seconds" -gt 0 ] || exit 75
     [ "$seconds" -le 18000 ] || seconds=18000
     ;;
-  catchup) seconds=3600 ;;
+  catchup)
+    # A timer tick may have waited on the writer lock. Never replay it at night.
+    day_start=$(TZ=Europe/Moscow date -d 'today 09:00:00' +%s)
+    day_end=$(TZ=Europe/Moscow date -d 'today 22:00:00' +%s)
+    [ "$now" -ge "$day_start" ] && [ "$now" -lt "$day_end" ] || exit 75
+    seconds=$((day_end - now))
+    [ "$seconds" -le 3600 ] || seconds=3600
+    ;;
   *) printf 'Unknown profile queue mode: %s\n' "$1" >&2; exit 2 ;;
 esac
 deadline=$(( (now + seconds) * 1000 ))
@@ -22,6 +29,7 @@ deadline=$(( (now + seconds) * 1000 ))
 
 # Only an actually completed worker retires recovery. Failed feeds, a deadline
 # or a skipped ExecCondition cannot reach this point under set -e.
-if /usr/bin/systemctl is-enabled --quiet tarkovstats-profile-catchup.timer; then
+if /usr/bin/systemctl is-enabled --quiet tarkovstats-profile-catchup.timer ||
+  /usr/bin/systemctl is-active --quiet tarkovstats-profile-catchup.timer; then
   /usr/bin/systemctl disable --now tarkovstats-profile-catchup.timer
 fi
