@@ -40,7 +40,7 @@ export default function ArenaDetailedStatistics({ profile, scope, risk, rating }
       </div>{scope !== "overall" && <p className="arena-combat-footnote">{t("arena.combat.modeHoursNote")}</p>}</div>
       <div><h3>{t("arena.combat.ratings")}</h3><div className="data-ledger">
         <StatCard label={t("arena.tsr.title")} value={number(tsr?.displayReady ? tsr.rating : null, 2)} />
-        <StatCard label={t("arena.combat.risk")} value={number(riskScore)} suffix={riskScore == null ? undefined : t("arena.combat.outOf100")} />
+        <StatCard label={t("arena.combat.risk")} value={number(riskScore ?? 0)} suffix={t("arena.combat.outOf100")} />
       </div></div>
     </div>
   </section>;
