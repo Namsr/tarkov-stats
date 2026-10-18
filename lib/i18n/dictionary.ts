@@ -13,6 +13,19 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "axis.photo.title": "Photo for match #{n}",
+  "axis.photo.alt": "Score screenshot for match #{n}",
+  "axis.photo.open": "Open photo for match #{n}",
+  "axis.photo.remove": "Remove photo",
+  "axis.photo.invalid": "Choose a valid PNG, JPEG or WebP image up to 24 megapixels.",
+  "axis.photo.tooLarge": "The photo is too large. Choose an image up to 10 MB.",
+  "axis.photo.zoom": "Photo zoom",
+  "axis.photo.zoomIn": "Zoom in",
+  "axis.photo.zoomOut": "Zoom out",
+  "axis.photo.fit": "Fit to screen",
+  "axis.photo.pan": "Photo. Scroll to view enlarged areas.",
+  "axis.photo.loadError": "Could not load the photo. Close this window and try again.",
+
   "axis.profile.tab": "Axis",
   "axis.profile.all": "All",
   "axis.profile.period": "Full period",
@@ -100,7 +113,6 @@ const en: Dict = {
   "axis.kda.coverage": "Matches with K/D/A this season: {n}",
   "axis.kda.empty": "No match K/D/A recorded this season",
   "axis.kda.short": "K/D/A",
-  "axis.kda.manual": "K/D/A entered by admin",
   "axis.kda.value": "Kills: {kills}; deaths: {deaths}; assists: {assists}",
   "axis.kda.add": "Enter K/D/A and rounds",
   "axis.kda.edit": "Edit match stats",
@@ -1837,6 +1849,19 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "axis.photo.title": "Фото матча №{n}",
+  "axis.photo.alt": "Снимок счёта матча №{n}",
+  "axis.photo.open": "Открыть фото матча №{n}",
+  "axis.photo.remove": "Удалить фото",
+  "axis.photo.invalid": "Выберите изображение PNG, JPEG или WebP размером до 24 мегапикселей.",
+  "axis.photo.tooLarge": "Фото слишком большое. Выберите изображение размером до 10 МБ.",
+  "axis.photo.zoom": "Масштаб фото",
+  "axis.photo.zoomIn": "Увеличить",
+  "axis.photo.zoomOut": "Уменьшить",
+  "axis.photo.fit": "Вписать в окно",
+  "axis.photo.pan": "Фото. Прокручивайте, чтобы рассмотреть увеличенные участки.",
+  "axis.photo.loadError": "Не удалось загрузить фото. Закройте окно и попробуйте снова.",
+
   "axis.profile.tab": "Axis",
   "axis.profile.all": "Все",
   "axis.profile.period": "Весь период",
@@ -1924,7 +1949,6 @@ const ru: Dict = {
   "axis.kda.coverage": "Матчей с K/D/A в текущем сезоне: {n}",
   "axis.kda.empty": "В текущем сезоне пока нет заполненных K/D/A",
   "axis.kda.short": "K/D/A",
-  "axis.kda.manual": "K/D/A введено вручную",
   "axis.kda.value": "Убийства: {kills}; смерти: {deaths}; ассисты: {assists}",
   "axis.kda.add": "Ввести K/D/A и счёт",
   "axis.kda.edit": "Изменить статистику",

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import AxisMatchPhoto, { type AxisMatchPhotoHandle } from "@/components/AxisMatchPhoto";
 import { useI18n } from "@/lib/i18n/context";
 import { sortAxisMatchPlayers, type AxisMatch } from "@/lib/axis-history";
 import { AXIS_KDA_MAX, parseAxisKda, sameAxisKda, parseAxisRoundScore, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "@/lib/axis-kda";
@@ -17,6 +18,7 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
   onConflict: () => void;
 }) {
   const { t, lang } = useI18n();
+  const photo = useRef<AxisMatchPhotoHandle>(null);
   const [draft, setDraft] = useState<Draft[] | null>(null);
   const [roundDraft, setRoundDraft] = useState<RoundDraft | null>(null);
   const [roster, setRoster] = useState<AxisMatch["teams"]>([]);
@@ -52,15 +54,17 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
         if (!sameAxisRoundScore(score, roundDraft.expected)) rounds = { score, expected: roundDraft.expected };
       }
     } catch { setMessage(t("axis.kda.invalid")); return; }
-    if (!changes.length && rounds === undefined) { setDraft(null); setRoundDraft(null); return; }
+    const photoChange = photo.current?.getChange();
+    if (photoChange === false) return;
+    if (!changes.length && rounds === undefined && photoChange === undefined) { setDraft(null); setRoundDraft(null); return; }
     setBusy(true); setMessage("");
     try {
       const response = await fetch("/api/admin/axis-league/match-stats", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ matchNumber: match.number, players: changes, rounds }), signal: AbortSignal.timeout(15_000) });
+        body: JSON.stringify({ matchNumber: match.number, players: changes, rounds, photo: photoChange }), signal: AbortSignal.timeout(30_000) });
       const body = await response.json();
       if (!response.ok || !body.ok || body.matchNumber !== match.number || !Array.isArray(body.players)) {
-        if (response.status === 409) { onConflict(); setMessage(t("axis.kda.conflict")); }
-        else setMessage(t("admin.error.save"));
+        if (response.status === 409) { if (photoChange !== undefined) photo.current?.conflict(); onConflict(); setMessage(t("axis.kda.conflict")); }
+        else setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : "admin.error.save"));
         return;
       }
       onSaved(body.players, body.rounds);
@@ -96,8 +100,9 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
   </div> : null;
   const content = children({ teams, renderInputs, rounds, editing: canEdit && draft !== null });
   if (!canEdit) return content;
-  return <form className="axis-match-edit-form" onSubmit={(event) => { event.preventDefault(); void save(); }} aria-label={t("axis.kda.form", { n: match.number })}>
+  return <form className="axis-match-edit-form" onPaste={(event) => photo.current?.paste(event)} onSubmit={(event) => { event.preventDefault(); void save(); }} aria-label={t("axis.kda.form", { n: match.number })}>
     {content}
+    {draft !== null && <AxisMatchPhoto ref={photo} matchNumber={match.number} busy={busy} />}
     {(players.length > 0 || teams.length === 2) && <div className="axis-kda-editor">
       {draft === null ? <button type="button" className="ghost-button" onClick={begin}>{t(hasStats ? "axis.kda.edit" : "axis.kda.add")}</button> : <>
         <p className="axis-kda-hint">{t("axis.kda.hint")}</p>

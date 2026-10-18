@@ -1,3 +1,4 @@
+import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, type AxisMatchPhoto, type AxisStoredPhoto, type AxisPhotoChange } from "../axis-match-photo.ts";
 import type { AxisLeagueResponse, AxisPlayer, AxisProfile, AxisRecentMatch } from "../axis-league";
 import { AXIS_CHANNEL_ID, AXIS_REFRESH_MS } from "../axis-league.ts";
 import type { AxisHistoryPage, AxisHistoryResponse } from "../axis-history";
@@ -10,6 +11,10 @@ import { axisLeagueAverages, buildAxisPlayerSummary, AXIS_PLAYER_PAGE_SIZE, type
 type SqliteDatabase = any;
 export function createAxisLeagueStore(db: SqliteDatabase) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS axis_match_photos (
+      match_number INTEGER PRIMARY KEY, revision TEXT NOT NULL,
+      width INTEGER NOT NULL, height INTEGER NOT NULL, data BLOB NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS axis_match_rounds (
       match_number INTEGER PRIMARY KEY,
       team_a INTEGER NOT NULL CHECK(team_a BETWEEN 0 AND 9999),
@@ -293,11 +298,28 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       if (enabled) db.prepare("INSERT OR IGNORE INTO axis_kda_editors(google_sub) VALUES(?)").run(subject);
       else db.prepare("DELETE FROM axis_kda_editors WHERE google_sub=?").run(subject);
     },
-    setMatchStats(matchNumber: number, input: AxisKdaChange[], roundInput?: AxisRoundChange) {
+    readMatchPhotoMetadata(matchNumber: number): AxisMatchPhoto | null {
+      const row = db.prepare("SELECT revision,width,height FROM axis_match_photos WHERE match_number=?").get(matchNumber);
+      return row ? { revision: row.revision, width: row.width, height: row.height } : null;
+    },
+    readMatchPhoto(matchNumber: number): AxisStoredPhoto | null {
+      return db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) ?? null;
+    },
+    setMatchPhoto(matchNumber: number, expected: string | null, photo: AxisStoredPhoto | null): AxisMatchPhoto | null {
+      return this.setMatchStats(matchNumber, [], undefined, { expected, photo }).photo!;
+    },
+    setMatchStats(matchNumber: number, input: AxisKdaChange[], roundInput?: AxisRoundChange, photoInput?: AxisPhotoChange) {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
       const changes = Array.isArray(input) && input.length === 0 ? [] : parseAxisKdaChanges(input);
       const rounds = roundInput === undefined ? undefined : parseAxisRoundChange(roundInput);
-      if (!changes.length && rounds === undefined) throw new TypeError("No match changes");
+      if (photoInput !== undefined) {
+        const { expected, photo } = photoInput;
+        if (expected !== null && (typeof expected !== "string" || !/^[a-f0-9]{64}$/.test(expected))) throw new TypeError("Invalid expected photo");
+        if (photo && (!/^[a-f0-9]{64}$/.test(photo.revision) || !Number.isSafeInteger(photo.width) || !Number.isSafeInteger(photo.height)
+          || photo.width <= 0 || photo.height <= 0 || photo.width * photo.height > AXIS_PHOTO_MAX_PIXELS
+          || !(photo.data instanceof Uint8Array) || !photo.data.length || photo.data.length > AXIS_PHOTO_MAX_BYTES)) throw new TypeError("Invalid photo data");
+      }
+      if (!changes.length && rounds === undefined && photoInput === undefined) throw new TypeError("No match changes");
       const archived = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?").get(matchNumber);
       let match: AxisHistoryPage["matches"][number] | undefined = archived ? JSON.parse(archived.payload) : undefined;
       if (!match) {
@@ -315,6 +337,10 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const remove = db.prepare("DELETE FROM axis_match_kda WHERE match_number=? AND discord_id=?");
       db.exec("BEGIN IMMEDIATE");
       try {
+        if (photoInput !== undefined) {
+          const current = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber);
+          if ((current?.revision ?? null) !== photoInput.expected) throw new AxisKdaConflict("Photo was changed by another editor");
+        }
         if (rounds !== undefined) {
           const existing = db.prepare("SELECT team_a AS a,team_b AS b FROM axis_match_rounds WHERE match_number=?").get(matchNumber) ?? null;
           if (!sameAxisRoundScore(existing, rounds.expected)) throw new AxisKdaConflict("Round score was changed by another editor");
@@ -331,9 +357,15 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           if (rounds.score) db.prepare("INSERT INTO axis_match_rounds(match_number,team_a,team_b) VALUES(?,?,?) ON CONFLICT(match_number) DO UPDATE SET team_a=excluded.team_a,team_b=excluded.team_b").run(matchNumber, rounds.score.a, rounds.score.b);
           else db.prepare("DELETE FROM axis_match_rounds WHERE match_number=?").run(matchNumber);
         }
+        if (photoInput !== undefined) {
+          const photo = photoInput.photo;
+          if (photo) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
+            .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
+          else db.prepare("DELETE FROM axis_match_photos WHERE match_number=?").run(matchNumber);
+        }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
-      return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score };
+      return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score, photo: photoInput === undefined ? undefined : photoInput.photo ? { revision: photoInput.photo.revision, width: photoInput.photo.width, height: photoInput.photo.height } : null };
     },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
     claimArchiveRefresh(now = Date.now(), headOnly = false): boolean {

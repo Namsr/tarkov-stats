@@ -646,3 +646,30 @@ test("preview outcomes follow the recorded player's team rather than assuming th
   assert.equal(db.read().players[0].recentMatches[0].won, false);
   assert.equal(db.read().players[1].recentMatches[0].won, true);
 });
+
+
+test("private match photos survive reopening and imports without entering public history or invalidating standings", async t => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "axis-photo-store-"));
+  let db = new DatabaseSync(join(dir, "league.db"));
+  t.after(async () => { db.close(); await rm(dir, { recursive: true, force: true }); });
+  let store = createAxisLeagueStore(db);
+  const match = { number: 7, time: Date.now(), queueId: AXIS_CHANNEL_ID, queue: "AXIS", maps: [], winner: 0, teams: [{ name: null, players: [] }] };
+  const page = { page: 1, pages: 1, total: 1, matches: [match] };
+  store.publishArchive(page);
+  const revision = db.prepare("SELECT revision FROM axis_preview_state WHERE id=1").get().revision;
+  const data = Buffer.from("stored image bytes");
+  const photo = { revision: "a".repeat(64), width: 128, height: 72, data };
+  store.setMatchPhoto(7, null, photo);
+  assert.equal(db.prepare("SELECT revision FROM axis_preview_state WHERE id=1").get().revision, revision);
+  db.close(); db = new DatabaseSync(join(dir, "league.db")); store = createAxisLeagueStore(db);
+  store.publishArchive(page);
+  assert.deepEqual(Buffer.from(store.readMatchPhoto(7).data), data);
+  assert.deepEqual(store.readMatchPhotoMetadata(7), { revision: photo.revision, width: 128, height: 72 });
+  assert.equal("photo" in store.readMatchHistory(7).matches[0], false);
+  assert.equal("photo" in store.readSeasonHistory(1, "all").matches[0], false);
+  assert.throws(() => store.setMatchPhoto(7, null, null), AxisKdaConflict);
+  assert.deepEqual(Buffer.from(store.readMatchPhoto(7).data), data);
+});

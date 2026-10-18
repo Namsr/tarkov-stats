@@ -16,6 +16,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 } });
 const { canEditAxisKda, requireAxisKdaEditor } = await import("../lib/axis-access.ts");
 const { requireAdmin, getAdminSession } = await import("../lib/admin-auth.ts");
+const { GET: photoGet } = await import("../app/api/axis-league/match-photo/route.ts");
 const { POST: profilesPost } = await import("../app/api/axis-league/profiles/route.ts");
 
 test("KDA editor role is scoped to the signed Google subject and revocation is immediate", async (t) => {
@@ -72,4 +73,23 @@ test("the configured main administrator can edit AXIS without assigning themselv
   assert.equal(await canEditAxisKda(globalThis.axisUser), true);
   assert.equal((await requireAxisKdaEditor()).ok, true);
   assert.equal((await requireAdmin()).ok, true);
+});
+
+
+test("photo metadata and files require a current editor role, including after revocation", async t => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  process.env.ADMIN_GOOGLE_SUB = "full-admin";
+  globalThis.axisRoleStore = createAxisLeagueStore(db);
+  globalThis.axisStoreFailure = false;
+  globalThis.axisUser = null;
+  const get = (query = "meta=1") => photoGet(new Request("https://tarkovstats.ru/api/axis-league/match-photo?match=5&" + query));
+  assert.equal((await get()).status, 401);
+  globalThis.axisUser = { sub: "editor", email: "same@example.test", name: "Editor", picture: "" };
+  assert.equal((await get()).status, 403);
+  globalThis.axisRoleStore.setKdaEditor("editor", true);
+  const metadata = await get(); assert.equal(metadata.status, 200); assert.equal((await metadata.json()).photo, null);
+  assert.equal((await get("v=" + "a".repeat(64))).status, 404);
+  globalThis.axisRoleStore.setKdaEditor("editor", false);
+  assert.equal((await get()).status, 403); assert.equal((await get("v=" + "a".repeat(64))).status, 403);
+  globalThis.axisUser = { ...globalThis.axisUser, sub: "full-admin" }; assert.equal((await get()).status, 200);
 });

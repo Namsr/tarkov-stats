@@ -36,7 +36,7 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
     peak = Math.max(peak, active);
     res.once('close', () => { active--; held.delete(res); });
     if (req.url === '/reset') req.socket.destroy();
-    else if (req.url === '/echo') {
+    else if (req.url === '/echo' || req.url === '/api/admin/axis-league/match-stats') {
       let body = '';
       req.setEncoding('utf8');
       req.on('data', (chunk) => { body += chunk; });
@@ -157,6 +157,14 @@ test('Caddy rejects excess HTTP/2 requests across sites and releases timed-out s
   assert.equal(normal.headers.server, undefined);
   assert.match(normal.headers['strict-transport-security'], /max-age=31536000/);
   t.diagnostic('ordinary request and client IP handling passed');
+  const photoPayload = 'x'.repeat(300 * 1024);
+  const uploaded = await request('/api/admin/axis-league/match-stats', 'tarkovstats.ru', 'POST', photoPayload);
+  assert.equal(uploaded.status, 200, 'photo POST permits a body above the ordinary 256KB limit');
+  assert.equal(uploaded.body, photoPayload);
+  assert.equal((await request('/echo', 'tarkovstats.ru', 'POST', photoPayload)).status, 413, 'other writes retain the small body limit');
+  assert.equal((await request('/api/admin/axis-league/match-stats', 'tarkovstats.ru', 'PUT', photoPayload)).status, 413, 'only photo POST gets the larger limit');
+  assert.equal((await request('/api/admin/axis-league/match-stats', 'tarkovstats.ru', 'POST', 'x'.repeat(14 * 1024 * 1024 + 1))).status, 413, 'photo requests remain bounded at the proxy');
+
   const beforeIdlePost = received;
   assert.equal((await request('/', 'tarkovstats.ru', 'POST')).status, 200);
   const idleSocket = lastUpstreamSocket;
