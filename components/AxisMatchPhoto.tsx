@@ -135,13 +135,16 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
     },
     conflict() { setConflict(true); setRetry(value => value + 1); setMessage(t("axis.kda.conflict")); },
   }));
-  if (!loaded && !loadFailed) return null;
-  if (loadFailed) return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
-    <p role="status">{t(loadFailed ? "axis.photo.loadError" : "common.loading")}</p>
-    {loadFailed && <button type="button" className="ghost-button" onClick={() => { setLoadFailed(false); setRetry(value => value + 1); }}>{t("admin.retry")}</button>}
-  </section>;
-  if (!preview && !message && !reading) return null;
   return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
+    <div className="axis-photo-paste" tabIndex={0} role="group" aria-label={t("axis.photo.pasteHint")}>
+      <h4>{t("axis.photo.heading")}</h4>
+      <p>{t("axis.photo.pasteHint")}</p>
+    </div>
+    {!loaded && !loadFailed && <p role="status">{t("common.loading")}</p>}
+    {loadFailed && <>
+      <p role="status">{t("axis.photo.loadError")}</p>
+      <button type="button" className="ghost-button" onClick={() => { setLoadFailed(false); setRetry(value => value + 1); }}>{t("admin.retry")}</button>
+    </>}
     {preview && <button type="button" className="axis-photo-thumbnail" onClick={() => setViewer(preview)} aria-label={t("axis.photo.open", { n: matchNumber })}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={preview.src} alt={t("axis.photo.alt", { n: matchNumber })} loading="lazy" width={preview.width} height={preview.height} />

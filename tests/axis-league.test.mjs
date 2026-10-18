@@ -69,22 +69,34 @@ function store(t) {
   return createAxisLeagueStore(db);
 }
 
-test("match players rank by kills, assists, fewer deaths, then nickname without mutating the roster", () => {
+test("match players rank by kills, fewer deaths, assists, then nickname without mutating the roster", () => {
   const player = (name, kills, deaths, assists) => ({ id: name, name, kda: { kills, deaths, assists } });
   const players = [
     { id: "missing", name: "Unknown", kda: null },
     player("Zulu", 10, 2, 5), player("Leader", 11, 20, 0),
     player("Bravo", 10, 2, 5), player("Assist", 10, 99, 6),
-    player("FewerDeaths", 10, 1, 5), player("Zero", 0, 0, 0),
+    player("FewerDeaths", 10, 1, 5), player("Zero", 0, 0, 0), player("MoreAssists", 10, 2, 6),
     { id: "omitted", name: "Absent" },
   ];
   const original = structuredClone(players);
   assert.deepEqual(sortAxisMatchPlayers(players, "en").map(p => p.name),
-    ["Leader", "Assist", "FewerDeaths", "Bravo", "Zulu", "Zero", "Unknown", "Absent"]);
+    ["Leader", "FewerDeaths", "MoreAssists", "Bravo", "Zulu", "Assist", "Zero", "Unknown", "Absent"]);
   assert.deepEqual(players, original);
   assert.deepEqual(sortAxisMatchPlayers(players.filter(p => p.kda == null), "en"), players.filter(p => p.kda == null));
   assert.deepEqual(sortAxisMatchPlayers([player("Яков", 1, 1, 1), player("Антон", 1, 1, 1), player("Борис", 1, 1, 1)], "ru").map(p => p.name),
     ["Антон", "Борис", "Яков"]);
+});
+
+test("match 5663 puts fewer deaths ahead of more assists when kills are tied", () => {
+  const players = [
+    { id: "1", name: "Shcherbak", kda: { kills: 21, deaths: 18, assists: 9 } },
+    { id: "2", name: "Lapps_Twitch", kda: { kills: 21, deaths: 12, assists: 7 } },
+    { id: "3", name: "W8Power", kda: { kills: 19, deaths: 16, assists: 6 } },
+    { id: "4", name: "MSHK_Gummy", kda: { kills: 18, deaths: 16, assists: 7 } },
+    { id: "5", name: "BogHblu", kda: { kills: 11, deaths: 17, assists: 7 } },
+  ];
+  assert.deepEqual(sortAxisMatchPlayers(players, "ru").map(player => player.name),
+    ["Lapps_Twitch", "Shcherbak", "W8Power", "MSHK_Gummy", "BogHblu"]);
 });
 
 function historyMatch(number = 25) {
