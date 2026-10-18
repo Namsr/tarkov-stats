@@ -27,26 +27,22 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
   const request = axisPlayerRequest(aid, season, page, filter);
   const [saved, setSaved] = useState(() => ({ request, data: cachedAxisPlayer(request) }));
   const handledRetry = useRef(0);
-  const historyRef = useRef<HTMLElement>(null);
+  const historyPreload = useRef<AbortController | null>(null);
   // Keep this player and season mounted while only the history query changes.
   const cached = cachedAxisPlayer(request);
   const data = cached ?? (saved.data?.aid === aid && saved.data.season === season ? saved.data : null);
   const historyPending = !cached && saved.request !== request;
-  const hasData = data != null;
   useEffect(() => {
-    if (!hasData || !historyRef.current) return;
     const controller = new AbortController();
-    // Warm filters only as the history approaches the viewport, after the profile has loaded.
-    const observer = new IntersectionObserver(entries => {
-      if (!entries.some(entry => entry.isIntersecting)) return;
-      observer.disconnect();
-      for (const result of ["all", "win", "loss"]) {
-        void loadAxisPlayer(axisPlayerRequest(aid, season, 1, result), controller.signal).catch(() => {});
-      }
-    }, { rootMargin: "800px 0px" });
-    observer.observe(historyRef.current);
-    return () => { observer.disconnect(); controller.abort(); };
-  }, [aid, season, hasData]);
+    historyPreload.current = controller;
+    return () => { controller.abort(); historyPreload.current = null; };
+  }, [aid, season]);
+  function preloadHistory(result: string) {
+    const signal = historyPreload.current?.signal;
+    if (signal && result !== filter && document.visibilityState !== "hidden") {
+      void loadAxisPlayer(axisPlayerRequest(aid, season, 1, result), signal).catch(() => {});
+    }
+  }
   useEffect(() => {
     const controller = new AbortController();
     let running = false;
@@ -177,9 +173,9 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
         {peers.length ? peers.map(peer => <div className="axis-personal-peer-row" key={peer.id}><PlayerName player={peer} /><span>{number(peer.games)}</span><span>{number(peer.wins)}</span><span>{number(peer.losses)}</span><span className="axis-personal-peer-winrate"><span>{percent(peer.winrate)}</span>{peer.winrate != null && <span className="axis-personal-peer-bar" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(1, peer.winrate)) * 100}%` }} /></span>}</span></div>) : <p className="axis-personal-note">{t("axis.profile.noPeers")}</p>}
       </div>
     </section>
-    <section id="axis-player-history" ref={historyRef} className="axis-personal-section profile-anchor-section" aria-busy={historyPending && !failed}>
+    <section id="axis-player-history" className="axis-personal-section profile-anchor-section" aria-busy={historyPending && !failed}>
       <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.history.title")}</h2><div className="profile-segments" role="group" aria-label={t("axis.profile.result")}>
-        {(["all", "win", "loss"] as const).map(result => <button key={result} type="button" aria-pressed={filter === result} onClick={() => { setPage(1); setFilter(result); setFailed(false); }}>{t(result === "all" ? "axis.profile.all" : result === "win" ? "axis.column.wins" : "axis.column.losses")}</button>)}
+        {(["all", "win", "loss"] as const).map(result => <button key={result} type="button" aria-pressed={filter === result} onPointerEnter={() => preloadHistory(result)} onFocus={() => preloadHistory(result)} onClick={() => { setPage(1); setFilter(result); setFailed(false); }}>{t(result === "all" ? "axis.profile.all" : result === "win" ? "axis.column.wins" : "axis.column.losses")}</button>)}
       </div></div>
       {historyPending && <p className={failed ? "profile-chart-notice" : "sr-only"} role="status">{t(failed ? "axis.profile.error" : "common.loading")}{failed && <> <button type="button" className="ghost-button" onClick={() => { setFailed(false); setRetry(value => value + 1); }}>{t("admin.retry")}</button></>}</p>}
       <div className="axis-personal-history-head"><span>{t("axis.profile.result")}</span><span>{t("axis.profile.mapMatch")}</span><span>{t("axis.rounds.label")}</span><span className="axis-personal-history-kda">{t("axis.kda.short")}</span><span>{t("axis.column.mmr")}</span></div>
