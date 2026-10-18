@@ -8,7 +8,7 @@ import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 
 const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
-  if (specifier === "next/server") return mock("export const NextResponse = Response; export function after() {}");
+  if (specifier === "next/server") return mock("export const NextResponse = Response; export function after(callback) { globalThis.axisAfter = callback; }");
   if (specifier === "@/lib/admin/request-events") return mock("export async function recordAuthActivity() {}");
   if (specifier === "server-only") return mock("");
   if (specifier === "@/lib/auth/session") return mock("export async function getSession() { return globalThis.axisUser; }");
@@ -106,14 +106,18 @@ test("existing signed sessions populate Google names without granting editor acc
   const response = await me();
   assert.equal(response.status, 200);
   assert.equal((await response.json()).canEditAxisKda, false);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM axis_google_accounts").get().n, 0, "session response must not wait for identity persistence");
+  await globalThis.axisAfter();
   globalThis.axisRoleStore.setKdaEditor(globalThis.axisUser.sub, true);
   assert.equal(globalThis.axisRoleStore.listKdaEditors()[0].name, "Имя Google");
   globalThis.axisUser = { ...globalThis.axisUser, name: "Новое имя" };
   assert.equal((await (await me()).json()).canEditAxisKda, true);
+  await globalThis.axisAfter();
   assert.equal(globalThis.axisRoleStore.listKdaEditors()[0].name, "Новое имя");
   globalThis.axisStoreFailure = true;
   const offline = await me();
   assert.equal(offline.status, 200); assert.equal((await offline.json()).user.sub, "returning-user");
+  await assert.doesNotReject(globalThis.axisAfter());
   globalThis.axisUser = null;
   assert.equal((await (await me()).json()).user, null);
 });

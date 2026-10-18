@@ -11,8 +11,10 @@ export const runtime = "nodejs";
 export async function GET() {
   const user = await getSession();
   if (user) {
-    await recordGoogleIdentity(user);
-    after(() => recordAuthActivity(user.sub));
+    after(async () => {
+      await recordGoogleIdentity(user);
+      await recordAuthActivity(user.sub);
+    });
   }
   return NextResponse.json(
     { user, isAdmin: isAdminUser(user), canEditAxisKda: await canEditAxisKda(user) },

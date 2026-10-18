@@ -713,6 +713,27 @@ test("old editor tables gain Google names and atomic match attribution that surv
 });
 
 
+test("unchanged Google names stay readable while another connection holds the writer lock", async t => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "axis-identity-lock-"));
+  const path = join(dir, "league.db"), db = new DatabaseSync(path), writer = new DatabaseSync(path);
+  t.after(async () => { writer.close(); db.close(); await rm(dir, { recursive: true, force: true }); });
+  const store = createAxisLeagueStore(db);
+  store.rememberGoogleAccount("known", "Google name");
+  store.rememberGoogleAccount("unnamed", null);
+  writer.exec("BEGIN IMMEDIATE");
+  try {
+    assert.doesNotThrow(() => store.rememberGoogleAccount("known", "  Google name  "));
+    assert.doesNotThrow(() => store.rememberGoogleAccount("unnamed", null));
+    assert.throws(() => store.rememberGoogleAccount("known", "Changed"), /locked/, "a real name change still requires a write");
+  } finally { writer.exec("ROLLBACK"); }
+  store.setKdaEditor("known", true);
+  store.rememberGoogleAccount("known", "Changed");
+  assert.equal(store.listKdaEditors()[0].name, "Changed");
+});
+
 test("match attribution renders Google names safely in both languages and hides unknown historical authors", async () => {
   const require = createRequire(import.meta.url);
   const ts = require("typescript"), { renderToStaticMarkup } = require("react-dom/server");

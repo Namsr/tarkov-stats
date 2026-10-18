@@ -303,8 +303,12 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     },
     rememberGoogleAccount(subject: string, name: string | null) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(subject) || name !== null && (typeof name !== "string" || !name.trim() || name.length > 200)) throw new TypeError("Invalid Google identity");
+      const normalized = name?.trim() ?? null;
+      // Even a no-op UPSERT takes SQLite's writer lock. Session reads need only a lookup.
+      const existing = db.prepare("SELECT name FROM axis_google_accounts WHERE google_sub=?").get(subject);
+      if (existing && existing.name === normalized) return;
       db.prepare(`INSERT INTO axis_google_accounts(google_sub,name) VALUES(?,?)
-        ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name WHERE name IS NOT excluded.name`).run(subject, name?.trim() ?? null);
+        ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name WHERE name IS NOT excluded.name`).run(subject, normalized);
     },
     listKdaEditors(): { subject: string; name: string | null }[] {
       return db.prepare(`SELECT e.google_sub AS subject,a.name FROM axis_kda_editors e
