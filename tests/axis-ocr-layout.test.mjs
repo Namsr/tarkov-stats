@@ -30,7 +30,7 @@ function setPixel(data, width, x, y, color = [220, 225, 230]) {
   data[offset + 3] = 255;
 }
 
-function drawSyntheticScoreboard(width, height, crop) {
+function drawSyntheticScoreboard(width, height, crop, dividerOffset = 0) {
   const data = rgbaImage(width, height);
   const scale = crop.width / 1584;
   const ruleY = Math.round(crop.y + 160 * scale);
@@ -41,7 +41,7 @@ function drawSyntheticScoreboard(width, height, crop) {
       setPixel(data, width, x, Math.round(ruleY + 32 * scale) + dy, [136, 138, 140]);
     }
   }
-  const dividerX = Math.round(crop.x + crop.width / 2);
+  const dividerX = Math.round(crop.x + crop.width / 2) + dividerOffset;
   for (let y = ruleY; y < crop.y + crop.height; y++) {
     for (let dx = -1; dx <= 1; dx++) setPixel(data, width, dividerX + dx, y, [92, 96, 101]);
   }
@@ -71,6 +71,17 @@ test("detects the centered panel in a 16:9 screenshot", () => {
   const detected = detectAxisScoreboard(drawSyntheticScoreboard(width, height, expected));
   assert.ok(detected && Math.abs(detected.y - expected.y) <= 1);
   assert.deepEqual({ ...detected, y: expected.y }, expected);
+});
+
+test("finds a thin center seam just off the neutral header midpoint and rejects a remote line", () => {
+  const crop = { x: 0, y: 4, width: 1164, height: Math.ceil(513 * 1164 / 1584) };
+  const nearSeam = detectAxisScoreboard(drawSyntheticScoreboard(1164, 386, crop, -3));
+  assert.ok(nearSeam, "a three-pixel centerline offset should remain inside the narrow search band");
+  assert.ok(Math.abs(nearSeam.y - crop.y) <= 1);
+  assert.ok(Math.abs(nearSeam.width - crop.width) <= 1);
+
+  const unrelatedLine = detectAxisScoreboard(drawSyntheticScoreboard(1164, 386, crop, -20));
+  assert.equal(unrelatedLine, null, "a vertical line outside the center search band is not a scoreboard divider");
 });
 
 test("builds two score cells and exact KDA/name regions for each scoreboard row", () => {

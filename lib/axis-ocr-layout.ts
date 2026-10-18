@@ -92,6 +92,25 @@ function dividerCoverage(
   return total ? lit / total : 0;
 }
 
+function centerDividerCoverage(
+  data: Uint8Array | Uint8ClampedArray,
+  imageWidth: number,
+  imageHeight: number,
+  expectedX: number,
+  y: number,
+  scale: number,
+): number {
+  // The neutral header run can extend a few pixels past the panel's actual
+  // right edge. Search only a narrow canonical band around its midpoint so
+  // rounding does not move the probe off a thin center seam.
+  const radius = Math.max(1, Math.ceil(4 * scale));
+  let best = 0;
+  for (let offset = -radius; offset <= radius; offset++) {
+    best = Math.max(best, dividerCoverage(data, imageWidth, imageHeight, expectedX + offset, y, scale));
+  }
+  return best;
+}
+
 function cropHasImageContent(
   data: Uint8Array | Uint8ClampedArray,
   imageWidth: number,
@@ -127,7 +146,7 @@ export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | nul
     const scale = rule.width / 1584;
     if (y + 353 * scale > height + 2) continue;
     const dividerX = Math.round(rule.x + rule.width / 2);
-    const divider = dividerCoverage(data, width, height, dividerX, y, scale);
+    const divider = centerDividerCoverage(data, width, height, dividerX, y, scale);
     if (divider < 0.22) continue;
 
     let pairedRuleWidth = 0;
