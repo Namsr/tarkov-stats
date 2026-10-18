@@ -450,12 +450,14 @@ test("delayed tracked Seasonal versions recover once, replay old validators and 
   db.prepare("INSERT INTO seasonal_profile_sync_queue (cycle_id,aid,feed_updated_at,status,updated_at) VALUES (?,?,?,'pending',?)")
     .run(cycleId, 16, delayed, now);
 
+  db.prepare("INSERT INTO seasonal_profile_sync_queue (cycle_id,aid,feed_updated_at,status,http_status,updated_at) VALUES (?,?,?,'superseded',409,?)")
+    .run(cycleId, 17, delayed, now);
   const posted = [];
   const validators = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/pvp-season/updated.json")) {
       validators.push(request.headers["if-none-match"] ?? null);
-      if (validators.length === 3) { response.writeHead(304).end(); return; }
+      if (validators.length >= 3) { response.writeHead(304).end(); return; }
       response.setHeader("etag", '"current"');
       response.end(JSON.stringify({ 7: delayed, 8: delayed, 9: delayed, 10: delayed,
         11: now + day, 12: startsAt - 1, 13: delayed, 14: delayed, 16: delayed }));
@@ -472,7 +474,8 @@ test("delayed tracked Seasonal versions recover once, replay old validators and 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   try {
-    for (let pass = 0; pass < 3; pass += 1) {
+    for (let pass = 0; pass < 4; pass += 1) {
+      if (pass === 3) db.prepare("UPDATE seasonal_profile_sync_queue SET updated_at=0 WHERE aid=17").run();
       await execFileAsync(process.execPath, ["--require", preloadPath, "--experimental-strip-types",
         "--experimental-sqlite", "scripts/sync-seasonal-profiles.mjs"], {
         cwd: process.cwd(),
@@ -487,12 +490,14 @@ test("delayed tracked Seasonal versions recover once, replay old validators and 
           SEASONAL_PROFILE_INDEX_URL: "https://players.tarkov.dev/pvp-season/index.json" },
       });
     }
-    assert.deepEqual(validators, [null, '"current"', '"current"'], "an upgrade must replay the previously filtered feed before reusing validators");
-    assert.deepEqual(posted, [{ aid: 7, cycleId, expectedUpdatedAt: delayed }], "only the lagging tracked account needs a download across 200/200/304 polls");
+    assert.deepEqual(validators, [null, '"current"', '"current"', '"current"'], "an upgrade must replay the previously filtered feed before reusing validators");
+    assert.deepEqual(posted, [{ aid: 7, cycleId, expectedUpdatedAt: delayed }, { aid: 17, cycleId, expectedUpdatedAt: delayed }],
+      "the same-day conflict stays quiet, then retries next day even on 304; satisfied snapshots are not downloaded");
     assert.deepEqual(db.prepare("SELECT aid,status,attempts FROM seasonal_profile_sync_queue ORDER BY aid").all()
       .map((row) => ({ ...row })), [
       { aid: 7, status: "superseded", attempts: 1 },
       { aid: 16, status: "superseded", attempts: 0 },
+      { aid: 17, status: "superseded", attempts: 1 },
     ]);
     assert.equal(db.prepare("SELECT MAX(profile_updated_at) AS version FROM progression_snapshots WHERE cycle_id=? AND aid=7")
       .get(cycleId).version, latest, "a response newer than the delayed feed becomes the latest snapshot");

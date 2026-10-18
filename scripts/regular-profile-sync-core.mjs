@@ -131,6 +131,13 @@ export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, now = Date.now(
   return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
 }
 
+// Deferred upstream conflicts get one new attempt per Moscow calendar day,
+// independently of feed ETags and without retrying every five-minute slice.
+export function profileRetryDayStart(now = Date.now()) {
+  const offset = 3 * 60 * 60_000;
+  return Math.floor((now + offset) / PROFILE_FEED_WINDOW_MS) * PROFILE_FEED_WINDOW_MS - offset;
+}
+
 /** Fresh versions get four turns, then debt gets one; either lane can use idle turns. */
 export function profileQueueSelector(db, query) {
   const table = /FROM ([a-z_]+) q\b/.exec(query)?.[1];

@@ -15,6 +15,7 @@ import {
   normalizeUpdatedAt,
   remainingRunBudget,
   profileQueueSelector,
+  profileRetryDayStart,
   snapshotTargetVersion,
   summarizeCoverage,
 } from "../scripts/regular-profile-sync-core.mjs";
@@ -84,6 +85,13 @@ test("all modes admit delayed tracked versions, bound unknown discovery and pres
   assert.equal(classifyFeedEntry(undefined, now + 1, now), null);
   assert.equal(classifyFeedEntry(undefined, now - 1, now, now), null);
   assert.equal(classifyFeedEntry(undefined, now, now, now), "new");
+});
+
+test("deferred profile retries change day at Moscow midnight", () => {
+  const boundary = Date.parse("2026-10-18T00:00:00+03:00");
+  assert.equal(profileRetryDayStart(boundary - 1), boundary - 86_400_000);
+  assert.equal(profileRetryDayStart(boundary), boundary);
+  assert.equal(profileRetryDayStart(boundary + 23 * 3_600_000), boundary);
 });
 
 test("updated feed cache key changes once per fifteen-minute slot", () => {
@@ -211,6 +219,7 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
   const failOnce = new Set();
   const failAlways = new Set();
   const staleResponses = new Map();
+  let unchangedFeed = false;
   const apiDb = new DatabaseSync(dbPath);
   const progressionDb = new DatabaseSync(progressionDbPath);
   apiDb.exec(`
@@ -231,6 +240,8 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
 
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith("/profile/updated.json")) {
+      if (unchangedFeed && request.headers['if-none-match'] === '"regular-feed"') return response.writeHead(304).end();
+      response.setHeader('etag', '"regular-feed"');
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify(feed));
       return;
@@ -406,11 +417,14 @@ test("collector bootstraps, admits new AIDs, deduplicates, retries, and resumes 
     assert.equal(calls.get(11), attempts, "an unavailable expired version is not fetched again");
     assert.equal(progressionDb.prepare("SELECT COUNT(*) n FROM progression_snapshots WHERE aid=11").get().n, 1, "history is preserved without fabricating the expected version");
     staleResponses.clear();
-    feed = { ...feed, 11: Date.now() - 1000 };
-    await run();
+    unchangedFeed = true;
+    apiDb.prepare("UPDATE regular_profile_sync_queue SET updated_at=0 WHERE aid=11").run();
+    const retried = await run();
+    assert.match(retried.stdout, /"feedHttpStatus":304/);
+    assert.equal(calls.get(11), attempts + 1, "the next day retries an unchanged target even on feed 304");
     const recovered = apiDb.prepare("SELECT status,stale_version FROM regular_profile_sync_queue WHERE aid=11").get();
     assert.equal(recovered.status, "completed");
-    assert.equal(recovered.stale_version, null, "a new feed target reactivates the preserved task");
+    assert.equal(recovered.stale_version, null, "a previously deferred target recovers without a new feed version");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     apiDb.close();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { backoff, classifyFeedEntry, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
+import { backoff, classifyFeedEntry, delay, envInteger, envNumber, log, message, remainingRunBudget, retryableError, profileQueueSelector, profileRetryDayStart, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import process from "node:process";
@@ -306,6 +306,9 @@ async function loadFeed(startedAt) {
     db.exec("ROLLBACK");
     throw error;
   }
+  db.prepare(`UPDATE seasonal_profile_sync_queue SET status = 'pending', last_run_id = NULL
+    WHERE cycle_id = ? AND status = 'superseded' AND http_status = 409 AND updated_at < ?`)
+    .run(cycle.cycleId, profileRetryDayStart());
   Object.assign(counters, enqueueMissingSeasonalIndexProfiles(db, cycle.cycleId, cycle.startsAt));
   // A tombstone can be written after a version was queued, so the enqueue-time
   // exclusion above is not enough: drop those rows before the queue is claimed

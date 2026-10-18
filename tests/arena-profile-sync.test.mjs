@@ -1253,6 +1253,16 @@ test("Arena conditional feed requests skip the body on 304 but keep index backfi
     assert.deepEqual(calls, [2]);
     assert.equal(third.attempted, 1);
     assert.equal(third.completed, 1);
+    players.prepare("UPDATE arena_mode_stats SET upstream_version=? WHERE aid=2").run(initial);
+    players.prepare("UPDATE arena_profile_sync_queue SET status='stale',http_status=409,updated_at=? WHERE aid=2").run(Date.now());
+    calls.length = 0;
+    assert.equal(summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout).attempted, 0);
+    players.prepare("UPDATE arena_profile_sync_queue SET updated_at=0,schema_version=? WHERE aid=2").run(ARENA_PARSER_VERSION - 1);
+    const recovered = summaryFrom((await launch(dbPath, baseUrl, feedUrl)).stdout);
+    assert.equal(recovered.feedHttpStatus, 304);
+    assert.equal(recovered.completed, 1);
+    assert.deepEqual(calls, [2], "an unchanged target is retried on the next day, not every slice");
+    assert.equal(players.prepare("SELECT schema_version FROM arena_profile_sync_queue WHERE aid=2").get().schema_version, ARENA_PARSER_VERSION);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     players.close();

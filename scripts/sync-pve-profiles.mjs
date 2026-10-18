@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
+import { remainingRunBudget, classifyFeedEntry, profileQueueSelector, profileRetryDayStart, PROFILE_FEED_POLICY } from "./regular-profile-sync-core.mjs";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -313,6 +313,8 @@ async function loadFeed(startedAt) {
     AND EXISTS (SELECT 1 FROM progression_sync.progression_snapshots s
       WHERE s.mode = 'pve' AND s.cycle_id = 'persistent' AND s.aid = pve_profile_sync_queue.aid
         AND s.profile_updated_at >= pve_profile_sync_queue.feed_updated_at)`).run(Date.now()));
+  await withDatabaseBusyRetry(() => db.prepare(`UPDATE pve_profile_sync_queue SET status = 'pending', last_run_id = NULL
+    WHERE status = 'stale' AND updated_at < ?`).run(profileRetryDayStart()));
   const coverage = { total: 0, missing: 0, lagging: 0, current: 0 };
   for (const [aid, profile] of tracked) {
     if (excluded.has(aid)) continue;
