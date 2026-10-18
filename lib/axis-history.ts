@@ -31,8 +31,8 @@ export function sortAxisMatchPlayers(players: readonly AxisMatchPlayer[], locale
   const names = new Intl.Collator(locale, { sensitivity: "base" });
   return [...players].sort((a, b) => {
     if (a.kda == null || b.kda == null) return Number(b.kda != null) - Number(a.kda != null);
-    return b.kda.kills - a.kda.kills || b.kda.assists - a.kda.assists
-      || a.kda.deaths - b.kda.deaths || names.compare(a.name, b.name);
+    return b.kda.kills - a.kda.kills || a.kda.deaths - b.kda.deaths
+      || b.kda.assists - a.kda.assists || names.compare(a.name, b.name);
   });
 }
 
