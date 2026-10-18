@@ -121,11 +121,13 @@ export function normalizeUpdatedAt(value) {
 }
 
 export const PROFILE_FEED_WINDOW_MS = 24 * 60 * 60_000;
-export const PROFILE_FEED_POLICY = "recent-24h-v1";
+// Reset conditional validators once so previously discarded tracked versions
+// are reconsidered even when upstream would otherwise answer 304.
+export const PROFILE_FEED_POLICY = "tracked-versions-v2";
 
 export function classifyFeedEntry(savedUpdatedAt, feedUpdatedAt, now = Date.now(), minimumUpdatedAt = 0) {
-  if (feedUpdatedAt < Math.max(now - PROFILE_FEED_WINDOW_MS, minimumUpdatedAt) || feedUpdatedAt > now) return null;
-  if (savedUpdatedAt === undefined) return "new";
+  if (feedUpdatedAt < minimumUpdatedAt || feedUpdatedAt > now) return null;
+  if (savedUpdatedAt === undefined) return feedUpdatedAt >= now - PROFILE_FEED_WINDOW_MS ? "new" : null;
   return feedUpdatedAt > savedUpdatedAt ? "updated" : null;
 }
 

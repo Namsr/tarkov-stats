@@ -82,10 +82,12 @@ test("Seasonal timeout leaves versioned refresh requests and HTTP error classifi
     else process.env.SEASONAL_PROFILE_URL_TEMPLATE = oldTemplate;
   });
   const payload = { aid: 730001, updated: 1783000000000 };
+  const before = Date.now();
   const request = async (input, init) => {
     const url = new URL(input);
     assert.equal(url.pathname, "/pvp-season/730001.json");
-    assert.equal(url.searchParams.get("v"), String(payload.updated));
+    assert.ok(Number(url.searchParams.get("v")) >= before);
+    assert.ok(Number(url.searchParams.get("v")) <= Date.now());
     assert.equal(init.cache, "no-store");
     assert.ok(init.signal instanceof AbortSignal);
     return Response.json(payload);

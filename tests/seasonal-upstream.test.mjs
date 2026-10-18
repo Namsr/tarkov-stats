@@ -94,6 +94,14 @@ test("explicit profile refresh bypasses the normal fifteen-minute cache slot", (
   assert.equal(new URL(url).searchParams.get("v"), "1800000000000");
 });
 
+test("forced collector captures bypass an old feed-version cache entry", () => {
+  const url = "https://players.tarkov.dev/pvp-season/7978003.json";
+  const delayedVersion = 1_792_182_878_229;
+  const now = 1_792_278_585_121;
+  assert.equal(new URL(seasonalProfileCacheUrl(url, delayedVersion, now)).searchParams.get("v"), String(delayedVersion));
+  assert.equal(new URL(seasonalProfileCacheUrl(url, delayedVersion, now, true)).searchParams.get("v"), String(now));
+});
+
 test("adapts the confirmed separate gameMode contract", async () => {
   const payload = await loadFixture("seasonal-game-mode.json");
   const profile = parseSeasonalProfile(payload, {
