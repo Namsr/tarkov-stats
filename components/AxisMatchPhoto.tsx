@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useImperativeHandle, useRef, useState, type ClipboardEvent, type Ref } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type ClipboardEvent, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n/context";
 import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, AXIS_PHOTO_TYPES, axisPhotoUrl, type AxisMatchPhoto, type AxisPhotoUpload } from "@/lib/axis-match-photo";
+import type { AxisOcrImage } from "@/lib/axis-ocr";
 
 export interface AxisMatchPhotoHandle {
   paste: (event: ClipboardEvent) => void;
@@ -11,7 +12,7 @@ export interface AxisMatchPhotoHandle {
   conflict: () => void;
 }
 
-type PhotoPreview = { src: string; width: number; height: number };
+type PhotoPreview = { src: string; width: number; height: number; key?: string };
 
 function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; matchNumber: number; onClose: () => void }) {
   const { t } = useI18n();
@@ -66,7 +67,7 @@ function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; mat
 }
 
 /** Mounted only inside the authorized match statistics editor. */
-export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber: number; busy: boolean; ref: Ref<AxisMatchPhotoHandle> }) {
+export default function AxisMatchPhoto({ matchNumber, busy, ref, onImageChange }: { matchNumber: number; busy: boolean; ref: Ref<AxisMatchPhotoHandle>; onImageChange: (image: AxisOcrImage | null) => void }) {
   const { t } = useI18n();
   const [photo, setPhoto] = useState<AxisMatchPhoto | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -81,6 +82,16 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
   const [message, setMessage] = useState("");
   const [viewer, setViewer] = useState<PhotoPreview | null>(null);
   const preview = draft === undefined ? photo ? { ...photo, src: axisPhotoUrl(matchNumber, photo.revision) } : null : draft;
+  const ocrImage = useMemo<AxisOcrImage | null>(() => draft === undefined
+    ? photo ? { src: axisPhotoUrl(matchNumber, photo.revision), width: photo.width, height: photo.height, key: `match:${matchNumber}:saved:${photo.revision}`, isNew: false } : null
+    : draft ? { src: draft.src, width: draft.width, height: draft.height, key: `match:${matchNumber}:${draft.key}`, isNew: true } : null, [draft, photo, matchNumber]);
+  const emittedImageKey = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const key = ocrImage?.key ?? null;
+    if (emittedImageKey.current === key) return;
+    emittedImageKey.current = key;
+    onImageChange(ocrImage);
+  }, [ocrImage, onImageChange]);
   useEffect(() => () => { selection.current++; }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -104,10 +115,15 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
     setMessage(""); setReading(false);
     if (!AXIS_PHOTO_TYPES.includes(file.type)) { setMessage(t("axis.photo.invalid")); return; }
     if (!file.size || file.size > AXIS_PHOTO_MAX_BYTES) { setMessage(t("axis.photo.tooLarge")); return; }
+    const previousImage = ocrImage;
+    onImageChange(null);
     setReading(true);
     try {
       const currentPhoto = await metadataRequest.current;
-      if (currentPhoto === undefined || version !== selection.current) return;
+      if (currentPhoto === undefined || version !== selection.current) {
+        if (version === selection.current) onImageChange(previousImage);
+        return;
+      }
       const src = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
@@ -118,8 +134,8 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
       if (image.naturalWidth * image.naturalHeight > AXIS_PHOTO_MAX_PIXELS) throw new Error("Image too large");
       if (version !== selection.current) return;
       setExpected(currentPhoto?.revision ?? null); setConflict(false);
-      setDraft({ src, width: image.naturalWidth, height: image.naturalHeight });
-    } catch { if (version === selection.current) setMessage(t("axis.photo.invalid")); }
+      setDraft({ src, width: image.naturalWidth, height: image.naturalHeight, key: `new:${version}` });
+    } catch { if (version === selection.current) { setMessage(t("axis.photo.invalid")); onImageChange(previousImage); } }
     finally { if (version === selection.current) setReading(false); }
   }
   function paste(event: ClipboardEvent) {
@@ -139,6 +155,10 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
     <div className="axis-photo-paste" tabIndex={0} role="group" aria-label={t("axis.photo.pasteHint")}>
       <h4>{t("axis.photo.heading")}</h4>
       <p>{t("axis.photo.pasteHint")}</p>
+      <label className="axis-photo-file"><span>{t("axis.photo.select")}</span>
+        <input type="file" accept={AXIS_PHOTO_TYPES.join(",")} disabled={busy || reading || loadFailed}
+          aria-label={t("axis.photo.select")} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void select(file); }} />
+      </label>
     </div>
     {!loaded && !loadFailed && <p role="status">{t("common.loading")}</p>}
     {loadFailed && <>
@@ -150,7 +170,7 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref }: { matchNumber
       <img src={preview.src} alt={t("axis.photo.alt", { n: matchNumber })} loading="lazy" width={preview.width} height={preview.height} />
     </button>}
     {preview && <button type="button" className="axis-photo-remove" disabled={busy || reading} aria-label={t("axis.photo.remove")}
-      onClick={() => { setExpected(photo?.revision ?? null); setDraft(null); setConflict(false); setMessage(""); }}><span aria-hidden="true">×</span></button>}
+      onClick={() => { onImageChange(null); setExpected(photo?.revision ?? null); setDraft(null); setConflict(false); setMessage(""); }}><span aria-hidden="true">×</span></button>}
     {(reading || message) && <p className="admin-notice" role="status">{reading ? t("common.loading") : message}</p>}
     {viewer && <PhotoViewer image={viewer} matchNumber={matchNumber} onClose={() => setViewer(null)} />}
   </section>;

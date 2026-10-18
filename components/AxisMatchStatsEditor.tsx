@@ -1,6 +1,9 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import AxisOcrPreview, { type AxisOcrPreviewHandle } from "@/components/AxisOcrPreview";
+import type { AxisOcrImage } from "@/lib/axis-ocr";
+import { axisOcrKdaTouchKey, axisOcrRoundTouchKey, fillAxisOcrKdaDrafts, fillAxisOcrRoundDraft } from "@/lib/axis-ocr-draft";
 import AxisMatchPhoto, { type AxisMatchPhotoHandle } from "@/components/AxisMatchPhoto";
 import { useI18n } from "@/lib/i18n/context";
 import { sortAxisMatchPlayers, type AxisMatch } from "@/lib/axis-history";
@@ -19,11 +22,26 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
 }) {
   const { t, lang } = useI18n();
   const photo = useRef<AxisMatchPhotoHandle>(null);
+  const ocr = useRef<AxisOcrPreviewHandle>(null);
+  const [ocrImage, setOcrImage] = useState<AxisOcrImage | null>(null);
+  const [editSession, setEditSession] = useState(0);
+  const touchCounts = useRef<Record<string, number>>({});
+  const matchNumberRef = useRef(match.number);
   const [draft, setDraft] = useState<Draft[] | null>(null);
   const [roundDraft, setRoundDraft] = useState<RoundDraft | null>(null);
   const [roster, setRoster] = useState<AxisMatch["teams"]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  useEffect(() => {
+    if (matchNumberRef.current === match.number) return;
+    matchNumberRef.current = match.number;
+    ocr.current?.invalidate();
+    setDraft(null); setRoundDraft(null); setOcrImage(null); setMessage(""); setRoster([]);
+    touchCounts.current = {};
+  }, [match.number]);
+  const handleImageChange = useCallback((image: AxisOcrImage | null) => {
+    setOcrImage((current) => current?.key === image?.key ? current : image);
+  }, []);
   const players = match.teams.flatMap((team) => team.players);
   const hasStats = players.some((player) => player.kda != null) || match.rounds != null;
   const teams = draft === null ? match.teams.map((team) => ({ ...team, players: sortAxisMatchPlayers(team.players, lang) })) : roster;
@@ -32,12 +50,13 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
     return name && !/^Team [A-Z]$/.test(name) ? name : t("axis.history.team", { n: String.fromCharCode(65 + index) });
   }
   function begin() {
-    setMessage(""); setRoster(teams);
+    setMessage(""); setRoster(teams); setOcrImage(null); setEditSession((session) => session + 1); touchCounts.current = {};
     setDraft(players.map((player) => ({ discordId: player.id, expected: player.kda ?? null,
       kills: player.kda == null ? "" : String(player.kda.kills), deaths: player.kda == null ? "" : String(player.kda.deaths), assists: player.kda == null ? "" : String(player.kda.assists) })));
     setRoundDraft({ a: match.rounds == null ? "" : String(match.rounds.a), b: match.rounds == null ? "" : String(match.rounds.b), expected: match.rounds ?? null });
   }
   async function save() {
+    ocr.current?.invalidate();
     let changes: AxisKdaChange[];
     let rounds: AxisRoundChange | undefined;
     try {
@@ -56,19 +75,19 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
     } catch { setMessage(t("axis.kda.invalid")); return; }
     const photoChange = photo.current?.getChange();
     if (photoChange === false) return;
-    if (!changes.length && rounds === undefined && photoChange === undefined) { setDraft(null); setRoundDraft(null); return; }
+    if (!changes.length && rounds === undefined && photoChange === undefined) { setDraft(null); setRoundDraft(null); setOcrImage(null); return; }
     setBusy(true); setMessage("");
     try {
       const response = await fetch("/api/admin/axis-league/match-stats", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ matchNumber: match.number, players: changes, rounds, photo: photoChange }), signal: AbortSignal.timeout(30_000) });
       const body = await response.json();
       if (!response.ok || !body.ok || body.matchNumber !== match.number || !Array.isArray(body.players)) {
-        if (response.status === 409) { if (photoChange !== undefined) photo.current?.conflict(); onConflict(); setMessage(t("axis.kda.conflict")); }
+        if (response.status === 409) { ocr.current?.invalidate(); if (photoChange !== undefined) photo.current?.conflict(); onConflict(); setMessage(t("axis.kda.conflict")); }
         else setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : "admin.error.save"));
         return;
       }
       onSaved(body.players, body.rounds);
-      setDraft(null); setRoundDraft(null); setMessage(t("admin.saved"));
+      setDraft(null); setRoundDraft(null); setOcrImage(null); setMessage(t("admin.saved"));
     } catch { setMessage(t("admin.error.save")); }
     finally { setBusy(false); }
   }
@@ -80,10 +99,10 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
       {fields.map((field) => <label key={field} title={t("arena.counter." + field)}><span>{t("axis.kda.column." + field)}</span>
         <input type="number" inputMode="numeric" min={0} max={AXIS_KDA_MAX} step={1} disabled={busy} value={row[field]}
           aria-label={t("axis.kda.input", { name, metric: t("arena.counter." + field) })}
-          onChange={(event) => { setMessage(""); setDraft((rows) => rows?.map((entry) => entry.discordId === id ? { ...entry, [field]: event.target.value } : entry) ?? null); }} />
+          onChange={(event) => { const key = axisOcrKdaTouchKey(id, field); touchCounts.current[key] = (touchCounts.current[key] ?? 0) + 1; setMessage(""); setDraft((rows) => rows?.map((entry) => entry.discordId === id ? { ...entry, [field]: event.target.value } : entry) ?? null); }} />
       </label>)}
       <button type="button" className="axis-kda-clear" disabled={busy} title={t("axis.kda.clear")} aria-label={t("axis.kda.clearPlayer", { name })}
-        onClick={() => { setMessage(""); setDraft((rows) => rows?.map((entry) => entry.discordId === id ? { ...entry, kills: "", deaths: "", assists: "" } : entry) ?? null); }}><span aria-hidden="true">×</span></button>
+        onClick={() => { for (const field of fields) { const key = axisOcrKdaTouchKey(id, field); touchCounts.current[key] = (touchCounts.current[key] ?? 0) + 1; } setMessage(""); setDraft((rows) => rows?.map((entry) => entry.discordId === id ? { ...entry, kills: "", deaths: "", assists: "" } : entry) ?? null); }}> <span aria-hidden="true">×</span></button>
     </div>;
   }
   const rounds = teams.length === 2 ? <div className="axis-match-rounds">
@@ -93,21 +112,41 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
         <span>{teamName(index)}</span>
         <input type="number" inputMode="numeric" min={0} max={AXIS_KDA_MAX} step={1} disabled={busy} value={roundDraft[side]}
           aria-label={t("axis.rounds.input", { team: teamName(index) })}
-          onChange={(event) => { setMessage(""); setRoundDraft((previous) => previous ? { ...previous, [side]: event.target.value } : previous); }} />
+          onChange={(event) => { const key = axisOcrRoundTouchKey(side); touchCounts.current[key] = (touchCounts.current[key] ?? 0) + 1; setMessage(""); setRoundDraft((previous) => previous ? { ...previous, [side]: event.target.value } : previous); }} />
       </label>)}
-      <button type="button" className="axis-kda-clear" disabled={busy} aria-label={t("axis.rounds.clear")} onClick={() => { setMessage(""); setRoundDraft((previous) => previous ? { ...previous, a: "", b: "" } : previous); }}><span aria-hidden="true">×</span></button>
+      <button type="button" className="axis-kda-clear" disabled={busy} aria-label={t("axis.rounds.clear")} onClick={() => { for (const side of ["a", "b"] as const) { const key = axisOcrRoundTouchKey(side); touchCounts.current[key] = (touchCounts.current[key] ?? 0) + 1; } setMessage(""); setRoundDraft((previous) => previous ? { ...previous, a: "", b: "" } : previous); }}> <span aria-hidden="true">×</span></button>
     </div> : <strong>{match.rounds ? `${match.rounds.a} : ${match.rounds.b}` : "— : —"}</strong>}
   </div> : null;
+  const currentOcrImage = ocrImage?.key.startsWith(`match:${match.number}:`) ? ocrImage : null;
   const content = children({ teams, renderInputs, rounds, editing: canEdit && draft !== null });
   if (!canEdit) return content;
   return <form className="axis-match-edit-form" onPaste={(event) => photo.current?.paste(event)} onSubmit={(event) => { event.preventDefault(); void save(); }} aria-label={t("axis.kda.form", { n: match.number })}>
     {content}
-    {draft !== null && <AxisMatchPhoto ref={photo} matchNumber={match.number} busy={busy} />}
+    {draft !== null && <>
+      <AxisMatchPhoto key={match.number} ref={photo} matchNumber={match.number} busy={busy}
+        onImageChange={handleImageChange} />
+      {currentOcrImage && <AxisOcrPreview key={`${match.number}:${editSession}:${currentOcrImage.key}`} ref={ocr} image={currentOcrImage}
+        matchNumber={match.number} sessionKey={editSession} busy={busy} teamNames={teams.map((_team, index) => teamName(index))}
+        onJobStart={() => ({ ...touchCounts.current })}
+        onFill={(candidates, roundCandidate, started) => {
+          if (draft === null) return 0;
+          const kdaPreview = fillAxisOcrKdaDrafts(draft, candidates, started, touchCounts.current);
+          const roundPreview = fillAxisOcrRoundDraft(roundDraft, roundCandidate, started, touchCounts.current);
+          if (kdaPreview.filled) setDraft((current) => current
+            ? fillAxisOcrKdaDrafts(current, candidates, started, touchCounts.current).drafts
+            : current);
+          if (roundPreview.filled) setRoundDraft((current) => current
+            ? fillAxisOcrRoundDraft(current, roundCandidate, started, touchCounts.current).draft
+            : current);
+          if (kdaPreview.filled || roundPreview.filled) setMessage("");
+          return kdaPreview.filled + roundPreview.filled;
+        }} />}
+    </>}
     {(players.length > 0 || teams.length === 2) && <div className="axis-kda-editor">
       {draft === null ? <button type="button" className="ghost-button" onClick={begin}>{t(hasStats ? "axis.kda.edit" : "axis.kda.add")}</button> : <>
         <p className="axis-kda-hint">{t("axis.kda.hint")}</p>
         <div className="axis-kda-actions"><button type="submit" className="tactical-button" disabled={busy}>{t(busy ? "common.loading" : "axis.kda.save")}</button>
-          <button type="button" className="ghost-button" disabled={busy} onClick={() => { setDraft(null); setRoundDraft(null); setMessage(""); }}>{t("axis.kda.cancel")}</button></div>
+          <button type="button" className="ghost-button" disabled={busy} onClick={() => { ocr.current?.invalidate(); setDraft(null); setRoundDraft(null); setOcrImage(null); touchCounts.current = {}; setMessage(""); }}>{t("axis.kda.cancel")}</button></div>
       </>}
       {message && <p className="admin-notice" role="status">{message}</p>}
     </div>}

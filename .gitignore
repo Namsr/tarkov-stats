@@ -13,6 +13,9 @@
 # testing
 /coverage
 
+# Generated from pinned OCR packages during dev/build; no runtime CDN requests.
+/public/ocr/
+
 # next.js
 /.next/
 /out/
