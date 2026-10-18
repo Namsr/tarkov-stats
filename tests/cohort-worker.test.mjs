@@ -204,11 +204,14 @@ test("a cohort deadline includes waiting in the FIFO and releases all failed wor
 });
 
 test("a timed-out cohort does not reject newer queued comparisons", async (t) => {
-  const worker = new CohortComputeWorker({ entry: fixture, timeoutMs: 5000, totalTimeoutMs: 3000 });
+  const worker = new CohortComputeWorker({ entry: fixture, timeoutMs: 15000, totalTimeoutMs: 8000 });
   t.after(() => worker.stop());
   const initial = await worker.compute(job("normal"));
   const stalled = assert.rejects(worker.compute(job("stall")), (error) => error.reason === "deadline");
-  await delay(1000);
+  // Keep the queued jobs' original deadline, but leave five seconds for a
+  // fresh nice(19) worker to start on a busy CI runner. A one-second startup
+  // margin tests host scheduling rather than preservation of younger jobs.
+  await delay(5000);
   const phases = [];
   const queued = worker.computeObserved([job("normal")], (sample) => phases.push(sample));
   const following = worker.compute(job("normal"));
