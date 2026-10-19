@@ -388,6 +388,14 @@ export function axisOcrDecodeCtc(
   return { text: characters.join(""), confidence };
 }
 
+/** Keep the model score only for a valid counter; it is not a calibrated accuracy probability. */
+export function axisOcrReadCounter(reading: { text: string; confidence: number }): { value: number | null; confidence: number | null } {
+  const value = parseAxisOcrNumbers(reading.text, 1)?.[0] ?? null;
+  const confidence = value !== null && Number.isFinite(reading.confidence)
+    && reading.confidence >= 0 && reading.confidence <= 1 ? reading.confidence : null;
+  return { value, confidence };
+}
+
 /** Parse exactly the requested count of counters; ambiguous or missing digits abstain. */
 export function parseAxisOcrNumbers(text: unknown, count: number): number[] | null {
   if (typeof text !== "string" || text.length > 256
