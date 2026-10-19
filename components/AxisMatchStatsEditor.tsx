@@ -17,7 +17,7 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
   match: AxisMatch;
   canEdit: boolean;
   children: (state: { teams: AxisMatch["teams"]; renderInputs: (id: string) => ReactNode; rounds: ReactNode; editing: boolean }) => ReactNode;
-  onSaved: (players: { discordId: string; kda: AxisKda | null }[], rounds?: AxisRoundScore | null) => void;
+  onSaved: (players: { discordId: string; kda: AxisKda | null }[], rounds?: AxisRoundScore | null, edited?: AxisMatch["edited"]) => void;
   onConflict: () => void;
 }) {
   const { t, lang } = useI18n();
@@ -86,7 +86,7 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
         else setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : "admin.error.save"));
         return;
       }
-      onSaved(body.players, body.rounds);
+      onSaved(body.players, body.rounds, body.edited);
       setDraft(null); setRoundDraft(null); setOcrImage(null); setMessage(t("admin.saved"));
     } catch { setMessage(t("admin.error.save")); }
     finally { setBusy(false); }
