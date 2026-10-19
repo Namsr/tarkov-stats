@@ -16,7 +16,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
   if (specifier === "@/lib/admin/axis-league-db" || specifier === "./admin/axis-league-db.ts") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
-  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season,_defer,matchNumber) { return matchNumber == null ? globalThis.axisStore.readSeasonHistory(page,season) : globalThis.axisStore.readMatchHistory(matchNumber); }");
+  if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season,_defer,matchNumber,map) { return matchNumber == null ? globalThis.axisStore.readSeasonHistory(page,season,undefined,map) : globalThis.axisStore.readMatchHistory(matchNumber); }");
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(specifier.slice(2) + ".ts")).href };
   return nextResolve(specifier, context);
 } });
@@ -252,6 +252,28 @@ test("season API validates selectors and returns only the requested local season
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.season, "current"); assert.equal(body.total, 1);
+});
+
+test("history map filters validate input and remain scoped to the selected season", async t => {
+  setup(t);
+  const base = { queueId: "1343726040421367842", queue: "Arena League", teams: [], winner: null };
+  globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 3, matches: [
+    { ...base, number: 1, time: Date.parse("2026-10-15T22:58:00Z"), maps: ["Bay 5"] },
+    { ...base, number: 2, time: Date.now(), maps: ["Bay 5", "Bay 5"] },
+    { ...base, number: 3, time: Date.now(), maps: ["Bowl"] },
+  ] });
+  const get = query => historyGet(new Request("https://tarkovstats.ru/api/axis-league/history?" + query));
+  for (const map of ["", " ", "a".repeat(201), "Bay\n5", "\0"]) {
+    assert.equal((await get("map=" + encodeURIComponent(map))).status, 400);
+  }
+  assert.equal((await get("match=2&map=Bay%205")).status, 400);
+  const response = await get("season=current&map=Bay%205");
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.map, "Bay 5"); assert.equal(body.total, 1);
+  assert.deepEqual(body.matches.map(match => match.number), [2]);
+  assert.equal((await (await get("map=Bay%205")).json()).total, 2);
+  assert.equal((await (await get("season=current&map=" + encodeURIComponent("Bay 5' OR 1=1 --"))).json()).total, 0);
 });
 
 test("cross-origin and non-JSON writes are rejected without changing links", async (t) => {

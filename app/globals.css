@@ -934,11 +934,14 @@ html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 .axis-history-summary__map-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; padding-top: 12px; border-top: 1px solid var(--card-border); }
 .axis-history-summary h3 { font-size: .67rem; color: var(--muted); }
 .axis-history-summary__maps { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; text-align: left; min-width: 0; }
-.axis-history-summary__maps li { position: relative; display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; padding: 5px 9px; border: 1px solid var(--card-border); border-radius: 4px; background: var(--card-bg); font-size: .72rem; cursor: help; }
-.axis-history-summary__maps li:first-child { border-color: var(--muted); }
-.axis-history-summary__maps li:hover { background: var(--input-bg); }
-.axis-history-summary__maps li:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.axis-history-summary__maps li > span:first-child { overflow-wrap: anywhere; }
+.axis-history-summary__maps li { position: relative; display: inline-flex; max-width: 100%; min-width: 0; }
+.axis-history-summary__maps button { position: relative; display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; padding: 5px 9px; border: 1px solid var(--card-border); border-radius: 4px; background: var(--card-bg); font-size: .72rem; cursor: pointer; }
+.axis-history-summary__maps li:first-child button { border-color: var(--muted); }
+.axis-history-summary__maps button:hover { background: var(--input-bg); }
+.axis-history-summary__maps button[aria-pressed="true"] { background: var(--input-bg); border-color: var(--foreground); box-shadow: inset 0 0 0 1px var(--foreground); }
+.axis-history-summary__maps button:focus-visible, .axis-history-all-maps:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.axis-history-summary__maps button > span:first-child { overflow-wrap: anywhere; }
+.axis-history-all-maps { color: var(--muted-strong); font-size: .67rem; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .axis-history-summary__maps strong { font-variant-numeric: tabular-nums; }
 .axis-history-summary__bar { position: absolute; inset: auto auto 0 0; height: 2px; background: var(--accent); opacity: .65; }
 .axis-history-summary__map-tooltip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 2; padding: 5px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: var(--foreground); color: var(--background); font-size: .75rem; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }

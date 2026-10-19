@@ -29,6 +29,7 @@ export interface AxisHistorySummary {
   maps: { name: string; matches: number }[];
 }
 export interface AxisHistoryResponse extends AxisHistoryPage {
+  map?: string;
   summary?: AxisHistorySummary;
   matchNumber?: number;
   updatedAt: number | null; available: boolean; stale: boolean;

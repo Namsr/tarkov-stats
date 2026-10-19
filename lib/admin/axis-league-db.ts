@@ -434,14 +434,17 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         archiveComplete: Boolean(state.complete), updatedAt: state.updated_at, available: state.updated_at != null,
         stale: Boolean(state.last_error) || state.updated_at != null && now - state.updated_at > AXIS_REFRESH_MS * 2 };
     },
-    readSeasonHistory(page: number, season: string, now = Date.now()): AxisHistoryResponse {
+    readSeasonHistory(page: number, season: string, now = Date.now(), map?: string): AxisHistoryResponse {
       const state = this.archiveState();
       const seasons = readSeasons();
       const selected = seasons.find((entry) => entry.id === season);
       if (season !== "all" && !selected) throw new RangeError("Unknown AXIS season");
       const where = selected ? " WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=?" + (selected.endsAt == null ? "" : " AND json_extract(payload, '$.time')<?") : "";
       const parameters = selected ? [AXIS_CHANNEL_ID, selected.startsAt, ...(selected.endsAt == null ? [] : [selected.endsAt])] : [];
-      const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + where).get(...parameters).n;
+      const listWhere = map == null ? where : where + (where ? " AND " : " WHERE ")
+        + "EXISTS (SELECT 1 FROM json_each(axis_archive_matches.payload,'$.maps') WHERE value=?)";
+      const listParameters = map == null ? parameters : [...parameters, map];
+      const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + listWhere).get(...listParameters).n;
       const completed = "SELECT number,payload FROM axis_archive_matches" + where + (where ? " AND " : " WHERE ")
         + "(json_extract(payload,'$.winner')>=0 OR json_extract(payload,'$.winner')=-2)";
       const counts = db.prepare(
@@ -454,9 +457,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         + " GROUP BY name ORDER BY matches DESC,name COLLATE NOCASE,name"
       ).all(...parameters).map((row: { name: string; matches: number }) => ({ name: row.name, matches: row.matches }));
       const summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps };
-      const matches = db.prepare("SELECT payload FROM axis_archive_matches" + where + " ORDER BY number DESC LIMIT ? OFFSET ?")
-        .all(...parameters, AXIS_HISTORY_PAGE_SIZE, (page - 1) * AXIS_HISTORY_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
-      return { page, total, pages: Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season,
+      const matches = db.prepare("SELECT payload FROM axis_archive_matches" + listWhere + " ORDER BY number DESC LIMIT ? OFFSET ?")
+        .all(...listParameters, AXIS_HISTORY_PAGE_SIZE, (page - 1) * AXIS_HISTORY_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
+      return { page, total, pages: Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season, map,
         matches: decorateMatches(matches), summary,
         archiveComplete: Boolean(state.complete), updatedAt: state.updated_at, available: state.updated_at != null,
         stale: Boolean(state.last_error) || state.updated_at != null && now - state.updated_at > AXIS_REFRESH_MS * 2 };

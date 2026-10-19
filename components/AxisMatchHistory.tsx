@@ -1,6 +1,6 @@
 "use client";
 
-import type { AxisPlayer } from "@/lib/axis-league";
+import { AXIS_REFRESH_MS, type AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
@@ -15,15 +15,17 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const scrolledMatch = useRef<number | undefined>(undefined);
   const scoreFlights = useRef(new Map<HTMLDetailsElement, Animation>());
   const [season, setSeason] = useState(initialMatch ? "all" : "current");
+  const [selectedMap, setSelectedMap] = useState<string | undefined>();
   const [focusedMatch, setFocusedMatch] = useState(initialMatch);
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
-  const [cachedPages, setCachedPages] = useState<AxisHistoryResponse[]>([]);
+  const [cachedPages, setCachedPages] = useState<(AxisHistoryResponse & { receivedAt: number })[]>([]);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  const handledRetry = useRef(0);
   const [mapTooltip, setMapTooltip] = useState<string | null>(null);
   const mapTooltipId = useId();
-  const current = data?.page === page && data?.season === season && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.matchNumber === focusedMatch) ?? null;
-  const summary = current?.summary;
+  const current = data?.page === page && data?.season === season && data?.map === selectedMap && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch) ?? null;
+  const summary = current?.summary ?? (data?.season === season && data?.matchNumber === focusedMatch ? data.summary : undefined);
   const totalWins = summary ? summary.winsA + summary.winsB : 0;
   const leaguePlayers = new Map(players?.map((player) => [player.id, player]));
   const locale = lang === "ru" ? "ru-RU" : "en-US";
@@ -45,26 +47,32 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     if (!active) return;
     const controller = new AbortController();
     let running = false;
-    async function load() {
+    const refreshMs = season === "current" || season === "all" ? AXIS_REFRESH_MS : AXIS_REFRESH_MS * 2;
+    async function load(force = false) {
       if (running || document.visibilityState === "hidden") return;
+      const cached = cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch);
+      if (!force && cached && Date.now() - cached.receivedAt < refreshMs) return;
       running = true;
       try {
-        const response = await fetch(focusedMatch ? `/api/axis-league/history?match=${focusedMatch}&season=all` : `/api/axis-league/history?page=${page}&season=${season}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        const response = await fetch(focusedMatch ? `/api/axis-league/history?match=${focusedMatch}&season=all` : `/api/axis-league/history?page=${page}&season=${season}${selectedMap ? `&map=${encodeURIComponent(selectedMap)}` : ""}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
         const body = await response.json() as AxisHistoryResponse;
-        if (!response.ok || !body.available || body.page !== page || body.season !== season || body.matchNumber !== focusedMatch || !Array.isArray(body.matches)) throw new Error("History unavailable");
+        if (!response.ok || !body.available || body.page !== page || body.season !== season || body.map !== selectedMap || body.matchNumber !== focusedMatch || !Array.isArray(body.matches)) throw new Error("History unavailable");
         if (!controller.signal.aborted) {
           setData(body); setFailed(false);
-          setCachedPages((previous) => [body, ...previous.filter((entry) => entry.page !== page || entry.season !== season || entry.matchNumber !== focusedMatch)].slice(0, 8));
+          setCachedPages((previous) => [{ ...body, receivedAt: Date.now() }, ...previous.filter((entry) => entry.page !== page || entry.season !== season || entry.map !== selectedMap || entry.matchNumber !== focusedMatch)].slice(0, 8));
         }
       } catch { if (!controller.signal.aborted) setFailed(true); }
       finally { running = false; }
     }
-    void load();
+    const force = retry !== handledRetry.current;
+    handledRetry.current = retry;
+    void load(force);
     // Current results follow the five-minute import; historical pages only check for manual edits.
-    const timer = setInterval(() => void load(), season === "current" || season === "all" ? 5 * 60_000 : 10 * 60_000);
-    document.addEventListener("visibilitychange", load);
-    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", load); };
-  }, [active, page, season, retry, focusedMatch]);
+    const timer = setInterval(() => void load(true), refreshMs);
+    const onVisible = () => void load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  }, [active, page, season, retry, focusedMatch, selectedMap, cachedPages]);
 
   useEffect(() => {
     if (!active || !current) return;
@@ -78,13 +86,17 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   }, [active, focusedMatch, current]);
 
   function clearMatch() {
-    setFocusedMatch(undefined); setPage(1); setSeason("current"); setFailed(false);
+    setFocusedMatch(undefined); setPage(1); setSeason("current"); setSelectedMap(undefined); setFailed(false);
     const url = new URL(window.location.href);
     url.searchParams.delete("match"); url.hash = "";
     window.history.replaceState(null, "", url);
   }
 
   function navigate(target: number) { pendingScroll.current = true; setFailed(false); setPage(target); }
+  function selectMap(map?: string) {
+    pendingScroll.current = false; setPage(1); setFailed(false); setMapTooltip(null);
+    setSelectedMap(map === selectedMap ? undefined : map);
+  }
   function teamName(match: AxisMatch, index: number) {
     const name = match.teams[index]?.name;
     return name && !/^Team [A-Z]$/.test(name) ? name : t("axis.history.team", { n: String.fromCharCode(65 + index) });
@@ -131,7 +143,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   return <section className="axis-history" aria-label={t("axis.history.title")}>
     {focusedMatch && <button type="button" className="back-link" onClick={clearMatch}>← {t("axis.history.title")}</button>}
     <div className="axis-history-toolbar" hidden={focusedMatch != null}>
-      <label><span>{t("axis.season.label")}</span><select value={season} onChange={(event) => { setPage(1); setFailed(false); setSeason(event.target.value); }}>
+      <label><span>{t("axis.season.label")}</span><select value={season} onChange={(event) => { setPage(1); setFailed(false); setSelectedMap(undefined); setSeason(event.target.value); }}>
         <option value="current">{t("axis.season.current")}</option>
         {(data?.seasons ?? []).filter((entry) => !entry.current).map((entry) => <option key={entry.id} value={entry.id}>{t("axis.season.from", { date: new Date(entry.startsAt).toLocaleDateString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "short", year: "numeric" }) })}</option>)}
         <option value="all">{t("axis.season.all")}</option>
@@ -143,7 +155,6 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
       <button type="button" className="ghost-button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button>
     </div>}
     {!current && !failed && <p role="status" className="leaderboard-publication">{t("common.loading")}</p>}
-    {current && <>
       {focusedMatch == null && summary && <section className="axis-history-summary data-panel" data-leader={summary.winsA === summary.winsB ? "tie" : summary.winsA > summary.winsB ? "a" : "b"} aria-label={t("axis.history.summary")}>
         <div className="axis-history-summary__header">
           <h2 className="section-heading">{t("axis.history.summary")}</h2>
@@ -164,14 +175,18 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
           ? t(summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
           : t("axis.history.leading", { team: t("axis.history.team", { n: summary.winsA > summary.winsB ? "A" : "B" }) })}</p>
         <div className="axis-history-summary__map-row"><h3>{t("axis.history.maps")}</h3>
-        {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map, index) => <li key={map.name} tabIndex={0} aria-describedby={`${mapTooltipId}-${index}`}
-          onPointerEnter={() => setMapTooltip(map.name)} onPointerLeave={(event) => { if (!event.currentTarget.matches(":focus-visible")) setMapTooltip(null); }}
+        {selectedMap && <button type="button" className="axis-history-all-maps" onClick={() => selectMap()}>{t("axis.history.allMaps")}</button>}
+        {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map, index) => <li key={map.name}
+          onPointerEnter={() => setMapTooltip(map.name)} onPointerLeave={(event) => { if (!event.currentTarget.querySelector("button")?.matches(":focus-visible")) setMapTooltip(null); }}
           onFocus={() => setMapTooltip(map.name)} onBlur={() => setMapTooltip(null)}>
+          <button type="button" aria-pressed={selectedMap === map.name} aria-describedby={`${mapTooltipId}-${index}`} onClick={() => selectMap(map.name)}>
           <span>{map.name}</span><strong>{number(map.matches)}</strong>
           <span className="axis-history-summary__bar" aria-hidden="true" style={{ width: `${map.matches / summary.maps[0].matches * 100}%` }} />
+          </button>
           <span className="axis-history-summary__map-tooltip" id={`${mapTooltipId}-${index}`} role="tooltip" hidden={mapTooltip !== map.name}>{(summary.played ? map.matches / summary.played : 0).toLocaleString(locale, { style: "percent", maximumFractionDigits: 0 })}</span>
         </li>)}</ol>}</div>
       </section>}
+    {current && <>
       <nav hidden={focusedMatch != null} className="axis-history-pages" aria-label={t("axis.history.pagination")}>
         <button type="button" className="ghost-button" disabled={page === 1} onClick={() => navigate(1)}>{t("axis.history.first")}</button>
         <button type="button" className="ghost-button" disabled={page === 1} onClick={() => navigate(page - 1)}>{t("axis.history.previous")}</button>
@@ -180,7 +195,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
         <button type="button" className="ghost-button" disabled={page === current.pages} onClick={() => navigate(current.pages)}>{t("axis.history.last")}</button>
       </nav>
       {current.matches.length === 0 ? <p className="axis-empty data-panel">{t("axis.history.empty")}</p> :
-        <div className="axis-match-list" key={`${season}:${page}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0}>
+        <div className="axis-match-list" key={`${season}:${page}:${selectedMap ?? ""}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0}>
           <summary onClick={toggleMatch}>
             <span className="axis-match-summary-meta">
             <strong>{t("axis.history.match", { n: String(match.number) })}</strong>
@@ -197,10 +212,10 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
             setCachedPages([]);
             const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
-            setData((previous) => previous ? { ...previous, matches: previous.matches.map((entry) => entry.number !== match.number ? entry : { ...entry,
+            setData((previous) => { const source = current ?? previous; return source ? { ...source, matches: source.matches.map((entry) => entry.number !== match.number ? entry : { ...entry,
               rounds: rounds === undefined ? entry.rounds : rounds,
               edited: edited ?? entry.edited,
-              teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous);
+              teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous; });
             setRetry((value) => value + 1);
           }}>{({ teams, renderInputs, rounds, editing }) => <>
             {rounds}

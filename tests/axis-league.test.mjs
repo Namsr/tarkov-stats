@@ -280,6 +280,16 @@ test("history statistics cover every selected page and count completed matches a
   const expected = { played: 28, winsA: 15, winsB: 12, maps: [{ name: "Bowl", matches: 27 }, { name: "Air Pit", matches: 8 }] };
   assert.deepEqual(db.readSeasonHistory(1, "current").summary, expected);
   assert.deepEqual(db.readSeasonHistory(2, "current").summary, expected);
+  const filtered = db.readSeasonHistory(1, "current", undefined, "Bowl");
+  assert.equal(filtered.map, "Bowl");
+  assert.equal(filtered.total, 27); assert.equal(filtered.pages, 2); assert.equal(filtered.matches.length, 25);
+  assert(filtered.matches.every(match => match.maps.includes("Bowl")));
+  assert.equal(db.readSeasonHistory(2, "current", undefined, "Bowl").matches.length, 2);
+  assert.deepEqual(filtered.summary, expected, "map filtering must retain the season summary and map choices");
+  assert.equal(db.readSeasonHistory(1, "current", undefined, "Air Pit").total, 8);
+  assert.equal(db.readSeasonHistory(1, "current", undefined, "Old season").total, 0);
+  assert.equal(db.readSeasonHistory(1, "all", undefined, "Old season").total, 1);
+  assert.equal(db.readSeasonHistory(1, "all", undefined, "Bowl' OR 1=1 --").total, 0);
   const all = db.readSeasonHistory(1, "all").summary;
   assert.equal(all.played, 31); assert.equal(all.winsA, 18); assert.equal(all.winsB, 12);
   assert.deepEqual(all.maps.slice(2), [{ name: "Old season", matches: 1 }, { name: "Other queue", matches: 1 }]);
