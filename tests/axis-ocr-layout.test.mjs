@@ -4,6 +4,7 @@ import { decodeAxisOcrDataUrl, isAxisOcrDataRasterUrl } from "../lib/client-axis
 import {
   axisOcrDecodeCtc,
   axisOcrPrepareTensor,
+  axisOcrReadCounter,
   axisOcrRegions,
   axisOcrTightGrayCrop,
   detectAxisScoreboard,
@@ -189,6 +190,17 @@ test("layout helpers reject invalid crop geometry", () => {
     { x: 0, y: 0, width: 0, height: 100 },
     { x: 0, y: Number.NaN, width: 100, height: 100 },
   ]) assert.throws(() => axisOcrRegions(crop), /Invalid Axis OCR crop/);
+});
+
+test("numeric confidence belongs to a valid counter, including zero, rather than to its nickname", () => {
+  assert.deepEqual(axisOcrReadCounter({ text: "0", confidence: 0.97 }), { value: 0, confidence: 0.97 });
+  assert.deepEqual(axisOcrReadCounter({ text: " 12 ", confidence: 0.42 }), { value: 12, confidence: 0.42 });
+  for (const text of ["", "O", "-1", "12 3", "10000"]) {
+    assert.deepEqual(axisOcrReadCounter({ text, confidence: 1 }), { value: null, confidence: null });
+  }
+  for (const confidence of [NaN, Infinity, -0.1, 1.1]) {
+    assert.deepEqual(axisOcrReadCounter({ text: "7", confidence }), { value: 7, confidence: null });
+  }
 });
 
 test("accepts bounded base64 raster data URLs used by local paste input", () => {

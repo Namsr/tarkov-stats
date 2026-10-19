@@ -13,10 +13,12 @@ export interface AxisOcrRow {
   kills: number | null;
   deaths: number | null;
   assists: number | null;
+  numberConfidence: { kills: number | null; deaths: number | null; assists: number | null };
   confidence: number;
 }
 export interface AxisOcrResult {
   score: { left: number | null; right: number | null };
+  scoreConfidence: { left: number | null; right: number | null };
   rows: AxisOcrRow[];
   crop: AxisOcrCrop;
 }
@@ -27,6 +29,18 @@ export interface AxisOcrParticipant {
   arenaNickname: string | null;
 }
 export interface AxisOcrContext { matchNumber: number; participants: AxisOcrParticipant[] }
+
+/** A row uses its weakest numeric model score; never present a perfect-accuracy guarantee. */
+export function axisOcrConfidencePercent(readings: readonly { value: number | null; confidence: number | null }[]): number | null {
+  if (!readings.length) return null;
+  let lowest = 1;
+  for (const reading of readings) {
+    if (parseAxisOcrCounter(reading.value) === null || reading.confidence === null
+      || !Number.isFinite(reading.confidence) || reading.confidence < 0 || reading.confidence > 1) return null;
+    lowest = Math.min(lowest, reading.confidence);
+  }
+  return Math.min(99, Math.floor(lowest * 100));
+}
 
 function normalizeAlias(value: unknown): string | null {
   if (typeof value !== "string") return null;
