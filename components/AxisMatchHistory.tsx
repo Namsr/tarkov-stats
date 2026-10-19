@@ -2,6 +2,7 @@
 
 import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
+import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
@@ -103,11 +104,13 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
             <span>{match.maps.length ? match.maps.join(", ") : t("axis.history.noMap")}</span>
             <span className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
-          <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds) => {
+          <AxisMatchAttribution edited={match.edited} />
+          <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
             setCachedPages([]);
             const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
             setData((previous) => previous ? { ...previous, matches: previous.matches.map((entry) => entry.number !== match.number ? entry : { ...entry,
               rounds: rounds === undefined ? entry.rounds : rounds,
+              edited: edited ?? entry.edited,
               teams: entry.teams.map((team) => ({ ...team, players: team.players.map((player) => saved.has(player.id) ? { ...player, kda: saved.get(player.id)! } : player) })) }) } : previous);
             setRetry((value) => value + 1);
           }}>{({ teams, renderInputs, rounds, editing }) => <>

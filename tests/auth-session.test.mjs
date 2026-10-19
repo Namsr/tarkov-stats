@@ -162,6 +162,10 @@ test("the callback's session-issuing redirect is no-store when it is actually re
   // Without the HttpOnly flag the cookie is readable by any script on the page.
   assert.match(sessionCookie, /;\s*HttpOnly(?:;|$)/i);
   assert.equal((await decryptSession(token))?.sub, "google-user-1");
+  const { getAxisLeagueStore } = await import("../lib/admin/axis-league-db.ts");
+  const identities = await getAxisLeagueStore();
+  identities.setKdaEditor("google-user-1", true);
+  assert.deepEqual(identities.listKdaEditors().map(row => ({ ...row })), [{ subject: "google-user-1", name: "Player" }]);
   assert.equal(res.headers.get("cache-control"), "no-store");
 });
 

@@ -12,7 +12,9 @@ export interface AxisMatchPlayer {
   kda?: AxisKda | null;
   id: string; name: string; avatarUrl?: string | null; mmr: number | null; change: number | null; profile: AxisProfile | null;
 }
+export interface AxisMatchEdit { name: string | null; at: number }
 export interface AxisMatch {
+  edited?: AxisMatchEdit | null;
   rounds?: AxisRoundScore | null;
   queueId?: string | null;
   number: number; time: number | null; queue: string | null; maps: string[];

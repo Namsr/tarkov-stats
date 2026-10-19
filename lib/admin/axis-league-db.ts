@@ -1,7 +1,7 @@
 import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, type AxisMatchPhoto, type AxisStoredPhoto, type AxisPhotoChange } from "../axis-match-photo.ts";
 import type { AxisLeagueResponse, AxisPlayer, AxisProfile, AxisRecentMatch } from "../axis-league";
 import { AXIS_CHANNEL_ID, AXIS_REFRESH_MS } from "../axis-league.ts";
-import type { AxisHistoryPage, AxisHistoryResponse } from "../axis-history";
+import type { AxisHistoryPage, AxisHistoryResponse, AxisMatchEdit } from "../axis-history";
 import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
 import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
@@ -21,6 +21,10 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       team_b INTEGER NOT NULL CHECK(team_b BETWEEN 0 AND 9999)
     );
     CREATE TABLE IF NOT EXISTS axis_kda_editors (google_sub TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS axis_google_accounts (google_sub TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE IF NOT EXISTS axis_match_edits (
+      match_number INTEGER PRIMARY KEY, google_sub TEXT NOT NULL, name TEXT, edited_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS axis_match_kda (
       match_number INTEGER NOT NULL, discord_id TEXT NOT NULL,
       kills INTEGER NOT NULL CHECK(kills BETWEEN 0 AND 9999),
@@ -194,6 +198,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     const links = profileLinks();
     const stats = new Map<string, AxisKda>();
     const rounds = new Map<number, AxisRoundScore>();
+    const edits = new Map<number, AxisMatchEdit>();
     if (matches.length) {
       for (const row of db.prepare(`SELECT * FROM axis_match_kda WHERE match_number IN (${matches.map(() => "?").join(",")})`).all(...matches.map((match) => match.number))) {
         stats.set(`${row.match_number}:${row.discord_id}`, { kills: row.kills, deaths: row.deaths, assists: row.assists });
@@ -202,7 +207,12 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         rounds.set(row.match_number, { a: row.team_a, b: row.team_b });
       }
     }
-    return matches.map((match) => ({ ...match, rounds: rounds.get(match.number) ?? null, teams: match.teams.map((team) => ({ ...team,
+    if (matches.length) {
+      for (const row of db.prepare(`SELECT match_number,name,edited_at FROM axis_match_edits WHERE match_number IN (${matches.map(() => "?").join(",")})`).all(...matches.map((match) => match.number))) {
+        edits.set(row.match_number, { name: row.name, at: row.edited_at });
+      }
+    }
+    return matches.map((match) => ({ ...match, edited: edits.get(match.number) ?? null, rounds: rounds.get(match.number) ?? null, teams: match.teams.map((team) => ({ ...team,
       players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) }));
   }
   return {
@@ -291,7 +301,19 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         matches: decorateMatches(matches), season, seasons: archive.complete ? seasons : seasons.filter(entry => entry.current),
         archiveComplete: Boolean(archive.complete), updatedAt: archive.updated_at, available: archive.updated_at != null, stale } };
     },
-    listKdaEditors(): string[] { return db.prepare("SELECT google_sub FROM axis_kda_editors ORDER BY google_sub").all().map((row: { google_sub: string }) => row.google_sub); },
+    rememberGoogleAccount(subject: string, name: string | null) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(subject) || name !== null && (typeof name !== "string" || !name.trim() || name.length > 200)) throw new TypeError("Invalid Google identity");
+      const normalized = name?.trim() ?? null;
+      // Even a no-op UPSERT takes SQLite's writer lock. Session reads need only a lookup.
+      const existing = db.prepare("SELECT name FROM axis_google_accounts WHERE google_sub=?").get(subject);
+      if (existing && existing.name === normalized) return;
+      db.prepare(`INSERT INTO axis_google_accounts(google_sub,name) VALUES(?,?)
+        ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name WHERE name IS NOT excluded.name`).run(subject, normalized);
+    },
+    listKdaEditors(): { subject: string; name: string | null }[] {
+      return db.prepare(`SELECT e.google_sub AS subject,a.name FROM axis_kda_editors e
+        LEFT JOIN axis_google_accounts a ON a.google_sub=e.google_sub ORDER BY e.google_sub`).all();
+    },
     isKdaEditor(subject: string): boolean { return Boolean(db.prepare("SELECT 1 FROM axis_kda_editors WHERE google_sub=?").get(subject)); },
     setKdaEditor(subject: string, enabled: boolean) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(subject) || typeof enabled !== "boolean") throw new TypeError("Invalid editor identity");
@@ -308,7 +330,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     setMatchPhoto(matchNumber: number, expected: string | null, photo: AxisStoredPhoto | null): AxisMatchPhoto | null {
       return this.setMatchStats(matchNumber, [], undefined, { expected, photo }).photo!;
     },
-    setMatchStats(matchNumber: number, input: AxisKdaChange[], roundInput?: AxisRoundChange, photoInput?: AxisPhotoChange) {
+    setMatchStats(matchNumber: number, input: AxisKdaChange[], roundInput?: AxisRoundChange, photoInput?: AxisPhotoChange, actor?: { sub: string; name: string | null }) {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
       const changes = Array.isArray(input) && input.length === 0 ? [] : parseAxisKdaChanges(input);
       const rounds = roundInput === undefined ? undefined : parseAxisRoundChange(roundInput);
@@ -320,6 +342,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           || !(photo.data instanceof Uint8Array) || !photo.data.length || photo.data.length > AXIS_PHOTO_MAX_BYTES)) throw new TypeError("Invalid photo data");
       }
       if (!changes.length && rounds === undefined && photoInput === undefined) throw new TypeError("No match changes");
+      if (actor && (!/^[A-Za-z0-9_-]{1,128}$/.test(actor.sub) || actor.name !== null && (typeof actor.name !== "string" || !actor.name.trim() || actor.name.length > 200))) throw new TypeError("Invalid match editor");
+      const changed = changes.some(change => !sameAxisKda(change.kda, change.expected))
+        || rounds !== undefined && !sameAxisRoundScore(rounds.score, rounds.expected)
+        || photoInput !== undefined && (photoInput.photo?.revision ?? null) !== photoInput.expected;
+      let edited: AxisMatchEdit | undefined;
       const archived = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?").get(matchNumber);
       let match: AxisHistoryPage["matches"][number] | undefined = archived ? JSON.parse(archived.payload) : undefined;
       if (!match) {
@@ -363,9 +390,16 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
           else db.prepare("DELETE FROM axis_match_photos WHERE match_number=?").run(matchNumber);
         }
+        if (actor && changed) {
+          edited = { name: actor.name?.trim() ?? null, at: Date.now() };
+          this.rememberGoogleAccount(actor.sub, edited.name);
+          db.prepare(`INSERT INTO axis_match_edits(match_number,google_sub,name,edited_at) VALUES(?,?,?,?)
+            ON CONFLICT(match_number) DO UPDATE SET google_sub=excluded.google_sub,name=excluded.name,edited_at=excluded.edited_at`)
+            .run(matchNumber, actor.sub, edited.name, edited.at);
+        }
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
-      return { players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score, photo: photoInput === undefined ? undefined : photoInput.photo ? { revision: photoInput.photo.revision, width: photoInput.photo.width, height: photoInput.photo.height } : null };
+      return { edited, players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score, photo: photoInput === undefined ? undefined : photoInput.photo ? { revision: photoInput.photo.revision, width: photoInput.photo.width, height: photoInput.photo.height } : null };
     },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
     claimArchiveRefresh(now = Date.now(), headOnly = false): boolean {

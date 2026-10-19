@@ -952,6 +952,8 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-editor-access .admin-moderation label { flex: 1 1 280px; min-width: 0; }
 .axis-editor-list { list-style: none; margin-top: 14px; padding: 0; }
 .axis-editor-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.axis-editor-identity { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.axis-match-attribution { margin: 12px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .axis-editor-list code, .axis-profile-access { overflow-wrap: anywhere; user-select: all; }
 .axis-editor-empty { margin-top: 12px; color: var(--muted); font-size: .76rem; }
 .axis-profile-access { color: var(--muted); font-size: .75rem; }

@@ -1,6 +1,7 @@
 import { ADMIN_NO_STORE_HEADERS, rejectInvalidAdminMutation } from "@/lib/admin/mutation";
 import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import { AxisKdaConflict } from "@/lib/axis-kda";
+import { googleDisplayName } from "@/lib/auth/google-identity";
 import { requireAxisKdaEditor } from "@/lib/axis-access";
 
 import { AxisPhotoInputError, type AxisPhotoChange } from "@/lib/axis-match-photo";
@@ -20,11 +21,11 @@ export async function POST(request: Request) {
       if (!input || input.expected !== null && (typeof input.expected !== "string" || !/^[a-f0-9]{64}$/.test(input.expected))
         || input.data !== null && typeof input.data !== "string") throw new AxisPhotoInputError();
       photo = { expected: input.expected as string | null, photo: input.data === null ? null : await normalizeAxisPhoto(input.data) };
-      const access = await requireAxisKdaEditor();
-      if (!access.ok) return Response.json({ error: "Forbidden" }, { status: access.status, headers: ADMIN_NO_STORE_HEADERS });
     }
+    const access = await requireAxisKdaEditor();
+    if (!access.ok) return Response.json({ error: "Forbidden" }, { status: access.status, headers: ADMIN_NO_STORE_HEADERS });
     const store = await getAxisLeagueStore();
-    const stats = store.setMatchStats(Number(body.matchNumber), body.players as Parameters<typeof store.setMatchStats>[1], body.rounds as Parameters<typeof store.setMatchStats>[2], photo);
+    const stats = store.setMatchStats(Number(body.matchNumber), body.players as Parameters<typeof store.setMatchStats>[1], body.rounds as Parameters<typeof store.setMatchStats>[2], photo, { sub: access.user.sub, name: googleDisplayName(access.user) });
     return Response.json({ ok: true, matchNumber: body.matchNumber, ...stats }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch (error) {
     const status = error instanceof AxisKdaConflict ? 409 : error instanceof AxisPhotoInputError ? error.status : error instanceof TypeError || error instanceof RangeError || error instanceof SyntaxError ? 400 : 503;

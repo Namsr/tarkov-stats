@@ -10,6 +10,7 @@ import {
   sessionCookieOptions,
   SESSION_COOKIE,
 } from "@/lib/auth/session";
+import { recordGoogleIdentity } from "@/lib/auth/google-identity";
 import { recordAuthSignIn } from "@/lib/admin/request-events";
 
 export const runtime = "nodejs";
@@ -48,6 +49,7 @@ export async function GET(request: NextRequest) {
     const accessToken = await exchangeCode(code, callbackUrl(base));
     const user = await fetchGoogleUser(accessToken);
     const token = await encryptSession(user);
+    await recordGoogleIdentity(user);
     after(() => recordAuthSignIn(user.sub));
 
     const res = NextResponse.redirect(home, { headers: noStore });
