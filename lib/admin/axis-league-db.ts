@@ -1,7 +1,7 @@
 import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, type AxisMatchPhoto, type AxisStoredPhoto, type AxisPhotoChange } from "../axis-match-photo.ts";
 import type { AxisLeagueResponse, AxisPlayer, AxisProfile, AxisRecentMatch } from "../axis-league";
 import { AXIS_CHANNEL_ID, AXIS_REFRESH_MS } from "../axis-league.ts";
-import type { AxisHistoryPage, AxisHistoryResponse, AxisMatchEdit } from "../axis-history";
+import type { AxisHistoryPage, AxisHistoryResponse, AxisHistorySummary, AxisMatchEdit } from "../axis-history";
 import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
 import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
@@ -122,6 +122,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     averageKda: number | null;
     games: number | null;
   } | null = null;
+  let historySummaryRevision = -1;
+  const historySummaries = new Map<string, AxisHistorySummary>();
   const previewVersion = db.prepare("SELECT revision FROM axis_preview_state WHERE id=1");
   function readPreviews(startsAt: number, archive: { complete: number; updated_at: number | null }) {
     const version = `${startsAt}:${previewVersion.get().revision}:${archive.complete}:${archive.updated_at == null}`;
@@ -445,18 +447,30 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         + "EXISTS (SELECT 1 FROM json_each(axis_archive_matches.payload,'$.maps') WHERE value=?)";
       const listParameters = map == null ? parameters : [...parameters, map];
       const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + listWhere).get(...listParameters).n;
-      const completed = "SELECT number,payload FROM axis_archive_matches" + where + (where ? " AND " : " WHERE ")
-        + "(json_extract(payload,'$.winner')>=0 OR json_extract(payload,'$.winner')=-2)";
-      const counts = db.prepare(
-        "SELECT COUNT(*) AS played,COALESCE(SUM(json_extract(payload,'$.winner')=0),0) AS winsA,"
-        + "COALESCE(SUM(json_extract(payload,'$.winner')=1),0) AS winsB FROM (" + completed + ")"
-      ).get(...parameters);
-      const maps = db.prepare(
-        "SELECT name,COUNT(*) AS matches FROM (SELECT DISTINCT m.number,map.value AS name FROM ("
-        + completed + ") m,json_each(m.payload,'$.maps') map WHERE map.type='text')"
-        + " GROUP BY name ORDER BY matches DESC,name COLLATE NOCASE,name"
-      ).all(...parameters).map((row: { name: string; matches: number }) => ({ name: row.name, matches: row.matches }));
-      const summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps };
+      // The summary is independent of map/page. Reuse it until persisted match data changes,
+      // including imports from another SQLite handle or worker.
+      const revision = previewVersion.get().revision as number;
+      if (revision !== historySummaryRevision) {
+        historySummaries.clear(); historySummaryRevision = revision;
+      }
+      const summaryKey = selected ? `${selected.startsAt}:${selected.endsAt ?? ""}` : "all";
+      let summary = historySummaries.get(summaryKey);
+      if (!summary) {
+        const completed = "SELECT number,payload FROM axis_archive_matches" + where + (where ? " AND " : " WHERE ")
+          + "(json_extract(payload,'$.winner')>=0 OR json_extract(payload,'$.winner')=-2)";
+        const counts = db.prepare(
+          "SELECT COUNT(*) AS played,COALESCE(SUM(json_extract(payload,'$.winner')=0),0) AS winsA,"
+          + "COALESCE(SUM(json_extract(payload,'$.winner')=1),0) AS winsB FROM (" + completed + ")"
+        ).get(...parameters);
+        const maps = db.prepare(
+          "SELECT name,COUNT(*) AS matches FROM (SELECT DISTINCT m.number,map.value AS name FROM ("
+          + completed + ") m,json_each(m.payload,'$.maps') map WHERE map.type='text')"
+          + " GROUP BY name ORDER BY matches DESC,name COLLATE NOCASE,name"
+        ).all(...parameters).map((row: { name: string; matches: number }) => ({ name: row.name, matches: row.matches }));
+        summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps };
+        if (historySummaries.size >= 16) historySummaries.delete(historySummaries.keys().next().value!);
+        historySummaries.set(summaryKey, summary);
+      }
       const matches = db.prepare("SELECT payload FROM axis_archive_matches" + listWhere + " ORDER BY number DESC LIMIT ? OFFSET ?")
         .all(...listParameters, AXIS_HISTORY_PAGE_SIZE, (page - 1) * AXIS_HISTORY_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
       return { page, total, pages: Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season, map,

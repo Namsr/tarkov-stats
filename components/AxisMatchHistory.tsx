@@ -34,7 +34,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   useEffect(() => {
     const flights = scoreFlights.current;
     return () => { for (const flight of flights.values()) flight.cancel(); flights.clear(); };
-  }, []);
+  }, [page, season, selectedMap, focusedMatch]);
 
   useEffect(() => {
     if (mapTooltip == null) return;
@@ -47,11 +47,17 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     if (!active) return;
     const controller = new AbortController();
     let running = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const refreshMs = season === "current" || season === "all" ? AXIS_REFRESH_MS : AXIS_REFRESH_MS * 2;
     async function load(force = false) {
       if (running || document.visibilityState === "hidden") return;
       const cached = cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch);
-      if (!force && cached && Date.now() - cached.receivedAt < refreshMs) return;
+      clearTimeout(timer);
+      const remaining = cached ? refreshMs - (Date.now() - cached.receivedAt) : 0;
+      if (!force && remaining > 0) {
+        timer = setTimeout(() => void load(), remaining);
+        return;
+      }
       running = true;
       try {
         const response = await fetch(focusedMatch ? `/api/axis-league/history?match=${focusedMatch}&season=all` : `/api/axis-league/history?page=${page}&season=${season}${selectedMap ? `&map=${encodeURIComponent(selectedMap)}` : ""}`, { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
@@ -62,16 +68,18 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
           setCachedPages((previous) => [{ ...body, receivedAt: Date.now() }, ...previous.filter((entry) => entry.page !== page || entry.season !== season || entry.map !== selectedMap || entry.matchNumber !== focusedMatch)].slice(0, 8));
         }
       } catch { if (!controller.signal.aborted) setFailed(true); }
-      finally { running = false; }
+      finally {
+        running = false;
+        if (!controller.signal.aborted) timer = setTimeout(() => void load(true), refreshMs);
+      }
     }
     const force = retry !== handledRetry.current;
     handledRetry.current = retry;
     void load(force);
     // Current results follow the five-minute import; historical pages only check for manual edits.
-    const timer = setInterval(() => void load(true), refreshMs);
     const onVisible = () => void load();
     document.addEventListener("visibilitychange", onVisible);
-    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [active, page, season, retry, focusedMatch, selectedMap, cachedPages]);
 
   useEffect(() => {
@@ -143,7 +151,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   return <section className="axis-history" aria-label={t("axis.history.title")}>
     {focusedMatch && <button type="button" className="back-link" onClick={clearMatch}>← {t("axis.history.title")}</button>}
     <div className="axis-history-toolbar" hidden={focusedMatch != null}>
-      <label><span>{t("axis.season.label")}</span><select value={season} onChange={(event) => { setPage(1); setFailed(false); setSelectedMap(undefined); setSeason(event.target.value); }}>
+      <label><span>{t("axis.season.label")}</span><select value={season} onChange={(event) => { pendingScroll.current = false; setMapTooltip(null); setPage(1); setFailed(false); setSelectedMap(undefined); setSeason(event.target.value); }}>
         <option value="current">{t("axis.season.current")}</option>
         {(data?.seasons ?? []).filter((entry) => !entry.current).map((entry) => <option key={entry.id} value={entry.id}>{t("axis.season.from", { date: new Date(entry.startsAt).toLocaleDateString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "short", year: "numeric" }) })}</option>)}
         <option value="all">{t("axis.season.all")}</option>

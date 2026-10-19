@@ -302,6 +302,29 @@ test("history statistics cover every selected page and count completed matches a
   });
 });
 
+test("history summary scans are reused across pages/maps and invalidated by another store handle", t => {
+  const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
+  let scans = 0;
+  const measured = { exec: sql.exec.bind(sql), prepare(query) {
+    if (query.includes("AS played") || query.includes("SELECT name,COUNT(*) AS matches")) scans++;
+    return sql.prepare(query);
+  } };
+  const reader = createAxisLeagueStore(measured), writer = createAxisLeagueStore(sql);
+  const one = { ...seasonMatch(1, AXIS_CURRENT_SEASON_START), maps: ["Bowl"], winner: 0 };
+  writer.publishArchive({ page: 1, pages: 1, total: 1, matches: [one] }, 1000);
+  const first = reader.readSeasonHistory(1, "current").summary;
+  assert.equal(scans, 2);
+  assert.equal(reader.readSeasonHistory(2, "current").summary, first);
+  assert.equal(reader.readSeasonHistory(1, "current", undefined, "Bowl").summary, first);
+  assert.equal(scans, 2, "page/map reads must not rescan the same season");
+  writer.publishArchive({ page: 1, pages: 1, total: 1, matches: [one] }, 2000);
+  assert.equal(reader.readSeasonHistory(1, "current").summary, first);
+  assert.equal(scans, 2, "unchanged refreshes retain cached aggregates");
+  writer.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ ...one, winner: 1, maps: ["Air Pit"] }] }, 2000);
+  assert.deepEqual(reader.readSeasonHistory(1, "current").summary, { played: 1, winsA: 0, winsB: 1, maps: [{ name: "Air Pit", matches: 1 }] });
+  assert.equal(scans, 4, "same-timestamp changes on another handle invalidate aggregates");
+});
+
 test("persisted season summaries survive reopen, skip unchanged imports and update across store handles", (t) => {
   const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
   const one = createAxisLeagueStore(sql), two = createAxisLeagueStore(sql);
