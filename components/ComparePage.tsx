@@ -200,8 +200,8 @@ function useComparisonProfile(
 
   useEffect(() => {
     const data = state.data;
-    if (!scope || scope.mode === "arena" || aid === null || !data || state.scopeKey !== scopeKey || state.aid !== aid
-      || comparisonDossier(scope, aid, data.payload)?.risk) return;
+    if (!scope || aid === null || !data || state.scopeKey !== scopeKey || state.aid !== aid
+      || (scope.mode === "arena" ? record(data.payload)?.risk : comparisonDossier(scope, aid, data.payload)?.risk)) return;
     const controller = new AbortController();
     const generation = requestGeneration.current;
     const active = () => !controller.signal.aborted && generation === requestGeneration.current;
@@ -220,9 +220,15 @@ function useComparisonProfile(
           if (identity?.aid !== aid || identity.mode !== scope.mode || identity.cycleId !== scope.cycleId) return;
           if (!body?.risk) continue;
           const payload = record(data.payload)!;
+          if (scope.mode === "arena") {
+            const risk = record(body.risk), version = record(risk?.version);
+            const profileUpdatedAt = record(payload.arena)?.profileUpdatedAt;
+            if (risk?.aid !== aid || typeof version?.upstream !== "number"
+              || (typeof profileUpdatedAt === "number" && version.upstream < profileUpdatedAt)) continue;
+          }
           const viewModel = record(payload.viewModel);
           const nextPayload = { ...payload, risk: body.risk, ...(viewModel ? { viewModel: { ...viewModel, risk: body.risk } } : {}) };
-          if (!comparisonDossier(scope, aid, nextPayload)?.risk) continue;
+          if (scope.mode !== "arena" && !comparisonDossier(scope, aid, nextPayload)?.risk) continue;
           setState((current) => active() && current.data === data && current.scopeKey === scopeKey && current.aid === aid
             ? { ...current, data: storedProfile(data.profile, nextPayload) } : current);
           return;
