@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { useI18n } from "@/lib/i18n/context";
-import { inferAxisOcrLeftTeam, matchAxisOcrRows, parseAxisOcrCounter, type AxisOcrContext, type AxisOcrCrop, type AxisOcrImage, type AxisOcrParticipant, type AxisOcrResult } from "@/lib/axis-ocr";
+import { axisOcrConfidencePercent, inferAxisOcrLeftTeam, matchAxisOcrRows, parseAxisOcrCounter, type AxisOcrContext, type AxisOcrImage, type AxisOcrParticipant, type AxisOcrResult } from "@/lib/axis-ocr";
 import type { AxisOcrKdaCandidate, AxisOcrRoundCandidate, AxisOcrTouchSnapshot } from "@/lib/axis-ocr-draft";
 import { analyzeAxisOcrMappingSafety } from "@/lib/axis-ocr-mapping";
 
@@ -18,7 +18,6 @@ type PreviewState = {
   started: AxisOcrTouchSnapshot;
   fillMessage: string;
 };
-type CropDraft = { x: string; y: string; width: string; height: string };
 type LeftTeamChoice = "unknown" | "0" | "1";
 type Props = {
   ref: Ref<AxisOcrPreviewHandle>;
@@ -43,15 +42,14 @@ function isContext(value: unknown, matchNumber: number): value is AxisOcrContext
       && (participant.arenaNickname === null || typeof participant.arenaNickname === "string"));
 }
 
-function cropFromDraft(draft: CropDraft, image: AxisOcrImage): { crop?: AxisOcrCrop; invalid: boolean } {
-  const values = [draft.x, draft.y, draft.width, draft.height];
-  if (values.every((value) => value === "")) return { invalid: false };
-  if (!values.every((value) => /^\d+$/.test(value))) return { invalid: true };
-  const [x, y, width, height] = values.map(Number);
-  if (![x, y, width, height].every(Number.isSafeInteger)
-    || x < 0 || y < 0 || width < 1 || height < 1
-    || x + width > image.width || y + height > image.height) return { invalid: true };
-  return { crop: { x, y, width, height }, invalid: false };
+function OcrConfidence({ readings }: { readings: readonly { value: number | null; confidence: number | null }[] }) {
+  const { t } = useI18n();
+  const percent = axisOcrConfidencePercent(readings);
+  const uncertain = percent === null || percent < 99;
+  return <span className="axis-ocr-confidence" data-level={uncertain ? "review" : "high"}>
+    <strong>{percent === null ? "—" : `${percent}%`}</strong>
+    <small>{t(percent === null ? "axis.ocr.confidenceUnavailable" : uncertain ? "axis.ocr.checkNumber" : "axis.ocr.confidenceLabel")}</small>
+  </span>;
 }
 
 function initialState(): PreviewState {
@@ -63,8 +61,6 @@ export default function AxisOcrPreview({
 }: Props) {
   const { t } = useI18n();
   const [state, setState] = useState<PreviewState>(initialState);
-  const [cropDraft, setCropDraft] = useState<CropDraft>({ x: "", y: "", width: "", height: "" });
-  const [cropError, setCropError] = useState(false);
   const [leftTeamChoice, setLeftTeamChoice] = useState<LeftTeamChoice>("unknown");
   const generation = useRef(0);
   const controller = useRef<AbortController | null>(null);
@@ -87,7 +83,7 @@ export default function AxisOcrPreview({
   }, [abortRecognition]);
   useImperativeHandle(ref, () => ({ invalidate }), [invalidate]);
 
-  const runRecognition = useCallback(async (crop?: AxisOcrCrop) => {
+  const runRecognition = useCallback(async () => {
     const id = ++generation.current;
     controller.current?.abort();
     const active = new AbortController();
@@ -108,7 +104,6 @@ export default function AxisOcrPreview({
       if (!isContext(contextValue, matchNumber)) throw new Error("Invalid OCR context");
       const result = await engine.recognizeAxisScreenshot(image, {
         signal: AbortSignal.any([active.signal, AbortSignal.timeout(120_000)]),
-        ...(crop ? { crop } : {}),
         onProgress: (value) => {
           if (id !== generation.current || active.signal.aborted) return;
           const progress = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
@@ -127,8 +122,6 @@ export default function AxisOcrPreview({
   }, [image, matchNumber]);
 
   useEffect(() => {
-    setCropDraft({ x: "", y: "", width: "", height: "" });
-    setCropError(false);
     setLeftTeamChoice("unknown");
     if (image.isNew) void runRecognition();
     return abortRecognition;
@@ -167,10 +160,8 @@ export default function AxisOcrPreview({
   }
 
   function requestRecognition() {
-    const parsed = cropFromDraft(cropDraft, image);
-    setCropError(parsed.invalid);
-    if (parsed.invalid || busy || state.status === "running") return;
-    void runRecognition(parsed.crop);
+    if (busy || state.status === "running") return;
+    void runRecognition();
   }
 
   function fillEmpty() {
@@ -181,31 +172,13 @@ export default function AxisOcrPreview({
       : previous);
   }
 
-  const cropFields = [
-    ["x", t("axis.ocr.cropX"), image.width],
-    ["y", t("axis.ocr.cropY"), image.height],
-    ["width", t("axis.ocr.cropWidth"), image.width],
-    ["height", t("axis.ocr.cropHeight"), image.height],
-  ] as const;
-
   return <section className="axis-ocr-panel" aria-label={t("axis.ocr.heading")}>
     <div className="axis-ocr-panel__heading">
-      <h4>{t("axis.ocr.heading")}</h4>
       <button type="button" className="ghost-button" disabled={busy || state.status === "running"} onClick={requestRecognition}>
         {t(state.status === "idle" ? "axis.ocr.recognize" : "axis.ocr.recognizeAgain")}
       </button>
       {state.status === "running" && <button type="button" className="ghost-button" onClick={invalidate}>{t("axis.ocr.cancel")}</button>}
     </div>
-    <p className="axis-ocr-panel__crop-hint">{t("axis.ocr.cropHelp", { width: image.width, height: image.height })}</p>
-    <div className="axis-ocr-crop" role="group" aria-label={t("axis.ocr.cropHelp", { width: image.width, height: image.height })}>
-      {cropFields.map(([field, label, max]) => <label key={field}>
-        <span>{label}</span>
-        <input type="number" inputMode="numeric" min={field === "width" || field === "height" ? 1 : 0} max={max}
-          value={cropDraft[field]} disabled={busy || state.status === "running"}
-          onChange={(event) => { invalidate(); setCropError(false); setCropDraft((previous) => ({ ...previous, [field]: event.target.value })); }} />
-      </label>)}
-    </div>
-    {cropError && <p className="admin-notice admin-notice--error" role="alert">{t("axis.ocr.cropInvalid")}</p>}
     {state.status === "running" && <div className="axis-ocr-progress" role="status" aria-live="polite">
       <span>{t("axis.ocr.running", { percent: Math.round(state.progress * 100) })}</span>
       <progress max={1} value={state.progress} aria-label={t("axis.ocr.progress")} />
@@ -220,6 +193,10 @@ export default function AxisOcrPreview({
           : <span>{inferredLeftTeam === null
             ? t("axis.ocr.leftTeamManual", { team: teamNames[leftTeam] ?? t("axis.history.team", { n: String.fromCharCode(65 + leftTeam) }) })
             : t("axis.ocr.leftTeam", { team: teamNames[leftTeam] ?? t("axis.history.team", { n: String.fromCharCode(65 + leftTeam) }) })}</span>}
+        <OcrConfidence readings={[
+          { value: result.score.left, confidence: result.scoreConfidence.left },
+          { value: result.score.right, confidence: result.scoreConfidence.right },
+        ]} />
       </div>
       <label className="axis-ocr-left-team">
         <span>{t("axis.ocr.leftTeamSelect")}</span>
@@ -274,6 +251,7 @@ export default function AxisOcrPreview({
                 <span>{t("axis.kda.column.deaths")}: {row.deaths ?? "—"}</span>
                 <span>{t("axis.kda.column.assists")}: {row.assists ?? "—"}</span>
               </div>
+              <OcrConfidence readings={(["kills", "deaths", "assists"] as const).map((field) => ({ value: row[field], confidence: row.numberConfidence[field] }))} />
               {blocked && <p className="axis-ocr-row__warning">{t("axis.ocr.mappingWarning")}</p>}
               {player && <small className="axis-ocr-row__team">{teamNames[player.teamIndex] ?? t("axis.history.team", { n: String.fromCharCode(65 + player.teamIndex) })}</small>}
             </article>;
@@ -281,7 +259,7 @@ export default function AxisOcrPreview({
         </div>}
       <button type="button" className="ghost-button axis-ocr-fill" disabled={busy} onClick={fillEmpty}>{t("axis.ocr.fillEmpty")}</button>
       {state.fillMessage && <p className="admin-notice" role="status">{state.fillMessage}</p>}
-      <p className="axis-ocr-panel__note">{t("axis.ocr.provisional")}</p>
+      <p className="axis-ocr-panel__note">{t("axis.ocr.confidenceHelp")} {t("axis.ocr.provisional")}</p>
     </>}
   </section>;
 }

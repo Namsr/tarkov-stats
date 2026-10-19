@@ -2077,21 +2077,24 @@ a.help-card:hover { border-color: var(--foreground); }
 .axis-photo-file input { width: min(100%, 220px); min-height: 44px; color: var(--muted-strong); font: inherit; }
 .axis-ocr-panel { min-width: 0; margin: 0 18px 20px; padding: 16px; border: 1px solid var(--card-border); border-radius: 8px; background: color-mix(in srgb, var(--foreground) 2%, var(--card-bg)); }
 .axis-ocr-panel__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.axis-ocr-panel__heading h4 { flex: 1 1 180px; margin: 0; font-size: .9rem; }
 .axis-ocr-panel__heading button, .axis-ocr-fill { min-height: 44px; }
-.axis-ocr-panel__crop-hint, .axis-ocr-panel__note { max-width: 760px; margin: 10px 0; color: var(--muted-strong); font-size: .76rem; line-height: 1.5; }
-.axis-ocr-crop { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.axis-ocr-crop label, .axis-ocr-row__assignment { display: grid; min-width: 0; gap: 5px; color: var(--muted-strong); font-size: .68rem; }
-.axis-ocr-crop input, .axis-ocr-row__assignment select { width: 100%; min-width: 0; min-height: 44px; padding: 7px 9px; color: var(--foreground); background: var(--input-bg); border: 1px solid var(--card-border); border-radius: 6px; font: inherit; }
+.axis-ocr-panel__note { max-width: 760px; margin: 10px 0; color: var(--muted-strong); font-size: .76rem; line-height: 1.5; }
+.axis-ocr-row__assignment { display: grid; min-width: 0; gap: 5px; color: var(--muted-strong); font-size: .68rem; }
+.axis-ocr-row__assignment select { width: 100%; min-width: 0; min-height: 44px; padding: 7px 9px; color: var(--foreground); background: var(--input-bg); border: 1px solid var(--card-border); border-radius: 6px; font: inherit; }
 .axis-ocr-progress { display: grid; gap: 8px; margin: 12px 0; color: var(--muted-strong); font-size: .78rem; }
 .axis-ocr-progress progress { width: 100%; min-height: 12px; accent-color: var(--accent); }
-.axis-ocr-score { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin: 14px 0; font-variant-numeric: tabular-nums; }
+.axis-ocr-score { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 14px 0; font-variant-numeric: tabular-nums; }
 .axis-ocr-score strong { font-size: 1rem; }
-.axis-ocr-score span, .axis-ocr-row__team { color: var(--muted); font-size: .74rem; }
+.axis-ocr-score > span, .axis-ocr-row__team { color: var(--muted); font-size: .74rem; }
+.axis-ocr-confidence { display: grid; justify-items: end; gap: 3px; min-width: 80px; max-width: 100px; text-align: right; font-variant-numeric: tabular-nums; }
+.axis-ocr-confidence strong { color: var(--danger); font-size: 2rem; line-height: 1.1; white-space: nowrap; }
+.axis-ocr-confidence[data-level="high"] strong { color: var(--success); }
+.axis-ocr-confidence small { color: var(--muted-strong); font-size: .65rem; }
+.axis-ocr-score > .axis-ocr-confidence { margin-left: auto; }
 .axis-ocr-left-team { display: grid; grid-template-columns: minmax(140px, .8fr) minmax(180px, 1fr); align-items: center; gap: 8px; max-width: 520px; margin: 10px 0; color: var(--muted-strong); font-size: .74rem; }
 .axis-ocr-left-team select { width: 100%; min-width: 0; min-height: 44px; padding: 7px 9px; color: var(--foreground); background: var(--input-bg); border: 1px solid var(--card-border); border-radius: 6px; font: inherit; }
 .axis-ocr-rows { display: grid; gap: 8px; max-height: min(55vh, 580px); margin: 12px 0; overflow: auto; overscroll-behavior: contain; }
-.axis-ocr-row { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(190px, 1fr) minmax(150px, .8fr); align-items: center; gap: 8px 12px; min-width: 0; padding: 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); }
+.axis-ocr-row { display: grid; grid-template-columns: minmax(80px, .7fr) minmax(130px, 1fr) minmax(100px, .8fr) auto; align-items: center; gap: 8px 12px; min-width: 0; padding: 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); }
 .axis-ocr-row__name { display: grid; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
 .axis-ocr-row__name strong { font-size: .8rem; }
 .axis-ocr-row__name span { color: var(--muted); font-size: .68rem; }
@@ -2121,10 +2124,10 @@ a.help-card:hover { border-color: var(--foreground); }
 @media (max-width: 600px) {
   .axis-match-photo { margin-right: 12px; margin-left: 12px; }
   .axis-ocr-panel { margin-right: 12px; margin-left: 12px; padding: 12px; }
-  .axis-ocr-crop { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .axis-ocr-row { grid-template-columns: minmax(0, 1fr); }
+  .axis-ocr-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .axis-ocr-row__name, .axis-ocr-row__assignment { grid-column: 1 / -1; }
   .axis-ocr-left-team { grid-template-columns: minmax(0, 1fr); gap: 5px; }
-  .axis-ocr-row__warning, .axis-ocr-row__team { grid-column: auto; }
+  .axis-ocr-row__warning, .axis-ocr-row__team { grid-column: 1 / -1; }
   .axis-photo-file { flex-wrap: wrap; }
   .axis-photo-dialog { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
   .axis-photo-dialog__header, .axis-photo-tools { padding-left: 12px; padding-right: 12px; }

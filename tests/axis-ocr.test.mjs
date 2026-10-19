@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferAxisOcrLeftTeam, matchAxisOcrRows, parseAxisOcrCounter } from "../lib/axis-ocr.ts";
+import { axisOcrConfidencePercent, inferAxisOcrLeftTeam, matchAxisOcrRows, parseAxisOcrCounter } from "../lib/axis-ocr.ts";
+
+test("a numeric row shows its lowest score, with no green result for missing or uncertain numbers", () => {
+  const reading = (confidence, value = 7) => ({ value, confidence });
+  assert.equal(axisOcrConfidencePercent([reading(0.999), reading(0.3), reading(0.999)]), 30);
+  assert.equal(axisOcrConfidencePercent([reading(0.999), reading(0.99, 0), reading(1)]), 99);
+  assert.equal(axisOcrConfidencePercent([reading(0.989), reading(1)]), 98);
+  assert.equal(axisOcrConfidencePercent([reading(1), reading(1)]), 99);
+  assert.equal(axisOcrConfidencePercent([]), null);
+  for (const bad of [reading(null), reading(NaN), reading(Infinity), reading(-0.1), reading(1.1), reading(1, null), reading(1, -1)]) {
+    assert.equal(axisOcrConfidencePercent([reading(1), bad]), null);
+  }
+});
 
 function participants() {
   return Array.from({ length: 10 }, (_, index) => ({

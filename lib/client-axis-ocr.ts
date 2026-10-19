@@ -1,5 +1,5 @@
 import type { AxisOcrCrop, AxisOcrImage, AxisOcrResult, AxisOcrRow } from "./axis-ocr.ts";
-import { axisOcrPrepareTensor, axisOcrRegions, detectAxisScoreboard, parseAxisOcrNumbers } from "./axis-ocr-layout.ts";
+import { axisOcrPrepareTensor, axisOcrReadCounter, axisOcrRegions, detectAxisScoreboard } from "./axis-ocr-layout.ts";
 import { createAxisOcrWorker, type AxisOcrWorkerHandle } from "./axis-ocr-worker.ts";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -317,7 +317,7 @@ function detectCrop(bitmap: ImageBitmap, job: AxisOcrJob): AxisOcrCrop {
     context.drawImage(bitmap, 0, 0);
     const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height);
     const detected = detectAxisScoreboard({ width: bitmap.width, height: bitmap.height, data: pixels.data });
-    if (!detected) throw new Error("Could not detect the scoreboard; enter a manual crop");
+    if (!detected) throw new Error("Could not detect the scoreboard");
     return normalizeCrop(detected, bitmap.width, bitmap.height);
   } finally {
     release();
@@ -391,17 +391,21 @@ async function recognizeImage(job: AxisOcrJob): Promise<AxisOcrResult> {
 
   const total = 2 + regions.rows.length * 4;
   let taskIndex = 0;
-  const leftScore = parseAxisOcrNumbers((await recognizeText(worker, bitmap, regions.score.left, job, "number", generation, taskProgress(taskIndex++, total))).text, 1)?.[0] ?? null;
-  const rightScore = parseAxisOcrNumbers((await recognizeText(worker, bitmap, regions.score.right, job, "number", generation, taskProgress(taskIndex++, total))).text, 1)?.[0] ?? null;
-  const rowValues = new Map<string, { kills: number | null; deaths: number | null; assists: number | null }>();
+  const readCounter = async (region: AxisOcrCrop) => axisOcrReadCounter(
+    await recognizeText(worker, bitmap, region, job, "number", generation, taskProgress(taskIndex++, total)),
+  );
+  const leftScore = await readCounter(regions.score.left);
+  const rightScore = await readCounter(regions.score.right);
+  const rowValues = new Map<string, Pick<AxisOcrRow, "kills" | "deaths" | "assists" | "numberConfidence">>();
   for (const row of regions.rows) {
-    const kills = parseAxisOcrNumbers((await recognizeText(worker, bitmap, row.kills, job, "number", generation, taskProgress(taskIndex++, total))).text, 1)?.[0] ?? null;
-    const deaths = parseAxisOcrNumbers((await recognizeText(worker, bitmap, row.deaths, job, "number", generation, taskProgress(taskIndex++, total))).text, 1)?.[0] ?? null;
-    const assists = parseAxisOcrNumbers((await recognizeText(worker, bitmap, row.assists, job, "number", generation, taskProgress(taskIndex++, total))).text, 1)?.[0] ?? null;
+    const kills = await readCounter(row.kills);
+    const deaths = await readCounter(row.deaths);
+    const assists = await readCounter(row.assists);
     rowValues.set(`${row.side}:${row.index}`, {
-      kills,
-      deaths,
-      assists,
+      kills: kills.value,
+      deaths: deaths.value,
+      assists: assists.value,
+      numberConfidence: { kills: kills.confidence, deaths: deaths.confidence, assists: assists.confidence },
     });
   }
 
@@ -423,11 +427,13 @@ async function recognizeImage(job: AxisOcrJob): Promise<AxisOcrResult> {
       kills: stats.kills,
       deaths: stats.deaths,
       assists: stats.assists,
+      numberConfidence: stats.numberConfidence,
       confidence: name.nickname ? name.confidence : 0,
     };
   });
   reportProgress(job, 0.99);
-  return { score: { left: leftScore, right: rightScore }, rows, crop };
+  return { score: { left: leftScore.value, right: rightScore.value },
+    scoreConfidence: { left: leftScore.confidence, right: rightScore.confidence }, rows, crop };
 }
 
 function validImageMetadata(image: AxisOcrImage): boolean {
