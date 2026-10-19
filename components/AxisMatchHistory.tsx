@@ -20,6 +20,8 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const current = data?.page === page && data?.season === season && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.matchNumber === focusedMatch) ?? null;
+  const summary = current?.summary;
+  const totalWins = summary ? summary.winsA + summary.winsB : 0;
   const leaguePlayers = new Map(players?.map((player) => [player.id, player]));
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
@@ -87,30 +89,35 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
         {(data?.seasons ?? []).filter((entry) => !entry.current).map((entry) => <option key={entry.id} value={entry.id}>{t("axis.season.from", { date: new Date(entry.startsAt).toLocaleDateString(locale, { timeZone: "Europe/Moscow", day: "numeric", month: "short", year: "numeric" }) })}</option>)}
         <option value="all">{t("axis.season.all")}</option>
       </select></label>
-      <p>{season === "current" ? t("axis.season.currentHint") : t("axis.season.inferredHint")}</p>
+      {season !== "current" && <p>{t("axis.season.inferredHint")}</p>}
     </div>
-    {current && !current.archiveComplete && <p className="axis-meta" role="status">{t("axis.season.importing")}</p>}
     {(failed || current?.stale) && <div className="leaderboard-state data-panel" role="status">
       <p>{t(current ? "axis.history.stale" : "axis.history.error")}</p>
       <button type="button" className="ghost-button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button>
     </div>}
     {!current && !failed && <p role="status" className="leaderboard-publication">{t("common.loading")}</p>}
     {current && <>
-      {focusedMatch == null && current.summary && <section className="axis-history-summary data-panel" aria-label={t("axis.history.summary")}>
+      {focusedMatch == null && summary && <section className="axis-history-summary data-panel" aria-label={t("axis.history.summary")}>
         <h2 className="section-heading">{t("axis.history.summary")}</h2>
         <p className="axis-history-summary__hint">{t(season === "all" ? "axis.history.archiveSummaryHint" : "axis.history.summaryHint")}</p>
-        <dl className="axis-history-summary__metrics">
-          <div><dt>{t("axis.gamesPlayed")}</dt><dd>{number(current.summary.played)}</dd></div>
-          <div><dt>{t("axis.history.wins", { team: "A" })}</dt><dd>{number(current.summary.winsA)}</dd></div>
-          <div><dt>{t("axis.history.wins", { team: "B" })}</dt><dd>{number(current.summary.winsB)}</dd></div>
+        <dl className="axis-history-summary__played">
+          <dt>{t("axis.history.playedMatches")}</dt><dd>{number(summary.played)}</dd>
         </dl>
-        <p className="axis-history-summary__leader">{current.summary.winsA === current.summary.winsB
-          ? t(current.summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
-          : t("axis.history.leading", { team: t("axis.history.team", { n: current.summary.winsA > current.summary.winsB ? "A" : "B" }) })}</p>
+        <div className="axis-history-summary__teams">
+          <span>{t("axis.history.team", { n: "A" })}<strong>{number(summary.winsA)}</strong></span>
+          <span><strong>{number(summary.winsB)}</strong>{t("axis.history.team", { n: "B" })}</span>
+        </div>
+        <div className="axis-history-summary__balance" role="img" aria-label={t("axis.history.winBalance", { a: number(summary.winsA), b: number(summary.winsB) })}>
+          <span className="axis-history-summary__balance-a" style={{ width: `${totalWins ? summary.winsA / totalWins * 100 : 0}%` }} />
+          <span className="axis-history-summary__balance-b" style={{ width: `${totalWins ? summary.winsB / totalWins * 100 : 0}%` }} />
+        </div>
+        <p className="axis-history-summary__leader">{summary.winsA === summary.winsB
+          ? t(summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
+          : t("axis.history.leading", { team: t("axis.history.team", { n: summary.winsA > summary.winsB ? "A" : "B" }) })}</p>
         <h3>{t("axis.history.maps")}</h3>
-        {current.summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{current.summary.maps.map((map) => <li key={map.name}>
+        {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map) => <li key={map.name}>
           <span>{map.name}</span><strong>{number(map.matches)}</strong>
-          <span className="axis-history-summary__bar" aria-hidden="true" style={{ width: `${map.matches / current.summary!.maps[0].matches * 100}%` }} />
+          <span className="axis-history-summary__bar" aria-hidden="true" style={{ width: `${map.matches / summary.maps[0].matches * 100}%` }} />
         </li>)}</ol>}
       </section>}
       <nav hidden={focusedMatch != null} className="axis-history-pages" aria-label={t("axis.history.pagination")}>

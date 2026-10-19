@@ -904,9 +904,17 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-summary { max-width: 680px; margin: 16px auto; padding: 14px 16px; text-align: center; }
 .axis-history-summary > .section-heading { font-size: .9rem; }
 .axis-history-summary__hint { margin: 5px auto 10px; font-size: .7rem; color: var(--muted-strong); }
-.axis-history-summary__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
-.axis-history-summary__metrics dt { color: var(--muted-strong); font-size: .7rem; overflow-wrap: anywhere; }
-.axis-history-summary__metrics dd { margin: 2px 0 0; font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.axis-history-summary__played { display: flex; justify-content: center; align-items: baseline; gap: 8px; margin: 0 0 8px; }
+.axis-history-summary__played dt { color: var(--muted-strong); font-size: .74rem; }
+.axis-history-summary__played dd { margin: 0; font-size: 1.2rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.axis-history-summary__teams { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: .74rem; }
+.axis-history-summary__teams > span { display: flex; align-items: baseline; gap: 8px; }
+.axis-history-summary__teams strong { font-size: .9rem; font-variant-numeric: tabular-nums; }
+.axis-history-summary__balance { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--card-border); }
+.axis-history-summary__balance > span { flex: none; height: 100%; transition: width 400ms ease; }
+.axis-history-summary__balance-a { background: var(--accent); }
+.axis-history-summary__balance-b { background: var(--muted); box-shadow: inset 2px 0 var(--card-bg); }
+@media (prefers-reduced-motion: reduce) { .axis-history-summary__balance > span { transition: none; } }
 .axis-history-summary__leader { margin: 7px 0 10px; color: var(--accent); font-size: .76rem; font-weight: 700; }
 .axis-history-summary h3 { font-size: .72rem; color: var(--muted-strong); }
 .axis-history-summary__maps { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 7px 0 0; text-align: left; }
