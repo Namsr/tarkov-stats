@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "retrievedAtUtc": "2026-10-18T23:18:08+00:00",
+  "model": "en_PP-OCRv5_mobile_rec",
+  "source": {
+    "kind": "official_preexported_onnx_artifact",
+    "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/en_PP-OCRv5_mobile_rec_onnx_infer.tar",
+    "officialPublisher": "PaddlePaddle PaddleX model ecology",
+    "modelNamespace": "paddlex/official_inference_model/paddle3.0.0",
+    "archivePath": "en_PP-OCRv5_mobile_rec_onnx_infer.tar",
+    "archiveBytes": 7874560,
+    "archiveSha256": "4424E851309B291B00AAB8191CD4314CEFBD2D1B2381FF8994019D262FA95E28",
+    "onnxPath": "model.onnx",
+    "onnxBytes": 7848423,
+    "onnxSha256": "B5F833DFC5D0EB71DA397B4EFA06EBEEE9B431B690A47D6AF40D77D8EABC557F",
+    "configPath": "en_PP-OCRv5_mobile_rec_onnx_infer/inference.yml (inside source archive)",
+    "configBytes": 3964,
+    "configSha256": "27E91D0582F40168AA218303C76E184BC78FA7A5D105AAD0CFBAD8458B441067",
+    "archiveReadmePath": "en_PP-OCRv5_mobile_rec_onnx_infer/README.md (inside source archive)",
+    "archiveReadmeSha256": "98B45EA81164D1E1A1DD82255207053B15CD6C69D922A1C5CF3387CE604D4B74"
+  },
+  "license": {
+    "spdx": "Apache-2.0",
+    "evidence": "The official artifact's bundled README.md frontmatter declares license: apache-2.0; PaddleOCR repository license is Apache-2.0.",
+    "officialRepositoryLicense": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/LICENSE"
+  },
+  "config": {
+    "modelName": "en_PP-OCRv5_mobile_rec",
+    "preprocessing": [
+      {
+        "DecodeImage": {
+          "channel_first": false,
+          "img_mode": "BGR"
+        }
+      },
+      {
+        "MultiLabelEncode": {
+          "gtc_encode": "NRTRLabelEncode"
+        }
+      },
+      {
+        "RecResizeImg": {
+          "image_shape": [
+            3,
+            48,
+            320
+          ]
+        }
+      },
+      {
+        "KeepKeys": {
+          "keep_keys": [
+            "image",
+            "label_ctc",
+            "label_gtc",
+            "length",
+            "valid_ratio"
+          ]
+        }
+      }
+    ],
+    "postprocessName": "CTCLabelDecode",
+    "configCharacterCount": 436,
+    "ctcBlankIndex": 0,
+    "dictionaryJsonPath": "dictionary.json",
+    "dictionaryJsonSha256": "FBAB60F91C72D47B0C7BD48CA20D7197ABDD116145D9630E6A1BE4822442DEDC",
+    "dictionaryJsonEntriesExcludingBlankIncludingTrailingSpace": 437,
+    "trailingSpaceIncluded": true,
+    "onnxOutputClassCount": 438
+  },
+  "onnxIo": {
+    "runtime": "onnxruntime 1.31.0; CPUExecutionProvider",
+    "input": {
+      "name": "x",
+      "shape": [
+        "DynamicDimension.0",
+        3,
+        48,
+        "DynamicDimension.1"
+      ],
+      "type": "tensor(float)"
+    },
+    "outputs": [
+      {
+        "name": "fetch_name_0",
+        "shape": [
+          "DynamicDimension.2",
+          "DynamicDimension.3",
+          438
+        ],
+        "type": "tensor(float)"
+      }
+    ]
+  },
+  "preprocessingSpec": {
+    "implementationReference": "PaddleX 3.7.2 paddlex/inference/models/text_recognition/processors.py: OCRReisizeNormImg.resize_norm_img",
+    "input": "BGR HWC uint8",
+    "resize": "OpenCV 4.10.0 cv2.resize default INTER_LINEAR; height 48; aspect-preserving width ceil(48*ratio); dynamic model width max(320, int(48*max(320/48, ratio))) capped at 3200; right pad to model width",
+    "tensor": "float32 NCHW; /255, then subtract 0.5 and divide by 0.5; zero-valued right padding",
+    "batching": "one crop per inference call for per-image dynamic width",
+    "decoder": "argmax over final 438-class axis, remove class 0 blank, collapse consecutive duplicate indices, map indices 1..437 through dictionary.json"
+  },
+  "exportNote": "This task verified PaddlePaddle-to-ONNX parity using Paddle's official pre-exported ONNX artifact; it did not generate or modify the model graph locally.",
+  "browserRuntime": {
+    "npmPackage": "onnxruntime-web",
+    "version": "1.30.0",
+    "backend": "wasm",
+    "numThreads": 1,
+    "licenseSource": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.30.0/LICENSE"
+  },
+  "validation": {
+    "split": "development",
+    "screenshots": 7,
+    "browserNumericFieldsCorrect": 224,
+    "browserNumericFieldsTotal": 224,
+    "browserPlayerAssignmentsCorrect": 70,
+    "browserPlayerAssignmentsTotal": 70,
+    "browserWrongPlayerAssignments": 0,
+    "independentHoldoutEvaluated": false
+  }
+}
