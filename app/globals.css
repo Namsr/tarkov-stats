@@ -901,8 +901,9 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-pages > span { color: var(--muted-strong); font-size: .76rem; text-align: center; }
 .axis-history-pages button:disabled { opacity: .4; cursor: default; }
 .axis-match-list { display: grid; gap: 12px; }
-.axis-history-summary { --axis-team-a: #8dbce5; --axis-team-b: var(--danger); max-width: 680px; margin: 16px auto; padding: 16px 18px; text-align: center; background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--axis-team-a) 8%, transparent), transparent 65%), radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--axis-team-b) 7%, transparent), transparent 65%), var(--card-bg); }
-html[data-theme="light"] .axis-history-summary { --axis-team-a: #286894; }
+.axis-history { --axis-team-a: #8dbce5; --axis-team-b: var(--danger); }
+.axis-history-summary { max-width: 680px; margin: 16px auto; padding: 16px 18px; text-align: center; background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--axis-team-a) 8%, transparent), transparent 65%), radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--axis-team-b) 7%, transparent), transparent 65%), var(--card-bg); }
+html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 @media (min-width: 1024px) {
   .axis-history { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 680px) minmax(0, 1fr); column-gap: 16px; align-items: start; }
   .axis-history > * { grid-column: 1 / -1; }
@@ -958,14 +959,21 @@ html[data-theme="light"] .axis-history-summary { --axis-team-a: #286894; }
 @media (prefers-reduced-motion: reduce) {
   .axis-match::details-content { transition: none; }
 }
-.axis-match summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 64px; padding: 16px 18px; cursor: pointer; font-size: .8rem; }
-.axis-match summary::before { content: "›"; color: var(--muted); font-size: 1.2rem; transition: transform 200ms ease; }
+.axis-match summary { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 64px; padding: 16px 18px; cursor: pointer; font-size: .8rem; }
+.axis-match summary::before { content: "›"; position: absolute; left: 18px; top: calc(50% - .9rem); color: var(--muted); font-size: 1.2rem; transition: transform 200ms ease; }
+.axis-match-summary-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; padding-left: 22px; overflow-wrap: anywhere; }
+.axis-match-summary-score { position: relative; z-index: 1; justify-self: center; text-align: center; white-space: nowrap; font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: .08em; transform-origin: center; }
+.axis-match[open] .axis-match-summary-score { visibility: hidden; }
+.axis-match[data-score-moving] .axis-match-rounds > strong { visibility: hidden; }
+.axis-match summary > .axis-match-result { min-width: 0; margin-left: 0; justify-self: end; text-align: right; overflow-wrap: anywhere; }
 .axis-match[open] summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .axis-match summary::before { transition: none; } }
 .axis-match summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .axis-match summary time, .axis-match-queue { color: var(--muted-strong); }
 .axis-match-result { margin-left: auto; color: var(--muted-strong); }
 .axis-match-result--winner, .axis-match-team--winner .axis-match-team-heading span { color: var(--accent); font-weight: 700; }
+.axis-match-result--winner[data-winner="0"] { color: var(--axis-team-a); }
+.axis-match-result--winner[data-winner="1"] { color: var(--axis-team-b); }
 .axis-match-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; padding: 4px 18px 18px; }
 .axis-match-team { min-width: 0; }
 .axis-match-team-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -1028,6 +1036,11 @@ html[data-theme="light"] .axis-history-summary { --axis-team-a: #286894; }
   .axis-match-team li:has(.axis-kda-inline) .axis-match-stats { min-height: 44px; align-items: center; }
   .axis-kda-editor { margin-left: 12px; margin-right: 12px; }
   .axis-match summary { gap: 8px 10px; padding: 14px 12px; }
+  .axis-match summary { grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr); }
+  .axis-match summary::before { left: 12px; }
+  .axis-match-summary-meta { grid-column: 1 / -1; gap: 6px 10px; padding-left: 16px; }
+  .axis-match-summary-score { grid-column: 2; grid-row: 2; font-size: .8rem; }
+  .axis-match summary > .axis-match-result { grid-column: 3; grid-row: 2; }
   .axis-match-result { margin-left: 0; flex-basis: 100%; }
   .axis-history-pages > span { order: -1; flex-basis: 100%; }
 }

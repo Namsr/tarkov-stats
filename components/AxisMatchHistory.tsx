@@ -4,7 +4,7 @@ import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
@@ -13,6 +13,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const [page, setPage] = useState(1);
   const pendingScroll = useRef(false);
   const scrolledMatch = useRef<number | undefined>(undefined);
+  const scoreFlights = useRef(new Map<HTMLDetailsElement, Animation>());
   const [season, setSeason] = useState(initialMatch ? "all" : "current");
   const [focusedMatch, setFocusedMatch] = useState(initialMatch);
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
@@ -27,6 +28,11 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const leaguePlayers = new Map(players?.map((player) => [player.id, player]));
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
+
+  useEffect(() => {
+    const flights = scoreFlights.current;
+    return () => { for (const flight of flights.values()) flight.cancel(); flights.clear(); };
+  }, []);
 
   useEffect(() => {
     if (mapTooltip == null) return;
@@ -90,6 +96,38 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     return t("axis.history.winner", { team: teamName(match, match.winner) });
   }
 
+  function toggleMatch(event: MouseEvent<HTMLElement>) {
+    event.preventDefault();
+    const details = event.currentTarget.parentElement as HTMLDetailsElement;
+    const score = details.querySelector<HTMLElement>(".axis-match-summary-score");
+    const expandedScore = details.querySelector<HTMLElement>(".axis-match-rounds > strong");
+    const opening = !details.open;
+    const previousFlight = scoreFlights.current.get(details);
+    const from = previousFlight ? score?.getBoundingClientRect() : (opening ? score : expandedScore)?.getBoundingClientRect();
+    previousFlight?.cancel(); scoreFlights.current.delete(details);
+    delete details.dataset.scoreMoving;
+    details.open = opening;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (score && expandedScore && from && !reducedMotion) {
+      const base = score.getBoundingClientRect();
+      const to = opening ? expandedScore.getBoundingClientRect() : base;
+      if (base.width && base.height && to.width && to.height) {
+        const transform = (rect: DOMRect) => `translate(${rect.x + rect.width / 2 - base.x - base.width / 2}px, ${rect.y + rect.height / 2 - base.y - base.height / 2}px) scale(${rect.width / base.width}, ${rect.height / base.height})`;
+        details.dataset.scoreMoving = "true";
+        const flight = score.animate([
+          { transform: transform(from), visibility: "visible" },
+          { transform: transform(to), visibility: "visible" },
+        ], { duration: 300, easing: "ease", fill: "both" });
+        scoreFlights.current.set(details, flight);
+        flight.onfinish = () => {
+          if (scoreFlights.current.get(details) !== flight) return;
+          scoreFlights.current.delete(details); delete details.dataset.scoreMoving; flight.cancel();
+        };
+      }
+    }
+    if (opening) requestAnimationFrame(() => details.scrollIntoView({ block: "start", behavior: reducedMotion ? "instant" : "smooth" }));
+  }
+
   return <section className="axis-history" aria-label={t("axis.history.title")}>
     {focusedMatch && <button type="button" className="back-link" onClick={clearMatch}>← {t("axis.history.title")}</button>}
     <div className="axis-history-toolbar" hidden={focusedMatch != null}>
@@ -143,15 +181,17 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
       </nav>
       {current.matches.length === 0 ? <p className="axis-empty data-panel">{t("axis.history.empty")}</p> :
         <div className="axis-match-list" key={`${season}:${page}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0}>
-          <summary onClick={(event) => {
-            const match = event.currentTarget.parentElement as HTMLDetailsElement;
-            if (!match.open) requestAnimationFrame(() => match.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }));
-          }}>
+          <summary onClick={toggleMatch}>
+            <span className="axis-match-summary-meta">
             <strong>{t("axis.history.match", { n: String(match.number) })}</strong>
             {match.time == null ? <span>{t("axis.history.noTime")}</span> : <time dateTime={new Date(match.time).toISOString()}>{new Date(match.time).toLocaleString(locale)}</time>}
             <span className="axis-match-queue">{match.queue ?? t("axis.history.unknownQueue")}</span>
             <span>{match.maps.length ? match.maps.join(", ") : t("axis.history.noMap")}</span>
-            <span className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
+            </span>
+            <span className="axis-match-summary-score" aria-label={match.teams.length === 2 ? `${t("axis.rounds.label")}: ${match.rounds ? `${match.rounds.a} : ${match.rounds.b}` : "— : —"}` : undefined}>
+              {match.teams.length === 2 ? match.rounds ? `${match.rounds.a} : ${match.rounds.b}` : "— : —" : null}
+            </span>
+            <span data-winner={match.winner ?? undefined} className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
           <AxisMatchAttribution edited={match.edited} />
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
