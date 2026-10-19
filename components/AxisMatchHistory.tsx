@@ -4,7 +4,7 @@ import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
@@ -19,12 +19,21 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const [cachedPages, setCachedPages] = useState<AxisHistoryResponse[]>([]);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [mapTooltip, setMapTooltip] = useState<string | null>(null);
+  const mapTooltipId = useId();
   const current = data?.page === page && data?.season === season && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.matchNumber === focusedMatch) ?? null;
   const summary = current?.summary;
   const totalWins = summary ? summary.winsA + summary.winsB : 0;
   const leaguePlayers = new Map(players?.map((player) => [player.id, player]));
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
+
+  useEffect(() => {
+    if (mapTooltip == null) return;
+    const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") setMapTooltip(null); };
+    window.addEventListener("keydown", dismiss);
+    return () => window.removeEventListener("keydown", dismiss);
+  }, [mapTooltip]);
 
   useEffect(() => {
     if (!active) return;
@@ -97,28 +106,33 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     </div>}
     {!current && !failed && <p role="status" className="leaderboard-publication">{t("common.loading")}</p>}
     {current && <>
-      {focusedMatch == null && summary && <section className="axis-history-summary data-panel" aria-label={t("axis.history.summary")}>
-        <h2 className="section-heading">{t("axis.history.summary")}</h2>
-        <p className="axis-history-summary__hint">{t(season === "all" ? "axis.history.archiveSummaryHint" : "axis.history.summaryHint")}</p>
-        <dl className="axis-history-summary__played">
-          <dt>{t("axis.history.playedMatches")}</dt><dd>{number(summary.played)}</dd>
-        </dl>
+      {focusedMatch == null && summary && <section className="axis-history-summary data-panel" data-leader={summary.winsA === summary.winsB ? "tie" : summary.winsA > summary.winsB ? "a" : "b"} aria-label={t("axis.history.summary")}>
+        <div className="axis-history-summary__header">
+          <h2 className="section-heading">{t("axis.history.summary")}</h2>
+          <dl className="axis-history-summary__played">
+            <dt>{t("axis.history.playedMatches")}</dt><dd>{number(summary.played)}</dd>
+          </dl>
+        </div>
         <div className="axis-history-summary__teams">
-          <span>{t("axis.history.team", { n: "A" })}<strong>{number(summary.winsA)}</strong></span>
-          <span><strong>{number(summary.winsB)}</strong>{t("axis.history.team", { n: "B" })}</span>
+          <span className="axis-history-summary__team-a"><i aria-hidden="true">A</i><span>{t("axis.history.team", { n: "A" })}<small>{t("arena.counter.wins")}</small></span><strong>{number(summary.winsA)}</strong></span>
+          <span className="axis-history-summary__team-b"><i aria-hidden="true">B</i><span>{t("axis.history.team", { n: "B" })}<small>{t("arena.counter.wins")}</small></span><strong>{number(summary.winsB)}</strong></span>
         </div>
         <div className="axis-history-summary__balance" role="img" aria-label={t("axis.history.winBalance", { a: number(summary.winsA), b: number(summary.winsB) })}>
           <span className="axis-history-summary__balance-a" style={{ width: `${totalWins ? summary.winsA / totalWins * 100 : 0}%` }} />
           <span className="axis-history-summary__balance-b" style={{ width: `${totalWins ? summary.winsB / totalWins * 100 : 0}%` }} />
+          <span className="axis-history-summary__balance-marker" aria-hidden="true" style={{ left: `${totalWins ? summary.winsA / totalWins * 100 : 50}%` }} />
         </div>
         <p className="axis-history-summary__leader">{summary.winsA === summary.winsB
           ? t(summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
           : t("axis.history.leading", { team: t("axis.history.team", { n: summary.winsA > summary.winsB ? "A" : "B" }) })}</p>
-        <h3>{t("axis.history.maps")}</h3>
-        {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map) => <li key={map.name}>
+        <div className="axis-history-summary__map-row"><h3>{t("axis.history.maps")}</h3>
+        {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map, index) => <li key={map.name} tabIndex={0} aria-describedby={`${mapTooltipId}-${index}`}
+          onPointerEnter={() => setMapTooltip(map.name)} onPointerLeave={(event) => { if (!event.currentTarget.matches(":focus-visible")) setMapTooltip(null); }}
+          onFocus={() => setMapTooltip(map.name)} onBlur={() => setMapTooltip(null)}>
           <span>{map.name}</span><strong>{number(map.matches)}</strong>
           <span className="axis-history-summary__bar" aria-hidden="true" style={{ width: `${map.matches / summary.maps[0].matches * 100}%` }} />
-        </li>)}</ol>}
+          <span className="axis-history-summary__map-tooltip" id={`${mapTooltipId}-${index}`} role="tooltip" hidden={mapTooltip !== map.name}>{(summary.played ? map.matches / summary.played : 0).toLocaleString(locale, { style: "percent", maximumFractionDigits: 0 })}</span>
+        </li>)}</ol>}</div>
       </section>}
       <nav hidden={focusedMatch != null} className="axis-history-pages" aria-label={t("axis.history.pagination")}>
         <button type="button" className="ghost-button" disabled={page === 1} onClick={() => navigate(1)}>{t("axis.history.first")}</button>

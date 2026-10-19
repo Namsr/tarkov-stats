@@ -901,27 +901,54 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-pages > span { color: var(--muted-strong); font-size: .76rem; text-align: center; }
 .axis-history-pages button:disabled { opacity: .4; cursor: default; }
 .axis-match-list { display: grid; gap: 12px; }
-.axis-history-summary { max-width: 680px; margin: 16px auto; padding: 14px 16px; text-align: center; }
-.axis-history-summary > .section-heading { font-size: .9rem; }
-.axis-history-summary__hint { margin: 5px auto 10px; font-size: .7rem; color: var(--muted-strong); }
-.axis-history-summary__played { display: flex; justify-content: center; align-items: baseline; gap: 8px; margin: 0 0 8px; }
-.axis-history-summary__played dt { color: var(--muted-strong); font-size: .74rem; }
-.axis-history-summary__played dd { margin: 0; font-size: 1.2rem; font-weight: 800; font-variant-numeric: tabular-nums; }
-.axis-history-summary__teams { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: .74rem; }
-.axis-history-summary__teams > span { display: flex; align-items: baseline; gap: 8px; }
-.axis-history-summary__teams strong { font-size: .9rem; font-variant-numeric: tabular-nums; }
-.axis-history-summary__balance { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--card-border); }
+.axis-history-summary { --axis-team-a: #8dbce5; --axis-team-b: var(--danger); max-width: 680px; margin: 16px auto; padding: 16px 18px; text-align: center; background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--axis-team-a) 8%, transparent), transparent 65%), radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--axis-team-b) 7%, transparent), transparent 65%), var(--card-bg); }
+html[data-theme="light"] .axis-history-summary { --axis-team-a: #286894; }
+@media (min-width: 1024px) {
+  .axis-history { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 680px) minmax(0, 1fr); column-gap: 16px; align-items: start; }
+  .axis-history > * { grid-column: 1 / -1; }
+  .axis-history > .axis-history-toolbar { grid-column: 1; grid-row: 1; }
+  .axis-history > .axis-history-summary { grid-column: 2; grid-row: 1; width: 100%; max-width: 100%; margin: 40px 0 0; }
+}
+.axis-history-summary__header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 18px; }
+.axis-history-summary__header > .section-heading { font-size: .73rem; letter-spacing: .1em; color: var(--muted-strong); }
+.axis-history-summary__played { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 3px 9px; border: 1px solid var(--card-border); border-radius: 5px; background: var(--card-bg); }
+.axis-history-summary__played dt { color: var(--muted-strong); font-size: .66rem; }
+.axis-history-summary__played dd { margin: 0; font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.axis-history-summary__teams { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: .76rem; }
+.axis-history-summary__teams > span { display: flex; align-items: center; gap: 9px; }
+.axis-history-summary__team-a { color: var(--axis-team-a); text-align: left; }
+.axis-history-summary__team-b { color: var(--axis-team-b); text-align: right; flex-direction: row-reverse; }
+.axis-history-summary__teams i { display: grid; place-items: center; width: 30px; height: 34px; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 5px; background: color-mix(in srgb, currentColor 9%, transparent); font-size: .9rem; font-style: normal; font-weight: 800; }
+.axis-history-summary__teams small { display: block; color: var(--muted); font-size: .63rem; margin-top: 1px; }
+.axis-history-summary__teams strong { margin-inline: 3px; font-size: 1.65rem; line-height: 1; font-variant-numeric: tabular-nums; font-weight: 800; }
+.axis-history-summary__balance { position: relative; display: flex; height: 14px; border-radius: 3px; background: var(--card-border); }
 .axis-history-summary__balance > span { flex: none; height: 100%; transition: width 400ms ease; }
-.axis-history-summary__balance-a { background: var(--accent); }
-.axis-history-summary__balance-b { background: var(--muted); box-shadow: inset 2px 0 var(--card-bg); }
-@media (prefers-reduced-motion: reduce) { .axis-history-summary__balance > span { transition: none; } }
-.axis-history-summary__leader { margin: 7px 0 10px; color: var(--accent); font-size: .76rem; font-weight: 700; }
-.axis-history-summary h3 { font-size: .72rem; color: var(--muted-strong); }
-.axis-history-summary__maps { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 7px 0 0; text-align: left; }
-.axis-history-summary__maps li { position: relative; display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; padding: 5px 10px; border-radius: 4px; background: var(--input-bg); overflow: hidden; font-size: .74rem; }
+.axis-history-summary__balance-a { background: var(--axis-team-a); border-radius: 3px 0 0 3px; }
+.axis-history-summary__balance-b { background: var(--axis-team-b); border-radius: 0 3px 3px 0; }
+.axis-history-summary__balance > .axis-history-summary__balance-marker { position: absolute; top: -5px; bottom: -5px; height: auto; width: 3px; transform: translateX(-50%); border-radius: 1px; background: #fff; box-shadow: 0 0 0 3px var(--card-bg); transition: left 400ms ease; }
+@media (prefers-reduced-motion: reduce) { .axis-history-summary__balance > span, .axis-history-summary__balance > .axis-history-summary__balance-marker { transition: none; } }
+.axis-history-summary__leader { margin: 8px 0 14px; color: var(--muted-strong); font-size: .72rem; font-weight: 600; }
+.axis-history-summary[data-leader="a"] .axis-history-summary__leader { color: var(--axis-team-a); }
+.axis-history-summary[data-leader="b"] .axis-history-summary__leader { color: var(--axis-team-b); }
+.axis-history-summary__map-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; padding-top: 12px; border-top: 1px solid var(--card-border); }
+.axis-history-summary h3 { font-size: .67rem; color: var(--muted); }
+.axis-history-summary__maps { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; text-align: left; min-width: 0; }
+.axis-history-summary__maps li { position: relative; display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; padding: 5px 9px; border: 1px solid var(--card-border); border-radius: 4px; background: var(--card-bg); font-size: .72rem; cursor: help; }
+.axis-history-summary__maps li:first-child { border-color: var(--muted); }
+.axis-history-summary__maps li:hover { background: var(--input-bg); }
+.axis-history-summary__maps li:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .axis-history-summary__maps li > span:first-child { overflow-wrap: anywhere; }
 .axis-history-summary__maps strong { font-variant-numeric: tabular-nums; }
 .axis-history-summary__bar { position: absolute; inset: auto auto 0 0; height: 2px; background: var(--accent); opacity: .65; }
+.axis-history-summary__map-tooltip { position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 2; padding: 5px 8px; border: 1px solid var(--card-border); border-radius: 4px; background: var(--foreground); color: var(--background); font-size: .75rem; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (max-width: 400px) {
+  .axis-history-summary__header { justify-content: center; margin-bottom: 14px; }
+  .axis-history-summary__teams { gap: 8px; font-size: .7rem; }
+  .axis-history-summary__teams > span { gap: 5px; }
+  .axis-history-summary__teams > span > span { white-space: nowrap; }
+  .axis-history-summary__teams i { width: 24px; height: 28px; flex-shrink: 0; font-size: .75rem; }
+  .axis-history-summary__teams strong { margin-inline: 0; font-size: 1.4rem; }
+}
 .axis-match { overflow: hidden; scroll-margin-top: 96px; }
 @supports (interpolate-size: allow-keywords) {
   .axis-match { interpolate-size: allow-keywords; }
