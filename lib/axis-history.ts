@@ -22,7 +22,14 @@ export interface AxisMatch {
   winner: number | null;
 }
 export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: number; total: number }
+export interface AxisHistorySummary {
+  played: number;
+  winsA: number;
+  winsB: number;
+  maps: { name: string; matches: number }[];
+}
 export interface AxisHistoryResponse extends AxisHistoryPage {
+  summary?: AxisHistorySummary;
   matchNumber?: number;
   updatedAt: number | null; available: boolean; stale: boolean;
   seasons?: AxisSeason[]; season?: string; archiveComplete?: boolean;

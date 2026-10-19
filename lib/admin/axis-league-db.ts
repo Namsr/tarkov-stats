@@ -442,10 +442,22 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const where = selected ? " WHERE json_extract(payload, '$.queueId')=? AND json_extract(payload, '$.time')>=?" + (selected.endsAt == null ? "" : " AND json_extract(payload, '$.time')<?") : "";
       const parameters = selected ? [AXIS_CHANNEL_ID, selected.startsAt, ...(selected.endsAt == null ? [] : [selected.endsAt])] : [];
       const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + where).get(...parameters).n;
+      const completed = "SELECT number,payload FROM axis_archive_matches" + where + (where ? " AND " : " WHERE ")
+        + "(json_extract(payload,'$.winner')>=0 OR json_extract(payload,'$.winner')=-2)";
+      const counts = db.prepare(
+        "SELECT COUNT(*) AS played,COALESCE(SUM(json_extract(payload,'$.winner')=0),0) AS winsA,"
+        + "COALESCE(SUM(json_extract(payload,'$.winner')=1),0) AS winsB FROM (" + completed + ")"
+      ).get(...parameters);
+      const maps = db.prepare(
+        "SELECT name,COUNT(*) AS matches FROM (SELECT DISTINCT m.number,map.value AS name FROM ("
+        + completed + ") m,json_each(m.payload,'$.maps') map WHERE map.type='text')"
+        + " GROUP BY name ORDER BY matches DESC,name COLLATE NOCASE,name"
+      ).all(...parameters).map((row: { name: string; matches: number }) => ({ name: row.name, matches: row.matches }));
+      const summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps };
       const matches = db.prepare("SELECT payload FROM axis_archive_matches" + where + " ORDER BY number DESC LIMIT ? OFFSET ?")
         .all(...parameters, AXIS_HISTORY_PAGE_SIZE, (page - 1) * AXIS_HISTORY_PAGE_SIZE).map((row: { payload: string }) => JSON.parse(row.payload));
       return { page, total, pages: Math.max(1, Math.ceil(total / AXIS_HISTORY_PAGE_SIZE)), seasons: state.complete ? seasons : seasons.filter((entry) => entry.current), season,
-        matches: decorateMatches(matches),
+        matches: decorateMatches(matches), summary,
         archiveComplete: Boolean(state.complete), updatedAt: state.updated_at, available: state.updated_at != null,
         stale: Boolean(state.last_error) || state.updated_at != null && now - state.updated_at > AXIS_REFRESH_MS * 2 };
     },

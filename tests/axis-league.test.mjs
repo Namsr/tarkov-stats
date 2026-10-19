@@ -261,6 +261,37 @@ test("future mass resets create another season without erasing the confirmed bou
   assert.equal(seasons[1].inferred, false);
 });
 
+test("history statistics cover every selected page and count completed matches and distinct maps", t => {
+  const db = store(t);
+  assert.deepEqual(db.readSeasonHistory(1, "current").summary, { played: 0, winsA: 0, winsB: 0, maps: [] });
+  const matches = Array.from({ length: 27 }, (_, i) => ({
+    ...seasonMatch(i + 2, AXIS_CURRENT_SEASON_START + i),
+    winner: i < 15 ? 0 : 1, maps: i < 20 ? ["Bowl", "Bowl"] : ["Air Pit", "Bowl"],
+  }));
+  matches.push(
+    { ...seasonMatch(29, AXIS_CURRENT_SEASON_START + 28), winner: -2, maps: ["Air Pit"] },
+    { ...seasonMatch(30, AXIS_CURRENT_SEASON_START + 29), winner: -1, maps: ["Cancelled"] },
+    { ...seasonMatch(31, AXIS_CURRENT_SEASON_START + 30), winner: null, maps: ["Unknown"] },
+    { ...seasonMatch(1, AXIS_CURRENT_SEASON_START - 1), maps: ["Old season"] },
+    { ...seasonMatch(32, AXIS_CURRENT_SEASON_START, 1100, "other"), maps: ["Other queue"] },
+    { ...seasonMatch(33, null), maps: [] },
+  );
+  db.publishArchive({ page: 1, pages: 1, total: matches.length, matches });
+  const expected = { played: 28, winsA: 15, winsB: 12, maps: [{ name: "Bowl", matches: 27 }, { name: "Air Pit", matches: 8 }] };
+  assert.deepEqual(db.readSeasonHistory(1, "current").summary, expected);
+  assert.deepEqual(db.readSeasonHistory(2, "current").summary, expected);
+  const all = db.readSeasonHistory(1, "all").summary;
+  assert.equal(all.played, 31); assert.equal(all.winsA, 18); assert.equal(all.winsB, 12);
+  assert.deepEqual(all.maps.slice(2), [{ name: "Old season", matches: 1 }, { name: "Other queue", matches: 1 }]);
+  matches[0].winner = 1;
+  db.publishArchive({ page: 1, pages: 1, total: matches.length, matches });
+  assert.equal(db.readSeasonHistory(1, "current").summary.winsB, 13);
+  const previousSeason = db.readSeasonHistory(1, "all").seasons.find(season => !season.current);
+  assert.deepEqual(db.readSeasonHistory(1, previousSeason.id).summary, {
+    played: 1, winsA: 1, winsB: 0, maps: [{ name: "Old season", matches: 1 }],
+  });
+});
+
 test("persisted season summaries survive reopen, skip unchanged imports and update across store handles", (t) => {
   const sql = new DatabaseSync(":memory:"); t.after(() => sql.close());
   const one = createAxisLeagueStore(sql), two = createAxisLeagueStore(sql);

@@ -4,13 +4,15 @@ import type { AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 
 export default function AxisMatchHistory({ active = true, canEditKda = false, initialMatch, players, averageKda }: { active?: boolean; canEditKda?: boolean; initialMatch?: number; players?: AxisPlayer[]; averageKda?: number | null }) {
   const { t, lang } = useI18n();
   const [page, setPage] = useState(1);
+  const pendingScroll = useRef(false);
+  const scrolledMatch = useRef<number | undefined>(undefined);
   const [season, setSeason] = useState(initialMatch ? "all" : "current");
   const [focusedMatch, setFocusedMatch] = useState(initialMatch);
   const [data, setData] = useState<AxisHistoryResponse | null>(null);
@@ -48,9 +50,15 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   }, [active, page, season, retry, focusedMatch]);
 
   useEffect(() => {
-    if (focusedMatch == null || !current) return;
-    document.getElementById(`axis-match-${focusedMatch}`)?.scrollIntoView({ block: "start" });
-  }, [focusedMatch, current]);
+    if (!active || !current) return;
+    const matchNumber = focusedMatch ?? (pendingScroll.current ? current.matches[0]?.number : undefined);
+    if (matchNumber == null || focusedMatch != null && scrolledMatch.current === focusedMatch) return;
+    const match = document.getElementById(`axis-match-${matchNumber}`);
+    if (!match) return;
+    match.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+    pendingScroll.current = false;
+    scrolledMatch.current = focusedMatch;
+  }, [active, focusedMatch, current]);
 
   function clearMatch() {
     setFocusedMatch(undefined); setPage(1); setSeason("current"); setFailed(false);
@@ -59,7 +67,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     window.history.replaceState(null, "", url);
   }
 
-  function navigate(target: number) { setFailed(false); setPage(target); }
+  function navigate(target: number) { pendingScroll.current = true; setFailed(false); setPage(target); }
   function teamName(match: AxisMatch, index: number) {
     const name = match.teams[index]?.name;
     return name && !/^Team [A-Z]$/.test(name) ? name : t("axis.history.team", { n: String.fromCharCode(65 + index) });
@@ -88,6 +96,23 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
     </div>}
     {!current && !failed && <p role="status" className="leaderboard-publication">{t("common.loading")}</p>}
     {current && <>
+      {focusedMatch == null && current.summary && <section className="axis-history-summary data-panel" aria-label={t("axis.history.summary")}>
+        <h2 className="section-heading">{t("axis.history.summary")}</h2>
+        <p className="axis-history-summary__hint">{t(season === "all" ? "axis.history.archiveSummaryHint" : "axis.history.summaryHint")}</p>
+        <dl className="axis-history-summary__metrics">
+          <div><dt>{t("axis.gamesPlayed")}</dt><dd>{number(current.summary.played)}</dd></div>
+          <div><dt>{t("axis.history.wins", { team: t("axis.history.team", { n: "A" }) })}</dt><dd>{number(current.summary.winsA)}</dd></div>
+          <div><dt>{t("axis.history.wins", { team: t("axis.history.team", { n: "B" }) })}</dt><dd>{number(current.summary.winsB)}</dd></div>
+        </dl>
+        <p className="axis-history-summary__leader">{current.summary.winsA === current.summary.winsB
+          ? t(current.summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
+          : t("axis.history.leading", { team: t("axis.history.team", { n: current.summary.winsA > current.summary.winsB ? "A" : "B" }) })}</p>
+        <h3>{t("axis.history.maps")}</h3>
+        {current.summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{current.summary.maps.map((map) => <li key={map.name}>
+          <span>{map.name}</span><strong>{number(map.matches)}</strong>
+          <span className="axis-history-summary__bar" aria-hidden="true" style={{ width: `${map.matches / current.summary!.maps[0].matches * 100}%` }} />
+        </li>)}</ol>}
+      </section>}
       <nav hidden={focusedMatch != null} className="axis-history-pages" aria-label={t("axis.history.pagination")}>
         <button type="button" className="ghost-button" disabled={page === 1} onClick={() => navigate(1)}>{t("axis.history.first")}</button>
         <button type="button" className="ghost-button" disabled={page === 1} onClick={() => navigate(page - 1)}>{t("axis.history.previous")}</button>
@@ -96,8 +121,11 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
         <button type="button" className="ghost-button" disabled={page === current.pages} onClick={() => navigate(current.pages)}>{t("axis.history.last")}</button>
       </nav>
       {current.matches.length === 0 ? <p className="axis-empty data-panel">{t("axis.history.empty")}</p> :
-        <div className="axis-match-list">{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0}>
-          <summary>
+        <div className="axis-match-list" key={`${season}:${page}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0}>
+          <summary onClick={(event) => {
+            const match = event.currentTarget.parentElement as HTMLDetailsElement;
+            if (!match.open) requestAnimationFrame(() => match.scrollIntoView({ block: "start", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }));
+          }}>
             <strong>{t("axis.history.match", { n: String(match.number) })}</strong>
             {match.time == null ? <span>{t("axis.history.noTime")}</span> : <time dateTime={new Date(match.time).toISOString()}>{new Date(match.time).toLocaleString(locale)}</time>}
             <span className="axis-match-queue">{match.queue ?? t("axis.history.unknownQueue")}</span>

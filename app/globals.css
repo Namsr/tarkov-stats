@@ -901,10 +901,31 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-pages > span { color: var(--muted-strong); font-size: .76rem; text-align: center; }
 .axis-history-pages button:disabled { opacity: .4; cursor: default; }
 .axis-match-list { display: grid; gap: 12px; }
-.axis-match { overflow: hidden; }
+.axis-history-summary { max-width: 760px; margin: 24px auto; padding: 24px clamp(12px, 3vw, 28px); text-align: center; }
+.axis-history-summary__hint { max-width: 580px; margin: 10px auto 20px; font-size: .76rem; color: var(--muted-strong); }
+.axis-history-summary__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.axis-history-summary__metrics dt { color: var(--muted-strong); font-size: .74rem; overflow-wrap: anywhere; }
+.axis-history-summary__metrics dd { margin: 6px 0 0; font-size: clamp(1.5rem, 4vw, 2.2rem); font-weight: 800; font-variant-numeric: tabular-nums; }
+.axis-history-summary__leader { margin: 16px 0 24px; color: var(--accent); font-size: .84rem; font-weight: 700; }
+.axis-history-summary h3 { font-size: .82rem; }
+.axis-history-summary__maps { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; text-align: left; }
+.axis-history-summary__maps li { position: relative; display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 4px; background: var(--input-bg); overflow: hidden; font-size: .8rem; }
+.axis-history-summary__maps li > span:first-child { overflow-wrap: anywhere; }
+.axis-history-summary__maps strong { font-variant-numeric: tabular-nums; }
+.axis-history-summary__bar { position: absolute; inset: auto auto 0 0; height: 3px; background: var(--accent); opacity: .65; }
+.axis-match { overflow: hidden; scroll-margin-top: 96px; }
+@supports (interpolate-size: allow-keywords) {
+  .axis-match { interpolate-size: allow-keywords; }
+  .axis-match::details-content { block-size: 0; opacity: 0; overflow: clip; transition: block-size 300ms ease, opacity 200ms ease, content-visibility 300ms allow-discrete; }
+  .axis-match[open]::details-content { block-size: auto; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .axis-match::details-content { transition: none; }
+}
 .axis-match summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 64px; padding: 16px 18px; cursor: pointer; font-size: .8rem; }
-.axis-match summary::before { content: "›"; color: var(--muted); font-size: 1.2rem; }
-.axis-match[open] summary::before { content: "⌄"; }
+.axis-match summary::before { content: "›"; color: var(--muted); font-size: 1.2rem; transition: transform 200ms ease; }
+.axis-match[open] summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .axis-match summary::before { transition: none; } }
 .axis-match summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .axis-match summary time, .axis-match-queue { color: var(--muted-strong); }
 .axis-match-result { margin-left: auto; color: var(--muted-strong); }
