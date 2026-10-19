@@ -4,10 +4,6 @@ import { getAnalyticsStore } from "@/lib/admin/analytics-db";
 import { fetchCloudflareTrafficRange } from "@/lib/admin/cloudflare-analytics";
 import { ADMIN_NO_STORE_HEADERS, parseAdminDomain, parseAdminPeriod, periodMilliseconds } from "@/lib/admin/types";
 import { getSuspiciousSummary } from "@/lib/admin/moderation-db";
-import { getAveragePublicationStates } from "@/lib/average-publication";
-import { getSystemMetricsStore } from "@/lib/admin/system-metrics";
-import { runtimeHealthReport } from "@/lib/observability/runtime-health.mjs";
-import type { HealthDiagnostics } from "@/lib/admin/health-report";
 
 export const runtime = "nodejs";
 
@@ -26,26 +22,10 @@ export async function GET(request: NextRequest) {
     fetchCloudflareTrafficRange(now - duration * 2, now - duration, domain),
     getSuspiciousSummary().catch(() => null),
   ]);
-  const local = store?.summary(period, domain, now) ?? null;
+  const local = store?.summary(period, domain, now, false) ?? null;
   const previousLocal = store?.summary(period, domain, now - duration, false) ?? null;
   const own = store?.pageviewSummary(period, domain, now) ?? null;
   const previousOwn = store?.pageviewSummary(period, domain, now - duration, false) ?? null;
-  const averagePublications = await getAveragePublicationStates(now);
-  const systemStore = await getSystemMetricsStore();
-  const diagnostics: HealthDiagnostics = {
-    from: now - duration, to: now,
-    browser: store?.browserPerformanceSummary(period, domain, now) ?? null,
-    runtime: runtimeHealthReport(now - duration, now),
-    system: { available: Boolean(systemStore), configured: (process.env.SYSTEM_METRICS_INGEST_TOKEN?.trim() ?? "").length >= 32,
-      scope: "host", data: systemStore?.range(period, now) ?? null },
-    collection: { backend: "recorded_requests_excluding_read_only_risk_polls", browser: "supported_public_pages_dnt_respected",
-      runtime: "current_http_process_memory_last_120_samples", slowRequestLimit: 30,
-      latencyPercentiles: "successful_requests", phaseDurations: "may_overlap_do_not_sum_percentiles",
-      browserValues: "milliseconds", clientReady: "navigation_to_react_effect_not_full_hydration",
-      browserApi: "resource_timing_includes_browser_cache_no_http_status", lcp: "initial_document_at_first_hidden",
-      browserRetentionDays: 7, browserDocumentSampleLimit: 400, browserMetricGroupLimit: 150,
-      unmeasuredBrowserMetrics: ["INP", "CLS", "full_hydration", "client_render_after_api"] },
-  };
   const metrics = {
     visits: traffic.visits,
     pageviews: traffic.pageviews,
@@ -78,7 +58,5 @@ export async function GET(request: NextRequest) {
     suspicious,
     storageAvailable: Boolean(store),
     traffic: { available: traffic.available, reason: traffic.reason, sampled: traffic.sampled, from: traffic.from, to: traffic.to },
-    averagePublications,
-    diagnostics,
   }, { headers: ADMIN_NO_STORE_HEADERS });
 }
