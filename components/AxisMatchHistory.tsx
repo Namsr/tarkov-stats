@@ -101,8 +101,8 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
         <p className="axis-history-summary__hint">{t(season === "all" ? "axis.history.archiveSummaryHint" : "axis.history.summaryHint")}</p>
         <dl className="axis-history-summary__metrics">
           <div><dt>{t("axis.gamesPlayed")}</dt><dd>{number(current.summary.played)}</dd></div>
-          <div><dt>{t("axis.history.wins", { team: t("axis.history.team", { n: "A" }) })}</dt><dd>{number(current.summary.winsA)}</dd></div>
-          <div><dt>{t("axis.history.wins", { team: t("axis.history.team", { n: "B" }) })}</dt><dd>{number(current.summary.winsB)}</dd></div>
+          <div><dt>{t("axis.history.wins", { team: "A" })}</dt><dd>{number(current.summary.winsA)}</dd></div>
+          <div><dt>{t("axis.history.wins", { team: "B" })}</dt><dd>{number(current.summary.winsB)}</dd></div>
         </dl>
         <p className="axis-history-summary__leader">{current.summary.winsA === current.summary.winsB
           ? t(current.summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")

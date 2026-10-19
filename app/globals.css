@@ -901,18 +901,19 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-pages > span { color: var(--muted-strong); font-size: .76rem; text-align: center; }
 .axis-history-pages button:disabled { opacity: .4; cursor: default; }
 .axis-match-list { display: grid; gap: 12px; }
-.axis-history-summary { max-width: 760px; margin: 24px auto; padding: 24px clamp(12px, 3vw, 28px); text-align: center; }
-.axis-history-summary__hint { max-width: 580px; margin: 10px auto 20px; font-size: .76rem; color: var(--muted-strong); }
-.axis-history-summary__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.axis-history-summary__metrics dt { color: var(--muted-strong); font-size: .74rem; overflow-wrap: anywhere; }
-.axis-history-summary__metrics dd { margin: 6px 0 0; font-size: clamp(1.5rem, 4vw, 2.2rem); font-weight: 800; font-variant-numeric: tabular-nums; }
-.axis-history-summary__leader { margin: 16px 0 24px; color: var(--accent); font-size: .84rem; font-weight: 700; }
-.axis-history-summary h3 { font-size: .82rem; }
-.axis-history-summary__maps { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; text-align: left; }
-.axis-history-summary__maps li { position: relative; display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 4px; background: var(--input-bg); overflow: hidden; font-size: .8rem; }
+.axis-history-summary { max-width: 680px; margin: 16px auto; padding: 14px 16px; text-align: center; }
+.axis-history-summary > .section-heading { font-size: .9rem; }
+.axis-history-summary__hint { margin: 5px auto 10px; font-size: .7rem; color: var(--muted-strong); }
+.axis-history-summary__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.axis-history-summary__metrics dt { color: var(--muted-strong); font-size: .7rem; overflow-wrap: anywhere; }
+.axis-history-summary__metrics dd { margin: 2px 0 0; font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.axis-history-summary__leader { margin: 7px 0 10px; color: var(--accent); font-size: .76rem; font-weight: 700; }
+.axis-history-summary h3 { font-size: .72rem; color: var(--muted-strong); }
+.axis-history-summary__maps { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 7px 0 0; text-align: left; }
+.axis-history-summary__maps li { position: relative; display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; padding: 5px 10px; border-radius: 4px; background: var(--input-bg); overflow: hidden; font-size: .74rem; }
 .axis-history-summary__maps li > span:first-child { overflow-wrap: anywhere; }
 .axis-history-summary__maps strong { font-variant-numeric: tabular-nums; }
-.axis-history-summary__bar { position: absolute; inset: auto auto 0 0; height: 3px; background: var(--accent); opacity: .65; }
+.axis-history-summary__bar { position: absolute; inset: auto auto 0 0; height: 2px; background: var(--accent); opacity: .65; }
 .axis-match { overflow: hidden; scroll-margin-top: 96px; }
 @supports (interpolate-size: allow-keywords) {
   .axis-match { interpolate-size: allow-keywords; }
