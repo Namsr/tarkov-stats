@@ -104,7 +104,7 @@ test("latency graphs compare matching percentiles with an editable reference wit
     { rows: data, referenceKey: "api", defaultReferenceMs: reference, lang: "ru", t }));
   const example = render(1.5);
   assert.ok(example.includes("1 000 раз выше эталона"));
-  assert.ok(example.includes("1 500 мс"));
+  assert.ok(example.includes(`${new Intl.NumberFormat().format(1500)} мс`));
   assert.ok(example.includes(dict.ru["admin.health.timeline.unavailable"]));
   assert.ok(render(100).includes("15 раз выше эталона"));
   assert.ok(render(3000).includes("В пределах эталона (0,5×)"));
@@ -113,7 +113,9 @@ test("latency graphs compare matching percentiles with an editable reference wit
     assert.ok(html.includes(dict.ru["admin.health.comparison.noReference"]));
     assert.doesNotMatch(html, /NaN|Infinity|width:-/);
   }
-  assert.ok(render(100, []).includes(dict.ru["admin.health.timeline.unavailable"]));
+  const empty = render(100, []);
+  assert.ok(empty.includes(dict.ru["admin.health.browser.noSamples"]));
+  assert.ok(!empty.includes(dict.ru["admin.health.timeline.unavailable"]));
   assert.ok(render(100, [{ ...rows[0], p50: 0 }]).includes("В пределах эталона (0×)"));
 });
 
@@ -138,6 +140,9 @@ test("latency timelines draw real timestamps with gaps and never carry the last 
   assert.ok(html.includes("1 000 раз выше эталона"));
   assert.ok(html.includes("admin-health-chart__reference"));
   assert.ok(!html.includes("admin-health-comparison__track"));
+  const isolated = render([point(0, 0), point(3, 1500), point(6, 100)]);
+  assert.equal((isolated.match(/class="admin-health-chart__sample /g) ?? []).length, 6, "earlier isolated measurements need visible dots for all three percentiles");
+  assert.equal((html.match(/class="admin-health-chart__sample /g) ?? []).length, 0, "joined points already have a visible line");
   const failed = render([...series, { ...point(4, null), problems: 1, maxMs: 7000 }]);
   assert.ok(!failed.includes("1 000 раз выше эталона"), "latest failed bucket must not reuse an earlier success");
   assert.doesNotMatch(failed, /NaN|Infinity/);

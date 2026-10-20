@@ -2158,3 +2158,5 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-health-chart__comparison { display: block; max-width: 180px; margin-top: 4px; color: var(--muted-strong); font-size: .65rem; font-weight: 400; white-space: normal; }
 .admin-health-comparison__controls select { width: min(520px, 100%); }
 .admin-health-comparison__controls label:first-child { flex: 1 1 230px; }
+
+.admin-health-chart__sample { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: currentColor; transform: translate(-50%, -50%); }

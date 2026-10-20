@@ -880,6 +880,17 @@ export function HealthSeriesCharts({ points, bucketMs, lang, t, onShowTable, lat
           const last = latencyOnly ? points.at(-1)?.[series.key] : healthLatest(points, series.key);
           return last != null && <span key={series.tone} className={`admin-health-chart__marker admin-health-chart__marker--${series.tone}`} style={{ left: `${xFor(lastAt)}%`, top: `${yFor(last, latencyMax) / chartHeight * 100}%` }} />;
         })}
+        {latencyOnly && HEALTH_LATENCY_SERIES.flatMap((series) => points.slice(0, -1).map((point, index) => {
+          const value = point[series.key];
+          if (value == null) return null;
+          const previous = points[index - 1];
+          const next = points[index + 1];
+          const joinedBefore = previous?.[series.key] != null && point.at - previous.at <= bucketMs;
+          const joinedAfter = next?.[series.key] != null && next.at - point.at <= bucketMs;
+          // An isolated SVG move has no visible stroke. Keep sparse measurements
+          // visible without drawing a line across unmeasured intervals.
+          return !joinedBefore && !joinedAfter && <span key={`${series.tone}-${point.at}`} className={`admin-health-chart__sample admin-health-chart__marker--${series.tone}`} style={{ left: `${xFor(point.at)}%`, top: `${yFor(value, latencyMax) / chartHeight * 100}%` }} />;
+        }))}
       </div>
       {xAxis}
       </>}
@@ -941,7 +952,7 @@ export function HealthLatencyComparison({ rows, referenceKey, defaultReferenceMs
       <HealthSeriesCharts points={points} bucketMs={bucketMs} lang={lang} t={t} onShowTable={showTable} latencyOnly referenceMs={reference} />
       <details className="admin-health-operation-table" ref={table}><summary>{t("admin.health.timeline.table")}</summary><div className="admin-health-table-wrap"><table className="admin-health-table"><thead><tr><th scope="col">{t("admin.monitoring.table.time")}</th><th scope="col">{t("admin.health.browser.samples")}</th>{["p50", "p95", "p99"].map((key) => <th key={key} scope="col">{t("admin.health." + key + "Short")}</th>)}<th scope="col">{t("admin.health.maxShort")}</th></tr></thead><tbody>{points.map((point) => <tr key={point.at}><th scope="row">{formatDate(point.at, lang, t)}</th><td>{formatNumber(point.requests)}</td><td>{healthLatency(point.p50Ms, t)}</td><td>{healthLatency(point.p95Ms, t)}</td><td>{healthLatency(point.p99Ms, t)}</td><td>{healthLatency(point.maxMs, t)}</td></tr>)}</tbody></table></div></details>
     </> : <>
-      <p className="admin-notice">{t("admin.health.timeline.unavailable")}</p>
+      <p className="admin-notice">{t(selected ? "admin.health.timeline.unavailable" : "admin.health.browser.noSamples")}</p>
       {selected && <dl className="admin-health-chart__chips">{(["p50", "p95", "p99"] as const).map((key) => <div key={key} className="admin-health-chart__chip"><dt>{t("admin.health." + key + "Short")}</dt><dd>{healthLatency(selected[key], t)}<small className="admin-health-chart__comparison">{healthReferenceRatio(selected[key], reference, lang, t)}</small></dd></div>)}</dl>}
     </>}
   </div>;
