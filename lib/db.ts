@@ -38,6 +38,7 @@ import {
   readRegularRiskAchievementBaseline,
 } from "@/lib/achievement-baseline-publication";
 import { buildRegularRiskBaseline, storedRegularRiskInputs, REGULAR_RISK_MAX_COHORT } from "@/lib/regular-risk-score";
+import { initializeRiskPopulationRevision } from "./risk-population-revision.ts";
 import { retrySqliteBusy } from "@/lib/sqlite-busy-retry";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
 
@@ -782,26 +783,22 @@ function persistentComparisonMetricsSql(
   where: string,
   statistic: AverageStatistic,
 ): string {
-  const selected = statistic === "median"
-    ? "rn IN (CAST((n + 1) / 2 AS INTEGER), CAST((n + 2) / 2 AS INTEGER))"
-    : `rn > CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END
-       AND rn <= n - CASE WHEN n >= ${MIN_N_FOR_TRIM} THEN CAST(n * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
-  // One ranked pass per metric over the shared cohort CTE. Ranking the six
-  // metrics together meant a UNION ALL that expanded the cohort six times first,
-  // so the statement wrote and then sorted six figures worth of rows. That is
-  // cheap for a matched window of a few hundred rows and ruinous for the
-  // population fallback, which has no window and aggregates every eligible row.
-  // Ranking each metric on its own keeps the cohort at one row per player.
+  const trim = (n: string) => `CASE WHEN ${n} >= ${MIN_N_FOR_TRIM} THEN CAST(${n} * ${TRIM_FRACTION} AS INTEGER) ELSE 0 END`;
+  // Sort each metric within the same materialized cohort. Shared counts and
+  // rank comparisons avoid per-row window bookkeeping; LIMIT/OFFSET selects
+  // exactly the old middle/trimmed slice in the same numeric order.
   const metricWhere = (metric: string) => `${metric} IS NOT NULL${
     metric === "pmc_survival_rate" ? " AND pmc_survival_rate > 0" : ""
   }${mode === "pve" && PVP_METRICS.has(metric) ? " AND pvp_stats_known = 1" : ""}`;
   const perMetric = COMPARISON_RADAR_METRICS.map((metric, index) =>
-    `SELECT '${metric}' AS metric, MAX(n) AS n,
-      AVG(CASE WHEN ${selected} THEN v END) AS a,
-      SUM(CASE WHEN v < player_v THEN 1 ELSE 0 END) AS below,
-      SUM(CASE WHEN v = player_v THEN 1 ELSE 0 END) AS equal, NULL, NULL, NULL, NULL
-      FROM (SELECT ${metric} AS v, ? AS player_v, ROW_NUMBER() OVER (ORDER BY ${metric}) AS rn,
-        count_${index} AS n FROM cohort CROSS JOIN summary WHERE ${metricWhere(metric)})`
+    `SELECT '${metric}' AS metric, count_${index} AS n,
+      (SELECT AVG(v) FROM (SELECT ${metric} AS v FROM cohort WHERE ${metricWhere(metric)}
+        ORDER BY ${metric} LIMIT ${statistic === "median"
+          ? `2 - (SELECT count_${index} FROM summary) % 2`
+          : `(SELECT count_${index} - 2 * (${trim(`count_${index}`)}) FROM summary)`}
+        OFFSET (SELECT ${statistic === "median" ? `CAST((count_${index} - 1) / 2 AS INTEGER)` : trim(`count_${index}`)} FROM summary))) AS a,
+      below_${index} AS below, equal_${index} AS equal, NULL, NULL, NULL, NULL
+      FROM summary`
   ).join("\n    UNION ALL\n    ");
   // Materialize once: SQLite otherwise inlines the CTE into each metric and
   // can select a narrow PvP index that reads every large profile row again.
@@ -816,9 +813,11 @@ function persistentComparisonMetricsSql(
     SELECT COUNT(*) AS n, MIN(hours) AS hours_min, MAX(hours) AS hours_max,
       MIN(pmc_raids) AS raids_min, MAX(pmc_raids) AS raids_max,
       ${COMPARISON_RADAR_METRICS.map((metric, index) =>
-        `COUNT(CASE WHEN ${metricWhere(metric)} THEN 1 END) AS count_${index}`
+        `COUNT(CASE WHEN ${metricWhere(metric)} THEN 1 END) AS count_${index},
+        SUM(CASE WHEN ${metricWhere(metric)} AND ${metric} < player_${index} THEN 1 ELSE 0 END) AS below_${index},
+        SUM(CASE WHEN ${metricWhere(metric)} AND ${metric} = player_${index} THEN 1 ELSE 0 END) AS equal_${index}`
       ).join(", ")}
-    FROM cohort
+    FROM cohort CROSS JOIN (SELECT ${COMPARISON_RADAR_METRICS.map((_, index) => `? AS player_${index}`).join(", ")})
   )
   SELECT '__group__' AS metric, n, NULL AS a,
     NULL AS below, NULL AS equal,
@@ -1402,6 +1401,7 @@ function initializeSqliteSchema(opened: any): void {
   ensureSqliteCohortIndexes(opened);
   ensureSqliteAverageIndexes(opened);
   initializeArenaSchema(opened);
+  initializeRiskPopulationRevision(opened, "regular");
 }
 
 
@@ -1467,10 +1467,16 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
               try {
                 const saved = db.prepare(SQLITE_UPSERT_SQL).run(...argsFor(aid, stats, ids, now), aid);
                 if (Number(saved.changes) > 0) {
-                  rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
-                  if (Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0) {
+                  const wanted = new Set(Number.isFinite(stats.hoursPlayed) && stats.hoursPlayed > 0 ? ids : []);
+                  const owners = rawDb.prepare("SELECT ach_id, hours FROM regular_risk_achievement_owners WHERE aid = ?")
+                    .all(aid) as { ach_id: string; hours: number }[];
+                  // A timestamp/counter refresh need not rewrite every owner
+                  // row or invalidate otherwise identical risk references.
+                  if (owners.length !== wanted.size || owners.some((owner) =>
+                    owner.hours !== stats.hoursPlayed || !wanted.has(owner.ach_id))) {
+                    rawDb.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
                     const insertOwner = rawDb.prepare("INSERT INTO regular_risk_achievement_owners(aid, ach_id, hours) VALUES (?, ?, ?)");
-                    for (const id of new Set(ids)) insertOwner.run(aid, id, stats.hoursPlayed);
+                    for (const id of wanted) insertOwner.run(aid, id, stats.hoursPlayed);
                   }
                 }
                 updateSearchIndex(aid, stats, now);

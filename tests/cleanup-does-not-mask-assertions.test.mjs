@@ -704,6 +704,8 @@ const suitesWhoseDeleteNeedsAGuard = [
 // on its delete anyway, so the real distinction is not guarded versus unguarded,
 // it is whether a handle can still be live at the delete.
 const suitesThatCloseTheHandleOrTheProcessFirst = [
+  // Both revision-test connections are closed before removing their fixture.
+  "tests/achievement-baseline-publication.test.ts",
   "tests/admin-analytics.test.ts",
   "tests/admin-data-audit.test.mjs",
   "tests/admin-moderation.test.ts",

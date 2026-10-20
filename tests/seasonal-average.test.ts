@@ -149,6 +149,9 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     assert.equal(diagnostics.at(-1).populationSqlMs, 0);
     assert.equal(diagnostics.at(-1).prepareMs, 0);
     const changed = new DatabaseSync(databasePath);
+    changed.exec("UPDATE player_profiles SET last_access_at = last_access_at + 1; UPDATE progression_snapshots SET captured_at = captured_at + 1");
+    assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 2);
+    assert.equal(diagnostics.at(-1).cache, "hit", "access/queue metadata must not rebuild achievement populations");
     changed.prepare("UPDATE progression_snapshots SET achievements = '[]' WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 2").run();
     changed.close();
     assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 1);

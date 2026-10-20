@@ -16,6 +16,7 @@ import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { prepareSeasonalRiskAchievements } from "./risk-achievement-population.ts";
 import { performance } from "node:perf_hooks";
+import { riskPopulationRevision } from "../risk-population-revision.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { logSampledTiming } from "../observability/sample-rate.ts";
 
@@ -545,7 +546,7 @@ export function selectSeasonalRiskPercent(
 let riskAchievementPopulation: {
   db: AverageBackend["db"];
   cycleId: string;
-  version: number;
+  version: number | string;
   changes: number;
   baseline: ReturnType<typeof prepareSeasonalRiskAchievements>;
 } | null = null;
@@ -598,9 +599,11 @@ export async function getSeasonalAchievementBaseline(
       [cycleId],
     );
     const seasonStartsAt = finiteValue(cycle?.starts_at);
-    const version = Number(backend.db.prepare("PRAGMA data_version").get().data_version);
-    const changes = Number(backend.db.prepare("SELECT total_changes() AS n").get().n);
-    if (riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
+    const committed = backend.db.isTransaction === false;
+    const revision = committed ? riskPopulationRevision(backend.db, "seasonal") : null;
+    const version = revision ?? Number(backend.db.prepare("PRAGMA data_version").get().data_version);
+    const changes = revision === null ? Number(backend.db.prepare("SELECT total_changes() AS n").get().n) : 0;
+    if (committed && riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
         riskAchievementPopulation.cycleId === cycleId &&
         riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
       timing.cache = "hit";
@@ -628,7 +631,7 @@ export async function getSeasonalAchievementBaseline(
     timing.populationRows = rows.length;
     nextPhase("prepareMs");
     const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
-    riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
+    if (committed) riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
     nextPhase("lookupMs");
     const result = baseline(excludeAid);
     nextPhase(null);
