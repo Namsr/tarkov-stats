@@ -105,7 +105,7 @@ test("latency graphs compare matching percentiles with an editable reference wit
   const example = render(1.5);
   assert.ok(example.includes("1 000 раз выше эталона"));
   assert.ok(example.includes("1 500 мс"));
-  assert.ok(!example.includes("No measurement"));
+  assert.ok(example.includes(dict.ru["admin.health.timeline.unavailable"]));
   assert.ok(render(100).includes("15 раз выше эталона"));
   assert.ok(render(3000).includes("В пределах эталона (0,5×)"));
   for (const reference of [null, 0, -1, NaN, Infinity, 3_600_001]) {
@@ -113,8 +113,34 @@ test("latency graphs compare matching percentiles with an editable reference wit
     assert.ok(html.includes(dict.ru["admin.health.comparison.noReference"]));
     assert.doesNotMatch(html, /NaN|Infinity|width:-/);
   }
-  assert.ok(render(100, []).includes(dict.ru["admin.health.browser.noSamples"]));
+  assert.ok(render(100, []).includes(dict.ru["admin.health.timeline.unavailable"]));
   assert.ok(render(100, [{ ...rows[0], p50: 0 }]).includes("В пределах эталона (0×)"));
+});
+
+test("latency timelines draw real timestamps with gaps and never carry the last success into a failed interval", () => {
+  const { HealthLatencyComparison } = healthPanelRenderer();
+  const t = (key, vars = {}) => {
+    assert.ok(dict.ru[key], key);
+    return dict.ru[key].replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`));
+  };
+  const at = 1_800_000_000_000;
+  const point = (minute, value) => ({ at: at + minute * 60000, requests: 2, problems: 0,
+    p50Ms: value, p95Ms: value, p99Ms: value, p999Ms: value, maxMs: value });
+  const series = [point(0, 0), point(1, 100), point(3, 1500)];
+  const render = (points) => renderToStaticMarkup(React.createElement(HealthLatencyComparison, {
+    rows: [{ key: "profile", label: "Profile", samples: 6, p50: 100, p95: 1500, p99: 1500, series: points }],
+    referenceKey: "api", defaultReferenceMs: 1.5, bucketMs: 60000, lang: "ru", t,
+  }));
+  const html = render(series);
+  const path = html.match(/class="admin-health-chart__line admin-health-chart__line--p50" d="([^"]+)"/)[1];
+  assert.equal((path.match(/M/g) ?? []).length, 2, "missing minute must create a line break");
+  assert.equal((path.match(/L/g) ?? []).length, 1);
+  assert.ok(html.includes("1 000 раз выше эталона"));
+  assert.ok(html.includes("admin-health-chart__reference"));
+  assert.ok(!html.includes("admin-health-comparison__track"));
+  const failed = render([...series, { ...point(4, null), problems: 1, maxMs: 7000 }]);
+  assert.ok(!failed.includes("1 000 раз выше эталона"), "latest failed bucket must not reuse an earlier success");
+  assert.doesNotMatch(failed, /NaN|Infinity/);
 });
 
 test("browser dimensions strip identities and reject private and unknown routes", () => {
@@ -158,7 +184,8 @@ test("browser aggregates keep domains, window bounds, missing data and retention
   store.recordBrowserPerformance("tarkovstats.ru", "/", sample(5), now - 8 * 86400_000);
   const report = store.browserPerformanceSummary("15m", "tarkovstats.ru", now);
   assert.equal(report.samples, 2);
-  assert.deepEqual(report.metrics[0], { path: "/", endpoint: null, metric: "lcp", samples: 2, p50: 10, p95: 30, p99: 30, max: 30 });
+  assert.deepEqual(report.metrics[0], { path: "/", endpoint: null, metric: "lcp", samples: 2, p50: 10, p95: 30, p99: 30, max: 30,
+    series: [{ at: now - 60000, samples: 2, p50: 10, p95: 30, p99: 30, max: 30 }] });
   assert.equal(store.browserPerformanceSummary("15m", "all", now).samples, 3);
   store.cleanup(now);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM browser_performance WHERE value = 5").get().n, 0);
@@ -186,6 +213,36 @@ test("health export preserves failure phases, outliers, series and publication a
   assert.equal(result.averagePublications[0].ageMs, 1000);
   assert.equal(result.averagePublications[0].dirtyForMs, 500);
   assert.doesNotMatch(JSON.stringify(result), /private|nickname|not-a-safe-id/);
+});
+
+test("browser and operation histories keep bucket percentiles, identities and domains separate", (t) => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  const store = createAnalyticsStore(db);
+  const now = 1_800_000_000_000;
+  for (const [offset, value] of [[-180000, 0], [-179999, 10], [-60000, 1500]]) {
+    store.recordBrowserPerformance("tarkovstats.ru", "/", [{ metric: "api_total", endpoint: "profile", value }], now + offset);
+    store.record({ occurredAt: now + offset, host: "tarkovstats.ru", operation: "player_profile", mode: "regular", outcome: "success", status: 200, latencyMs: value });
+  }
+  store.recordBrowserPerformance("tarkovstats.ru", "/compare", [{ metric: "api_total", endpoint: "profile", value: 999 }], now - 60000);
+  store.recordBrowserPerformance("tarkovstats.ru", "/", [{ metric: "api_total", endpoint: "cohort", value: 888 }], now - 60000);
+  store.recordBrowserPerformance("tarkovstats.online", "/", [{ metric: "api_total", endpoint: "profile", value: 9999 }], now - 60000);
+  store.record({ occurredAt: now - 60000, host: "tarkovstats.ru", operation: "risk_evaluation", mode: "regular", outcome: "success", status: 200, latencyMs: 8000 });
+  store.record({ occurredAt: now - 30000, host: "tarkovstats.ru", operation: "player_profile", mode: "regular", outcome: "error", status: 503, latencyMs: 9000 });
+  store.record({ occurredAt: now - 60000, host: "tarkovstats.ru", operation: "player_profile", mode: "pve", outcome: "success", status: 200, latencyMs: 500 });
+  const browser = store.browserPerformanceSummary("15m", "tarkovstats.ru", now);
+  const sample = browser.metrics.find((row) => row.path === "/" && row.endpoint === "profile");
+  assert.equal(browser.bucketMs, 60000);
+  assert.deepEqual(sample.series.map((point) => [point.at, point.samples, point.p50, point.p95]),
+    [[now - 180000, 2, 0, 10], [now - 60000, 1, 1500, 1500]]);
+  const health = store.summary("15m", "tarkovstats.ru", now).health;
+  const regular = health.operations.find((row) => row.operation === "player_profile" && row.mode === "regular");
+  assert.deepEqual(regular.series.map((point) => [point.at, point.p50Ms, point.p95Ms]),
+    [[now - 180000, 0, 10], [now - 60000, 1500, 1500]]);
+  assert.equal(regular.series.at(-1).maxMs, 9000);
+  assert.equal(health.operations.find((row) => row.operation === "risk_evaluation").series[0].p50Ms, 8000);
+  assert.equal(health.operations.find((row) => row.mode === "pve").series[0].p50Ms, 500);
+  assert.ok(health.series.every((point) => (point.maxMs ?? 0) <= 9000));
+  assert.deepEqual(store.summary("15m", "all", now, false).health.operations, []);
 });
 
 test("cohort failures export stable categories rather than exception messages", () => {

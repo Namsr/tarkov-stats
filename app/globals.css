@@ -1837,16 +1837,6 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-health-comparison__controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }
 .admin-health-comparison__controls label { display: flex; flex-direction: column; gap: 7px; font-size: .74rem; min-width: 0; }
 .admin-health-comparison__controls input, .admin-health-comparison__controls select { width: 150px; max-width: 100%; padding: 9px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--foreground); }
-.admin-health-comparison__scale { display: flex; justify-content: space-between; margin-top: 20px; font-size: .67rem; color: var(--muted-strong); }
-.admin-health-comparison__rows { display: grid; gap: 18px; padding: 0; margin: 12px 0 20px; list-style: none; }
-.admin-health-comparison__label, .admin-health-comparison__value { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: .74rem; }
-.admin-health-comparison__label span { overflow-wrap: anywhere; }
-.admin-health-comparison__label small, .admin-health-comparison__value span { color: var(--muted-strong); }
-.admin-health-comparison__track { position: relative; height: 14px; margin: 7px 0; background: var(--card-border); border-radius: 3px; }
-.admin-health-comparison__track > span { display: block; height: 100%; background: var(--muted-strong); border-radius: inherit; }
-.admin-health-comparison__track > span.is-within { background: var(--success); }
-.admin-health-comparison__track > span.is-above { background: var(--accent); }
-.admin-health-comparison__track > i { position: absolute; top: -3px; bottom: -3px; border-left: 2px dashed var(--foreground); transform: translateX(-1px); }
 .admin-health-operation-table > summary { cursor: pointer; margin-top: 12px; font-size: .78rem; color: var(--muted-strong); }
 .admin-health-operation-table > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .admin-health-table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: .7rem; }
@@ -2161,3 +2151,10 @@ a.help-card:hover { border-color: var(--foreground); }
   .axis-photo-dialog { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
   .axis-photo-dialog__header, .axis-photo-tools { padding-left: 12px; padding-right: 12px; }
 }
+
+.admin-health-chart-grid--single { grid-template-columns: minmax(0, 1fr); }
+.admin-health-chart__reference { stroke: var(--foreground); stroke-width: .22; stroke-dasharray: 1 1; fill: none; }
+.admin-health-chart__dot--reference { background: var(--foreground); }
+.admin-health-chart__comparison { display: block; max-width: 180px; margin-top: 4px; color: var(--muted-strong); font-size: .65rem; font-weight: 400; white-space: normal; }
+.admin-health-comparison__controls select { width: min(520px, 100%); }
+.admin-health-comparison__controls label:first-child { flex: 1 1 230px; }
