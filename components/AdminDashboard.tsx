@@ -9,6 +9,8 @@ import type { AudienceSummary, HealthPhaseSummary, LocalSummary } from "@/lib/ad
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
 import type { AccountModeration } from "@/lib/admin/moderation-db";
+import { loadAdminReport } from "@/lib/admin/report-client";
+import type { AdminReport } from "@/lib/admin/report-worker";
 import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
 import ShowcasePanel from "@/components/AdminShowcase";
@@ -85,6 +87,8 @@ export default function AdminDashboard() {
   const [mode, setMode] = useState("");
   const [sort, setSort] = useState<"last" | "requests" | "snapshots">("last");
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [healthSummary, setHealthSummary] = useState<AdminReport | null>(null);
+  const [reportRunning, setReportRunning] = useState(false);
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [accounts, setAccounts] = useState<Accounts | null>(null);
   const [showcase, setShowcase] = useState<{ groups: ShowcaseGroup[]; available: boolean } | null>(null);
@@ -109,7 +113,7 @@ export default function AdminDashboard() {
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; loadRequest.current?.abort(); };
   }, []);
 
   const updateUrl = useCallback((nextTab: Tab, nextPeriod = period, nextDomain = domain) => {
@@ -132,21 +136,33 @@ export default function AdminDashboard() {
     setRefreshError("");
     setReloading(true);
     if (!options?.silent) { setLoading(true); setError(""); }
+    setReportRunning(tab === "health");
+    let hasHealthReport = false;
     const params = new URLSearchParams({ period, domain });
     try {
-      if (tab === "overview" || tab === "health") {
+      if (tab === "overview") {
         const nextSummary = await getJson<Summary>(`/api/admin/summary?${params}`, { signal: request.signal });
         if (stale()) return;
         setSummary(nextSummary);
-        if (tab === "health") {
-          setAuditError("");
-          try {
-            const nextAudit = await getJson<DataAudit>("/api/admin/data-audit", { signal: request.signal });
-            if (stale()) return;
-            setAudit(nextAudit);
+      } else if (tab === "health") {
+        const nextReport = await loadAdminReport(params, { signal: request.signal, onState: (state) => {
+          if (stale()) return;
+          if (state.report) {
+            hasHealthReport = true;
+            setHealthSummary(state.report);
+            setLoading(false);
           }
-          catch { if (!stale()) setAuditError(t("admin.error.load")); }
+          setReportRunning(state.status === "running");
+        } });
+        if (stale()) return;
+        setHealthSummary(nextReport);
+        setAuditError("");
+        try {
+          const nextAudit = await getJson<DataAudit>("/api/admin/data-audit", { signal: request.signal });
+          if (stale()) return;
+          setAudit(nextAudit);
         }
+        catch { if (!stale()) setAuditError(t("admin.error.load")); }
       } else if (tab === "showcase") {
         const nextShowcase = await getJson<{ groups: ShowcaseGroup[]; available: boolean }>("/api/admin/showcase", { signal: request.signal });
         if (stale()) return;
@@ -176,8 +192,8 @@ export default function AdminDashboard() {
         if (stale()) return;
         setAccounts(nextAccounts);
       }
-    } catch { if (stale()) return; if (options?.silent) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
-    finally { if (!stale()) { setReloading(false); setLoading(false); } }
+    } catch { if (stale()) return; if (options?.silent || hasHealthReport) setRefreshError(t("admin.error.load")); else setError(t("admin.error.load")); }
+    finally { if (!stale()) { setReloading(false); setLoading(false); setReportRunning(false); } }
   }, [domain, mode, period, searchQuery, sort, tab, t]);
 
   const runAudit = useCallback(async () => {
@@ -249,6 +265,8 @@ export default function AdminDashboard() {
       {error && <div className="admin-notice admin-notice--error" role="alert">{error} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {refreshError && <div className="admin-notice admin-notice--error" role="alert">{refreshError} <button type="button" onClick={() => setRefreshKey((key) => key + 1)}>{t("admin.retry")}</button></div>}
       {resultMessage && <p className="admin-notice" role="status">{resultMessage}</p>}
+      {!error && tab === "health" && reportRunning && <p className="admin-notice" role="status">{t("admin.health.reportRunning")}</p>}
+      {!error && !loading && tab === "health" && healthSummary && <p className="admin-notice" role="status">{t("admin.health.reportGenerated", { date: formatDate(healthSummary.generatedAt, lang, t) })}</p>}
       {!error && loading && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
@@ -264,7 +282,7 @@ export default function AdminDashboard() {
       )}
       {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} onResult={setResultMessage} />}
-      {!error && !loading && tab === "health" && <HealthPanel summary={summary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
+      {!error && !loading && tab === "health" && <HealthPanel summary={healthSummary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
       {!error && !loading && tab === "monitoring" && <SystemMonitoringPanel data={systemMetrics} lang={lang} t={t} />}
     </main>
   );
@@ -864,7 +882,7 @@ export function HealthSeriesCharts({ points, bucketMs, lang, t, onShowTable }: {
   </div>;
 }
 
-function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudit }: { summary: Summary | null; lang: string; t: T; audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void> }) {
+function HealthPanel({ summary, lang, t, audit, auditBusy, auditError, onRunAudit }: { summary: AdminReport | null; lang: string; t: T; audit: DataAudit | null; auditBusy: boolean; auditError: string; onRunAudit: () => Promise<void> }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const seriesTable = useRef<HTMLDetailsElement>(null);
   const health = summary?.health;

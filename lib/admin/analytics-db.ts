@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS request_events (
 CREATE INDEX IF NOT EXISTS idx_request_events_time ON request_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_request_events_account ON request_events(aid, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_request_events_operation_time ON request_events(operation, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_request_events_operation_mode_time ON request_events(operation, mode, occurred_at);
 CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS auth_activity_daily (
   day TEXT NOT NULL,
@@ -302,19 +303,34 @@ function pageviewWhere(period: AdminPeriod, domain: AdminDomain, now: number, lo
   return { sql, args };
 }
 
-function percentile(
+const PHASE_COLUMNS = [
+  ["profile", "profile_ms"], ["baseline", "baseline_ms"], ["metadata", "metadata_ms"], ["mastery", "mastery_ms"],
+  ["cohort", "cohort_ms"], ["risk", "risk_ms"], ["store_read", "store_read_ms"], ["store_write", "store_write_ms"],
+  ["averages", "averages_ms"], ["queue", "queue_ms"], ["achievements", "achievements_ms"], ["store_open", "store_open_ms"],
+  ["worker", "worker_ms"], ["seasonal", "seasonal_ms"], ["levels", "levels_ms"], ["parse", "parse_ms"],
+  ["bucket_aggregate", "bucket_aggregate_ms"], ["range_bounds", "range_bounds_ms"],
+] as const;
+type TimingColumn = "latency_ms" | (typeof PHASE_COLUMNS)[number][1];
+
+// Reuse the population counts already collected with operation totals. A single
+// ordering returns all three exact nearest-rank percentiles and the maximum.
+function timingPercentiles(
   db: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   where: string,
   args: unknown[],
-  fraction: number,
-  column: "latency_ms" | "profile_ms" | "baseline_ms" | "metadata_ms" | "mastery_ms" | "cohort_ms" | "risk_ms" | "store_read_ms" | "store_write_ms" | "averages_ms" | "queue_ms" | "achievements_ms" | "store_open_ms" | "worker_ms" | "seasonal_ms" | "levels_ms" | "parse_ms" | "bucket_aggregate_ms" | "range_bounds_ms" = "latency_ms",
-  knownCount?: number,
-): number | null {
-  const count = knownCount ?? Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`).get(...args)?.n ?? 0);
-  if (!count) return null;
-  const offset = Math.max(0, Math.ceil(count * fraction) - 1);
-  const row = db.prepare(`SELECT ${column} AS value FROM request_events WHERE ${where} ORDER BY ${column} LIMIT 1 OFFSET ?`).get(...args, offset);
-  return row ? Number(row.value) : null;
+  count: number,
+  column: TimingColumn = "latency_ms",
+): { p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; maxMs: number | null } {
+  if (!count) return { p50Ms: null, p95Ms: null, p99Ms: null, maxMs: null };
+  const row = db.prepare(`WITH ranked AS (
+    SELECT ${column} AS value, ROW_NUMBER() OVER (ORDER BY ${column}) AS rn
+    FROM request_events WHERE ${where}
+  ) SELECT MAX(CASE WHEN rn = ? THEN value END) AS p50,
+      MAX(CASE WHEN rn = ? THEN value END) AS p95,
+      MAX(CASE WHEN rn = ? THEN value END) AS p99, MAX(value) AS max
+    FROM ranked`).get(...args, ...[0.5, 0.95, 0.99].map((fraction) => Math.max(1, Math.ceil(count * fraction))));
+  return { p50Ms: row.p50 == null ? null : Number(row.p50), p95Ms: row.p95 == null ? null : Number(row.p95),
+    p99Ms: row.p99 == null ? null : Number(row.p99), maxMs: row.max == null ? null : Number(row.max) };
 }
 
 function diagnosticStageSql(): string {
@@ -723,7 +739,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
       const cutoffDay = new Date(now - periodMilliseconds(period)).toISOString().slice(0, 10);
       const auth = db.prepare("SELECT COUNT(DISTINCT subject_hash) AS active_users, COALESCE(SUM(sign_ins), 0) AS sign_ins FROM auth_activity_daily WHERE day >= ?").get(cutoffDay);
       const successSql = `${sql} AND outcome = 'success'`;
-      const p99Ms = includeDiagnostics ? percentile(db, successSql, args, 0.99) : null;
+      const latency = timingPercentiles(db, successSql, args, includeDiagnostics ? Number(row.success ?? 0) : 0);
       const activeCutoff = now - ACTIVE_ISSUE_WINDOW_MS;
       const operationRows = includeDiagnostics ? db.prepare(`SELECT
         operation, mode, COUNT(*) AS requests,
@@ -731,7 +747,11 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         SUM(CASE WHEN status >= 500 THEN 1 ELSE 0 END) AS server_errors,
         SUM(CASE WHEN outcome = 'rate_limited' OR status = 429 THEN 1 ELSE 0 END) AS rate_limited,
         MAX(CASE WHEN outcome = 'success' THEN occurred_at END) AS last_success_at,
-        MAX(CASE WHEN ${problemSql()} THEN occurred_at END) AS last_issue_at
+        MAX(CASE WHEN ${problemSql()} THEN occurred_at END) AS last_issue_at,
+        ${PHASE_COLUMNS.flatMap(([, column]) => [
+          `COUNT(CASE WHEN outcome = 'success' THEN ${column} END) AS success_${column}`,
+          `COUNT(CASE WHEN ${problemSql()} THEN ${column} END) AS failure_${column}`,
+        ]).join(",\n        ")}
         FROM request_events WHERE ${operationSql}
         GROUP BY operation, mode ORDER BY requests DESC, operation, mode`).all(...args) as Record<string, unknown>[] : [];
       const operations: HealthOperationSummary[] = operationRows.map((operationRow) => {
@@ -753,64 +773,40 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           if (variant.cache != null) variantArgs.push(String(variant.cache));
           if (variant.force != null) variantArgs.push(Number(variant.force));
           const where = filters.join(" AND ");
+          const timing = timingPercentiles(db, where, variantArgs, Number(variant.requests));
           return {
             source: variant.source == null ? null : String(variant.source),
             cache: variant.cache == null ? null : String(variant.cache),
             force: variant.force == null ? null : Number(variant.force) === 1,
             requests: Number(variant.requests),
-            p50Ms: percentile(db, where, variantArgs, 0.5),
-            p95Ms: percentile(db, where, variantArgs, 0.95),
-            p99Ms: percentile(db, where, variantArgs, 0.99),
+            p50Ms: timing.p50Ms, p95Ms: timing.p95Ms, p99Ms: timing.p99Ms,
           };
         });
         const successfulOperationWhere = `${operationWhere} AND outcome = 'success'`;
-        const phaseColumns = [
-          ["profile", "profile_ms"],
-          ["baseline", "baseline_ms"],
-          ["metadata", "metadata_ms"],
-          ["mastery", "mastery_ms"],
-          ["cohort", "cohort_ms"],
-          ["risk", "risk_ms"],
-          ["store_read", "store_read_ms"],
-          ["store_write", "store_write_ms"],
-          ["averages", "averages_ms"],
-          ["queue", "queue_ms"],
-          ["achievements", "achievements_ms"],
-          ["store_open", "store_open_ms"],
-          ["worker", "worker_ms"],
-          ["seasonal", "seasonal_ms"],
-          ["levels", "levels_ms"],
-          ["parse", "parse_ms"],
-          ["bucket_aggregate", "bucket_aggregate_ms"],
-          ["range_bounds", "range_bounds_ms"],
-        ] as const;
-        const phaseSummary = (baseWhere: string): HealthPhaseSummary[] => phaseColumns.flatMap(([phase, column]) => {
+        const phaseSummary = (baseWhere: string, population: "success" | "failure"): HealthPhaseSummary[] => PHASE_COLUMNS.flatMap(([phase, column]) => {
           const where = `${baseWhere} AND ${column} IS NOT NULL`;
-          const samples = Number(db.prepare(`SELECT COUNT(*) AS n FROM request_events WHERE ${where}`)
-            .get(...operationArgs)?.n ?? 0);
-          return samples === 0 ? [] : [{
+          const samples = Number(operationRow[`${population}_${column}`] ?? 0);
+          if (!samples) return [];
+          const timing = timingPercentiles(db, where, operationArgs, samples, column);
+          return [{
             phase,
             samples,
-            p50Ms: percentile(db, where, operationArgs, 0.5, column, samples),
-            p95Ms: percentile(db, where, operationArgs, 0.95, column, samples),
-            p99Ms: percentile(db, where, operationArgs, 0.99, column, samples),
+            p50Ms: timing.p50Ms, p95Ms: timing.p95Ms, p99Ms: timing.p99Ms,
           }];
         });
+        const successful = timingPercentiles(db, successfulOperationWhere, operationArgs, Number(operationRow.success));
+        const all = timingPercentiles(db, operationWhere, operationArgs, Number(operationRow.requests));
         return {
           operation: String(operationRow.operation), mode,
           requests: Number(operationRow.requests ?? 0), success: Number(operationRow.success ?? 0),
           serverErrors: Number(operationRow.server_errors ?? 0), rateLimited: Number(operationRow.rate_limited ?? 0),
-          p50Ms: percentile(db, successfulOperationWhere, operationArgs, 0.5),
-          p95Ms: percentile(db, successfulOperationWhere, operationArgs, 0.95),
-          p99Ms: percentile(db, successfulOperationWhere, operationArgs, 0.99),
+          p50Ms: successful.p50Ms, p95Ms: successful.p95Ms, p99Ms: successful.p99Ms,
           lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
           lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
           variants,
-          phases: phaseSummary(successfulOperationWhere),
-          failurePhases: phaseSummary(`${operationWhere} AND ${problemSql()}`),
-          allLatencyMs: { p50: percentile(db, operationWhere, operationArgs, 0.5),
-            p95: percentile(db, operationWhere, operationArgs, 0.95), p99: percentile(db, operationWhere, operationArgs, 0.99),
-            max: db.prepare(`SELECT MAX(latency_ms) AS n FROM request_events WHERE ${operationWhere}`).get(...operationArgs)?.n ?? null },
+          phases: phaseSummary(successfulOperationWhere, "success"),
+          failurePhases: phaseSummary(`${operationWhere} AND ${problemSql()}`, "failure"),
+          allLatencyMs: { p50: all.p50Ms, p95: all.p95Ms, p99: all.p99Ms, max: all.maxMs },
         };
       });
       const issueRows = includeDiagnostics ? db.prepare(`SELECT
@@ -892,9 +888,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           requests: Number(row.requests ?? 0), success: Number(row.success ?? 0),
           notFound: Number(row.not_found ?? 0), rateLimited: Number(row.rate_limited ?? 0),
           serverErrors: Number(row.server_errors ?? 0),
-          p50Ms: includeDiagnostics ? percentile(db, successSql, args, 0.5) : null,
-          p95Ms: includeDiagnostics ? percentile(db, successSql, args, 0.95) : null,
-          p99Ms,
+          p50Ms: latency.p50Ms, p95Ms: latency.p95Ms, p99Ms: latency.p99Ms,
           lastSuccessAt: row.last_success_at == null ? null : Number(row.last_success_at),
           cacheHits: Number(row.cache_hits ?? 0), cacheMisses: Number(row.cache_misses ?? 0),
           status: currentSignal.status,

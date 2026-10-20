@@ -59,7 +59,10 @@ test("admin UI exposes the agreed tabs, manual refresh, and guarded moderation i
   // A silent moderation reload keeps the panel mounted; only the current load
   // may clear the flags, regardless of whether that load set `loading`.
   assert.match(loadBody, /setRefreshError\(""\);\s*setReloading\(true\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
-  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) \\{ setReloading\\(false\\); setLoading\\(false\\); \\} \\}`));
+  assert.match(loadBody, new RegExp(`finally \\{ if \\(!${guard}\\(\\)\\) \\{ setReloading\\(false\\); setLoading\\(false\\); setReportRunning\\(false\\); \\} \\}`));
+  assert.match(loadBody, /if \(tab === "overview"\)/);
+  assert.match(loadBody, /loadAdminReport\(params, \{ signal: request\.signal/);
+  assert.match(loadBody, new RegExp(`if \\(${guard}\\(\\)\\) return;\\r?\\n\\s+setHealthSummary\\(nextReport\\)`));
   // No payload is written straight from the fetch, which would skip the guard.
   assert.doesNotMatch(loadBody, /await getJson[^\n]*\r?\n\s*set[A-Z]\w*\(/);
   // The search box writes on every keystroke, so `load` must read a debounced copy
@@ -228,10 +231,10 @@ test("a moderation result message survives the refresh it triggers", async () =>
   assert.match(dashboard, /setReloading\(true\);\s*if \(!options\?\.silent\) \{ setLoading\(true\); setError\(""\); \}/);
   // The newest load clears `loading` whether or not it set it, so a silent
   // reload cannot strand the panel behind a flag it never claimed.
-  assert.match(dashboard, /finally \{ if \(!stale\(\)\) \{ setReloading\(false\); setLoading\(false\); \} \}/);
+  assert.match(dashboard, /finally \{ if \(!stale\(\)\) \{ setReloading\(false\); setLoading\(false\); setReportRunning\(false\); \} \}/);
   // A failed silent reload still has to be reported, and `error` would unmount
   // the panel, so it lands in `refreshError`, announced as the error it is.
-  assert.match(dashboard, /catch \{ if \(stale\(\)\) return; if \(options\?\.silent\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
+  assert.match(dashboard, /catch \{ if \(stale\(\)\) return; if \(options\?\.silent \|\| hasHealthReport\) setRefreshError\(t\("admin\.error\.load"\)\); else setError\(t\("admin\.error\.load"\)\); \}/);
   assert.match(dashboard, /\{refreshError && <div className="admin-notice admin-notice--error" role="alert">\{refreshError\} <button type="button" onClick=\{\(\) => setRefreshKey\(\(key\) => key \+ 1\)\}>\{t\("admin\.retry"\)\}/);
   // Refresh cannot start a non-silent load while one is in flight, and the
   // initial/refresh/filter loads stay non-silent.
@@ -247,7 +250,7 @@ test("admin dashboard drops load and audit results after unmount", async () => {
   const dashboard = await readFile("components/AdminDashboard.tsx", "utf8");
 
   assert.match(dashboard, /const mounted = useRef\(true\);/);
-  assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; \};\s*\}, \[\]\);/);
+  assert.match(dashboard, /useEffect\(\(\) => \{\s*mounted\.current = true;\s*return \(\) => \{ mounted\.current = false; loadRequest\.current\?\.abort\(\); \};\s*\}, \[\]\);/);
   // The load generation guard covers both a newer request and unmount; the
   // existing load test pins every response write to that guard.
   assert.match(dashboard, /const stale = \(\) => !mounted\.current \|\| generation !== loadGeneration\.current;/);

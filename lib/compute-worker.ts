@@ -10,6 +10,7 @@ export type ComputeWorkerOptions = {
   maxPending?: number;
   /** Optional end-to-end budget, including time waiting in the FIFO. */
   totalTimeoutMs?: number;
+  maxOldSpaceMb?: number;
   unavailableError?: (message: string) => Error;
 };
 
@@ -121,6 +122,7 @@ export class ComputeWorker<Args extends unknown[], Result> {
     try {
       if (!this.child) {
         const child = spawn(process.execPath, [
+          ...(this.options.maxOldSpaceMb ? [`--max-old-space-size=${this.options.maxOldSpaceMb}`] : []),
           "--experimental-strip-types", "--experimental-sqlite", "--experimental-loader",
           pathToFileURL(resolve("scripts/ts-alias-loader.mjs")).href,
           resolve(this.options.entry),

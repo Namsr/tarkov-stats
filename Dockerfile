@@ -57,6 +57,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./sc
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-axis-league.mjs ./scripts/sync-axis-league.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-average-worker.mjs ./scripts/compute-average-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-cohort-worker.mjs ./scripts/compute-cohort-worker.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-admin-report.mjs ./scripts/compute-admin-report.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-risk-worker.mjs ./scripts/compute-risk-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs

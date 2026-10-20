@@ -13,6 +13,46 @@ import { createAnalyticsStore } from "../lib/admin/analytics-db.ts";
 
 const DAY = 86_400_000;
 
+test("batched timing queries preserve nearest ranks, zeroes, null phases, failures and domain bounds", (t) => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  const store = createAnalyticsStore(db); const now = 50 * DAY;
+  const events = [];
+  for (let i = 0; i < 211; i++) {
+    const event = { occurredAt: now - i * 5000, host: i % 3 ? "tarkovstats.ru" : "tarkovstats.online",
+      operation: i % 7 ? "player_profile" : "risk_evaluation", mode: i % 2 ? "regular" : "arena",
+      outcome: i % 5 ? "success" : "error", status: i % 5 ? 200 : 503,
+      latencyMs: i % 17, profileMs: i % 3 ? i % 11 : null, queueMs: i % 4 ? i % 13 : null };
+    store.record(event); events.push(event);
+  }
+  const ranks = (values) => {
+    const sorted = values.toSorted((a, b) => a - b);
+    return [0.5, 0.95, 0.99].map((fraction) => sorted.length ? sorted[Math.ceil(sorted.length * fraction) - 1] : null);
+  };
+  for (const domain of ["all", "tarkovstats.ru", "tarkovstats.online"]) for (const period of ["15m", "7d"]) {
+    const eligible = events.filter((e) => e.occurredAt < now && e.occurredAt >= now - (period === "15m" ? 900000 : 7 * DAY)
+      && (domain === "all" || e.host === domain));
+    const report = store.summary(period, domain, now);
+    assert.deepEqual([report.health.p50Ms, report.health.p95Ms, report.health.p99Ms],
+      ranks(eligible.filter((e) => e.operation !== "risk_evaluation" && e.outcome === "success").map((e) => e.latencyMs)));
+    for (const operation of report.health.operations) {
+      const population = eligible.filter((e) => e.operation === operation.operation && e.mode === operation.mode);
+      assert.deepEqual([operation.allLatencyMs.p50, operation.allLatencyMs.p95, operation.allLatencyMs.p99], ranks(population.map((e) => e.latencyMs)));
+      assert.equal(operation.allLatencyMs.max, Math.max(...population.map((e) => e.latencyMs)));
+      for (const [outcome, phases] of [["success", operation.phases], ["error", operation.failurePhases]]) {
+        for (const [phase, key] of [["profile", "profileMs"], ["queue", "queueMs"]]) {
+          const values = population.filter((e) => e.outcome === outcome && e[key] != null).map((e) => e[key]);
+          const actual = phases.find((p) => p.phase === phase);
+          if (!values.length) assert.equal(actual, undefined);
+          else { assert.equal(actual.samples, values.length); assert.deepEqual([actual.p50Ms, actual.p95Ms, actual.p99Ms], ranks(values)); }
+        }
+      }
+    }
+  }
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT latency_ms FROM request_events WHERE operation=? AND mode=? AND occurred_at>=? AND occurred_at<?")
+    .all("player_profile", "arena", now - 7 * DAY, now).map((row) => row.detail).join(" ");
+  assert.match(plan, /idx_request_events_operation_mode_time/);
+});
+
 // A failed initialization caches its `null` for the life of the process unless the
 // promise is cleared, so the probe runs in a child process with a controlled clock.
 function runInitializationProbe(source: string) {
