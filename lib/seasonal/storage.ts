@@ -20,6 +20,7 @@ import type { WeaponMasteryProgress } from "@/types/tarkov";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { reissueEditedTriggers, sqliteTrigger } from "../sqlite-trigger-ddl.ts";
 import { seasonalPrestige } from "./prestige.ts";
+import { initializeRiskPopulationRevision } from "../risk-population-revision.ts";
 
 // This module intentionally uses the small synchronous node:sqlite surface that
 // the existing progression store already relies on. Keeping schema ownership in
@@ -544,6 +545,7 @@ export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean
     // was unreachable on every open. Reads only; the "no migration writes" guarantee
     // that keeps an unchanged cycle usable under a concurrent writer still holds.
     reissueEditedTriggers(db, SEASONAL_JOURNAL_TRIGGERS);
+    initializeRiskPopulationRevision(db, "seasonal");
     return { created: false };
   }
   const snapshotColumns = columns(db, "progression_snapshots");
@@ -644,6 +646,7 @@ export function initializeSeasonalSchema(db: SqliteDatabase): { created: boolean
   if (!columns(db, "progression_intervals").has("score_sample_n")) {
     db.exec("ALTER TABLE progression_intervals ADD COLUMN score_sample_n INTEGER");
   }
+  initializeRiskPopulationRevision(db, "seasonal");
   return initializeSeasonalLeaderboardChangeJournal(db);
 }
 

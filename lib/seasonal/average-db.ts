@@ -16,6 +16,7 @@ import type { AverageDashboardResponse } from "../../types/average.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { prepareSeasonalRiskAchievements } from "./risk-achievement-population.ts";
 import { performance } from "node:perf_hooks";
+import { riskPopulationRevision } from "../risk-population-revision.ts";
 // @ts-ignore Node's strip-types test runner requires the explicit extension.
 import { logSampledTiming } from "../observability/sample-rate.ts";
 
@@ -545,7 +546,7 @@ export function selectSeasonalRiskPercent(
 let riskAchievementPopulation: {
   db: AverageBackend["db"];
   cycleId: string;
-  version: number;
+  version: number | string;
   changes: number;
   baseline: ReturnType<typeof prepareSeasonalRiskAchievements>;
 } | null = null;
@@ -592,48 +593,56 @@ export async function getSeasonalAchievementBaseline(
   try {
     const backend = await openSeasonalAverageBackend();
     if (!backend) return null;
-    const cycle = await backendFirst(
-      backend,
-      "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?",
-      [cycleId],
-    );
-    const seasonStartsAt = finiteValue(cycle?.starts_at);
-    const version = Number(backend.db.prepare("PRAGMA data_version").get().data_version);
-    const changes = Number(backend.db.prepare("SELECT total_changes() AS n").get().n);
-    if (riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
-        riskAchievementPopulation.cycleId === cycleId &&
-        riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
-      timing.cache = "hit";
+    const committed = backend.db.isTransaction === false;
+    // Read metadata, revision and owners in one snapshot. A concurrent commit
+    // must not publish old metadata under the new revision. No async work may
+    // interleave on this shared connection while the savepoint is held.
+    if (committed) backend.db.exec("SAVEPOINT seasonal_risk_population");
+    try {
+      const cycle = backend.db.prepare(
+        "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?",
+      ).get(cycleId);
+      const seasonStartsAt = finiteValue(cycle?.starts_at);
+      const revision = committed ? riskPopulationRevision(backend.db, "seasonal") : null;
+      const version = revision ?? Number(backend.db.prepare("PRAGMA data_version").get().data_version);
+      const changes = revision === null ? Number(backend.db.prepare("SELECT total_changes() AS n").get().n) : 0;
+      if (committed && riskAchievementPopulation && riskAchievementPopulation.db === backend.db &&
+          riskAchievementPopulation.cycleId === cycleId &&
+          riskAchievementPopulation.version === version && riskAchievementPopulation.changes === changes) {
+        timing.cache = "hit";
+        nextPhase("lookupMs");
+        const baseline = riskAchievementPopulation.baseline(excludeAid);
+        nextPhase(null);
+        timing.outcome = "success";
+        return baseline;
+      }
+      timing.cache = "miss";
+      timing.invalidation = !riskAchievementPopulation ? "cold"
+        : riskAchievementPopulation.db !== backend.db ? "database"
+        : riskAchievementPopulation.cycleId !== cycleId ? "cycle"
+        : riskAchievementPopulation.version !== version ? "external_commit" : "local_write";
+      nextPhase("populationSqlMs");
+      const rows = backend.db.prepare(`SELECT p.aid, p.lifetime_pvp_hours AS hours,
+          latest.achievements, cycle.starts_at
+        FROM player_profiles p
+        ${LATEST_RISK_SNAPSHOT_JOIN}
+        JOIN season_cycles cycle ON cycle.mode = p.mode AND cycle.cycle_id = p.cycle_id
+        WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
+          AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
+          AND latest.pmc_raids >= 1
+          AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`).all(cycleId);
+      timing.populationRows = rows.length;
+      nextPhase("prepareMs");
+      const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
+      if (committed) riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
       nextPhase("lookupMs");
-      const baseline = riskAchievementPopulation.baseline(excludeAid);
+      const result = baseline(excludeAid);
       nextPhase(null);
       timing.outcome = "success";
-      return baseline;
+      return result;
+    } finally {
+      if (committed) backend.db.exec("RELEASE seasonal_risk_population");
     }
-    timing.cache = "miss";
-    timing.invalidation = !riskAchievementPopulation ? "cold"
-      : riskAchievementPopulation.db !== backend.db ? "database"
-      : riskAchievementPopulation.cycleId !== cycleId ? "cycle"
-      : riskAchievementPopulation.version !== version ? "external_commit" : "local_write";
-    nextPhase("populationSqlMs");
-    const rows = await backendRows(backend, `SELECT p.aid, p.lifetime_pvp_hours AS hours,
-        latest.achievements, cycle.starts_at
-      FROM player_profiles p
-      ${LATEST_RISK_SNAPSHOT_JOIN}
-      JOIN season_cycles cycle ON cycle.mode = p.mode AND cycle.cycle_id = p.cycle_id
-      WHERE p.mode = 'seasonal' AND p.cycle_id = ? AND p.confirmed_banned = 0
-        AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = p.aid)
-        AND latest.pmc_raids >= 1
-        AND latest.achievements IS NOT NULL AND json_valid(latest.achievements)`, [cycleId]);
-    timing.populationRows = rows.length;
-    nextPhase("prepareMs");
-    const baseline = prepareSeasonalRiskAchievements(rows, seasonStartsAt);
-    riskAchievementPopulation = { db: backend.db, cycleId, version, changes, baseline };
-    nextPhase("lookupMs");
-    const result = baseline(excludeAid);
-    nextPhase(null);
-    timing.outcome = "success";
-    return result;
   } catch (error) {
     console.warn("seasonal achievement baseline unavailable: " + (error as Error).message);
     return null;

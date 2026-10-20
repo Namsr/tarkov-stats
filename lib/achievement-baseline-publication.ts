@@ -1,6 +1,7 @@
 import { ACHIEVEMENT_UNLOCK_P1_MIN_SAMPLE, firstFiniteHours } from "./achievement-unlock-hours.ts";
 import { performance } from "node:perf_hooks";
 import { logSampledTiming } from "./observability/sample-rate.ts";
+import { riskPopulationRevision } from "./risk-population-revision.ts";
 
 export type PublishedAchievementMode = "regular" | "pve";
 
@@ -81,11 +82,18 @@ export interface RegularRiskAchievementTiming {
   aggregateMs: number;
   percentileMs: number;
   totalMs: number;
+  cacheHits?: number;
+  cacheMisses?: number;
 }
+
+type OwnerBoundary = { hours: number; aid: number };
+type OwnerSummary = { n: number; mean: number; square: number; lower?: OwnerBoundary; upper?: OwnerBoundary };
+const ownerSummaries = new WeakMap<object, { revision: string; entries: Map<string, OwnerSummary> }>();
+const MAX_OWNER_SUMMARIES = 512;
 
 /** Indexed owner samples; no per-profile expansion of players.achievements. */
 export function readRegularRiskAchievementBaseline(
-  db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined } },
+  db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined; all?(...params: unknown[]): Record<string, unknown>[] }; exec?(sql: string): void; readonly isTransaction?: boolean },
   ownedIds: readonly string[],
   excludeAid: number,
   observe: (timing: RegularRiskAchievementTiming) => void = logSampledTiming,
@@ -98,6 +106,11 @@ export function readRegularRiskAchievementBaseline(
     const before = performance.now();
     try { return read(); } finally { timing[phase] += performance.now() - before; }
   };
+  // All summaries, target lookups and the revision belong to one committed
+  // read snapshot. Never cache a caller's uncommitted write transaction: a
+  // rollback could otherwise reuse the revision for different source data.
+  const snapshot = typeof db.exec === "function" && db.isTransaction === false;
+  if (snapshot) db.exec!("SAVEPOINT regular_risk_baseline");
   try {
     const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'regular_risk_reference_state'").get();
     const state = hasState ? db.prepare("SELECT total FROM regular_risk_reference_state WHERE id = 1").get() : undefined;
@@ -113,10 +126,73 @@ export function readRegularRiskAchievementBaseline(
     // Read-only backfills can run before the web store migrates an older database.
     const identityIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_players_risk_identity'").get()
       ? " INDEXED BY idx_players_risk_identity" : "";
-    const where = `WHERE ach_id = ? AND aid != ? AND hours > 0 AND hours < 1e100
+    const eligibility = `hours > 0 AND hours < 1e100
         AND EXISTS (SELECT 1 FROM players p${identityIndex}
           WHERE p.aid = regular_risk_achievement_owners.aid)
         AND aid NOT IN (SELECT aid FROM excluded_players)`;
+    const where = `WHERE ach_id = ? AND aid != ? AND ${eligibility}`;
+    const revision = snapshot ? riskPopulationRevision(db, "regular") : null;
+    if (revision !== null && typeof db.prepare("SELECT 1").all === "function") {
+      let cache = ownerSummaries.get(db);
+      if (!cache || cache.revision !== revision) {
+        cache = { revision, entries: new Map() };
+        ownerSummaries.set(db, cache);
+      }
+      const aggregateAll = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
+        FROM regular_risk_achievement_owners WHERE ach_id = ? AND ${eligibility}`);
+      const boundary = db.prepare(`SELECT hours, aid FROM regular_risk_achievement_owners
+        WHERE ach_id = ? AND ${eligibility} ORDER BY hours, aid LIMIT 2 OFFSET ?`);
+      const target = db.prepare(`SELECT hours FROM regular_risk_achievement_owners
+        WHERE aid = ? AND ach_id = ? AND ${eligibility}`);
+      const preciseMoments = db.prepare(`SELECT AVG(hours) AS mean, AVG(hours * hours) AS square
+        FROM regular_risk_achievement_owners ${where}`);
+      timing.cacheHits = 0;
+      timing.cacheMisses = 0;
+      timing.metadataMs = performance.now() - started;
+      for (const id of ids) {
+        let summary = cache.entries.get(id);
+        if (summary) {
+          timing.cacheHits++;
+          cache.entries.delete(id);
+        } else {
+          timing.cacheMisses++;
+          const row = measured("aggregateMs", () => aggregateAll.get(id));
+          const n = Number(row?.n ?? 0);
+          // Removing one owner moves P20 by at most one position. Store both
+          // boundary rows instead of retaining/sorting the entire population.
+          const rank = Math.max(0, Math.ceil((n - 1) * 0.2) - 1);
+          const boundaries = n ? measured("percentileMs", () => boundary.all!(id, rank)) as OwnerBoundary[] : [];
+          summary = { n, mean: Number(row?.mean ?? 0), square: Number(row?.square ?? 0),
+            lower: boundaries[0], upper: boundaries[1] };
+        }
+        cache.entries.set(id, summary);
+        if (cache.entries.size > MAX_OWNER_SUMMARIES) cache.entries.delete(cache.entries.keys().next().value!);
+        const owner = target.get(excludeAid, id);
+        const removed = owner ? Number(owner.hours) : null;
+        const n = summary.n - (removed === null ? 0 : 1);
+        let mean = n ? removed === null ? summary.mean : (summary.mean * summary.n - removed) / n : 0;
+        let square = n ? removed === null ? summary.square : (summary.square * summary.n - removed * removed) / n : 0;
+        const rank = Math.max(0, Math.ceil((summary.n - 1) * 0.2) - 1);
+        const before = removed !== null && summary.lower && (removed < summary.lower.hours ||
+          removed === summary.lower.hours && excludeAid <= summary.lower.aid);
+        const shifted = removed === null ? Math.ceil(n * 0.2) - 1 > rank : before;
+        const early = n ? (shifted ? summary.upper : summary.lower)?.hours ?? 0 : 0;
+        // Subtraction of an outlier can lose the remaining moments. A value
+        // near P20 is also a scoring availability boundary. Keep the original
+        // SQL moments in those cases instead of relying on rounded subtraction.
+        if (n && removed !== null && (removed > summary.mean * summary.n / 2 ||
+          removed * removed > summary.square * summary.n / 2 ||
+          Math.abs(mean - early) <= 1e-10 * Math.max(1, mean, early))) {
+          const row = measured("aggregateMs", () => preciseMoments.get(id, excludeAid));
+          mean = Number(row?.mean ?? 0);
+          square = Number(row?.square ?? 0);
+        }
+        achievements.push({ ach_id: id, owners: n, hoursOwners: n, meanHours: mean,
+          stdHours: Math.sqrt(Math.max(0, square - mean * mean)), earlyHours: early, unlockHours: early });
+      }
+      timing.outcome = "success";
+      return { total: Math.max(0, Number(total) - 1), achievements };
+    }
     const aggregate = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
         FROM regular_risk_achievement_owners ${where}`);
     const percentile = db.prepare(`SELECT hours FROM regular_risk_achievement_owners ${where}
@@ -134,6 +210,7 @@ export function readRegularRiskAchievementBaseline(
     timing.outcome = "success";
     return { total: Math.max(0, Number(total) - 1), achievements };
   } finally {
+    if (snapshot) db.exec!("RELEASE regular_risk_baseline");
     timing.totalMs = performance.now() - started;
     if (timing.metadataMs === 0) timing.metadataMs = timing.totalMs - timing.aggregateMs - timing.percentileMs;
     for (const field of ["metadataMs", "aggregateMs", "percentileMs", "totalMs"] as const) {

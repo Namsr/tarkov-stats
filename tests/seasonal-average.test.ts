@@ -17,6 +17,7 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
   process.env.PROGRESSION_SQLITE_PATH = databasePath;
   try {
     const db = new DatabaseSync(databasePath);
+    db.exec("PRAGMA journal_mode = WAL");
     initializeSeasonalSchema(db);
     const now = 1_800_000_000_000;
     db.prepare("INSERT INTO season_cycles (mode, cycle_id, starts_at, enabled) VALUES ('seasonal', ?, ?, 1)")
@@ -149,6 +150,9 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     assert.equal(diagnostics.at(-1).populationSqlMs, 0);
     assert.equal(diagnostics.at(-1).prepareMs, 0);
     const changed = new DatabaseSync(databasePath);
+    changed.exec("UPDATE player_profiles SET last_access_at = last_access_at + 1; UPDATE progression_snapshots SET captured_at = captured_at + 1");
+    assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 2);
+    assert.equal(diagnostics.at(-1).cache, "hit", "access/queue metadata must not rebuild achievement populations");
     changed.prepare("UPDATE progression_snapshots SET achievements = '[]' WHERE mode = 'seasonal' AND cycle_id = 's1' AND aid = 2").run();
     changed.close();
     assert.equal((await getSeasonalAchievementBaseline("s1", undefined, observe))?.achievements[0]?.owners, 1);
@@ -164,6 +168,43 @@ test("Seasonal cross-section keeps cycle, snapshot, freshness, and enrichment bo
     assert.ok(!JSON.stringify(diagnostics).includes('"achievements"'));
     assert.equal((await getSeasonalAchievementBaseline("s2", undefined, () => { throw new Error("logger unavailable"); }))?.eligibleN, 2);
     assert.equal((await getSeasonalAchievementBaseline("s1"))?.eligibleN, 38);
+    // A concurrent commit between metadata and revision reads must not publish
+    // old season metadata under the new population revision.
+    const writer = new DatabaseSync(databasePath);
+    const originalPrepare = DatabaseSync.prototype.prepare;
+    const oldStart = now - 200 * 86_400_000;
+    const newStart = oldStart + 86_400_000;
+    let raced = false;
+    writer.prepare("UPDATE season_cycles SET starts_at = ? WHERE cycle_id = 's1'").run(oldStart - 1);
+    DatabaseSync.prototype.prepare = function (sql) {
+      const statement = originalPrepare.call(this, sql);
+      if (sql === "SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?") {
+        const get = statement.get.bind(statement);
+        statement.get = (...params) => {
+          const result = get(...params);
+          if (!raced && params[0] === "s1") {
+            raced = true;
+            originalPrepare.call(writer, "UPDATE season_cycles SET starts_at = ? WHERE cycle_id = 's1'").run(newStart);
+          }
+          return result;
+        };
+      }
+      return statement;
+    };
+    try {
+      const duringCommit = await getSeasonalAchievementBaseline("s1", undefined, observe);
+      assert.equal(raced, true);
+      assert.equal(duringCommit?.seasonStartsAt, oldStart - 1);
+      const afterCommit = await getSeasonalAchievementBaseline("s1", undefined, observe);
+      assert.equal(afterCommit?.seasonStartsAt, newStart);
+      assert.equal(diagnostics.at(-1).cache, "miss");
+      assert.deepEqual(await getSeasonalAchievementBaseline("s1", undefined, observe), afterCommit);
+      assert.equal(diagnostics.at(-1).cache, "hit");
+    } finally {
+      DatabaseSync.prototype.prepare = originalPrepare;
+      writer.prepare("UPDATE season_cycles SET starts_at = ? WHERE cycle_id = 's1'").run(oldStart);
+      writer.close();
+    }
     const targetStats = {
       pmcRaids: 5,
       hoursPlayed: 100,

@@ -1493,7 +1493,7 @@ test("shared cohort summary preserves the complete response against previous ran
       assert.ok(match, "capture actual cohort selection for the frozen reference");
       const mode = match[1] === "players" ? "regular" : "pve";
       const where = match[2].replace(/ AND mode = 'pve'$/, "").replace(/\bmode_players\./g, "players.");
-      sql = referenceComparisonMetricsSql(mode, where, sql.includes("rn IN (") ? "median" : "trimmed_mean");
+      sql = referenceComparisonMetricsSql(mode, where, sql.includes("LIMIT 2 -") ? "median" : "trimmed_mean");
     }
     return prepare.call(this, sql);
   };

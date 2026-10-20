@@ -1,12 +1,169 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initializeRiskPopulationRevision, riskPopulationRevision } from "../lib/risk-population-revision.ts";
 
 import {
   materializeAchievementBaseline,
   readPublishedAchievementBaseline,
   readRegularRiskAchievementBaseline,
 } from "../lib/achievement-baseline-publication.ts";
+
+function assertSameOwners(db: DatabaseSync, ids: string[], aid: number) {
+  const reference = readRegularRiskAchievementBaseline({ prepare: db.prepare.bind(db) }, ids, aid);
+  const actual = readRegularRiskAchievementBaseline(db, ids, aid);
+  assert.equal(actual.total, reference.total);
+  actual.achievements.forEach((value, index) => {
+    const expected = reference.achievements[index];
+    const { meanHours, stdHours, ...exact } = value;
+    const { meanHours: mean, stdHours: std, ...expectedExact } = expected;
+    assert.deepEqual(exact, expectedExact);
+    assert.ok(Math.abs(meanHours - mean) <= 1e-10 * Math.max(1, mean), `${aid}: mean ${meanHours} != ${mean}`);
+    assert.ok(Math.abs(stdHours - std) <= 1e-7 * Math.max(1, std), `${aid}: std ${stdHours} != ${std}`);
+  });
+}
+
+test("cached risk owners preserve exact exclusion ranks, ties and absent owners across population sizes", () => {
+  const db = fixture();
+  try {
+    materializeAchievementBaseline(db, "regular", 1);
+    initializeRiskPopulationRevision(db, "regular");
+    const insert = db.prepare("INSERT INTO players VALUES (?, ?, ?)");
+    const owner = db.prepare("INSERT INTO regular_risk_achievement_owners VALUES (?, ?, ?)");
+    for (let n = 1; n <= 65; n++) {
+      db.exec("DELETE FROM regular_risk_achievement_owners; DELETE FROM players");
+      for (let aid = 1; aid <= n; aid++) {
+        const hours = ((aid * 37) % 19 + 1) / 10;
+        insert.run(aid, hours, '[]');
+        owner.run(aid, "a", hours);
+      }
+      // Every other target hits the same summary; the target's own contribution
+      // and tie position must still be removed on each lookup.
+      for (let aid = 1; aid <= n + 1; aid++) assertSameOwners(db, ["a", "missing", "a"], aid);
+    }
+    db.exec("UPDATE regular_risk_achievement_owners SET hours = 1e90 WHERE aid = 1");
+    assertSameOwners(db, ["a"], 1);
+    db.exec("UPDATE regular_risk_achievement_owners SET hours = 0.1");
+    assertSameOwners(db, ["a"], 2);
+  } finally { db.close(); }
+});
+
+test("risk owner cache invalidates on committed inputs, ignores unrelated writes and avoids rolled-back snapshots", () => {
+  const db = fixture();
+  try {
+    materializeAchievementBaseline(db, "regular", 1);
+    initializeRiskPopulationRevision(db, "regular");
+    const observations: { cacheHits?: number; cacheMisses?: number }[] = [];
+    const read = () => readRegularRiskAchievementBaseline(db, ["a", "b"], 999, (event) => observations.push(event));
+    read(); read();
+    assert.equal(observations.at(-1)?.cacheHits, 2);
+    const revision = riskPopulationRevision(db, "regular");
+    db.exec("UPDATE mode_players SET hours = 999; UPDATE players SET hours = 777");
+    assert.equal(riskPopulationRevision(db, "regular"), revision);
+    read();
+    assert.equal(observations.at(-1)?.cacheHits, 2);
+    for (const sql of [
+      "UPDATE regular_risk_achievement_owners SET hours = 99 WHERE aid = 1",
+      "INSERT INTO excluded_players VALUES (2)",
+      "UPDATE excluded_players SET aid = 3 WHERE aid = 2",
+      "DELETE FROM excluded_players WHERE aid = 3",
+      "DELETE FROM players WHERE aid = 1",
+      "INSERT INTO players VALUES (1, 10, '[]')",
+    ]) {
+      db.exec(sql);
+      read();
+      assert.equal(observations.at(-1)?.cacheMisses, 2, sql);
+      assertSameOwners(db, ["a", "b"], 1);
+    }
+    db.exec("BEGIN; UPDATE regular_risk_achievement_owners SET hours = 1000");
+    assertSameOwners(db, ["a", "b"], 2);
+    db.exec("ROLLBACK; UPDATE regular_risk_achievement_owners SET hours = 2000");
+    assertSameOwners(db, ["a", "b"], 2);
+    db.exec("BEGIN; DELETE FROM regular_risk_achievement_owners");
+    read();
+    db.exec("ROLLBACK");
+    assertSameOwners(db, ["a", "b"], 999);
+  } finally { db.close(); }
+});
+
+test("risk population revisions track external commits, rollbacks and repaired triggers", () => {
+  const directory = mkdtempSync(join(tmpdir(), "risk-revision-"));
+  const db = new DatabaseSync(join(directory, "players.db"));
+  const writer = new DatabaseSync(join(directory, "players.db"));
+  try {
+    db.exec(`PRAGMA journal_mode=WAL;
+      CREATE TABLE players(aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT);
+      CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
+      INSERT INTO players VALUES (1, 10, '["a"]'), (2, 20, '["a"]'), (3, 30, '["a"]')`);
+    materializeAchievementBaseline(db, "regular", 1);
+    initializeRiskPopulationRevision(db, "regular");
+    const before = riskPopulationRevision(db, "regular");
+    assertSameOwners(db, ["a"], 1);
+    writer.exec("BEGIN; UPDATE regular_risk_achievement_owners SET hours = 500 WHERE aid = 2");
+    assert.equal(riskPopulationRevision(db, "regular"), before);
+    assertSameOwners(db, ["a"], 1);
+    writer.exec("ROLLBACK");
+    assert.equal(riskPopulationRevision(db, "regular"), before);
+    writer.exec("UPDATE regular_risk_achievement_owners SET hours = 90 WHERE aid = 2");
+    assert.notEqual(riskPopulationRevision(db, "regular"), before);
+    assertSameOwners(db, ["a"], 1);
+    writer.exec("DROP TRIGGER risk_regular_excluded_players_insert; INSERT INTO excluded_players VALUES (2)");
+    initializeRiskPopulationRevision(db, "regular");
+    assertSameOwners(db, ["a"], 1);
+    const repaired = riskPopulationRevision(db, "regular");
+    initializeRiskPopulationRevision(db, "regular");
+    assert.equal(riskPopulationRevision(db, "regular"), repaired, "current schema initialization stays read-only");
+  } finally {
+    writer.close(); db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("seasonal revisions follow latest-snapshot inputs and eligibility without access or other-mode invalidation", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`CREATE TABLE player_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,lifetime_pvp_hours REAL,confirmed_banned INTEGER,last_access_at INTEGER);
+      CREATE TABLE progression_snapshots(id INTEGER PRIMARY KEY,mode TEXT,cycle_id TEXT,aid INTEGER,profile_updated_at INTEGER,pmc_raids INTEGER,achievements TEXT,captured_at INTEGER);
+      CREATE TABLE season_cycles(mode TEXT,cycle_id TEXT,starts_at INTEGER,enabled INTEGER);
+      CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)`);
+    initializeRiskPopulationRevision(db, "seasonal");
+    const changed = (sql: string, expected: boolean) => {
+      const before = riskPopulationRevision(db, "seasonal");
+      db.exec(sql);
+      assert.equal(riskPopulationRevision(db, "seasonal") !== before, expected, sql);
+    };
+    changed("INSERT INTO player_profiles VALUES ('regular','persistent',1,100,0,1)", false);
+    changed("INSERT INTO progression_snapshots VALUES (1,'regular','persistent',1,1,100,'[]',1)", false);
+    changed("INSERT INTO player_profiles VALUES ('seasonal','s1',1,100,0,1)", true);
+    changed("UPDATE player_profiles SET last_access_at = 2", false);
+    changed("UPDATE player_profiles SET lifetime_pvp_hours = 101 WHERE mode = 'seasonal'", true);
+    changed("UPDATE player_profiles SET confirmed_banned = 1 WHERE mode = 'seasonal'", true);
+    changed("INSERT INTO progression_snapshots VALUES (2,'seasonal','s1',1,1,100,'[]',1)", true);
+    changed("UPDATE progression_snapshots SET captured_at = 2", false);
+    for (const sql of [
+      "UPDATE progression_snapshots SET achievements = '[\"a\"]' WHERE id = 2",
+      "UPDATE progression_snapshots SET pmc_raids = 0 WHERE id = 2",
+      "UPDATE progression_snapshots SET profile_updated_at = 2 WHERE id = 2",
+      "UPDATE progression_snapshots SET cycle_id = 's2' WHERE id = 2",
+      "UPDATE progression_snapshots SET aid = 2 WHERE id = 2",
+      "UPDATE progression_snapshots SET mode = 'regular' WHERE id = 2",
+      "UPDATE progression_snapshots SET mode = 'seasonal' WHERE id = 2",
+      "DELETE FROM progression_snapshots WHERE id = 2",
+      "INSERT INTO excluded_players VALUES (1)",
+      "DELETE FROM excluded_players",
+      "INSERT INTO season_cycles VALUES ('seasonal','s1',100,1)",
+      "UPDATE season_cycles SET starts_at = 200",
+    ]) changed(sql, true);
+    changed("UPDATE season_cycles SET enabled = 0", false);
+    changed("UPDATE player_profiles SET lifetime_pvp_hours = 101 WHERE mode = 'seasonal'", false);
+    const before = riskPopulationRevision(db, "seasonal");
+    db.exec("BEGIN; DELETE FROM player_profiles WHERE mode = 'seasonal'; ROLLBACK");
+    assert.equal(riskPopulationRevision(db, "seasonal"), before);
+  } finally { db.close(); }
+});
 
 function fixture(): DatabaseSync {
   const db = new DatabaseSync(":memory:");

@@ -13,11 +13,40 @@ import { backfillRegularRiskReferences } from "../lib/regular-risk-reference-bac
 import { materializeDueAchievementBaselines } from "../scripts/materialize-progression-population.mjs";
 import { materializeAchievementBaseline, readRegularRiskAchievementBaseline } from "../lib/achievement-baseline-publication.ts";
 import { ADMIN_RISK_SCORE_VERSIONS } from "../lib/admin/risk-version.ts";
+import { initializeRiskPopulationRevision, riskPopulationRevision } from "../lib/risk-population-revision.ts";
 
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
   return nextResolve(specifier, context);
 } });
+
+test("cached achievement references preserve regular risk scores, tiers and evidence availability", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE players(aid INTEGER PRIMARY KEY, hours REAL, achievements TEXT); CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY)");
+    const ids = ["a", "6514143d59647d2cb3213c93", "664f1f8768508d74604bf556"];
+    const insert = db.prepare("INSERT INTO players VALUES (?, ?, ?)");
+    for (let aid = 1; aid <= 101; aid++) insert.run(aid, (aid * 37 % 89 + 1) * 21.1, JSON.stringify(ids));
+    materializeAchievementBaseline(db, "regular", 1);
+    initializeRiskPopulationRevision(db, "regular");
+    for (let aid = 1; aid <= 101; aid++) {
+      const legacy = readRegularRiskAchievementBaseline({ prepare: db.prepare.bind(db) }, ids, aid);
+      const cached = readRegularRiskAchievementBaseline(db, ids, aid);
+      const input = (baseline) => ({ ownedIds: ids, stats: baseline.achievements.map((row) => ({
+        id: row.ach_id, owners: row.owners, hoursOwners: row.hoursOwners,
+        samplePct: row.owners / baseline.total * 100, earlyHours: row.earlyHours, meanHours: row.meanHours,
+      })) });
+      const target = { hoursPlayed: (aid * 13 % 101 + 1) * 10.1, pmcRaids: 1000 };
+      const before = scoreRegularCheater(target, null, input(legacy));
+      const after = scoreRegularCheater(target, null, input(cached));
+      assert.equal(after.score, before.score);
+      assert.equal(after.tier, before.tier);
+      assert.equal(after.availability, before.availability);
+      assert.deepEqual(after.factors.map((factor) => ({ ...factor, cohortMean: undefined })),
+        before.factors.map((factor) => ({ ...factor, cohortMean: undefined })));
+    }
+  } finally { db.close(); }
+});
 const directory = mkdtempSync(join(tmpdir(), "regular-risk-"));
 for (const [key, name] of [["SQLITE_PATH", "players"], ["BANS_SQLITE_PATH", "bans"], ["ADMIN_ANALYTICS_SQLITE_PATH", "admin"], ["PROGRESSION_SQLITE_PATH", "progression"], ["REPORTS_SQLITE_PATH", "reports"]]) process.env[key] = join(directory, `${name}.db`);
 const { getStore } = await import("../lib/db.ts");
@@ -313,6 +342,38 @@ function profile(aid, counters = raw()) {
       [["Kills"], counters.kills], [["KilledPmc"], counters.killedPmc], [["LongestWinStreak", "Pmc"], counters.streak],
     ].filter(([, v]) => v !== null).map(([Key, Value]) => ({ Key, Value })) } } }, achievements: {} };
 }
+test("profile refreshes retain owner references until their exact hours or achievement set changes", async () => {
+  const store = await getStore();
+  const db = new DatabaseSync(process.env.SQLITE_PATH);
+  const aid = 800_001;
+  const original = { ...parseProfileStats(profile(aid)), hoursPlayed: 10_000 };
+  try {
+    await store.upsert(aid, original, ["a", "b"]);
+    const before = riskPopulationRevision(db, "regular");
+    await store.upsert(aid, { ...original, nickname: "renamed", pmcRaids: 2000,
+      profileUpdatedAt: original.profileUpdatedAt + 1 }, ["b", "a", "a"]);
+    assert.equal(riskPopulationRevision(db, "regular"), before);
+    await store.upsert(aid, { ...original, hoursPlayed: 20_000,
+      profileUpdatedAt: original.profileUpdatedAt + 2 }, ["a", "b"]);
+    assert.notEqual(riskPopulationRevision(db, "regular"), before);
+    assert.deepEqual(db.prepare("SELECT hours FROM regular_risk_achievement_owners WHERE aid = ?").all(aid)
+      .map((row) => row.hours), [20_000, 20_000]);
+    const updated = riskPopulationRevision(db, "regular");
+    await store.upsert(aid, { ...original, hoursPlayed: 20_000,
+      profileUpdatedAt: original.profileUpdatedAt + 3 }, ["a", "c"]);
+    assert.notEqual(riskPopulationRevision(db, "regular"), updated);
+    assert.deepEqual(db.prepare("SELECT ach_id FROM regular_risk_achievement_owners WHERE aid = ? ORDER BY ach_id")
+      .all(aid).map((row) => row.ach_id), ["a", "c"]);
+    await store.upsert(aid, { ...original, hoursPlayed: 0,
+      profileUpdatedAt: original.profileUpdatedAt + 4 }, ["a", "c"]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM regular_risk_achievement_owners WHERE aid = ?").get(aid).n, 0);
+  } finally {
+    db.prepare("DELETE FROM regular_risk_achievement_owners WHERE aid = ?").run(aid);
+    db.prepare("DELETE FROM players WHERE aid = ?").run(aid);
+    db.close();
+  }
+});
+
 test("parser and persistent store retain independent raw availability through evaluation", async () => {
   const store = await getStore();
   assert.ok(store);

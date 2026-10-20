@@ -73,18 +73,18 @@ test("persistent cohort SQL combines range counts and all metric distributions",
   // counts already rejected is never aggregated and thrown away.
   assert.match(compute, /const selected = !matched && \(mode === "regular" \|\| mode === "pve"\)\s*\?\s*twoDimensionalPopulationWhere\(/);
   assert.match(compute, /:\s*twoDimensionalRangeWhere\(/);
-  // The six metrics are ranked one at a time over the shared cohort CTE. A
-  // UNION ALL of per-metric rows would expand the cohort six times before the
-  // sort, which is what made the population fallback take seconds.
+  // Each metric sorts just its exact selected slice, with shared counts and
+  // percentile comparisons. There is no per-row window-function bookkeeping.
   const metricsSql = db.slice(db.indexOf("function persistentComparisonMetricsSql"), db.indexOf("async function computePersistentTwoDimensionalCohort"));
-  assert.match(metricsSql, /ROW_NUMBER\(\) OVER \(ORDER BY \$\{metric\}\) AS rn,\s*\n\s*count_\$\{index\} AS n FROM cohort CROSS JOIN summary/);
+  assert.match(metricsSql, /ORDER BY \$\{metric\} LIMIT/);
+  assert.doesNotMatch(metricsSql, /ROW_NUMBER\(\)/);
   assert.match(metricsSql, /summary AS MATERIALIZED/);
   assert.match(metricsSql, /COUNT\(CASE WHEN \$\{metricWhere\(metric\)\} THEN 1 END\)/);
   assert.doesNotMatch(metricsSql, /COUNT\(\*\) OVER \(\)/);
   assert.doesNotMatch(db, /metric_values AS/);
   assert.doesNotMatch(db, /PARTITION BY metric/);
-  assert.match(db, /SUM\(CASE WHEN v < player_v THEN 1 ELSE 0 END\) AS below/);
-  assert.match(db, /SUM\(CASE WHEN v = player_v THEN 1 ELSE 0 END\) AS equal/);
+  assert.match(metricsSql, /SUM\(CASE WHEN \$\{metricWhere\(metric\)\} AND \$\{metric\} < player_\$\{index\}/);
+  assert.match(metricsSql, /SUM\(CASE WHEN \$\{metricWhere\(metric\)\} AND \$\{metric\} = player_\$\{index\}/);
 });
 
 
