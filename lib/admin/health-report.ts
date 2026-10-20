@@ -4,6 +4,10 @@ import type { BrowserPerformanceSummary } from "./browser-performance-db.ts";
 import type { SystemMetricsRange } from "./system-metrics.ts";
 import type { AveragePublicationState } from "../average-publication.ts";
 
+export function healthOperationEntry(operation: string): "background" | "api" {
+  return operation === "risk_evaluation" ? "background" : "api";
+}
+
 export interface HealthDiagnostics {
   from: number; to: number;
   browser: BrowserPerformanceSummary | null;
@@ -31,7 +35,7 @@ export function healthReport(summary: {
     health: summary.health && {
       ...summary.health,
       operations: summary.health.operations.map((operation) => ({ ...operation,
-        entry: operation.operation === "risk_evaluation" ? "background" : "api" })),
+        entry: healthOperationEntry(operation.operation) })),
       latencyMs: { p50: summary.health.p50Ms, p95: summary.health.p95Ms, p99: summary.health.p99Ms },
       cache: { hits: summary.health.cacheHits, misses: summary.health.cacheMisses },
     },

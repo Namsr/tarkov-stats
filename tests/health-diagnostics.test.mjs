@@ -9,7 +9,11 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { browserPage, browserEndpoint, parseBrowserSamples, resourceSamples } from "../lib/observability/browser-performance.ts";
 import { createAnalyticsStore, getAnalyticsStore } from "../lib/admin/analytics-db.ts";
-import { healthReport } from "../lib/admin/health-report.ts";
+import { healthOperationEntry, healthReport } from "../lib/admin/health-report.ts";
+import { createRequire } from "node:module";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { dict } from "../lib/i18n/dictionary.ts";
 import { cohortFailureDiagnostic } from "../lib/cohort-worker.ts";
 import { ComputeUnavailableError } from "../lib/compute-worker.ts";
 import { DynamicComputeTimeoutError } from "../lib/average-dynamic-cache.ts";
@@ -20,6 +24,98 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier.startsWith("@/")) return { shortCircuit: true, url: pathToFileURL(resolve(`${specifier.slice(2)}.ts`)).href };
   return nextResolve(specifier, context);
 } });
+
+function healthPanelRenderer() {
+  const require = createRequire(import.meta.url);
+  const compile = (path, imports) => {
+    const compiled = { exports: {} };
+    const code = ts.transpileModule(readFileSync(path, "utf8"), {
+      compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    runInNewContext(code, { module: compiled, exports: compiled.exports, Intl, Date, Map, Set,
+      require: (id) => id in imports ? imports[id] : require(id),
+    });
+    return compiled.exports;
+  };
+  const statCard = compile("components/StatCard.tsx", {});
+  return compile("components/AdminDashboard.tsx", {
+    "next/link": {}, "next/navigation": {},
+    "@/components/StatCard": statCard,
+    "@/components/AdminAudienceCharts": {}, "@/lib/i18n/context": {},
+    "@/lib/admin/report-client": {}, "@/types/seasonal": { GAME_MODES: [] },
+    "@/components/AdminShowcase": {}, "@/components/AdminSupport": {}, "@/components/AdminAxisLeague": {},
+    "@/lib/admin/health-report": { healthReport, healthOperationEntry },
+    "@/lib/observability/browser-performance": { BROWSER_METRICS: ["api_total", "lcp"], BROWSER_ENDPOINTS: ["profile"] },
+  });
+}
+
+test("health panel separates browser, API, background and VPS evidence in both languages", () => {
+  const { HealthPanel } = healthPanelRenderer();
+  const now = 1_800_000_000_000;
+  const operation = (name) => ({ operation: name, mode: "regular", requests: 2, success: 2, serverErrors: 0,
+    p50Ms: 10, p95Ms: 20, p99Ms: 30, lastSuccessAt: now, lastIssueAt: null, variants: [], phases: [] });
+  const summary = { generatedAt: now, period: "24h", domain: "all", storageAvailable: true,
+    health: { status: "healthy", activeIssueCount: 0, recentIssueCount: 0, statusSinceAt: null,
+      requests: 2, success: 2, serverErrors: 0, rateLimited: 0, cacheHits: 1, cacheMisses: 1,
+      p50Ms: 10, p95Ms: 20, p99Ms: 30, lastSuccessAt: now, bucketMs: 300000,
+      series: [], issues: [], operations: [operation("average_cohort"), operation("risk_evaluation")] },
+    diagnostics: { browser: { available: true, samples: 4, lastSampleAt: now,
+      metrics: [{ path: "/", endpoint: "profile", metric: "api_total", samples: 4, p50: 50, p95: 100, p99: 200, max: 300 }] },
+      runtime: { available: true, sampleCount: 2, retentionSamples: 120,
+        latest: { at: now, windowMs: 60000, eventLoop: { p99Ms: 12, maxMs: 20 }, cpuPercent: 5, memory: { rss: 268435456 } } },
+      system: { available: false, configured: false, data: null } } };
+  for (const lang of ["ru", "en"]) {
+    const t = (key, vars = {}) => {
+      assert.ok(dict[lang][key], `Missing ${lang} key ${key}`);
+      return dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`));
+    };
+    const render = (value) => renderToStaticMarkup(React.createElement(HealthPanel, { summary: value, lang, t,
+      audit: null, auditBusy: false, auditError: "", onRunAudit: async () => {} }));
+    const html = render(summary);
+    for (const group of ["user", "site", "background", "vps"]) assert.ok(html.includes(`href="#health-${group}"`) && html.includes(`id="health-${group}"`));
+    const site = html.slice(html.indexOf('id="health-site"'), html.indexOf('id="health-background"'));
+    const background = html.slice(html.indexOf('id="health-background"'), html.indexOf('id="health-vps"'));
+    assert.ok(site.includes(dict[lang]["admin.health.operation.average_cohort"]));
+    assert.ok(!site.includes(dict[lang]["admin.health.operation.risk_evaluation"]));
+    assert.ok(background.includes(dict[lang]["admin.health.operation.risk_evaluation"]));
+    assert.ok(!background.includes(dict[lang]["admin.health.operation.average_cohort"]));
+    assert.ok(html.includes(dict[lang]["admin.health.browser.metric.api_total"]));
+    assert.ok(html.includes(dict[lang]["admin.health.runtime.heading"]));
+    const missing = render({ ...summary, diagnostics: undefined });
+    assert.ok(missing.includes(dict[lang]["admin.health.browser.unavailable"]));
+    assert.ok(missing.includes(dict[lang]["admin.health.runtime.unavailable"]));
+    assert.ok(missing.includes(dict[lang]["admin.monitoring.storageUnavailable"]));
+    assert.doesNotMatch(missing, /NaN|Infinity|undefined/);
+    const invalid = render({ ...summary, diagnostics: { ...summary.diagnostics,
+      runtime: { available: true, latest: { eventLoop: { p99Ms: NaN }, cpuPercent: "0" } } } });
+    assert.doesNotMatch(invalid, /NaN|Infinity|undefined/);
+  }
+});
+
+test("latency graphs compare matching percentiles with an editable reference without zero or missing-data ratios", () => {
+  const { HealthLatencyComparison } = healthPanelRenderer();
+  const t = (key, vars = {}) => {
+    assert.ok(dict.ru[key], `Missing key ${key}`);
+    return dict.ru[key].replace(/\{(\w+)\}/g, (_, name) => String(vars[name] ?? `{${name}}`));
+  };
+  const rows = [{ key: "profile", label: "Profile", samples: 500, p50: 1500, p95: 9000, p99: 12000 },
+    { key: "unknown", label: "No measurement", samples: 0, p50: null, p95: null, p99: null }];
+  const render = (reference, data = rows) => renderToStaticMarkup(React.createElement(HealthLatencyComparison,
+    { rows: data, referenceKey: "api", defaultReferenceMs: reference, lang: "ru", t }));
+  const example = render(1.5);
+  assert.ok(example.includes("1 000 раз выше эталона"));
+  assert.ok(example.includes("1 500 мс"));
+  assert.ok(!example.includes("No measurement"));
+  assert.ok(render(100).includes("15 раз выше эталона"));
+  assert.ok(render(3000).includes("В пределах эталона (0,5×)"));
+  for (const reference of [null, 0, -1, NaN, Infinity, 3_600_001]) {
+    const html = render(reference);
+    assert.ok(html.includes(dict.ru["admin.health.comparison.noReference"]));
+    assert.doesNotMatch(html, /NaN|Infinity|width:-/);
+  }
+  assert.ok(render(100, []).includes(dict.ru["admin.health.browser.noSamples"]));
+  assert.ok(render(100, [{ ...rows[0], p50: 0 }]).includes("В пределах эталона (0×)"));
+});
 
 test("browser dimensions strip identities and reject private and unknown routes", () => {
   assert.equal(browserPage("/player/pve/12345"), "/player/pve/:account");
