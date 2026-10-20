@@ -70,11 +70,24 @@ test("client starts once, polls without refreshing again, and exposes the previo
     calls.push({ url, options });
     return Response.json(calls.length === 1 ? { status: "running", report: previous } : { status: "ready", report: current }, { status: calls.length === 1 ? 202 : 200 });
   });
-  const signal = new AbortController().signal;
+  const controller = new AbortController(); const signal = controller.signal;
   assert.deepEqual(await loadAdminReport(new URLSearchParams({ period: "7d", domain: "all" }), { signal, onState: (s) => states.push(s) }), current);
   assert.match(calls[0].url, /refresh=1/); assert.doesNotMatch(calls[1].url, /refresh=/);
-  assert.ok(calls.every((c) => c.options.signal === signal && c.options.cache === "no-store"));
+  assert.ok(calls.every((c) => c.options.signal === calls[0].options.signal && c.options.cache === "no-store"));
+  controller.abort(); assert.ok(calls.every((c) => c.options.signal.aborted));
   assert.deepEqual(states[0].report, previous);
+});
+
+test("the total client deadline interrupts a stalled HTTP request", async (t) => {
+  const budget = new AbortController(); let requestedBudget;
+  t.mock.method(AbortSignal, "timeout", (ms) => { requestedBudget = ms; return budget.signal; });
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }));
+  const result = loadAdminReport(new URLSearchParams(), { signal: new AbortController().signal, onState: () => assert.fail("a stalled request cannot publish state") });
+  const rejected = assert.rejects(result, { name: "TimeoutError" });
+  budget.abort(new DOMException("report deadline", "TimeoutError"));
+  await rejected; assert.equal(requestedBudget, 130_000);
 });
 
 test("leaving a report aborts its poll wait and a failed response is not treated as ready", async (t) => {
@@ -165,6 +178,7 @@ test("production report child preserves analytical results and is packaged in th
 });
 
 test.after(async () => {
-  await delay(100);
-  rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // stop() sends SIGKILL; Windows may still hold the child's SQLite files until
+  // it exits. A cleanup failure must not replace an actual assertion failure.
+  try { rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* Best-effort cleanup after asynchronous worker shutdown. */ }
 });

@@ -16,21 +16,24 @@ export async function loadAdminReport(params: URLSearchParams, options: {
   signal: AbortSignal;
   onState: (state: AdminReportState) => void;
 }): Promise<AdminReport> {
+  // The budget must also cancel an individual stalled fetch/body, not just
+  // stop the next polling iteration after that request eventually returns.
+  const signal = AbortSignal.any([options.signal, AbortSignal.timeout(130_000)]);
   const until = Date.now() + 130_000;
   let refresh = true;
   while (Date.now() < until) {
-    options.signal.throwIfAborted();
+    signal.throwIfAborted();
     const query = new URLSearchParams(params);
     if (refresh) query.set("refresh", "1");
-    const response = await fetch(`/api/admin/health-report?${query}`, { cache: "no-store", signal: options.signal });
+    const response = await fetch(`/api/admin/health-report?${query}`, { cache: "no-store", signal });
     if (!response.ok) throw new Error(String(response.status));
     const state = await response.json() as AdminReportState;
-    options.signal.throwIfAborted();
+    signal.throwIfAborted();
     options.onState(state);
     if (state.status === "ready" && state.report) return state.report;
     if (state.status !== "running") throw new Error("admin_report_unavailable");
     refresh = false;
-    await pause(options.signal);
+    await pause(signal);
   }
   throw new Error("admin_report_timeout");
 }

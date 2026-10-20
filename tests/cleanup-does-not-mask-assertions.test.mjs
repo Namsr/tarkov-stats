@@ -680,6 +680,7 @@ test("a body the scan cannot see into is still guarded when it guards itself", (
 // sqlite-handle-recovery says its own openers do, and which is why they are held
 // to the same rule rather than counted as safe.
 const suitesWhoseDeleteNeedsAGuard = [
+  "tests/admin-report.test.mjs",
   "tests/arena-index-sync.test.mjs",
   "tests/average-publication.test.ts",
   "tests/ban-import.test.ts",
