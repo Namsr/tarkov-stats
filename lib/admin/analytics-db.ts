@@ -75,6 +75,7 @@ export interface HealthOperationSummary {
   lastSuccessAt: number | null;
   lastIssueAt: number | null;
   variants: HealthOperationVariant[];
+  series?: HealthSeriesPoint[];
   phases: HealthPhaseSummary[];
   failurePhases: HealthPhaseSummary[];
   allLatencyMs: { p50: number | null; p95: number | null; p99: number | null; max: number | null };
@@ -754,6 +755,40 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         ]).join(",\n        ")}
         FROM request_events WHERE ${operationSql}
         GROUP BY operation, mode ORDER BY requests DESC, operation, mode`).all(...args) as Record<string, unknown>[] : [];
+      const bucketMs = bucketMilliseconds(period);
+      const readSeries = (grouped: boolean): Record<string, unknown>[] => includeDiagnostics ? db.prepare(`WITH bucketed AS (
+          SELECT ${grouped ? "operation, mode," : ""} CAST(occurred_at / ? AS INTEGER) * ? AS at, latency_ms, outcome, status
+          FROM request_events WHERE ${grouped ? operationSql : sql}
+        ), ranked AS (
+          SELECT ${grouped ? "operation, mode," : ""} at, latency_ms, outcome, status,
+            ROW_NUMBER() OVER (PARTITION BY ${grouped ? "operation, mode," : ""} at ORDER BY CASE WHEN outcome = 'success' THEN 0 ELSE 1 END, latency_ms) AS latency_rank,
+            COUNT(*) OVER (PARTITION BY ${grouped ? "operation, mode," : ""} at) AS bucket_count,
+            SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) OVER (PARTITION BY ${grouped ? "operation, mode," : ""} at) AS success_count
+          FROM bucketed
+        )
+        SELECT ${grouped ? "operation, mode," : ""} at, MAX(bucket_count) AS requests,
+          SUM(CASE WHEN outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500 THEN 1 ELSE 0 END) AS problems,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms,
+          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 999 + 999) / 1000 AS INTEGER) THEN latency_ms END) AS p999_ms,
+          MAX(latency_ms) AS max_ms
+        FROM ranked GROUP BY ${grouped ? "operation, mode," : ""} at ORDER BY at`).all(bucketMs, bucketMs, ...args) as Record<string, unknown>[] : [];
+      const toSeriesPoint = (seriesRow: Record<string, unknown>): HealthSeriesPoint => ({
+        at: Number(seriesRow.at), requests: Number(seriesRow.requests), problems: Number(seriesRow.problems),
+        p50Ms: seriesRow.p50_ms == null ? null : Number(seriesRow.p50_ms),
+        p95Ms: seriesRow.p95_ms == null ? null : Number(seriesRow.p95_ms),
+        p99Ms: seriesRow.p99_ms == null ? null : Number(seriesRow.p99_ms),
+        p999Ms: seriesRow.p999_ms == null ? null : Number(seriesRow.p999_ms),
+        maxMs: seriesRow.max_ms == null ? null : Number(seriesRow.max_ms),
+      });
+      const operationSeries = new Map<string, HealthSeriesPoint[]>();
+      for (const point of readSeries(true)) {
+        const key = JSON.stringify([point.operation, point.mode]);
+        const points = operationSeries.get(key) ?? [];
+        points.push(toSeriesPoint(point));
+        operationSeries.set(key, points);
+      }
       const operations: HealthOperationSummary[] = operationRows.map((operationRow) => {
         const mode = operationRow.mode == null ? null : String(operationRow.mode);
         const operationWhere = `${operationSql} AND operation = ? AND ${mode == null ? "mode IS NULL" : "mode = ?"}`;
@@ -804,6 +839,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           lastSuccessAt: operationRow.last_success_at == null ? null : Number(operationRow.last_success_at),
           lastIssueAt: operationRow.last_issue_at == null ? null : Number(operationRow.last_issue_at),
           variants,
+          series: operationSeries.get(JSON.stringify([operationRow.operation, operationRow.mode])) ?? [],
           phases: phaseSummary(successfulOperationWhere, "success"),
           failurePhases: phaseSummary(`${operationWhere} AND ${problemSql()}`, "failure"),
           allLatencyMs: { p50: all.p50Ms, p95: all.p95Ms, p99: all.p99Ms, max: all.maxMs },
@@ -851,33 +887,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         phases: Object.fromEntries(Object.entries(sample).filter(([key, value]) => key.endsWith("_ms") && key !== "latency_ms" && value != null)
           .map(([key, value]) => [key.slice(0, -3), Number(value)])),
       }));
-      const bucketMs = bucketMilliseconds(period);
-      const seriesRows = includeDiagnostics ? db.prepare(`WITH bucketed AS (
-          SELECT CAST(occurred_at / ? AS INTEGER) * ? AS at, latency_ms, outcome, status
-          FROM request_events WHERE ${sql}
-        ), ranked AS (
-          SELECT at, latency_ms, outcome, status,
-            ROW_NUMBER() OVER (PARTITION BY at ORDER BY CASE WHEN outcome = 'success' THEN 0 ELSE 1 END, latency_ms) AS latency_rank,
-            COUNT(*) OVER (PARTITION BY at) AS bucket_count,
-            SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) OVER (PARTITION BY at) AS success_count
-          FROM bucketed
-        )
-        SELECT at, MAX(bucket_count) AS requests,
-          SUM(CASE WHEN outcome IN ('error', 'unavailable', 'rate_limited') OR status >= 500 THEN 1 ELSE 0 END) AS problems,
-          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 50 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p50_ms,
-          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 95 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p95_ms,
-          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 99 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p99_ms,
-          MAX(CASE WHEN outcome = 'success' AND latency_rank = CAST((success_count * 999 + 999) / 1000 AS INTEGER) THEN latency_ms END) AS p999_ms,
-          MAX(latency_ms) AS max_ms
-        FROM ranked GROUP BY at ORDER BY at`).all(bucketMs, bucketMs, ...args) as Record<string, unknown>[] : [];
-      const series: HealthSeriesPoint[] = seriesRows.map((seriesRow) => ({
-        at: Number(seriesRow.at), requests: Number(seriesRow.requests), problems: Number(seriesRow.problems),
-        p50Ms: seriesRow.p50_ms == null ? null : Number(seriesRow.p50_ms),
-        p95Ms: seriesRow.p95_ms == null ? null : Number(seriesRow.p95_ms),
-        p99Ms: seriesRow.p99_ms == null ? null : Number(seriesRow.p99_ms),
-        p999Ms: seriesRow.p999_ms == null ? null : Number(seriesRow.p999_ms),
-        maxMs: seriesRow.max_ms == null ? null : Number(seriesRow.max_ms),
-      }));
+      const series: HealthSeriesPoint[] = readSeries(false).map(toSeriesPoint);
       const currentSignal = includeDiagnostics ? queryHealthSignal(db, domain, now) : {
         status: "healthy" as const, activeIssueCount: 0, firstSeenAt: null, lastSeenAt: null,
       };

@@ -1820,6 +1820,25 @@ a.help-card:hover { border-color: var(--foreground); }
 .admin-health-chart__swatch--requests { border-top-color: var(--success); }
 .admin-health-chart__swatch--problems { border-top-color: var(--danger); border-top-style: dotted; }
 .admin-health-table-wrap { margin-top: 18px; overflow-x: auto; }
+.admin-health-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-health-nav a { border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 14px; color: var(--foreground); font-size: .76rem; }
+.admin-health-nav a:hover { background: var(--card-bg); border-color: var(--accent); }
+.admin-health-group { scroll-margin-top: 100px; padding-top: 16px; border-top: 1px solid var(--card-border); }
+.admin-health-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; }
+.admin-health-selector { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 18px 0; font-size: .78rem; }
+.admin-health-selector select { max-width: 100%; min-width: 0; padding: 10px; color: var(--foreground); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 6px; }
+.admin-health-browser-table { min-width: 780px; }
+.admin-health-browser-scroll { max-height: 480px; }
+.admin-health-browser-table thead th { position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
+.admin-health-operation-details { margin-top: 6px; max-width: 560px; white-space: normal; }
+.admin-health-operation-details summary { color: var(--muted-strong); font-size: .65rem; cursor: pointer; }
+.admin-health-operation-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.admin-health-comparison { margin: 22px 0; }
+.admin-health-comparison__controls { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }
+.admin-health-comparison__controls label { display: flex; flex-direction: column; gap: 7px; font-size: .74rem; min-width: 0; }
+.admin-health-comparison__controls input, .admin-health-comparison__controls select { width: 150px; max-width: 100%; padding: 9px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); color: var(--foreground); }
+.admin-health-operation-table > summary { cursor: pointer; margin-top: 12px; font-size: .78rem; color: var(--muted-strong); }
+.admin-health-operation-table > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .admin-health-table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: .7rem; }
 .admin-health-table th, .admin-health-table td { border-top: 1px solid var(--card-border); padding: 10px 9px; font-variant-numeric: tabular-nums; text-align: right; vertical-align: top; white-space: nowrap; }
 .admin-health-table th:first-child, .admin-health-table td:first-child { text-align: left; }
@@ -2132,3 +2151,12 @@ a.help-card:hover { border-color: var(--foreground); }
   .axis-photo-dialog { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border-radius: 0; }
   .axis-photo-dialog__header, .axis-photo-tools { padding-left: 12px; padding-right: 12px; }
 }
+
+.admin-health-chart-grid--single { grid-template-columns: minmax(0, 1fr); }
+.admin-health-chart__reference { stroke: var(--foreground); stroke-width: .22; stroke-dasharray: 1 1; fill: none; }
+.admin-health-chart__dot--reference { background: var(--foreground); }
+.admin-health-chart__comparison { display: block; max-width: 180px; margin-top: 4px; color: var(--muted-strong); font-size: .65rem; font-weight: 400; white-space: normal; }
+.admin-health-comparison__controls select { width: min(520px, 100%); }
+.admin-health-comparison__controls label:first-child { flex: 1 1 230px; }
+
+.admin-health-chart__sample { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: currentColor; transform: translate(-50%, -50%); }

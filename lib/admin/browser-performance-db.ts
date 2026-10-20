@@ -1,10 +1,12 @@
 import type { AdminDomain, AdminPeriod } from "./types.ts";
-import { periodMilliseconds } from "./types.ts";
+import { bucketMilliseconds, periodMilliseconds } from "./types.ts";
 import type { BrowserSample } from "../observability/browser-performance.ts";
 
 export interface BrowserPerformanceSummary {
   available: boolean; samples: number; lastSampleAt: number | null; from: number; to: number;
-  metrics: Array<{ path: string; endpoint: string | null; metric: string; samples: number; p50: number; p95: number; p99: number; max: number }>;
+  bucketMs?: number;
+  metrics: Array<{ path: string; endpoint: string | null; metric: string; samples: number; p50: number; p95: number; p99: number; max: number;
+    series?: Array<{ at: number; samples: number; p50: number; p95: number; p99: number; max: number }> }>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,9 +42,36 @@ export function createBrowserPerformanceStore(db: any) {
         MAX(CASE WHEN rn = CAST((n * 95 + 99) / 100 AS INTEGER) THEN value END) AS p95,
         MAX(CASE WHEN rn = CAST((n * 99 + 99) / 100 AS INTEGER) THEN value END) AS p99
       FROM ranked GROUP BY path, endpoint, metric ORDER BY samples DESC LIMIT 150`).all(...args);
-      return { available: true, samples: Number(totals.n), lastSampleAt: totals.last == null ? null : Number(totals.last), from, to: now,
+      const bucketMs = bucketMilliseconds(period);
+      const series = new Map<string, NonNullable<BrowserPerformanceSummary["metrics"][number]["series"]>>();
+      if (rows.length) {
+        // Only return history for the same bounded groups as the summary.
+        const history = db.prepare(`WITH selected(path,endpoint,metric) AS (VALUES ${rows.map(() => "(?,?,?)").join(",")}), bucketed AS (
+          SELECT b.path, b.endpoint, b.metric, b.value, CAST(b.occurred_at / ? AS INTEGER) * ? AS at
+          FROM browser_performance b JOIN selected s ON b.path=s.path AND b.endpoint IS s.endpoint AND b.metric=s.metric
+          WHERE ${where}
+        ), ranked AS (
+          SELECT *, ROW_NUMBER() OVER (PARTITION BY path,endpoint,metric,at ORDER BY value) AS rn,
+            COUNT(*) OVER (PARTITION BY path,endpoint,metric,at) AS n FROM bucketed
+        ) SELECT path,endpoint,metric,at,MAX(n) AS samples,MAX(value) AS max,
+          MAX(CASE WHEN rn=CAST((n*50+99)/100 AS INTEGER) THEN value END) AS p50,
+          MAX(CASE WHEN rn=CAST((n*95+99)/100 AS INTEGER) THEN value END) AS p95,
+          MAX(CASE WHEN rn=CAST((n*99+99)/100 AS INTEGER) THEN value END) AS p99
+        FROM ranked GROUP BY path,endpoint,metric,at ORDER BY at`).all(
+          ...rows.flatMap((row: Record<string, unknown>) => [row.path, row.endpoint, row.metric]), bucketMs, bucketMs, ...args,
+        ) as Record<string, unknown>[];
+        for (const point of history) {
+          const key = JSON.stringify([point.path, point.endpoint, point.metric]);
+          const points = series.get(key) ?? [];
+          points.push({ at: Number(point.at), samples: Number(point.samples), p50: Number(point.p50),
+            p95: Number(point.p95), p99: Number(point.p99), max: Number(point.max) });
+          series.set(key, points);
+        }
+      }
+      return { available: true, samples: Number(totals.n), lastSampleAt: totals.last == null ? null : Number(totals.last), from, to: now, bucketMs,
         metrics: rows.map((row: Record<string, unknown>) => ({ path: String(row.path), endpoint: row.endpoint == null ? null : String(row.endpoint), metric: String(row.metric),
-          samples: Number(row.samples), p50: Number(row.p50), p95: Number(row.p95), p99: Number(row.p99), max: Number(row.max) })) };
+          samples: Number(row.samples), p50: Number(row.p50), p95: Number(row.p95), p99: Number(row.p99), max: Number(row.max),
+          series: series.get(JSON.stringify([row.path, row.endpoint, row.metric])) ?? [] })) };
     },
     cleanup(now: number) { db.prepare("DELETE FROM browser_performance WHERE occurred_at < ?").run(now - 7 * 86_400_000); },
   };
