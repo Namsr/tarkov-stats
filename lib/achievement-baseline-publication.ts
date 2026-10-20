@@ -93,7 +93,7 @@ const MAX_OWNER_SUMMARIES = 512;
 
 /** Indexed owner samples; no per-profile expansion of players.achievements. */
 export function readRegularRiskAchievementBaseline(
-  db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined }; exec?(sql: string): void; readonly isTransaction?: boolean },
+  db: { prepare(sql: string): { get(...params: unknown[]): Record<string, unknown> | undefined; all?(...params: unknown[]): Record<string, unknown>[] }; exec?(sql: string): void; readonly isTransaction?: boolean },
   ownedIds: readonly string[],
   excludeAid: number,
   observe: (timing: RegularRiskAchievementTiming) => void = logSampledTiming,
@@ -132,7 +132,7 @@ export function readRegularRiskAchievementBaseline(
         AND aid NOT IN (SELECT aid FROM excluded_players)`;
     const where = `WHERE ach_id = ? AND aid != ? AND ${eligibility}`;
     const revision = snapshot ? riskPopulationRevision(db, "regular") : null;
-    if (revision !== null) {
+    if (revision !== null && typeof db.prepare("SELECT 1").all === "function") {
       let cache = ownerSummaries.get(db);
       if (!cache || cache.revision !== revision) {
         cache = { revision, entries: new Map() };
@@ -141,7 +141,7 @@ export function readRegularRiskAchievementBaseline(
       const aggregateAll = db.prepare(`SELECT COUNT(*) AS n, AVG(hours) AS mean, AVG(hours * hours) AS square
         FROM regular_risk_achievement_owners WHERE ach_id = ? AND ${eligibility}`);
       const boundary = db.prepare(`SELECT hours, aid FROM regular_risk_achievement_owners
-        WHERE ach_id = ? AND ${eligibility} ORDER BY hours, aid LIMIT 1 OFFSET ?`);
+        WHERE ach_id = ? AND ${eligibility} ORDER BY hours, aid LIMIT 2 OFFSET ?`);
       const target = db.prepare(`SELECT hours FROM regular_risk_achievement_owners
         WHERE aid = ? AND ach_id = ? AND ${eligibility}`);
       const preciseMoments = db.prepare(`SELECT AVG(hours) AS mean, AVG(hours * hours) AS square
@@ -161,9 +161,9 @@ export function readRegularRiskAchievementBaseline(
           // Removing one owner moves P20 by at most one position. Store both
           // boundary rows instead of retaining/sorting the entire population.
           const rank = Math.max(0, Math.ceil((n - 1) * 0.2) - 1);
+          const boundaries = n ? measured("percentileMs", () => boundary.all!(id, rank)) as OwnerBoundary[] : [];
           summary = { n, mean: Number(row?.mean ?? 0), square: Number(row?.square ?? 0),
-            lower: n ? measured("percentileMs", () => boundary.get(id, rank)) as OwnerBoundary : undefined,
-            upper: n > rank + 1 ? measured("percentileMs", () => boundary.get(id, rank + 1)) as OwnerBoundary : undefined };
+            lower: boundaries[0], upper: boundaries[1] };
         }
         cache.entries.set(id, summary);
         if (cache.entries.size > MAX_OWNER_SUMMARIES) cache.entries.delete(cache.entries.keys().next().value!);
