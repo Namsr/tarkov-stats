@@ -41,7 +41,7 @@ function healthPanelRenderer() {
   return compile("components/AdminDashboard.tsx", {
     "next/link": {}, "next/navigation": {},
     "@/components/StatCard": statCard,
-    "@/components/AdminAudienceCharts": {}, "@/lib/i18n/context": {},
+    "@/components/AdminAudienceCharts": {}, "@/components/AdminTrafficAudience": {}, "@/lib/i18n/context": {},
     "@/lib/admin/report-client": {}, "@/types/seasonal": { GAME_MODES: [] },
     "@/components/AdminShowcase": {}, "@/components/AdminSupport": {}, "@/components/AdminAxisLeague": {},
     "@/lib/admin/health-report": { healthReport, healthOperationEntry },

@@ -85,7 +85,7 @@ test("legacy history backfills earliest observed days once and survives retentio
   assert.equal(store.audienceSummary("7d", "all", NOW).users.total, 2);
   assert.equal(store.audienceSummary("7d", "all", NOW).visitors.total, 2);
   assert.deepEqual(db.prepare("PRAGMA table_info(auth_users)").all().map((row) => row.name), ["subject_hash", "first_day"]);
-  assert.deepEqual(db.prepare("PRAGMA table_info(audience_visitors)").all().map((row) => row.name), ["visitor_id", "host", "first_day"]);
+  assert.deepEqual(db.prepare("PRAGMA table_info(audience_visitors)").all().map((row) => row.name), ["visitor_id", "host", "first_day", "first_at"]);
 });
 
 test("UTC midnight, empty ranges and out-of-order events keep daily totals correct", () => {
@@ -189,4 +189,51 @@ test("Google aggregates separate active accounts, accounts signing in and repeat
   assert.deepEqual(store.authSummary("15m", NOW), {
     activeUsers: 2, signInUsers: 1, signIns: 2, fromDay: day(NOW), toDay: day(NOW),
   });
+});
+
+
+test("returning visitors stay returning when retention deletes an earlier hit on the 90-day boundary", () => {
+  const db = new DatabaseSync(":memory:");
+  let store = createAnalyticsStore(db);
+  const from = NOW - 90 * DAY;
+  visit(store, "boundary-return", from - 1);
+  visit(store, "boundary-return", from + 1);
+  visit(store, "boundary-new", from + 2);
+  store.cleanup(NOW);
+  store = createAnalyticsStore(db);
+  assert.deepEqual(store.visitorEngagement("90d", "all", NOW), {
+    visitors: 2, newVisitors: 1, returningVisitors: 1, repeatVisitors: 0, regularVisitors: 0,
+  });
+  assert.equal(db.prepare("SELECT first_at FROM audience_visitors WHERE visitor_id = ?").get("boundary-return").first_at, from - 1);
+});
+
+test("first-time migration backfills surviving first hits once and preserves legacy daily history", () => {
+  const db = new DatabaseSync(":memory:");
+  let store = createAnalyticsStore(db);
+  visit(store, "known", NOW - 60_000);
+  db.exec("DROP TRIGGER track_first_visit_day; ALTER TABLE audience_visitors DROP COLUMN first_at; DELETE FROM analytics_meta WHERE key = 'audience_first_time_v1';");
+  db.prepare("INSERT INTO audience_visitors (visitor_id, host, first_day) VALUES (?, ?, ?)").run("legacy", "tarkovstats.ru", day(NOW - 120 * DAY));
+  store = createAnalyticsStore(db);
+  assert.equal(db.prepare("SELECT first_at FROM audience_visitors WHERE visitor_id = 'known'").get().first_at, NOW - 60_000);
+  assert.equal(db.prepare("SELECT first_at FROM audience_visitors WHERE visitor_id = 'legacy'").get().first_at, null);
+  visit(store, "legacy", NOW - 30_000);
+  visit(store, "known", NOW - 120_000); // Earlier, out of order, on the same day.
+  assert.equal(db.prepare("SELECT first_at FROM audience_visitors WHERE visitor_id = 'known'").get().first_at, NOW - 120_000);
+  assert.equal(store.visitorEngagement("15m", "all", NOW).returningVisitors, 1);
+  store = createAnalyticsStore(db);
+  assert.equal(store.visitorEngagement("15m", "all", NOW).returningVisitors, 1);
+});
+
+
+test("migration keeps day precision when retention may have removed earlier first-day events", () => {
+  const db = new DatabaseSync(":memory:");
+  let store = createAnalyticsStore(db);
+  const from = NOW - 90 * DAY;
+  visit(store, "pruned-first-day", from - 1);
+  visit(store, "pruned-first-day", from + 1);
+  store.cleanup(NOW);
+  db.exec("DROP TRIGGER track_first_visit_day; ALTER TABLE audience_visitors DROP COLUMN first_at; DELETE FROM analytics_meta WHERE key = 'audience_first_time_v1';");
+  store = createAnalyticsStore(db);
+  assert.equal(db.prepare("SELECT first_at FROM audience_visitors").get().first_at, null);
+  assert.equal(store.visitorEngagement("90d", "all", NOW).returningVisitors, 1);
 });

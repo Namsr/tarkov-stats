@@ -572,6 +572,44 @@ function ensureAudienceHistory(db: any): void {
   }
 }
 
+// Preserve the first anonymous pageview time after detailed events expire.
+// Legacy identities with no surviving first-day events keep day-level precision.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureVisitorFirstTimes(db: any): void {
+  if (db.prepare("SELECT 1 FROM analytics_meta WHERE key = 'audience_first_time_v1'").get()) return;
+  try {
+    db.exec("SAVEPOINT visitor_first_times");
+    const columns = tableColumns(db, "main", "audience_visitors");
+    if (!columns.has("first_at")) db.exec("ALTER TABLE audience_visitors ADD COLUMN first_at INTEGER");
+    db.exec(`UPDATE audience_visitors SET first_at = (
+        SELECT MIN(p.occurred_at) FROM page_views p
+        WHERE p.visitor_id = audience_visitors.visitor_id
+          AND COALESCE(p.host, '') = audience_visitors.host
+          AND strftime('%Y-%m-%d', p.occurred_at / 1000.0, 'unixepoch') = audience_visitors.first_day
+          AND audience_visitors.first_day > COALESCE((SELECT
+            strftime('%Y-%m-%d', (CAST(value AS INTEGER) - ${RETENTION_MS}) / 1000.0, 'unixepoch')
+            FROM analytics_meta WHERE key = 'last_cleanup_at'), '0000-01-01')
+      );
+      DROP TRIGGER IF EXISTS track_first_visit_day;
+      CREATE TRIGGER track_first_visit_day AFTER INSERT ON page_views BEGIN
+        INSERT INTO audience_visitors (visitor_id, host, first_day, first_at)
+        VALUES (NEW.visitor_id, COALESCE(NEW.host, ''),
+          strftime('%Y-%m-%d', NEW.occurred_at / 1000.0, 'unixepoch'), NEW.occurred_at)
+        ON CONFLICT(visitor_id, host) DO UPDATE SET
+          first_at = CASE
+            WHEN excluded.first_day < first_day THEN excluded.first_at
+            WHEN excluded.first_day = first_day AND first_at IS NOT NULL THEN MIN(first_at, excluded.first_at)
+            ELSE first_at END,
+          first_day = MIN(first_day, excluded.first_day);
+      END;
+      INSERT INTO analytics_meta (key, value) VALUES ('audience_first_time_v1', '1');
+      RELEASE visitor_first_times;`);
+  } catch (error) {
+    db.exec("ROLLBACK TO visitor_first_times; RELEASE visitor_first_times;");
+    throw error;
+  }
+}
+
 function audienceGrowth(rows: Array<{ day: string; added: number }>, from: number, now: number): AudienceGrowth {
   const dayMs = 86_400_000;
   const firstDay = new Date(from).toISOString().slice(0, 10);
@@ -598,6 +636,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
   ensureRequestDiagnosticColumns(db);
   removeExactAuthTimestamps(db);
   ensureAudienceHistory(db);
+  ensureVisitorFirstTimes(db);
   const browser = createBrowserPerformanceStore(db);
   return {
     recordBrowserPerformance(host, path, samples, now = Date.now()) {
@@ -664,7 +703,6 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
     },
     visitorEngagement(period, domain, now = Date.now()) {
       const from = now - periodMilliseconds(period);
-      const fromDay = new Date(from).toISOString().slice(0, 10);
       const wide = pageviewWhere(period, domain, now, PAGEVIEW_SESSION_GAP_MS);
       const hostFilter = domain === "all" ? "" : " AND host = ?";
       const hostArgs = domain === "all" ? [] : [domain];
@@ -680,7 +718,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         ), classified AS (
           SELECT sessions,
             EXISTS(SELECT 1 FROM audience_visitors h WHERE h.visitor_id = a.visitor_id
-              AND first_day < ?${hostFilter})
+              AND COALESCE(first_at, CAST(strftime('%s', first_day) AS INTEGER) * 1000) < ?${hostFilter})
             OR EXISTS(SELECT 1 FROM page_views p WHERE p.visitor_id = a.visitor_id
               AND occurred_at < ?${hostFilter}) AS is_returning,
             (SELECT COUNT(DISTINCT strftime('%Y-%m-%d', occurred_at / 1000.0, 'unixepoch', '+3 hours'))
@@ -690,7 +728,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         ) SELECT COUNT(*) AS visitors, COALESCE(SUM(is_returning), 0) AS returning_visitors,
           COALESCE(SUM(sessions >= 2), 0) AS repeat_visitors,
           COALESCE(SUM(regular), 0) AS regular_visitors FROM classified`)
-        .get(...wide.args, PAGEVIEW_SESSION_GAP_MS, from, PAGEVIEW_SESSION_GAP_MS, from, fromDay, ...hostArgs,
+        .get(...wide.args, PAGEVIEW_SESSION_GAP_MS, from, PAGEVIEW_SESSION_GAP_MS, from, from, ...hostArgs,
           from, ...hostArgs, now - 30 * 86_400_000, now, ...hostArgs);
       const visitors = Number(row.visitors);
       const returningVisitors = Number(row.returning_visitors);
