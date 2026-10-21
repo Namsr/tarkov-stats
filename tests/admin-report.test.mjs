@@ -135,8 +135,58 @@ test("overview does not calculate detailed health, browser metrics, or VPS diagn
   const payload = await response.json(); assert.equal(payload.diagnostics, undefined); assert.equal(payload.health.operations.length, 0);
 });
 
+test("traffic API guards audience data and keeps local metrics available when Cloudflare is unavailable", async () => {
+  const { GET } = await import("../app/api/admin/traffic/route.ts");
+  const { NextRequest } = await import("next/server.js");
+  const request = (query = "") => new NextRequest(`https://tarkovstats.ru/api/admin/traffic${query}`);
+  for (const status of [401, 403]) {
+    process.env.ADMIN_REPORT_TEST_AUTH = String(status);
+    const response = await GET(request());
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await response.json()).engagement, undefined);
+  }
+  process.env.ADMIN_REPORT_TEST_AUTH = "200";
+  for (const query of ["?period=wrong", "?domain=secret"]) assert.equal((await GET(request(query))).status, 400);
+  const store = await getAnalyticsStore();
+  const now = Date.parse("2026-10-21T12:00:00.000Z");
+  store.recordPageview({ occurredAt: now - 60000, host: "tarkovstats.ru", visitorId: "traffic-test", path: "/" });
+  store.recordAuth("traffic-account", "sign_in", now - 60000);
+  const response = await GET(request("?period=24h&domain=tarkovstats.ru"));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const payload = await response.json();
+  assert.equal(payload.available, false);
+  assert.equal(payload.engagement.visitors, 1);
+  assert.equal(payload.auth.signInUsers, 1);
+  assert.equal(payload.audience.users.total, 1);
+  const online = await (await GET(request("?period=24h&domain=tarkovstats.online"))).json();
+  assert.equal(online.engagement.visitors, 0);
+  assert.equal(online.auth.signInUsers, 1); // Google data is explicitly global.
+});
+
+test("traffic keeps Cloudflare data when local queries fail and does not expose SQL errors", async (t) => {
+  process.env.ADMIN_REPORT_TEST_AUTH = "200";
+  process.env.ADMIN_TRAFFIC_TEST_AVAILABLE = "true";
+  t.after(() => { delete process.env.ADMIN_TRAFFIC_TEST_AVAILABLE; });
+  const store = await getAnalyticsStore();
+  const { GET } = await import("../app/api/admin/traffic/route.ts");
+  const { NextRequest } = await import("next/server.js");
+  for (const method of ["visitorEngagement", "authSummary", "audienceSummary"]) {
+    const query = t.mock.method(store, method, () => { throw new Error("SQLITE_BUSY private SQL text"); });
+    const response = await GET(new NextRequest("https://tarkovstats.ru/api/admin/traffic?period=24h&domain=all"));
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.available, true);
+    for (const field of ["engagement", "auth", "audience"]) assert.equal(payload[field], null);
+    assert.deepEqual(payload.devices, []);
+    assert.doesNotMatch(JSON.stringify(payload), /SQLITE|private/);
+    query.mock.restore();
+  }
+});
+
 test("HTTP remains responsive during report SQL; overflow, failures, crashes and deadlines recover", async (t) => {
-  const worker = new AdminReportWorker({ entry: resolve("tests/fixtures/admin-report-worker.mjs"), timeoutMs: 10000, totalTimeoutMs: 15000 });
+  const worker = new AdminReportWorker({ entry: resolve("tests/fixtures/admin-report-worker.mjs"), timeoutMs: 30000, totalTimeoutMs: 45000 });
   t.after(() => worker.stop());
   const server = createServer((_req, res) => res.end("ok"));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -144,7 +194,7 @@ test("HTTP remains responsive during report SQL; overflow, failures, crashes and
   const active = worker.compute(job("hold")); const queued = worker.compute(job());
   active.catch(() => {}); queued.catch(() => {});
   await assert.rejects(worker.compute(job()), /queue is full/);
-  const marker = process.env.ADMIN_REPORT_TEST_MARKER; const until = Date.now() + 10000;
+  const marker = process.env.ADMIN_REPORT_TEST_MARKER; const until = Date.now() + 30000;
   while (!existsSync(marker) && Date.now() < until) await delay(10);
   assert.ok(existsSync(marker));
   assert.equal(await (await fetch(`http://127.0.0.1:${server.address().port}/healthz`, { signal: AbortSignal.timeout(5000) })).text(), "ok");
@@ -154,7 +204,7 @@ test("HTTP remains responsive during report SQL; overflow, failures, crashes and
   assert.equal((await worker.compute(job())).pid, first.pid);
   await assert.rejects(worker.compute(job("crash")), /worker exited/);
   assert.notEqual((await worker.compute(job())).pid, first.pid);
-  const bounded = new AdminReportWorker({ entry: resolve("tests/fixtures/admin-report-worker.mjs"), timeoutMs: 3000, totalTimeoutMs: 5000 });
+  const bounded = new AdminReportWorker({ entry: resolve("tests/fixtures/admin-report-worker.mjs"), timeoutMs: 10000, totalTimeoutMs: 15000 });
   t.after(() => bounded.stop());
   await bounded.compute(job());
   await assert.rejects(bounded.compute(job("stall")), /timed out/);

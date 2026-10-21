@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     previousOwn,
     health: local?.health ?? null,
     freshness: local?.freshness ?? null,
-    auth: local?.auth ?? { activeUsers: 0, signIns: 0 },
+    auth: local?.auth ?? null,
     audience: store?.audienceSummary(period, domain, now) ?? null,
     suspicious,
     storageAvailable: Boolean(store),
