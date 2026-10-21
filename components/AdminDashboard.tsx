@@ -5,6 +5,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Keyboard
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import StatCard from "@/components/StatCard";
 import AdminAudienceCharts from "@/components/AdminAudienceCharts";
+import { DevicePanel, GoogleAuthPanel, VisitorEngagementPanel } from "@/components/AdminTrafficAudience";
+import type { AuthSummary, VisitorEngagement } from "@/lib/admin/analytics-db";
 import type { AudienceSummary, HealthPhaseSummary, LocalSummary } from "@/lib/admin/analytics-db";
 import { useI18n } from "@/lib/i18n/context";
 import type { AdminDomain, AdminPeriod } from "@/lib/admin/types";
@@ -32,14 +34,14 @@ import type { AveragePublicationState as AveragePublication } from "@/lib/averag
 import { healthOperationEntry, healthReport, type HealthDiagnostics } from "@/lib/admin/health-report";
 import { BROWSER_METRICS, BROWSER_ENDPOINTS } from "@/lib/observability/browser-performance";
 
-type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: { activeUsers: number; signIns: number }; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[]; diagnostics?: HealthDiagnostics };
+type Summary = { generatedAt: number; period: AdminPeriod; domain: AdminDomain; metrics: Metrics; previous: Metrics; series: SeriesPoint[]; own: OwnTraffic | null; previousOwn: OwnTraffic | null; health: Health | null; freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null } | null; auth?: AuthSummary | null; audience?: AudienceSummary | null; storageAvailable: boolean; traffic: { available: boolean; reason?: string; sampled: boolean; from: string; to: string }; averagePublications?: AveragePublication[]; diagnostics?: HealthDiagnostics };
 type HealthSignal = { status: "healthy" | "degraded" | "incident"; activeIssueCount: number; firstSeenAt: number | null; lastSeenAt: number | null; storageAvailable?: boolean };
 type AuditDataset = { mode: "regular" | "pve" | "arena" | "pvp-season"; dataset: "index" | "updated"; status: "ok" | "unavailable"; upstreamRecordCount: number | null; localRecordCount: number | null; differenceCount: number | null; coveragePercent: number | null; lastCheckedAt: number | null; lastReceivedAt: number | null; lastLocalApplyAt: number | null; latestUpstreamUpdatedAt: number | null; error: string | null };
 type DataAudit = { available: boolean; running: boolean; runId: string | null; startedAt: number | null; error: string | null; snapshot: { status: "success" | "partial" | "error"; finishedAt: number; datasets: AuditDataset[] } | null };
 type Rank = { key: string; pageviews: number; visits: number };
 type OwnRank = { key: string; pageviews: number; visitors: number };
 type OwnTraffic = { available: boolean; pageviews: number; visits: number; visitors: number; series: SeriesPoint[]; pages: OwnRank[]; referrers: OwnRank[] };
-type Traffic = { available: boolean; reason?: string; sampled: boolean; pageviews: number; visits: number; series: SeriesPoint[]; domains: Rank[]; pages: Rank[]; referrers: Rank[]; countries: Rank[]; devices: Rank[]; browsers: Rank[] };
+type Traffic = { engagement: VisitorEngagement | null; auth: AuthSummary | null; audience: AudienceSummary | null; available: boolean; reason?: string; sampled: boolean; pageviews: number; visits: number; series: SeriesPoint[]; domains: Rank[]; pages: Rank[]; referrers: Rank[]; countries: Rank[]; devices: Rank[]; browsers: Rank[] };
 type Account = { aid: number; nickname: string | null; modes: string[]; requestCount: number; snapshotCount: number; lastRequestedAt: number; reportedAt?: number; reportedMode?: string; reportedModes?: string[]; outcomes: Record<string, number>; refreshCount: number; sources: string[]; moderation?: AccountModeration; risk?: AccountModeration["risk"]; reportCount?: number; confirmedBan?: boolean; review?: AccountModeration["review"]; canRestoreManualBan?: boolean };
 type Accounts = { available: boolean; accounts: Account[]; nextCursor: string | null };
 type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedBytes: number; memoryPercent: number; swapUsedBytes: number; swapPercent: number | null; diskUsedBytes: number; diskPercent: number; diskReadBytesPerSecond: number | null; diskWriteBytesPerSecond: number | null; networkRxBytesPerSecond: number | null; networkTxBytesPerSecond: number | null; load1: number; load5: number; load15: number; uptimeSeconds: number };
@@ -281,7 +283,7 @@ export default function AdminDashboard() {
           onChange={({ notifications, goals }) => setSupport({ notifications, goals, available: true })}
         />
       )}
-      {!error && !loading && tab === "traffic" && <TrafficPanel traffic={traffic} lang={lang} t={t} />}
+      {!error && !loading && tab === "traffic" && <TrafficPanel key={`${period}:${domain}`} traffic={traffic} lang={lang} t={t} />}
       {!error && !loading && (tab === "accounts" || tab === "suspicious") && <AccountsPanel data={accounts} suspicious={tab === "suspicious"} lang={lang} t={t} reload={load} onResult={setResultMessage} />}
       {!error && !loading && tab === "health" && <HealthPanel summary={healthSummary} lang={lang} t={t} audit={audit} auditBusy={auditBusy} auditError={auditError} onRunAudit={runAudit} />}
       {!error && !loading && tab === "monitoring" && <SystemMonitoringPanel data={systemMetrics} lang={lang} t={t} />}
@@ -303,7 +305,7 @@ function Overview({ summary, lang, t }: { summary: Summary | null; lang: string;
     <div className="admin-metrics">{(["visits", "pageviews", "accountRequests", "newSuspicious", "severeRisk", "errors"] as MetricName[]).map((name) => <StatCard key={name} label={t("admin.metric." + name)} value={formatNumber(finite(metrics[name]))} benchmarkDiff={metricDiff(finite(metrics[name]), finite(previous[name]))} />)}</div>
     <TrendChart series={summary.series ?? []} lang={lang} t={t} />
     <OwnPanel own={summary.own} previous={summary.previousOwn} storageAvailable={summary.storageAvailable} lang={lang} t={t} />
-    {summary.auth && <section className="data-panel admin-panel"><h2 className="section-heading">{t("admin.auth.heading")}</h2><div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.auth.activeUsers")} value={formatNumber(summary.auth.activeUsers)} /><StatCard label={t("admin.auth.signIns")} value={formatNumber(summary.auth.signIns)} /></div></section>}
+    {summary.auth && <GoogleAuthPanel auth={summary.auth} />}
     {summary.audience && <AdminAudienceCharts key={`${summary.period}:${summary.domain}`} audience={summary.audience} />}
   </div>;
 }
@@ -418,8 +420,18 @@ function TrendChart({ series, lang, t, headingKey = "admin.chart.heading", descr
 
 function TrafficPanel({ traffic, lang, t }: { traffic: Traffic | null; lang: string; t: T }) {
   if (!traffic) return <Empty t={t} />;
-  if (!traffic.available) return <div className="admin-notice">{t("admin.warning.traffic")}</div>;
-  return <div className="admin-stack">{traffic.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}<div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.metric.visits")} value={formatNumber(traffic.visits)} /><StatCard label={t("admin.metric.pageviews")} value={formatNumber(traffic.pageviews)} /></div><TrendChart series={traffic.series ?? []} lang={lang} t={t} /><div className="admin-ranks">{(["domains", "pages", "referrers", "countries", "devices", "browsers"] as const).map((name) => <RankList key={name} title={t("admin.rank." + name)} rows={traffic[name] ?? []} t={t} />)}</div></div>;
+  return <div className="admin-stack">
+    <VisitorEngagementPanel engagement={traffic.engagement} />
+    {traffic.auth && <GoogleAuthPanel auth={traffic.auth} />}
+    {traffic.audience && <AdminAudienceCharts audience={traffic.audience} />}
+    {!traffic.available ? <div className="admin-notice">{t("admin.warning.traffic")}</div> : <>
+      {traffic.sampled && <div className="admin-notice">{t("admin.warning.sampled")}</div>}
+      <DevicePanel devices={traffic.devices ?? []} />
+      <div className="admin-metrics admin-metrics--small"><StatCard label={t("admin.metric.visits")} value={formatNumber(traffic.visits)} /><StatCard label={t("admin.metric.pageviews")} value={formatNumber(traffic.pageviews)} /></div>
+      <TrendChart series={traffic.series ?? []} lang={lang} t={t} />
+      <div className="admin-ranks">{(["domains", "pages", "referrers", "countries", "browsers"] as const).map((name) => <RankList key={name} title={t("admin.rank." + name)} rows={traffic[name] ?? []} t={t} />)}</div>
+    </>}
+  </div>;
 }
 
 type SystemSeriesKey = keyof Pick<SystemMetricPoint,

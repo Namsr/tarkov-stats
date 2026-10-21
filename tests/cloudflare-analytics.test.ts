@@ -51,3 +51,23 @@ test("Cloudflare provider sends a JSON GraphQL request and degrades safely", asy
   const unavailable = await fetchCloudflareTrafficRange(0, 1_000, "all", { accountId: "", token: "" });
   assert.equal(unavailable.reason, "not_configured");
 });
+
+
+test("device groups normalize case, combine domains and preserve unrecognized devices as unknown", () => {
+  const parsed = (domain) => parseCloudflareTraffic({ devices: [
+    group(10, 6, { requestHost: "tarkovstats.ru", deviceType: "Mobile" }),
+    group(5, 3, { requestHost: "tarkovstats.online", deviceType: "mobile" }),
+    group(4, 2, { requestHost: "tarkovstats.ru", deviceType: "tablet" }),
+    group(8, 4, { requestHost: "tarkovstats.ru", deviceType: "desktop" }),
+    group(2, 1, { requestHost: "tarkovstats.ru", deviceType: "console" }),
+    group(1, 1, { requestHost: "tarkovstats.ru" }),
+    group(999, 999, { requestHost: "other.example", deviceType: "mobile" }),
+  ] }, domain, 0, 1000);
+  assert.deepEqual(parsed("all").devices, [
+    { key: "mobile", pageviews: 15, visits: 9 },
+    { key: "desktop", pageviews: 8, visits: 4 },
+    { key: "tablet", pageviews: 4, visits: 2 },
+    { key: "unknown", pageviews: 3, visits: 2 },
+  ]);
+  assert.equal(parsed("tarkovstats.ru").devices.find((row) => row.key === "mobile").visits, 6);
+});

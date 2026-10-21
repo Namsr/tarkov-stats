@@ -118,3 +118,75 @@ test("auth timestamp migration installs lifetime tracking on the rebuilt daily t
   store.recordAuth("new", "sign_in", NOW);
   assert.equal(store.audienceSummary("7d", "all", NOW).users.total, 2);
 });
+
+
+test("engagement separates first-time, returning, repeat and regular visitors at exact period boundaries", () => {
+  const store = createAnalyticsStore(new DatabaseSync(":memory:"));
+  const from = NOW - DAY;
+  visit(store, "new-repeat", from);
+  visit(store, "new-repeat", from + 10 * 60_000); // same session
+  visit(store, "new-repeat", from + 41 * 60_000); // second session
+  visit(store, "old-regular", NOW - 20 * DAY);
+  visit(store, "old-regular", NOW - 10 * DAY);
+  visit(store, "old-regular", NOW - 60_000);
+  visit(store, "continued", from - 10 * 60_000);
+  visit(store, "continued", from + 10 * 60_000);
+  visit(store, "continued", from + 50 * 60_000); // continued + one new session
+  visit(store, "old-single", from - 60_000);
+  visit(store, "old-single", from + 40 * 60_000); // one new session, not two
+  visit(store, "new-single", NOW - 60_000);
+  visit(store, "at-end", NOW); // exclusive endpoint
+  visit(store, "future", NOW + DAY);
+  assert.deepEqual(store.visitorEngagement("24h", "all", NOW), {
+    visitors: 5, newVisitors: 2, returningVisitors: 3, repeatVisitors: 2, regularVisitors: 1,
+  });
+  assert.equal(store.visitorEngagement("24h", "all", NOW).visitors, store.pageviewSummary("24h", "all", NOW).visitors);
+});
+
+test("engagement respects domain history, retention, empty ranges and 15-minute precision", () => {
+  const store = createAnalyticsStore(new DatabaseSync(":memory:"));
+  visit(store, "long-time", NOW - 120 * DAY);
+  visit(store, "cross-domain", NOW - DAY, "tarkovstats.online");
+  visit(store, "same-day", NOW - 16 * 60_000);
+  visit(store, "same-day", NOW - 14 * 60_000);
+  visit(store, "cross-domain", NOW - 60_000);
+  visit(store, "long-time", NOW - 60_000);
+  store.cleanup(NOW);
+  assert.deepEqual(store.visitorEngagement("15m", "tarkovstats.ru", NOW), {
+    visitors: 3, newVisitors: 1, returningVisitors: 2, repeatVisitors: 0, regularVisitors: 0,
+  });
+  assert.deepEqual(store.visitorEngagement("15m", "all", NOW), {
+    visitors: 3, newVisitors: 0, returningVisitors: 3, repeatVisitors: 0, regularVisitors: 0,
+  });
+  assert.deepEqual(store.visitorEngagement("15m", "tarkovstats.online", NOW), {
+    visitors: 0, newVisitors: 0, returningVisitors: 0, repeatVisitors: 0, regularVisitors: 0,
+  });
+});
+
+test("regular visitors use distinct MSK days within the last 30 days and must be active in the selected period", () => {
+  const store = createAnalyticsStore(new DatabaseSync(":memory:"));
+  const midnight = Date.parse("2026-09-21T21:00:00Z");
+  visit(store, "regular", midnight - 1);
+  visit(store, "regular", midnight);
+  visit(store, "regular", midnight - 2 * DAY);
+  visit(store, "same-day", NOW - 60_000);
+  visit(store, "same-day", NOW - 120_000);
+  visit(store, "same-day", NOW - 180_000);
+  for (const offset of [31, 32, 33]) visit(store, "too-old", NOW - offset * DAY);
+  visit(store, "too-old", NOW - 60_000);
+  for (const offset of [3, 4, 5]) visit(store, "inactive", NOW - offset * DAY);
+  assert.equal(store.visitorEngagement("24h", "all", NOW).regularVisitors, 1);
+  assert.equal(store.visitorEngagement("7d", "all", NOW).regularVisitors, 2);
+});
+
+test("Google aggregates separate active accounts, accounts signing in and repeat sign-in events, excluding future days", () => {
+  const store = createAnalyticsStore(new DatabaseSync(":memory:"));
+  store.recordAuth("signed", "sign_in", NOW - 60_000);
+  store.recordAuth("signed", "sign_in", NOW - 30_000);
+  store.recordAuth("saved-session", "activity", NOW - 60_000);
+  store.recordAuth("before-window", "sign_in", NOW - 2 * DAY);
+  store.recordAuth("future", "sign_in", NOW + DAY);
+  assert.deepEqual(store.authSummary("15m", NOW), {
+    activeUsers: 2, signInUsers: 1, signIns: 2, fromDay: day(NOW), toDay: day(NOW),
+  });
+});

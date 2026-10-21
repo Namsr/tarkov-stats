@@ -282,3 +282,46 @@ test("the suspicious queue reports missing report storage as unavailable", async
   assert.match(guard, /suspiciousOnly[\s\S]*?===\s*null/);
   assert.match(guard, /NextResponse\.json\(\{[\s\S]*?available: false/);
 });
+
+
+test("audience, Google and device cards render localized definitions, counts and empty states", async () => {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const ts = require("typescript");
+  const { createElement } = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { dict } = await import("../lib/i18n/dictionary.ts");
+  const compile = async (file, resolver = require) => {
+    const source = await readFile(file, "utf8"); const exports = {};
+    const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+    new Function("require", "exports", compiled)(resolver, exports);
+    return exports;
+  };
+  const StatCard = (await compile("components/StatCard.tsx")).default;
+  for (const lang of ["ru", "en"]) {
+    const components = await compile("components/AdminTrafficAudience.tsx", (id) =>
+      id === "@/components/StatCard" ? { default: StatCard }
+        : id === "@/lib/i18n/context" ? { useI18n: () => ({ lang,
+          t: (key, vars = {}) => {
+            assert.ok(dict[lang][key], `missing ${lang} key: ${key}`);
+            return dict[lang][key].replace(/\{(\w+)\}/g, (_, name) => vars[name]);
+          },
+        }) } : require(id));
+    const render = (name, props) => renderToStaticMarkup(createElement(components[name], props));
+    const devices = render("DevicePanel", { devices: [
+      { key: "mobile", visits: 3, pageviews: 8 }, { key: "tablet", visits: 1, pageviews: 2 },
+    ] });
+    assert.match(devices, /75\s*%/); assert.match(devices, /25\s*%/);
+    for (const key of ["mobile", "tablet", "desktop", "unknown"]) assert.ok(devices.includes(dict[lang]["admin.devices." + key]));
+    const emptyDevices = render("DevicePanel", { devices: [] });
+    assert.doesNotMatch(emptyDevices, /NaN|Infinity/);
+    const engagement = render("VisitorEngagementPanel", { engagement: { visitors: 4, newVisitors: 1, returningVisitors: 3, repeatVisitors: 2, regularVisitors: 1 } });
+    assert.match(engagement, /75\s*%/);
+    assert.ok(engagement.includes(dict[lang]["admin.engagement.regularVisitors.hint"]));
+    assert.ok(render("VisitorEngagementPanel", { engagement: null }).includes(dict[lang]["admin.warning.storage"]));
+    const auth = render("GoogleAuthPanel", { auth: { activeUsers: 107, signInUsers: 100, signIns: 120, fromDay: "2026-10-20", toDay: "2026-10-21" } });
+    for (const value of ["107", "100", "120"]) assert.ok(auth.includes(value));
+    assert.ok(auth.includes(dict[lang]["admin.auth.explanation"]));
+    assert.doesNotMatch(devices + engagement + auth, /admin\.(?:devices|engagement|auth)\.|undefined/);
+  }
+});

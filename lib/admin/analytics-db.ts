@@ -142,7 +142,23 @@ export interface LocalSummary {
     slowRequests: HealthRequestSample[];
   };
   freshness: { lastEventAt: number | null; lastProfileRequestAt: number | null };
-  auth: { activeUsers: number; signIns: number };
+  auth: AuthSummary;
+}
+
+export interface AuthSummary {
+  activeUsers: number;
+  signInUsers: number;
+  signIns: number;
+  fromDay: string;
+  toDay: string;
+}
+
+export interface VisitorEngagement {
+  visitors: number;
+  newVisitors: number;
+  returningVisitors: number;
+  repeatVisitors: number;
+  regularVisitors: number;
 }
 
 export interface AudienceGrowth {
@@ -211,6 +227,8 @@ export interface AnalyticsStore {
   browserPerformanceSummary(period: AdminPeriod, domain: AdminDomain, now?: number): BrowserPerformanceSummary;
   record(event: RequestEvent): void;
   recordAuth(subjectHash: string, kind: "sign_in" | "activity", now?: number): void;
+  authSummary(period: AdminPeriod, now?: number): AuthSummary;
+  visitorEngagement(period: AdminPeriod, domain: AdminDomain, now?: number): VisitorEngagement;
   audienceSummary(period: AdminPeriod, domain: AdminDomain, now?: number): AudienceSummary;
   recordPageview(event: PageviewEvent): void;
   pageviewSummary(period: AdminPeriod, domain: AdminDomain, now?: number, includeDetails?: boolean): OwnTraffic;
@@ -633,6 +651,52 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           activities = activities + excluded.activities`)
         .run(day, subjectHash, kind === "sign_in" ? 1 : 0, kind === "activity" ? 1 : 0);
     },
+    authSummary(period, now = Date.now()) {
+      // Auth facts intentionally have UTC-day precision, across both domains.
+      const fromDay = new Date(now - periodMilliseconds(period)).toISOString().slice(0, 10);
+      const toDay = new Date(now).toISOString().slice(0, 10);
+      const row = db.prepare(`SELECT COUNT(DISTINCT subject_hash) AS active_users,
+        COUNT(DISTINCT CASE WHEN sign_ins > 0 THEN subject_hash END) AS sign_in_users,
+        COALESCE(SUM(sign_ins), 0) AS sign_ins FROM auth_activity_daily
+        WHERE day >= ? AND day <= ?`).get(fromDay, toDay);
+      return { activeUsers: Number(row.active_users), signInUsers: Number(row.sign_in_users),
+        signIns: Number(row.sign_ins), fromDay, toDay };
+    },
+    visitorEngagement(period, domain, now = Date.now()) {
+      const from = now - periodMilliseconds(period);
+      const fromDay = new Date(from).toISOString().slice(0, 10);
+      const wide = pageviewWhere(period, domain, now, PAGEVIEW_SESSION_GAP_MS);
+      const hostFilter = domain === "all" ? "" : " AND host = ?";
+      const hostArgs = domain === "all" ? [] : [domain];
+      const row = db.prepare(`WITH ordered AS (
+          SELECT visitor_id, occurred_at,
+            LAG(occurred_at) OVER (PARTITION BY visitor_id ORDER BY occurred_at) AS prev
+          FROM page_views WHERE ${wide.sql}
+        ), active AS (
+          SELECT visitor_id,
+            SUM(CASE WHEN prev IS NULL OR occurred_at - prev > ? THEN 1 ELSE 0 END)
+              + MAX(CASE WHEN prev < ? AND occurred_at - prev <= ? THEN 1 ELSE 0 END) AS sessions
+          FROM ordered WHERE occurred_at >= ? GROUP BY visitor_id
+        ), classified AS (
+          SELECT sessions,
+            EXISTS(SELECT 1 FROM audience_visitors h WHERE h.visitor_id = a.visitor_id
+              AND first_day < ?${hostFilter})
+            OR EXISTS(SELECT 1 FROM page_views p WHERE p.visitor_id = a.visitor_id
+              AND occurred_at < ?${hostFilter}) AS is_returning,
+            (SELECT COUNT(DISTINCT strftime('%Y-%m-%d', occurred_at / 1000.0, 'unixepoch', '+3 hours'))
+              FROM page_views p WHERE p.visitor_id = a.visitor_id
+                AND occurred_at >= ? AND occurred_at < ?${hostFilter}) >= 3 AS regular
+          FROM active a
+        ) SELECT COUNT(*) AS visitors, COALESCE(SUM(is_returning), 0) AS returning_visitors,
+          COALESCE(SUM(sessions >= 2), 0) AS repeat_visitors,
+          COALESCE(SUM(regular), 0) AS regular_visitors FROM classified`)
+        .get(...wide.args, PAGEVIEW_SESSION_GAP_MS, from, PAGEVIEW_SESSION_GAP_MS, from, fromDay, ...hostArgs,
+          from, ...hostArgs, now - 30 * 86_400_000, now, ...hostArgs);
+      const visitors = Number(row.visitors);
+      const returningVisitors = Number(row.returning_visitors);
+      return { visitors, newVisitors: visitors - returningVisitors, returningVisitors,
+        repeatVisitors: Number(row.repeat_visitors), regularVisitors: Number(row.regular_visitors) };
+    },
     audienceSummary(period, domain, now = Date.now()) {
       const today = new Date(now).toISOString().slice(0, 10);
       const from = now - periodMilliseconds(period);
@@ -737,8 +801,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
         MAX(occurred_at) AS last_event_at,
         MAX(CASE WHEN operation = 'player_profile' THEN occurred_at END) AS last_profile_at
         FROM request_events WHERE ${sql}`).get(...args) as Record<string, unknown>;
-      const cutoffDay = new Date(now - periodMilliseconds(period)).toISOString().slice(0, 10);
-      const auth = db.prepare("SELECT COUNT(DISTINCT subject_hash) AS active_users, COALESCE(SUM(sign_ins), 0) AS sign_ins FROM auth_activity_daily WHERE day >= ?").get(cutoffDay);
+      const auth = this.authSummary(period, now);
       const successSql = `${sql} AND outcome = 'success'`;
       const latency = timingPercentiles(db, successSql, args, includeDiagnostics ? Number(row.success ?? 0) : 0);
       const activeCutoff = now - ACTIVE_ISSUE_WINDOW_MS;
@@ -911,7 +974,7 @@ export function createAnalyticsStore(db: any, options: AnalyticsStoreOptions = {
           lastEventAt: row.last_event_at == null ? null : Number(row.last_event_at),
           lastProfileRequestAt: row.last_profile_at == null ? null : Number(row.last_profile_at),
         },
-        auth: { activeUsers: Number(auth?.active_users ?? 0), signIns: Number(auth?.sign_ins ?? 0) },
+        auth,
       };
     },
     accounts(options) {

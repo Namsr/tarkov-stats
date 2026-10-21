@@ -364,7 +364,7 @@ test("auth aggregates persist only day-level HMAC counts without exact timestamp
   assert.deepEqual(columns, ["day", "subject_hash", "sign_ins", "activities"]);
   const rows = db.prepare("SELECT * FROM auth_activity_daily ORDER BY subject_hash").all();
   assert.equal(JSON.stringify(rows).includes(rawSub), false);
-  assert.deepEqual(store.summary("24h", "all", now + 30_000).auth, { activeUsers: 2, signIns: 1 });
+  assert.deepEqual(store.summary("24h", "all", now + 30_000).auth, { activeUsers: 2, signInUsers: 1, signIns: 1, fromDay: "1971-02-04", toDay: "1971-02-05" });
 
   const source = await readFile("lib/admin/request-events.ts", "utf8");
   assert.match(source, /createHmac\("sha256", secret\)\.update\(sub\)/);

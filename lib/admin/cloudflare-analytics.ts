@@ -115,7 +115,10 @@ export function parseCloudflareTraffic(account: TrafficAccount, domain: AdminDom
   result.pages = ranks(account.pages, domain, "requestPath", normalizeTrafficPath);
   result.referrers = ranks(account.referrers, domain, "refererHost");
   result.countries = ranks(account.countries, domain, "countryName");
-  result.devices = ranks(account.devices, domain, "deviceType");
+  result.devices = ranks(account.devices, domain, "deviceType", (value) => {
+    const key = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return ["mobile", "tablet", "desktop"].includes(key) ? key : "unknown";
+  });
   result.browsers = ranks(account.browsers, domain, "userAgentBrowser");
   result.pageviews = result.domains.reduce((sum, item) => sum + item.pageviews, 0);
   result.visits = result.domains.reduce((sum, item) => sum + item.visits, 0);
