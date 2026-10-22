@@ -57,6 +57,42 @@ reads fetch only their requested prediction rows. Existing installations backfil
 on the first successful import after deployment. The model version invalidates old
 materializations when its calculation changes.
 
+Archive refreshes collect their bounded set of pages before opening the write
+transaction. All successfully fetched pages, cursor/seasons and predictions are
+then committed together, with one replay per worker tick. A failed later fetch
+still publishes the earlier successful pages and marks the archive stale. A
+failed publication rolls back the entire batch; no transaction spans network I/O.
+
+Saving identical KDA/round values checks optimistic concurrency but performs no
+statistics writes or replay. Archive name/avatar/team-label updates also reuse
+predictions: comparison includes every input the model reads, and skips replay
+only if the saved model matched the revision before this transaction. Unseen
+changes from another process and model-version changes still force rebuilding.
+New results, real KDA/round changes, roster/MMR changes and other model inputs
+still replay the complete archive synchronously inside the write transaction.
+This can delay the editing request and other work in that process; ordinary
+history reads continue to use the saved probabilities.
+
+Local performance check (Windows, Node 24.19.0, 5,732 saved public entries):
+
+| Operation | Before optimization | After optimization |
+|---|---:|---:|
+| Save identical KDA | 534 ms | 0.09 ms |
+| Change an archived name | 531 ms | 42 ms |
+| Import three pages of 50 new entries | 1.77 s | 0.59 s |
+| Read a warm history page | 1.08 ms | 1.14 ms |
+
+These isolate computation with in-memory SQLite. Repeated operations use the
+median of seven runs (25 for history); the three-page import is one run with
+synthetic new entries appended to the real archive. Ordinary real KDA edits still
+take roughly 0.4–0.7 seconds in this setup. A separate temporary file-backed
+SQLite run measured unchanged KDA saves at 874 → 0.35 ms and the three-page import
+at 3.02 → 1.55 seconds; real KDA edits remained around 0.8 seconds. Filesystem
+commit latency varies considerably. These are local store timings, not HTTP or
+production latency measurements, and make no speed claim for necessary full
+replays. All 5,117 persisted forecasts from the public snapshot match the
+pre-optimization results exactly, including the saved KDA/round overlays.
+
 Validation covers chronological isolation, team symmetry, cold starts, cancelled
 games, queue isolation, combat, map and joint evidence, decay, persistence, edits,
 rollback, migration, peak transfer, safe undated forecasts and translated rendering. Historical probability calibration

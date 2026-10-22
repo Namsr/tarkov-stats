@@ -24,6 +24,11 @@ export interface AxisMatch {
   winner: number | null;
 }
 export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: number; total: number }
+/** Shared by the fetch planner and the atomic archive publisher. */
+export function advanceAxisArchiveState(previous: { complete: number; next_page: number }, data: AxisHistoryPage, count: number) {
+  const nextPage = previous.complete && count < data.total ? 2 : data.page === 1 ? previous.next_page : data.page + 1;
+  return { complete: Number(count >= data.total), next_page: nextPage > data.pages ? 2 : nextPage };
+}
 export interface AxisHistorySummary {
   played: number;
   winsA: number;

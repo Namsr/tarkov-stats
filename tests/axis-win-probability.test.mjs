@@ -298,6 +298,94 @@ test("existing archives acquire predictions on the next unchanged import", t => 
   assert.ok(db.readMatchHistory(2).matches[0].winProbability.a > .5);
 });
 
+test("unchanged KDA and round saves do not invalidate predictions and still detect stale editors", t => {
+  const { sql, db } = store(t);
+  db.publishArchive(archive([match(1), match(2)]));
+  const kda = { kills: 10, deaths: 5, assists: 3 }, score = { a: 11, b: 8 };
+  db.setMatchStats(1, [{ discordId: "1", kda, expected: null }], { score, expected: null });
+  const revision = sql.prepare("SELECT revision FROM axis_preview_state").get().revision;
+  const prepare = sql.prepare.bind(sql);
+  sql.prepare = query => {
+    assert.notEqual(query, "SELECT payload FROM axis_archive_matches ORDER BY number");
+    return prepare(query);
+  };
+  db.setMatchStats(1, [{ discordId: "1", kda, expected: kda }], { score, expected: score });
+  db.setMatchStats(1, [{ discordId: "2", kda: null, expected: null }], { score, expected: score });
+  assert.equal(sql.prepare("SELECT revision FROM axis_preview_state").get().revision, revision);
+  assert.throws(() => db.setMatchStats(1, [{ discordId: "1", kda: null, expected: null }]), /another administrator/);
+  assert.throws(() => db.setMatchStats(1, [], { score: null, expected: null }), /another editor/);
+});
+
+test("metadata updates reuse predictions but unseen external statistics still require replay", t => {
+  const { sql, db } = store(t), matches = [match(1), match(2)];
+  db.publishArchive(archive(matches));
+  const before = db.readMatchHistory(2).matches[0].winProbability;
+  let replays = 0;
+  const prepare = sql.prepare.bind(sql);
+  sql.prepare = query => {
+    if (query === "SELECT * FROM axis_match_kda") replays++;
+    return prepare(query);
+  };
+  matches[0].queue = "Renamed queue"; // queueId is the actual model key.
+  matches[0].teams[0].name = "Renamed team";
+  Object.assign(matches[0].teams[0].players[0], { name: "Renamed player", avatarUrl: "https://example.com/avatar.png",
+    profile: { aid: 123, mode: "arena" }, kda: { kills: 999, deaths: 0, assists: 999 } });
+  matches[0].rounds = { a: 999, b: 0 }; // Authoritative KDA/rounds are in separate tables.
+  db.publishArchive(archive(matches));
+  assert.equal(replays, 0);
+  assert.equal(db.readMatchHistory(1).matches[0].teams[0].players[0].name, "Renamed player");
+  assert.deepEqual(db.readMatchHistory(2).matches[0].winProbability, before);
+  sql.exec("INSERT INTO axis_match_kda VALUES(1,'1',25,1,10)");
+  matches[0].teams[0].name = "Another name";
+  db.publishArchive(archive(matches));
+  assert.equal(replays, 1, "another process's unobserved data change cannot be skipped");
+  assert.notDeepEqual(db.readMatchHistory(2).matches[0].winProbability, before);
+});
+
+test("every archived model input still invalidates saved predictions", t => {
+  const mutations = [
+    m => { m.time -= 1000; }, m => { m.queueId = "999"; }, m => { delete m.queueId; m.queue = "Unknown queue"; },
+    m => { m.maps = ["Air Pit"]; }, m => { m.winner = 1; },
+    m => { m.teams[0].players[0].id = "99"; }, m => { m.teams[0].players[0].mmr = 1100; },
+    m => { m.teams[0].players[0].change = -25; }, m => { m.teams.reverse(); },
+  ];
+  for (const mutate of mutations) {
+    const { sql, db } = store(t), matches = [match(1), match(2)];
+    db.publishArchive(archive(matches));
+    let replays = 0;
+    const prepare = sql.prepare.bind(sql);
+    sql.prepare = query => {
+      if (query === "SELECT * FROM axis_match_kda") replays++;
+      return prepare(query);
+    };
+    mutate(matches[0]); db.publishArchive(archive(matches));
+    assert.equal(replays, 1);
+  }
+});
+
+test("a page batch replays once, preserves timestamp batches and rolls back as one unit", t => {
+  const { sql, db } = store(t), matches = [match(1), match(2), match(3)];
+  matches[1].time = matches[0].time;
+  const pages = matches.map((m, i) => ({ page: i + 1, pages: 3, total: 3, matches: [m] }));
+  let replays = 0, fail = false;
+  const prepare = sql.prepare.bind(sql);
+  sql.prepare = query => {
+    if (query === "SELECT * FROM axis_match_kda") replays++;
+    if (fail && query.startsWith("UPDATE axis_prediction_state SET version=")) throw new Error("Simulated prediction failure");
+    return prepare(query);
+  };
+  db.publishArchiveBatch(pages);
+  assert.equal(replays, 1);
+  const expected = buildAxisWinProbabilities(matches);
+  for (const m of matches) assert.deepEqual(db.readMatchHistory(m.number).matches[0].winProbability, expected.get(m.number));
+  assert.equal(db.archiveState().complete, 1);
+  fail = true;
+  assert.throws(() => db.publishArchiveBatch([{ page: 1, pages: 1, total: 4, matches: [match(4)] }]), /Simulated/);
+  assert.equal(db.readMatchHistory(4).matches.length, 0);
+  assert.deepEqual(db.readMatchHistory(3).matches[0].winProbability, expected.get(3));
+  assert.equal(db.archiveState().complete, 1);
+});
+
 test("a previous model version rebuilds saved probabilities on an unchanged import", t => {
   const { sql, db } = store(t), data = archive([match(1), match(2)]);
   db.publishArchive(data);
