@@ -82,12 +82,16 @@ function dividerCoverage(
   const step = Math.max(1, Math.floor(scale));
   let lit = 0, total = 0;
   for (let row = y; row <= end; row += step) {
+    // A scaled/antialiased seam may light only one pixel in this band.
+    // Measure continuity by rows, so its thickness does not dilute coverage.
+    let rowLit = false;
     for (let dx = -1; dx <= 1; dx++) {
       const sampleX = Math.min(imageWidth - 1, Math.max(0, x + dx));
       const luma = pixelLuma(data, (row * imageWidth + sampleX) * 4);
-      total++;
-      if (luma >= 42) lit++;
+      if (luma >= 42) rowLit = true;
     }
+    total++;
+    if (rowLit) lit++;
   }
   return total ? lit / total : 0;
 }
@@ -147,7 +151,7 @@ export function detectAxisScoreboard(image: AxisOcrRgbaImage): AxisOcrCrop | nul
     if (y + 353 * scale > height + 2) continue;
     const dividerX = Math.round(rule.x + rule.width / 2);
     const divider = centerDividerCoverage(data, width, height, dividerX, y, scale);
-    if (divider < 0.22) continue;
+    if (divider < 0.5) continue;
 
     let pairedRuleWidth = 0;
     const expectedBottomRule = y + 32 * scale;
