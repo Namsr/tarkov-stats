@@ -33,6 +33,7 @@ export interface AxisHistorySummary {
   played: number;
   winsA: number;
   winsB: number;
+  averageWinProbability: (AxisWinProbability & { matches: number }) | null;
   maps: { name: string; matches: number }[];
 }
 export interface AxisHistoryResponse extends AxisHistoryPage {

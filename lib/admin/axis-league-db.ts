@@ -131,9 +131,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     averageKda: number | null;
     games: number | null;
   } | null = null;
-  let historySummaryRevision = -1;
+  let historySummaryRevision = "";
   const historySummaries = new Map<string, AxisHistorySummary>();
   const previewVersion = db.prepare("SELECT revision FROM axis_preview_state WHERE id=1");
+  const historyVersion = db.prepare(`SELECT s.revision AS matches_revision,p.version,p.revision AS prediction_revision
+    FROM axis_preview_state s JOIN axis_prediction_state p ON p.id=s.id WHERE s.id=1`);
   function readPreviews(startsAt: number, archive: { complete: number; updated_at: number | null }) {
     const version = `${startsAt}:${previewVersion.get().revision}:${archive.complete}:${archive.updated_at == null}`;
     if (previewCache?.version === version) return previewCache;
@@ -517,7 +519,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const total = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches" + listWhere).get(...listParameters).n;
       // The summary is independent of map/page. Reuse it until persisted match data changes,
       // including imports from another SQLite handle or worker.
-      const revision = previewVersion.get().revision as number;
+      const saved = historyVersion.get();
+      const revision = `${saved.matches_revision}:${saved.version}:${saved.prediction_revision}`;
       if (revision !== historySummaryRevision) {
         historySummaries.clear(); historySummaryRevision = revision;
       }
@@ -528,14 +531,18 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           + "(json_extract(payload,'$.winner')>=0 OR json_extract(payload,'$.winner')=-2)";
         const counts = db.prepare(
           "SELECT COUNT(*) AS played,COALESCE(SUM(json_extract(payload,'$.winner')=0),0) AS winsA,"
-          + "COALESCE(SUM(json_extract(payload,'$.winner')=1),0) AS winsB FROM (" + completed + ")"
-        ).get(...parameters);
+          + "COALESCE(SUM(json_extract(payload,'$.winner')=1),0) AS winsB,"
+          + "COUNT(CASE WHEN json_extract(payload,'$.winner') IN (0,1) THEN p.number END) AS predictedMatches,"
+          + "AVG(CASE WHEN json_extract(payload,'$.winner') IN (0,1) THEN p.a END) AS probabilityA"
+          + " FROM (" + completed + ") m LEFT JOIN axis_match_predictions p ON p.number=m.number AND ?"
+        ).get(...parameters, Number(saved.version === AXIS_PREDICTION_VERSION && saved.prediction_revision === saved.matches_revision));
         const maps = db.prepare(
           "SELECT name,COUNT(*) AS matches FROM (SELECT DISTINCT m.number,map.value AS name FROM ("
           + completed + ") m,json_each(m.payload,'$.maps') map WHERE map.type='text')"
           + " GROUP BY name ORDER BY matches DESC,name COLLATE NOCASE,name"
         ).all(...parameters).map((row: { name: string; matches: number }) => ({ name: row.name, matches: row.matches }));
-        summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps };
+        summary = { played: counts.played, winsA: counts.winsA, winsB: counts.winsB, maps,
+          averageWinProbability: counts.predictedMatches ? { matches: counts.predictedMatches, a: counts.probabilityA, b: 1 - counts.probabilityA } : null };
         if (historySummaries.size >= 16) historySummaries.delete(historySummaries.keys().next().value!);
         historySummaries.set(summaryKey, summary);
       }

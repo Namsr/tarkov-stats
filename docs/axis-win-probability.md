@@ -4,6 +4,15 @@ The compact block inside an expanded match shows the A/B probability conditional
 Both percentages sum to 100%. No explanation or extra interaction is required.
 Invalid or incomplete rosters display a dash rather than invented probabilities.
 
+The history summary also shows each side's mean pre-match win probability across
+the selected season, independent of the current page or map filter. It averages
+saved forecasts for decisive completed matches; draws, cancellations, pending
+games and missing forecasts are excluded. No eligible forecasts produces a dash.
+The existing summary query joins predictions by primary key, and its cached
+result includes source and prediction revisions/version. No extra client request,
+polling, model replay or SQL query is added. The estimate describes roster balance
+under the model; it does not establish the causal effect of a captain pick order.
+
 `lib/axis-win-probability.ts` replays each queue in timestamp order. Matches with
 the same timestamp are predicted as a batch before any results are observed.
 Missing or non-finite timestamps produce no forecast and never train either model:

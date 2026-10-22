@@ -928,12 +928,17 @@ html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 .axis-history-summary__played dt { color: var(--muted-strong); font-size: .66rem; }
 .axis-history-summary__played dd { margin: 0; font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 .axis-history-summary__teams { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: .76rem; }
-.axis-history-summary__teams > span { display: flex; align-items: center; gap: 9px; }
+.axis-history-summary__teams > div { flex: 1; min-width: 0; }
+.axis-history-summary__result { display: flex; align-items: center; gap: 9px; }
 .axis-history-summary__team-a { color: var(--axis-team-a); text-align: left; }
-.axis-history-summary__team-b { color: var(--axis-team-b); text-align: right; flex-direction: row-reverse; }
+.axis-history-summary__team-b { color: var(--axis-team-b); text-align: right; }
+.axis-history-summary__team-b .axis-history-summary__result { flex-direction: row-reverse; }
 .axis-history-summary__teams i { display: grid; place-items: center; width: 30px; height: 34px; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 5px; background: color-mix(in srgb, currentColor 9%, transparent); font-size: .9rem; font-style: normal; font-weight: 800; }
 .axis-history-summary__teams small { display: block; color: var(--muted); font-size: .63rem; margin-top: 1px; }
 .axis-history-summary__teams strong { margin-inline: 3px; font-size: 1.65rem; line-height: 1; font-variant-numeric: tabular-nums; font-weight: 800; }
+.axis-history-summary__probability { margin: 14px 0 0; }
+.axis-history-summary__probability dt { color: var(--muted-strong); font-size: .72rem; }
+.axis-history-summary__probability dd { margin: 5px 0 0; font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .axis-history-summary__balance { position: relative; display: flex; height: 14px; border-radius: 3px; background: var(--card-border); }
 .axis-history-summary__balance > span { flex: none; height: 100%; transition: width 400ms ease; }
 .axis-history-summary__balance-a { background: var(--axis-team-a); border-radius: 3px 0 0 3px; }
@@ -960,8 +965,8 @@ html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 @media (max-width: 400px) {
   .axis-history-summary__header { justify-content: center; margin-bottom: 14px; }
   .axis-history-summary__teams { gap: 8px; font-size: .7rem; }
-  .axis-history-summary__teams > span { gap: 5px; }
-  .axis-history-summary__teams > span > span { white-space: nowrap; }
+  .axis-history-summary__result { gap: 5px; }
+  .axis-history-summary__result > span { white-space: nowrap; }
   .axis-history-summary__teams i { width: 24px; height: 28px; flex-shrink: 0; font-size: .75rem; }
   .axis-history-summary__teams strong { margin-inline: 0; font-size: 1.4rem; }
 }
