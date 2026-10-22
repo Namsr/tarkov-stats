@@ -509,5 +509,6 @@ test("history renders season probabilities below team results in both languages 
       assert.ok(percentages[1].includes(lang === "ru" ? "48,7" : "48.7"));
     } else assert.deepEqual(percentages, ["—", "—"]);
     assert.doesNotMatch(html, /NaN|undefined|axis\.history\./);
+    assert.doesNotMatch(html, /axis-history-summary__coverage|88 (?:из|of) 88/);
   }
 });

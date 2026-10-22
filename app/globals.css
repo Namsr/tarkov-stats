@@ -939,7 +939,6 @@ html[data-theme="light"] .axis-history { --axis-team-a: #286894; }
 .axis-history-summary__probability { margin: 14px 0 0; }
 .axis-history-summary__probability dt { color: var(--muted-strong); font-size: .72rem; }
 .axis-history-summary__probability dd { margin: 5px 0 0; font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-.axis-history-summary__coverage { margin: 0 0 12px; color: var(--muted); font-size: .67rem; text-align: center; }
 .axis-history-summary__balance { position: relative; display: flex; height: 14px; border-radius: 3px; background: var(--card-border); }
 .axis-history-summary__balance > span { flex: none; height: 100%; transition: width 400ms ease; }
 .axis-history-summary__balance-a { background: var(--axis-team-a); border-radius: 3px 0 0 3px; }

@@ -7,8 +7,7 @@ Invalid or incomplete rosters display a dash rather than invented probabilities.
 The history summary also shows each side's mean pre-match win probability across
 the selected season, independent of the current page or map filter. It averages
 saved forecasts for decisive completed matches; draws, cancellations, pending
-games and missing forecasts are excluded. Coverage is displayed against the
-season's number of decisive matches. No eligible forecasts produces a dash.
+games and missing forecasts are excluded. No eligible forecasts produces a dash.
 The existing summary query joins predictions by primary key, and its cached
 result includes source and prediction revisions/version. No extra client request,
 polling, model replay or SQL query is added. The estimate describes roster balance

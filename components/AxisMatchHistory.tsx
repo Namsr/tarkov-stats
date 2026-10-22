@@ -181,7 +181,6 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
             </dl>
           </div>)}
         </div>
-        <p className="axis-history-summary__coverage">{t("axis.history.probabilityCoverage", { n: number(summary.averageWinProbability?.matches ?? 0), total: number(totalWins) })}</p>
         <div className="axis-history-summary__balance" role="img" aria-label={t("axis.history.winBalance", { a: number(summary.winsA), b: number(summary.winsB) })}>
           <span className="axis-history-summary__balance-a" style={{ width: `${totalWins ? summary.winsA / totalWins * 100 : 0}%` }} />
           <span className="axis-history-summary__balance-b" style={{ width: `${totalWins ? summary.winsB / totalWins * 100 : 0}%` }} />
