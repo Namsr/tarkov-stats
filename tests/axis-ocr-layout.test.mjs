@@ -85,6 +85,27 @@ test("finds a thin center seam just off the neutral header midpoint and rejects 
   assert.equal(unrelatedLine, null, "a vertical line outside the center search band is not a scoreboard divider");
 });
 
+test("detects a dim single-pixel seam without accepting short bright fragments", () => {
+  const crop = { x: 75, y: 82, width: 1106, height: Math.ceil(513 * 1106 / 1584) };
+  const thinSeam = (brightFraction) => {
+    const image = drawSyntheticScoreboard(1232, 596, crop);
+    const ruleY = Math.round(crop.y + 160 * crop.width / 1584);
+    const dividerX = Math.round(crop.x + crop.width / 2);
+    for (let y = ruleY + 1; y < crop.y + crop.height; y++) {
+      for (let dx = -1; dx <= 1; dx++) setPixel(image.data, image.width, dividerX + dx, y, [16, 18, 22]);
+      // Resizing/compression leaves the seam intermittently below the luma threshold.
+      setPixel(image.data, image.width, dividerX, y, y % 10 < brightFraction * 10 ? [43, 43, 43] : [40, 40, 40]);
+    }
+    return image;
+  };
+  const detected = detectAxisScoreboard(thinSeam(0.6));
+  assert.ok(detected, "a thin seam visible in most rows must locate the scoreboard");
+  assert.equal(detected.x, crop.x);
+  assert.equal(detected.width, crop.width);
+  assert.ok(Math.abs(detected.y - crop.y) <= 2);
+  assert.equal(detectAxisScoreboard(thinSeam(0.2)), null);
+});
+
 test("builds two score cells and exact KDA/name regions for each scoreboard row", () => {
   const crop = { x: 40, y: 30, width: 1584, height: 513 };
   const regions = axisOcrRegions(crop);
