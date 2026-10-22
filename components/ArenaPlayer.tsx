@@ -417,9 +417,9 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
     setFavoriteLoading(true);
     setFavoriteProfile(null);
     setFavoriteError(false);
-    fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "default" })
-      .then(async (response) => {
-        const body = await response.json() as ArenaResponse;
+    loadPlayerProfileResponse<ArenaResponse>(`/api/player/profile?${params}`, { signal: controller.signal })
+      .then((response) => {
+        const body = response.body;
         if (!response.ok) throw new Error();
         return isLegacyArenaResponse(body) ? null : toArenaProfile(body, effectiveFavoriteAid);
       })

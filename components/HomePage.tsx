@@ -3,23 +3,23 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import AuthErrorBanner from "@/components/AuthErrorBanner";
 import ArenaCombatSummary from "@/components/ArenaCombatSummary";
 import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
 import ArenaModeBars from "@/components/ArenaModeBars";
+import HomeArenaComparison from "@/components/home/HomeArenaComparison";
+import AuthErrorBanner from "@/components/AuthErrorBanner";
 import { toArenaProfile } from "@/components/arena-ui";
 import CheaterScore from "@/components/CheaterScore";
 import ProfilePortrait from "@/components/ProfilePortrait";
 import ProfilePrestige from "@/components/ProfilePrestige";
 import SearchBar from "@/components/SearchBar";
-import HomeArenaComparison from "@/components/home/HomeArenaComparison";
 import HomeComparison from "@/components/home/HomeComparison";
 import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import { loadAverageJson } from "@/lib/client-average-request";
-import { validTimelineResponse } from "@/lib/progression-timeline-response";
+import { validHomeProgressionTimeline, type HomeProgressionTimeline } from "@/lib/home-progression";
 import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "@/lib/client-risk";
 import { scheduleArenaRiskPoll } from "@/lib/arena/client-risk";
 import {
@@ -42,7 +42,7 @@ import type { ArenaTsRating } from "@/lib/arena/ts-rating";
 import type { PublicIndexCoverage } from "@/lib/public-index-coverage";
 import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaProfileRisk, type ArenaStatistic, type ArenaStoredMode } from "@/types/arena";
 import type { ProfileViewAchievement } from "@/types/player-profile-view";
-import { GAME_MODES, type GameMode, type ProgressionTimelineResponse } from "@/types/seasonal";
+import { GAME_MODES, type GameMode } from "@/types/seasonal";
 import "@/components/home/home.css";
 import "@/components/profile.css";
 import "@/components/arena-profile.css";
@@ -63,8 +63,8 @@ interface ShowcaseSnapshot {
   mode: GameMode;
   profile: HomeProfile | null;
   arena: { profile: ArenaProfile; risk: ArenaProfileRisk | null; rating: ArenaTsRating | null } | null;
-  timeline: ProgressionTimelineResponse | null;
-  cohort: HomeCohort | null;
+  timeline: HomeProgressionTimeline | null | undefined;
+  cohort: HomeCohort | null | undefined;
 }
 
 type ShowcaseProfileResponse = HomeProfile | {
@@ -104,7 +104,7 @@ export default function HomePage() {
     const controller = new AbortController();
     async function resolveShowcase() {
       try {
-        const response = await fetch("/api/home/showcase", { cache: "no-store", signal: controller.signal });
+        const response = await fetch("/api/home/showcase", { signal: controller.signal });
         const config = response.ok ? await response.json() as ShowcaseConfig : null;
         if (!cancelled) {
           setAid(pickShowcaseAid(config));
@@ -147,8 +147,19 @@ export default function HomePage() {
     const cycle = showcaseTimelineCycle(mode, seasonalCycleId);
     const cohortUrl = showcaseCohortRequest(mode, aid, seasonalCycleId);
     const identity = { aid, mode, cycleId: cycle ?? "persistent" };
-    let refreshedTimeline: ProgressionTimelineResponse | null = null;
-    let refreshedCohort: HomeCohort | null = null;
+    let profileSettled = false;
+    let refreshedTimeline: ShowcaseSnapshot["timeline"] = cycle == null ? null : undefined;
+    let refreshedCohort: ShowcaseSnapshot["cohort"] = cohortUrl == null ? null : undefined;
+    function publishTimeline(timeline: ShowcaseSnapshot["timeline"]) {
+      refreshedTimeline = timeline;
+      if (!cancelled && profileSettled) setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
+        ? { ...current, timeline } : current);
+    }
+    function publishCohort(cohort: ShowcaseSnapshot["cohort"]) {
+      refreshedCohort = cohort;
+      if (!cancelled && profileSettled) setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
+        ? { ...current, cohort } : current);
+    }
     const loadProfile = async (): Promise<Pick<ShowcaseSnapshot, "profile" | "arena"> | null> => {
       try {
         const response = await loadPlayerProfileResponse<ShowcaseProfileResponse>(profileUrl, { force, signal: controller.signal });
@@ -178,26 +189,22 @@ export default function HomePage() {
         return validate(body);
       } catch { return null; }
     }
-    void Promise.all([
-      loadProfile(),
-      cycle == null ? Promise.resolve(null)
-        : load(`/api/progression/timeline?${new URLSearchParams({ mode, cycle, aid: String(aid) })}`,
-          (body) => validTimelineResponse(body, identity) ? body : null,
-          (timeline) => {
-            refreshedTimeline = timeline;
-            setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
-              ? { ...current, timeline } : current);
-          }),
-      cohortUrl == null ? Promise.resolve(null)
-        : load(cohortUrl, (body) => homeCohort(body, identity), (cohort) => {
-          refreshedCohort = cohort;
-          setSnapshot((current) => !cancelled && current?.mode === mode && current.profile?.identity.aid === aid
-            ? { ...current, cohort } : current);
-        }),
-    ]).then(([profileData, timeline, cohortData]) => {
-      if (!cancelled) setSnapshot({ mode, profile: profileData?.profile ?? null, arena: profileData?.arena ?? null,
-        timeline: refreshedTimeline ?? timeline, cohort: refreshedCohort ?? cohortData });
+    // Profile availability is independent of the optional history and cohort.
+    // Keep the previous mode until its replacement arrives, then fill each chart
+    // as it settles. A retrying 503 must never hide an already usable profile.
+    void loadProfile().then((profileData) => {
+      if (cancelled) return;
+      profileSettled = true;
+      setSnapshot({ mode, profile: profileData?.profile ?? null, arena: profileData?.arena ?? null,
+        timeline: profileData ? refreshedTimeline : null, cohort: profileData ? refreshedCohort : null });
     });
+    void (cycle == null ? Promise.resolve(null)
+      : load(`/api/progression/timeline?${new URLSearchParams({ mode, cycle, aid: String(aid), view: "home" })}`,
+        (body) => validHomeProgressionTimeline(body, identity) ? body : null,
+        publishTimeline)).then((timeline) => publishTimeline(refreshedTimeline ?? timeline));
+    void (cohortUrl == null ? Promise.resolve(null)
+      : load(cohortUrl, (body) => homeCohort(body, identity), publishCohort))
+      .then((cohort) => publishCohort(refreshedCohort ?? cohort));
     return () => { cancelled = true; controller.abort(); };
   }, [aid, mode, attempt, profileUrl, seasonalCycleId]);
 

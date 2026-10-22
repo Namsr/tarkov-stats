@@ -1,3 +1,4 @@
+import { singleFlight } from "./seasonal/progression-flight.ts";
 import type {
   PlayerProfile,
   ParsedPlayerStats,
@@ -119,6 +120,9 @@ function profileUpdatedAt(value: unknown): number | null {
   return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
 }
 
+type PublicProfileOptions = { force?: boolean; mode?: PublicProfileMode; expectedUpdatedAt?: number; signal?: AbortSignal };
+const profileLoads = new Map<string, Promise<PublicProfileResult>>();
+
 /**
  * Captcha-free profile fetch by account id from the public static cache.
  * `profile` is null when not cached upstream (404). `fromCache` says whether the
@@ -126,10 +130,15 @@ function profileUpdatedAt(value: unknown): number | null {
  * Pass `{ force: true }` to bypass the in-process cache and always re-fetch
  * upstream (the explicit "Refresh" / page reload path).
  */
-export async function getPublicProfile(
-  aid: number,
-  opts: { force?: boolean; mode?: PublicProfileMode; expectedUpdatedAt?: number; signal?: AbortSignal } = {}
-): Promise<PublicProfileResult> {
+export function getPublicProfile(aid: number, opts: PublicProfileOptions = {}): Promise<PublicProfileResult> {
+  // Scanner requests have their own cancellation lifetime. Keep those independent;
+  // sharing their signal could abort a visitor's request with the scanner's work.
+  if (opts.signal) return loadPublicProfile(aid, opts);
+  const key = JSON.stringify([opts.mode ?? "regular", aid, Boolean(opts.force), profileUpdatedAt(opts.expectedUpdatedAt)]);
+  return singleFlight(profileLoads, key, () => loadPublicProfile(aid, opts));
+}
+
+async function loadPublicProfile(aid: number, opts: PublicProfileOptions): Promise<PublicProfileResult> {
   const now = Date.now();
   const mode = opts.mode ?? "regular";
   const cacheKey = `${mode}:${aid}`;

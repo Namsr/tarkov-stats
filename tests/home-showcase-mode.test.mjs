@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { stripTypeScriptTypes } from "node:module";
 import { isPlayerRiskCurrent, schedulePlayerRiskPoll } from "../lib/client-risk.ts";
 import { showcaseTimelineCycle } from "../lib/home-showcase.ts";
 
@@ -64,7 +65,7 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   assert.match(component, /load\(cohortUrl, \(body\) => homeCohort\(body, identity\)/);
   assert.match(component, /loadAverageJson<unknown>\(url, \{/);
   assert.match(component, /signal: controller\.signal, forceRefresh: force, retryUnavailable: true/);
-  assert.match(component, /validTimelineResponse\(body, identity\)/);
+  assert.match(component, /validHomeProgressionTimeline\(body, identity\)/);
 });
 
 test("home comparison block follows the displayed game mode", async () => {
@@ -254,3 +255,91 @@ for (const mode of ["regular", "pve", "seasonal"]) {
     assert.equal(current.profile.risk, null);
   });
 }
+
+
+async function showcaseHarness(mode = "regular") {
+  const component = await read("components/HomePage.tsx");
+  const start = component.indexOf("    if (profileUrl == null || aid == null) return;");
+  const end = component.indexOf("  }, [aid, mode, attempt, profileUrl, seasonalCycleId]);", start);
+  assert.ok(start >= 0 && end > start);
+  const source = stripTypeScriptTypes(`function effect() {${component.slice(start, end)}}`);
+  const pending = new Map();
+  let current = { mode: "pve", profile: { identity: { aid: 99 } } };
+  const previous = current;
+  const updates = [];
+  const aid = 8045310;
+  const identity = { aid, mode, cycleId: "persistent" };
+  const request = (url, options) => new Promise((resolve, reject) => pending.set(url, { resolve, reject, options }));
+  const factory = new Function("loadPlayerProfileResponse", "loadAverageJson", "validHomeProgressionTimeline", "toArenaProfile", "homeCohort", "showcaseTimelineCycle", "showcaseCohortRequest", "profileUrl", "aid", "mode", "seasonalCycleId", "forceUrl", "setSnapshot", source + "; return effect;");
+  const effect = factory(request, request, () => true, (body) => body.arena, (body) => body,
+    (mode) => mode === "arena" ? null : "persistent", (mode) => mode === "arena" ? null : "/cohort",
+    "/profile", aid, mode, null, { current: null }, (update) => {
+      current = typeof update === "function" ? update(current) : update;
+      updates.push(current);
+    });
+  const cleanup = effect();
+  const profile = { identity, viewModel: { freshness: { profileUpdatedAt: 100 } } };
+  return { pending, profile, identity, previous, cleanup, updates, get current() { return current; } };
+}
+
+const flushShowcase = () => new Promise(setImmediate);
+const timelineRequest = (harness) => [...harness.pending.entries()].find(([url]) => url.includes("/timeline?"))[1];
+
+test("showcase publishes the profile while timeline and cohort are still pending", async () => {
+  const h = await showcaseHarness();
+  h.pending.get("/profile").resolve({ ok: true, body: h.profile });
+  await flushShowcase();
+  assert.equal(h.current.profile, h.profile, "secondary requests must not block the profile");
+  assert.equal(h.current.timeline, undefined);
+  assert.equal(h.current.cohort, undefined);
+  const timeline = { metrics: {} };
+  timelineRequest(h).resolve(timeline);
+  await flushShowcase();
+  assert.equal(h.current.timeline, timeline);
+  assert.equal(h.current.cohort, undefined);
+  const updated = { ...timeline, refreshed: true };
+  timelineRequest(h).options.onUpdate(updated);
+  h.pending.get("/cohort").resolve({ quality: "sufficient" });
+  await flushShowcase();
+  assert.equal(h.current.timeline, updated, "a later result must retain a refreshed timeline");
+  assert.equal(h.current.cohort.quality, "sufficient");
+  h.cleanup();
+});
+
+test("showcase retains the old mode until the profile arrives and preserves early secondary results", async () => {
+  const h = await showcaseHarness();
+  const cohort = { quality: "sufficient" };
+  h.pending.get("/cohort").resolve(cohort);
+  timelineRequest(h).reject(new Error("offline"));
+  await flushShowcase();
+  assert.equal(h.current, h.previous);
+  h.pending.get("/profile").resolve({ ok: true, body: h.profile });
+  await flushShowcase();
+  assert.equal(h.current.profile, h.profile);
+  assert.equal(h.current.timeline, null);
+  assert.equal(h.current.cohort, cohort);
+  h.cleanup();
+});
+
+test("showcase ignores results and background updates after a mode switch", async () => {
+  const h = await showcaseHarness();
+  h.cleanup();
+  h.pending.get("/profile").resolve({ ok: true, body: h.profile });
+  timelineRequest(h).resolve({ metrics: {} });
+  h.pending.get("/cohort").options.onUpdate({ quality: "sufficient" });
+  h.pending.get("/cohort").resolve(null);
+  await flushShowcase();
+  assert.equal(h.current, h.previous);
+  assert.ok(h.pending.get("/profile").options.signal.aborted);
+});
+
+test("showcase exposes a failed profile without waiting for optional requests", async () => {
+  const h = await showcaseHarness();
+  h.pending.get("/profile").reject(new Error("offline"));
+  await flushShowcase();
+  assert.equal(h.current.mode, "regular");
+  assert.equal(h.current.profile, null);
+  assert.equal(h.current.timeline, null);
+  assert.equal(h.current.cohort, null);
+  h.cleanup();
+});

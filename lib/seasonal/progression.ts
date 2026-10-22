@@ -66,9 +66,11 @@ export function parseProgressionRequest(
 export function parseProgressionTimelineRequest(
   params: URLSearchParams,
 ): ProgressionTimelineRequest | null {
-  const allowed = new Set(["mode", "cycle", "aid"]);
+  const required = ["mode", "cycle", "aid"];
+  const allowed = new Set([...required, "view"]);
   if ([...params.keys()].some((key) => !allowed.has(key))) return null;
-  if ([...allowed].some((key) => params.getAll(key).length !== 1)) return null;
+  if (required.some((key) => params.getAll(key).length !== 1)) return null;
+  if (params.getAll("view").length > 1 || (params.has("view") && params.get("view") !== "home")) return null;
   const mode = params.get("mode");
   if (mode !== "regular" && mode !== "pve" && mode !== "seasonal") return null;
   const cycleId = parseCycleForMode(params.get("cycle"), mode);
