@@ -26,10 +26,17 @@ export function summaryComplete(result) {
 export function runCollector(mode, budgetMs, deadline, signal) {
   return new Promise((resolveResult) => {
     const arenaRunId = mode.name === "arena" ? randomUUID() : null;
+    const hardBudgetMs = Math.max(1, Math.min(budgetMs, deadline - Date.now() - 5000));
+    // Stop admitting work before the watchdog so in-flight requests can drain
+    // and SQLite can publish SUMMARY and release the lease. The hard stop still
+    // handles blocked SQLite or an unresponsive collector.
+    const finishReserveMs = Math.min(30_000, Math.floor(hardBudgetMs / 5));
+    const workBudgetMs = Math.max(1, hardBudgetMs - finishReserveMs);
+    const workDeadline = Math.min(deadline, Date.now() + workBudgetMs);
     const child = spawn(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", `scripts/${mode.script}`], {
-      env: { ...process.env, ...mode.env, [mode.budget]: String(Math.max(60_000, budgetMs)),
+      env: { ...process.env, ...mode.env, [mode.budget]: String(Math.max(60_000, workBudgetMs)),
         ...(arenaRunId ? { ARENA_PROFILE_SYNC_RUN_ID: arenaRunId } : {}),
-        PROFILE_QUEUE_DEADLINE_MS: String(Math.min(deadline, Date.now() + budgetMs)) },
+        PROFILE_QUEUE_DEADLINE_MS: String(workDeadline) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let summary = null;
@@ -43,7 +50,7 @@ export function runCollector(mode, budgetMs, deadline, signal) {
       child.kill("SIGTERM");
       killTimer = setTimeout(() => child.kill("SIGKILL"), Math.max(1, Math.min(5000, deadline - Date.now())));
     };
-    const watchdog = setTimeout(stop, Math.max(1, Math.min(budgetMs, deadline - Date.now() - 5000)));
+    const watchdog = setTimeout(stop, hardBudgetMs);
     signal?.addEventListener("abort", stop, { once: true });
     if (signal?.aborted) stop();
     child.stdout.pipe(process.stdout, { end: false });
@@ -117,6 +124,7 @@ export async function runProfileQueue({ deadline = Date.now() + PROFILE_QUEUE_MA
       // Empty attempts must not spin on SQLite in a tight loop.
       if (!state.complete && !result.summary?.attempted) state.retryAt = Math.max(state.retryAt, now() + 60_000);
       emit("MODE_RESULT", { mode: state.mode.name, round, code: result.code, complete: state.complete,
+        killed: Boolean(result.killed), signal: result.signal ?? null, stopReason: result.summary?.stopReason ?? null,
         backlog: result.summary?.backlog ?? null, deferred: result.summary?.deferred ?? 0,
         errors: result.summary?.errors ?? null, retryAt: state.complete ? null : state.retryAt });
     }

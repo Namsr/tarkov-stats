@@ -49,7 +49,8 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(backup, /tarkovstats-run-background worker nice -n 19 ionice -c 3 node/);
   assert.doesNotMatch(backup, /docker exec tarkovstats-web/);
   const service = await readFile("ops/systemd/tarkovstats-publications.service", "utf8");
-  assert.match(service, /flock -n -E 75 \/run\/tarkovstats-data-sync.lock/);
+  assert.match(service, /flock -w 7200 -E 75 \/run\/tarkovstats-data-sync.lock/);
+  assert.match(service, /^TimeoutStartSec=5h$/m);
   assert.match(service, /^RestartSec=1h$/m);
   const timer = await readFile("ops/systemd/tarkovstats-publications.timer", "utf8");
   assert.match(timer, /^OnCalendar=\*-\*-\* 02:30:00 UTC$/m);

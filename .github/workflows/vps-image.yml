@@ -40,7 +40,7 @@ jobs:
           echo "CADDY_BIN=$RUNNER_TEMP/caddy-bin/caddy" >> "$GITHUB_ENV"
       - run: npm test
       - run: npm audit --omit=dev
-      - run: systemd-analyze verify ops/systemd/tarkovstats-background.slice ops/systemd/tarkovstats-backup.service ops/systemd/tarkovstats-backup.timer ops/systemd/tarkovstats-profile-queue.service ops/systemd/tarkovstats-profile-catchup.service ops/systemd/tarkovstats-profile-catchup.timer
+      - run: systemd-analyze verify ops/systemd/tarkovstats-publications.service ops/systemd/tarkovstats-background.slice ops/systemd/tarkovstats-backup.service ops/systemd/tarkovstats-backup.timer ops/systemd/tarkovstats-profile-queue.service ops/systemd/tarkovstats-profile-catchup.service ops/systemd/tarkovstats-profile-catchup.timer
   build:
     needs: checks
     runs-on: ubuntu-24.04
