@@ -8,7 +8,7 @@ import { homeProgressPoints, type HomeProgressMetric } from "@/lib/home-showcase
 import type { HomeProgressionTimeline } from "@/lib/home-progression";
 import { useChartWidth } from "./useChartWidth";
 
-export default function HomeProgress({ timeline, name }: { timeline: HomeProgressionTimeline | null | undefined; name: string }) {
+export default function HomeProgress({ timeline, name, onRetry }: { timeline: HomeProgressionTimeline | null | undefined; name: string; onRetry?: () => void }) {
   const { t, lang } = useI18n();
   const [metric, setMetric] = useState<HomeProgressMetric>("level");
   const [active, setActive] = useState<number | null>(null);
@@ -73,6 +73,7 @@ export default function HomeProgress({ timeline, name }: { timeline: HomeProgres
         <span id={statusId} className="sr-only" role="status">{current && `${date(current.at)}, ${t(metric === "level" ? "metric.level" : metric === "pvp_kd" ? "metric.pmc_kd_ratio" : "metric.survival_rate")}: ${format(current.value)}, ${t("home.pointRaids", { n: n(current.raids, 0) })}`}</span>
       </>}
     </div>
+    {timeline === null && onRetry && <button type="button" className="home-text-link" onClick={onRetry}>{t("leaderboard.retry")}</button>}
     <div className="home-chart-foot">{t("metric.pmc_raids")}</div>
   </>;
 }

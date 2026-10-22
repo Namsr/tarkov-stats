@@ -64,7 +64,7 @@ test("home showcase fetches per-mode data and degrades unsupported sections", as
   // (arena metrics, error bodies) degrades instead of crashing the block.
   assert.match(component, /load\(cohortUrl, \(body\) => homeCohort\(body, identity\)/);
   assert.match(component, /loadAverageJson<unknown>\(url, \{/);
-  assert.match(component, /signal: controller\.signal, forceRefresh: force, retryUnavailable: true/);
+  assert.match(component, /signal: controller\.signal, forceRefresh: forceSecondary, retryUnavailable: true/);
   assert.match(component, /validHomeProgressionTimeline\(body, identity\)/);
 });
 
@@ -83,7 +83,7 @@ test("home comparison block follows the displayed game mode", async () => {
   assert.match(comparison, /if \(cycleId != null\) params\.set\("cycle", cycleId\)/);
   // The loaded favorite must come back for the same identity before it renders.
   assert.match(comparison, /body\.identity\?\.mode === gameMode/);
-  assert.match(comparison, /body\.identity\?\.cycleId === cycleId/);
+  assert.match(comparison, /body\.identity\?\.cycleId === \(cycleId \?\? "persistent"\)/);
   // The block used to be hardwired to the regular mode.
   assert.doesNotMatch(comparison, /favorite\.mode === "regular"/);
   assert.doesNotMatch(comparison, /mode=regular/);
@@ -159,9 +159,8 @@ test("the showcase retry bypasses the profile response cache on every click", as
   assert.match(component, /if \(!force\) forceUrl\.current = null;/);
   assert.match(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(profileUrl, \{ force, signal: controller\.signal \}\)/);
   assert.doesNotMatch(component, /loadPlayerProfileResponse<ShowcaseProfileResponse>\(`\/api\/player\/profile\?\$\{params\}`\)/);
-  // The favorite panel has no retry button, so the user action that triggers the
-  // request is the only way past a cached mismatched body.
-  assert.match(comparison, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`, \{ force: true \}\)/);
+  // Ordinary favorite loads reuse the cache; only the explicit retry forces it.
+  assert.match(comparison, /loadPlayerProfileResponse<HomeProfile>\(`\/api\/player\/profile\?\$\{params\}`, \{ force, signal: controller\.signal \}\)/);
 });
 
 test("home showcase achievement icons are the rarest unlocked ones", async () => {
@@ -257,7 +256,7 @@ for (const mode of ["regular", "pve", "seasonal"]) {
 }
 
 
-async function showcaseHarness(mode = "regular") {
+async function showcaseHarness(mode = "regular", retrySecondary = false) {
   const component = await read("components/HomePage.tsx");
   const start = component.indexOf("    if (profileUrl == null || aid == null) return;");
   const end = component.indexOf("  }, [aid, mode, attempt, profileUrl, seasonalCycleId]);", start);
@@ -270,10 +269,10 @@ async function showcaseHarness(mode = "regular") {
   const aid = 8045310;
   const identity = { aid, mode, cycleId: "persistent" };
   const request = (url, options) => new Promise((resolve, reject) => pending.set(url, { resolve, reject, options }));
-  const factory = new Function("loadPlayerProfileResponse", "loadAverageJson", "validHomeProgressionTimeline", "toArenaProfile", "homeCohort", "showcaseTimelineCycle", "showcaseCohortRequest", "profileUrl", "aid", "mode", "seasonalCycleId", "forceUrl", "setSnapshot", source + "; return effect;");
+  const factory = new Function("loadPlayerProfileResponse", "loadAverageJson", "validHomeProgressionTimeline", "toArenaProfile", "homeCohort", "showcaseTimelineCycle", "showcaseCohortRequest", "profileUrl", "aid", "mode", "seasonalCycleId", "forceUrl", "secondaryForceUrl", "setSnapshot", source + "; return effect;");
   const effect = factory(request, request, () => true, (body) => body.arena, (body) => body,
     (mode) => mode === "arena" ? null : "persistent", (mode) => mode === "arena" ? null : "/cohort",
-    "/profile", aid, mode, null, { current: null }, (update) => {
+    "/profile", aid, mode, null, { current: null }, { current: retrySecondary ? "/profile" : null }, (update) => {
       current = typeof update === "function" ? update(current) : update;
       updates.push(current);
     });
@@ -341,5 +340,14 @@ test("showcase exposes a failed profile without waiting for optional requests", 
   assert.equal(h.current.profile, null);
   assert.equal(h.current.timeline, null);
   assert.equal(h.current.cohort, null);
+  h.cleanup();
+});
+
+
+test("home history retry bypasses cached invalid secondary data without forcing the profile", async () => {
+  const h = await showcaseHarness("regular", true);
+  assert.equal(h.pending.get("/profile").options.force, false);
+  assert.equal(timelineRequest(h).options.forceRefresh, true);
+  assert.equal(timelineRequest(h).options.maxUnavailableRetries, 2);
   h.cleanup();
 });

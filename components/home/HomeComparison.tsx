@@ -21,6 +21,8 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const [mode, setMode] = useState<"average" | "favorite">("average");
   const [active, setActive] = useState<{ index: number; x: number; y: number } | null>(null);
   const [favAid, setFavAid] = useState<number | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const retryKey = useRef<string | null>(null);
   const [favoriteResult, setFavoriteResult] = useState<{ key: string; profile: HomeProfile | null } | null>(null);
   const { favorites, authStatus, loading: favsLoading } = useFavorites();
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -42,34 +44,30 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
   const favName = favProfile?.viewModel.identity.nickname ?? favEntry?.nickname ?? (effectiveFavAid != null ? `AID ${effectiveFavAid}` : "");
   const otherName = mode === "average" ? t("radar.series.average") : favName;
   useEffect(() => {
-    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null || favoriteKey == null) return;
+    if (mode !== "favorite" || !canCompareFavorite || effectiveFavAid == null || favoriteKey == null || (gameMode === "seasonal" && cycleId == null)) return;
     const key: string = favoriteKey;
-    let cancelled = false;
+    const controller = new AbortController();
+    const force = retryKey.current === key;
+    retryKey.current = null;
+    setFavoriteResult(null);
     const params = new URLSearchParams({ aid: String(effectiveFavAid), mode: gameMode });
     if (cycleId != null) params.set("cycle", cycleId);
     async function loadFavorite() {
       try {
-        // The panel has no retry affordance, so a forced read is its only way
-        // past a cached 200 carrying a mismatched identity, which would
-        // otherwise keep the panel empty until the TTL expires. Not every run
-        // is a user action: the effect also re-runs on a gameMode or cycleId
-        // prop change and when canCompareFavorite flips as the favorites list
-        // resolves, and each of those spends a slot in the 10 req/min
-        // server-side "profile" rate-limit bucket.
-        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`, { force: true });
+        const response = await loadPlayerProfileResponse<HomeProfile>(`/api/player/profile?${params}`, { force, signal: controller.signal });
         const body = response.body;
         const identityMatches = body.identity?.aid === effectiveFavAid && body.identity?.mode === gameMode
-          && (cycleId == null || body.identity?.cycleId === cycleId);
-        if (!cancelled) setFavoriteResult({ key, profile: response.ok && identityMatches && body.viewModel ? body : null });
-      } catch { if (!cancelled) setFavoriteResult({ key, profile: null }); }
+          && body.identity?.cycleId === (cycleId ?? "persistent");
+        if (!controller.signal.aborted) setFavoriteResult({ key, profile: response.ok && identityMatches && body.viewModel ? body : null });
+      } catch { if (!controller.signal.aborted) setFavoriteResult({ key, profile: null }); }
     }
     void loadFavorite();
-    return () => { cancelled = true; };
-  }, [mode, canCompareFavorite, effectiveFavAid, favoriteKey, gameMode, cycleId]);
+    return () => { controller.abort(); };
+  }, [mode, canCompareFavorite, effectiveFavAid, favoriteKey, gameMode, cycleId, attempt]);
 
   const favProfileKnown = favProfile && favProfile.comparisonStats?.pvpStatsKnown !== false;
-  const loading = profile === undefined || cohort === undefined || (mode === "favorite" && (favsLoading || (canCompareFavorite && favProfile === undefined)));
-  const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && cohort?.quality === "sufficient" && (mode === "average" || Boolean(favProfileKnown));
+  const loading = profile === undefined || (mode === "average" && cohort === undefined) || (mode === "favorite" && (favsLoading || (canCompareFavorite && favProfile === undefined)));
+  const ready = Boolean(profile) && profile?.comparisonStats?.pvpStatsKnown !== false && (mode === "average" ? cohort?.quality === "sufficient" : Boolean(favProfileKnown));
   const statusKey = mode === "favorite" && isGuest ? "home.favoriteNeedAuth"
     : mode === "favorite" && authStatus === "error" ? "home.comparisonUnavailable"
     : mode === "favorite" && !favsLoading && favorites.length === 0 ? "home.noFavorites"
@@ -83,7 +81,7 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
     const baseline = comparisonCohortMetricValue(cohortStrategy, average ?? { value: null, count: 0 });
     const playerValue = finiteNonNegativeMetricValue(profile?.comparisonStats?.[metric.stat]);
     const favoriteValue = finiteNonNegativeMetricValue(favProfile?.comparisonStats?.[metric.stat]);
-    return { ...metric, baseline, a: playerValue, b: mode === "average" ? baseline : favoriteValue };
+    return { ...metric, baseline: mode === "average" ? baseline : Math.max(playerValue ?? 0, favoriteValue ?? 0) || 1, a: playerValue, b: mode === "average" ? baseline : favoriteValue };
   });
   const point = (index: number, r: number) => { const angle = ([-150, -90, -30, 30, 90, 150][index] * Math.PI) / 180; return { x: width / 2 + Math.cos(angle) * r, y: height / 2 + Math.sin(angle) * r }; };
   const polygon = (points: { x: number; y: number }[]) => points.map((p) => `${p.x},${p.y}`).join(" ");
@@ -121,6 +119,8 @@ export default function HomeComparison({ profile, cohort, gameMode, cycleId }: {
         {favorites.map((favorite) => <option key={favorite.aid} value={favorite.aid}>{favorite.nickname ?? `AID ${favorite.aid}`}</option>)}
       </select>
     </label>}
+    {mode === "favorite" && canCompareFavorite && favProfile === null && <button type="button" className="home-text-link" onClick={() => { retryKey.current = favoriteKey; setAttempt((value) => value + 1); }}>{t("leaderboard.retry")}</button>}
+    {ready && mode === "favorite" && <p className="home-risk-note">{t("home.favoriteScale")}</p>}
     {ready && <div className="home-radar-legend"><span><i aria-hidden="true" />{name}</span><span><i className="home-other-key" aria-hidden="true" />{otherName}</span></div>}
     <div ref={ref} className="home-comparison-chart">
       {!ready ? <p className="home-empty" role="status">{t(statusKey)}</p> : <>

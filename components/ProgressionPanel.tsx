@@ -113,6 +113,10 @@ export default function ProgressionPanel({
   const [data, setData] = useState<ProgressionTimelineResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [secondaryAttempt, setSecondaryAttempt] = useState(0);
+  const retryKey = useRef<string | null>(null);
+  const secondaryRetryKey = useRef<string | null>(null);
   const mainIdentityKey = `${mode}\0${cycleId}\0${aid}`;
   const [selection, setSelection] = useState<ComparisonSelection>(() => ({ ownerKey: mainIdentityKey, aid: "" }));
   const selectedAid = selection.ownerKey === mainIdentityKey ? selection.aid : "";
@@ -135,6 +139,8 @@ export default function ProgressionPanel({
     const controller = new AbortController();
     const cacheKey = `${mode}\0${cycleId}\0${aid}`;
     const cached = timelineCache.get(cacheKey) ?? null;
+    const retry = retryKey.current === cacheKey;
+    retryKey.current = null;
     const abortForNavigation = () => controller.abort();
     window.addEventListener("profile-mode-navigate", abortForNavigation, { once: true });
     setLoading(cached === null);
@@ -151,8 +157,8 @@ export default function ProgressionPanel({
         });
         const result = await loadAverageJson<unknown>(`/api/progression/timeline?${params}`, {
           signal: controller.signal,
-          forceRefresh: forceRefresh || refreshRevision > 0,
-          retryUnavailable: true,
+          forceRefresh: forceRefresh || refreshRevision > 0 || retry,
+          retryUnavailable: true, maxUnavailableRetries: 2,
           onUpdate: (next) => {
             if (!validTimelineResponse(next, { aid, mode, cycleId })) return;
             timelineCache.set(cacheKey, next);
@@ -169,12 +175,13 @@ export default function ProgressionPanel({
         if (controller.signal.aborted) return;
         timelineCache.set(cacheKey, result);
         startTransition(() => {
+          if (controller.signal.aborted) return;
           setData(result);
           onRiskChange?.(result.history?.ready && validRisk(result.risk) ? result.risk : null);
         });
       } catch (caught: unknown) {
         if (caught instanceof Error && caught.name === "AbortError") return;
-        if (!controller.signal.aborted && !cached) setError(true);
+        if (!controller.signal.aborted) setError(true);
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -187,7 +194,7 @@ export default function ProgressionPanel({
       controller.abort();
     };
     // `t` is read through `translate` so a language switch cannot re-run this effect.
-  }, [aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision]);
+  }, [aid, attempt, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision]);
 
   const history = data?.history;
   const longTerm = data?.longTerm;
@@ -213,7 +220,7 @@ export default function ProgressionPanel({
   )
     ? { aid: selectedFavorite.aid, nickname: selectedNickname, timeline: secondaryCandidate }
     : null;
-  const mainReady = !loading && !error && Boolean(data) && hasPoints;
+  const mainReady = !loading && Boolean(data) && hasPoints;
   const compareNotice = favoritesLoading
     ? t("progression.compare.loadingFavorites")
     : authStatus === "loading"
@@ -228,7 +235,7 @@ export default function ProgressionPanel({
             ? t("progression.compare.noEligible")
             : loading
               ? t("progression.compare.historyLoading")
-              : error || !data || !hasPoints
+              : !data || !hasPoints
                 ? t("progression.compare.noHistory")
                 : "";
   const secondaryHasPoints = timelineHasPlayerHistory(activeSecondary?.timeline ?? null);
@@ -284,6 +291,8 @@ export default function ProgressionPanel({
     const abortForNavigation = () => controller.abort();
     window.addEventListener("profile-mode-navigate", abortForNavigation, { once: true });
     const cacheKey = `${mode}\0${cycleId}\0${favorite.aid}`;
+    const retry = secondaryRetryKey.current === cacheKey;
+    secondaryRetryKey.current = null;
     const cached = timelineCache.get(cacheKey) ?? null;
     const nickname = favorite.nickname?.trim() || translate.current("progression.compare.playerId", { aid: favorite.aid });
     setSecondary(cached ? { aid: favorite.aid, nickname, timeline: cached } : null);
@@ -299,7 +308,8 @@ export default function ProgressionPanel({
         });
         const result = await loadAverageJson<unknown>(`/api/progression/timeline?${params}`, {
           signal: controller.signal,
-          retryUnavailable: true,
+          forceRefresh: retry,
+          retryUnavailable: true, maxUnavailableRetries: 2,
           onUpdate: (next) => {
             if (generation !== secondaryGeneration.current || !validTimelineResponse(next, { aid: favorite.aid, mode, cycleId })) return;
             timelineCache.set(cacheKey, next);
@@ -340,7 +350,7 @@ export default function ProgressionPanel({
     // Same reasoning as the load effect above: the comparison parameters carry no
     // language, and entering this effect aborts whatever request is in flight, so
     // `t` here cancelled and re-issued the favorite's timeline on every EN/RU toggle.
-  }, [cycleId, eligibleFavorites, mode, selectedAid]);
+  }, [cycleId, eligibleFavorites, mode, secondaryAttempt, selectedAid]);
 
   return <section className="profile-progression" aria-labelledby="progression-heading">
     <div className="profile-progress-heading"><h2 id="progression-heading" className="section-heading">{t("player.progression")}</h2>
@@ -357,11 +367,11 @@ export default function ProgressionPanel({
     </div>
     {data?.comparison.status === "warming" && <p className="profile-chart-notice" role="status">{t("progression.comparisonWarming")}</p>}
     {showSecondaryLoading && <p className="profile-chart-notice" role="status">{t("progression.compare.loading")}</p>}
-    {showSecondaryError && <p className="profile-chart-notice" role="status">{t("progression.compare.error")}</p>}
+    {showSecondaryError && <div className="profile-chart-notice"><p role="status">{t("progression.compare.error")}</p><button type="button" className="profile-text-button" onClick={() => { secondaryRetryKey.current = `${mode}\0${cycleId}\0${selectedAid}`; setSecondaryAttempt((value) => value + 1); }}>{t("leaderboard.retry")}</button></div>}
     {activeSecondary && !showSecondaryLoading && !secondaryHasPoints && !showSecondaryError && <p className="profile-chart-notice" role="status">{t("progression.compare.noHistory")}</p>}
     {loading && <div className="h-72 skeleton rounded-xl" role="status" aria-label={t("common.loading")} />}
-    {error && <p className="profile-chart-notice" role="status">{t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable")}</p>}
-    {!loading && !error && <>
+    {error && <div className="profile-chart-notice"><p role="status">{t(mode === "pve" ? "progression.unavailable.pve" : "progression.unavailable")}</p><button type="button" className="profile-text-button" onClick={() => { retryKey.current = mainIdentityKey; setAttempt((value) => value + 1); }}>{t("leaderboard.retry")}</button></div>}
+    {!loading && <>
       {history && !history.ready && !hasPoints && <p className="profile-chart-notice" role="status">{t("progression.collecting")}</p>}
       {data && <ProgressionTimelineChart key={mainIdentityKey} data={data} title={t("progression.timeline.title")} comparison={activeSecondary && secondaryHasPoints ? activeSecondary : undefined} />}
       {history && <CompactDetails summary={t("progression.dataDetails")} className="profile-progress-details">

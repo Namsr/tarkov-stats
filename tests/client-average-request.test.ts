@@ -259,3 +259,43 @@ test("the session response cache evicts instead of growing without bound", async
   await requests.loadAverageJson(urls[79]);
   assert.equal(fetches, 81);
 });
+
+
+test("bounded 503 retries stop, respect backoff, and a later attempt recovers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previousTimer = browser.setTimeout;
+  browser.setTimeout = globalThis.setTimeout;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response('{"error":"busy"}', { status: 503, headers: { "Retry-After": "2" } });
+  };
+  try {
+    const pending = requests.loadAverageJson("/bounded", { retryUnavailable: true, maxUnavailableRetries: 2 });
+    const rejected = assert.rejects(pending, /busy/);
+    await nextTurn();
+    assert.equal(calls, 1);
+    t.mock.timers.tick(1999); await nextTurn(); assert.equal(calls, 1);
+    t.mock.timers.tick(1); await nextTurn(); assert.equal(calls, 2);
+    t.mock.timers.tick(2000); await rejected; assert.equal(calls, 3);
+    t.mock.timers.tick(60_000); await nextTurn(); assert.equal(calls, 3);
+    globalThis.fetch = async () => Response.json({ recovered: true });
+    assert.deepEqual(await requests.loadAverageJson("/bounded", { retryUnavailable: true, maxUnavailableRetries: 2 }), { recovered: true });
+  } finally { browser.setTimeout = previousTimer; }
+});
+
+test("aborting a bounded 503 wait prevents further requests", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previousTimer = browser.setTimeout;
+  browser.setTimeout = globalThis.setTimeout;
+  const controller = new AbortController();
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ error: "busy" }, { status: 503 }); };
+  try {
+    const pending = requests.loadAverageJson("/cancel-bounded", { signal: controller.signal, retryUnavailable: true, maxUnavailableRetries: 2 });
+    await nextTurn();
+    controller.abort();
+    await assert.rejects(pending, { name: "AbortError" });
+    t.mock.timers.tick(60_000); await nextTurn(); assert.equal(calls, 1);
+  } finally { browser.setTimeout = previousTimer; }
+});
