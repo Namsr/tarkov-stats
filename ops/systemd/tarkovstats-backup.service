@@ -1,6 +1,6 @@
 [Unit]
 Description=TarkovStats verified database backup
-After=docker.service tarkovstats-background.slice
+After=docker.service tarkovstats-background.slice tarkovstats-daily-cycle.service tarkovstats-leaderboard-materialize.service tarkovstats-publications.service
 Requires=docker.service tarkovstats-background.slice
 ConditionPathExists=/opt/tarkovstats/backup-db.sh
 # At most the daily attempt plus two retries; manual starts count too.
@@ -14,7 +14,8 @@ ExecStart=/bin/sh /opt/tarkovstats/backup-db.sh
 ExecStartPost=/bin/sh /opt/tarkovstats/backup-db.sh --check-age
 Nice=19
 IOSchedulingClass=idle
-# Includes waiting for the wrapper's data-sync/leaderboard locks.
+# Normal nightly work is ordered before this service, outside its runtime budget.
+# The wrapper still owns shared locks for independent/manual invocations.
 TimeoutStartSec=2h
 TimeoutStopSec=90s
 Restart=on-failure

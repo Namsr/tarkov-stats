@@ -200,6 +200,10 @@ test('backup failure diagnostics expose the storage budget and service retries a
     assert.match(service, /StartLimitIntervalSec=1d/);
     assert.match(service, /StartLimitBurst=3/);
     assert.match(service, /Restart=on-failure\r?\nRestartSec=1h/);
+    for (const dependency of ['daily-cycle', 'leaderboard-materialize', 'publications']) {
+      assert.match(service, new RegExp('^After=.*tarkovstats-' + dependency + '\\.service', 'm'));
+    }
+    assert.doesNotMatch(service, /^(Requires|Wants)=.*tarkovstats-(daily-cycle|publications)/m, 'backup must not start another nightly scan');
     assert.match(service, /ExecStartPost=.* --check-age/);
     assert.match(timer, /OnCalendar=\*-\*-\* 04:10:00 UTC/);
   } finally { await rm(f.dir, { recursive: true, force: true }); }

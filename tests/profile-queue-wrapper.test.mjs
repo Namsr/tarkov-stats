@@ -392,3 +392,55 @@ test('daily cycle units retain importer protection, one daily activation and chi
   assert.match(leaderboard, /flock \/run\/tarkovstats-data-sync.lock .*flock \/run\/tarkovstats-leaderboard.lock/);
   assert.doesNotMatch(leaderboard, /flock -n/);
 });
+
+
+test('collectors receive a soft deadline before the watchdog and shared shutdown boundary', async () => {
+  const script = `.queue-budget-${randomUUID()}.mjs`;
+  const file = resolve('scripts', script);
+  try {
+    await writeFile(file, `console.log(new Date().toISOString()+' SUMMARY '+JSON.stringify({
+      feedHttpStatus:200,backlog:1,attempted:1,errors:0,
+      budget:Number(process.env.ARENA_PROFILE_SYNC_MAX_RUN_MS),deadline:Number(process.env.PROFILE_QUEUE_DEADLINE_MS)}));`);
+    const started = Date.now();
+    const result = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 300_000, started + 400_000);
+    assert.equal(result.killed, false);
+    assert.equal(result.summary.budget, 270_000);
+    assert.ok(result.summary.deadline >= started + 269_000 && result.summary.deadline <= started + 271_000);
+    const commonDeadline = Date.now() + 8000;
+    const bounded = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 300_000, commonDeadline);
+    assert.ok(bounded.summary.deadline <= commonDeadline - 5500, 'the shared deadline retains both finish and hard-kill reserves');
+    assert.equal(summaryComplete(bounded), false, 'an unfinished queue stays unfinished');
+  } finally { await rm(file, { force: true }); }
+});
+
+test('a collector can drain and publish its unfinished summary after its soft deadline', async () => {
+  const script = `.queue-drain-${randomUUID()}.mjs`;
+  const file = resolve('scripts', script);
+  try {
+    await writeFile(file, `const deadline=Number(process.env.PROFILE_QUEUE_DEADLINE_MS);
+      setTimeout(()=>console.log(new Date().toISOString()+' SUMMARY '+JSON.stringify({
+        feedHttpStatus:200,backlog:7,attempted:2,errors:0,stopped:true,stopReason:'max_run_ms'})),Math.max(0,deadline-Date.now())+100);`);
+    const result = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 3000, Date.now() + 15_000);
+    assert.equal(result.code, 0);
+    assert.equal(result.killed, false);
+    assert.equal(result.summary.backlog, 7);
+    assert.equal(summaryComplete(result), false);
+    const h = harness(mode => mode.name === 'arena' ? { ...result, elapsed: 300_000 } : done(), 1_300_000);
+    await h.run();
+    const attempts = h.events.filter(event => event.event === 'MODE_RESULT' && event.mode === 'arena');
+    assert.ok(attempts.length > 1);
+    assert.equal(attempts[0].retryAt, h.start + 300_000, 'a normal slice with saved work has no error backoff');
+  } finally { await rm(file, { force: true }); }
+});
+
+test('a collector exiting before it can report is never treated as complete', async () => {
+  const script = `.queue-no-summary-${randomUUID()}.mjs`;
+  const file = resolve('scripts', script);
+  try {
+    await writeFile(file, 'process.exitCode=0;');
+    const result = await runCollector({ ...PROFILE_QUEUE_MODES[0], script }, 3000, Date.now() + 15_000);
+    assert.equal(result.code, 0);
+    assert.equal(result.summary, null);
+    assert.equal(summaryComplete(result), false);
+  } finally { await rm(file, { force: true }); }
+});

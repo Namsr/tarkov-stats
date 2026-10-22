@@ -8,8 +8,10 @@ ConditionPathExists=/usr/local/sbin/tarkovstats-materialize-publications
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/tarkovstats-auto
-ExecStart=/usr/bin/flock -n -E 75 /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-materialize-publications
-TimeoutStartSec=3h
+ExecStart=/usr/bin/flock -w 7200 -E 75 /run/tarkovstats-data-sync.lock /usr/local/sbin/tarkovstats-materialize-publications
+# Allow up to the backup service's 2h window to acquire the writer lock,
+# followed by the existing 3h publication window.
+TimeoutStartSec=5h
 TimeoutStopSec=90s
 # Retry failed/deferred scopes hourly, preserving published data in the meantime.
 Restart=on-failure
