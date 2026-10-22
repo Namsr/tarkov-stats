@@ -6,8 +6,9 @@ Invalid or incomplete rosters display a dash rather than invented probabilities.
 
 `lib/axis-win-probability.ts` replays each queue in timestamp order. Matches with
 the same timestamp are predicted as a batch before any results are observed.
-Missing timestamps use only the supplied pre-match MMR with a fixed Elo weight
-and no learned temperature. They never train the model or use learned history.
+Missing or non-finite timestamps produce no forecast and never train either model:
+there is no safe temporal cutoff or calibration check for these records. The UI
+shows a dash, including for otherwise valid undated rosters.
 No current leaderboard statistics, target-match KDA, round score, winner or MMR
 change enter the target prediction. Historical corrections replay later forecasts.
 
@@ -31,11 +32,24 @@ The model does not read current leaderboard peak ratings or clear all experience
 at a season boundary.
 
 Regularized online logistic regression learns feature weights from prior decisive
-games, starting with conservative priors and the usual Elo MMR scale. An online
-temperature adjustment also uses earlier results only. There is no team-side
+games, starting with conservative priors and the usual Elo MMR scale. A separate
+temperature calibrator fits regularized log loss on the last 1,000 earlier raw
+scores and their outcomes. Every score was computed before observing its result.
+The calibrator starts fitting after 100 decisive games and refits every 25. Its
+one nonnegative scale is found by bounded bisection (0–5), with ridge strength 5
+toward scale 1. Confidence is also shrunk by n/(n+20) when the queue has little
+history; with no decisive observations it starts at 50/50. There is no team-side
 intercept, so swapping teams complements the forecast. Values are limited to
 5–95% and rounded to 0.1 percentage point. This is an estimate, not a guarantee;
 the model has no information about voice communication, roles or unrecorded games.
+
+This replaces version 2's single-step temperature updates. The base feature
+weights still learn independently; calibration changes the confidence scale,
+not which side has the higher raw score. Rounding can create or remove 50/50
+ties. Draws and cancellations do not count as calibration outcomes. See the
+[scikit-learn calibration guide](https://scikit-learn.org/stable/modules/calibration.html)
+for temperature scaling, reliability curves and the distinction between Brier
+score and calibration alone. No Python/runtime ML dependency is added.
 
 Predictions are materialized atomically during archive imports and KDA/round edits.
 An unchanged import checks a revision and does not rebuild. HTTP history/profile
@@ -79,3 +93,58 @@ NeatQueue does not include the site's manually entered KDA/round scores, so this
 replay cannot validate their predictive contribution. The earlier version 1 local
 synthetic benchmark replayed 6,000 matches in 562 ms; this excludes SQLite
 publication time and is not a production latency measurement for version 2.
+
+## Version 3 calibration validation
+
+A saved public site archive includes all 5,732 entries plus its manually saved
+KDA/round scores (83 matches). For selection of the calibrator, the first 2,400
+decisive games of the primary queue were used (ending #4547). The later 1,005
+games, starting #4548, were not used to choose its window or regularization.
+Evaluation is walk-forward: an outcome may update calibration only for subsequent
+games. Simultaneous timestamps cannot straddle the evaluation split.
+
+| Later 1,005 matches | Version 2 | Version 3 |
+|---|---:|---:|
+| Brier | 0.231185 | 0.230205 |
+| Log loss | 0.654341 | 0.652176 |
+| Team A probability ECE, ten 10-point bins | 4.12 pp | 2.58 pp |
+| Favorite probability ECE, five 10-point bins | 3.64 pp | 1.67 pp |
+
+ECE is the count-weighted absolute difference between a bin's average probability
+and observed win frequency. Different bins, small samples and repeated players
+affect this measurement. Exact 50/50 forecasts are excluded from favorite metrics;
+they remain in Brier, log loss and team A reliability using actual outcomes.
+
+Version 3 favorite reliability on this later period:
+
+| Average forecast | Favorite wins | Observed win rate |
+|---|---:|---:|
+| 54.48% | 323 / 575 | 56.17% |
+| 64.09% | 190 / 290 | 65.52% |
+| 73.97% | 84 / 110 | 76.36% |
+| 83.17% | 19 / 23 | 82.61% |
+
+There were seven 50/50 forecasts. The highest-probability group has only 23
+matches and cannot establish precise 80%+ calibration.
+
+For the current season alone (88 matches), favorite ECE decreases from 9.47 pp
+to 6.88 pp, but team A ECE increases from 10.73 pp to 12.76 pp. The group averaging
+64.28% wins 22/34 (64.71%); other current-season groups remain uncertain. This is
+not uniform improvement or proof that each current-season percentage is accurate.
+
+The archive previously informed base feature development, so the later period is
+held out from this calibrator's selection, not a completely independent or
+prospective test of the entire model. Future games and stable results across
+larger samples are still required. No exact win-frequency guarantee is made.
+
+To reproduce a report from a saved JSON array of matches (no network access):
+
+```sh
+node --experimental-strip-types scripts/backtest-axis-probability.mjs archive.json --development-count 2400
+```
+
+The JSON report contains development, later-period and current-season metrics,
+reliability bins with approximate Wilson intervals, and every evaluated match.
+Duplicate match numbers are rejected. Wilson intervals assume independent binary
+trials; repeated players/lineups mean they should not be read as definitive
+uncertainty bounds.

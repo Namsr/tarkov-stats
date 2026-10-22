@@ -1,6 +1,7 @@
 import type { AxisMatch } from "./axis-history";
+import { createAxisProbabilityCalibration } from "./axis-probability-calibration.ts";
 
-export const AXIS_PREDICTION_VERSION = 2;
+export const AXIS_PREDICTION_VERSION = 3;
 export interface AxisWinProbability { a: number; b: number }
 
 // Priors are deliberately modest; regularized online logistic regression learns their
@@ -69,13 +70,13 @@ export function buildAxisWinProbabilities(matches: readonly AxisMatch[]): Map<nu
     const batch: (() => void)[] = [];
     for (let i = start; i < end; i++) {
       const match = ordered[i];
-      if (!roster(match)) continue;
+      if (!roster(match) || match.time == null || !Number.isFinite(match.time)) continue;
       const key = match.queueId ?? `unknown:${match.queue ?? ""}`;
       let model = queues.get(key);
       if (!model) { model = createModel(); queues.set(key, model); }
       const result = model.predict(match);
       predictions.set(match.number, result.probability);
-      if (match.time != null && Number.isFinite(match.time)) batch.push(result.observe);
+      batch.push(result.observe);
     }
     for (const observe of batch) observe();
     start = end;
@@ -88,7 +89,8 @@ function createModel() {
   const pairs = new Map<string, Evidence>(), trios = new Map<string, Evidence>(), lineups = new Map<string, Evidence>();
   const mapPairs = new Map<string, Evidence>(), opponents = new Map<string, Evidence>(), meetings = new Map<string, Evidence>();
   const weights = [...PRIORS];
-  let games = 0, calibration = 1;
+  let games = 0;
+  const calibration = createAxisProbabilityCalibration();
   function player(id: string): Player {
     let p = players.get(id);
     if (!p) {
@@ -98,15 +100,14 @@ function createModel() {
     return p;
   }
   return { predict(match: AxisMatch) {
-    const time = match.time ?? 0;
+    const time = match.time!; // The replay rejects undated matches before creating a prediction.
     const maps = [...new Set(match.maps.map(name => name.trim().toLowerCase()).filter(Boolean))];
     const ids = match.teams.map(team => team.players.map(p => p.id).sort());
     const teamPairs = ids.map(team => groups(team, 2)), teamTrios = ids.map(team => groups(team, 3));
     const teamKeys = ids.map(team => team.join(":"));
     const matchup = [...teamKeys].sort().join("|");
     const direction = teamKeys[0] < teamKeys[1] ? 1 : -1;
-    const hasHistory = match.time != null && Number.isFinite(match.time);
-    const ratings = match.teams.map(team => team.players.map(p => Number.isFinite(p.mmr) ? p.mmr! : hasHistory ? player(p.id).rating ?? 1000 : 1000));
+    const ratings = match.teams.map(team => team.players.map(p => Number.isFinite(p.mmr) ? p.mmr! : player(p.id).rating ?? 1000));
     const rating = (mean(ratings[0]) - mean(ratings[1])) / 400;
     const teamFeatures = match.teams.map((team, index) => {
       const members = team.players.map(p => player(p.id));
@@ -134,11 +135,9 @@ function createModel() {
       return value(opponents.get(key), time, 10) * (a < b ? 1 : -1);
     }))) * 2;
     features[13] = value(meetings.get(matchup), time, 10) * direction * 2;
-    if (!hasHistory) features.fill(0, 1); // No safe temporal cutoff: use pre-match MMR only.
-    // An undated game cannot safely use even globally learned coefficients.
-    const logit = hasHistory ? dot(features, weights) : Math.LN10 * features[0];
-    // Shrink extremes. The temperature is fitted prequentially, never on the target result.
-    const a = Math.round(clamp(sigmoid(logit * (hasHistory ? calibration : 1)), .05, .95) * 1000) / 1000;
+    const logit = dot(features, weights);
+    const probability = calibration.probability(logit);
+    const a = Math.round(probability * 1000) / 1000;
     // Personal strength + map form explain the baseline; synergy learns excess results,
     // rather than rewarding a pair simply because its members were already stronger.
     const individual = sigmoid(dot(features.map((v, i) => i >= 8 && i <= 13 ? 0 : v), weights));
@@ -196,7 +195,7 @@ function createModel() {
       const rate = .04 / Math.sqrt(1 + games / 200);
       const error = outcome - sigmoid(logit);
       for (let i = 0; i < weights.length; i++) weights[i] = clamp(weights[i] + rate * (error * features[i] - .02 * (weights[i] - PRIORS[i])), i === 0 ? 0 : -2, 4);
-      calibration = clamp(calibration + .01 * ((outcome - sigmoid(logit * calibration)) * logit - .02 * (calibration - 1)), .35, 1.5);
+      calibration.observe(logit, match.winner === 0 ? 1 : 0);
       games++;
     } };
   } };
