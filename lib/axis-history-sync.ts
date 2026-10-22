@@ -1,4 +1,4 @@
-import { AXIS_HISTORY_API_URL, AXIS_HISTORY_PAGE_SIZE, AXIS_ARCHIVE_PAGE_SIZE, parseAxisHistory } from "./axis-history.ts";
+import { AXIS_HISTORY_API_URL, AXIS_HISTORY_PAGE_SIZE, AXIS_ARCHIVE_PAGE_SIZE, parseAxisHistory, advanceAxisArchiveState, type AxisHistoryPage } from "./axis-history.ts";
 import { getAxisLeagueStore, type AxisLeagueStore } from "./admin/axis-league-db.ts";
 
 export async function loadAxisHistory(page: number, defer?: (task: () => Promise<void>) => void) {
@@ -12,7 +12,12 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
   if (pending) return pending;
   if (!store.claimArchiveRefresh(now, headOnly)) return;
   const refresh = (async () => {
+    const pages: AxisHistoryPage[] = [];
+    let fetchFailed = false;
+    let fetchError: unknown;
     try {
+      let progress = store.archiveState();
+      const numbers = new Set(store.archiveMatchNumbers());
       const signal = AbortSignal.timeout(12_000);
       const read = async (page: number, pageSize = AXIS_ARCHIVE_PAGE_SIZE) => {
         const url = new URL(AXIS_HISTORY_API_URL);
@@ -20,20 +25,32 @@ export async function refreshAxisArchive(store: AxisLeagueStore, request: typeof
         const response = await request(url, { cache: "no-store", signal });
         if (!response.ok) throw new Error(`NeatQueue archive HTTP ${response.status}`);
         const data = parseAxisHistory(await response.json(), page, pageSize);
-        store.publishArchive(data, now);
+        pages.push(data);
+        for (const match of data.matches) numbers.add(match.number);
+        progress = advanceAxisArchiveState(progress, data, numbers.size);
         return data;
       };
-      const complete = Boolean(store.archiveState().complete);
+      const complete = Boolean(progress.complete);
       let first = await read(1, complete || headOnly ? AXIS_HISTORY_PAGE_SIZE : AXIS_ARCHIVE_PAGE_SIZE);
-      if (headOnly) return;
-      // A normal refresh needs only the newest 25. Catch up after longer outages without gaps.
-      if (complete && !store.archiveState().complete) first = await read(1);
-      // Bounded initial import: two older pages per worker tick.
-      for (let i = 0; i < 2 && !store.archiveState().complete; i++) {
-        const page = store.archiveState().next_page;
-        if (page > first.pages) break;
-        await read(page);
+      if (!headOnly) {
+        // A normal refresh needs only the newest 25. Catch up after longer outages without gaps.
+        if (complete && !progress.complete) first = await read(1);
+        // Bounded initial import: two older pages per worker tick.
+        for (let i = 0; i < 2 && !progress.complete; i++) {
+          const page = progress.next_page;
+          if (page > first.pages) break;
+          await read(page);
+        }
       }
+    } catch (error) {
+      fetchFailed = true;
+      fetchError = error;
+    }
+    try {
+      // Keep successful pages even if a later fetch failed. Never hold a SQLite
+      // transaction across network I/O; publish archive + forecasts atomically once.
+      store.publishArchiveBatch(pages, now);
+      if (fetchFailed) throw fetchError;
     } catch (error) {
       store.failArchiveRefresh();
       console.warn("AXIS archive refresh failed: " + (error instanceof Error ? error.message : String(error)));

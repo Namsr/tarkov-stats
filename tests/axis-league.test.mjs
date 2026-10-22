@@ -416,6 +416,8 @@ test("complete archives poll only 25 newest matches and catch up missing matches
 
 test("initial archive import stays bounded and resumes the next 50-match page", async (t) => {
   const db = store(t); const calls = [];
+  const publish = db.publishArchiveBatch.bind(db), batches = [];
+  db.publishArchiveBatch = (pages, now) => { batches.push(pages.map(page => page.page)); return publish(pages, now); };
   const request = async url => {
     const page = Number(url.searchParams.get("page"));
     const size = Number(url.searchParams.get("page_size"));
@@ -425,11 +427,30 @@ test("initial archive import stays bounded and resumes the next 50-match page", 
   };
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
   assert.deepEqual(calls, [1, 2, 3]); assert.equal(db.archiveState().complete, 0);
+  assert.deepEqual(batches, [[1, 2, 3]], "one worker tick publishes all pages together");
   assert.equal(db.readSeasonHistory(1, "all").total, 150);
   calls.length = 0;
   await refreshAxisArchive(db, request, AXIS_REFRESH_MS + 30_000);
   assert.deepEqual(calls, [1, 4]); assert.equal(db.archiveState().complete, 1);
   assert.equal(db.readSeasonHistory(1, "all").total, 151);
+});
+
+test("a failed later archive fetch publishes earlier pages once without exposing an intermediate archive", async t => {
+  const db = store(t), publish = db.publishArchiveBatch.bind(db), batches = [];
+  db.publishArchiveBatch = (pages, now) => { batches.push(pages.map(page => page.page)); return publish(pages, now); };
+  const request = async url => {
+    const page = Number(url.searchParams.get("page"));
+    assert.equal(db.readSeasonHistory(1, "all").matches.length, 0, "network fetches cannot expose a partial transaction");
+    if (page === 3) throw new Error("third page offline");
+    return Response.json({ data: Array.from({ length: 50 }, (_, i) => historyMatch(150 - (page - 1) * 50 - i)),
+      pagination: { current_page: page, per_page: 50, total_pages: 3, total_items: 150 } });
+  };
+  await refreshAxisArchive(db, request, AXIS_REFRESH_MS);
+  assert.deepEqual(batches, [[1, 2]]);
+  assert.equal(db.readSeasonHistory(1, "all").total, 100);
+  assert.equal(db.archiveState().next_page, 3);
+  assert.equal(db.archiveState().complete, 0);
+  assert.equal(db.archiveState().last_error, 1);
 });
 
 test("HTTP head refreshes cannot starve archive import or leave the cursor beyond an outage gap", async (t) => {

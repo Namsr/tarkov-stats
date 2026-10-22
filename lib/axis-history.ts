@@ -1,6 +1,7 @@
 import { AXIS_SERVER_ID, axisAvatarUrl, type AxisProfile } from "./axis-league.ts";
 import type { AxisSeason } from "./axis-seasons";
 import type { AxisKda, AxisRoundScore } from "./axis-kda";
+import type { AxisWinProbability } from "./axis-win-probability";
 
 export const AXIS_HISTORY_SOURCE_URL = `https://www.neatqueue.com/history/${AXIS_SERVER_ID}`;
 export const AXIS_HISTORY_API_URL = `https://api.neatqueue.com/api/v1/history/${AXIS_SERVER_ID}`;
@@ -14,6 +15,7 @@ export interface AxisMatchPlayer {
 }
 export interface AxisMatchEdit { name: string | null; at: number }
 export interface AxisMatch {
+  winProbability?: AxisWinProbability | null;
   edited?: AxisMatchEdit | null;
   rounds?: AxisRoundScore | null;
   queueId?: string | null;
@@ -22,6 +24,11 @@ export interface AxisMatch {
   winner: number | null;
 }
 export interface AxisHistoryPage { matches: AxisMatch[]; page: number; pages: number; total: number }
+/** Shared by the fetch planner and the atomic archive publisher. */
+export function advanceAxisArchiveState(previous: { complete: number; next_page: number }, data: AxisHistoryPage, count: number) {
+  const nextPage = previous.complete && count < data.total ? 2 : data.page === 1 ? previous.next_page : data.page + 1;
+  return { complete: Number(count >= data.total), next_page: nextPage > data.pages ? 2 : nextPage };
+}
 export interface AxisHistorySummary {
   played: number;
   winsA: number;

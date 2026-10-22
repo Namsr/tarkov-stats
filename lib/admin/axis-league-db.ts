@@ -2,13 +2,19 @@ import { AXIS_PHOTO_MAX_BYTES, AXIS_PHOTO_MAX_PIXELS, type AxisMatchPhoto, type 
 import type { AxisLeagueResponse, AxisPlayer, AxisProfile, AxisRecentMatch } from "../axis-league";
 import { AXIS_CHANNEL_ID, AXIS_REFRESH_MS } from "../axis-league.ts";
 import type { AxisHistoryPage, AxisHistoryResponse, AxisHistorySummary, AxisMatchEdit } from "../axis-history";
-import { AXIS_HISTORY_PAGE_SIZE } from "../axis-history.ts";
+import { AXIS_HISTORY_PAGE_SIZE, advanceAxisArchiveState } from "../axis-history.ts";
 import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
 import { axisLeagueAverages, buildAxisPlayerSummary, AXIS_PLAYER_PAGE_SIZE, type AxisIdentity, type AxisPlayerSummary, type AxisPlayerProfileResponse } from "../axis-player-profile.ts";
+import { AXIS_PREDICTION_VERSION, buildAxisWinProbabilities, type AxisWinProbability } from "../axis-win-probability.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
 type SqliteDatabase = any;
+// KDA and round scores come from their own tables, never from archive payloads.
+function predictionInput(match: AxisHistoryPage["matches"][number]): string {
+  return JSON.stringify([match.time, match.queueId ?? `unknown:${match.queue ?? ""}`, match.maps, match.winner,
+    match.teams.map(team => team.players.map(player => [player.id, player.mmr, player.change]))]);
+}
 export function createAxisLeagueStore(db: SqliteDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS axis_match_photos (
@@ -33,6 +39,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       PRIMARY KEY(match_number, discord_id)
     );
     CREATE TABLE IF NOT EXISTS axis_archive_matches (number INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS axis_match_predictions (number INTEGER PRIMARY KEY, a REAL NOT NULL, b REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS axis_prediction_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT -1);
+    INSERT OR IGNORE INTO axis_prediction_state(id) VALUES(1);
     CREATE INDEX IF NOT EXISTS axis_archive_queue_time ON axis_archive_matches(
       json_extract(payload, '$.queueId'), json_extract(payload, '$.time'), number
     );
@@ -60,7 +69,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
   `);
   // Invalidate only for match/KDA changes, including writes by another worker or an older process.
   db.exec("CREATE TABLE IF NOT EXISTS axis_preview_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0); INSERT OR IGNORE INTO axis_preview_state(id) VALUES(1)");
-  for (const table of ["axis_match_kda", "axis_archive_matches"]) {
+  for (const table of ["axis_match_kda", "axis_archive_matches", "axis_match_rounds"]) {
     for (const event of ["INSERT", "UPDATE", "DELETE"]) {
       db.exec(`CREATE TRIGGER IF NOT EXISTS preview_${table}_${event} AFTER ${event} ON ${table}
         BEGIN UPDATE axis_preview_state SET revision=revision+1 WHERE id=1; END`);
@@ -196,12 +205,50 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     }
     return links;
   }
+  // Run inside the import/edit transaction. HTTP reads fetch only the requested page's
+  // saved probabilities, and all processes see the same atomic model revision.
+  function rebuildPredictions(unchangedSince?: number) {
+    const revision = previewVersion.get().revision as number;
+    const saved = db.prepare("SELECT version,revision FROM axis_prediction_state WHERE id=1").get();
+    if (saved.version === AXIS_PREDICTION_VERSION && saved.revision === revision) return;
+    // Names, avatars and team labels do not change any model input. Only advance
+    // an already-current model; an older worker's unseen changes still force replay.
+    if (saved.version === AXIS_PREDICTION_VERSION && saved.revision === unchangedSince) {
+      db.prepare("UPDATE axis_prediction_state SET revision=? WHERE id=1").run(revision);
+      return;
+    }
+    const stats = new Map<string, AxisKda>();
+    for (const row of db.prepare("SELECT * FROM axis_match_kda").all()) {
+      stats.set(`${row.match_number}:${row.discord_id}`, { kills: row.kills, deaths: row.deaths, assists: row.assists });
+    }
+    const rounds = new Map<number, AxisRoundScore>();
+    for (const row of db.prepare("SELECT * FROM axis_match_rounds").all()) rounds.set(row.match_number, { a: row.team_a, b: row.team_b });
+    const matches = db.prepare("SELECT payload FROM axis_archive_matches ORDER BY number").all().map((row: { payload: string }) => {
+      const match = JSON.parse(row.payload) as AxisHistoryPage["matches"][number];
+      return { ...match, rounds: rounds.get(match.number) ?? null, teams: match.teams.map(team => ({ ...team,
+        players: team.players.map(player => ({ ...player, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) };
+    });
+    const predictions = buildAxisWinProbabilities(matches);
+    const remove = db.prepare("DELETE FROM axis_match_predictions WHERE number=?");
+    for (const row of db.prepare("SELECT number FROM axis_match_predictions").all()) {
+      if (!predictions.has(row.number)) remove.run(row.number);
+    }
+    // Appending a game does not rewrite thousands of unchanged historical forecasts.
+    const save = db.prepare(`INSERT INTO axis_match_predictions(number,a,b) VALUES(?,?,?)
+      ON CONFLICT(number) DO UPDATE SET a=excluded.a,b=excluded.b WHERE a<>excluded.a OR b<>excluded.b`);
+    for (const [number, probability] of predictions) save.run(number, probability.a, probability.b);
+    db.prepare("UPDATE axis_prediction_state SET version=?,revision=? WHERE id=1").run(AXIS_PREDICTION_VERSION, revision);
+  }
   function decorateMatches(matches: AxisHistoryPage["matches"]) {
     const links = profileLinks();
     const stats = new Map<string, AxisKda>();
     const rounds = new Map<number, AxisRoundScore>();
     const edits = new Map<number, AxisMatchEdit>();
+    const probabilities = new Map<number, AxisWinProbability>();
     if (matches.length) {
+      for (const row of db.prepare(`SELECT number,a,b FROM axis_match_predictions WHERE number IN (${matches.map(() => "?").join(",")})`).all(...matches.map(match => match.number))) {
+        probabilities.set(row.number, { a: row.a, b: row.b });
+      }
       for (const row of db.prepare(`SELECT * FROM axis_match_kda WHERE match_number IN (${matches.map(() => "?").join(",")})`).all(...matches.map((match) => match.number))) {
         stats.set(`${row.match_number}:${row.discord_id}`, { kills: row.kills, deaths: row.deaths, assists: row.assists });
       }
@@ -214,7 +261,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         edits.set(row.match_number, { name: row.name, at: row.edited_at });
       }
     }
-    return matches.map((match) => ({ ...match, edited: edits.get(match.number) ?? null, rounds: rounds.get(match.number) ?? null, teams: match.teams.map((team) => ({ ...team,
+    return matches.map((match) => ({ ...match, winProbability: probabilities.get(match.number) ?? buildAxisWinProbabilities([match]).get(match.number) ?? null,
+      edited: edits.get(match.number) ?? null, rounds: rounds.get(match.number) ?? null, teams: match.teams.map((team) => ({ ...team,
       players: team.players.map((player) => ({ ...player, profile: links.get(player.id) ?? null, kda: stats.get(`${match.number}:${player.id}`) ?? null })) })) }));
   }
   return {
@@ -366,6 +414,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const remove = db.prepare("DELETE FROM axis_match_kda WHERE match_number=? AND discord_id=?");
       db.exec("BEGIN IMMEDIATE");
       try {
+        let statsChanged = false;
         if (photoInput !== undefined) {
           const current = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber);
           if ((current?.revision ?? null) !== photoInput.expected) throw new AxisKdaConflict("Photo was changed by another editor");
@@ -378,11 +427,14 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           const existing = read.get(matchNumber, change.discordId) ?? null;
           if (!sameAxisKda(existing, change.expected)) throw new AxisKdaConflict("Match statistics were changed by another administrator");
         }
-        for (const { discordId, kda } of changes) {
+        for (const { discordId, kda, expected } of changes) {
+          if (sameAxisKda(kda, expected)) continue;
+          statsChanged = true;
           if (kda) save.run(matchNumber, discordId, kda.kills, kda.deaths, kda.assists);
           else remove.run(matchNumber, discordId);
         }
-        if (rounds !== undefined) {
+        if (rounds !== undefined && !sameAxisRoundScore(rounds.score, rounds.expected)) {
+          statsChanged = true;
           if (rounds.score) db.prepare("INSERT INTO axis_match_rounds(match_number,team_a,team_b) VALUES(?,?,?) ON CONFLICT(match_number) DO UPDATE SET team_a=excluded.team_a,team_b=excluded.team_b").run(matchNumber, rounds.score.a, rounds.score.b);
           else db.prepare("DELETE FROM axis_match_rounds WHERE match_number=?").run(matchNumber);
         }
@@ -399,31 +451,47 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             ON CONFLICT(match_number) DO UPDATE SET google_sub=excluded.google_sub,name=excluded.name,edited_at=excluded.edited_at`)
             .run(matchNumber, actor.sub, edited.name, edited.at);
         }
+        if (statsChanged) rebuildPredictions();
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
       return { edited, players: changes.map(({ discordId, kda }) => ({ discordId, kda })), rounds: rounds?.score, photo: photoInput === undefined ? undefined : photoInput.photo ? { revision: photoInput.photo.revision, width: photoInput.photo.width, height: photoInput.photo.height } : null };
     },
     archiveState() { return db.prepare("SELECT * FROM axis_archive_state WHERE id = 1").get(); },
+    archiveMatchNumbers(): number[] { return db.prepare("SELECT number FROM axis_archive_matches").all().map((row: { number: number }) => row.number); },
     claimArchiveRefresh(now = Date.now(), headOnly = false): boolean {
       // HTTP fallback must leave the 30-second import slots to the dedicated worker.
       const interval = headOnly || this.archiveState().complete ? AXIS_REFRESH_MS : 30_000;
       return db.prepare("UPDATE axis_archive_state SET attempted_at = ? WHERE id = 1 AND attempted_at <= ?").run(now, now - interval).changes === 1;
     },
     publishArchive(data: AxisHistoryPage, now = Date.now()) {
+      this.publishArchiveBatch([data], now);
+    },
+    publishArchiveBatch(pages: readonly AxisHistoryPage[], now = Date.now()) {
+      if (!pages.length) return;
       const statement = db.prepare("INSERT INTO axis_archive_matches(number,payload) VALUES(?,?) ON CONFLICT(number) DO UPDATE SET payload=excluded.payload WHERE payload<>excluded.payload");
+      const read = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?");
       db.exec("BEGIN IMMEDIATE");
       try {
-        const previous = this.archiveState();
+        const revision = previewVersion.get().revision as number;
+        let progress = this.archiveState();
         backfillParticipants();
-        let changed = false;
-        for (const match of data.matches) if (statement.run(match.number, JSON.stringify(match)).changes) changed = true;
+        let changed = false, predictionChanged = false;
+        for (const data of pages) {
+          for (const match of data.matches) {
+            const previous = read.get(match.number);
+            if (!statement.run(match.number, JSON.stringify(match)).changes) continue;
+            changed = true;
+            if (!previous || predictionInput(JSON.parse(previous.payload)) !== predictionInput(match)) predictionChanged = true;
+          }
+          // Pages can shift during import. Count distinct saved records after each
+          // page so the cursor has the same behavior as sequential publication.
+          const count = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches").get().n;
+          progress = advanceAxisArchiveState(progress, data, count);
+        }
         if (changed || db.prepare("SELECT payload FROM axis_archive_seasons WHERE id=1").get().payload == null) updateSeasons();
-        // A page can shift while the archive is imported. Completeness requires every record.
-        const count = db.prepare("SELECT COUNT(*) AS n FROM axis_archive_matches").get().n;
-        // An HTTP head refresh can discover the gap before the worker does.
-        const nextPage = previous.complete && count < data.total ? 2 : data.page === 1 ? previous.next_page : data.page + 1;
         db.prepare("UPDATE axis_archive_state SET updated_at=?,last_error=0,complete=?,next_page=? WHERE id=1")
-          .run(now, Number(count >= data.total), nextPage > data.pages ? 2 : nextPage);
+          .run(now, progress.complete, progress.next_page);
+        rebuildPredictions(predictionChanged ? undefined : revision);
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     },

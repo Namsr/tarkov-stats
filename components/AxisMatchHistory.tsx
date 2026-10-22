@@ -3,6 +3,7 @@
 import { AXIS_REFRESH_MS, type AxisPlayer } from "@/lib/axis-league";
 import AxisPlayerIdentity from "@/components/AxisPlayerIdentity";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
+import AxisMatchProbability from "@/components/AxisMatchProbability";
 import AxisMatchStatsEditor from "@/components/AxisMatchStatsEditor";
 import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
 import { useI18n } from "@/lib/i18n/context";
@@ -216,6 +217,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
             </span>
             <span data-winner={match.winner ?? undefined} className={`axis-match-result${match.winner != null && match.winner >= 0 ? " axis-match-result--winner" : ""}`}>{result(match)}</span>
           </summary>
+          <AxisMatchProbability match={match} />
           <AxisMatchAttribution edited={match.edited} />
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
             setCachedPages([]);
