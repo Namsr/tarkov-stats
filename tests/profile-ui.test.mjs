@@ -364,8 +364,8 @@ test("a language switch does not re-request the profile or discard a refresh", a
   assert.match(seasonal, /error instanceof PlayerProfileResponseError \? new Error\(t\("seasonal\.profileUnavailable"\)\) : error/);
 
   // The timeline parameters carry no language, so the fetch must not re-run for one.
-  assert.doesNotMatch(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);
-  assert.match(panel, /\}, \[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]\);/);
+  assert.doesNotMatch(panel, /\}, \[aid, attempt, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision, t\]\);/);
+  assert.match(panel, /\}, \[aid, attempt, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]\);/);
   assert.match(panel, /const translate = useRef\(t\);/);
 
   // The favorite comparison in the same panel had the identical defect and was
@@ -373,8 +373,8 @@ test("a language switch does not re-request the profile or discard a refresh", a
   // cancelled a running comparison and re-requested it with identical parameters.
   // Sliced on the effect's own markers so the render body's legitimate `t` calls
   // cannot satisfy or break the bare-`t` check in either direction.
-  assert.doesNotMatch(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid, t\]\);/);
-  assert.match(panel, /\}, \[cycleId, eligibleFavorites, mode, selectedAid\]\);/);
+  assert.doesNotMatch(panel, /\}, \[cycleId, eligibleFavorites, mode, secondaryAttempt, selectedAid, t\]\);/);
+  assert.match(panel, /\}, \[cycleId, eligibleFavorites, mode, secondaryAttempt, selectedAid\]\);/);
   const compare = panel.slice(
     panel.indexOf("const favorite = eligibleFavorites.find((item) =>"),
     panel.indexOf("void loadSecondary();"),
@@ -737,7 +737,7 @@ test("profile mode switching is available during loading and capture is post-res
   assert.match(progression, /`\$\{mode\}\\0\$\{cycleId\}\\0\$\{aid\}`/);
   assert.match(progression, /const cached = timelineCache\.get\(cacheKey\) \?\? null/);
   assert.match(progression, /setData\(cached\)[\s\S]*void loadTimeline\(\)/);
-  assert.match(progression, /startTransition\(\(\) => \{\s*setData\(result\)/);
+  assert.match(progression, /startTransition\(\(\) => \{\s*if \(controller\.signal\.aborted\) return;\s*setData\(result\)/);
   assert.match(progression, /window\.addEventListener\("profile-mode-navigate", abortForNavigation/);
   assert.match(progression, /data\?\.comparison\.status === "warming"/);
   assert.match(regular, /if \(loading\) \{\s*return <ProfileShellLoading mode=\{mode\} aid=\{Number\(aid\)\}/);
@@ -1258,7 +1258,7 @@ test("regular PvP progression precedes the single risk card and radar", async ()
   assert.match(panel, /ProgressionTimelineResponse/);
   assert.match(panel, /setData\(result\)/);
   assert.match(panel, /function timelineHasPoints/);
-  assert.match(panel, /\[aid, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]/);
+  assert.match(panel, /\[aid, attempt, cycleId, forceRefresh, mode, onRiskChange, profileUpdatedAt, refreshRevision\]/);
   assert.doesNotMatch(panel, /params\.(?:set|append)\("revision"/);
   assert.match(panel, /role="status"/);
   assert.match(panel, /history\.ready \? "progression\.ready" : "progression\.collecting"/);

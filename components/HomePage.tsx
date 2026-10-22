@@ -98,6 +98,7 @@ export default function HomePage() {
   // effect has to read it without depending on it, or clearing it after a mode
   // or cycle switch would re-run that effect a second time.
   const forceUrl = useRef<string | null>(null);
+  const secondaryForceUrl = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,6 +142,8 @@ export default function HomePage() {
     // recovers. Every other URL is an ordinary load: forcing one would spend a
     // rate-limit slot on a switch that did not ask for it.
     const force = forceUrl.current === profileUrl;
+    const forceSecondary = force || secondaryForceUrl.current === profileUrl;
+    secondaryForceUrl.current = null;
     if (!force) forceUrl.current = null;
     let cancelled = false;
     const controller = new AbortController();
@@ -180,7 +183,7 @@ export default function HomePage() {
     async function load<T>(url: string, validate: (body: unknown) => T | null, onUpdate: (body: T) => void): Promise<T | null> {
       try {
         const body = await loadAverageJson<unknown>(url, {
-          signal: controller.signal, forceRefresh: force, retryUnavailable: true,
+          signal: controller.signal, forceRefresh: forceSecondary, retryUnavailable: true, maxUnavailableRetries: 2,
           onUpdate: (payload) => {
             const next = validate(payload);
             if (!cancelled && next !== null) onUpdate(next);
@@ -337,7 +340,7 @@ export default function HomePage() {
 
       {!showingArena && <><section id="progress" className="home-section home-wrap">
         {heading("home.progressTitle", "progression", "home.openHistory")}
-        <HomeProgress timeline={display?.timeline} name={name} />
+        <HomeProgress timeline={display?.timeline} name={name} onRetry={current?.profile ? () => { forceUrl.current = null; secondaryForceUrl.current = profileUrl; setAttempt((value) => value + 1); } : undefined} />
       </section>
 
       <section id="risk" className="home-section home-risk-section">

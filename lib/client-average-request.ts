@@ -225,9 +225,11 @@ function throwForStatus(response: CachedJson): never {
 
 export async function loadAverageJson<T>(
   url: string,
-  options: { signal?: AbortSignal; retryUnavailable?: boolean; onUpdate?: (body: T) => void; forceRefresh?: boolean } = {},
+  options: { signal?: AbortSignal; retryUnavailable?: boolean; maxUnavailableRetries?: number; onUpdate?: (body: T) => void; forceRefresh?: boolean } = {},
 ): Promise<T> {
   const signal = options.signal;
+  let unavailableRetries = 0;
+  const maxUnavailableRetries = options.maxUnavailableRetries ?? Infinity;
   for (;;) {
     aborted(signal);
     const settled = options.forceRefresh ? undefined : responses.get(url);
@@ -245,7 +247,7 @@ export async function loadAverageJson<T>(
         observeResponse(url, response, options);
         return response.body as T;
       }
-      if (response.status === 503 && options.retryUnavailable) {
+      if (response.status === 503 && options.retryUnavailable && unavailableRetries++ < maxUnavailableRetries) {
         await wait(response.retryAfter * 1_000, signal);
         continue;
       }
@@ -295,7 +297,7 @@ export async function loadAverageJson<T>(
       observeResponse(url, response, options);
       return response.body as T;
     }
-    if (response.status === 503 && options.retryUnavailable) {
+    if (response.status === 503 && options.retryUnavailable && unavailableRetries++ < maxUnavailableRetries) {
       await wait(response.retryAfter * 1_000, signal);
       continue;
     }
