@@ -901,6 +901,18 @@ a.leaderboard-rank { transition: border-color 160ms ease, background-color 160ms
 .axis-history-pages > span { color: var(--muted-strong); font-size: .76rem; text-align: center; }
 .axis-history-pages button:disabled { opacity: .4; cursor: default; }
 .axis-match-list { display: grid; gap: 12px; }
+.axis-match-probability { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 7px 16px; width: min(100%, 440px); margin: 0 auto 12px; padding: 4px 18px 8px; font-size: .72rem; }
+.axis-match-probability__label { grid-column: 1 / -1; color: var(--muted-strong); text-align: center; font-size: .65rem; }
+.axis-match-probability__team { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; overflow-wrap: anywhere; }
+.axis-match-probability__team strong { font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.axis-match-probability__team[data-team="a"] { grid-column: 1; grid-row: 2; color: var(--axis-team-a, var(--accent)); }
+.axis-match-probability__team[data-team="b"] { grid-column: 2; grid-row: 2; justify-content: flex-end; text-align: right; color: var(--axis-team-b, var(--danger)); }
+.axis-match-probability__bar { grid-column: 1 / -1; display: block; height: 3px; overflow: hidden; border-radius: 3px; background: var(--axis-team-b, var(--danger)); }
+.axis-match-probability__bar > span { display: block; height: 100%; background: var(--axis-team-a, var(--accent)); }
+.axis-match-probability__empty { grid-column: 1 / -1; text-align: center; color: var(--muted); }
+@media (max-width: 600px) {
+  .axis-match-probability { gap: 6px 12px; padding-inline: 12px; }
+}
 .axis-history { --axis-team-a: #8dbce5; --axis-team-b: var(--danger); }
 .axis-history-summary { max-width: 680px; margin: 16px auto; padding: 16px 18px; text-align: center; background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--axis-team-a) 8%, transparent), transparent 65%), radial-gradient(ellipse at 100% 0, color-mix(in srgb, var(--axis-team-b) 7%, transparent), transparent 65%), var(--card-bg); }
 html[data-theme="light"] .axis-history { --axis-team-a: #286894; }

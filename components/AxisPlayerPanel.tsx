@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import AxisMatchAttribution from "@/components/AxisMatchAttribution";
+import AxisMatchProbability from "@/components/AxisMatchProbability";
 import { useI18n } from "@/lib/i18n/context";
 import { AxisAvatar } from "@/components/AxisPlayerIdentity";
 import AxisIcon from "@/components/AxisIcon";
@@ -188,7 +189,7 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
           <span><strong>{match.maps.join(", ") || t("axis.history.noMap")}</strong><small>#{match.number}{match.time != null && <> · <time dateTime={new Date(match.time).toISOString()}>{new Date(match.time).toLocaleString(lang, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></>}</small></span>
           <span>{score(match)}</span><span className="axis-personal-history-kda">{own?.kda ? `${own.kda.kills} / ${own.kda.deaths} / ${own.kda.assists}` : "— / — / —"}</span>
           <span className="axis-personal-result" data-result={own?.change != null && own.change > 0 ? "win" : own?.change != null && own.change < 0 ? "loss" : "draw"}>{own?.change != null && own.change > 0 ? "+" : ""}{number(own?.change)}</span>
-        </summary><AxisMatchAttribution edited={match.edited} /><div className="axis-personal-rosters">{match.teams.map((team, index) => <section key={index}><h3>{t("axis.history.team", { n: String.fromCharCode(65 + index) })}</h3>{sortAxisMatchPlayers(team.players, lang).map(player => <div className="axis-personal-roster-row" data-self={player.id === data.identity.id || undefined} key={player.id}><PlayerName player={player} /><span>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</span></div>)}</section>)}</div></details>;
+        </summary><AxisMatchProbability match={match} /><AxisMatchAttribution edited={match.edited} /><div className="axis-personal-rosters">{match.teams.map((team, index) => <section key={index}><h3>{t("axis.history.team", { n: String.fromCharCode(65 + index) })}</h3>{sortAxisMatchPlayers(team.players, lang).map(player => <div className="axis-personal-roster-row" data-self={player.id === data.identity.id || undefined} key={player.id}><PlayerName player={player} /><span>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</span></div>)}</section>)}</div></details>;
       }) : <p className="axis-personal-note">{t("axis.history.empty")}</p>}
       <nav className="axis-personal-pagination" aria-label={t("axis.history.pagination")}><button type="button" className="ghost-button" disabled={historyPending || page === 1} onClick={() => setPage(value => value - 1)}>{t("axis.history.previous")}</button><span role="status">{t("axis.history.page", { page: number(data.history.page), pages: number(data.history.pages), n: number(data.history.total) })}</span><button type="button" className="ghost-button" disabled={historyPending || page >= data.history.pages} onClick={() => setPage(value => value + 1)}>{t("axis.history.next")}</button></nav>
     </section>

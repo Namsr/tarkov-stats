@@ -67,6 +67,7 @@ GEMINI.md
 /docs/*
 !/docs/leaderboard-score-hours.md
 !/docs/regular-ban-risk.md
+!/docs/axis-win-probability.md
 /ops/*
 !/ops/Caddyfile
 !/ops/deploy.sh
