@@ -3,7 +3,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { buildAxisWinProbabilities } from "../lib/axis-win-probability.ts";
+import { AXIS_PREDICTION_VERSION, buildAxisWinProbabilities } from "../lib/axis-win-probability.ts";
 import { createAxisLeagueStore } from "../lib/admin/axis-league-db.ts";
 import { AXIS_CHANNEL_ID } from "../lib/axis-league.ts";
 import { dict } from "../lib/i18n/dictionary.ts";
@@ -35,6 +35,58 @@ test("missing MMR falls back to the last known rating from earlier games", () =>
   past.teams[1].players.forEach(p => { p.change = 0; });
   const target = match(2); target.teams.forEach(team => team.players.forEach(p => { p.mmr = null; }));
   assert.equal(probability([past], target), .64);
+});
+
+test("undated games use fixed Elo and cannot learn from dated results, ratings or peaks", () => {
+  const target = match(999); target.time = null;
+  target.teams[0].players.forEach(p => { p.mmr = 1200; });
+  assert.equal(probability([], target), .76);
+  for (const winner of [0, 1]) {
+    const history = Array.from({ length: 200 }, (_, i) => {
+      const game = match(i + 1, undefined, undefined, winner);
+      game.teams[0].players.forEach(p => { p.mmr = 1800; p.change = 25; });
+      return game;
+    });
+    assert.equal(probability(history, target), .76);
+    const swapped = structuredClone(target); swapped.teams.reverse();
+    assert.equal(probability(history, swapped), .24);
+    const missing = structuredClone(target); missing.teams.forEach(team => team.players.forEach(p => { p.mmr = null; }));
+    assert.equal(probability(history, missing), .5);
+  }
+});
+
+test("past peaks transfer across resets without target, simultaneous or future rating leakage", () => {
+  const warmup = (number, a, b, rating) => {
+    const game = match(number, a, b, -2);
+    game.time = START - DAY * 10 + number * 60_000;
+    game.teams.forEach(team => team.players.forEach(p => { p.mmr = rating; p.change = 0; }));
+    return game;
+  };
+  const history = [warmup(1, ["1", "2"], ["5", "6"], 1800), warmup(2, ["3", "4"], ["7", "8"], 1000),
+    warmup(3, ["11", "12"], ["15", "16"], 1800), warmup(4, ["13", "14"], ["17", "18"], 1000)];
+  for (let i = 0; i < 200; i++) {
+    const game = match(i + 10, ["1", "2"], ["3", "4"], i % 10 < 7 ? 0 : 1);
+    game.teams.forEach(team => team.players.forEach(p => { p.change = 0; }));
+    history.push(game);
+  }
+  // These players have no win/loss, KDA, map, pair or encounter evidence. The
+  // only distinguishing past observation is their pre-reset peak rating.
+  const target = match(300, ["11", "12"], ["13", "14"]);
+  const p = probability(history, target);
+  // The effect is learned, rather than a hard-coded bonus for a former peak.
+  assert.notEqual(p, .5);
+  const reversed = structuredClone(target); reversed.teams.reverse();
+  assert.equal(Math.round((p + probability(history, reversed)) * 1000), 1000);
+  const equalPeaks = structuredClone(history);
+  equalPeaks[2].teams.forEach(team => team.players.forEach(p => { p.mmr = 1000; }));
+  assert.equal(probability(equalPeaks, target), .5);
+  const later = warmup(400, ["13", "14"], ["17", "18"], 5000); later.time = target.time + DAY;
+  assert.equal(probability([...history, later], target), p);
+  later.time = target.time;
+  assert.equal(probability([...history, later], target), p);
+  const edited = structuredClone(target);
+  edited.teams[1].players.forEach(p => { p.change = 5000; });
+  assert.equal(probability(history, edited), p);
 });
 
 test("target outcome, MMR changes, rounds and KDA cannot leak into its probability", () => {
@@ -189,6 +241,17 @@ test("existing archives acquire predictions on the next unchanged import", t => 
   db.publishArchive(data);
   assert.equal(sql.prepare("SELECT count(*) AS n FROM axis_match_predictions").get().n, 2);
   assert.ok(db.readMatchHistory(2).matches[0].winProbability.a > .5);
+});
+
+test("a previous model version rebuilds saved probabilities on an unchanged import", t => {
+  const { sql, db } = store(t), data = archive([match(1), match(2)]);
+  db.publishArchive(data);
+  const correct = db.readMatchHistory(2).matches[0].winProbability;
+  sql.prepare("UPDATE axis_prediction_state SET version=?").run(AXIS_PREDICTION_VERSION - 1);
+  sql.exec("UPDATE axis_match_predictions SET a=0.123,b=0.877");
+  db.publishArchive(data);
+  assert.deepEqual(db.readMatchHistory(2).matches[0].winProbability, correct);
+  assert.equal(sql.prepare("SELECT version FROM axis_prediction_state").get().version, AXIS_PREDICTION_VERSION);
 });
 
 test("appending a game preserves existing prediction rows; invalidated rosters remove their row", t => {

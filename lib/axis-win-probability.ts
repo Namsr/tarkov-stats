@@ -1,11 +1,11 @@
 import type { AxisMatch } from "./axis-history";
 
-export const AXIS_PREDICTION_VERSION = 1;
+export const AXIS_PREDICTION_VERSION = 2;
 export interface AxisWinProbability { a: number; b: number }
 
 // Priors are deliberately modest; regularized online logistic regression learns their
 // usefulness from earlier games only. MMR uses the usual 400-point Elo scale.
-const PRIORS = [Math.LN10, 1, .6, .3, .2, .5, .6, .2, .7, .4, .4, .3, .4, .3, 0];
+const PRIORS = [Math.LN10, 1, .6, .3, .2, .5, .6, .2, .7, .4, .4, .3, .4, .3, 0, 0];
 const DAY = 86_400_000;
 const clamp = (n: number, lo = -2, hi = 2) => Math.max(lo, Math.min(hi, n));
 const sigmoid = (n: number) => 1 / (1 + Math.exp(-clamp(n, -12, 12)));
@@ -14,7 +14,7 @@ const dot = (a: number[], b: number[]) => a.reduce((sum, value, i) => sum + valu
 
 interface Evidence { n: number; value: number; at: number }
 interface Player {
-  rating: number | null;
+  rating: number | null; peakMmr: number | null;
   result: Evidence; form: Evidence; combat: Evidence; recentCombat: Evidence; rounds: Evidence;
   maps: Map<string, Evidence>; mapCombat: Map<string, Evidence>;
 }
@@ -92,7 +92,7 @@ function createModel() {
   function player(id: string): Player {
     let p = players.get(id);
     if (!p) {
-      p = { rating: null, result: evidence(), form: evidence(), combat: evidence(), recentCombat: evidence(), rounds: evidence(), maps: new Map(), mapCombat: new Map() };
+      p = { rating: null, peakMmr: null, result: evidence(), form: evidence(), combat: evidence(), recentCombat: evidence(), rounds: evidence(), maps: new Map(), mapCombat: new Map() };
       players.set(id, p);
     }
     return p;
@@ -122,6 +122,9 @@ function createModel() {
         value(lineups.get(teamKeys[index]), time, 12) * 2,
         mean(teamPairs[index].map(key => mean(maps.map(map => value(mapPairs.get(`${map}|${key}`), time, 8))))) * 2,
         0, 0, Math.min(...ratings[index]) / 400,
+        // A past peak survives season resets. A new player's current rating is
+        // already known; never invent a peak below it or read today's leaderboard.
+        mean(members.map((p, i) => Math.max(0, (p.peakMmr ?? ratings[index][i]) - ratings[index][i]) / 400)),
       ];
     });
     const features = teamFeatures[0].map((v, i) => clamp(v - teamFeatures[1][i]));
@@ -132,9 +135,10 @@ function createModel() {
     }))) * 2;
     features[13] = value(meetings.get(matchup), time, 10) * direction * 2;
     if (!hasHistory) features.fill(0, 1); // No safe temporal cutoff: use pre-match MMR only.
-    const logit = dot(features, weights);
+    // An undated game cannot safely use even globally learned coefficients.
+    const logit = hasHistory ? dot(features, weights) : Math.LN10 * features[0];
     // Shrink extremes. The temperature is fitted prequentially, never on the target result.
-    const a = Math.round(clamp(sigmoid(logit * calibration), .05, .95) * 1000) / 1000;
+    const a = Math.round(clamp(sigmoid(logit * (hasHistory ? calibration : 1)), .05, .95) * 1000) / 1000;
     // Personal strength + map form explain the baseline; synergy learns excess results,
     // rather than rewarding a pair simply because its members were already stronger.
     const individual = sigmoid(dot(features.map((v, i) => i >= 8 && i <= 13 ? 0 : v), weights));
@@ -148,7 +152,10 @@ function createModel() {
         const sign = index === 0 ? 1 : -1;
         for (const member of team.players) {
           const p = player(member.id);
-          if (Number.isFinite(member.mmr)) p.rating = member.mmr! + (Number.isFinite(member.change) ? member.change! : 0);
+          if (Number.isFinite(member.mmr)) {
+            p.rating = member.mmr! + (Number.isFinite(member.change) ? member.change! : 0);
+            p.peakMmr = Math.max(p.peakMmr ?? member.mmr!, member.mmr!, p.rating);
+          }
           if (match.winner !== -2) {
             add(p.result, time, residual * sign);
             // Besides wall-clock decay, forget a little on each appearance.
