@@ -3,7 +3,7 @@
 import { usePathname, useSearchParams } from "next/navigation";
 import { ProfileShellLoading } from "@/components/ProfileShell";
 import RegularPlayer from "@/components/RegularPlayer";
-import { ArenaProfileLoading } from "@/components/ArenaPlayer";
+import { ArenaProfileLoading } from "@/components/ArenaProfileLoading";
 import SeasonalPlayer from "@/components/SeasonalPlayer";
 import { parsePlayerId } from "@/lib/player-id";
 import { PLAYER_LEVELS_V2026_07_22 } from "@/lib/tarkov-api";

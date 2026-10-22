@@ -5,10 +5,10 @@ import { useI18n } from "@/lib/i18n/context";
 import ChartCrosshair from "@/components/ChartCrosshair";
 import { chartPointAtPointer } from "@/lib/chart-interaction";
 import { homeProgressPoints, type HomeProgressMetric } from "@/lib/home-showcase";
-import type { ProgressionTimelineResponse } from "@/types/seasonal";
+import type { HomeProgressionTimeline } from "@/lib/home-progression";
 import { useChartWidth } from "./useChartWidth";
 
-export default function HomeProgress({ timeline, name }: { timeline: ProgressionTimelineResponse | null | undefined; name: string }) {
+export default function HomeProgress({ timeline, name }: { timeline: HomeProgressionTimeline | null | undefined; name: string }) {
   const { t, lang } = useI18n();
   const [metric, setMetric] = useState<HomeProgressMetric>("level");
   const [active, setActive] = useState<number | null>(null);

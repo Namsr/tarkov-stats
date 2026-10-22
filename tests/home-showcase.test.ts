@@ -3,6 +3,7 @@ import test from "node:test";
 import { HOME_EXAMPLE_AIDS, homeCohort, homePercentageDifference, homeProfileSide, homeProgressPoints, homeRadarRatio, pickShowcaseAid, showcaseCohortRequest, showcaseMode, showcaseProfileHref, showcaseProfileRequest, showcaseTimelineCycle } from "../lib/home-showcase.ts";
 import type { HomeProfile } from "../lib/home-showcase";
 import type { ProgressionTimelineResponse } from "../types/seasonal";
+import { homeProgressionTimeline, validHomeProgressionTimeline } from "../lib/home-progression.ts";
 
 test("homepage comparison reports signed percentages without inventing a zero baseline", () => {
   assert.equal(homePercentageDifference(67, 33), 103);
@@ -42,6 +43,42 @@ test("homepage progression uses current-series levels and excludes unknown value
   ]);
   assert.deepEqual(homeProgressPoints(timeline, "pvp_kd"), [{ raids: 16, value: 2.4, at: 4000 }]);
   assert.deepEqual(homeProgressPoints(timeline, "survival"), []);
+});
+
+test("compact home history preserves every plotted point without population and profile-only data", () => {
+  const point = { pmcRaids: 16, level: 4, value: 500, seriesId: 2, observedAt: 4000 };
+  const series = { player: [{ ...point, seriesId: 1 }, point, { ...point, pmcRaids: 24, level: 5 }],
+    nearby: [point], overall: [point], n: 100, confidence: 1, freshnessAt: 4000 };
+  const timeline = { identity: { aid: 42, mode: "regular", cycleId: "persistent" },
+    metrics: { xp: series, pvp_kd: series, survival: series, ai_kd: series },
+    risk: { unused: true }, longTerm: { unused: true } } as unknown as ProgressionTimelineResponse;
+  const original = structuredClone(timeline);
+  const compact = homeProgressionTimeline(timeline);
+  assert.deepEqual(timeline, original);
+  assert.deepEqual(Object.keys(compact).sort(), ["identity", "metrics"]);
+  assert.deepEqual(Object.keys(compact.metrics).sort(), ["pvp_kd", "survival", "xp"]);
+  assert.deepEqual(Object.keys(compact.metrics.xp!), ["player"]);
+  assert.equal(compact.metrics.xp!.player.length, 2);
+  for (const metric of ["level", "pvp_kd", "survival"] as const) {
+    assert.deepEqual(homeProgressPoints(compact, metric), homeProgressPoints(timeline, metric));
+  }
+  assert.ok(validHomeProgressionTimeline(JSON.parse(JSON.stringify(compact)), timeline.identity));
+  assert.deepEqual(homeProgressionTimeline({ ...timeline, metrics: {} }).metrics, {});
+});
+
+test("compact home history rejects foreign identities and malformed series", () => {
+  const identity = { aid: 42, mode: "regular", cycleId: "persistent" };
+  const valid = { identity, metrics: { xp: { player: [] } } };
+  assert.equal(validHomeProgressionTimeline(valid, identity), true);
+  for (const identityPatch of [{ aid: 43 }, { mode: "pve" }, { cycleId: "other" }]) {
+    assert.equal(validHomeProgressionTimeline({ ...valid, identity: { ...identity, ...identityPatch } }, identity), false);
+  }
+  for (const metrics of [null, [], { xp: null }, { xp: { player: {} } }, { ai_kd: { player: [] } },
+    { xp: { player: [null] } }, { xp: { player: [{ pmcRaids: "16", value: 3 }] } },
+    { xp: { player: [{ pmcRaids: 16, value: Infinity }] } }]) {
+    assert.equal(validHomeProgressionTimeline({ identity, metrics }, identity), false);
+  }
+  assert.equal(validHomeProgressionTimeline(null, identity), false);
 });
 
 test("pickShowcaseAid uses configured aids and falls back to example aids", () => {

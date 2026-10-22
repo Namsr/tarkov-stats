@@ -287,3 +287,77 @@ test("mode profile refresh falls back to the last stored snapshot", () => {
   assert.match(profileRouteSource, /catch \(error\) \{\s*if \(stored\) return await storedResponse\(stored\)/);
   assert.match(profileRouteSource, /if \(!profile\) \{\s*if \(stored\) return await storedResponse\(stored\)/);
 });
+
+
+test("concurrent profile cache misses share one upstream read and remain cached afterwards", async (t) => {
+  const aid = 98600001;
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    await gate;
+    return Response.json({ ...base, aid });
+  });
+  const pending = Array.from({ length: 8 }, () => getPublicProfile(aid));
+  release();
+  const results = await Promise.all(pending);
+  assert.equal(calls, 1);
+  for (const result of results) assert.equal(result.profile.aid, aid);
+  assert.equal((await getPublicProfile(aid)).fromCache, true);
+  assert.equal(calls, 1);
+});
+
+test("profile coalescing isolates mode, refresh policy and expected version", async (t) => {
+  const aid = 98600002;
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(String(url));
+    await new Promise(setImmediate);
+    return Response.json({ ...base, aid, updated: 1800000000000,
+      pmcStats: { eft: {} }, skills: { Common: [] }, stat: { arenaOverAllCounters: {} } });
+  });
+  await Promise.all([
+    getPublicProfile(aid), getPublicProfile(aid),
+    getPublicProfile(aid, { force: true }), getPublicProfile(aid, { force: true }),
+    getPublicProfile(aid, { mode: "pve" }), getPublicProfile(aid, { mode: "arena" }),
+    getPublicProfile(aid, { force: true, expectedUpdatedAt: 1700000000000 }),
+  ]);
+  assert.equal(calls.length, 5);
+  assert.equal(calls.filter((url) => url.includes("?v=")).length, 2);
+  assert.ok(calls.some((url) => url.includes("/pve/")));
+  assert.ok(calls.some((url) => url.includes("/arena/")));
+});
+
+test("failed shared profile requests are discarded so a retry can recover", async (t) => {
+  const aid = 98600003;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    const call = ++calls;
+    await new Promise(setImmediate);
+    return call === 1 ? new Response(null, { status: 503 }) : Response.json({ ...base, aid });
+  });
+  const failed = await Promise.allSettled(Array.from({ length: 8 }, () => getPublicProfile(aid, { force: true })));
+  assert.ok(failed.every((result) => result.status === "rejected"));
+  assert.equal(calls, 1);
+  assert.equal((await getPublicProfile(aid, { force: true })).profile.aid, aid);
+  assert.equal(calls, 2);
+});
+
+test("independently cancellable profile reads do not cancel another caller", async (t) => {
+  const aid = 98600004;
+  const controller = new AbortController();
+  const requests = [];
+  t.mock.method(globalThis, "fetch", (url, init) => new Promise((resolve, reject) => {
+    requests.push({ resolve, signal: init.signal });
+    init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+  }));
+  const cancellable = getPublicProfile(aid, { force: true, signal: controller.signal });
+  const independent = getPublicProfile(aid, { force: true });
+  controller.abort();
+  await assert.rejects(cancellable, { name: "AbortError" });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].signal.aborted, false);
+  requests[1].resolve(Response.json({ ...base, aid }));
+  assert.equal((await independent).profile.aid, aid);
+});

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import type { AxisIdentity } from "@/lib/axis-player-profile";
+import { ArenaProfileLoading } from "@/components/ArenaProfileLoading";
 import ArenaOverallComparison from "@/components/ArenaOverallComparison";
 import ArenaCombatSummary from "@/components/ArenaCombatSummary";
 import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
@@ -140,26 +141,6 @@ function ArenaProfileActions({
       <FavoriteButton aid={aid} nickname={nickname} identity={{ mode: "arena", cycleId: "persistent" }} />
       <CheaterReportButton aid={aid} mode="arena" cycle="persistent" />
     </div>
-  );
-}
-
-export function ArenaProfileLoading({ children }: { children?: ReactNode } = {}) {
-  const { t } = useI18n();
-  return (
-    <main className="page-frame profile-page min-h-screen" aria-label={t("arena.profile.loading")}>
-      {children}
-      <div className="surface p-5 sm:p-6">
-        <div className="h-3 w-16 skeleton rounded" />
-        <div className="mt-4 h-12 w-56 skeleton rounded" />
-        <div className="mt-7 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-24 skeleton rounded-xl" />)}
-        </div>
-      </div>
-      <div className="mt-5 grid gap-4 xl:grid-cols-2">
-        <div className="h-[420px] skeleton rounded-xl" />
-        <div className="h-[420px] skeleton rounded-xl" />
-      </div>
-    </main>
   );
 }
 
@@ -417,9 +398,9 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
     setFavoriteLoading(true);
     setFavoriteProfile(null);
     setFavoriteError(false);
-    fetch(`/api/player/profile?${params}`, { signal: controller.signal, cache: "default" })
-      .then(async (response) => {
-        const body = await response.json() as ArenaResponse;
+    loadPlayerProfileResponse<ArenaResponse>(`/api/player/profile?${params}`, { signal: controller.signal })
+      .then((response) => {
+        const body = response.body;
         if (!response.ok) throw new Error();
         return isLegacyArenaResponse(body) ? null : toArenaProfile(body, effectiveFavoriteAid);
       })
