@@ -427,3 +427,87 @@ test("probability UI renders localized percentages and accessible team labels wi
     assert.doesNotMatch(html, /NaN|undefined|title=|tooltip/);
   }
 });
+
+test("season averages use saved forecasts across every page, excluding draws and missing predictions", t => {
+  const { sql, db } = store(t);
+  const matches = Array.from({ length: 30 }, (_, i) => ({ ...match(i + 2, undefined, undefined, i < 27 ? 0 : 1), maps: [i < 15 ? "Bowl" : "Air Pit"] }));
+  const old = { ...match(1), time: START - 30 * DAY };
+  const other = { ...match(37), queueId: "other" };
+  matches.push(match(32, undefined, undefined, -2), match(33, undefined, undefined, -1), match(34, undefined, undefined, null),
+    { ...match(35), time: null }, match(36, [], []), other, old);
+  db.publishArchive(archive(matches));
+  const save = sql.prepare("UPDATE axis_match_predictions SET a=?,b=? WHERE number=?");
+  for (let n = 2; n <= 31; n++) save.run(n <= 16 ? .6 : .4, n <= 16 ? .4 : .6, n);
+  for (const n of [32, 33, 34, 37, 1]) save.run(.99, .01, n);
+  sql.exec("DELETE FROM axis_match_predictions WHERE number IN (2,31)");
+  const prepare = sql.prepare.bind(sql);
+  sql.prepare = query => {
+    assert.notEqual(query, "SELECT * FROM axis_match_kda", "history reads cannot replay the model");
+    assert.notEqual(query, "SELECT payload FROM axis_archive_matches ORDER BY number", "no full archive parsing on a read");
+    return prepare(query);
+  };
+  const summary = db.readSeasonHistory(1, "current").summary;
+  assert.equal(summary.averageWinProbability.matches, 28);
+  assert.ok(Math.abs(summary.averageWinProbability.a - .5) < 1e-12);
+  assert.ok(Math.abs(summary.averageWinProbability.b - .5) < 1e-12);
+  assert.equal(summary.winsA, 28); assert.equal(summary.winsB, 3);
+  assert.equal(db.readSeasonHistory(2, "current").summary, summary);
+  assert.equal(db.readSeasonHistory(1, "current", undefined, "Bowl").summary, summary);
+  const previousSeason = db.readSeasonHistory(1, "all").seasons.find(s => !s.current);
+  assert.equal(db.readSeasonHistory(1, previousSeason.id).summary.averageWinProbability.a, .99);
+});
+
+test("season average caches notice model backfill without archive changes and later KDA corrections", t => {
+  const { sql, db: writer } = store(t), reader = createAxisLeagueStore(sql);
+  const data = archive([match(1), match(2)]);
+  writer.publishArchive(data);
+  sql.exec("DELETE FROM axis_match_predictions; UPDATE axis_prediction_state SET version=0");
+  assert.equal(reader.readSeasonHistory(1, "current").summary.averageWinProbability, null);
+  const revision = sql.prepare("SELECT revision FROM axis_preview_state").get().revision;
+  writer.publishArchive(data);
+  assert.equal(sql.prepare("SELECT revision FROM axis_preview_state").get().revision, revision);
+  const before = reader.readSeasonHistory(1, "current").summary.averageWinProbability;
+  assert.equal(before.matches, 2);
+  writer.setMatchStats(1, [{ discordId: "1", expected: null, kda: { kills: 25, deaths: 1, assists: 10 } }]);
+  const after = reader.readSeasonHistory(1, "current").summary.averageWinProbability;
+  assert.equal(after.matches, 2);
+  assert.notEqual(after.a, before.a);
+});
+
+test("history renders season probabilities below team results in both languages with no extra fetch", async () => {
+  const require = createRequire(import.meta.url), ts = require("typescript");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const source = await readFile("components/AxisMatchHistory.tsx", "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const ast = ts.createSourceFile("history.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let fetchCalls = 0;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "fetch") fetchCalls++;
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.equal(fetchCalls, 1, "the existing history request is the only fetch");
+  for (const lang of ["ru", "en"]) for (const average of [{ a: .5125, b: .4875, matches: 88 }, null]) {
+    const compiledModule = { exports: {} };
+    const summary = { played: 88, winsA: 52, winsB: 36, maps: [], averageWinProbability: average };
+    const data = { available: true, stale: false, page: 1, pages: 1, total: 88, season: "current", matches: [], summary };
+    const states = [1, "current", undefined, undefined, data, [], false, 0, null];
+    const t = (key, values = {}) => Object.entries(values).reduce((s, [k, v]) => s.replace(`{${k}}`, v), dict[lang][key]);
+    new Function("require", "module", "exports", compiled)(name => {
+      if (name === "react") return { useState: () => [states.shift(), () => {}], useRef: value => ({ current: value }), useId: () => "maps", useEffect: () => {} };
+      if (name === "@/lib/i18n/context") return { useI18n: () => ({ t, lang }) };
+      if (name === "@/lib/axis-league") return { AXIS_REFRESH_MS: 300_000 };
+      if (name.startsWith("@/components/")) return { default: () => null };
+      return require(name);
+    }, compiledModule, compiledModule.exports);
+    const html = renderToStaticMarkup(compiledModule.exports.default({ active: false }));
+    assert.ok(html.includes(dict[lang]["axis.history.averageProbability"]));
+    assert.match(html, /<strong>52<\/strong>/); assert.match(html, /<strong>36<\/strong>/);
+    const percentages = [...html.matchAll(/<dd>([^<]*)<\/dd>/g)].slice(1).map(m => m[1]);
+    if (average) {
+      assert.ok(percentages[0].includes(lang === "ru" ? "51,3" : "51.3"));
+      assert.ok(percentages[1].includes(lang === "ru" ? "48,7" : "48.7"));
+    } else assert.deepEqual(percentages, ["—", "—"]);
+    assert.doesNotMatch(html, /NaN|undefined|axis\.history\./);
+  }
+});

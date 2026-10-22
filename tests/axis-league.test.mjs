@@ -263,7 +263,7 @@ test("future mass resets create another season without erasing the confirmed bou
 
 test("history statistics cover every selected page and count completed matches and distinct maps", t => {
   const db = store(t);
-  assert.deepEqual(db.readSeasonHistory(1, "current").summary, { played: 0, winsA: 0, winsB: 0, maps: [] });
+  assert.deepEqual(db.readSeasonHistory(1, "current").summary, { played: 0, winsA: 0, winsB: 0, maps: [], averageWinProbability: null });
   const matches = Array.from({ length: 27 }, (_, i) => ({
     ...seasonMatch(i + 2, AXIS_CURRENT_SEASON_START + i),
     winner: i < 15 ? 0 : 1, maps: i < 20 ? ["Bowl", "Bowl"] : ["Air Pit", "Bowl"],
@@ -277,7 +277,7 @@ test("history statistics cover every selected page and count completed matches a
     { ...seasonMatch(33, null), maps: [] },
   );
   db.publishArchive({ page: 1, pages: 1, total: matches.length, matches });
-  const expected = { played: 28, winsA: 15, winsB: 12, maps: [{ name: "Bowl", matches: 27 }, { name: "Air Pit", matches: 8 }] };
+  const expected = { played: 28, winsA: 15, winsB: 12, maps: [{ name: "Bowl", matches: 27 }, { name: "Air Pit", matches: 8 }], averageWinProbability: null };
   assert.deepEqual(db.readSeasonHistory(1, "current").summary, expected);
   assert.deepEqual(db.readSeasonHistory(2, "current").summary, expected);
   const filtered = db.readSeasonHistory(1, "current", undefined, "Bowl");
@@ -298,7 +298,7 @@ test("history statistics cover every selected page and count completed matches a
   assert.equal(db.readSeasonHistory(1, "current").summary.winsB, 13);
   const previousSeason = db.readSeasonHistory(1, "all").seasons.find(season => !season.current);
   assert.deepEqual(db.readSeasonHistory(1, previousSeason.id).summary, {
-    played: 1, winsA: 1, winsB: 0, maps: [{ name: "Old season", matches: 1 }],
+    played: 1, winsA: 1, winsB: 0, maps: [{ name: "Old season", matches: 1 }], averageWinProbability: null,
   });
 });
 
@@ -321,7 +321,7 @@ test("history summary scans are reused across pages/maps and invalidated by anot
   assert.equal(reader.readSeasonHistory(1, "current").summary, first);
   assert.equal(scans, 2, "unchanged refreshes retain cached aggregates");
   writer.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ ...one, winner: 1, maps: ["Air Pit"] }] }, 2000);
-  assert.deepEqual(reader.readSeasonHistory(1, "current").summary, { played: 1, winsA: 0, winsB: 1, maps: [{ name: "Air Pit", matches: 1 }] });
+  assert.deepEqual(reader.readSeasonHistory(1, "current").summary, { played: 1, winsA: 0, winsB: 1, maps: [{ name: "Air Pit", matches: 1 }], averageWinProbability: null });
   assert.equal(scans, 4, "same-timestamp changes on another handle invalidate aggregates");
 });
 

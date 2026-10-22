@@ -28,6 +28,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
   const current = data?.page === page && data?.season === season && data?.map === selectedMap && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch) ?? null;
   const summary = current?.summary ?? (data?.season === season && data?.matchNumber === focusedMatch ? data.summary : undefined);
   const totalWins = summary ? summary.winsA + summary.winsB : 0;
+  const averageProbabilityA = summary?.averageWinProbability ? Math.round(summary.averageWinProbability.a * 1000) / 1000 : null;
   const leaguePlayers = new Map(players?.map((player) => [player.id, player]));
   const locale = lang === "ru" ? "ru-RU" : "en-US";
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 1 });
@@ -172,9 +173,15 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
           </dl>
         </div>
         <div className="axis-history-summary__teams">
-          <span className="axis-history-summary__team-a"><i aria-hidden="true">A</i><span>{t("axis.history.team", { n: "A" })}<small>{t("arena.counter.wins")}</small></span><strong>{number(summary.winsA)}</strong></span>
-          <span className="axis-history-summary__team-b"><i aria-hidden="true">B</i><span>{t("axis.history.team", { n: "B" })}<small>{t("arena.counter.wins")}</small></span><strong>{number(summary.winsB)}</strong></span>
+          {(["A", "B"] as const).map((team, index) => <div className={`axis-history-summary__team-${team.toLowerCase()}`} key={team}>
+            <div className="axis-history-summary__result"><i aria-hidden="true">{team}</i><span>{t("axis.history.team", { n: team })}<small>{t("arena.counter.wins")}</small></span><strong>{number(index === 0 ? summary.winsA : summary.winsB)}</strong></div>
+            <dl className="axis-history-summary__probability">
+              <dt>{t("axis.history.averageProbability")}</dt>
+              <dd>{averageProbabilityA == null ? "—" : (index === 0 ? averageProbabilityA : Math.round((1 - averageProbabilityA) * 1000) / 1000).toLocaleString(locale, { style: "percent", maximumFractionDigits: 1 })}</dd>
+            </dl>
+          </div>)}
         </div>
+        <p className="axis-history-summary__coverage">{t("axis.history.probabilityCoverage", { n: number(summary.averageWinProbability?.matches ?? 0), total: number(totalWins) })}</p>
         <div className="axis-history-summary__balance" role="img" aria-label={t("axis.history.winBalance", { a: number(summary.winsA), b: number(summary.winsB) })}>
           <span className="axis-history-summary__balance-a" style={{ width: `${totalWins ? summary.winsA / totalWins * 100 : 0}%` }} />
           <span className="axis-history-summary__balance-b" style={{ width: `${totalWins ? summary.winsB / totalWins * 100 : 0}%` }} />
