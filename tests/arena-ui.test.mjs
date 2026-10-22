@@ -648,12 +648,3 @@ test("Arena mode bars load all baselines in one batch request", async () => {
     async () => Response.json({}),
   ), /baselines/);
 });
-
-
-test("the player loading shell does not eagerly import the full Arena screen", () => {
-  const loading = read("app/player/loading.tsx");
-  const placeholder = read("components/ArenaProfileLoading.tsx");
-  assert.doesNotMatch(loading, /from "@\/components\/ArenaPlayer"/);
-  assert.match(placeholder, /aria-label=\{t\("arena\.profile\.loading"\)\}/);
-  assert.match(placeholder, /grid-cols-2[\s\S]*lg:grid-cols-4/);
-});

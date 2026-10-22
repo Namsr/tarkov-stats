@@ -2,8 +2,11 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
+import ArenaCombatSummary from "@/components/ArenaCombatSummary";
+import ArenaDetailedStatistics from "@/components/ArenaDetailedStatistics";
+import ArenaModeBars from "@/components/ArenaModeBars";
+import HomeArenaComparison from "@/components/home/HomeArenaComparison";
 import AuthErrorBanner from "@/components/AuthErrorBanner";
 import { toArenaProfile } from "@/components/arena-ui";
 import CheaterScore from "@/components/CheaterScore";
@@ -43,17 +46,6 @@ import { GAME_MODES, type GameMode } from "@/types/seasonal";
 import "@/components/home/home.css";
 import "@/components/profile.css";
 import "@/components/arena-profile.css";
-
-// Arena-only controls are requested when that mode actually renders.
-function HomeSectionLoading() {
-  const { t } = useI18n();
-  return <p className="home-empty" role="status">{t("common.loading")}</p>;
-}
-
-const ArenaCombatSummary = dynamic(() => import("@/components/ArenaCombatSummary"), { loading: HomeSectionLoading });
-const ArenaDetailedStatistics = dynamic(() => import("@/components/ArenaDetailedStatistics"), { loading: HomeSectionLoading });
-const ArenaModeBars = dynamic(() => import("@/components/ArenaModeBars"), { loading: HomeSectionLoading });
-const HomeArenaComparison = dynamic(() => import("@/components/home/HomeArenaComparison"), { loading: HomeSectionLoading });
 
 /** Daily throughput is a static figure, not a live measurement: the sync runs at
  *  1 RPS per mode, so a real per-day count would swing with queue state and mean

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { PlayerProfile, ParsedPlayerStats, SkillEntry } from "@/types/tarkov";
 import StatCard from "@/components/StatCard";
 import PlayerRadarComparison from "@/components/PlayerRadarComparison";
@@ -29,14 +28,9 @@ import {
   loadPlayerProfileResponse,
   PlayerProfileResponseError,
 } from "@/lib/client-profile-request";
-import { ArenaProfileLoading } from "@/components/ArenaProfileLoading";
-
+import ArenaPlayer from "@/components/ArenaPlayer";
 import type { AxisIdentity } from "@/lib/axis-player-profile";
 import ProfilePrimaryActions, { ProfileActivity } from "@/components/ProfileActions";
-
-const ArenaPlayer = dynamic(() => import("@/components/ArenaPlayer"), {
-  loading: () => <ArenaProfileLoading />,
-});
 
 async function pollRegularRisk(input: {
   aid: number;
