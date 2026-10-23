@@ -24,6 +24,7 @@ process.env.SEASONAL_ENABLED = "false";
 const request = (query = "") => GET(new Request("http://localhost/api/admin/achievement-tempo" + query));
 
 test("admin route denies anonymous and non-admin users before opening storage", async () => {
+  let source, output;
   try {
     globalThis.tempoTestSession = null;
     assert.equal((await request()).status, 401);
@@ -38,7 +39,8 @@ test("admin route denies anonymous and non-admin users before opening storage", 
     const seasonal = await request("?mode=seasonal");
     assert.equal((await seasonal.json()).reason, "season_unavailable");
 
-    const source = new DatabaseSync(sourcePath), output = new DatabaseSync(outputPath);
+    source = new DatabaseSync(sourcePath);
+    output = new DatabaseSync(outputPath);
     source.exec(`CREATE TABLE player_profiles(mode TEXT,cycle_id TEXT,aid INTEGER,confirmed_banned INTEGER);
       CREATE TABLE excluded_players(aid INTEGER PRIMARY KEY);
       CREATE TABLE progression_personal_revisions(mode TEXT,cycle_id TEXT,aid INTEGER,revision INTEGER);
@@ -61,6 +63,9 @@ test("admin route denies anonymous and non-admin users before opening storage", 
     assert.deepEqual([source, output].map((db) => db.prepare("PRAGMA data_version").get().data_version), versions);
     source.exec("INSERT INTO excluded_players VALUES(1)");
     assert.equal((await (await request("?aid=1")).json()).reason, "exclusions_changed");
-    output.close(); source.close();
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    output?.close();
+    source?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

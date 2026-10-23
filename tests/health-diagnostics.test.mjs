@@ -44,6 +44,7 @@ function healthPanelRenderer() {
     "@/components/AdminAudienceCharts": {}, "@/components/AdminTrafficAudience": {}, "@/lib/i18n/context": {},
     "@/lib/admin/report-client": {}, "@/types/seasonal": { GAME_MODES: [] },
     "@/components/AdminShowcase": {}, "@/components/AdminSupport": {}, "@/components/AdminAxisLeague": {},
+    "@/components/AdminAchievementTempo": {},
     "@/lib/admin/health-report": { healthReport, healthOperationEntry },
     "@/lib/observability/browser-performance": { BROWSER_METRICS: ["api_total", "lcp"], BROWSER_ENDPOINTS: ["profile"] },
   });
