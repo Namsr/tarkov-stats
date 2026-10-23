@@ -60,6 +60,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-cohort-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-admin-report.mjs ./scripts/compute-admin-report.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-risk-worker.mjs ./scripts/compute-risk-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-progression-population.mjs ./scripts/materialize-progression-population.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-achievement-tempo.mjs ./scripts/materialize-achievement-tempo.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-average-publications.mjs ./scripts/materialize-average-publications.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/materialize-leaderboards.mjs ./scripts/materialize-leaderboards.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-leaderboard-exact-fields.mjs ./scripts/backfill-leaderboard-exact-fields.mjs

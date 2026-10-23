@@ -8,4 +8,7 @@ status=0
 /usr/local/sbin/tarkovstats-run-background -e PROGRESSION_MATERIALIZE_ONCE=true \
   worker nice -n 19 node --experimental-strip-types --experimental-sqlite \
   scripts/materialize-progression-population.mjs || status=1
+/usr/local/sbin/tarkovstats-run-background \
+  worker nice -n 19 node --experimental-strip-types --experimental-sqlite \
+  scripts/materialize-achievement-tempo.mjs || status=1
 exit "$status"
