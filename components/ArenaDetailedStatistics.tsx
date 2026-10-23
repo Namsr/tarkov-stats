@@ -32,7 +32,6 @@ export default function ArenaDetailedStatistics({ profile, scope }: {
       <div><h3>{t("arena.combat.account")}</h3><div className="data-ledger">
         <StatCard label={t("arena.combat.bestArp")} value={number(profile.overall.bestArp)} />
         <StatCard label={t("arena.account.hours")} value={number(profile.overall.hours, 1)} suffix={profile.overall.hours == null ? undefined : t("unit.h")} />
-        {scope !== "overall" && stats.hours != null && <StatCard label={t("arena.combat.modeHours")} value={number(stats.hours, 1)} suffix={t("unit.h")} />}
       </div></div>
     </div>
   </section>;

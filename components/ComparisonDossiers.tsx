@@ -187,7 +187,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     </>)}
     {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? selectedArenaMetrics : persistentMetrics), scope.mode === "arena" ? undefined : "compare.advantageNote")}
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
-      { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
+      { field: "hours", label: "compare.arenaAccountHours", digits: 1 }, { field: "bestArp", label: "compare.arenaAccountBestArp" },
       ...arenaCounters.map(([key, label]) => ({ field: `arena_${arenaMode}_${key}`, label: `arena.counter.${label}` })),
     ] : activityMetrics.filter(metric => scope.mode !== "seasonal" || !metric.field.startsWith("pmcExit")), true))}
     {scope.mode !== "arena" && section("growth", "compare.growth", metricPairs(progressionMetrics))}

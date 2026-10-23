@@ -178,9 +178,7 @@ test("Arena risk cards always render a number while other missing metrics stay u
       }));
       assert.ok(!html.includes(`data-label="${dict[lang]["arena.combat.risk"]}"`));
       assert.ok(!html.includes(`data-label="${dict[lang]["arena.tsr.title"]}"`));
-      const label = `data-label="${dict[lang]["arena.combat.modeHours"]}"`;
-      assert.equal(html.includes(label), hours !== null, "show mode hours only when supplied, including zero");
-      if (hours !== null) assert.ok(html.includes(`${label}>${hours}</div>`));
+      if (hours !== null) assert.ok(!html.includes(`>${hours}</div>`), "mode hours are not displayed; only account hours are available");
       assert.ok(html.includes(`data-label="${dict[lang]["arena.account.hours"]}">120</div>`));
     }
   }
