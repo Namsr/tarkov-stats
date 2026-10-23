@@ -1,0 +1,312 @@
+{
+  "baselineCommit": "53cf43b067cfa3e5778fd35d7a3de320eb67dbc6",
+  "environment": {
+    "node": "v24.19.0",
+    "sqlite": "3.53.3",
+    "platform": "win32",
+    "pragmas": {
+      "journal_mode": {
+        "journal_mode": "wal"
+      },
+      "synchronous": {
+        "synchronous": 2
+      },
+      "cache_size": {
+        "cache_size": -2000
+      },
+      "temp_store": {
+        "temp_store": 0
+      },
+      "page_size": {
+        "page_size": 4096
+      }
+    },
+    "maxOldSpaceMiB": 128
+  },
+  "fixture": {
+    "players": 2000,
+    "snapshotsPerPlayer": 24,
+    "padding": 2048
+  },
+  "before": [
+    {
+      "name": "initial",
+      "durationMs": 40432.311,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 27685,
+          "normalizedPlayers": 2000,
+          "refreshMs": 2554,
+          "publishMs": 10193,
+          "totalMs": 40432
+        }
+      ],
+      "walBytes": 7473712,
+      "persistedRowChanges": 92084,
+      "changes": 238084,
+      "tempAllocatedBytes": 6893568,
+      "peakRssMiB": 256.890625,
+      "commitSectionsMs": [
+        169.10970000000088,
+        43.59860000000481
+      ],
+      "payloadHash": "83a155361e23c7c3b7c8691a91fbf76141cfe2a2d2bfa4e2b38bfacb8b50a4e3",
+      "intervalsHash": "2917eda6eef7667a2346ba9ec467fd3299c54f4c68a4b242b7851f6135386975",
+      "aggregatesHash": "d4bd042d0115d97039ae00740298a208058b64c1f8ab8faafc14bd8b7cc3a319"
+    },
+    {
+      "name": "unchanged",
+      "durationMs": 12633.425799999997,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 84,
+          "normalizedPlayers": 0,
+          "refreshMs": 2395,
+          "publishMs": 10153,
+          "totalMs": 12632
+        }
+      ],
+      "walBytes": 370832,
+      "persistedRowChanges": 165,
+      "changes": 46165,
+      "tempAllocatedBytes": 7757824,
+      "peakRssMiB": 270.5625,
+      "commitSectionsMs": [
+        37.58340000000317,
+        4.990899999997055
+      ],
+      "payloadHash": "83a155361e23c7c3b7c8691a91fbf76141cfe2a2d2bfa4e2b38bfacb8b50a4e3",
+      "intervalsHash": "2917eda6eef7667a2346ba9ec467fd3299c54f4c68a4b242b7851f6135386975",
+      "aggregatesHash": "d4bd042d0115d97039ae00740298a208058b64c1f8ab8faafc14bd8b7cc3a319"
+    },
+    {
+      "name": "one_percent",
+      "durationMs": 12779.539500000006,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 196,
+          "normalizedPlayers": 20,
+          "refreshMs": 2460,
+          "publishMs": 10123,
+          "totalMs": 12779
+        }
+      ],
+      "walBytes": 6826872,
+      "persistedRowChanges": 11667,
+      "changes": 57787,
+      "tempAllocatedBytes": 7757824,
+      "peakRssMiB": 284.99609375,
+      "commitSectionsMs": [
+        144.58870000000024,
+        6.856499999994412
+      ],
+      "payloadHash": "6add0a159b56f1356901c1140cb8f81382a025c8ba5da749c5e2d1ae059a5b0d",
+      "intervalsHash": "9c3622a12edb61ecd2995d7f20e4ff1259010b31d282bd48f0c13a26940c9d39",
+      "aggregatesHash": "27baeb9492f3a898b80ef285c9416b6957b2b4d953639d9384cb520449474799"
+    }
+  ],
+  "after": [
+    {
+      "name": "initial",
+      "durationMs": 37608.496699999996,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 28199,
+          "normalizedPlayers": 2000,
+          "refreshMs": 2630,
+          "publishMs": 6779,
+          "totalMs": 37608
+        }
+      ],
+      "walBytes": 7473712,
+      "persistedRowChanges": 92084,
+      "changes": 284165,
+      "tempAllocatedBytes": 11321344,
+      "peakRssMiB": 251.54296875,
+      "commitSectionsMs": [
+        237.80309999999736,
+        210.98429999999644
+      ],
+      "payloadHash": "83a155361e23c7c3b7c8691a91fbf76141cfe2a2d2bfa4e2b38bfacb8b50a4e3",
+      "intervalsHash": "2917eda6eef7667a2346ba9ec467fd3299c54f4c68a4b242b7851f6135386975",
+      "aggregatesHash": "d4bd042d0115d97039ae00740298a208058b64c1f8ab8faafc14bd8b7cc3a319"
+    },
+    {
+      "name": "unchanged",
+      "durationMs": 8837.509600000005,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 62,
+          "normalizedPlayers": 0,
+          "refreshMs": 2370,
+          "publishMs": 6404,
+          "totalMs": 8836
+        }
+      ],
+      "walBytes": 341992,
+      "persistedRowChanges": 3,
+      "changes": 92084,
+      "tempAllocatedBytes": 13012992,
+      "peakRssMiB": 272.18359375,
+      "commitSectionsMs": [
+        31.338700000000244,
+        4.48229999999603
+      ],
+      "payloadHash": "83a155361e23c7c3b7c8691a91fbf76141cfe2a2d2bfa4e2b38bfacb8b50a4e3",
+      "intervalsHash": "2917eda6eef7667a2346ba9ec467fd3299c54f4c68a4b242b7851f6135386975",
+      "aggregatesHash": "d4bd042d0115d97039ae00740298a208058b64c1f8ab8faafc14bd8b7cc3a319"
+    },
+    {
+      "name": "one_percent",
+      "durationMs": 9138.906499999997,
+      "workerPhases": [
+        {
+          "mode": "regular",
+          "cycleId": "persistent",
+          "normalizeMs": 190,
+          "normalizedPlayers": 20,
+          "refreshMs": 2571,
+          "publishMs": 6378,
+          "totalMs": 9139
+        }
+      ],
+      "walBytes": 6830992,
+      "persistedRowChanges": 11565,
+      "changes": 103789,
+      "tempAllocatedBytes": 13012992,
+      "peakRssMiB": 289.16796875,
+      "commitSectionsMs": [
+        242.174500000001,
+        19.365200000000186
+      ],
+      "payloadHash": "6add0a159b56f1356901c1140cb8f81382a025c8ba5da749c5e2d1ae059a5b0d",
+      "intervalsHash": "9c3622a12edb61ecd2995d7f20e4ff1259010b31d282bd48f0c13a26940c9d39",
+      "aggregatesHash": "27baeb9492f3a898b80ef285c9416b6957b2b4d953639d9384cb520449474799"
+    }
+  ],
+  "queryPlans": {
+    "before": [
+      {
+        "sql": "SELECT source.*, ((dimension_raids - 1) / 10 + 1) * 10 AS bucket\n        FROM (SELECT i.*, p.lifetime_pvp_hours, s.pmc_raids AS dimension_raids,\n    COALESCE(\n      CASE\n        WHEN json_extract(s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n          AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n          THEN json_extract(s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')\n        WHEN json_extract(s.stats_json, '$.pmcKdRatio') IS NOT NULL\n          AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n          AND COALESCE(json_extract(s.stats_json, '$.pvpStatsKnown'), 1) != 0\n          AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n          THEN json_extract(s.stats_json, '$.pmcKdRatio') * s.pmc_deaths\n            - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths\n        ELSE NULL\n      END,\n      i.killed_pmc\n    ) AS pmc_killed_pmc\n    FROM progression_intervals i JOIN player_profiles p\n      ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid AND p.confirmed_banned = 0\n    JOIN progression_snapshots s ON s.id = i.to_snapshot_id\n    JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id\n    WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'\n      \n    ORDER BY s.pmc_raids, i.aid, i.ended_at, i.id) source",
+        "calls": 1,
+        "plan": [
+          "SEARCH i USING INDEX idx_progression_intervals_cycle_valid_end (mode=? AND cycle_id=? AND status=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "SEARCH s USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH from_s USING INTEGER PRIMARY KEY (rowid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      },
+      {
+        "sql": "WITH ranked AS (\n      SELECT s.*, ROW_NUMBER() OVER (\n        PARTITION BY s.aid, ((s.pmc_raids - 1) / 10 + 1)\n        ORDER BY s.profile_updated_at DESC, s.id DESC\n      ) rank\n      FROM progression_snapshots s WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0\n        AND s.pmc_raids > (? - 10) AND s.pmc_raids <= ?\n    ) SELECT r.aid, r.local_date, r.experience AS value, r.pmc_raids AS dimension_raids,\n      r.profile_updated_at AS freshness_at, p.lifetime_pvp_hours\n    FROM ranked r JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid\n      AND p.confirmed_banned = 0 WHERE r.rank = 1\n    ORDER BY r.pmc_raids, r.aid",
+        "calls": 27,
+        "plan": [
+          "CO-ROUTINE ranked",
+          "CO-ROUTINE (subquery-3)",
+          "SEARCH s USING INDEX idx_progression_snapshots_cycle_raids_latest (mode=? AND cycle_id=? AND pmc_raids>? AND pmc_raids<?)",
+          "USE TEMP B-TREE FOR ORDER BY",
+          "SCAN (subquery-3)",
+          "SCAN r",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      },
+      {
+        "sql": "SELECT s.aid, s.id AS point_id, s.local_date,\n    s.profile_updated_at AS observed_at, s.experience, s.pmc_raids, s.level,\n    s.pmc_survived, s.pmc_deaths, s.pmc_kills, s.killed_pmc, CASE WHEN json_valid(s.stats_json) THEN\n    CASE WHEN json_type(s.stats_json, '$.pvpStatsKnown') IS NULL THEN\n      json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio'))\n    ELSE json_set(json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio')),\n      '$.pvpStatsKnown', json(s.stats_json -> '$.pvpStatsKnown')) END\n    ELSE '{}' END AS stats_json, s.series_id,\n    COALESCE(p.lifetime_pvp_hours, s.hours) AS lifetime_hours\n  FROM progression_snapshots s\n  JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid\n  WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0\n  AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY ((s.pmc_raids - 1) / 10 + 1), s.aid, s.profile_updated_at, s.id",
+        "calls": 4,
+        "plan": [
+          "SEARCH s USING INDEX idx_progression_snapshots_cycle_raids_latest (mode=? AND cycle_id=? AND pmc_raids>?)",
+          "CORRELATED SCALAR SUBQUERY 1",
+          "SEARCH e USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      },
+      {
+        "sql": "SELECT i.aid, i.id AS point_id, i.local_date,\n    i.ended_at AS observed_at, i.elapsed_days, i.status,\n    i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,\n    i.scav_raids AS delta_scav_raids, i.pmc_survived AS delta_pmc_survived,\n    i.pmc_deaths AS delta_pmc_deaths, i.pmc_kills AS delta_pmc_kills,\n    i.killed_pmc AS delta_killed_pmc,\n    CASE\n      WHEN json_extract(to_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n        AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n        THEN json_extract(to_s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')\n      WHEN json_extract(to_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n        AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n        AND COALESCE(json_extract(to_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n        AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n        THEN json_extract(to_s.stats_json, '$.pmcKdRatio') * to_s.pmc_deaths\n          - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths\n      ELSE NULL\n    END AS delta_pmc_killed_pmc,\n    to_s.pmc_raids, to_s.level, to_s.series_id,\n    from_s.profile_updated_at AS period_start_at,\n    COALESCE(p.lifetime_pvp_hours, to_s.hours) AS lifetime_hours\n  FROM progression_intervals i\n  JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id\n  JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id\n  JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid\n  WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid' AND i.pmc_raids > 0\n  AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY ((to_s.pmc_raids - 1) / 10 + 1), i.aid, i.ended_at, i.id",
+        "calls": 6,
+        "plan": [
+          "SEARCH i USING INDEX idx_progression_intervals_cycle_valid_end (mode=? AND cycle_id=? AND status=?)",
+          "CORRELATED SCALAR SUBQUERY 1",
+          "SEARCH e USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH to_s USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "SEARCH from_s USING INTEGER PRIMARY KEY (rowid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      }
+    ],
+    "after": [
+      {
+        "sql": "SELECT * FROM progression_population_snapshot_source ORDER BY rowid",
+        "plan": [
+          "SCAN progression_population_snapshot_source"
+        ]
+      },
+      {
+        "sql": "SELECT * FROM progression_population_interval_source ORDER BY rowid",
+        "plan": [
+          "SCAN progression_population_interval_source"
+        ]
+      },
+      {
+        "sql": "SELECT source.*, ((dimension_raids - 1) / 10 + 1) * 10 AS bucket\n        FROM (SELECT i.*, p.lifetime_pvp_hours, s.pmc_raids AS dimension_raids,\n    COALESCE(\n      CASE\n        WHEN json_extract(s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n          AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n          THEN json_extract(s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')\n        WHEN json_extract(s.stats_json, '$.pmcKdRatio') IS NOT NULL\n          AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n          AND COALESCE(json_extract(s.stats_json, '$.pvpStatsKnown'), 1) != 0\n          AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n          THEN json_extract(s.stats_json, '$.pmcKdRatio') * s.pmc_deaths\n            - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths\n        ELSE NULL\n      END,\n      i.killed_pmc\n    ) AS pmc_killed_pmc\n    FROM progression_intervals i JOIN player_profiles p\n      ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid AND p.confirmed_banned = 0\n    JOIN progression_snapshots s ON s.id = i.to_snapshot_id\n    JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id\n    WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'\n      \n    ) source",
+        "calls": 1,
+        "plan": [
+          "SEARCH i USING INDEX idx_progression_intervals_cycle_valid_end (mode=? AND cycle_id=? AND status=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "SEARCH s USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH from_s USING INTEGER PRIMARY KEY (rowid=?)"
+        ]
+      },
+      {
+        "sql": "WITH ranked AS (\n      SELECT s.id, s.aid, s.local_date, s.experience, s.pmc_raids, s.profile_updated_at, ROW_NUMBER() OVER (\n        PARTITION BY s.aid, ((s.pmc_raids - 1) / 10 + 1)\n        ORDER BY s.profile_updated_at DESC, s.id DESC\n      ) rank\n      FROM progression_snapshots s WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0\n        AND s.pmc_raids > (? - 10) AND s.pmc_raids <= ?\n    ) SELECT r.aid, r.local_date, r.experience AS value, r.pmc_raids AS dimension_raids,\n      r.profile_updated_at AS freshness_at, p.lifetime_pvp_hours\n    FROM ranked r JOIN player_profiles p ON p.mode = ? AND p.cycle_id = ? AND p.aid = r.aid\n      AND p.confirmed_banned = 0 WHERE r.rank = 1\n    ORDER BY r.pmc_raids, r.aid",
+        "calls": 27,
+        "plan": [
+          "CO-ROUTINE ranked",
+          "CO-ROUTINE (subquery-3)",
+          "SEARCH s USING INDEX idx_progression_snapshots_cycle_raids_latest (mode=? AND cycle_id=? AND pmc_raids>? AND pmc_raids<?)",
+          "USE TEMP B-TREE FOR ORDER BY",
+          "SCAN (subquery-3)",
+          "SCAN r",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      },
+      {
+        "sql": "SELECT s.aid, s.id AS point_id, s.local_date,\n    s.profile_updated_at AS observed_at, s.experience, s.pmc_raids, s.level,\n    s.pmc_survived, s.pmc_deaths, s.pmc_kills, s.killed_pmc, CASE WHEN json_valid(s.stats_json) THEN\n    CASE WHEN json_type(s.stats_json, '$.pvpStatsKnown') IS NULL THEN\n      json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio'))\n    ELSE json_set(json_object('pmcKilledPmc', json_extract(s.stats_json, '$.pmcKilledPmc'), 'pmcKdRatio', json_extract(s.stats_json, '$.pmcKdRatio')),\n      '$.pvpStatsKnown', json(s.stats_json -> '$.pvpStatsKnown')) END\n    ELSE '{}' END AS stats_json, s.series_id,\n    COALESCE(p.lifetime_pvp_hours, s.hours) AS lifetime_hours\n  FROM progression_snapshots s\n  JOIN player_profiles p ON p.mode = s.mode AND p.cycle_id = s.cycle_id AND p.aid = s.aid\n  WHERE s.mode = ? AND s.cycle_id = ? AND s.pmc_raids > 0\n  AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = s.aid) ORDER BY ((s.pmc_raids - 1) / 10 + 1), s.aid, s.profile_updated_at, s.id",
+        "calls": 1,
+        "plan": [
+          "SEARCH s USING INDEX idx_progression_snapshots_cycle_raids_latest (mode=? AND cycle_id=? AND pmc_raids>?)",
+          "CORRELATED SCALAR SUBQUERY 1",
+          "SEARCH e USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      },
+      {
+        "sql": "SELECT i.aid, i.id AS point_id, i.local_date,\n    i.ended_at AS observed_at, i.elapsed_days, i.status,\n    i.experience AS delta_experience, i.pmc_raids AS delta_pmc_raids,\n    i.scav_raids AS delta_scav_raids, i.pmc_survived AS delta_pmc_survived,\n    i.pmc_deaths AS delta_pmc_deaths, i.pmc_kills AS delta_pmc_kills,\n    i.killed_pmc AS delta_killed_pmc,\n    CASE\n      WHEN json_extract(to_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n        AND json_extract(from_s.stats_json, '$.pmcKilledPmc') IS NOT NULL\n        THEN json_extract(to_s.stats_json, '$.pmcKilledPmc') - json_extract(from_s.stats_json, '$.pmcKilledPmc')\n      WHEN json_extract(to_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n        AND json_extract(from_s.stats_json, '$.pmcKdRatio') IS NOT NULL\n        AND COALESCE(json_extract(to_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n        AND COALESCE(json_extract(from_s.stats_json, '$.pvpStatsKnown'), 1) != 0\n        THEN json_extract(to_s.stats_json, '$.pmcKdRatio') * to_s.pmc_deaths\n          - json_extract(from_s.stats_json, '$.pmcKdRatio') * from_s.pmc_deaths\n      ELSE NULL\n    END AS delta_pmc_killed_pmc,\n    to_s.pmc_raids, to_s.level, to_s.series_id,\n    from_s.profile_updated_at AS period_start_at,\n    COALESCE(p.lifetime_pvp_hours, to_s.hours) AS lifetime_hours\n  FROM progression_intervals i\n  JOIN progression_snapshots to_s ON to_s.id = i.to_snapshot_id\n  JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id\n  JOIN player_profiles p ON p.mode = i.mode AND p.cycle_id = i.cycle_id AND p.aid = i.aid\n  WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid' AND i.pmc_raids > 0\n  AND p.confirmed_banned = 0 AND NOT EXISTS (SELECT 1 FROM excluded_players e WHERE e.aid = i.aid) ORDER BY ((to_s.pmc_raids - 1) / 10 + 1), i.aid, i.ended_at, i.id",
+        "calls": 1,
+        "plan": [
+          "SEARCH i USING INDEX idx_progression_intervals_cycle_valid_end (mode=? AND cycle_id=? AND status=?)",
+          "CORRELATED SCALAR SUBQUERY 1",
+          "SEARCH e USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH to_s USING INTEGER PRIMARY KEY (rowid=?)",
+          "SEARCH p USING INDEX sqlite_autoindex_player_profiles_1 (mode=? AND cycle_id=? AND aid=?)",
+          "SEARCH from_s USING INTEGER PRIMARY KEY (rowid=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ]
+      }
+    ]
+  }
+}

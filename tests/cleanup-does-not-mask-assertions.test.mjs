@@ -726,6 +726,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/leaderboard-warmup.test.mjs",
   "tests/profile-mastery.test.ts",
   "tests/profile-queue-wrapper.test.mjs",
+  // Both SQLite connections close, and IPC/crash children exit, before cleanup.
+  "tests/progression-materialization.test.mjs",
   "tests/progression-timeline.test.ts",
   "tests/pve-profile-sync.test.mjs",
   "tests/regular-profile-sync.test.mjs",

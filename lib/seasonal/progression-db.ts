@@ -369,10 +369,11 @@ function intervalMetricValues(row: TimelineIntervalRow): Record<typeof TIMELINE_
 function timelineLegacyMetricRows(
   rows: readonly Record<string, unknown>[],
   metric: typeof TIMELINE_LEGACY_METRICS[number],
+  precomputed = false,
 ): DailyRow[] {
   return rows.flatMap((raw) => {
     const row = raw as unknown as TimelineIntervalRow;
-    const value = intervalMetricValues(row)?.[metric] ?? null;
+    const value = precomputed ? finiteNumber(raw[metric]) : intervalMetricValues(row)?.[metric] ?? null;
     const aid = finiteNumber(row.aid);
     const pointId = finiteNumber(row.point_id);
     const observedAt = finiteNumber(row.observed_at);
@@ -596,7 +597,7 @@ function buildPopulationSnapshotPayload(
       for (const raw of populationRows(cumulative ? snapshotRows : intervalRows)) {
         yield* metric === "xp" ? timelineSnapshotRows([raw])
           : metric === "survival" || metric === "pvp_kd" || metric === "ai_kd"
-            ? timelineCumulativeMetricRows([raw], metric) : timelineLegacyMetricRows([raw], metric);
+            ? timelineCumulativeMetricRows([raw], metric) : timelineLegacyMetricRows([raw], metric, true);
       }
     }
     return [metric, buildProgressionPopulationMetric(normalizedRows(), metric, PLAYTIME_RANGES)];
@@ -641,37 +642,79 @@ export function materializeSqlitePopulationSnapshot(
   now = Date.now(),
 ): { generation: number; generatedAt: number } {
   initializeSeasonalSchema(db);
-  const snapshots = () => db.prepare(POPULATION_TIMELINE_SNAPSHOT_SQL.replace("ORDER BY s.aid", "ORDER BY ((s.pmc_raids - 1) / 10 + 1), s.aid")).iterate(mode, cycleId);
-  const intervals = () => db.prepare(POPULATION_TIMELINE_INTERVAL_SQL.replace("ORDER BY i.aid", "ORDER BY ((to_s.pmc_raids - 1) / 10 + 1), i.aid")).iterate(mode, cycleId);
-  const riskRows = () => db.prepare(POPULATION_RISK_SQL).iterate(mode, cycleId);
-  const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).iterate(mode, cycleId);
-  const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).iterate(mode, cycleId) as Iterable<DetailDbRow>;
-  const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
-  const payload = JSON.stringify({
-    ...buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
-      finiteNumber(cycle?.starts_at), mode, cycleId),
-    average: buildPublishedProgressionAverage(db, mode, cycleId, now),
-  });
-  const generation = now;
-  db.exec("SAVEPOINT publish_progression_population");
+  // Compute one consistent view without reserving the main writer. End the
+  // read before publication so continuous captures do not prevent promotion.
+  db.exec("SAVEPOINT build_progression_population");
+  let publishing = false;
   try {
-    db.prepare(`INSERT INTO progression_population_generations
-      (mode, cycle_id, generation, generated_at, payload) VALUES (?, ?, ?, ?, ?)`)
-      .run(mode, cycleId, generation, now, payload);
+    const observedGeneration = db.prepare("SELECT generation FROM progression_population_current WHERE mode = ? AND cycle_id = ?")
+      .get(mode, cycleId)?.generation ?? null;
+    const snapshotSql = POPULATION_TIMELINE_SNAPSHOT_SQL.replace("ORDER BY s.aid", "ORDER BY ((s.pmc_raids - 1) / 10 + 1), s.aid");
+    db.prepare(`CREATE TEMP TABLE progression_population_snapshot_source AS ${snapshotSql}`).run(mode, cycleId);
+    // CTAS assigns rowids in SELECT order; these scans need no further sort.
+    const snapshots = () => db.prepare("SELECT * FROM progression_population_snapshot_source ORDER BY rowid").iterate();
+
+    // Compute the six rate metrics once per interval. Retain compact numeric
+    // rows on SQLite's temporary store, keeping JS bounded to an adaptive window.
+    db.exec(`CREATE TEMP TABLE progression_population_interval_source (
+      aid INTEGER, point_id INTEGER, local_date TEXT, observed_at INTEGER, pmc_raids INTEGER,
+      level INTEGER, series_id INTEGER, lifetime_hours REAL, period_start_at INTEGER,
+      elapsed_days REAL, delta_experience REAL, delta_pmc_raids REAL,
+      ${TIMELINE_LEGACY_METRICS.map(metric => metric + " REAL").join(", ")})`);
+    const insertInterval = db.prepare(`INSERT INTO progression_population_interval_source
+      VALUES (${Array(12 + TIMELINE_LEGACY_METRICS.length).fill("?").join(", ")})`);
+    const intervalSql = POPULATION_TIMELINE_INTERVAL_SQL.replace("ORDER BY i.aid", "ORDER BY ((to_s.pmc_raids - 1) / 10 + 1), i.aid");
+    for (const raw of db.prepare(intervalSql).iterate(mode, cycleId)) {
+      const values = intervalMetricValues(raw as unknown as TimelineIntervalRow);
+      if (!values) continue;
+      insertInterval.run(raw.aid, raw.point_id, raw.local_date, raw.observed_at, raw.pmc_raids,
+        raw.level, raw.series_id, raw.lifetime_hours, raw.period_start_at, raw.elapsed_days,
+        raw.delta_experience, raw.delta_pmc_raids, ...TIMELINE_LEGACY_METRICS.map(metric => values[metric]));
+    }
+    const intervals = () => db.prepare("SELECT * FROM progression_population_interval_source ORDER BY rowid").iterate();
+    const riskRows = () => db.prepare(POPULATION_RISK_SQL).iterate(mode, cycleId);
+    const achievementRows = () => db.prepare(POPULATION_ACHIEVEMENT_SQL).iterate(mode, cycleId);
+    const detailIntervals = () => db.prepare(POPULATION_DETAIL_INTERVAL_SQL).iterate(mode, cycleId) as Iterable<DetailDbRow>;
+    const cycle = mode === "seasonal" ? db.prepare("SELECT starts_at FROM season_cycles WHERE mode = 'seasonal' AND cycle_id = ?").get(cycleId) : undefined;
+    const payload = JSON.stringify({
+      ...buildPopulationSnapshotPayload(snapshots, intervals, riskRows, achievementRows, detailIntervals,
+        finiteNumber(cycle?.starts_at), mode, cycleId),
+      average: buildPublishedProgressionAverage(db, mode, cycleId, now),
+    });
+    db.exec("RELEASE build_progression_population");
+    db.exec("SAVEPOINT publish_progression_population");
+    publishing = true;
+    // Identity is monotonic even after clock rollback. The first INSERT both
+    // reserves the writer and chooses an unused generation under that lock.
+    const generation = Number(db.prepare(`INSERT INTO progression_population_generations
+      (mode, cycle_id, generation, generated_at, payload) VALUES (?, ?,
+        MAX(?, COALESCE((SELECT MAX(generation) + 1 FROM progression_population_generations
+          WHERE mode = ? AND cycle_id = ?), 1)), ?, ?) RETURNING generation`)
+      .get(mode, cycleId, now, mode, cycleId, now, payload)!.generation);
     db.prepare(`INSERT INTO progression_population_current (mode, cycle_id, generation, generated_at)
       VALUES (?, ?, ?, ?) ON CONFLICT(mode, cycle_id) DO UPDATE SET
-        generation = excluded.generation, generated_at = excluded.generated_at`)
-      .run(mode, cycleId, generation, now);
+        generation = excluded.generation, generated_at = excluded.generated_at
+        WHERE progression_population_current.generation IS ? OR excluded.generated_at > progression_population_current.generated_at`)
+      .run(mode, cycleId, generation, now, observedGeneration);
+    // Keep the actual current row even when repairing future-dated generations.
     db.prepare(`DELETE FROM progression_population_generations WHERE mode = ? AND cycle_id = ?
+      AND generation != (SELECT generation FROM progression_population_current WHERE mode = ? AND cycle_id = ?)
       AND generation NOT IN (SELECT generation FROM progression_population_generations
-        WHERE mode = ? AND cycle_id = ? ORDER BY generation DESC LIMIT 2)`)
-      .run(mode, cycleId, mode, cycleId);
+        WHERE mode = ? AND cycle_id = ? AND generation !=
+          (SELECT generation FROM progression_population_current WHERE mode = ? AND cycle_id = ?)
+        ORDER BY generation DESC LIMIT 1)`)
+      .run(mode, cycleId, mode, cycleId, mode, cycleId, mode, cycleId);
+    const current = db.prepare("SELECT generation, generated_at FROM progression_population_current WHERE mode = ? AND cycle_id = ?").get(mode, cycleId)!;
     db.exec("RELEASE publish_progression_population");
-    return { generation, generatedAt: now };
+    return { generation: Number(current.generation), generatedAt: Number(current.generated_at) };
   } catch (error) {
-    db.exec("ROLLBACK TO publish_progression_population");
-    db.exec("RELEASE publish_progression_population");
+    const savepoint = publishing ? "publish_progression_population" : "build_progression_population";
+    db.exec(`ROLLBACK TO ${savepoint}`);
+    db.exec(`RELEASE ${savepoint}`);
     throw error;
+  } finally {
+    db.exec("DROP TABLE IF EXISTS temp.progression_population_snapshot_source");
+    db.exec("DROP TABLE IF EXISTS temp.progression_population_interval_source");
   }
 }
 
