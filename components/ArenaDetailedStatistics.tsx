@@ -27,7 +27,6 @@ export default function ArenaDetailedStatistics({ profile, scope, risk, rating }
   });
   return <section id="statistics" tabIndex={-1} className="profile-anchor-section arena-detailed-statistics">
     <div className="profile-collection__heading"><h2 className="section-heading">{t("arena.combat.details")}</h2><span className="profile-scope-name">{t(scope === "overall" ? "profile.allModes" : "arena.mode." + scope)}</span></div>
-    <p className="arena-combat-footnote">{t("arena.combat.missing")}</p>
     <div className="profile-statistics">
       {GROUPS.map((group) => <div key={group.title}><h3>{t(group.title)}</h3><div className="data-ledger">{group.rows.map(([key, label]) => <div key={key} data-arena-stat={key}><StatCard label={t("arena.counter." + label)} value={number(c[key])} /></div>)}</div>
         {group.title === "arena.combat.streaks" && inconsistentStreak && <p className="arena-combat-footnote">{t("arena.combat.streakConflict")}</p>}

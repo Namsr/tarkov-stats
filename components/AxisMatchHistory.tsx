@@ -186,9 +186,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
           <span className="axis-history-summary__balance-b" style={{ width: `${totalWins ? summary.winsB / totalWins * 100 : 0}%` }} />
           <span className="axis-history-summary__balance-marker" aria-hidden="true" style={{ left: `${totalWins ? summary.winsA / totalWins * 100 : 50}%` }} />
         </div>
-        <p className="axis-history-summary__leader">{summary.winsA === summary.winsB
-          ? t(summary.played === 0 ? "axis.history.noPlayed" : "axis.history.equalWins")
-          : t("axis.history.leading", { team: t("axis.history.team", { n: summary.winsA > summary.winsB ? "A" : "B" }) })}</p>
+        {summary.played === 0 && <p className="axis-history-summary__leader">{t("axis.history.noPlayed")}</p>}
         <div className="axis-history-summary__map-row"><h3>{t("axis.history.maps")}</h3>
         {selectedMap && <button type="button" className="axis-history-all-maps" onClick={() => selectMap()}>{t("axis.history.allMaps")}</button>}
         {summary.maps.length === 0 ? <p className="axis-meta">{t("axis.history.noMap")}</p> : <ol className="axis-history-summary__maps">{summary.maps.map((map, index) => <li key={map.name}
@@ -242,7 +240,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, in
               <AxisPlayerIdentity player={leaguePlayers.get(player.id) ?? player} mmr={leaguePlayers.get(player.id)?.mmr ?? null} averageKda={averageKda} showArenaNickname={editing} />
               <div className="axis-match-values">
               {renderInputs(player.id) ?? <span className="axis-match-kda" aria-label={t("axis.kda.value", { kills: player.kda?.kills ?? "—", deaths: player.kda?.deaths ?? "—", assists: player.kda?.assists ?? "—" })}>
-                <small>{t("axis.kda.short")}</small><strong>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</strong>
+                <strong>{player.kda ? `${player.kda.kills} / ${player.kda.deaths} / ${player.kda.assists}` : "— / — / —"}</strong>
               </span>}
               <span className="axis-match-stats"><span>{player.mmr == null ? "—" : number(player.mmr)}</span>
                 <span className={player.change == null || player.change === 0 ? "" : player.change > 0 ? "axis-match-gain" : "axis-match-loss"} aria-label={t("axis.history.change", { n: player.change == null ? "—" : number(player.change) })}>

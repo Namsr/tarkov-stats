@@ -597,7 +597,6 @@ function LegacyPlayer({
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="section-heading">{t("player.raidStats")}</h2>
-            <span className="section-kicker">{t("player.coreStats")}</span>
           </div>
           <div className="data-ledger">
             {raidStats.map((item) => <StatCard key={item.label} {...item} />)}
@@ -792,7 +791,6 @@ function LegacyPlayer({
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-4">
             <h2 className="section-heading">{t("player.raidStats")}</h2>
-            <span className="section-kicker">{t("player.coreStats")}</span>
           </div>
           <div className="data-ledger">
             {raidStats.map((item) => (

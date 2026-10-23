@@ -7,6 +7,7 @@ import AxisMatchProbability from "@/components/AxisMatchProbability";
 import { useI18n } from "@/lib/i18n/context";
 import { AxisAvatar } from "@/components/AxisPlayerIdentity";
 import AxisIcon from "@/components/AxisIcon";
+import CompactDetails from "@/components/CompactDetails";
 import { arenaBarPositionFromRatio } from "@/components/arena-ui";
 import { axisKdaRatio, axisMatchHref, type AxisProfile } from "@/lib/axis-league";
 import { axisPlayerHref, axisPlayerResult, AXIS_PEER_MIN_MATCHES, AXIS_STORY_MAP_MIN_MATCHES, type AxisPeer } from "@/lib/axis-player-profile";
@@ -123,7 +124,7 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
 
   return <div className="axis-personal">
     <section id="axis-player-overview" className="profile-anchor-section">
-      <div className="axis-personal-heading"><div><p className="section-kicker">{t("axis.kicker")}</p><h2 className="section-heading">{t("axis.title")}</h2></div>
+      <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.title")}</h2>
         <label className="profile-select"><span>{t("axis.season.label")}</span><select value={season} onChange={event => { setSeason(event.target.value); setPage(1); setFailed(false); }}>
           {(data.history.seasons ?? []).map(entry => <option value={entry.id} key={entry.id}>{entry.current ? t("axis.season.current") : t("axis.season.from", { date: new Date(entry.startsAt).toLocaleDateString(lang, { day: "numeric", month: "short", year: "numeric", timeZone: "Europe/Moscow" }) })}</option>)}
           <option value="all">{t("axis.profile.allSeasons")}</option>
@@ -149,7 +150,7 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
       </div>
     </section>
     <section className="axis-personal-section">
-      <div className="axis-personal-heading"><div><h2 className="section-heading">{t("axis.profile.combat")}</h2><p className="axis-personal-note">{t("axis.profile.averageKda")} <strong>{combat ? [combat.kills, combat.deaths, combat.assists].map(n => number(n / combat.matches, 1)).join(" / ") : "— / — / —"}</strong></p></div>
+      <div className="axis-personal-heading"><div><h2 className="section-heading">{t("axis.profile.combat")}</h2><p className="axis-personal-note">{t("axis.kda.short")} <strong>{combat ? [combat.kills, combat.deaths, combat.assists].map(n => number(n / combat.matches, 1)).join(" / ") : "— / — / —"}</strong></p></div>
         <div className="profile-segments" role="group" aria-label={t("axis.profile.combatRange")}><button type="button" aria-pressed={!recent} onClick={() => setRecent(false)}>{t("axis.profile.period")}</button><button type="button" aria-pressed={recent} onClick={() => setRecent(true)}>{t("axis.profile.lastTen")}</button></div>
       </div>
       <div className="axis-personal-recent"><span>{t("axis.profile.lastTen")}</span><div>{[...personalRecent].reverse().map(match => <Link key={match.number} href={axisMatchHref(match.number)} prefetch={false} data-result={match.won == null ? "draw" : match.won ? "win" : "loss"} aria-label={t("axis.history.match", { n: match.number })}>{t(match.won == null ? "axis.preview.drawMark" : match.won ? "axis.preview.winMark" : "axis.preview.lossMark")}</Link>)}</div><span className="axis-personal-recent-summary">{[outcomeCount("wins", recentWins), outcomeCount("losses", recentLosses), recentDraws ? t("axis.profile.drawCount", { n: number(recentDraws) }) : null].filter(Boolean).join(" · ")}</span></div>
@@ -161,13 +162,16 @@ export default function AxisPlayerPanel({ aid }: { aid: number }) {
       <p className="axis-personal-note">{t("axis.profile.coverage", { n: combat?.matches ?? 0, total: recent ? personalRecent.length : data.archivedGames })}</p>
     </section>
     <section id="axis-player-peers" className="axis-personal-section profile-anchor-section">
-      <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.profile.connections")}</h2><span className="axis-personal-note">{t("axis.profile.minimum", { n: AXIS_PEER_MIN_MATCHES })}</span></div>
-      <p className="axis-personal-note">{t("axis.profile.perspective", { name: data.identity.name })}</p>
+      <div className="axis-personal-heading"><h2 className="section-heading">{t("axis.profile.connections")}</h2></div>
       <div className="axis-personal-cards">{card(t("axis.profile.bestTeammate"), data.highlights.teammate, "with")}{card(t("axis.profile.nemesis"), data.highlights.opponent, "against")}
         {(() => { const content = <><span className="axis-personal-card-label"><AxisIcon name="split" />{t("axis.profile.betterWith")}</span>{ally ? <><PlayerName player={ally.with} link={false} /><div className="axis-personal-split"><span><small>{t("axis.profile.with")}</small><strong>{percent(ally.with.winrate)}</strong></span><span><small>{t("axis.profile.against")}</small><strong>{percent(ally.against.winrate)}</strong></span></div><small>{t("axis.profile.dualCount", { with: ally.with.wins + ally.with.losses, against: ally.against.wins + ally.against.losses })}</small></> : <p className="axis-personal-empty">{t("axis.profile.insufficient", { n: AXIS_PEER_MIN_MATCHES })}</p>}</>;
           return ally?.with.profile ? <Link className="axis-personal-card" href={axisPlayerHref(ally.with.profile)} prefetch={false}>{content}</Link> : <article className="axis-personal-card">{content}</article>; })()}
       </div>
-      <p className="axis-personal-note">{t("axis.profile.highlightRule")}</p>
+      <CompactDetails summary={t("average.calculation.help")}>
+        <p>{t("axis.profile.perspective", { name: data.identity.name })}</p>
+        <p>{t("axis.profile.minimum", { n: AXIS_PEER_MIN_MATCHES })}</p>
+        <p>{t("axis.profile.highlightRule")}</p>
+      </CompactDetails>
       <div className="profile-segments axis-personal-peer-tabs" role="group" aria-label={t("axis.profile.connections")}>
         {(["teammates", "opponents"] as const).map(view => <button key={view} type="button" aria-pressed={peerView === view} onClick={() => setPeerView(view)}>{t("axis.profile." + view)}</button>)}
       </div>
