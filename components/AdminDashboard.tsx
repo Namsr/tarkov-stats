@@ -17,12 +17,13 @@ import { appRouteMode, GAME_MODES, type GameMode } from "@/types/seasonal";
 
 import ShowcasePanel from "@/components/AdminShowcase";
 import AdminSupport from "@/components/AdminSupport";
+import AdminAchievementTempo from "@/components/AdminAchievementTempo";
 import AdminAxisLeague from "@/components/AdminAxisLeague";
 import type { AxisLeagueResponse } from "@/lib/axis-league";
 import type { ShowcaseGroup } from "@/lib/admin/showcase-db";
 import type { FundraisingGoal, SupportNotification } from "@/lib/admin/support-db";
 
-type Tab = "overview" | "showcase" | "axis" | "support" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring";
+type Tab = "overview" | "showcase" | "axis" | "support" | "traffic" | "accounts" | "suspicious" | "health" | "monitoring" | "achievements";
 type MetricName = "visits" | "pageviews" | "accountRequests" | "newSuspicious" | "severeRisk" | "errors";
 type Metrics = Record<MetricName, number>;
 type SeriesPoint = { at: string; domains: Record<string, { pageviews: number; visits: number }> };
@@ -48,7 +49,7 @@ type SystemMetricPoint = { at: number; cpuPercent: number | null; memoryUsedByte
 type SystemMetricSnapshot = SystemMetricPoint & { memoryTotalBytes: number; swapTotalBytes: number; diskTotalBytes: number; diskAvailableBytes: number };
 type SystemMetrics = { available: boolean; configured: boolean; reason?: string; latest: SystemMetricSnapshot | null; points: SystemMetricPoint[]; sampleCount?: number; from?: number; to?: number };
 
-const tabs: Tab[] = ["overview", "showcase", "axis", "support", "traffic", "accounts", "suspicious", "health", "monitoring"];
+const tabs: Tab[] = ["overview", "showcase", "axis", "support", "traffic", "accounts", "suspicious", "achievements", "health", "monitoring"];
 const periods: AdminPeriod[] = ["15m", "24h", "7d", "30d", "90d"];
 const domains: AdminDomain[] = ["all", "tarkovstats.ru", "tarkovstats.online"];
 const EMPTY_METRICS: Metrics = { visits: 0, pageviews: 0, accountRequests: 0, newSuspicious: 0, severeRisk: 0, errors: 0 };
@@ -186,6 +187,8 @@ export default function AdminDashboard() {
         const nextMetrics = await getJson<SystemMetrics>(`/api/admin/system-metrics?${params}`, { signal: request.signal });
         if (stale()) return;
         setSystemMetrics(nextMetrics);
+      } else if (tab === "achievements") {
+        // This panel owns its scoped read-only requests and account selection.
       } else {
         if (mode) params.set("mode", mode);
         if (searchQuery.trim()) params.set("search", searchQuery.trim());
@@ -255,7 +258,7 @@ export default function AdminDashboard() {
         {tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} onClick={() => chooseTab(item)}><span>{t("admin.tab." + item)}</span>{item === "health" && healthSignal && (healthSignal.activeIssueCount > 0 || healthSignal.storageAvailable === false) && <span className={`admin-tab-alert admin-tab-alert--${healthSignal.status}`} aria-label={t("admin.health.tabAlert", { n: healthSignal.activeIssueCount })}>{healthSignal.activeIssueCount || "!"}</span>}</button>)}
       </div>
 
-      {tab !== "showcase" && tab !== "support" && tab !== "axis" && <section className="admin-filters" aria-label={t("admin.filters") }>
+      {tab !== "showcase" && tab !== "support" && tab !== "axis" && tab !== "achievements" && <section className="admin-filters" aria-label={t("admin.filters") }>
         <label><span>{t("admin.period")}</span><select value={period} onChange={(event) => choosePeriod(event.target.value as AdminPeriod)}>{periods.map((item) => <option key={item} value={item}>{t("admin.period." + item)}</option>)}</select></label>
         {tab !== "monitoring" && <label><span>{t("admin.domain")}</span><select value={domain} onChange={(event) => chooseDomain(event.target.value as AdminDomain)}>{domains.map((item) => <option key={item} value={item}>{item === "all" ? t("admin.domain.all") : item}</option>)}</select></label>}
         {(tab === "accounts" || tab === "suspicious") && <>
@@ -270,10 +273,11 @@ export default function AdminDashboard() {
       {resultMessage && <p className="admin-notice" role="status">{resultMessage}</p>}
       {!error && tab === "health" && reportRunning && <p className="admin-notice" role="status">{t("admin.health.reportRunning")}</p>}
       {!error && !loading && tab === "health" && healthSummary && <p className="admin-notice" role="status">{t("admin.health.reportGenerated", { date: formatDate(healthSummary.generatedAt, lang, t) })}</p>}
-      {!error && loading && <AdminLoading />}
+      {!error && loading && tab !== "achievements" && <AdminLoading />}
       {!error && !loading && tab === "overview" && <Overview summary={summary} lang={lang} t={t} />}
       {!error && !loading && tab === "showcase" && <ShowcasePanel groups={showcase?.groups ?? []} available={showcase?.available ?? true} t={t} lang={lang} onChange={(groups) => setShowcase({ groups, available: true })} />}
       {!error && !loading && tab === "axis" && <AdminAxisLeague data={axis} onChange={setAxis} />}
+      {tab === "achievements" && <AdminAchievementTempo refreshKey={refreshKey} />}
       {!error && !loading && tab === "support" && (
         <AdminSupport
           notifications={support?.notifications ?? []}

@@ -706,6 +706,8 @@ const suitesWhoseDeleteNeedsAGuard = [
 const suitesThatCloseTheHandleOrTheProcessFirst = [
   // Both revision-test connections are closed before removing their fixture.
   "tests/achievement-baseline-publication.test.ts",
+  // Route requests close their read handles; fixture handles close in finally.
+  "tests/achievement-tempo-route.test.mjs",
   "tests/admin-analytics.test.ts",
   "tests/admin-data-audit.test.mjs",
   "tests/admin-moderation.test.ts",

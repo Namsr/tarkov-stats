@@ -159,7 +159,7 @@ docker() {
   }
 });
 
-test("daily refresh remains sequential and tries progression even after average failure", async () => {
+test("daily refresh remains sequential and tries progression and achievement tempo even after average failure", async () => {
   const source = await readFile("ops/materialize-publications.sh", "utf8");
   const dir = await mkdtemp(join(tmpdir(), "daily-publications-"));
   try {
@@ -167,15 +167,22 @@ test("daily refresh remains sequential and tries progression even after average 
       case "$*" in
         *AVERAGE_MATERIALIZE_ONCE*) echo average; return 9;;
         *PROGRESSION_MATERIALIZE_ONCE*) echo progression; return 0;;
+        *materialize-achievement-tempo.mjs*) echo tempo; return 0;;
         *) return 88;;
       esac
     }
 `;
-    const file = join(dir, "daily.sh");
-    await writeFile(file, mock + source.replaceAll("/usr/local/sbin/tarkovstats-run-background", "runner"));
-    const result = spawnSync(shell, [file], { encoding: "utf8", timeout: 10_000 });
-    assert.ifError(result.error);
-    assert.equal(result.status, 1, result.stderr);
-    assert.deepEqual(result.stdout.trim().split(/\r?\n/), ["average", "progression"]);
+    for (const [name, setup, expected] of [
+      ["average-failure", mock, 1],
+      ["tempo-failure", mock.replace("echo average; return 9", "echo average; return 0").replace("echo tempo; return 0", "echo tempo; return 7"), 1],
+      ["success", mock.replace("echo average; return 9", "echo average; return 0"), 0],
+    ]) {
+      const file = join(dir, `${name}.sh`);
+      await writeFile(file, setup + source.replaceAll("/usr/local/sbin/tarkovstats-run-background", "runner"));
+      const result = spawnSync(shell, [file], { encoding: "utf8", timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, expected, result.stderr);
+      assert.deepEqual(result.stdout.trim().split(/\r?\n/), ["average", "progression", "tempo"]);
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

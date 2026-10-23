@@ -101,14 +101,15 @@ jobs:
               }
             })().catch(error => { console.error(error); process.exitCode = 1; })'
           processes=$(docker top image-smoke -eo pid,args)
-          if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression)'; then
+          if printf '%s\n' "$processes" | grep -E 'materialize-(average|progression|achievement)'; then
             echo "HTTP-only container launched an offline materializer"
             exit 1
           fi
           # The same image also supports sequential one-shot jobs under the worker cap.
           docker run --rm --network none --memory 512m --memory-swap 768m --cpus 0.5 --env AVERAGE_MATERIALIZE_ONCE=true --env PROGRESSION_MATERIALIZE_ONCE=true --entrypoint sh "tarkovstats-web:$GITHUB_SHA" -c '
               nice -n 19 node --experimental-strip-types --experimental-sqlite --experimental-loader ./scripts/ts-alias-loader.mjs scripts/materialize-average-publications.mjs &&
-              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs
+              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-progression-population.mjs &&
+              nice -n 19 node --experimental-strip-types --experimental-sqlite scripts/materialize-achievement-tempo.mjs
             '
       - name: Publish a revision-specific image
         if: github.event_name != 'pull_request'
