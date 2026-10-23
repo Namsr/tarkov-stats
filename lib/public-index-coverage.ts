@@ -48,10 +48,9 @@ export async function getPublicIndexCoverage(): Promise<PublicIndexCoverage> {
         }
       }
     } catch {
-      // An absent database can precede the first sync of its modes. Other read
-      // failures must not turn an incomplete count into a reported total.
-      const { existsSync } = await import("node:fs");
-      if (existsSync(/* turbopackIgnore: true */ path)) return { total: null, syncedAt: null };
+      // An unavailable source is unknown. Publishing the remaining subtotal
+      // would turn an outage into a false decrease in the daily history.
+      return { total: null, syncedAt: null };
     } finally {
       db?.close();
     }

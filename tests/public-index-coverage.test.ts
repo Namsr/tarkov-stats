@@ -47,6 +47,8 @@ test("coverage reports unknown before any sync and never creates databases", asy
   assert.equal(existsSync(playersPath), false);
   assert.equal(existsSync(progressionPath), false);
   writeMeta([]);
+  const emptySeasonal = new DatabaseSync(progressionPath);
+  emptySeasonal.close();
   assert.deepEqual(await getPublicIndexCoverage(), { total: null, syncedAt: null });
 });
 
@@ -268,7 +270,10 @@ test("missed endpoints freeze a target and midday recovery remains continuous", 
 
 test("unavailable metadata and write locks cannot overwrite good profile snapshots", async () => {
   await counterFixture(async ({ progression, paths }) => {
+    // A valid Seasonal subtotal must not conceal the loss of players.db.
+    writeMeta([["row_count", 40], ["synced_at", startsAt]], "seasonal_player_index_meta", paths.PROGRESSION_SQLITE_PATH, "s1");
     const baseline = await captureHomeCounter(at(0, 1000));
+    assert.equal(baseline.from, 140);
     process.env.SQLITE_PATH = join(directory, "missing-authority.db");
     try { await assert.rejects(captureHomeCounter(at(0, 2000))); }
     finally { process.env.SQLITE_PATH = paths.SQLITE_PATH; }
