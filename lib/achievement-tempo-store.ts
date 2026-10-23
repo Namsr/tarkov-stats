@@ -70,8 +70,11 @@ export function materializeTempo(source: DatabaseSync, output: DatabaseSync, sco
     const exclusions = tempoExclusions(source);
     if (!force && previous && previous.exclusions === exclusions
       && now >= previous.generatedAt && now - previous.generatedAt < TEMPO_TTL_MS) return { skipped: true, decoded: 0 };
+    // Personal revision numbers can repeat in a rebuilt source database. They
+    // are reusable only within the same durable source incarnation and model.
+    const sameSource = previous?.exclusions.split(":")[0] === exclusions.split(":")[0];
     const cached = new Map<number, { revision: number; observedAt: number; unlocks: TempoUnlocks }>();
-    for (const row of previous ? output.prepare("SELECT * FROM achievement_tempo_profiles WHERE mode=? AND cycle_id=?").iterate(scope.mode, scope.cycleId) : []) {
+    for (const row of sameSource ? output.prepare("SELECT * FROM achievement_tempo_profiles WHERE mode=? AND cycle_id=?").iterate(scope.mode, scope.cycleId) : []) {
       cached.set(Number(row.aid), { revision: Number(row.revision), observedAt: Number(row.observed_at), unlocks: JSON.parse(String(row.unlocks_json)) });
     }
     const latest = source.prepare(`SELECT profile_updated_at, stats_json, achievements FROM progression_snapshots
@@ -83,6 +86,7 @@ export function materializeTempo(source: DatabaseSync, output: DatabaseSync, sco
     let profiles = 0, decoded = 0;
     output.exec("BEGIN IMMEDIATE");
     try {
+      if (!sameSource) output.prepare("DELETE FROM achievement_tempo_profiles WHERE mode=? AND cycle_id=?").run(scope.mode, scope.cycleId);
       for (const row of source.prepare(`SELECT p.aid,
         EXISTS(SELECT 1 FROM player_profiles b WHERE b.aid=p.aid AND b.confirmed_banned != 0) AS banned,
         COALESCE(r.revision, 0) AS revision,
@@ -96,8 +100,9 @@ export function materializeTempo(source: DatabaseSync, output: DatabaseSync, sco
         if (!profile || revision === 0 || profile.revision !== revision) {
           const snapshot = latest.get(scope.mode, scope.cycleId, aid);
           if (!snapshot) continue;
-          profile = { revision, observedAt: Number(snapshot.profile_updated_at),
-            unlocks: parseTempoUnlocks(String(snapshot.stats_json), snapshot.achievements == null ? null : String(snapshot.achievements), now) };
+          const observedAt = Number(snapshot.profile_updated_at);
+          profile = { revision, observedAt,
+            unlocks: parseTempoUnlocks(String(snapshot.stats_json), snapshot.achievements == null ? null : String(snapshot.achievements), Math.min(now, observedAt)) };
           save.run(scope.mode, scope.cycleId, aid, revision, profile.observedAt, JSON.stringify(profile.unlocks));
           decoded++;
         }

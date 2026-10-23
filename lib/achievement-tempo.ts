@@ -1,6 +1,6 @@
 // Calendar intervals describe completed transitions, not active playtime or a
 // probability of cheating. This experimental model never contributes risk points.
-export const TEMPO_VERSION = 1;
+export const TEMPO_VERSION = 2;
 export const TEMPO_MIN_SAMPLE = 100;
 export const TEMPO_P1_SAMPLE = 500;
 export const TEMPO_TTL_MS = 24 * 60 * 60_000;

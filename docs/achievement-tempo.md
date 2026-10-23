@@ -17,7 +17,7 @@ configured active cycle. Seasonal prestige is disabled: the earlier study found
 imported, identical and reversed timestamps, and their provenance is unverified.
 Regular and Seasonal populations never mix. PvE and Arena are outside this model.
 
-Missing, future, malformed, conflicting, zero-length and reversed dates do not
+Missing, future (including dates after the saved profile's timestamp), malformed, conflicting, zero-length and reversed dates do not
 become fast transitions. A contradictory known Killa/prestige chain disables the
 affected family. Dates can be upstream seconds or normalized milliseconds;
 calendar time never substitutes for active playtime.
@@ -56,11 +56,15 @@ The existing `ops/materialize-publications.sh` runs
 `scripts/materialize-achievement-tempo.mjs` after population publication, in a
 separate bounded worker process. This releases the earlier population worker's
 memory before the experiment starts. The runtime image explicitly includes the
-script. The daily schedule needs no additional service; successful generations
+script. Every scheduled invocation publishes even if it starts slightly earlier
+than the previous day's invocation; freshness does not suppress a daily run.
+The daily schedule needs no additional service; successful generations
 remain fresh for 24 hours. Reports older than 48 hours are unavailable.
 
 The worker reads a consistent transaction of progression.db, using personal
-revisions to decode only changed raw snapshots. It writes compact normalized
+revisions to decode only changed raw snapshots. A changed source incarnation or
+incompatible model clears that scope's normalized cache, including old identities,
+before decoding the replacement source. It writes compact normalized
 dates and a complete reference generation to a separate achievement-tempo.db.
 All updates for a scope commit atomically. An error or 180-second deadline leaves
 the previous generation intact; Regular and Seasonal can succeed independently.

@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { initializeTempoExclusions, materializeTempo } from "../lib/achievement-tempo-store.ts";
+import { TEMPO_TTL_MS } from "../lib/achievement-tempo.ts";
+import { materializeAchievementTempo } from "../scripts/materialize-achievement-tempo.mjs";
 
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "server-only") return { shortCircuit: true, url: "data:text/javascript,export {};" };
@@ -61,6 +63,14 @@ test("admin route denies anonymous and non-admin users before opening storage", 
     assert.equal(body.evaluations[0].reason, "missing_dates");
     assert.equal("values" in body.cohorts[0], false, "never return the population account list");
     assert.deepEqual([source, output].map((db) => db.prepare("PRAGMA data_version").get().data_version), versions);
+    const publication = JSON.parse(output.prepare("SELECT payload FROM achievement_tempo_publications").get().payload);
+    publication.generatedAt = Date.now() - TEMPO_TTL_MS + 60_000;
+    output.prepare("UPDATE achievement_tempo_publications SET payload=?").run(JSON.stringify(publication));
+    const daily = materializeAchievementTempo();
+    assert.deepEqual(daily.errors, []);
+    assert.equal(daily.results[0].skipped, false, "a daily startup one minute early must still publish");
+    assert.equal(daily.results[0].decoded, 0, "forcing publication still reuses normalized profiles");
+    assert.ok(JSON.parse(output.prepare("SELECT payload FROM achievement_tempo_publications").get().payload).generatedAt > publication.generatedAt);
     source.exec("INSERT INTO excluded_players VALUES(1)");
     assert.equal((await (await request("?aid=1")).json()).reason, "exclusions_changed");
   } finally {

@@ -167,3 +167,38 @@ test("mode and cycle publications stay separate and a rolled-back ban does not i
     assert.equal(readTempoReport(db.source, db.output, seasonal, 3, now).available, true);
   } finally { db.close(); }
 });
+
+test("a rebuilt source with reused personal revisions discards old normalized dates and identities", () => {
+  const original = fixture(), replacement = fixture();
+  try {
+    materializeTempo(original.source, original.output, scope, { now });
+    replacement.source.exec("DELETE FROM player_profiles WHERE aid=120");
+    replacement.source.prepare("UPDATE progression_snapshots SET stats_json=? WHERE aid=1").run(JSON.stringify({ achievementUnlocks: {
+      [ids[0]]: start, [ids[1]]: start + 10 * day, [ids[2]]: start + 20 * day,
+    } }));
+    assert.equal(readTempoReport(replacement.source, original.output, scope, 1, now).reason, "exclusions_changed");
+    assert.equal(materializeTempo(replacement.source, original.output, scope, { now }).decoded, 119);
+    const report = readTempoReport(replacement.source, original.output, scope, 1, now);
+    assert.equal(report.evaluations[0].days, 10);
+    assert.equal(report.evaluations[2].days, 20);
+    assert.equal(readTempoReport(replacement.source, original.output, scope, 120, now).observedAt, null);
+  } finally { replacement.close(); original.close(); }
+});
+
+test("dates after the saved snapshot are unavailable and a model upgrade decodes the old cache again", () => {
+  const db = fixture();
+  try {
+    materializeTempo(db.source, db.output, scope, { now });
+    const payload = JSON.parse(db.output.prepare("SELECT payload FROM achievement_tempo_publications").get().payload);
+    payload.version = 0;
+    db.output.prepare("UPDATE achievement_tempo_publications SET payload=?").run(JSON.stringify(payload));
+    // Keep personal revision unchanged to ensure the incompatible model forces a decode.
+    db.source.prepare("UPDATE progression_snapshots SET profile_updated_at=? WHERE aid=3").run(start - day);
+    assert.equal(materializeTempo(db.source, db.output, scope, { now, force: true }).decoded, 120);
+    const report = readTempoReport(db.source, db.output, scope, 3, now);
+    assert.equal(report.evaluations[0].reason, "invalid_dates");
+    assert.equal(report.evaluations[0].signal, "unavailable");
+    assert.equal(report.evaluations[0].days, null);
+    assert.equal(report.cohorts[0].n, 119);
+  } finally { db.close(); }
+});

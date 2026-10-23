@@ -20,7 +20,9 @@ export function materializeAchievementTempo() {
     if (cycle?.enabled) scopes.push({ mode: "seasonal", cycleId: cycle.cycleId, startsAt: cycle.startsAt, endsAt: cycle.endsAt });
     const results = [], errors = [];
     for (const scope of scopes) {
-      try { results.push({ mode: scope.mode, ...materializeTempo(source, output, scope, { deadline: startedAt + 180_000 }) }); }
+      // Daily start time drifts with the preceding jobs. Always publish when
+      // scheduled; a 24h freshness gate could otherwise skip alternate days.
+      try { results.push({ mode: scope.mode, ...materializeTempo(source, output, scope, { deadline: startedAt + 180_000, force: true }) }); }
       catch (error) { errors.push({ mode: scope.mode, error: error.message }); }
     }
     console.log("achievement tempo publication", { durationMs: Date.now() - startedAt, results, errors });
