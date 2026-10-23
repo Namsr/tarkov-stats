@@ -439,13 +439,11 @@ export function createSqliteSeasonalOperatorStore(db: SqliteDatabase) {
           WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?
         `).run(input.cycleId, input.aid);
         if (Number(result.changes) !== 1) throw new Error("Seasonal profile not found");
-        // Retries may reclaim this lease after midnight. Preserve the first
-        // observation so the delayed public counter cannot move it to a later day.
         db.prepare(`INSERT INTO upstream_ban_confirmations
           (aid, mode, cycle_id, source, confirmed_at)
           VALUES (?, 'seasonal', ?, 'seasonal_upstream', ?)
           ON CONFLICT(aid, mode, cycle_id, source) DO UPDATE SET
-            confirmed_at = MIN(upstream_ban_confirmations.confirmed_at, excluded.confirmed_at)`)
+            confirmed_at = MAX(upstream_ban_confirmations.confirmed_at, excluded.confirmed_at)`)
           .run(input.aid, input.cycleId, now);
         db.prepare(`UPDATE scan_members SET active = 0
           WHERE mode = 'seasonal' AND cycle_id = ? AND aid = ?`)

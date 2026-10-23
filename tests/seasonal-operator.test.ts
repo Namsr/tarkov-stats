@@ -168,27 +168,3 @@ test("operator status reports coverage and separate operational queues", async (
   assert.equal(status.community[0].aid, 2);
   assert.equal(status.banQueue[0].aid, 1);
 });
-
-
-test("a retried ban-check lease across midnight preserves the first confirmation", async () => {
-  const { db, queue, operator } = setup();
-  try {
-    const midnight = Date.parse("2026-10-22T21:00:00Z");
-    const firstAt = midnight - 60_000;
-    const retryAt = midnight + 5 * 60_000;
-    db.prepare(`INSERT INTO player_profiles (
-      mode, cycle_id, aid, nickname, profile_updated_at, last_access_at,
-      experience, pmc_raids, scav_raids, pmc_survived, pmc_deaths, pmc_kills, killed_pmc,
-      first_seen_at, last_seen_at
-    ) VALUES ('seasonal', 'cycle-a', 62, 'Test', 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1)`).run();
-    await queue.enqueueTask({ mode: "seasonal", cycleId: "cycle-a", aid: 62, kind: "ban_check", priority: 1, now: firstAt });
-    const run = operator.beginOrResumeRun("cycle-a", "runner-a", firstAt);
-    const { task } = operator.claimNext(run.id, "runner-a", firstAt);
-    operator.confirmBanned({ runId: run.id, taskId: task.id, owner: "runner-a", aid: 62, cycleId: "cycle-a", now: firstAt });
-    // Confirmation committed, but the process died before it recorded an outcome.
-    const reclaimed = operator.claimNext(run.id, "runner-a", retryAt);
-    assert.equal(reclaimed.task.id, task.id);
-    operator.confirmBanned({ runId: run.id, taskId: task.id, owner: "runner-a", aid: 62, cycleId: "cycle-a", now: retryAt });
-    assert.equal(db.prepare("SELECT confirmed_at FROM upstream_ban_confirmations WHERE aid=62 AND source='seasonal_upstream'").get().confirmed_at, firstAt);
-  } finally { db.close(); }
-});

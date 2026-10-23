@@ -9,10 +9,11 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSqliteModerationStore } from "../lib/admin/moderation-db.ts";
 import { getPublicIndexCoverage } from "../lib/public-index-coverage.ts";
-import { getPublicBanCounter } from "../lib/public-ban-counter.ts";
-import { captureHomeBanCounter } from "../lib/home-ban-sampler.ts";
+import { getPublicHomeCounter } from "../lib/public-home-counter.ts";
+import { getPublicBanCount } from "../lib/public-ban-counter.ts";
+import { captureHomeCounter } from "../lib/home-counter-sampler.ts";
 import { initializeBanImportDb, importBanCandidate } from "../lib/ban-import.ts";
-import { DAY_MS, homeCounterDay, homeBanCountAt } from "../lib/home-ban-counter.ts";
+import { DAY_MS, homeCounterDay, homeCountAt } from "../lib/home-counter.ts";
 
 const directory = mkdtempSync(join(tmpdir(), "tarkov-index-coverage-"));
 const playersPath = join(directory, "players.db");
@@ -93,22 +94,26 @@ test("counter day follows Moscow midnight, independent of host timezone", () => 
   assert.equal(homeCounterDay(startsAt + DAY_MS).startsAt, startsAt + DAY_MS);
 });
 
-test("bans interpolate yesterday's confirmed additions, clamp, and join days continuously", () => {
+test("profile totals interpolate yesterday's net change, clamp, and join days continuously", () => {
   const counter = { from: 100, to: 124, startsAt, endsAt: startsAt + DAY_MS };
-  assert.equal(homeBanCountAt(counter, startsAt - DAY_MS), 100);
-  assert.equal(homeBanCountAt(counter, startsAt), 100);
-  assert.equal(homeBanCountAt(counter, startsAt + DAY_MS / 2), 112);
-  assert.equal(homeBanCountAt(counter, startsAt + DAY_MS), 124);
-  assert.equal(homeBanCountAt(counter, startsAt + 2 * DAY_MS), 124);
+  assert.equal(homeCountAt(counter, startsAt - DAY_MS), 100);
+  assert.equal(homeCountAt(counter, startsAt), 100);
+  assert.equal(homeCountAt(counter, startsAt + DAY_MS / 2), 112);
+  assert.equal(homeCountAt(counter, startsAt + DAY_MS), 124);
+  assert.equal(homeCountAt(counter, startsAt + 2 * DAY_MS), 124);
   const next = { from: 124, to: 130, startsAt: counter.endsAt, endsAt: counter.endsAt + DAY_MS };
-  assert.equal(homeBanCountAt(next, next.startsAt), homeBanCountAt(counter, counter.endsAt));
-  assert.equal(homeBanCountAt({ ...counter, to: 100 }, startsAt + DAY_MS / 2), 100);
+  assert.equal(homeCountAt(next, next.startsAt), homeCountAt(counter, counter.endsAt));
+  assert.equal(homeCountAt({ ...counter, to: 100 }, startsAt + DAY_MS / 2), 100);
 });
 
 test("public reads are unknown before sampling and never create storage", async () => {
-  assert.equal(await getPublicBanCounter(), null);
+  assert.equal(await getPublicHomeCounter(), null);
+  assert.equal(await getPublicBanCount(), null);
   assert.equal(existsSync(progressionPath), false);
-  await assert.rejects(captureHomeBanCounter(startsAt));
+  const previousPath = process.env.SQLITE_PATH;
+  process.env.SQLITE_PATH = join(directory, "missing-coverage.db");
+  try { await assert.rejects(captureHomeCounter(startsAt)); }
+  finally { process.env.SQLITE_PATH = previousPath; }
   assert.equal(existsSync(bansPath), false);
   assert.equal(existsSync(progressionPath), false);
 });
@@ -126,18 +131,25 @@ async function counterFixture(run) {
   Object.assign(process.env, paths);
   const bans = new DatabaseSync(paths.BANS_SQLITE_PATH);
   const progression = new DatabaseSync(paths.PROGRESSION_SQLITE_PATH);
+  const players = new DatabaseSync(paths.SQLITE_PATH);
   initializeBanImportDb(bans);
   progression.exec(`CREATE TABLE upstream_ban_confirmations (
     aid INTEGER,mode TEXT,cycle_id TEXT,source TEXT,confirmed_at INTEGER,
     PRIMARY KEY(aid,mode,cycle_id,source));
     CREATE TABLE player_profiles(aid INTEGER,mode TEXT,cycle_id TEXT,confirmed_banned INTEGER);`);
-  const archive = (aid) => bans.prepare(`INSERT INTO banned_accounts VALUES (?,?,?,'admin_manual','confirmed',NULL,1)`)
+  players.exec("CREATE TABLE player_index_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+  const setTotal = n => {
+    players.prepare("INSERT OR REPLACE INTO player_index_meta VALUES ('row_count',?)").run(String(n));
+    players.prepare("INSERT OR REPLACE INTO player_index_meta VALUES ('synced_at',?)").run(String(startsAt));
+  };
+  setTotal(100);
+  const archive = aid => bans.prepare(`INSERT INTO banned_accounts VALUES (?,?,?,'admin_manual','confirmed',NULL,1)`)
     .run(aid, startsAt, startsAt);
-  const upstream = (aid, source = "seasonal_upstream", at = startsAt) => progression.prepare(`
-    INSERT OR REPLACE INTO upstream_ban_confirmations VALUES (?,'seasonal','s1',?,?)`).run(aid, source, at);
-  try { await run({ bans, progression, archive, upstream, paths }); }
+  const upstream = (aid, source = "seasonal_upstream", timestamp = startsAt) => progression.prepare(`
+    INSERT OR REPLACE INTO upstream_ban_confirmations VALUES (?,'seasonal','s1',?,?)`).run(aid, source, timestamp);
+  try { await run({ bans, progression, players, archive, upstream, paths, setTotal }); }
   finally {
-    bans.close(); progression.close();
+    bans.close(); progression.close(); players.close();
     for (const [key, value] of Object.entries(old)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -146,49 +158,61 @@ async function counterFixture(run) {
 }
 
 const at = (day, elapsed = 0) => startsAt + day * DAY_MS + elapsed;
-const end = (day) => at(day + 1) - 60_000;
-const observedTotal = db => Number(db.prepare("SELECT total FROM home_ban_daily ORDER BY day_start DESC LIMIT 1").get().total);
+const end = day => at(day + 1) - 60_000;
+const observedTotal = db => Number(db.prepare("SELECT total FROM home_coverage_daily ORDER BY day_start DESC LIMIT 1").get().total);
 
-test("sampler records zero only from readable authorities and starts with a stable baseline", async () => {
-  await counterFixture(async ({ progression, archive }) => {
-    assert.equal(await getPublicBanCounter(), null);
-    const zero = await captureHomeBanCounter(at(0, 1000));
-    assert.equal(zero.from, 0); assert.equal(zero.to, 0);
-    archive(42);
-    assert.deepEqual(await captureHomeBanCounter(at(0, 2000)), zero);
-    assert.equal(observedTotal(progression), 1);
+test("profile sampler starts with a stable baseline and never invents growth", async () => {
+  await counterFixture(async ({ progression, setTotal }) => {
+    assert.equal(await getPublicHomeCounter(), null);
+    const baseline = await captureHomeCounter(at(0, 1000));
+    assert.equal(baseline.from, 100); assert.equal(baseline.to, 100);
+    setTotal(110);
+    assert.deepEqual(await captureHomeCounter(at(0, 2000)), baseline);
+    assert.equal(observedTotal(progression), 110);
   });
 });
 
-test("sampling runs without visitors, smooths yesterday's net growth and survives reopen", async () => {
-  await counterFixture(async ({ archive, upstream, progression }) => {
-    for (let aid = 1; aid <= 10; aid++) archive(aid);
-    await captureHomeBanCounter(at(0, DAY_MS / 2));
-    upstream(1); // overlapping authority, never another account
-    upstream(11); upstream(12);
-    await captureHomeBanCounter(end(0));
-    const first = await captureHomeBanCounter(at(1, 1000));
+test("profile sampling runs without visitors, smooths yesterday's growth and survives restart", async () => {
+  await counterFixture(async ({ setTotal, progression }) => {
+    setTotal(10);
+    await captureHomeCounter(at(0, DAY_MS / 2));
+    setTotal(12); await captureHomeCounter(end(0));
+    const first = await captureHomeCounter(at(1, 1000));
     assert.deepEqual(first, { from: 10, to: 12, startsAt: at(1, 1000), endsAt: at(2) });
-    for (let aid = 13; aid <= 15; aid++) upstream(aid);
-    await captureHomeBanCounter(end(1));
-    await captureHomeBanCounter(at(2));
-    const second = await captureHomeBanCounter(at(2, DAY_MS / 2));
+    setTotal(15); await captureHomeCounter(end(1));
+    await captureHomeCounter(at(2));
+    const second = await captureHomeCounter(at(2, DAY_MS / 2));
     assert.deepEqual(second, { from: 12, to: 15, startsAt: at(2), endsAt: at(3) });
-    assert.equal(homeBanCountAt(second, at(2, DAY_MS / 2)), 13);
-    // No public read occurred on either collection day; each call reopens storage.
-    assert.deepEqual(await getPublicBanCounter(), second);
+    assert.equal(homeCountAt(second, at(2, DAY_MS / 2)), 13);
+    assert.deepEqual(await getPublicHomeCounter(), second);
     const child = execFileSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e",
-      "const {getPublicBanCounter}=await import('./lib/public-ban-counter.ts'); console.log(JSON.stringify(await getPublicBanCounter()));"],
+      "const {getPublicHomeCounter}=await import('./lib/public-home-counter.ts'); console.log(JSON.stringify(await getPublicHomeCounter()));"],
       { cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 10_000 });
     assert.deepEqual(JSON.parse(child), second);
-    assert.equal(progression.prepare("SELECT COUNT(*) n FROM home_ban_daily").get().n, 3);
+    assert.equal(progression.prepare("SELECT COUNT(*) n FROM home_coverage_daily").get().n, 3);
   });
 });
 
-test("legacy-to-imported evidence and later synthetic provenance never change the total", async () => {
-  await counterFixture(async ({ bans, progression, upstream, paths }) => {
+test("banned count is the current database total, without time interpolation or duplicate AIDs", async () => {
+  await counterFixture(async ({ bans, archive, upstream }) => {
+    assert.equal(await getPublicBanCount(), 0);
+    archive(42); upstream(42); upstream(43, "legacy_unknown", 0);
+    assert.equal(await getPublicBanCount(), 2);
+    assert.equal(await getPublicBanCount(), 2, "time and repeated reads cannot add banned accounts");
+    bans.exec("DELETE FROM banned_accounts WHERE aid=42");
+    assert.equal(await getPublicBanCount(), 2, "an upstream confirmation still counts the same AID");
+    archive(44);
+    assert.equal(await getPublicBanCount(), 3, "only a real database change adds a banned account");
+    bans.exec("DELETE FROM banned_accounts WHERE aid=44");
+    assert.equal(await getPublicBanCount(), 2);
+  });
+});
+
+test("new evidence for a banned AID does not change its count or the profile-counter history", async () => {
+  await counterFixture(async ({ bans, progression, upstream }) => {
     upstream(42, "legacy_unknown", 0);
-    const baseline = await captureHomeBanCounter(at(0, 1000));
+    const baseline = await captureHomeCounter(at(0, 1000));
+    assert.equal(await getPublicBanCount(), 1);
     const candidate = { aid: 42, nickname: "Player", waves: [
       { date: "2025-12-19", source: "https://example.com/bans", nicknames: ["Player"] },
     ] };
@@ -198,84 +222,72 @@ test("legacy-to-imported evidence and later synthetic provenance never change th
       pmcStats: { eft: { totalInGameTime: 1234, overAllCounters: { Items: [] } } }, achievements: {},
     }) };
     assert.equal(importBanCandidate(bans, candidate, [profile], at(0, 2000), () => {}), "accepted");
-    assert.deepEqual(await captureHomeBanCounter(at(0, 3000)), baseline);
-    assert.equal(observedTotal(progression), 1);
+    assert.equal(await getPublicBanCount(), 1);
+    assert.deepEqual(await captureHomeCounter(at(0, 3000)), baseline);
     upstream(43, "seasonal_upstream", at(0, 4000));
     progression.exec("INSERT INTO player_profiles VALUES (43,'seasonal','s1',1)");
     const admin = new DatabaseSync(join(directory, `${fixtureId}-admin.db`));
     try { createSqliteModerationStore(admin); } finally { admin.close(); }
-    assert.equal(progression.prepare("SELECT confirmed_at FROM upstream_ban_confirmations WHERE aid=43 AND source='legacy_unknown'").get().confirmed_at, 0);
-    assert.deepEqual(await captureHomeBanCounter(end(0)), baseline);
-    assert.equal(observedTotal(progression), 2);
-    const tomorrow = await captureHomeBanCounter(at(1, 1000));
-    assert.equal(tomorrow.from, 1); assert.equal(tomorrow.to, 2);
-    assert.ok(existsSync(paths.PROGRESSION_SQLITE_PATH));
+    assert.equal(await getPublicBanCount(), 2);
+    assert.deepEqual(await captureHomeCounter(end(0)), baseline);
+    assert.equal(observedTotal(progression), 100);
   });
 });
 
-test("manual restore and re-ban between samples do not count the account twice", async () => {
-  await counterFixture(async ({ bans, progression, archive }) => {
-    archive(42);
-    const baseline = await captureHomeBanCounter(at(0, 1000));
-    bans.exec("DELETE FROM banned_accounts WHERE aid=42");
-    archive(42);
-    assert.deepEqual(await captureHomeBanCounter(at(0, 2000)), baseline);
-    assert.equal(observedTotal(progression), 1);
-    bans.exec("DELETE FROM banned_accounts WHERE aid=42");
-    await captureHomeBanCounter(end(0));
-    const tomorrow = await captureHomeBanCounter(at(1, 1000));
-    assert.equal(tomorrow.from, 1); assert.equal(tomorrow.to, 0);
+test("profile totals also reveal a verified decrease instead of artificial growth", async () => {
+  await counterFixture(async ({ setTotal }) => {
+    await captureHomeCounter(at(0, 1000));
+    setTotal(90); await captureHomeCounter(end(0));
+    const tomorrow = await captureHomeCounter(at(1, 1000));
+    assert.equal(tomorrow.from, 100); assert.equal(tomorrow.to, 90);
   });
 });
 
-test("missed endpoints freeze a persisted target and recovery catches up without invented days", async () => {
-  await counterFixture(async ({ archive, upstream, progression }) => {
-    archive(1);
-    await captureHomeBanCounter(at(0, 1000));
-    upstream(2); await captureHomeBanCounter(end(0));
-    const lastGood = await captureHomeBanCounter(at(1, DAY_MS / 2));
-    upstream(3);
-    // No sample near day 1's midnight: day 2 must retain the old window.
-    assert.deepEqual(await captureHomeBanCounter(at(2, DAY_MS / 2)), lastGood);
-    assert.equal(homeBanCountAt(await getPublicBanCounter(), at(2)), 2);
-    await captureHomeBanCounter(end(2));
-    assert.deepEqual(await captureHomeBanCounter(at(3, 1000)), lastGood);
-    upstream(4); await captureHomeBanCounter(end(3));
+test("missed endpoints freeze a target and midday recovery remains continuous", async () => {
+  await counterFixture(async ({ setTotal, progression }) => {
+    setTotal(1); await captureHomeCounter(at(0, 1000));
+    setTotal(2); await captureHomeCounter(end(0));
+    const lastGood = await captureHomeCounter(at(1, DAY_MS / 2));
+    setTotal(3);
+    assert.deepEqual(await captureHomeCounter(at(2, DAY_MS / 2)), lastGood);
+    assert.equal(homeCountAt(await getPublicHomeCounter(), at(2)), 2);
+    await captureHomeCounter(end(2));
+    assert.deepEqual(await captureHomeCounter(at(3, 1000)), lastGood);
+    setTotal(4); await captureHomeCounter(end(3));
     const recoveryAt = at(4, DAY_MS / 2);
-    const before = homeBanCountAt(await getPublicBanCounter(), recoveryAt);
-    const recovered = await captureHomeBanCounter(recoveryAt);
+    const before = homeCountAt(await getPublicHomeCounter(), recoveryAt);
+    const recovered = await captureHomeCounter(recoveryAt);
     assert.deepEqual(recovered, { from: 2, to: 4, startsAt: recoveryAt, endsAt: at(5) });
-    assert.equal(homeBanCountAt(recovered, recoveryAt), before, "publication cannot jump halfway through the backlog");
-    await captureHomeBanCounter(end(4));
-    const nextDay = await captureHomeBanCounter(at(5, 1000));
-    assert.equal(homeBanCountAt(nextDay, nextDay.startsAt), homeBanCountAt(recovered, recovered.endsAt));
-    assert.equal(progression.prepare("SELECT observed_at FROM home_ban_daily WHERE day_start=?").get(at(1)).observed_at, at(1, DAY_MS / 2));
+    assert.equal(homeCountAt(recovered, recoveryAt), before);
+    await captureHomeCounter(end(4));
+    const nextDay = await captureHomeCounter(at(5, 1000));
+    assert.equal(homeCountAt(nextDay, nextDay.startsAt), homeCountAt(recovered, recovered.endsAt));
+    assert.equal(progression.prepare("SELECT observed_at FROM home_coverage_daily WHERE day_start=?").get(at(1)).observed_at, at(1, DAY_MS / 2));
   });
 });
 
-test("unavailable sources and write locks cannot overwrite good snapshots", async () => {
-  await counterFixture(async ({ archive, progression, paths }) => {
-    archive(42);
-    const baseline = await captureHomeBanCounter(at(0, 1000));
-    process.env.BANS_SQLITE_PATH = join(directory, "missing-authority.db");
-    try { await assert.rejects(captureHomeBanCounter(at(0, 2000))); }
-    finally { process.env.BANS_SQLITE_PATH = paths.BANS_SQLITE_PATH; }
+test("unavailable metadata and write locks cannot overwrite good profile snapshots", async () => {
+  await counterFixture(async ({ progression, paths }) => {
+    const baseline = await captureHomeCounter(at(0, 1000));
+    process.env.SQLITE_PATH = join(directory, "missing-authority.db");
+    try { await assert.rejects(captureHomeCounter(at(0, 2000))); }
+    finally { process.env.SQLITE_PATH = paths.SQLITE_PATH; }
     assert.equal(existsSync(join(directory, "missing-authority.db")), false);
-    assert.equal(progression.prepare("SELECT observed_at FROM home_ban_daily").get().observed_at, at(0, 1000));
+    assert.equal(progression.prepare("SELECT observed_at FROM home_coverage_daily").get().observed_at, at(0, 1000));
     progression.exec("BEGIN IMMEDIATE");
-    try { await assert.rejects(captureHomeBanCounter(at(0, 3000)), /locked/); }
+    try { await assert.rejects(captureHomeCounter(at(0, 3000)), /locked/); }
     finally { progression.exec("ROLLBACK"); }
-    assert.deepEqual(await getPublicBanCounter(), baseline);
-    await assert.rejects(captureHomeBanCounter(at(0, 999)), /clock moved backwards/);
-    assert.equal(progression.prepare("SELECT observed_at FROM home_ban_daily").get().observed_at, at(0, 1000));
+    assert.deepEqual(await getPublicHomeCounter(), baseline);
+    await assert.rejects(captureHomeCounter(at(0, 999)), /clock moved backwards/);
+    assert.equal(progression.prepare("SELECT observed_at FROM home_coverage_daily").get().observed_at, at(0, 1000));
   });
 });
 
-test("the deployed sampler can capture once and terminate", async () => {
-  await counterFixture(async ({ archive }) => {
-    archive(42);
-    execFileSync(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-bans.mjs", "--once"],
+test("the deployed coverage sampler captures once and terminates", async () => {
+  await counterFixture(async ({ setTotal }) => {
+    setTotal(42);
+    execFileSync(process.execPath, ["--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-coverage.mjs", "--once"],
       { cwd: process.cwd(), env: process.env, timeout: 10_000, stdio: "pipe" });
-    assert.equal((await getPublicBanCounter()).from, 1);
+    assert.equal((await getPublicHomeCounter()).from, 42);
   });
 });

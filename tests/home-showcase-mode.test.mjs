@@ -382,7 +382,7 @@ test("home counters refresh, retain values on failure, resume on visibility and 
   const h = await scanRailHarness();
   assert.equal(h.pending.length, 1);
   assert.ok(h.clock[0] > 0);
-  const coverage = { total: 100, banned: { from: 10, to: 20 } };
+  const coverage = { total: 100, counter: { from: 10, to: 20 }, banned: 2 };
   h.pending[0].resolve({ ok: true, json: async () => coverage });
   await flushShowcase();
   assert.deepEqual(h.values, [coverage]);
@@ -414,4 +414,12 @@ test("home counters ignore a JSON response that arrives after unmount", async ()
   finishJson({ total: 999, banned: null });
   await flushShowcase();
   assert.deepEqual(h.values, []);
+});
+
+
+test("home smooths the profile total and renders banned accounts directly from the database response", async () => {
+  const component = await read("components/home/HomeScanRail.tsx");
+  assert.match(component, /homeCountAt\(coverage\.counter, now\)/);
+  assert.match(component, /const banned = coverage\?\.banned \?\? null/);
+  assert.doesNotMatch(component, /homeCountAt\(coverage\.banned/);
 });

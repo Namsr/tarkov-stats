@@ -14,7 +14,7 @@ services:
       WEB_BACKGROUND_WORKERS: "false"
     depends_on:
       - axis-league
-      - home-ban-sampler
+      - home-counter-sampler
     restart: unless-stopped
     expose:
       - "3000"
@@ -103,10 +103,10 @@ services:
     restart: unless-stopped
 
   # Persist homepage counters even when nobody visits the site.
-  home-ban-sampler:
+  home-counter-sampler:
     <<: *background-worker
     profiles: []
-    command: ["node", "--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-bans.mjs"]
+    command: ["node", "--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-coverage.mjs"]
     restart: unless-stopped
 
   caddy:

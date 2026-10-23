@@ -55,7 +55,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-web.mjs ./scripts/s
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/web-runtime-health.mjs ./scripts/web-runtime-health.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/supervise-worker.mjs ./scripts/supervise-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/sync-axis-league.mjs ./scripts/sync-axis-league.mjs
-COPY --from=builder --chown=nextjs:nodejs /app/scripts/sample-home-bans.mjs ./scripts/sample-home-bans.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/sample-home-coverage.mjs ./scripts/sample-home-coverage.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-average-worker.mjs ./scripts/compute-average-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-cohort-worker.mjs ./scripts/compute-cohort-worker.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/compute-admin-report.mjs ./scripts/compute-admin-report.mjs
