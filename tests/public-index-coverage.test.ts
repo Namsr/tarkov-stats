@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { createSqliteModerationStore } from "../lib/admin/moderation-db.ts";
 import { getPublicIndexCoverage } from "../lib/public-index-coverage.ts";
 import { getPublicBanCounter } from "../lib/public-ban-counter.ts";
 import { DAY_MS, homeCounterDay, homeBanCountAt } from "../lib/home-ban-counter.ts";
@@ -139,8 +140,8 @@ test("ban counter counts unique accounts by first confirmation, including import
 test("upstream bans across modes and cycles merge with the archive by AID", async () => {
   const db = new DatabaseSync(progressionPath);
   try {
-    db.exec(`CREATE TABLE upstream_ban_confirmations(aid INTEGER,mode TEXT,cycle_id TEXT,confirmed_at INTEGER)`);
-    const add = db.prepare("INSERT INTO upstream_ban_confirmations VALUES (?,?,?,?)");
+    db.exec(`CREATE TABLE upstream_ban_confirmations(aid INTEGER,mode TEXT,cycle_id TEXT,source TEXT,confirmed_at INTEGER)`);
+    const add = db.prepare("INSERT INTO upstream_ban_confirmations VALUES (?,?,?,'seasonal_upstream',?)");
     add.run(2, "seasonal", "s1", startsAt - 2 * DAY_MS); // same archived AID, earlier confirmation
     add.run(7, "seasonal", "s1", startsAt - 1000);
     add.run(7, "seasonal", "s2", startsAt - 500); // duplicate in another cycle
@@ -155,4 +156,48 @@ test("upstream bans across modes and cycles merge with the archive by AID", asyn
 test("unreadable ban storage never becomes zero bans", async () => {
   writeFileSync(bansPath, "broken");
   assert.equal(await getPublicBanCounter(startsAt), null);
+});
+
+
+test("moderation bootstrap cannot reveal today's new ban early through synthetic legacy dates", async () => {
+  const paths = {
+    SQLITE_PATH: join(directory, "bootstrap-players.db"),
+    PROGRESSION_SQLITE_PATH: join(directory, "bootstrap-progression.db"),
+    BANS_SQLITE_PATH: join(directory, "bootstrap-bans.db"),
+    REPORTS_SQLITE_PATH: join(directory, "bootstrap-reports.db"),
+  };
+  const old = Object.fromEntries(Object.keys(paths).map(key => [key, process.env[key]]));
+  Object.assign(process.env, paths);
+  const progression = new DatabaseSync(paths.PROGRESSION_SQLITE_PATH);
+  const admin = new DatabaseSync(join(directory, "bootstrap-admin.db"));
+  try {
+    progression.exec(`CREATE TABLE player_profiles (
+      aid INTEGER, mode TEXT, cycle_id TEXT, confirmed_banned INTEGER);
+      INSERT INTO player_profiles VALUES (42,'seasonal','s1',1);`);
+    progression.exec(`CREATE TABLE upstream_ban_confirmations (
+      aid INTEGER,mode TEXT,cycle_id TEXT,source TEXT,confirmed_at INTEGER,
+      PRIMARY KEY(aid,mode,cycle_id,source));`);
+    progression.prepare("INSERT INTO upstream_ban_confirmations VALUES (42,'seasonal','s1','seasonal_upstream',?)").run(startsAt + 1000);
+    const expected = { from: 0, to: 0, startsAt, endsAt: startsAt + DAY_MS };
+    assert.deepEqual(await getPublicBanCounter(startsAt + 2000), expected);
+    createSqliteModerationStore(admin);
+    assert.equal(progression.prepare("SELECT confirmed_at FROM upstream_ban_confirmations WHERE source='legacy_unknown'").get().confirmed_at, 0);
+    assert.deepEqual(await getPublicBanCounter(startsAt + 2000), expected);
+    // Storage bootstrap can infer a nonzero date from an older profile too.
+    progression.prepare("UPDATE upstream_ban_confirmations SET confirmed_at=? WHERE source='legacy_unknown'").run(startsAt - 10 * DAY_MS);
+    assert.deepEqual(await getPublicBanCounter(startsAt + 2000), expected);
+    // An account for which only legacy provenance remains is still counted.
+    progression.exec("INSERT INTO upstream_ban_confirmations VALUES (43,'regular','persistent','legacy_unknown',0)");
+    assert.deepEqual(await getPublicBanCounter(startsAt + 2000), { ...expected, from: 1, to: 1 });
+    const tomorrow = await getPublicBanCounter(startsAt + DAY_MS);
+    assert.equal(tomorrow.from, 1);
+    assert.equal(tomorrow.to, 2);
+  } finally {
+    admin.close();
+    progression.close();
+    for (const [key, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

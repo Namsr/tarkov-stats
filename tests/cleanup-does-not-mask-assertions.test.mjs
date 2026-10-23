@@ -726,6 +726,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/leaderboard-warmup.test.mjs",
   "tests/profile-mastery.test.ts",
   "tests/profile-queue-wrapper.test.mjs",
+  // Coverage readers close each connection in finally; fixture handles also close.
+  "tests/public-index-coverage.test.ts",
   // Both SQLite connections close, and IPC/crash children exit, before cleanup.
   "tests/progression-materialization.test.mjs",
   "tests/progression-timeline.test.ts",
