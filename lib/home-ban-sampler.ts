@@ -56,10 +56,12 @@ export async function captureHomeBanCounter(now = Date.now()): Promise<HomeBanCo
       const firstDay = homeCounterDay(Number(state.seeded_at)).startsAt === startsAt - DAY_MS;
       if (previous.startsAt < startsAt && yesterday !== null && (beforeYesterday !== null || firstDay)) {
         // On recovery, catch up from the frozen target instead of jumping over
-        // growth during the collection gap. Never invent the missing day's row.
-        const from = previous.endsAt < startsAt ? previous.to : beforeYesterday ?? Number(state.baseline);
+        // growth during the collection gap. Start at publication time so a
+        // midday restart cannot reveal half the backlog immediately. Never
+        // invent the missing day's row.
+        const from = previous.to;
         db.prepare("UPDATE home_ban_counter_state SET from_count=?,to_count=?,starts_at=?,ends_at=? WHERE id=1")
-          .run(from, yesterday, startsAt, endsAt);
+          .run(from, yesterday, now, endsAt);
       }
       const counter = readHomeBanCounter(db)!;
       db.exec("COMMIT");

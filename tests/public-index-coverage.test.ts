@@ -168,9 +168,10 @@ test("sampling runs without visitors, smooths yesterday's net growth and survive
     upstream(11); upstream(12);
     await captureHomeBanCounter(end(0));
     const first = await captureHomeBanCounter(at(1, 1000));
-    assert.deepEqual(first, { from: 10, to: 12, startsAt: at(1), endsAt: at(2) });
+    assert.deepEqual(first, { from: 10, to: 12, startsAt: at(1, 1000), endsAt: at(2) });
     for (let aid = 13; aid <= 15; aid++) upstream(aid);
     await captureHomeBanCounter(end(1));
+    await captureHomeBanCounter(at(2));
     const second = await captureHomeBanCounter(at(2, DAY_MS / 2));
     assert.deepEqual(second, { from: 12, to: 15, startsAt: at(2), endsAt: at(3) });
     assert.equal(homeBanCountAt(second, at(2, DAY_MS / 2)), 13);
@@ -240,8 +241,14 @@ test("missed endpoints freeze a persisted target and recovery catches up without
     await captureHomeBanCounter(end(2));
     assert.deepEqual(await captureHomeBanCounter(at(3, 1000)), lastGood);
     upstream(4); await captureHomeBanCounter(end(3));
-    const recovered = await captureHomeBanCounter(at(4, 1000));
-    assert.deepEqual(recovered, { from: 2, to: 4, startsAt: at(4), endsAt: at(5) });
+    const recoveryAt = at(4, DAY_MS / 2);
+    const before = homeBanCountAt(await getPublicBanCounter(), recoveryAt);
+    const recovered = await captureHomeBanCounter(recoveryAt);
+    assert.deepEqual(recovered, { from: 2, to: 4, startsAt: recoveryAt, endsAt: at(5) });
+    assert.equal(homeBanCountAt(recovered, recoveryAt), before, "publication cannot jump halfway through the backlog");
+    await captureHomeBanCounter(end(4));
+    const nextDay = await captureHomeBanCounter(at(5, 1000));
+    assert.equal(homeBanCountAt(nextDay, nextDay.startsAt), homeBanCountAt(recovered, recovered.endsAt));
     assert.equal(progression.prepare("SELECT observed_at FROM home_ban_daily WHERE day_start=?").get(at(1)).observed_at, at(1, DAY_MS / 2));
   });
 });
