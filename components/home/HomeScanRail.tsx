@@ -49,17 +49,23 @@ export default function HomeScanRail() {
   const banned = coverage?.banned ?? null;
   return <p className="home-scan-rail">
     <span className="home-scan-rail__item">
-      <span className="home-scan-rail__note">{t("home.scanAbout")}</span>
-      <strong className="home-scan-rail__value">{DAILY_SCAN_FIGURE.toLocaleString(lang)}</strong>
-      <span className="home-scan-rail__caption">{t("home.scanPerDay")}</span>
+      <span className="home-scan-rail__figure">
+        <span className="home-scan-rail__note" aria-hidden="true">{t("home.scanApprox")}</span>
+        <span className="sr-only">{t("home.scanAbout")} </span>
+        <strong className="home-scan-rail__value">{DAILY_SCAN_FIGURE.toLocaleString(lang)}</strong>
+      </span>
+      <span className="home-scan-rail__caption" aria-hidden="true">{t("home.scanPerDayShort")}</span>
+      <span className="sr-only"> {t("home.scanPerDay")}</span>
     </span>
     {total !== null && <span className="home-scan-rail__item" title={t("home.scanTotalHint")}>
       <strong className="home-scan-rail__value">{total.toLocaleString(lang)}</strong>
-      <span className="home-scan-rail__caption">{t("home.scanTotal")}</span>
+      <span className="home-scan-rail__caption" aria-hidden="true">{t("home.scanTotalShort")}</span>
+      <span className="sr-only"> {t("home.scanTotal")}</span>
     </span>}
     {banned !== null && <span className="home-scan-rail__item" title={t("home.scanBannedHint")}>
       <strong className="home-scan-rail__value">{banned.toLocaleString(lang)}</strong>
-      <span className="home-scan-rail__caption">{t("home.scanBanned")}</span>
+      <span className="home-scan-rail__caption" aria-hidden="true">{t("home.scanBannedShort")}</span>
+      <span className="sr-only"> {t("home.scanBanned")}</span>
     </span>}
   </p>;
 }
