@@ -340,9 +340,6 @@ function AveragePageContent({
       ? mode === "seasonal" ? "average.seasonalLifetimeHoursUnit" : "unit.h"
       : "average.unitRaids",
   );
-  const statisticLabel = t(
-    statistic === "median" ? "average.statistic.median" : "average.statistic.trimmedMean",
-  );
   const showAverageProgression = mode === "regular" || mode === "pve" || mode === "seasonal";
   const detailMetrics = METRICS.slice(4).map((metric) =>
     dimension === "pmc_raids" && metric.key === "total_raids"
@@ -422,8 +419,7 @@ function AveragePageContent({
       />
 
       <p className="average-sampleline" aria-live="polite">
-        {t("average.basedOn", { n: sampleN.toLocaleString() })} · {statisticLabel}
-        {period === "90d" ? ` · ${t("average.period.last90Days")}` : null}
+        {loading ? t("common.loading") : t("average.basedOn", { n: sampleN.toLocaleString() })}
       </p>
 
       {error && !loading && <p className="mt-5 text-sm text-[var(--danger)]">{error}</p>}
@@ -438,7 +434,7 @@ function AveragePageContent({
         <p className="mt-5 text-[var(--muted)]">{t("average.emptyRange")}</p>
       ) : (
         <div className="mt-5">
-          <AverageHeroGauges averages={averages} sampleN={sampleN} statisticLabel={statisticLabel} />
+          <AverageHeroGauges averages={averages} />
         </div>
       )}
 
@@ -480,13 +476,6 @@ function AveragePageContent({
                   })}
                 </select>
               </label>
-              <span className="sample-status" aria-live="polite">
-                {currentData
-                  ? t("average.basedOn", { n: sampleN.toLocaleString() })
-                  : loading
-                    ? t("common.loading")
-                    : null}
-              </span>
             </div>
           </div>
         </div>

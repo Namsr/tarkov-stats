@@ -451,7 +451,7 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
                   closeSearchPanels();
                 }
               }}
-              placeholder={t(landing ? "home.searchPlaceholder" : "search.placeholder")}
+              placeholder={t("search.placeholder")}
               aria-label={t("search.placeholder")}
               autoFocus={autoFocus}
               className={`search-unit__input${fixedMode ? " !rounded-full" : ""}`}
@@ -691,18 +691,6 @@ export default function SearchBar({ autoFocus = false, landing = false, onSelect
         </div>
       )}
 
-      {(!landing || results.length > 0) && <p className="search-unit__help">
-        {t(landing ? "home.searchHelpBefore" : "search.helpBefore")}{" "}
-        <a
-          href="https://tarkov.dev/players"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hover:text-[var(--accent)]"
-        >
-          tarkov.dev/players
-        </a>{landing ? "" : " "}
-        {t(landing ? "home.searchHelpAfter" : "search.helpAfter")}
-      </p>}
     </div>
   );
 }

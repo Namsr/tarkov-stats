@@ -51,11 +51,6 @@ export default function RegularAverageProgression({
   const currentData = data?.mode === mode && (mode !== "seasonal" || data.cycleId === cycleId)
     ? data
     : null;
-  const kicker = mode === "pve"
-    ? t("progression.kicker.pve")
-    : mode === "seasonal"
-      ? t("seasonal.averageKicker", { cycle: cycleId })
-      : t("progression.kicker");
 
   if (error && !currentData) return <p className="mt-10 text-sm text-[var(--danger)]" role="status">{error}</p>;
   if (!currentData) {
@@ -70,7 +65,6 @@ export default function RegularAverageProgression({
 
   return (
     <section className="mt-10" aria-labelledby="average-progression-heading">
-      <p className="section-kicker">{kicker}</p>
       <h2 id="average-progression-heading" className="section-heading">{t("player.progression")}</h2>
       <SeasonalProgressionChart
         data={currentData.series.cumulative}

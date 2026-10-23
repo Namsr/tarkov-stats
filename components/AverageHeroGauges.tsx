@@ -11,12 +11,8 @@ export interface AverageHeroRow {
 
 export default function AverageHeroGauges({
   averages,
-  sampleN,
-  statisticLabel,
 }: {
   averages: AverageHeroRow | null;
-  sampleN: number;
-  statisticLabel: string;
 }) {
   const { t, lang } = useI18n();
   const num = (value: number | null | undefined, digits = 1) =>
@@ -30,10 +26,6 @@ export default function AverageHeroGauges({
   const kpr = averages?.kills_per_raid ?? null;
   return (
     <div>
-      <div className="arena-combat-scope">
-        <strong>{statisticLabel}</strong>
-        <span>{t("average.basedOn", { n: sampleN.toLocaleString(lang) })}</span>
-      </div>
       <div className="arena-combat-gauges">
         <article className="arena-combat-card">
           <h2>{t("metric.kd_ratio")}</h2>
@@ -51,13 +43,12 @@ export default function AverageHeroGauges({
             value={survival}
             max={100}
             text={survival == null ? "—" : `${num(survival)}%`}
-            unit="%"
+            unit=""
             label={t("metric.survival_rate")}
           />
           <strong className="arena-combat-status">
             {t("metric.total_raids")}: {int(averages?.total_raids)}
           </strong>
-          <p className="arena-combat-note">{statisticLabel}</p>
         </article>
         <article className="arena-combat-card">
           <h2>{t("metric.kills_per_raid")}</h2>

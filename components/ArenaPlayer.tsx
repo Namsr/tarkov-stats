@@ -546,7 +546,7 @@ export default function ArenaPlayer({ aid, axisIdentity = null, axisHours = null
           {showFavorite && (favoriteLoading || favoriteError) && <p className="profile-chart-notice" role="status">{t(favoriteError ? "arena.favorite.error" : "arena.favorite.loading")}</p>}
           <ArenaOverallComparison key={`${numericAid}:${selectedMode}:${statistic}:${profile.profileUpdatedAt}:${profile.fetchedAt}`} aid={numericAid} mode={selectedMode} player={scopeStats} playerName={profile.nickname} statistic={statistic} favorite={favoriteStats} favoriteName={favoriteName} compareFavorite={showFavorite && canCompareFavorite} />
         </section>
-      <ArenaDetailedStatistics profile={profile} scope={selectedMode} risk={risk} rating={tsRating} />
+      <ArenaDetailedStatistics profile={profile} scope={selectedMode} />
       <ArenaModeBars profile={profile} selected={selectedMode} onSelect={changeMode} aid={numericAid} statistic={statistic} />
     </div>
   </main>;

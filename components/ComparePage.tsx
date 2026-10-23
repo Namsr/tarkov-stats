@@ -578,9 +578,7 @@ export default function ComparePage({ seasonalCycleId }: { seasonalCycleId?: str
   return (
     <main ref={frameRef} className="page-frame comparison-page">
       <header>
-        <p className="page-kicker">{t("compare.pageKicker")}</p>
         <h1 className="page-title">{t("compare.pageTitle")}</h1>
-        <p className="mt-4 max-w-3xl text-[var(--muted)]">{t("compare.pageDescription")}</p>
       </header>
 
       <div ref={toolbarRef} className="comparison-toolbar leaderboard-sticky">

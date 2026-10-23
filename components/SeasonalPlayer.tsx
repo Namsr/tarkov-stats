@@ -462,7 +462,6 @@ export default function SeasonalPlayer({
       <section>
         <div className="mb-3 flex items-baseline justify-between gap-4">
           <h2 className="section-heading">{t("player.raidStats")}</h2>
-          <span className="section-kicker">{t("player.coreStats")}</span>
         </div>
         <div className="data-ledger">
           <StatCard label={t("player.totalRaids")} value={stats.totalRaids ?? unknownValue} />
@@ -475,7 +474,7 @@ export default function SeasonalPlayer({
         </div>
       </section>
       <section>
-        <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+        <h2 className="section-heading mb-3">{t("profile.character")}</h2>
         <div className="detail-grid detail-grid--compact">
           <StatCard label={t("player.level")} value={stats.level ?? unknownValue} />
           <StatCard label={t("player.prestige")} value={stats.prestige ?? unknownValue} />

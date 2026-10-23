@@ -90,8 +90,7 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
     <main className="page-frame leaderboard-page axis-page">
       <Link href="/leaderboard" className="back-link">{t("nav.leaderboard")}</Link>
       <header className="axis-hero">
-        <div><p className="page-kicker">{t("axis.kicker")}</p><h1 className="page-title">{t("axis.title")}</h1>
-          <p className="axis-description">{t("axis.description")}</p></div>
+        <h1 className="page-title">{t("axis.title")}</h1>
         <a href={AXIS_DISCORD_URL} target="_blank" rel="noopener noreferrer" className="tactical-button axis-join">{t("axis.join")} <span aria-hidden>↗</span></a>
       </header>
       <div className="axis-season-strip">
@@ -116,7 +115,7 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
           {t(direction === "asc" ? "axis.ascending" : "axis.descending")} <span aria-hidden>{direction === "asc" ? "↑" : "↓"}</span>
         </button>
       </section>
-      <div className="axis-meta"><span>{t("axis.refreshHint")}</span>{data?.updatedAt != null && <span>{t("axis.updated", { time: new Date(data.updatedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) })}</span>}</div>
+      {data?.updatedAt != null && <div className="axis-meta"><span>{t("axis.updated", { time: new Date(data.updatedAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) })}</span></div>}
       {(failed || data?.stale) && <div className="leaderboard-state data-panel" role="status">
         <p>{t(data ? "axis.stale" : "axis.error")}</p><button className="ghost-button" type="button" onClick={() => setRetry((value) => value + 1)}>{t("admin.retry")}</button>
       </div>}
