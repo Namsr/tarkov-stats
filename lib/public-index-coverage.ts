@@ -1,54 +1,62 @@
-/** Coverage figures for the public nickname index, read from the metadata the
- *  index sync already writes at swap time.
- *
- *  `scripts/sync-player-index.mjs` streams the whole upstream index, swaps it
- *  into `player_index` and records `row_count` plus `synced_at` in
- *  `player_index_meta` inside that same transaction. So the served number costs
- *  two primary-key lookups on a table that holds ~10 rows, with no COUNT(*) over
- *  a multi-million row table and nothing for a visitor to trigger. It moves only
- *  when an index sync actually succeeds, which is the intent: it is a statement
- *  about the last completed sync, not a live count.
- *
- *  A missing or unparsable row yields null rather than a guess, so the home page
- *  can hide the figure instead of publishing a fabricated one. */
-
-const TOTAL_KEY = "row_count";
-const SYNCED_KEY = "synced_at";
+/** Sum of indexed profiles across modes, including archived Seasonal cycles.
+ * Metadata is written atomically by each index sync. Never scan player indexes
+ * or run schema migrations on a public coverage request. */
+import { DatabaseSync } from "node:sqlite";
 
 export interface PublicIndexCoverage {
-  /** Accounts in the public index at the last completed sync, or null if the
-   *  index has never synced on this deployment. */
+  /** Profiles, not distinct AIDs: each mode/cycle contributes separately. */
   total: number | null;
-  /** Epoch ms of that same sync, so callers can show or compare the as-of date. */
+  /** Oldest contributing sync, in epoch ms. */
   syncedAt: number | null;
 }
 
-function parseCount(raw: unknown): number | null {
+function positiveInteger(raw: unknown): number | null {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-function parseTimestamp(raw: unknown): number | null {
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function readMeta(db: any): PublicIndexCoverage {
-  const rows = db
-    .prepare("SELECT key, value FROM player_index_meta WHERE key IN (?, ?)")
-    .all(TOTAL_KEY, SYNCED_KEY) as { key: string; value: string }[];
-  const meta = new Map(rows.map((row) => [row.key, row.value]));
-  return { total: parseCount(meta.get(TOTAL_KEY)), syncedAt: parseTimestamp(meta.get(SYNCED_KEY)) };
 }
 
 export async function getPublicIndexCoverage(): Promise<PublicIndexCoverage> {
-  const store = await import("@/lib/db").then((m) => m.getPublicIndexMetaReader());
-  if (!store) return { total: null, syncedAt: null };
-  try {
-    return readMeta(store);
-  } catch {
-    // No `player_index_meta` yet (fresh deployment before the first sync).
-    return { total: null, syncedAt: null };
+  const counts: number[] = [];
+  const times: number[] = [];
+  const sources = [
+    { path: process.env.SQLITE_PATH || "/data/players.db",
+      tables: ["player_index_meta", "pve_player_index_meta", "arena_player_index_meta"] },
+    { path: process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db",
+      tables: ["seasonal_player_index_meta"] },
+  ];
+  for (const { path, tables } of sources) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(path, { readOnly: true });
+      for (const table of tables) {
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) continue;
+        const rows = db.prepare(`SELECT * FROM ${table} WHERE key IN ('row_count', 'synced_at')`).all();
+        const cycles = new Map<string, Map<string, unknown>>();
+        for (const row of rows) {
+          const cycle = String(row.cycle_id ?? "persistent");
+          if (!cycles.has(cycle)) cycles.set(cycle, new Map());
+          cycles.get(cycle)!.set(String(row.key), row.value);
+        }
+        for (const meta of cycles.values()) {
+          const count = positiveInteger(meta.get("row_count"));
+          const syncedAt = positiveInteger(meta.get("synced_at"));
+          // Never publish a partial total from invalid or half-written metadata.
+          if (count === null || syncedAt === null) return { total: null, syncedAt: null };
+          counts.push(count);
+          times.push(syncedAt);
+        }
+      }
+    } catch {
+      // An unavailable source is unknown. Publishing the remaining subtotal
+      // would turn an outage into a false decrease in the daily history.
+      return { total: null, syncedAt: null };
+    } finally {
+      db?.close();
+    }
   }
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  return counts.length && Number.isSafeInteger(total)
+    ? { total, syncedAt: Math.min(...times) }
+    : { total: null, syncedAt: null };
 }

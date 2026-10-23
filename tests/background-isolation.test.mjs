@@ -26,6 +26,11 @@ test("VPS containers leave host headroom and all offline jobs use the shared bud
   assert.match(compose, /worker: &background-worker/);
   assert.match(compose, /axis-league:\s+<<: \*background-worker\s+profiles: \[\]/);
   assert.match(web, /depends_on:\s+- axis-league/);
+  assert.match(compose, /home-counter-sampler:\s+<<: \*background-worker\s+profiles: \[\]/);
+  assert.match(web, /- home-counter-sampler/);
+  assert.match(compose, /command: \["node", "--experimental-strip-types", "--experimental-sqlite", "scripts\/sample-home-coverage\.mjs"\]/);
+  const dockerfile = await readFile("Dockerfile", "utf8");
+  assert.match(dockerfile, /COPY .*scripts\/sample-home-coverage\.mjs/);
   const slice = await readFile("ops/systemd/tarkovstats-background.slice", "utf8");
   assert.match(slice, /^MemoryMax=512M$/m);
   assert.match(slice, /^MemorySwapMax=256M$/m);

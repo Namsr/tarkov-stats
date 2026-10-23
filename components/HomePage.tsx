@@ -16,6 +16,7 @@ import SearchBar from "@/components/SearchBar";
 import HomeComparison from "@/components/home/HomeComparison";
 import HomeLeaderboard from "@/components/home/HomeLeaderboard";
 import HomeProgress from "@/components/home/HomeProgress";
+import HomeScanRail from "@/components/home/HomeScanRail";
 import { useI18n } from "@/lib/i18n/context";
 import { loadPlayerProfileResponse } from "@/lib/client-profile-request";
 import { loadAverageJson } from "@/lib/client-average-request";
@@ -39,25 +40,12 @@ import {
 } from "@/lib/home-showcase";
 import { rarestAchievements } from "@/lib/profile-achievements";
 import type { ArenaTsRating } from "@/lib/arena/ts-rating";
-import type { PublicIndexCoverage } from "@/lib/public-index-coverage";
 import { ARENA_MODE_KEYS, type ArenaProfile, type ArenaProfileRisk, type ArenaStatistic, type ArenaStoredMode } from "@/types/arena";
 import type { ProfileViewAchievement } from "@/types/player-profile-view";
 import { GAME_MODES, type GameMode } from "@/types/seasonal";
 import "@/components/home/home.css";
 import "@/components/profile.css";
 import "@/components/arena-profile.css";
-
-/** Daily throughput is a static figure, not a live measurement: the sync runs at
- *  1 RPS per mode, so a real per-day count would swing with queue state and mean
- *  nothing to a visitor.
- *
- *  2 500 is the rounded seven-day mean of profile updates across all four
- *  upstream `updated.json` feeds (regular 768, PvE 511, arena 499, seasonal 794
- *  per day, measured 2026-10-01). These are four separate feeds of overlapping
- *  players, so it counts profile updates rather than distinct people. Recompute
- *  when re-baselining the copy; the total beside it is live and comes from the
- *  `row_count` the index sync writes at swap time (lib/public-index-coverage). */
-const DAILY_SCAN_FIGURE = 2_500;
 
 interface ShowcaseSnapshot {
   mode: GameMode;
@@ -90,9 +78,6 @@ export default function HomePage() {
   const [arenaScope, setArenaScope] = useState<ArenaStoredMode>("overall");
   const [arenaStatistic, setArenaStatistic] = useState<ArenaStatistic>("trimmed_mean");
   const [snapshot, setSnapshot] = useState<ShowcaseSnapshot | null>(null);
-  // null until the index coverage response lands, so the rail never flashes a
-  // placeholder number and then swaps it for the real one.
-  const [coverage, setCoverage] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
   // The button records the URL it is retrying in a ref, not in state: the load
   // effect has to read it without depending on it, or clearing it after a mode
@@ -118,17 +103,6 @@ export default function HomePage() {
     }
     void resolveShowcase();
     return () => { cancelled = true; controller.abort(); };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/home/coverage", { signal: controller.signal })
-      .then((response) => (response.ok ? response.json() as Promise<PublicIndexCoverage> : null))
-      .then((body) => setCoverage(typeof body?.total === "number" ? body.total : null))
-      // The rail is decoration next to the search field: a failed read leaves the
-      // daily figure alone and simply omits the total, so it must not throw.
-      .catch(() => {});
-    return () => controller.abort();
   }, []);
 
   // Named outside the effect so the retry button can ask for exactly this URL.
@@ -272,19 +246,7 @@ export default function HomePage() {
           <AuthErrorBanner />
           <h1>{t("home.title")}<br />{t("home.game")}</h1>
           <SearchBar landing />
-          <p className="home-scan-rail">
-            <span className="home-scan-rail__item">
-              <span className="home-scan-rail__note">{t("home.scanAbout")}</span>
-              <strong className="home-scan-rail__value">{DAILY_SCAN_FIGURE.toLocaleString(lang)}</strong>
-              <span className="home-scan-rail__caption">{t("home.scanPerDay")}</span>
-            </span>
-            {coverage !== null && (
-              <span className="home-scan-rail__item">
-                <strong className="home-scan-rail__value">{coverage.toLocaleString(lang)}</strong>
-                <span className="home-scan-rail__caption">{t("home.scanTotal")}</span>
-              </span>
-            )}
-          </p>
+          <HomeScanRail />
           <nav className="home-feature-links" aria-label={t("home.sections")}>
             {sections.map(([id, label]) => <a key={id} href={`#${id}`}>{t(label)}</a>)}
           </nav>

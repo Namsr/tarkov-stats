@@ -1,20 +1,18 @@
 import { NextResponse } from "next/server";
 import { getPublicIndexCoverage } from "@/lib/public-index-coverage";
+import { getPublicBanCount } from "@/lib/public-ban-counter";
+import { getPublicHomeCounter } from "@/lib/public-home-counter";
 
 export const runtime = "nodejs";
 
-/** Public coverage counters, no per-user data: one policy for every branch so a
- *  fallback cannot ship without Cache-Control and become heuristically cached.
- *  The number is written by `sync-player-index.mjs` at swap time, so this is a
- *  single indexed key lookup against `player_index_meta`. */
-const PUBLIC_CACHE = { "Cache-Control": "public, max-age=300, s-maxage=600" };
+const PUBLIC_CACHE = { "Cache-Control": "public, max-age=60, s-maxage=60" };
 
 export async function GET() {
   try {
-    const coverage = await getPublicIndexCoverage();
-    return NextResponse.json(coverage, { headers: PUBLIC_CACHE });
+    const [coverage, counter, banned] = await Promise.all([getPublicIndexCoverage(), getPublicHomeCounter(), getPublicBanCount()]);
+    return NextResponse.json({ ...coverage, counter, banned }, { headers: PUBLIC_CACHE });
   } catch (error) {
-    console.warn("public index coverage read failed", error);
-    return NextResponse.json({ total: null, syncedAt: null }, { headers: PUBLIC_CACHE });
+    console.warn("public coverage read failed", error);
+    return NextResponse.json({ total: null, syncedAt: null, counter: null, banned: null }, { headers: PUBLIC_CACHE });
   }
 }

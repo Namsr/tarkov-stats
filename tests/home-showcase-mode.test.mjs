@@ -351,3 +351,75 @@ test("home history retry bypasses cached invalid secondary data without forcing 
   assert.equal(timelineRequest(h).options.maxUnavailableRetries, 2);
   h.cleanup();
 });
+
+async function scanRailHarness() {
+  const component = await read("components/home/HomeScanRail.tsx");
+  const start = component.indexOf("    const controller = new AbortController();");
+  const end = component.indexOf("  }, []);", start);
+  assert.ok(start >= 0 && end > start);
+  const source = stripTypeScriptTypes(`function effect() {${component.slice(start, end)}}`);
+  const intervals = new Map();
+  const listeners = new Map();
+  const pending = [];
+  const values = [];
+  const clock = [];
+  const document = {
+    hidden: false,
+    addEventListener: (name, callback) => listeners.set(name, callback),
+    removeEventListener: (name) => listeners.delete(name),
+  };
+  const window = {
+    setInterval(callback, delay) { intervals.set(delay, callback); return delay; },
+    clearInterval: (delay) => intervals.delete(delay),
+  };
+  const fetch = (_url, options) => new Promise((resolve, reject) => pending.push({ resolve, reject, options }));
+  const factory = new Function("document", "window", "fetch", "setCoverage", "setNow", source + "; return effect;");
+  const cleanup = factory(document, window, fetch, value => values.push(value), now => clock.push(now))();
+  return { document, pending, values, intervals, listeners, clock, cleanup };
+}
+
+test("home counters refresh, retain values on failure, resume on visibility and clean up", async () => {
+  const h = await scanRailHarness();
+  assert.equal(h.pending.length, 1);
+  assert.ok(h.clock[0] > 0);
+  const coverage = { total: 100, counter: { from: 10, to: 20 }, banned: 2 };
+  h.pending[0].resolve({ ok: true, json: async () => coverage });
+  await flushShowcase();
+  assert.deepEqual(h.values, [coverage]);
+  h.intervals.get(1000)();
+  assert.equal(h.clock.length, 2, "the number ticks locally without fetching every second");
+  assert.equal(h.pending.length, 1);
+  h.intervals.get(60000)();
+  h.pending[1].reject(new Error("offline"));
+  await flushShowcase();
+  assert.deepEqual(h.values, [coverage]);
+  h.document.hidden = true;
+  h.intervals.get(60000)();
+  assert.equal(h.pending.length, 2);
+  h.document.hidden = false;
+  h.listeners.get("visibilitychange")();
+  assert.equal(h.pending.length, 3);
+  h.cleanup();
+  assert.ok(h.pending[2].options.signal.aborted);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.listeners.size, 0);
+});
+
+test("home counters ignore a JSON response that arrives after unmount", async () => {
+  const h = await scanRailHarness();
+  let finishJson;
+  h.pending[0].resolve({ ok: true, json: () => new Promise(resolve => { finishJson = resolve; }) });
+  await flushShowcase();
+  h.cleanup();
+  finishJson({ total: 999, banned: null });
+  await flushShowcase();
+  assert.deepEqual(h.values, []);
+});
+
+
+test("home smooths the profile total and renders banned accounts directly from the database response", async () => {
+  const component = await read("components/home/HomeScanRail.tsx");
+  assert.match(component, /homeCountAt\(coverage\.counter, now\)/);
+  assert.match(component, /const banned = coverage\?\.banned \?\? null/);
+  assert.doesNotMatch(component, /homeCountAt\(coverage\.banned/);
+});
