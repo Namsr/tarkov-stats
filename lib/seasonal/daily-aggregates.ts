@@ -192,12 +192,12 @@ function intervalSql(targetBucket?: number): string {
     JOIN progression_snapshots from_s ON from_s.id = i.from_snapshot_id
     WHERE i.mode = ? AND i.cycle_id = ? AND i.status = 'valid'
       ${targetBucket == null ? "" : "AND ((s.pmc_raids - 1) / 10 + 1) * 10 = ?"}
-    ORDER BY s.pmc_raids, i.aid, i.ended_at, i.id`;
+    ${targetBucket == null ? "" : "ORDER BY s.pmc_raids, i.aid, i.ended_at, i.id"}`;
 }
 
 function cumulativeSql(targetBucket?: number): string {
   return `WITH ranked AS (
-      SELECT s.*, ROW_NUMBER() OVER (
+      SELECT s.id, s.aid, s.local_date, s.experience, s.pmc_raids, s.profile_updated_at, ROW_NUMBER() OVER (
         PARTITION BY s.aid, ((s.pmc_raids - 1) / 10 + 1)
         ORDER BY s.profile_updated_at DESC, s.id DESC
       ) rank
@@ -223,14 +223,28 @@ export function refreshSqliteProgressionAggregates(
   targetBucket?: number,
 ): { intervals: number; aggregates: number; generation: number } {
   initializeSeasonalSchema(db);
-  // Stage scores outside the main database's writer transaction. JS retains
-  // only one bucket's latest players; SQLite spills its temporary table to disk.
-  db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
-  db.exec("CREATE TEMP TABLE progression_score_stage (id INTEGER PRIMARY KEY, tempo REAL, form REAL, sample_n INTEGER)");
-  const stage = db.prepare("INSERT INTO progression_score_stage VALUES (?, ?, ?, ?)");
-  const aggregates: DailyAggregateRecord[] = [];
-  let intervalCount = 0;
+  db.exec("SAVEPOINT build_progression_aggregates");
+  let publishing = false;
   try {
+    // Stage scores outside the main database's writer transaction. JS retains
+    // only one bucket's latest players; SQLite spills its temporary table to disk.
+    db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
+    db.exec("CREATE TEMP TABLE progression_score_stage (id INTEGER PRIMARY KEY, tempo REAL, form REAL, sample_n INTEGER)");
+    db.exec("CREATE TEMP TABLE progression_aggregate_stage AS SELECT * FROM daily_aggregates WHERE 0");
+    const observedGeneration = Number(db.prepare("SELECT generation FROM progression_materializations WHERE mode = ? AND cycle_id = ?")
+      .get(mode, cycleId)?.generation ?? 0);
+    db.prepare(`CREATE TEMP TABLE progression_interval_state AS SELECT i.*,
+      COALESCE(r.revision, 0) AS source_revision FROM progression_intervals i
+      LEFT JOIN progression_personal_revisions r ON r.mode = i.mode AND r.cycle_id = i.cycle_id AND r.aid = i.aid
+      WHERE i.mode = ? AND i.cycle_id = ?
+        ${targetBucket == null ? "" : targetBucket === 0 ? "AND 0" : `AND i.to_snapshot_id IN (
+          SELECT id FROM progression_snapshots WHERE mode = ? AND cycle_id = ?
+            AND ((pmc_raids - 1) / 10 + 1) * 10 = ?)`}`)
+      .run(mode, cycleId, ...(targetBucket == null || targetBucket === 0 ? [] : [mode, cycleId, targetBucket]));
+    db.exec("CREATE UNIQUE INDEX progression_interval_state_id ON progression_interval_state(id)");
+    const stage = db.prepare("INSERT INTO progression_score_stage VALUES (?, ?, ?, ?)");
+    const aggregates: DailyAggregateRecord[] = [];
+    let intervalCount = 0;
     if (targetBucket == null) {
       db.prepare(`CREATE TEMP TABLE progression_interval_source AS
         SELECT source.*, ((dimension_raids - 1) / 10 + 1) * 10 AS bucket
@@ -275,47 +289,69 @@ export function refreshSqliteProgressionAggregates(
         throw error;
       }
     }
+    const insertAggregate = db.prepare(`INSERT INTO progression_aggregate_stage
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const row of aggregates) insertAggregate.run(row.mode, row.cycleId, row.localDate, row.kind, row.dimension, row.bucketMin,
+      row.bucketMax, row.mean, row.p25, row.p75, row.n, row.confidence, row.freshnessAt, row.scoreVersion);
+    db.exec("RELEASE build_progression_aggregates");
     db.exec("SAVEPOINT refresh_progression_aggregates");
-    try {
-      const scope = targetBucket == null ? "" : ` AND to_snapshot_id IN (
-        SELECT id FROM progression_snapshots WHERE mode = ? AND cycle_id = ?
-          AND ((pmc_raids - 1) / 10 + 1) * 10 = ?)`;
-      const scopeArgs = targetBucket == null ? [mode, cycleId] : [mode, cycleId, mode, cycleId, targetBucket];
-      if (targetBucket !== 0) {
-        db.prepare(`UPDATE progression_intervals SET tempo_score = NULL, form_score = NULL, score_sample_n = NULL
-          WHERE mode = ? AND cycle_id = ?${scope} AND id NOT IN (SELECT id FROM progression_score_stage)
-            AND (tempo_score IS NOT NULL OR form_score IS NOT NULL OR score_sample_n IS NOT NULL)`).run(...scopeArgs);
-        db.prepare(`UPDATE progression_intervals AS i SET tempo_score = s.tempo, form_score = s.form,
-          score_sample_n = s.sample_n, score_version = ? FROM progression_score_stage s
-          WHERE i.id = s.id AND (i.tempo_score IS NOT s.tempo OR i.form_score IS NOT s.form
-            OR i.score_sample_n IS NOT s.sample_n OR i.score_version IS NOT ?)`)
-          .run(ANALYTICS_SCORE_VERSION, ANALYTICS_SCORE_VERSION);
-      }
-      if (targetBucket == null) {
-        db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ?").run(mode, cycleId);
-      } else {
-        db.prepare("DELETE FROM daily_aggregates WHERE mode = ? AND cycle_id = ? AND bucket_min = ?")
-          .run(mode, cycleId, targetBucket - 10);
-      }
-      const insert = db.prepare(`INSERT INTO daily_aggregates (mode, cycle_id, local_date, kind, dimension,
-        bucket_min, bucket_max, mean, p25, p75, n, confidence, freshness_at, score_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-      for (const row of aggregates) insert.run(row.mode, row.cycleId, row.localDate, row.kind, row.dimension, row.bucketMin,
-        row.bucketMax, row.mean, row.p25, row.p75, row.n, row.confidence, row.freshnessAt, row.scoreVersion);
-      const generation = Number((db.prepare(`INSERT INTO progression_materializations
-        (mode, cycle_id, generation, materialized_at, score_version)
-        VALUES (?, ?, COALESCE((SELECT generation + 1 FROM progression_materializations WHERE mode = ? AND cycle_id = ?), 1), ?, ?)
-        ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = progression_materializations.generation + 1,
-          materialized_at = excluded.materialized_at, score_version = excluded.score_version
-        RETURNING generation`).get(mode, cycleId, mode, cycleId, Date.now(), ANALYTICS_SCORE_VERSION) as { generation: number }).generation);
+    publishing = true;
+    // The first main write takes the writer only for reconciliation. A newer
+    // completed refresh wins instead of being replaced by an older stage.
+    const next = db.prepare(`INSERT INTO progression_materializations
+      (mode, cycle_id, generation, materialized_at, score_version) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(mode, cycle_id) DO UPDATE SET generation = excluded.generation,
+        materialized_at = excluded.materialized_at, score_version = excluded.score_version
+      WHERE progression_materializations.generation = ? RETURNING generation`)
+      .get(mode, cycleId, observedGeneration + 1, Date.now(), ANALYTICS_SCORE_VERSION, observedGeneration);
+    if (!next) {
+      const current = db.prepare("SELECT generation FROM progression_materializations WHERE mode = ? AND cycle_id = ?").get(mode, cycleId);
       db.exec("RELEASE refresh_progression_aggregates");
-      return { intervals: intervalCount, aggregates: aggregates.length, generation };
-    } catch (error) {
-      db.exec("ROLLBACK TO refresh_progression_aggregates");
-      db.exec("RELEASE refresh_progression_aggregates");
-      throw error;
+      return { intervals: intervalCount, aggregates: aggregates.length, generation: Number(current.generation) };
     }
+    const generation = Number(next.generation);
+    const unchangedInput = `EXISTS (SELECT 1 FROM progression_interval_state old WHERE old.id = i.id
+      AND (i.mode, i.cycle_id, i.aid, i.from_snapshot_id, i.to_snapshot_id, i.ended_at, i.local_date, i.elapsed_days, i.status, i.experience, i.pmc_raids, i.scav_raids, i.pmc_survived, i.pmc_deaths, i.pmc_kills, i.killed_pmc, i.confidence)
+        IS (old.mode, old.cycle_id, old.aid, old.from_snapshot_id, old.to_snapshot_id, old.ended_at, old.local_date, old.elapsed_days, old.status, old.experience, old.pmc_raids, old.scav_raids, old.pmc_survived, old.pmc_deaths, old.pmc_kills, old.killed_pmc, old.confidence)
+      AND old.source_revision = COALESCE((SELECT r.revision FROM progression_personal_revisions r
+        WHERE r.mode = i.mode AND r.cycle_id = i.cycle_id AND r.aid = i.aid), 0))`;
+    const scope = targetBucket == null ? "" : ` AND to_snapshot_id IN (
+      SELECT id FROM progression_snapshots WHERE mode = ? AND cycle_id = ?
+        AND ((pmc_raids - 1) / 10 + 1) * 10 = ?)`;
+    const scopeArgs = targetBucket == null ? [mode, cycleId] : [mode, cycleId, mode, cycleId, targetBucket];
+    if (targetBucket !== 0) {
+      db.prepare(`UPDATE progression_intervals AS i SET tempo_score = NULL, form_score = NULL, score_sample_n = NULL
+        WHERE mode = ? AND cycle_id = ?${scope} AND id NOT IN (SELECT id FROM progression_score_stage)
+          AND (tempo_score IS NOT NULL OR form_score IS NOT NULL OR score_sample_n IS NOT NULL)
+          AND ${unchangedInput}`).run(...scopeArgs);
+      db.prepare(`UPDATE progression_intervals AS i SET tempo_score = s.tempo, form_score = s.form,
+        score_sample_n = s.sample_n, score_version = ? FROM progression_score_stage s
+        WHERE i.id = s.id AND (i.tempo_score IS NOT s.tempo OR i.form_score IS NOT s.form
+          OR i.score_sample_n IS NOT s.sample_n OR i.score_version IS NOT ?) AND ${unchangedInput}`)
+        .run(ANALYTICS_SCORE_VERSION, ANALYTICS_SCORE_VERSION);
+    }
+    // Remove disappeared keys, then update only changed values. A newer
+    // local_date replaces the old key; a no-change run preserves every row.
+    db.prepare(`DELETE FROM daily_aggregates AS d WHERE mode = ? AND cycle_id = ?
+      ${targetBucket == null ? "" : "AND bucket_min = ?"}
+      AND NOT EXISTS (SELECT 1 FROM progression_aggregate_stage s WHERE
+        s.mode = d.mode AND s.cycle_id = d.cycle_id AND s.local_date = d.local_date AND s.kind = d.kind AND s.dimension = d.dimension AND s.bucket_min = d.bucket_min)`)
+      .run(mode, cycleId, ...(targetBucket == null ? [] : [targetBucket - 10]));
+    db.exec(`INSERT INTO daily_aggregates SELECT * FROM progression_aggregate_stage WHERE true
+      ON CONFLICT (mode, cycle_id, local_date, kind, dimension, bucket_min) DO UPDATE SET
+        bucket_max = excluded.bucket_max, mean = excluded.mean, p25 = excluded.p25, p75 = excluded.p75, n = excluded.n, confidence = excluded.confidence, freshness_at = excluded.freshness_at, score_version = excluded.score_version
+      WHERE (daily_aggregates.bucket_max, daily_aggregates.mean, daily_aggregates.p25, daily_aggregates.p75, daily_aggregates.n, daily_aggregates.confidence, daily_aggregates.freshness_at, daily_aggregates.score_version)
+        IS NOT (excluded.bucket_max, excluded.mean, excluded.p25, excluded.p75, excluded.n, excluded.confidence, excluded.freshness_at, excluded.score_version)`);
+    db.exec("RELEASE refresh_progression_aggregates");
+    return { intervals: intervalCount, aggregates: aggregates.length, generation };
+  } catch (error) {
+    const savepoint = publishing ? "refresh_progression_aggregates" : "build_progression_aggregates";
+    db.exec(`ROLLBACK TO ${savepoint}`);
+    db.exec(`RELEASE ${savepoint}`);
+    throw error;
   } finally {
+    db.exec("DROP TABLE IF EXISTS temp.progression_interval_state");
+    db.exec("DROP TABLE IF EXISTS temp.progression_aggregate_stage");
     db.exec("DROP TABLE IF EXISTS temp.progression_interval_source");
     db.exec("DROP TABLE IF EXISTS temp.progression_score_stage");
   }
