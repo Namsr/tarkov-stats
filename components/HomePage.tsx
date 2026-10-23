@@ -276,7 +276,7 @@ export default function HomePage() {
             <ArenaCombatSummary profile={arena} risk={arenaRisk} rating={arenaRating} scope={arenaScope} onModeChange={setArenaScope} />
             <details className="arena-tsr-details home-arena-details">
               <summary>{t("arena.combat.details")}</summary>
-              <ArenaDetailedStatistics profile={arena} risk={arenaRisk} rating={arenaRating} scope={arenaScope} />
+              <ArenaDetailedStatistics profile={arena} scope={arenaScope} />
             </details>
           </div> : view && <dl className="home-profile-metrics">
             <div><dt>{t("metric.pmc_kd_ratio")}</dt><dd>{n(view.overview.pmcKdRatio, 2)}</dd></div>

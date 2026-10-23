@@ -603,7 +603,7 @@ function LegacyPlayer({
           </div>
         </section>
         <section>
-          <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+          <h2 className="section-heading mb-3">{t("profile.character")}</h2>
           <div className="detail-grid detail-grid--compact">
             {progressionStats.map((item) => <StatCard key={item.label} {...item} />)}
           </div>
@@ -800,7 +800,7 @@ function LegacyPlayer({
         </section>
 
         <section>
-          <h2 className="section-heading mb-3">{t("player.progression")}</h2>
+          <h2 className="section-heading mb-3">{t("profile.character")}</h2>
           <div className="detail-grid detail-grid--compact">
             {progressionStats.map((item) => (
               <StatCard key={item.label} {...item} />

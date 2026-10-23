@@ -25,10 +25,10 @@ export function ArenaRing({ value, max, text, unit, label }: {
   </div>;
 }
 
-export function ArenaCombatCards({ stats, score, item, hasRating, scope, riskId, playerName }: {
+export function ArenaCombatCards({ stats, score, item, hasRating, riskId, playerName }: {
   stats: { metrics: { win_rate: number | null }; counters: { matches: number | null; wins: number | null; losses: number | null } };
   score: number | null; item: Pick<ArenaModeTsRating, "rating" | "displayReady" | "reason" | "provisional"> | null | undefined;
-  hasRating: boolean; scope: ArenaStoredMode; riskId?: string; playerName?: string;
+  hasRating: boolean; riskId?: string; playerName?: string;
 }) {
   const { t, lang } = useI18n();
   const number = (value: number | null | undefined, digits = 0) => value == null ? t("common.notAvailable") : value.toLocaleString(lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -52,12 +52,11 @@ export function ArenaCombatCards({ stats, score, item, hasRating, scope, riskId,
       <article className="arena-combat-card arena-combat-card--rating" data-gauge="rating" aria-label={label("arena.tsr.title")} style={{ "--arena-ring-color": "var(--foreground)" } as CSSProperties}>
         <h2>{t("arena.tsr.title")} <span className="arena-combat-beta">{t("arena.tsr.beta")}</span></h2>
         <ArenaRing value={value} max={2} text={number(value, 2)} unit={t("arena.tsr.short")} label={t("arena.tsr.title")} />
-        <strong className="arena-combat-status">{t(scope === "overall" ? "arena.tsr.overall" : "arena.tsr.mode")}</strong>
         <p className="arena-combat-note">{hasRating ? ratingNote : t("arena.tsr.unavailable")}</p>
       </article>
       <article className="arena-combat-card arena-combat-card--wins" data-gauge="wins" aria-label={label("arena.metric.win_rate")}>
         <h2>{t("arena.metric.win_rate")}</h2>
-        <ArenaRing value={winRate} max={100} text={winRate == null ? number(null) : `${number(winRate, 1)}%`} unit={t("arena.counter.wins")} label={t("arena.metric.win_rate")} />
+        <ArenaRing value={winRate} max={100} text={winRate == null ? number(null) : `${number(winRate, 1)}%`} unit="" label={t("arena.metric.win_rate")} />
         <strong className="arena-combat-status">{t("arena.counter.wins")}: {number(stats.counters.wins)}</strong>
         <p className="arena-combat-note">{t("arena.counter.losses")}: {number(stats.counters.losses)} · {t("arena.counter.matches")}: {number(stats.counters.matches)}</p>
       </article>
@@ -75,9 +74,8 @@ export default function ArenaCombatSummary({ profile, risk, rating, scope, onMod
   const item = scope === "overall" ? rating?.overall : rating?.modes[scope];
   const modeName = (mode: ArenaStoredMode) => t(mode === "overall" ? "profile.allModes" : "arena.mode." + mode);
   return <section id="arena-overview" className="profile-anchor-section arena-combat-summary" tabIndex={-1} aria-label={t("profile.section.overview")}>
-    <div className="arena-combat-scope"><strong>{modeName(scope)}</strong><span>{t("arena.counter.matches")}: {number(stats.counters.matches)}</span></div>
     <div className="arena-combat-gauges">
-      <ArenaCombatCards stats={stats} score={riskItem?.score ?? null} item={item} hasRating={!!rating} scope={scope} riskId="arena-risk" />
+      <ArenaCombatCards stats={stats} score={riskItem?.score ?? null} item={item} hasRating={!!rating} riskId="arena-risk" />
     </div>
     <details className="arena-tsr-details">
       <summary>{t("arena.tsr.explanation")}</summary>

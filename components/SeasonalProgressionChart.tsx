@@ -165,7 +165,6 @@ export default function SeasonalProgressionChart({
     <section className="data-panel seasonal-chart">
       <div className="seasonal-chart__head">
         <div>
-          <p className="section-kicker">{t("seasonal.kind." + data.kind)}</p>
           <h2 className="section-heading">{title}</h2>
         </div>
         <div className="seasonal-chart__toggles" aria-label={t(persistent ? "progression.series.toggleAria" : "seasonal.series.toggleAria")}>

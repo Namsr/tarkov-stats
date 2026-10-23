@@ -3,8 +3,7 @@
 import StatCard from "@/components/StatCard";
 import { ARENA_METRIC_DECIMALS } from "@/components/arena-ui";
 import { useI18n } from "@/lib/i18n/context";
-import type { ArenaTsRating } from "@/lib/arena/ts-rating";
-import { ARENA_METRIC_KEYS, type ArenaCounters, type ArenaProfile, type ArenaProfileRisk, type ArenaStoredMode } from "@/types/arena";
+import { ARENA_METRIC_KEYS, type ArenaCounters, type ArenaProfile, type ArenaStoredMode } from "@/types/arena";
 
 const GROUPS: Array<{ title: string; rows: Array<[keyof ArenaCounters, string]> }> = [
   { title: "profile.arenaCombat", rows: [["kills", "kills"], ["deaths", "deaths"], ["assists", "assists"], ["headshots", "headshots"], ["damage", "damage"]] },
@@ -12,13 +11,11 @@ const GROUPS: Array<{ title: string; rows: Array<[keyof ArenaCounters, string]> 
   { title: "arena.combat.streaks", rows: [["current_kill_streak", "currentKillStreak"], ["max_kill_streak", "maxKillStreak"], ["current_win_streak", "currentWinStreak"], ["max_win_streak", "maxWinStreak"], ["current_loss_streak", "currentLossStreak"], ["max_loss_streak", "maxLossStreak"]] },
 ];
 
-export default function ArenaDetailedStatistics({ profile, scope, risk, rating }: {
-  profile: ArenaProfile; scope: ArenaStoredMode; risk: ArenaProfileRisk | null; rating: ArenaTsRating | null;
+export default function ArenaDetailedStatistics({ profile, scope }: {
+  profile: ArenaProfile; scope: ArenaStoredMode;
 }) {
   const { t, lang } = useI18n();
   const stats = scope === "overall" ? profile.overall : profile.modes[scope];
-  const tsr = scope === "overall" ? rating?.overall : rating?.modes[scope];
-  const riskScore = (scope === "overall" ? risk?.overall : risk?.modes.find((mode) => mode.mode === scope))?.score ?? null;
   const number = (value: number | null | undefined, digits = 0) => value == null ? t("common.notAvailable") : value.toLocaleString(lang, { maximumFractionDigits: digits });
   const c = stats.counters;
   const inconsistentStreak = (["kill", "win", "loss"] as const).some((type) => {
@@ -35,11 +32,7 @@ export default function ArenaDetailedStatistics({ profile, scope, risk, rating }
       <div><h3>{t("arena.combat.account")}</h3><div className="data-ledger">
         <StatCard label={t("arena.combat.bestArp")} value={number(profile.overall.bestArp)} />
         <StatCard label={t("arena.account.hours")} value={number(profile.overall.hours, 1)} suffix={profile.overall.hours == null ? undefined : t("unit.h")} />
-        {scope !== "overall" && <StatCard label={t("arena.combat.modeHours")} value={number(stats.hours, 1)} />}
-      </div>{scope !== "overall" && <p className="arena-combat-footnote">{t("arena.combat.modeHoursNote")}</p>}</div>
-      <div><h3>{t("arena.combat.ratings")}</h3><div className="data-ledger">
-        <StatCard label={t("arena.tsr.title")} value={number(tsr?.displayReady ? tsr.rating : null, 2)} />
-        <StatCard label={t("arena.combat.risk")} value={number(riskScore ?? 0)} suffix={t("arena.combat.outOf100")} />
+        {scope !== "overall" && stats.hours != null && <StatCard label={t("arena.combat.modeHours")} value={number(stats.hours, 1)} suffix={t("unit.h")} />}
       </div></div>
     </div>
   </section>;

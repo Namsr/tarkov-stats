@@ -127,7 +127,7 @@ function TimelineSlot({
     {player && state.loading && <p role="status">{loadingMessage}</p>}
     {player && !state.loading && state.error && <p role="alert">{errorMessage}</p>}
     {player && !state.loading && !state.error && !ready && <p role="status">{noHistoryMessage}</p>}
-    {ready && <p role="status">{readyMessage}</p>}
+    {ready && <p className="sr-only" role="status">{readyMessage}</p>}
   </article>;
 }
 
@@ -148,7 +148,7 @@ export default function CompareProgressionSection({
   const chartKey = `${mode}\0${cycleId}\0${primary?.aid ?? ""}\0${primary?.updatedAt ?? ""}\0${secondary?.aid ?? ""}\0${secondary?.updatedAt ?? ""}`;
 
   return <section className="profile-page compare-progression surface" aria-labelledby={headingId}>
-    <div className="compare-progression__heading">
+    <div className="sr-only">
       <h2 id={headingId} className="section-heading">{t("progression.timeline.title")}</h2>
     </div>
     <div className="compare-progression__slots">

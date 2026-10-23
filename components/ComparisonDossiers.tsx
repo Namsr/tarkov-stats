@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import CheaterScore from "@/components/CheaterScore";
+import CompactDetails from "@/components/CompactDetails";
 import ProfileRadar from "@/components/ProfileRadar";
 import AverageComparison from "@/components/AverageComparison";
 import { ArenaCombatCards } from "@/components/ArenaCombatSummary";
@@ -106,7 +107,7 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
   function section(id: string, title: string, children: ReactNode, note?: string) {
     return <section id={`compare-${id}`} className="dossier-section" aria-labelledby={`${sectionPrefix}-${id}`}>
       <h2 id={`${sectionPrefix}-${id}`} className="section-heading">{t(title)}</h2>
-      {note && <p className="dossier-note">{t(note)}</p>}{children}
+      {note && <CompactDetails summary={t("average.calculation.help")}><p>{t(note)}</p></CompactDetails>}{children}
     </section>;
   }
   function collection(id: string, rows: ReactNode[], limit: number) {
@@ -177,14 +178,14 @@ export default function ComparisonDossiers({ scope, primaryAid, secondaryAid, pr
     {scope.mode === "arena" && section("arena-overview", "profile.section.overview", <>
       <p className="dossier-note">{t(arenaMode === "overall" ? "compare.arenaOverall" : "arena.mode." + arenaMode)}</p>
       <div className="dossier-arena-gauges">{players.map((player, index) => <div className="dossier-arena-gauges__player" key={index}>
-        <ArenaCombatCards scope={arenaMode} playerName={name(index)} score={value(index, "arenaRisk")}
+        <ArenaCombatCards playerName={name(index)} score={value(index, "arenaRisk")}
           item={player?.arenaRating} hasRating={player?.arenaRating != null}
           stats={{ metrics: { win_rate: value(index, `arena_${arenaMode}_win_rate`) }, counters: {
             matches: value(index, `arena_${arenaMode}_matches`), wins: value(index, `arena_${arenaMode}_wins`), losses: value(index, `arena_${arenaMode}_losses`),
           } }} />
       </div>)}</div>
     </>)}
-    {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? selectedArenaMetrics : persistentMetrics), "compare.advantageNote")}
+    {section("combat", "compare.combat", metricPairs(scope.mode === "arena" ? selectedArenaMetrics : persistentMetrics), scope.mode === "arena" ? undefined : "compare.advantageNote")}
     {section("activity", "compare.activity", metricPairs(scope.mode === "arena" ? [
       { field: "hours", label: "arena.account.hours", digits: 1 }, { field: "bestArp", label: "arena.combat.bestArp" },
       ...arenaCounters.map(([key, label]) => ({ field: `arena_${arenaMode}_${key}`, label: `arena.counter.${label}` })),

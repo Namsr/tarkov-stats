@@ -172,10 +172,16 @@ test("Arena risk cards always render a number while other missing metrics stay u
       assert.ok(!riskCard.includes(dict[lang]["common.notAvailable"]));
       assert.ok(html.slice(html.indexOf("</article>")).includes(dict[lang]["common.notAvailable"]));
     }
-    for (const score of [null, 0, 24]) {
-      const html = renderToStaticMarkup(createElement(loaded[1].default, { profile: { overall: stats }, scope: "overall", rating: null,
-        risk: score === null ? null : { overall: { score } } }));
-      assert.ok(html.includes(`data-label="${dict[lang]["arena.combat.risk"]}">${score ?? 0}</div>`));
+    for (const hours of [null, 0, 12]) {
+      const html = renderToStaticMarkup(createElement(loaded[1].default, {
+        profile: { overall: { ...stats, hours: 120 }, modes: { lastHero: { ...stats, hours } } }, scope: "lastHero",
+      }));
+      assert.ok(!html.includes(`data-label="${dict[lang]["arena.combat.risk"]}"`));
+      assert.ok(!html.includes(`data-label="${dict[lang]["arena.tsr.title"]}"`));
+      const label = `data-label="${dict[lang]["arena.combat.modeHours"]}"`;
+      assert.equal(html.includes(label), hours !== null, "show mode hours only when supplied, including zero");
+      if (hours !== null) assert.ok(html.includes(`${label}>${hours}</div>`));
+      assert.ok(html.includes(`data-label="${dict[lang]["arena.account.hours"]}">120</div>`));
     }
   }
 });

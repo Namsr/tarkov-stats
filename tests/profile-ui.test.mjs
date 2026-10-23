@@ -1526,7 +1526,6 @@ test("PvE profiles use the persistent shell and mode-scoped UI data", async () =
   const progression = await readFile("components/ProgressionPanel.tsx", "utf8");
   const radar = await readFile("components/PlayerRadarComparison.tsx", "utf8");
   const achievements = await readFile("components/ProfileAchievements.tsx", "utf8");
-  const dictionary = await readFile("lib/i18n/dictionary.ts", "utf8");
 
   assert.match(regular, /if \(mode === "regular" \|\| mode === "pve"\)/);
   assert.match(regular, /<ProfileShell[\s\S]*?mode=\{mode\}[\s\S]*?overviewCards=\{regularOverviewCards\}/);
@@ -1541,8 +1540,6 @@ test("PvE profiles use the persistent shell and mode-scoped UI data", async () =
   assert.match(radar, /if \(mode === "arena"\)/);
   assert.doesNotMatch(radar, /if \(mode !== "regular" && mode !== "seasonal"\)/);
   assert.match(achievements, /mode: "regular" \| "pve" \| "seasonal"/);
-  assert.match(dictionary, /"progression\.kicker\.pve": "PvE history"/);
-  assert.match(dictionary, /"progression\.kicker\.pve": "История PvE"/);
 });
 
 test("PvE averages include the persistent progression charts", async () => {
