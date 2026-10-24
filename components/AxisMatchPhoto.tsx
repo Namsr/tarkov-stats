@@ -14,7 +14,7 @@ export interface AxisMatchPhotoHandle {
 
 type PhotoPreview = { src: string; width: number; height: number; key?: string };
 
-function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; matchNumber: number; onClose: () => void }) {
+export function AxisPhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; matchNumber: number; onClose: () => void }) {
   const { t } = useI18n();
   const dialog = useRef<HTMLDialogElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -66,8 +66,8 @@ function PhotoViewer({ image, matchNumber, onClose }: { image: PhotoPreview; mat
   </dialog>, document.body);
 }
 
-/** Mounted only inside the authorized match statistics editor. */
-export default function AxisMatchPhoto({ matchNumber, busy, ref, onImageChange }: { matchNumber: number; busy: boolean; ref: Ref<AxisMatchPhotoHandle>; onImageChange: (image: AxisOcrImage | null) => void }) {
+/** Shared photo picker for authorized screenshot submissions and match editing. */
+export default function AxisMatchPhoto({ matchNumber, busy, ref, onImageChange, uploadOnly = false }: { matchNumber: number; busy: boolean; ref: Ref<AxisMatchPhotoHandle>; onImageChange: (image: AxisOcrImage | null) => void; uploadOnly?: boolean }) {
   const { t } = useI18n();
   const [photo, setPhoto] = useState<AxisMatchPhoto | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -152,14 +152,15 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref, onImageChange }
     conflict() { setConflict(true); setRetry(value => value + 1); setMessage(t("axis.kda.conflict")); },
   }));
   return <section className="axis-match-photo" aria-label={t("axis.photo.title", { n: matchNumber })}>
-    <div className="axis-photo-paste" tabIndex={0} role="group" aria-label={t("axis.photo.pasteHint")}>
+    <div className="axis-photo-paste" tabIndex={0} role="group" aria-label={t(uploadOnly ? "axis.submission.hint" : "axis.photo.pasteHint")}>
       <h4>{t("axis.photo.heading")}</h4>
-      <p>{t("axis.photo.pasteHint")}</p>
+      <p>{t(uploadOnly ? "axis.submission.hint" : "axis.photo.pasteHint")}</p>
       <label className="axis-photo-file"><span>{t("axis.photo.select")}</span>
         <input type="file" accept={AXIS_PHOTO_TYPES.join(",")} disabled={busy || reading || loadFailed}
           aria-label={t("axis.photo.select")} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void select(file); }} />
       </label>
     </div>
+    {uploadOnly && photo && <p className="axis-kda-hint">{t("axis.submission.exists")}</p>}
     {!loaded && !loadFailed && <p role="status">{t("common.loading")}</p>}
     {loadFailed && <>
       <p role="status">{t("axis.photo.loadError")}</p>
@@ -169,9 +170,9 @@ export default function AxisMatchPhoto({ matchNumber, busy, ref, onImageChange }
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={preview.src} alt={t("axis.photo.alt", { n: matchNumber })} loading="lazy" width={preview.width} height={preview.height} />
     </button>}
-    {preview && <button type="button" className="axis-photo-remove" disabled={busy || reading} aria-label={t("axis.photo.remove")}
+    {preview && !uploadOnly && <button type="button" className="axis-photo-remove" disabled={busy || reading} aria-label={t("axis.photo.remove")}
       onClick={() => { onImageChange(null); setExpected(photo?.revision ?? null); setDraft(null); setConflict(false); setMessage(""); }}><span aria-hidden="true">×</span></button>}
     {(reading || message) && <p className="admin-notice" role="status">{reading ? t("common.loading") : message}</p>}
-    {viewer && <PhotoViewer image={viewer} matchNumber={matchNumber} onClose={() => setViewer(null)} />}
+    {viewer && <AxisPhotoViewer image={viewer} matchNumber={matchNumber} onClose={() => setViewer(null)} />}
   </section>;
 }

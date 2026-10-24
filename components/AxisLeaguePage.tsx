@@ -21,6 +21,7 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [view, setView] = useState<"standings" | "history" | "profiles">(initialView);
   const [canEdit, setCanEdit] = useState<boolean | null>(null);
+  const [canSubmit, setCanSubmit] = useState(false);
   const locale = lang === "ru" ? "ru-RU" : "en-US";
 
   useEffect(() => {
@@ -33,8 +34,11 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
         const response = await fetch("/api/auth/me", { cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
         if (!response.ok) throw new Error("Session unavailable");
         const body = await response.json();
-        if (!controller.signal.aborted) setCanEdit(body.isAdmin === true || body.canEditAxisKda === true);
-      } catch { if (!controller.signal.aborted) setCanEdit(false); }
+        if (!controller.signal.aborted) {
+          setCanEdit(body.isAdmin === true || body.canEditAxisKda === true);
+          setCanSubmit(body.canSubmitAxisScreenshot === true);
+        }
+      } catch { if (!controller.signal.aborted) { setCanEdit(false); setCanSubmit(false); } }
       finally { running = false; }
     }
     void loadAccess();
@@ -103,7 +107,7 @@ export default function AxisLeaguePage({ initialView = "standings", initialMatch
         <button type="button" className={view === "history" ? "is-active" : ""} aria-pressed={view === "history"} onClick={() => setView("history")}>{t("axis.history.title")}</button>
         {canEdit && <button type="button" className={view === "profiles" ? "is-active" : ""} aria-pressed={view === "profiles"} onClick={() => setView("profiles")}>{t("axis.profiles.title")}</button>}
       </div>
-      <div hidden={view !== "history"}><AxisMatchHistory initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} /></div>
+      <div hidden={view !== "history"}><AxisMatchHistory initialMatch={initialMatch} players={data?.players} averageKda={data?.averageKda ?? null} active={view === "history"} canEditKda={canEdit === true} canSubmitScreenshot={canSubmit} /></div>
       {view === "profiles" && (canEdit === null ? <p role="status">{t("common.loading")}</p> : canEdit ? <AdminAxisLeague data={data} onChange={cacheAxisLeague} editorOnly /> : <p role="status">{t("axis.profiles.accessDenied")}</p>)}
       {view === "standings" && <>
       <section className="leaderboard-controls axis-controls" aria-label={t("leaderboard.settings")}>

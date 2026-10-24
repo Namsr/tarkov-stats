@@ -13,7 +13,9 @@ const mockModule = (source) => ({ shortCircuit: true, url: "data:text/javascript
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === "next/server") return mockModule("export function after() {};");
   if (specifier === "@/lib/admin-auth") return mockModule("export async function requireAdmin() { return globalThis.axisAccess; }");
-  if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
+  if (specifier === "@/lib/axis-access") return mockModule("export async function requireAxisKdaEditor() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; } export async function requireAxisScreenshotSubmitter() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; } export async function requireAxisModerator() { return globalThis.axisKdaAccess ?? globalThis.axisAccess; }");
+  if (specifier === "@/lib/server-axis-ocr") return mockModule("export async function recognizeAxisPhoto() { if (globalThis.axisOcrFailure) throw new Error('ocr unavailable'); return globalThis.axisOcrResult; } export async function recognizeAxisPhotoUpload(value) { if (globalThis.axisOcrFailure) throw new Error('ocr unavailable'); return { photo: await globalThis.axisNormalizePhoto(value), result: globalThis.axisOcrResult }; }");
+  if (specifier === "@/lib/arena/service") return mockModule("export async function getArenaProfile() { return null; }");
   if (specifier === "@/lib/admin/axis-league-db" || specifier === "./admin/axis-league-db.ts") return mockModule("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/axis-league-sync") return mockModule("export async function loadAxisLeague() { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.read(); }");
   if (specifier === "@/lib/axis-history-sync") return mockModule("export async function loadAxisHistory(page) { if(globalThis.axisReadError) throw new Error('offline'); return globalThis.axisStore.readHistory(page); } export async function loadAxisSeasonHistory(page,season,_defer,matchNumber,map) { return matchNumber == null ? globalThis.axisStore.readSeasonHistory(page,season,undefined,map) : globalThis.axisStore.readMatchHistory(matchNumber); }");
@@ -32,12 +34,23 @@ const { loadAxisLeague: loadSavedLeague } = await import("../lib/axis-league-syn
 const { loadAxisHistory: loadSavedHistory, loadAxisSeasonHistory: loadSavedSeason } = await import("../lib/axis-history-sync.ts");
 
 const id = "95520357670191104";
+const ocrRows = () => Array.from({ length: 10 }, (_, index) => ({
+  id: `${index < 5 ? "left" : "right"}:${index % 5}`,
+  side: index < 5 ? "left" : "right",
+  index: index % 5,
+  nickname: index === 0 ? "Player" : `Player ${index + 1}`,
+  kills: null, deaths: null, assists: null,
+  numberConfidence: { kills: null, deaths: null, assists: null }, confidence: 1,
+}));
 function setup(t) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
   globalThis.axisAccess = { ok: true, user: { sub: "admin" } };
   globalThis.axisKdaAccess = null;
   globalThis.axisReadError = false;
+  globalThis.axisOcrFailure = false;
+  globalThis.axisNormalizePhoto = normalizeAxisPhoto;
+  globalThis.axisOcrResult = { score: { left: null, right: null }, scoreConfidence: { left: null, right: null }, crop: { x: 0, y: 0, width: 128, height: 72 }, rows: ocrRows() };
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publish([{ id, name: "Player", position: 1, mmr: 1000, peakMmr: 1000,
     games: 1, wins: 1, losses: 0, winrate: 1, streak: 1, peakStreak: 1, profile: null }]);
@@ -46,7 +59,10 @@ function setup(t) {
 function setupStats(t) {
   setup(t);
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [{ number: 5, time: Date.now(), queueId: "1343726040421367842", queue: "Arena League", maps: [], winner: 0,
-    teams: [{ name: null, players: [{ id, name: "Player", mmr: 1000, change: 25, profile: null }] }, { name: null, players: [] }] }] });
+    teams: [0, 1].map(teamIndex => ({ name: null, players: Array.from({ length: 5 }, (_, index) => {
+      const rosterIndex = teamIndex * 5 + index;
+      return { id: rosterIndex === 0 ? id : `axis-player-${rosterIndex + 1}`, name: rosterIndex === 0 ? "Player" : `Player ${rosterIndex + 1}`, mmr: 1000, change: 25, profile: null };
+    }) })) }] });
 }
 
 test("player profiles read locally and validate identity, season, pagination and result", async t => {
@@ -156,7 +172,7 @@ test("only full admins can manage editors or use admin profile-link endpoints", 
   assert.equal((await POST(request({ discordId: id, profile: "12345" }))).status, 403);
   globalThis.axisAccess = { ok: true, user: { sub: "admin" } };
   assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: true }))).status, 200);
-  assert.deepEqual((await (await editorsGet()).json()).editors, [{ subject: "limited-editor", name: null }]);
+  assert.deepEqual((await (await editorsGet()).json()).editors, [{ subject: "limited-editor", name: null, role: "moderator" }]);
   assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), true);
   assert.equal((await editorsPost(request({ subject: "limited-editor", enabled: false }))).status, 200);
   assert.equal(globalThis.axisStore.isKdaEditor("limited-editor"), false);
@@ -388,7 +404,7 @@ test("match photos validate access, origin and input, stay independent of stats,
   const replacement = { ...input, expected: saved.revision, data: (await imageFixture("#884422")).toString("base64") };
   assert.equal((await photoPost(photoRequest(replacement))).status, 200);
   assert.equal((await photoPost(photoRequest({ ...input, expected: saved.revision, data: null }))).status, 409, "stale deletion cannot remove a replacement");
-  assert.equal((await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=5&v=${saved.revision}`))).status, 404);
+  assert.equal((await photoGet(new Request(`https://tarkovstats.ru/api/axis-league/match-photo?match=5&v=${saved.revision}`))).status, 200, "submission history keeps both screenshots available to moderators");
   const current = globalThis.axisStore.readMatchPhotoMetadata(5);
   assert.equal((await photoPost(photoRequest({ ...input, expected: current.revision, data: null }))).status, 200);
   assert.equal(globalThis.axisStore.readMatchPhoto(5), null);
@@ -456,10 +472,10 @@ test("Google names resolve IDs before and after granting access without changing
   assert.equal(globalThis.axisStore.isKdaEditor(account.sub), false);
   // A client-supplied alias is ignored: the directory comes only from verified identities.
   const granted = await editorsPost(request({ subject: account.sub, enabled: true, name: "Forged" }));
-  assert.deepEqual((await granted.json()).editors, [{ subject: account.sub, name: "Редактор AXIS" }]);
+  assert.deepEqual((await granted.json()).editors, [{ subject: account.sub, name: "Редактор AXIS", role: "moderator" }]);
   await editorsPost(request({ subject: "pending-editor", enabled: true }));
   let editors = (await (await editorsGet()).json()).editors;
-  assert.deepEqual(editors.find(editor => editor.subject === "pending-editor"), { subject: "pending-editor", name: null });
+  assert.deepEqual(editors.find(editor => editor.subject === "pending-editor"), { subject: "pending-editor", name: null, role: "moderator" });
   await recordGoogleIdentity({ ...account, sub: "pending-editor" });
   await recordGoogleIdentity({ ...account, name: "New Google name" });
   editors = (await (await editorsGet()).json()).editors;

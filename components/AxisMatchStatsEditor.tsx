@@ -79,11 +79,11 @@ export default function AxisMatchStatsEditor({ match, canEdit, children, onSaved
     setBusy(true); setMessage("");
     try {
       const response = await fetch("/api/admin/axis-league/match-stats", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ matchNumber: match.number, players: changes, rounds, photo: photoChange }), signal: AbortSignal.timeout(30_000) });
+        body: JSON.stringify({ matchNumber: match.number, players: changes, rounds, photo: photoChange }), signal: AbortSignal.timeout(180_000) });
       const body = await response.json();
       if (!response.ok || !body.ok || body.matchNumber !== match.number || !Array.isArray(body.players)) {
         if (response.status === 409) { ocr.current?.invalidate(); if (photoChange !== undefined) photo.current?.conflict(); onConflict(); setMessage(t("axis.kda.conflict")); }
-        else setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : "admin.error.save"));
+        else setMessage(t(response.status === 413 ? "axis.photo.tooLarge" : response.status === 422 ? "axis.submission.mismatch" : "admin.error.save"));
         return;
       }
       onSaved(body.players, body.rounds, body.edited);
