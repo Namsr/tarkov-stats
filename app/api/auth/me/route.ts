@@ -3,7 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { isAdminUser } from "@/lib/admin-auth";
 import { recordAuthActivity } from "@/lib/admin/request-events";
 import { recordGoogleIdentity } from "@/lib/auth/google-identity";
-import { canEditAxisKda } from "@/lib/axis-access";
+import { axisUploadRole } from "@/lib/axis-access";
 
 export const runtime = "nodejs";
 
@@ -16,8 +16,9 @@ export async function GET() {
       await recordAuthActivity(user.sub);
     });
   }
+  const role = await axisUploadRole(user);
   return NextResponse.json(
-    { user, isAdmin: isAdminUser(user), canEditAxisKda: await canEditAxisKda(user) },
+    { user, isAdmin: isAdminUser(user), canEditAxisKda: role === "moderator", canSubmitAxisScreenshot: role !== null },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

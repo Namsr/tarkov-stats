@@ -32,14 +32,15 @@ export default function ProfilePage() {
   const [statsError, setStatsError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [canEditAxisKda, setCanEditAxisKda] = useState(false);
+  const [canSubmitAxisScreenshot, setCanSubmitAxisScreenshot] = useState(false);
   const [accountId, setAccountId] = useState("");
 
   useEffect(() => {
     if (!enabled) return;
     fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => response.json() as Promise<{ isAdmin?: boolean; canEditAxisKda?: boolean; user?: { sub?: string } | null }>)
-      .then((data) => { setIsAdmin(data.isAdmin === true); setCanEditAxisKda(data.canEditAxisKda === true); setAccountId(data.user?.sub ?? ""); })
-      .catch(() => setIsAdmin(false));
+      .then((response) => response.json() as Promise<{ isAdmin?: boolean; canEditAxisKda?: boolean; canSubmitAxisScreenshot?: boolean; user?: { sub?: string } | null }>)
+      .then((data) => { setIsAdmin(data.isAdmin === true); setCanEditAxisKda(data.canEditAxisKda === true); setCanSubmitAxisScreenshot(data.canSubmitAxisScreenshot === true); setAccountId(data.user?.sub ?? ""); })
+      .catch(() => { setIsAdmin(false); setCanEditAxisKda(false); setCanSubmitAxisScreenshot(false); });
   }, [enabled]);
 
   // force=true (страница открыта через перезагрузку) обходит 5-мин кэш upstream,
@@ -133,7 +134,7 @@ export default function ProfilePage() {
         </div>
         </div>
         {isAdmin && <Link href="/admin" className="tactical-button">{t("profile.admin")}</Link>}
-        {!isAdmin && canEditAxisKda && <Link href="/axis-league?view=history" className="tactical-button">{t("axis.editor.profileLink")}</Link>}
+        {!isAdmin && (canEditAxisKda || canSubmitAxisScreenshot) && <Link href="/axis-league?view=history" className="tactical-button">{t(canEditAxisKda ? "axis.editor.profileLink" : "axis.submission.profileLink")}</Link>}
       </div>
 
       {statsError && <p className="text-[var(--danger)] text-sm">{statsError}</p>}

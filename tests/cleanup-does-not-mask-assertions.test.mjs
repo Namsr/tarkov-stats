@@ -717,6 +717,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/average-materialize-once.test.mjs",
   // Photo persistence closes the current SQLite handle before removing its directory.
   "tests/axis-league.test.mjs",
+  // Workers are awaited/terminated, then the verification connection closes before cleanup.
+  "tests/axis-submission-storage.test.mjs",
   "tests/backup-db.test.mjs",
   // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
   "tests/background-isolation.test.mjs",

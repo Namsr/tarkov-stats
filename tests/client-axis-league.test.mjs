@@ -229,14 +229,14 @@ async function historyRequestEffect({ cachedPages = [], retry = 0, season = "cur
   const end = source.indexOf("  useEffect(() => {", start + 20);
   assert.ok(start > 0 && end > start);
   const compiled = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const state = { now: AXIS_REFRESH_MS - 1000, timers: new Map(), calls: [], failed: false, data: null, cache: cachedPages, visibilityState: "visible", listeners: new Map() };
+  const state = { now: AXIS_REFRESH_MS - 1000, timers: new Map(), calls: [], failed: false, data: null, revision: 0, cache: cachedPages, visibilityState: "visible", listeners: new Map() };
   let cleanup, timerId = 0;
   const document = { get visibilityState() { return state.visibilityState; }, addEventListener: (name, fn) => state.listeners.set(name, fn), removeEventListener: name => state.listeners.delete(name) };
-  new Function("useEffect", "active", "page", "season", "retry", "handledRetry", "focusedMatch", "selectedMap", "cachedPages", "AXIS_REFRESH_MS", "document", "Date", "setTimeout", "clearTimeout", "fetch", "setData", "setFailed", "setCachedPages", compiled)(
+  new Function("useEffect", "active", "page", "season", "retry", "handledRetry", "focusedMatch", "selectedMap", "cachedPages", "AXIS_REFRESH_MS", "document", "Date", "setTimeout", "clearTimeout", "fetch", "setData", "setFailed", "setCachedPages", "setHistoryRevision", compiled)(
     effect => { cleanup = effect(); }, true, 1, season, retry, { current: 0 }, undefined, undefined, cachedPages, AXIS_REFRESH_MS, document, { now: () => state.now },
     (fn, delay) => { state.timers.set(++timerId, { fn, delay }); return timerId; }, id => state.timers.delete(id),
     async (url, options) => { state.calls.push({ url, signal: options.signal }); return request ? request(url, options) : Response.json({ available: true, page: 1, season, matches: [] }); },
-    value => { state.data = value; }, value => { state.failed = value; }, update => { state.cache = update(state.cache); });
+    value => { state.data = value; }, value => { state.failed = value; }, update => { state.cache = update(state.cache); }, update => { state.revision = update(state.revision); });
   state.flush = () => new Promise(resolve => setImmediate(resolve));
   state.cleanup = () => cleanup();
   return state;
@@ -254,6 +254,7 @@ test("history cached revisits refresh at the original expiry without an extra re
       assert.equal(state.calls.length, 1);
       assert.equal(state.failed, false);
       assert.equal(state.cache[0].receivedAt, state.now);
+      assert.equal(state.revision, 1, "a successful refresh also invalidates moderator review");
     } finally { state.cleanup(); }
     assert.equal(state.timers.size, 0);
   }

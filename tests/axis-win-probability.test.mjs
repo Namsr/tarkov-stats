@@ -480,18 +480,20 @@ test("history renders season probabilities below team results in both languages 
   const source = await readFile("components/AxisMatchHistory.tsx", "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const ast = ts.createSourceFile("history.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  let fetchCalls = 0;
+  const fetchUrls = [];
   function visit(node) {
-    if (ts.isCallExpression(node) && node.expression.getText(ast) === "fetch") fetchCalls++;
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "fetch") fetchUrls.push(node.arguments[0].getText(ast));
     ts.forEachChild(node, visit);
   }
   visit(ast);
-  assert.equal(fetchCalls, 1, "the existing history request is the only fetch");
+  assert.equal(fetchUrls.filter(url => url.includes("/api/axis-league/history")).length, 1, "probabilities reuse the history response");
+  assert.equal(fetchUrls.filter(url => url.includes("/api/admin/axis-league/match-review")).length, 1, "moderation has one batched review request");
+  assert.equal(fetchUrls.length, 2, "there is no separate probability request");
   for (const lang of ["ru", "en"]) for (const average of [{ a: .5125, b: .4875, matches: 88 }, null]) {
     const compiledModule = { exports: {} };
     const summary = { played: 88, winsA: 52, winsB: 36, maps: [], averageWinProbability: average };
     const data = { available: true, stale: false, page: 1, pages: 1, total: 88, season: "current", matches: [], summary };
-    const states = [1, "current", undefined, undefined, data, [], false, 0, null];
+    const states = [1, {}, {}, false, "current", undefined, undefined, data, [], false, 0, null, 0];
     const t = (key, values = {}) => Object.entries(values).reduce((s, [k, v]) => s.replace(`{${k}}`, v), dict[lang][key]);
     new Function("require", "module", "exports", compiled)(name => {
       if (name === "react") return { useState: () => [states.shift(), () => {}], useRef: value => ({ current: value }), useId: () => "maps", useEffect: () => {} };
