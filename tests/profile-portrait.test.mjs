@@ -246,7 +246,7 @@ async function portraitHarness() {
     },
   };
   const jsx = (type, props, key) => ({ type, props, key });
-  const module = { exports: {} };
+  const componentModule = { exports: {} };
   const require = (name) => {
     if (name === "react") return react;
     if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
@@ -254,11 +254,11 @@ async function portraitHarness() {
     if (name === "@/lib/i18n/context") return { useI18n: () => ({ t: (key) => key }) };
     throw new Error(`Unexpected import: ${name}`);
   };
-  new Function("require", "module", "exports", compiled)(require, module, module.exports);
+  new Function("require", "module", "exports", compiled)(require, componentModule, componentModule.exports);
   return {
     render() {
       cursor = 0;
-      const node = module.exports.default({ aid: 42, mode: "seasonal", cycleId: "portrait-test", nickname: "Player" });
+      const node = componentModule.exports.default({ aid: 42, mode: "seasonal", cycleId: "portrait-test", nickname: "Player" });
       return { node, image: node.props.children.find((child) => child?.type === "img") };
     },
     unmount() { cleanup?.(); },
