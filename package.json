@@ -16,7 +16,7 @@
     "test:admin-moderation": "node --experimental-strip-types --test tests/achievement-baseline-publication.test.ts tests/admin-moderation.test.ts",
     "test:average-publication": "node --experimental-strip-types --experimental-sqlite --test tests/average-publication.test.ts",
     "test:average-client": "node --experimental-strip-types --test tests/client-average-request.test.ts",
-    "pretest": "npm run test:ops && npm run test:average-publication && npm run test:average-client && npm run test:leaderboard && npm run test:axis-ocr",
+    "pretest": "npm run test:ops && npm run test:average-publication && npm run test:average-client && npm run test:leaderboard && npm run test:axis-ocr && npm run test:discord",
     "test:arena-ui": "node --experimental-strip-types --test tests/arena-ui.test.mjs",
     "test:regular-progression": "node --experimental-strip-types --test tests/regular-progression.test.ts",
     "test:progression-population": "node --experimental-strip-types --experimental-sqlite --test tests/progression-population-snapshot.test.ts",
@@ -44,9 +44,13 @@
     "test:progression-memory": "node --experimental-strip-types --test tests/progression-memory.test.mjs",
     "import:ban-list": "node --experimental-strip-types --experimental-sqlite scripts/import-ban-list.mjs",
     "predev": "node scripts/prepare-axis-ocr.mjs",
-    "test:axis-ocr": "node --experimental-strip-types --test tests/axis-ocr.test.mjs tests/axis-ocr-context.test.mjs tests/axis-ocr-draft.test.mjs tests/axis-ocr-layout.test.mjs tests/axis-ocr-assets.test.mjs tests/axis-ocr-worker.test.mjs tests/axis-ocr-mapping.test.mjs && node --experimental-strip-types --test tests/server-axis-ocr.test.mjs"
+    "test:axis-ocr": "node --experimental-strip-types --test tests/axis-ocr.test.mjs tests/axis-ocr-context.test.mjs tests/axis-ocr-draft.test.mjs tests/axis-ocr-layout.test.mjs tests/axis-ocr-assets.test.mjs tests/axis-ocr-worker.test.mjs tests/axis-ocr-mapping.test.mjs && node --experimental-strip-types --test tests/server-axis-ocr.test.mjs",
+    "postbuild": "node scripts/prepare-discord-runtime.mjs",
+    "discord:bot": "node --experimental-strip-types --experimental-sqlite scripts/axis-discord-bot.mjs",
+    "test:discord": "node --experimental-strip-types --experimental-sqlite --test tests/axis-discord-bot.test.mjs tests/axis-discord-submission.test.mjs tests/axis-discord-runtime.test.mjs"
   },
   "dependencies": {
+    "discord.js": "14.27.0",
     "jose": "^6.2.12",
     "next": "^16.4.1",
     "onnxruntime-web": "1.30.0",

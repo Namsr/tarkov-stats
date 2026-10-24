@@ -15,6 +15,9 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+The optional [AXIS Discord bot](docs/axis-discord-bot.md) accepts match screenshots
+from configured Discord channels without requiring a website account.
+
 Useful checks before opening a pull request:
 
 ```bash

@@ -109,6 +109,30 @@ services:
     command: ["node", "--experimental-strip-types", "--experimental-sqlite", "scripts/sample-home-coverage.mjs"]
     restart: unless-stopped
 
+  # Optional screenshot reader. Uses the existing aggregate background budget;
+  # its own volume contains delivery checkpoints, never the site's databases.
+  # Token/configuration are supplied only to this service, not to web.
+  axis-discord:
+    <<: *background-worker
+    profiles: ["discord"]
+    env_file:
+      - path: .env.discord
+        required: false
+    environment:
+      AXIS_DISCORD_API_BASE_URL: "http://web:3000"
+      AXIS_DISCORD_STATE_PATH: "/data/axis-discord.db"
+    command: ["node", "--experimental-strip-types", "--experimental-sqlite", "scripts/axis-discord-bot.mjs"]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    volumes:
+      - axis_discord_data:/data
+    logging:
+      driver: journald
+      options:
+        tag: tarkovstats-axis-discord
+        mode: non-blocking
+        max-buffer-size: "1m"
+
   caddy:
     image: caddy:2-alpine
     environment:
@@ -146,6 +170,7 @@ services:
         max-buffer-size: "1m"
 
 volumes:
+  axis_discord_data:
   players_data:
   caddy_data:
   caddy_config:
