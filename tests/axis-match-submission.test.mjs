@@ -121,6 +121,15 @@ test("strict OCR validation accepts reversed sides, rejects mixed sides, and rec
   globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: partial };
   assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
   assert.deepEqual(globalThis.axisStore.readAxisMatchReview(77).submissions[0].missingDiscordIds, ["9", "10"]);
+
+  setup(t);
+  const unreadable = rowsFor(names).map((row, index) => index < 8 ? row : { ...row, nickname: "" });
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: unreadable };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  const unreadableReview = globalThis.axisStore.readAxisMatchReview(77);
+  assert.deepEqual(unreadableReview.submissions[0].unmatchedNames, ["", ""]);
+  assert.equal(unreadableReview.unreadableNames, 2);
+  assert.deepEqual(unreadableReview.nicknameMismatches, []);
 });
 
 test("OCR validation accepts the current Arena nickname alias for each roster player", () => {

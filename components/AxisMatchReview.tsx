@@ -7,7 +7,7 @@ import { axisPhotoUrl } from "@/lib/axis-match-photo";
 import { AxisPhotoViewer } from "@/components/AxisMatchPhoto";
 
 export function axisReviewNeedsAttention(review: AxisMatchReviewView, roundsMissing: boolean) {
-  return review.missingStats.length > 0 || review.nicknameMismatches.length > 0
+  return review.missingStats.length > 0 || review.nicknameMismatches.length > 0 || review.unreadableNames > 0
     || review.conflicts.length > 0 || review.roundConflict !== null || roundsMissing;
 }
 
@@ -19,6 +19,7 @@ export default function AxisMatchReview({ review, roundsMissing }: { review: Axi
     {review.missingStats.length > 0 && <p>{t("axis.review.missing", { names: review.missingStats.join(", ") })}</p>}
     {roundsMissing && <p>{t("axis.review.roundsMissing")}</p>}
     {review.nicknameMismatches.length > 0 && <p>{t("axis.review.unmatched", { names: review.nicknameMismatches.join(", ") })}</p>}
+    {review.unreadableNames > 0 && <p>{t("axis.review.unreadableNames", { n: review.unreadableNames })}</p>}
     {conflictNames.length > 0 && <p>{t("axis.review.conflicts", { names: conflictNames.join(", ") })}</p>}
     {review.conflicts.length > 0 && <ul className="axis-review-conflicts">{review.conflicts.map((conflict, index) => <li key={`${conflict.discordId}:${index}`}>
       <strong>{conflict.name}</strong><span aria-label={t("axis.review.recorded")}>{conflict.existing.kills} / {conflict.existing.deaths} / {conflict.existing.assists}</span>

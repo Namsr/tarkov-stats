@@ -13,6 +13,7 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "axis.review.unreadableNames": "Unreadable nicknames across screenshots: {n}",
   "axis.submission.profileLink": "AXIS League player",
   "axis.review.recorded": "Recorded K/D/A",
   "axis.review.recognized": "Screenshot K/D/A",
@@ -2071,6 +2072,7 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "axis.review.unreadableNames": "Не удалось прочитать ников на скриншотах: {n}",
   "axis.submission.profileLink": "Игрок AXIS League",
   "axis.review.recorded": "Записанная K/D/A",
   "axis.review.recognized": "K/D/A на скриншоте",

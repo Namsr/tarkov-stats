@@ -73,7 +73,7 @@ export function validateAxisOcrNames(result: AxisOcrResult, context: AxisOcrCont
   const assignments = matchAxisOcrRows(result.rows, context.participants);
   const matchedIds = new Set(Object.values(assignments).filter((id): id is string => Boolean(id)));
   const recognizedNames = result.rows.map((row) => row.nickname).filter((name) => name.trim());
-  const unmatchedNames = result.rows.filter((row) => row.nickname.trim() && !assignments[row.id]).map((row) => row.nickname);
+  const unmatchedNames = result.rows.filter((row) => !assignments[row.id]).map((row) => row.nickname.trim());
   if (matchedIds.size < 8 || unmatchedNames.length > 2) {
     throw new AxisOcrMatchMismatchError("Screenshot names do not match this match");
   }

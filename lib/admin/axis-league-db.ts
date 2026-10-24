@@ -357,7 +357,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       uploadedBy: latest?.uploadedBy ?? "",
       uploadedAt: latest?.uploadedAt ?? 0,
       missingStats: missingPlayers.map((player) => player.name),
-      nicknameMismatches: [...new Set(submissions.flatMap((entry) => entry.unmatchedNames))],
+      unreadableNames: submissions.reduce((count, entry) => count + entry.unmatchedNames.filter((name) => !name.trim()).length, 0),
+      nicknameMismatches: [...new Set(submissions.flatMap((entry) => entry.unmatchedNames.filter((name) => name.trim())))],
       conflicts: submissions.flatMap((entry) => entry.conflicts),
       roundConflict: submissions.find((entry) => entry.roundConflict)?.roundConflict ?? null,
       submissions,
@@ -614,9 +615,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           }
         }
         let statsChanged = false;
+        let previousPhoto: { revision: string; width: number; height: number; data: Uint8Array } | null = null;
         if (photoInput !== undefined) {
           const current = db.prepare("SELECT revision FROM axis_match_photos WHERE match_number=?").get(matchNumber);
           if ((current?.revision ?? null) !== photoInput.expected) throw new AxisKdaConflict("Photo was changed by another editor");
+          if (photoInput.photo) previousPhoto = db.prepare("SELECT revision,width,height,data FROM axis_match_photos WHERE match_number=?").get(matchNumber) ?? null;
         }
         if (rounds !== undefined) {
           const existing = db.prepare("SELECT team_a AS a,team_b AS b FROM axis_match_rounds WHERE match_number=?").get(matchNumber) ?? null;
@@ -639,6 +642,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         }
         if (photoInput !== undefined) {
           const photo = photoInput.photo;
+          if (photo && previousPhoto && previousPhoto.revision !== photo.revision) {
+            db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, previousPhoto.revision, previousPhoto.width, previousPhoto.height, previousPhoto.data,
+              JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), null, "legacy", 0);
+          }
           if (photo) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
             .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
           else db.prepare("DELETE FROM axis_match_photos WHERE match_number=?").run(matchNumber);
@@ -743,7 +751,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       const missingPlayers = match.teams.flatMap((team) => team.players.filter((player) => !recorded.has(player.id)));
       const review = this.readAxisMatchReview(matchNumber);
       return { players: [...recorded].map(([discordId, kda]) => ({ discordId, kda })), rounds: db.prepare("SELECT team_a AS a,team_b AS b FROM axis_match_rounds WHERE match_number=?").get(matchNumber) ?? null,
-        photo: this.readMatchPhotoMetadata(matchNumber) ?? { revision: photo.revision, width: photo.width, height: photo.height }, conflicts, roundConflict,
+        photo: this.readMatchPhotoMetadata(matchNumber), conflicts, roundConflict,
         review, missingPlayers: missingPlayers.map((player) => ({ discordId: player.id, name: player.name })) };
     },
     readAxisMatchSubmissionPhoto(matchNumber: number, revision: string): AxisStoredPhoto | null {

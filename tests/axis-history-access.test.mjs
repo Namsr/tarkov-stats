@@ -76,3 +76,25 @@ test("public history never asks for moderation; refreshes with unchanged archive
   assert.equal(requests.filter(url => url.includes("/api/axis-league/history")).length, 1);
   cleanupHistory(); cleanupRefreshed();
 });
+
+test("unreadable nicknames keep a complete match flagged for moderator review", async () => {
+  const { dict } = await import("../lib/i18n/dictionary.ts");
+  for (const lang of ["en", "ru"]) {
+    const code = ts.transpileModule(readFileSync("components/AxisMatchReview.tsx", "utf8"), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    }).outputText;
+    const componentModule = { exports: {} };
+    new Function("require", "module", "exports", code)(name => {
+      if (name === "@/lib/i18n/context") return { useI18n: () => ({ t: (key, vars = {}) => Object.entries(vars).reduce((text, [key, value]) => text.replace(`{${key}}`, value), dict[lang][key]) }) };
+      if (name === "@/lib/axis-match-photo") return { axisPhotoUrl: () => "" };
+      if (name === "@/components/AxisMatchPhoto") return { AxisPhotoViewer: () => null };
+      return require(name);
+    }, componentModule, componentModule.exports);
+    const review = { matchNumber: 42, missingStats: [], nicknameMismatches: [], unreadableNames: 2, conflicts: [], roundConflict: null, submissions: [] };
+    assert.equal(componentModule.exports.axisReviewNeedsAttention(review, false), true);
+    const html = renderToStaticMarkup(React.createElement(componentModule.exports.default, { review, roundsMissing: false }));
+    assert.ok(html.includes(dict[lang]["axis.review.unreadableNames"].replace("{n}", "2")));
+    assert.ok(!html.includes(dict[lang]["axis.review.complete"]));
+    assert.equal(componentModule.exports.axisReviewNeedsAttention({ ...review, unreadableNames: 0 }, false), false);
+  }
+});

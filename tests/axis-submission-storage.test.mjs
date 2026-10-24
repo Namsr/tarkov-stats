@@ -182,11 +182,13 @@ if (!isMainThread && workerData?.mode === "submit") {
     const player = match.teams[0].players[0];
     const input = [{ discordId: player.id, kda: kda(7), expected: null }];
     submitInStore(store, match, "a", input);
-    store.setMatchStats(match.number, [{ discordId: player.id, kda: null, expected: kda(7) }], undefined, undefined, { sub: "moderator", name: "Moderator" });
+    store.setMatchStats(match.number, [{ discordId: player.id, kda: null, expected: kda(7) }], undefined,
+      { expected: photo("a").revision, photo: null }, { sub: "moderator", name: "Moderator" });
     assert.equal(store.readMatchKda(match.number).has(player.id), false);
 
     const retry = submitInStore(store, match, "a", input);
     assert.equal(retry.conflicts.length, 0);
+    assert.equal(retry.photo, null, "a duplicate stays deleted when a moderator removed the primary photo");
     assert.equal(store.readMatchKda(match.number).has(player.id), false);
     assert.equal(store.readAxisMatchReview(match.number).submissions.length, 1);
   });
@@ -232,6 +234,38 @@ if (!isMainThread && workerData?.mode === "submit") {
     const review = store.readAxisMatchReview(match.number);
     assert.deepEqual(review.submissions.map(submission => submission.photoRevision).sort(), [photo("a").revision, photo("b").revision].sort());
     assert.equal(review.submissions.find(submission => submission.photoRevision === legacy.revision).uploadedBy, "legacy");
+  });
+
+  test("moderator photo replacement archives the legacy primary atomically", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    const legacy = photo("a", 1);
+    const replacement = photo("b", 4);
+    store.setMatchPhoto(match.number, null, legacy);
+    const reviewEvidence = {
+      matchNumber: match.number,
+      photoRevision: replacement.revision,
+      recognizedNames: [match.teams[0].players[0].name],
+      unmatchedNames: [],
+      missingDiscordIds: allPlayers(match).slice(1).map(player => player.id),
+      uploadedBy: "moderator",
+      uploadedAt: Date.now(),
+    };
+    store.setMatchStats(
+      match.number,
+      [],
+      undefined,
+      { expected: legacy.revision, photo: replacement },
+      { sub: "moderator", name: "Moderator" },
+      reviewEvidence,
+    );
+    assert.equal(store.readMatchPhotoMetadata(match.number).revision, replacement.revision);
+    assert.equal(store.readAxisMatchSubmissionPhoto(match.number, legacy.revision).revision, legacy.revision);
+    assert.equal(store.readAxisMatchSubmissionPhoto(match.number, replacement.revision).revision, replacement.revision);
+    const review = store.readAxisMatchReview(match.number);
+    assert.deepEqual(review.submissions.map(submission => submission.photoRevision).sort(), [legacy.revision, replacement.revision].sort());
+    assert.equal(review.submissions.find(submission => submission.photoRevision === legacy.revision).uploadedBy, "legacy");
+    assert.equal(review.submissions.find(submission => submission.photoRevision === replacement.revision).uploadedBy, "moderator");
   });
 
   test("stale roster fingerprint rejects the submission without partial writes", t => {

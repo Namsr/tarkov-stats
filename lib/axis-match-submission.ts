@@ -37,6 +37,7 @@ export interface AxisMatchSubmissionReview extends AxisMatchReview {
 export interface AxisMatchReviewView extends AxisMatchReview {
   missingStats: string[];
   nicknameMismatches: string[];
+  unreadableNames: number;
   conflicts: AxisMatchConflict[];
   roundConflict: { existing: { a: number; b: number }; incoming: { a: number; b: number } } | null;
   submissions: AxisMatchSubmissionReview[];
