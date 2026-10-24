@@ -64,6 +64,10 @@ test("roles keep player uploads separate from moderator editing and preserve old
   store.setAxisRole("player", "player");
   store.setAxisRole("moderator", "moderator");
   store.setKdaEditor("legacy", true);
+  assert.equal(store.readAxisRole("player"), "player");
+  assert.equal(store.readAxisRole("moderator"), "moderator");
+  assert.equal(store.readAxisRole("legacy"), "moderator");
+  assert.equal(store.readAxisRole("unknown"), null);
   assert.equal(store.isAxisUploader("player"), true);
   assert.equal(store.isKdaEditor("player"), false);
   assert.equal(store.isAxisModerator("player"), false);

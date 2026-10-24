@@ -20,15 +20,7 @@ export async function GET(request: Request) {
   if (!numbers) return Response.json({ error: "invalid_matches" }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   try {
     const store = await getAxisLeagueStore();
-    const reviews = numbers.map((matchNumber) => {
-      const history = store.readMatchHistory(matchNumber).matches[0];
-      if (!history || history.number !== matchNumber) return null;
-      const review = store.readAxisMatchReview(matchNumber);
-      // Legacy moderator uploads predate the evidence table. They still need
-      // to surface missing KDA, but the metadata read must stay BLOB-free.
-      const hasPhoto = Boolean(store.readMatchPhotoMetadata(matchNumber));
-      return review && (review.submissions.length > 0 || hasPhoto) ? review : null;
-    }).filter((review): review is NonNullable<typeof review> => review !== null);
+    const reviews = store.readAxisMatchReviews(numbers).filter((review) => review.submissions.length > 0);
     return Response.json({ reviews }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch { return Response.json({ error: "match_review_unavailable" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS }); }
 }

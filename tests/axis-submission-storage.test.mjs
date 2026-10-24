@@ -274,4 +274,36 @@ if (!isMainThread && workerData?.mode === "submit") {
     assert.ok(reviewSelects.length > 0);
     assert.ok(reviewSelects.every(query => !/SELECT\s+\*/i.test(query) && !/SELECT[\s\S]*\bdata\b[\s\S]*FROM axis_match_submissions/i.test(query)));
   });
+
+  test("batched review reads stay at four metadata queries for 25 matches", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("PRAGMA busy_timeout=5000");
+    const queries = [];
+    const tracedDb = {
+      exec: sql => db.exec(sql),
+      prepare: sql => { queries.push(String(sql)); return db.prepare(sql); },
+    };
+    const store = createAxisLeagueStore(tracedDb);
+    const matches = Array.from({ length: 25 }, (_, index) => makeMatch(index + 1));
+    store.publishArchive({ page: 1, pages: 1, total: 25, matches });
+    for (const match of matches) store.setMatchPhoto(match.number, null, photo(["a", "b", "c", "d", "e", "f"][match.number % 6]));
+    queries.length = 0;
+    const reviews = store.readAxisMatchReviews(matches.map(match => match.number));
+    assert.equal(reviews.length, 25);
+    assert.equal(queries.length, 4, "review metadata uses one query per table, not one per match");
+    assert.ok(queries.every(query => !/\bdata\b/i.test(query)), "review metadata must not select image bytes");
+    db.close();
+  });
+
+  test("batched reviews require an archived match and preserve legacy/missing-photo distinctions", () => {
+    const { db, store } = openStore(":memory:", makeMatch(101));
+    const second = makeMatch(102);
+    store.publishArchive({ page: 1, pages: 1, total: 2, matches: [second] });
+    store.setMatchPhoto(101, null, photo("a"));
+    const reviews = store.readAxisMatchReviews([101, 102, 999]);
+    assert.deepEqual(reviews.map(review => review.matchNumber), [101, 102]);
+    assert.equal(reviews.find(review => review.matchNumber === 101).submissions[0].uploadedBy, "legacy");
+    assert.deepEqual(reviews.find(review => review.matchNumber === 102).submissions, []);
+    db.close();
+  });
 }

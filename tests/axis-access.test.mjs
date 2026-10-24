@@ -140,3 +140,24 @@ test("existing signed sessions populate Google names without granting editor acc
   globalThis.axisUser = null;
   assert.equal((await (await me()).json()).user, null);
 });
+
+// The session endpoint runs on ordinary pages, so each account needs one role lookup.
+test("session flags share one role query for players and accounts without an AXIS role", async t => {
+  const db = new DatabaseSync(":memory:"); t.after(() => db.close());
+  globalThis.axisRoleStore = createAxisLeagueStore(db);
+  globalThis.axisStoreFailure = false;
+  process.env.ADMIN_GOOGLE_SUB = "other-admin";
+  globalThis.axisRoleStore.setAxisRole("player", "player");
+  const prepare = db.prepare.bind(db);
+  const queries = [];
+  db.prepare = sql => { queries.push(sql); return prepare(sql); };
+  const { GET: me } = await import("../app/api/auth/me/route.ts");
+  for (const subject of ["player", "ordinary-account"]) {
+    globalThis.axisUser = { sub: subject, name: "Name", email: "", picture: "" };
+    queries.length = 0;
+    const result = await (await me()).json();
+    assert.equal(result.canEditAxisKda, false);
+    assert.equal(result.canSubmitAxisScreenshot, subject === "player");
+    assert.equal(queries.filter(sql => /axis_match_roles|axis_kda_editors/.test(sql)).length, 1);
+  }
+});

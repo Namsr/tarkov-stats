@@ -493,7 +493,7 @@ test("history renders season probabilities below team results in both languages 
     const compiledModule = { exports: {} };
     const summary = { played: 88, winsA: 52, winsB: 36, maps: [], averageWinProbability: average };
     const data = { available: true, stale: false, page: 1, pages: 1, total: 88, season: "current", matches: [], summary };
-    const states = [1, new Set(), {}, false, "current", undefined, undefined, data, [], false, 0, null];
+    const states = [1, {}, {}, false, "current", undefined, undefined, data, [], false, 0, null, 0];
     const t = (key, values = {}) => Object.entries(values).reduce((s, [k, v]) => s.replace(`{${k}}`, v), dict[lang][key]);
     new Function("require", "module", "exports", compiled)(name => {
       if (name === "react") return { useState: () => [states.shift(), () => {}], useRef: value => ({ current: value }), useId: () => "maps", useEffect: () => {} };

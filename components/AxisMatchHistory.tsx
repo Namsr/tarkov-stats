@@ -15,7 +15,7 @@ import { type AxisHistoryResponse, type AxisMatch } from "@/lib/axis-history";
 export default function AxisMatchHistory({ active = true, canEditKda = false, canSubmitScreenshot = false, initialMatch, players, averageKda }: { active?: boolean; canEditKda?: boolean; canSubmitScreenshot?: boolean; initialMatch?: number; players?: AxisPlayer[]; averageKda?: number | null }) {
   const { t, lang } = useI18n();
   const [page, setPage] = useState(1);
-  const [openMatches, setOpenMatches] = useState<Set<number>>(new Set());
+  const [openMatches, setOpenMatches] = useState<Record<number, boolean>>({});
   const [reviews, setReviews] = useState<Record<number, AxisMatchReviewView>>({});
   const [reviewFailed, setReviewFailed] = useState(false);
   const pendingScroll = useRef(false);
@@ -31,6 +31,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
   const handledRetry = useRef(0);
   const [mapTooltip, setMapTooltip] = useState<string | null>(null);
   const mapTooltipId = useId();
+  const [historyRevision, setHistoryRevision] = useState(0);
   const current = data?.page === page && data?.season === season && data?.map === selectedMap && data?.matchNumber === focusedMatch ? data : cachedPages.find((entry) => entry.page === page && entry.season === season && entry.map === selectedMap && entry.matchNumber === focusedMatch) ?? null;
   const reviewMatchNumbers = current?.matches.map(match => match.number).join(",") ?? "";
   useEffect(() => {
@@ -48,7 +49,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
     }
     void load();
     return () => controller.abort();
-  }, [canEditKda, active, reviewMatchNumbers, retry, current?.updatedAt]);
+  }, [canEditKda, active, reviewMatchNumbers, historyRevision]);
   const summary = current?.summary ?? (data?.season === season && data?.matchNumber === focusedMatch ? data.summary : undefined);
   const totalWins = summary ? summary.winsA + summary.winsB : 0;
   const averageProbabilityA = summary?.averageWinProbability ? Math.round(summary.averageWinProbability.a * 1000) / 1000 : null;
@@ -89,7 +90,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
         const body = await response.json() as AxisHistoryResponse;
         if (!response.ok || !body.available || body.page !== page || body.season !== season || body.map !== selectedMap || body.matchNumber !== focusedMatch || !Array.isArray(body.matches)) throw new Error("History unavailable");
         if (!controller.signal.aborted) {
-          setData(body); setFailed(false);
+          setData(body); setFailed(false); setHistoryRevision(value => value + 1);
           setCachedPages((previous) => [{ ...body, receivedAt: Date.now() }, ...previous.filter((entry) => entry.page !== page || entry.season !== season || entry.map !== selectedMap || entry.matchNumber !== focusedMatch)].slice(0, 8));
         }
       } catch { if (!controller.signal.aborted) setFailed(true); }
@@ -232,9 +233,9 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
         <button type="button" className="ghost-button" disabled={page === current.pages} onClick={() => navigate(current.pages)}>{t("axis.history.last")}</button>
       </nav>
       {current.matches.length === 0 ? <p className="axis-empty data-panel">{t("axis.history.empty")}</p> :
-        <div className="axis-match-list" key={`${season}:${page}:${selectedMap ?? ""}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={index === 0} onToggle={event => {
+        <div className="axis-match-list" key={`${season}:${page}:${selectedMap ?? ""}:${focusedMatch ?? "all"}`}>{current.matches.map((match, index) => <details id={`axis-match-${match.number}`} className="data-panel axis-match" key={match.number} open={openMatches[match.number] ?? index === 0} onToggle={event => {
           const open = event.currentTarget.open;
-          setOpenMatches(previous => { const next = new Set(previous); if (open) next.add(match.number); else next.delete(match.number); return next; });
+          setOpenMatches(previous => previous[match.number] === open ? previous : { ...previous, [match.number]: open });
         }}>
           <summary onClick={toggleMatch}>
             <span className="axis-match-summary-meta">
@@ -252,7 +253,7 @@ export default function AxisMatchHistory({ active = true, canEditKda = false, ca
           <AxisMatchProbability match={match} />
           <AxisMatchAttribution edited={match.edited} />
           {canEditKda && reviews[match.number] && <AxisMatchReview review={reviews[match.number]} roundsMissing={match.rounds == null} />}
-          {canSubmitScreenshot && openMatches.has(match.number) && <AxisMatchSubmission matchNumber={match.number} onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
+          {canSubmitScreenshot && (openMatches[match.number] ?? index === 0) && <AxisMatchSubmission matchNumber={match.number} onSaved={() => { setCachedPages([]); setRetry(value => value + 1); }} />}
           <AxisMatchStatsEditor match={match} canEdit={canEditKda} onConflict={() => { setCachedPages([]); setRetry((value) => value + 1); }} onSaved={(players, rounds, edited) => {
             setCachedPages([]);
             const saved = new Map(players.map((entry) => [entry.discordId, entry.kda]));
