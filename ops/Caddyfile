@@ -108,7 +108,7 @@
 	# Photo JSON includes base64; all other mutations retain their small body cap.
 	@matchPhoto {
 		method POST
-		path /api/admin/axis-league/match-stats
+		path /api/admin/axis-league/match-stats /api/axis-league/match-submission /api/integrations/discord/axis-submission
 	}
 	request_body @matchPhoto {
 		max_size 14MB
@@ -116,7 +116,7 @@
 	@smallBody {
 		not {
 			method POST
-			path /api/admin/axis-league/match-stats
+			path /api/admin/axis-league/match-stats /api/axis-league/match-submission /api/integrations/discord/axis-submission
 		}
 	}
 	request_body @smallBody {

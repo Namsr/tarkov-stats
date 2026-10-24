@@ -71,7 +71,7 @@ jobs:
       - name: Verify the runtime image
         run: |
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "tarkovstats-web:$GITHUB_SHA")" = "$GITHUB_SHA"
-          docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('node:fs').accessSync('/app/server.js')"
+          docker run --rm --network none --entrypoint node "tarkovstats-web:$GITHUB_SHA" --experimental-strip-types --experimental-sqlite -e "require('node:sqlite'); require('discord.js'); require('node:fs').accessSync('/app/server.js'); require('node:fs').accessSync('/app/scripts/axis-discord-bot.mjs')"
           docker network create image-smoke
           trap 'docker logs image-smoke; docker rm --force image-smoke; docker network rm image-smoke' EXIT
           docker run --detach --network image-smoke --network-alias web --memory 896m --memory-swap 1152m --env WEB_BACKGROUND_WORKERS=false --name image-smoke "tarkovstats-web:$GITHUB_SHA"

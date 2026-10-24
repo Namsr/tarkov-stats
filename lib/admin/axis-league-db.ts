@@ -669,7 +669,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     /** Merge OCR output from a screenshot without replacing an already recorded value. */
     submitAxisMatch(matchNumber: number, photo: AxisStoredPhoto, input: AxisKdaChange[], roundInput: AxisRoundChange | undefined,
       evidence: Pick<AxisMatchReview, "recognizedNames" | "unmatchedNames"> & Partial<Pick<AxisMatchReview, "missingDiscordIds">>,
-      actor: { sub: string; name: string | null }, rosterFingerprint?: string) {
+      actor: { sub: string; name: string | null; source?: "google" | "discord" }, rosterFingerprint?: string) {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
       if (!photo || !/^[a-f0-9]{64}$/.test(photo.revision) || !Number.isSafeInteger(photo.width) || !Number.isSafeInteger(photo.height)
         || photo.width <= 0 || photo.height <= 0 || photo.width * photo.height > AXIS_PHOTO_MAX_PIXELS
@@ -743,7 +743,11 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           JSON.stringify(evidence.recognizedNames), JSON.stringify(evidence.unmatchedNames), JSON.stringify([...new Set(missingDiscordIds)]), JSON.stringify(conflicts), roundConflict ? JSON.stringify(roundConflict) : null, actor.sub, uploadedAt);
         if (!duplicate) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
           .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
-        if (!duplicate) this.rememberGoogleAccount(actor.sub, actor.name?.trim() ?? null);
+        // Discord authors are provenance for a submission, not Google
+        // identities. Keep them in the submission row without polluting the
+        // Google account directory used by moderator role screens.
+        const isDiscordActor = actor.source === "discord" || actor.sub.startsWith("discord_");
+        if (!duplicate && !isDiscordActor) this.rememberGoogleAccount(actor.sub, actor.name?.trim() ?? null);
         if (statsChanged) rebuildPredictions();
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
