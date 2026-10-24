@@ -156,5 +156,10 @@ response is retried for a bounded period so that the normal archive importer has
 time to publish it. A permanently invalid match binding eventually produces an
 error reply. Re-upload the image after correcting that binding.
 
+Discord's deleted-message and deleted-channel errors terminate their pending
+delivery jobs. An already saved website result remains intact even when the
+original Discord message disappears before acknowledgement. Temporary Discord
+permission failures are retried so that restoring access can resume processing.
+
 Live Discord delivery cannot be verified without a real application, token,
 permitted test channel and confirmed channel-to-match mapping.
