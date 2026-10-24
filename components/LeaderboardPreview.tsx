@@ -273,7 +273,7 @@ export function LeaderboardPreviewProvider({ meta, children, detailsLabel, detai
             const comparison = previewRatio(metric.value, metric.average);
             const label = metric.note ? t(metric.note) : !comparison ? t("leaderboard.preview.noComparison") : comparison.direction === "equal" ? t("leaderboard.preview.equal")
               : comparison.ratio === null ? t(comparison.direction === "above" ? "leaderboard.preview.above" : "leaderboard.preview.below")
-                : t(comparison.direction === "above" ? "leaderboard.preview.aboveTimes" : "leaderboard.preview.belowTimes", { n: format(comparison.ratio, 2) });
+                : t("common.averageRatio", { n: format(comparison.ratio, 2) });
             return <div key={metric.label} data-direction={comparison?.direction ?? "neutral"}><dt>{t(metric.label)}</dt><dd>{format(metric.value, metric.digits)}{metric.percent && metric.value !== null ? "%" : ""}<small>{label}</small></dd></div>;
           })}</dl>
           <dl className="leaderboard-preview__totals">{data.totals.map((total) => <div key={total.label}><dd>{format(total.value)}</dd><dt>{t(total.label)}</dt></div>)}</dl>
