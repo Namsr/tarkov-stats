@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { loadDiscordBotConfig } from "../lib/discord-bot/config.mjs";
 import { DiscordJobStore } from "../lib/discord-bot/state.mjs";
@@ -36,6 +37,108 @@ test("Discord config fails closed when a match binding is missing", () => {
   assert.throws(() => loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_BOOTSTRAP_MESSAGES: "101" }), /0\.\.100/);
   const config = loadDiscordBotConfig(ENV);
   assert.equal(config.matchChannels.get("200000000000000001"), 42);
+  assert.throws(() => loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_REMINDER_TEXT: "x".repeat(1801) }), /1800/);
+});
+
+test("new match channels and newly created threads get one durable reminder", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axis-discord-reminder-"));
+  let store;
+  let worker;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_STATE_PATH: join(directory, "state.db"),
+      AXIS_DISCORD_MATCH_CHANNELS: "{}", AXIS_DISCORD_MATCH_PREFIX: "queue-" });
+    const sent = [];
+    const channel = { id: "200000000000000002", guildId: config.guildId, parentId: ENV.AXIS_DISCORD_CHANNEL_IDS,
+      name: "queue-5771", send: async (value) => { sent.push(value); return { id: "600000000000000001" }; } };
+    const client = new EventEmitter();
+    client.channels = { fetch: async () => channel };
+    store = new DiscordJobStore(config.statePath);
+    worker = new DiscordBotWorker({ config, client, store });
+    worker.runLoop = async () => {};
+    worker.catchUpConfiguredChannels = async () => {};
+    await worker.start();
+    assert.equal(store.claimReminderDue(), null, "startup must not announce in old channels");
+    client.emit("threadCreate", channel, false);
+    client.emit("channelCreate", { ...channel, guildId: "100000000000000099" });
+    client.emit("channelCreate", { ...channel, parentId: null });
+    client.emit("channelCreate", { ...channel, name: "general" });
+    assert.equal(store.claimReminderDue(), null, "joined threads and unrelated channels are ignored");
+    client.emit("channelCreate", channel);
+    client.emit("threadCreate", channel, true);
+    await worker.processMatchReminder(store.claimReminderDue());
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].content, /Перед выбором победителя.*скриншот/);
+    assert.deepEqual(sent[0].allowedMentions, { parse: [] });
+    assert.equal(sent[0].enforceNonce, true);
+    await worker.stop();
+    assert.equal(client.listenerCount("channelCreate"), 0);
+    assert.equal(client.listenerCount("threadCreate"), 0);
+    store.close();
+    store = new DiscordJobStore(config.statePath);
+    worker = new DiscordBotWorker({ config, client, store });
+    worker.queueMatchReminder(channel);
+    assert.equal(store.claimReminderDue(), null, "restart must preserve a sent reminder");
+  } finally {
+    await worker?.stop();
+    closeStore(store);
+    await removeDirectory(directory);
+  }
+});
+
+test("pending reminders survive a permission outage and use private custom text", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axis-discord-reminder-retry-"));
+  let store;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_STATE_PATH: join(directory, "state.db"),
+      AXIS_DISCORD_REMINDER_TEXT: "Сначала скриншот, затем победитель." });
+    let denied = true;
+    const sent = [];
+    const channel = { id: ENV.AXIS_DISCORD_CHANNEL_IDS, guildId: config.guildId, parentId: null, name: "match-42",
+      send: async (value) => {
+        if (denied) throw discordApiError(50013, 403);
+        sent.push(value); return { id: "600000000000000002" };
+      } };
+    const client = { channels: { fetch: async () => channel } };
+    store = new DiscordJobStore(config.statePath);
+    const first = new DiscordBotWorker({ config, client, store, logger: { warn() {} } });
+    first.queueMatchReminder(channel);
+    await first.processMatchReminder(store.claimReminderDue());
+    assert.equal(store.claimReminderDue(), null, "retry must back off");
+    store.close();
+    store = new DiscordJobStore(config.statePath);
+    denied = false;
+    const second = new DiscordBotWorker({ config, client, store });
+    await second.processMatchReminder(store.claimReminderDue(Date.now() + 60_000));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content, config.reminderText);
+    assert.equal(store.claimReminderDue(Date.now() + 120_000), null);
+  } finally {
+    closeStore(store);
+    await removeDirectory(directory);
+  }
+});
+
+test("a queued reminder is cancelled when its match binding is revoked", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axis-discord-reminder-revoked-"));
+  let store;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_STATE_PATH: join(directory, "state.db") });
+    let sends = 0;
+    const channel = { id: ENV.AXIS_DISCORD_CHANNEL_IDS, guildId: config.guildId, parentId: null, name: "match-42",
+      send: async () => { sends++; return { id: "600000000000000003" }; } };
+    store = new DiscordJobStore(config.statePath);
+    const client = { channels: { fetch: async () => channel } };
+    const worker = new DiscordBotWorker({ config, client, store, logger: { warn() {} } });
+    worker.queueMatchReminder(channel);
+    const queued = store.claimReminderDue();
+    config.matchChannels.set(channel.id, 43);
+    await worker.processMatchReminder(queued);
+    assert.equal(sends, 0);
+    assert.equal(store.claimReminderDue(Date.now() + 60_000), null);
+  } finally {
+    closeStore(store);
+    await removeDirectory(directory);
+  }
 });
 
 test("confirmed queue-5771 chat binds to match 5771 within the channel allowlist", () => {
