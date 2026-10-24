@@ -6,7 +6,7 @@ import test from "node:test";
 import { loadDiscordBotConfig } from "../lib/discord-bot/config.mjs";
 import { DiscordJobStore } from "../lib/discord-bot/state.mjs";
 import { DiscordBotWorker } from "../lib/discord-bot/worker.mjs";
-import { downloadAttachment, validateAttachmentUrl } from "../lib/discord-bot/security.mjs";
+import { downloadAttachment, isAllowedMessage, resolveMatchNumber, validateAttachmentUrl } from "../lib/discord-bot/security.mjs";
 import { resultMessage } from "../lib/discord-bot/messages.mjs";
 
 const ENV = {
@@ -20,6 +20,17 @@ test("Discord config fails closed when a match binding is missing", () => {
   assert.throws(() => loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_BOOTSTRAP_MESSAGES: "101" }), /0\.\.100/);
   const config = loadDiscordBotConfig(ENV);
   assert.equal(config.matchChannels.get("200000000000000001"), 42);
+});
+
+test("confirmed queue-5771 chat binds to match 5771 within the channel allowlist", () => {
+  const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_MATCH_CHANNELS: "{}", AXIS_DISCORD_MATCH_PREFIX: "queue-" });
+  const channel = { id: "200000000000000001", parentId: null, name: "queue-5771" };
+  assert.equal(resolveMatchNumber(channel, config), 5771);
+  assert.equal(resolveMatchNumber({ ...channel, name: "queue-5771-copy" }, config), null);
+  assert.equal(resolveMatchNumber({ ...channel, name: "queue-99999999999999999" }, config), null);
+  const message = { guildId: config.guildId, channelId: channel.id, channel, author: { bot: false } };
+  assert.equal(isAllowedMessage(message, config), true);
+  assert.equal(isAllowedMessage({ ...message, channelId: "200000000000000099", channel: { ...channel, id: "200000000000000099" } }, config), false);
 });
 
 test("Discord reply names missing, unmatched and conflicting players safely", () => {

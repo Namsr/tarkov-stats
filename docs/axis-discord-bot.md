@@ -49,20 +49,20 @@ AXIS_DISCORD_SECRET=<same integration secret as web>
 AXIS_DISCORD_GUILD_ID=<same server ID as web>
 AXIS_DISCORD_CHANNEL_IDS=<same allowed channel IDs as web>
 AXIS_DISCORD_LANG=ru
-AXIS_DISCORD_MATCH_CHANNELS={"123456789012345678":1234}
-AXIS_DISCORD_MATCH_PREFIX=
+AXIS_DISCORD_MATCH_CHANNELS={}
+AXIS_DISCORD_MATCH_PREFIX=queue-
 ```
 
-Replace the example channel ID and match number with the real mapping. A thread
-is its own channel: map its ID to its match, and allow its ID or its parent text
-channel. The mapping is explicit so that a screenshot cannot be assigned to an
-unrelated match. Channels without a binding are ignored.
+The confirmed AXIS naming convention is `queue-<match number>`: `queue-5771`
+maps to match 5771. Only exact names with a positive integer suffix match, and
+the channel allowlist still applies. For an exceptional channel, set an explicit
+mapping such as `AXIS_DISCORD_MATCH_CHANNELS={"123456789012345678":1234}`.
+Explicit mappings take precedence over the name prefix.
 
-When the real naming convention is confirmed, `AXIS_DISCORD_MATCH_PREFIX` can
-enable exact prefix-plus-number names instead of listing every match channel.
-Leave it empty until that format has been checked. The channel allowlist still
-applies. This feature does not infer matches from a player's latest game or OCR
-alone.
+A thread is its own channel: allow its ID or its parent text channel. Channels
+without a supported name or an explicit binding are ignored. The worker does
+not infer matches from a player's latest game or OCR alone. Clear the prefix
+if a server uses a different naming convention.
 
 On first use the worker inspects the most recent 100 messages per configured
 channel. With a saved history checkpoint it recovers subsequent messages, and
