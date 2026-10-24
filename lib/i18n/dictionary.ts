@@ -13,6 +13,7 @@ export const LANGS: Lang[] = ["en", "ru"];
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "axis.discord.reminder": "Before choosing the winner, send a screenshot of the final results table in this chat so the statistics can be recorded on TarkovStats.",
   "axis.discord.accepted": "Accepted · K/D/A saved: {players}/{total} ({coverage}%)",
   "axis.discord.review": "Received, needs review · K/D/A saved: {players}/{total} ({coverage}%)",
   "axis.discord.confidence": "OCR score {confidence}%",
@@ -2078,6 +2079,7 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "axis.discord.reminder": "Перед выбором победителя отправьте в этот чат скриншот итоговой таблицы результатов, чтобы статистика попала на TarkovStats.",
   "axis.discord.accepted": "Зачтено · сохранено K/D/A: {players}/{total} ({coverage}%)",
   "axis.discord.review": "Принято, нужна проверка · сохранено K/D/A: {players}/{total} ({coverage}%)",
   "axis.discord.confidence": "Оценка OCR {confidence}%",

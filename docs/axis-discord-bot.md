@@ -6,6 +6,20 @@ need a TarkovStats account. The existing server OCR, roster matching, photo
 deduplication and moderation rules remain authoritative. There are no slash
 commands, role management or automatic channel creation.
 
+While online, the bot posts one reminder when an allowed match channel or a new
+thread is created: send the results screenshot before choosing the winner. It
+does not announce itself in old channels during startup or when added to an
+existing thread. Sent reminders and pending retries survive restarts in the
+state volume; Discord nonces also suppress recent duplicate sends.
+
+Set `AXIS_DISCORD_REMINDER_TEXT` in the bot's private `.env.discord` to customize
+the reminder (up to 1800 characters). Empty uses the selected ru/en translation.
+Changing this text only needs a service recreation to reload the environment,
+without a PR or rebuilding the image. Private environment files are not tracked
+and the normal deployment preserves them. The bot needs access to the new
+channel or its allowed category/parent, not only to a previous match's channel ID.
+The reminder is informational; it does not control another bot's winner selection.
+
 ## Create and install the Discord application
 
 1. Create an application in <https://discord.com/developers/applications> under
