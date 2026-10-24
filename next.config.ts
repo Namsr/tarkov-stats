@@ -52,7 +52,13 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Per-player fetch entries otherwise accumulate indefinitely in the tmpfs.
+  // Reuse Next's bounded LRU and tag invalidation without a filesystem copy.
+  cacheMaxMemorySize: 50 * 1024 * 1024,
+  experimental: { isrFlushToDisk: false },
   images: {
+    // Image optimization uses a separate disk cache with its own eviction.
+    maximumDiskCacheSize: 32 * 1024 * 1024,
     remotePatterns: [
       {
         protocol: "https",
