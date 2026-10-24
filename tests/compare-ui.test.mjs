@@ -21,14 +21,14 @@ test("average captions render both languages, both directions, equality and zero
     const render = (value, average) => renderToStaticMarkup(createElement(exports.default, { value, average }));
     assert.match(render(2, 1), /data-direction="above"/);
     assert.match(render(1, 2), /data-direction="below"/);
-    assert.ok(render(2, 1).includes(lang === "ru" ? "Выше среднего в 2×" : "2× above average"));
-    assert.ok(render(1, 2).includes(lang === "ru" ? "Ниже среднего в 2×" : "2× below average"));
+    assert.ok(render(2, 1).includes(lang === "ru" ? "2,00× от среднего" : "2.00× the average"));
+    assert.ok(render(1, 2).includes(lang === "ru" ? "0,50× от среднего" : "0.50× the average"));
+    assert.ok(render(9, 10).includes(lang === "ru" ? "0,90× от среднего" : "0.90× the average"));
+    assert.ok(render(0, 2).includes(lang === "ru" ? "0,00× от среднего" : "0.00× the average"));
     assert.ok(render(0, 0).includes(dict[lang]["common.atAverage"]));
-    for (const [value, average, key] of [[2, 0, "common.aboveAverage"], [0, 2, "common.belowAverage"]]) {
-      const html = render(value, average);
-      assert.ok(html.includes(dict[lang][key]));
-      assert.doesNotMatch(html, /Infinity|NaN|×/);
-    }
+    const zeroBaseline = render(2, 0);
+    assert.ok(zeroBaseline.includes(dict[lang]["common.aboveAverage"]));
+    assert.doesNotMatch(zeroBaseline, /Infinity|NaN|×/);
     assert.equal(render(null, 2), "");
     assert.equal(render(2, null), "");
   }

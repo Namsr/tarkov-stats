@@ -10,8 +10,8 @@ export default function AverageComparison({ value, average }: { value: number | 
   const { direction, ratio } = comparison;
   const label = direction === "equal" ? t("common.atAverage")
     : ratio === null ? t(direction === "above" ? "common.aboveAverage" : "common.belowAverage")
-      : t(direction === "above" ? "common.aboveAverageTimes" : "common.belowAverageTimes", {
-        n: ratio.toLocaleString(lang, { maximumFractionDigits: 2 }),
+      : t("common.averageRatio", {
+        n: ratio.toLocaleString(lang, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
       });
   return <span className="profile-average-comparison" data-direction={direction}>{label}</span>;
 }
