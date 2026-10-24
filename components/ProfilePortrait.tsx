@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 import type { GameMode } from "@/types/seasonal";
 
@@ -13,6 +13,15 @@ export default function ProfilePortrait({ aid, mode, cycleId, nickname }: {
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (status !== "error" || attempt >= 2) return;
+    const timer = setTimeout(() => {
+      setAttempt((value) => value + 1);
+      setStatus("loading");
+    }, 30_000 * 2 ** attempt);
+    return () => clearTimeout(timer);
+  }, [status, attempt]);
   const params = new URLSearchParams({ aid: String(aid), mode });
   if (mode === "seasonal" && cycleId) params.set("cycle", cycleId);
 
@@ -28,6 +37,7 @@ export default function ProfilePortrait({ aid, mode, cycleId, nickname }: {
       )}
       {status !== "error" && (
         <Image
+          key={attempt}
           className="profile-portrait__image"
           data-loaded={status === "loaded"}
           src={`/api/player/portrait?${params}`}

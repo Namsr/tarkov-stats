@@ -218,3 +218,90 @@ test("stale portraits stay visible during one unresolved renderer refresh", asyn
   await new Promise(setImmediate);
   assert.deepEqual(await cachedPortraitImage(url, async () => assert.fail("refetched fresh portrait")), { image: "new", stale: false });
 });
+
+// Execute the real component with a small hook/JSX harness, without a DOM library.
+async function portraitHarness() {
+  const { readFile } = await import("node:fs/promises");
+  const { createRequire } = await import("node:module");
+  const ts = createRequire(import.meta.url)("typescript");
+  const source = await readFile("components/ProfilePortrait.tsx", "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const states = [];
+  let cursor = 0;
+  let dependencies;
+  let cleanup;
+  const react = {
+    useState(initial) {
+      const index = cursor++;
+      if (states[index] === undefined) states[index] = initial;
+      return [states[index], (update) => { states[index] = typeof update === "function" ? update(states[index]) : update; }];
+    },
+    useEffect(effect, next) {
+      if (dependencies && next.every((value, index) => value === dependencies[index])) return;
+      cleanup?.();
+      dependencies = next;
+      cleanup = effect();
+    },
+  };
+  const jsx = (type, props, key) => ({ type, props, key });
+  const componentModule = { exports: {} };
+  const require = (name) => {
+    if (name === "react") return react;
+    if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
+    if (name === "next/image") return { default: "img" };
+    if (name === "@/lib/i18n/context") return { useI18n: () => ({ t: (key) => key }) };
+    throw new Error(`Unexpected import: ${name}`);
+  };
+  new Function("require", "module", "exports", compiled)(require, componentModule, componentModule.exports);
+  return {
+    render() {
+      cursor = 0;
+      const node = componentModule.exports.default({ aid: 42, mode: "seasonal", cycleId: "portrait-test", nickname: "Player" });
+      return { node, image: node.props.children.find((child) => child?.type === "img") };
+    },
+    unmount() { cleanup?.(); },
+  };
+}
+
+test("portrait retries after 30 and 60 seconds, stops after recovery or two failures, and cleans up on unmount", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const recovered = await portraitHarness();
+  let view = recovered.render();
+  const url = view.image.props.src;
+  view.image.props.onError();
+  assert.equal(recovered.render().image, undefined);
+  t.mock.timers.tick(29_999);
+  assert.equal(recovered.render().image, undefined);
+  t.mock.timers.tick(1);
+  view = recovered.render();
+  assert.equal(view.image.key, 1);
+  assert.equal(view.image.props.src, url, "retry preserves the mode and cycle");
+  view.image.props.onLoad();
+  assert.equal(recovered.render().image.props["data-loaded"], true);
+  t.mock.timers.tick(120_000);
+  assert.equal(recovered.render().image.key, 1, "a successful image must not reload");
+  recovered.unmount();
+
+  const failed = await portraitHarness();
+  for (const delay of [30_000, 60_000]) {
+    failed.render().image.props.onError();
+    failed.render();
+    t.mock.timers.tick(delay);
+  }
+  view = failed.render();
+  assert.equal(view.image.key, 2);
+  view.image.props.onError();
+  assert.equal(failed.render().node.props["aria-label"], "profile.portraitUnavailable");
+  t.mock.timers.tick(300_000);
+  assert.equal(failed.render().image, undefined, "a long outage must not cause unlimited retries");
+  failed.unmount();
+
+  const removed = await portraitHarness();
+  removed.render().image.props.onError();
+  removed.render();
+  removed.unmount();
+  t.mock.timers.tick(300_000);
+  assert.equal(removed.render().image, undefined, "unmounted images must cancel their retry timer");
+});
