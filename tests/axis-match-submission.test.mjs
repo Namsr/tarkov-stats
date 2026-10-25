@@ -9,10 +9,11 @@ import { recheckAxisMatchReviewNames } from "../lib/axis-match-submission.ts";
 
 const mock = source => ({ shortCircuit: true, url: "data:text/javascript," + encodeURIComponent(source) });
 registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") return mock("export function after(work) { globalThis.axisReviewAfter.push(work); }");
   if (specifier === "@/lib/admin/axis-league-db") return mock("export async function getAxisLeagueStore() { return globalThis.axisStore; }");
   if (specifier === "@/lib/admin-auth") return mock("export async function requireAdmin() { return globalThis.axisAdminAccess; }");
   if (specifier === "@/lib/axis-access") return mock("export async function requireAxisScreenshotSubmitter() { return globalThis.axisSubmitAccess; } export async function requireAxisModerator() { return globalThis.axisReviewAccess; }");
-  if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhoto() { return globalThis.axisOcrResult; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrStartedResolve?.(); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: 'a'.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
+  if (specifier === "@/lib/server-axis-ocr") return mock("export async function recognizeAxisPhoto() { globalThis.axisLegacyOcrCalls++; if (globalThis.axisLegacyOcrError) throw new Error('OCR busy'); return globalThis.axisOcrResult; } export async function recognizeAxisPhotoUpload() { globalThis.axisOcrStartedResolve?.(); if (globalThis.axisOcrGate) await globalThis.axisOcrGate; return { photo: { revision: 'a'.repeat(64), width: 1, height: 1, data: new Uint8Array([1]) }, result: globalThis.axisOcrResult }; } export class AxisOcrBusyError extends Error {}");
   if (specifier === "@/lib/auth/google-identity") return mock("export function googleDisplayName(user) { return user.name || null; }");
   if (specifier === "@/lib/arena/service") return mock(`export async function getArenaProfile(aid) {
     globalThis.axisProfileCalls.push(aid);
@@ -51,7 +52,10 @@ function request(body, path = "/api/axis-league/match-submission", headers = {})
 
 function setup(t) {
   const db = new DatabaseSync(":memory:");
-  t.after(() => db.close());
+  globalThis.axisReviewAfter = [];
+  globalThis.axisLegacyOcrCalls = 0;
+  globalThis.axisLegacyOcrError = false;
+  t.after(async () => { for (const work of globalThis.axisReviewAfter.splice(0)) await work(); db.close(); });
   globalThis.axisStore = createAxisLeagueStore(db);
   globalThis.axisStore.publishArchive({ page: 1, pages: 1, total: 1, matches: [match()] });
   globalThis.axisSubmitAccess = { ok: true, user: { sub: "player", name: "Player" } };
@@ -255,20 +259,26 @@ test("saved name rechecks retain ambiguous aliases, unreadable rows and unrelate
   store.submitAxisMatch(77, photo("c"), [], undefined,
     { recognizedNames: ["Alias", "alias"], unmatchedNames: ["Alias", "alias", ""] }, { sub: "player", name: "Player" });
   const review = store.readAxisMatchReview(77);
-  const original = structuredClone(review);
   const participants = match().teams.flatMap((team, teamIndex) => team.players.map(player => ({
     discordId: player.id, teamIndex, historyName: player.name, arenaNickname: player.id === "1" ? "Alias" : null,
   })));
-  assert.deepEqual(recheckAxisMatchReviewNames(review, participants), original, "duplicate screenshot names remain ambiguous");
-  review.submissions[0].recognizedNames = ["Alias"];
-  review.submissions[0].unmatchedNames = ["Alias", ""];
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  const evidence = (first, second) => {
+    const rows = rowsFor([first, second, ...names.slice(2)]);
+    review.submissions[0].recognizedNames = rows.map(row => row.nickname).filter(Boolean);
+    review.submissions[0].unmatchedNames = [first, second];
+    review.submissions[0].nameRows = rows;
+  };
+  evidence("Alias", "alias");
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias", "alias"], "duplicate screenshot names remain ambiguous");
+  evidence("Alias", "");
   participants[1].arenaNickname = "alias";
   assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "shared player aliases remain ambiguous");
   participants[1].arenaNickname = null;
-  review.submissions[0].recognizedNames = ["Player 1", "Alias"];
+  evidence("Alias", "Player 1");
+  review.submissions[0].unmatchedNames = ["Alias"];
   assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "one player cannot match two screenshot rows");
-  // Legacy rows can have names only in unmatchedNames.
-  review.submissions[0].recognizedNames = [];
+  evidence("Alias", "");
   const result = recheckAxisMatchReviewNames(review, participants);
   assert.deepEqual(result.nicknameMismatches, []);
   assert.deepEqual(result.unmatchedNames, [""]);
@@ -276,7 +286,85 @@ test("saved name rechecks retain ambiguous aliases, unreadable rows and unrelate
   assert.deepEqual(result.missingStats, review.missingStats);
   assert.deepEqual(result.conflicts, review.conflicts);
   assert.deepEqual(result.roundConflict, review.roundConflict);
-  assert.deepEqual(original.submissions[0].recognizedNames, ["Alias", "alias"]);
+  review.submissions[0].nameRows = null;
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "legacy names need side evidence before resolution");
+  evidence("Alias", "");
+  review.submissions[0].nameRows[0].nickname = "Different OCR";
+  assert.deepEqual(recheckAxisMatchReviewNames(review, participants).nicknameMismatches, ["Alias"], "changed legacy OCR cannot clear original warnings");
+});
+
+for (const renamedPlayer of ["2", "6"]) test(`a nickname transferred to an already matched player ${renamedPlayer} cannot clear a saved warning`, async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile(renamedPlayer, { aid: 1006, mode: "arena" });
+  globalThis.axisProfiles.set(1006, { nickname: "Old Arena Name" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[0] = "dn1she2_0";
+  names[Number(renamedPlayer) - 1] = "Old Arena Name";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  globalThis.axisProfiles.set(1006, { nickname: "dn1she2_0" });
+  const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
+});
+
+test("newly matched nicknames on the wrong team sides retain both warnings", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("1", { aid: 1001, mode: "arena" });
+  store.setProfile("6", { aid: 1006, mode: "arena" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[0] = "dn1she2_0";
+  names[5] = "M950";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  assert.equal((await submitPost(request({ matchNumber: 77, photo: { expected: null, data: imageData } }))).status, 200);
+  globalThis.axisProfiles.set(1001, { nickname: "M950" });
+  globalThis.axisProfiles.set(1006, { nickname: "dn1she2_0" });
+  const response = await reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).reviews[0].nicknameMismatches, ["dn1she2_0", "M950"]);
+});
+
+test("legacy side metadata is recovered once after responding without changing the upload evidence", async t => {
+  setup(t);
+  const store = globalThis.axisStore;
+  store.publish(match().teams.flatMap(team => team.players));
+  store.setProfile("9", { aid: 1009, mode: "arena" });
+  globalThis.axisProfiles.set(1009, { nickname: "dn1she2_0" });
+  const names = Array.from({ length: 10 }, (_, index) => `Player ${index + 1}`);
+  names[8] = "dn1she2_0";
+  globalThis.axisOcrResult = { ...globalThis.axisOcrResult, rows: rowsFor(names) };
+  const originalEvidence = { recognizedNames: names, unmatchedNames: ["dn1she2_0"] };
+  store.submitAxisMatch(77, photo("c"), [], undefined, originalEvidence, { sub: "player", name: "Player" });
+  const get = () => reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  const first = await get();
+  assert.deepEqual((await first.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
+  assert.equal(globalThis.axisLegacyOcrCalls, 0, "response never waits for heavy OCR");
+  await get();
+  assert.equal(globalThis.axisReviewAfter.length, 1, "recovery admission is bounded across concurrent reads");
+  await globalThis.axisReviewAfter.shift()();
+  const next = await get();
+  assert.deepEqual((await next.json()).reviews[0].nicknameMismatches, []);
+  assert.equal(globalThis.axisLegacyOcrCalls, 1);
+  assert.equal(globalThis.axisReviewAfter.length, 0, "persisted metadata prevents repeated OCR");
+  assert.deepEqual(store.readAxisMatchReview(77).submissions[0].unmatchedNames, originalEvidence.unmatchedNames);
+  assert.equal(store.readMatchKda(77).size, 0);
+});
+
+test("a failed legacy OCR leaves the warnings readable and retryable", async t => {
+  setup(t);
+  globalThis.axisStore.submitAxisMatch(77, photo("c"), [], undefined,
+    { recognizedNames: ["dn1she2_0"], unmatchedNames: ["dn1she2_0"] }, { sub: "player", name: "Player" });
+  const get = () => reviewGet(new Request("https://tarkovstats.ru/api/admin/axis-league/match-review?matches=77"));
+  assert.equal((await get()).status, 200);
+  globalThis.axisLegacyOcrError = true;
+  await globalThis.axisReviewAfter.shift()();
+  const retry = await get();
+  assert.equal(retry.status, 200);
+  assert.deepEqual((await retry.json()).reviews[0].nicknameMismatches, ["dn1she2_0"]);
 });
 
 test("role endpoint accepts player and moderator assignments", async t => {

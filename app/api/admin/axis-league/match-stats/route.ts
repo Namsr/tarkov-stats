@@ -8,6 +8,7 @@ import { AxisPhotoInputError, type AxisPhotoChange } from "@/lib/axis-match-phot
 import { readAxisPhotoBody } from "@/lib/axis-photo-upload";
 import { axisOcrContextForMatch, axisOcrRosterFingerprint, axisOcrStatsPlayerIds, validateAxisOcrNames, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
 import { recognizeAxisPhotoUpload } from "@/lib/server-axis-ocr";
+import { parseAxisOcrNameRows } from "@/lib/axis-match-submission";
 
 export const runtime = "nodejs";
 
@@ -50,7 +51,7 @@ export async function POST(request: Request) {
       const refreshedAccess = await requireAxisKdaEditor();
       if (!refreshedAccess.ok) return Response.json({ error: "Forbidden" }, { status: refreshedAccess.status, headers: ADMIN_NO_STORE_HEADERS });
       actorAccess = refreshedAccess;
-      review = { matchNumber: Number(body.matchNumber), photoRevision: recognized.photo.revision, recognizedNames, unmatchedNames, missingDiscordIds, uploadedBy: refreshedAccess.user.sub, uploadedAt: Date.now() };
+      review = { matchNumber: Number(body.matchNumber), photoRevision: recognized.photo.revision, recognizedNames, unmatchedNames, missingDiscordIds, nameRows: parseAxisOcrNameRows(result.rows), uploadedBy: refreshedAccess.user.sub, uploadedAt: Date.now() };
     }
     const stats = store.setMatchStats(Number(body.matchNumber), body.players as Parameters<typeof store.setMatchStats>[1], body.rounds as Parameters<typeof store.setMatchStats>[2], photo, { sub: actorAccess.user.sub, name: googleDisplayName(actorAccess.user) }, review, rosterFingerprint);
     return Response.json({ ok: true, matchNumber: body.matchNumber, ...stats }, { headers: ADMIN_NO_STORE_HEADERS });

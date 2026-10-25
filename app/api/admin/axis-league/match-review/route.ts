@@ -1,10 +1,13 @@
 import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/mutation";
+import { after } from "next/server";
 import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import { requireAxisModerator } from "@/lib/axis-access";
 import { axisOcrContextForMatch, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
-import { recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
+import { parseAxisOcrNameRows, recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
+import { recognizeAxisPhoto } from "@/lib/server-axis-ocr";
 
 export const runtime = "nodejs";
+let legacyRecoveryRunning = false;
 
 function readMatchNumbers(request: Request): number[] | null {
   const params = new URL(request.url).searchParams;
@@ -23,6 +26,23 @@ export async function GET(request: Request) {
   try {
     const store = await getAxisLeagueStore();
     const savedReviews = store.readAxisMatchReviews(numbers).filter((review) => review.submissions.length > 0);
+    // Recover at most one legacy image per process after responding. The OCR
+    // queue remains bounded and subsequent reads use the persisted metadata.
+    const legacy = savedReviews.flatMap((review) => review.submissions)
+      .find((submission) => !submission.nameRows && submission.unmatchedNames.some((name) => name.trim()));
+    if (legacy && !legacyRecoveryRunning) {
+      legacyRecoveryRunning = true;
+      after(async () => {
+        try {
+          const photo = store.readAxisMatchSubmissionPhoto(legacy.matchNumber, legacy.photoRevision);
+          if (!photo) return;
+          const result = await recognizeAxisPhoto(photo);
+          store.setAxisMatchSubmissionNameRows(legacy.matchNumber, legacy.photoRevision, parseAxisOcrNameRows(result.rows));
+        } catch (error) {
+          console.warn("AXIS legacy screenshot name recovery failed", error instanceof Error ? error.message : "unknown error");
+        } finally { legacyRecoveryRunning = false; }
+      });
+    }
     const reviews = await Promise.all(savedReviews.map(async (review) => {
       if (!review.nicknameMismatches.length) return review;
       const match = store.readMatchHistory(review.matchNumber).matches[0];

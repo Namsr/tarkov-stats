@@ -7,7 +7,7 @@ import { detectAxisSeasons, type AxisSeason } from "../axis-seasons.ts";
 import { AxisKdaConflict, parseAxisKdaChanges, sameAxisKda, parseAxisRoundChange, sameAxisRoundScore, type AxisRoundScore, type AxisRoundChange, type AxisKda, type AxisKdaChange } from "../axis-kda.ts";
 import { axisLeagueAverages, buildAxisPlayerSummary, AXIS_PLAYER_PAGE_SIZE, type AxisIdentity, type AxisPlayerSummary, type AxisPlayerProfileResponse } from "../axis-player-profile.ts";
 import { AXIS_PREDICTION_VERSION, buildAxisWinProbabilities, type AxisWinProbability } from "../axis-win-probability.ts";
-import { axisMatchRosterFingerprintForMatch, type AxisMatchConflict, type AxisMatchReview, type AxisMatchReviewView, type AxisMatchSubmissionReview, type AxisUploadRole } from "../axis-match-submission.ts";
+import { axisMatchRosterFingerprintForMatch, parseAxisOcrNameRows, type AxisMatchConflict, type AxisMatchReview, type AxisMatchReviewView, type AxisMatchSubmissionReview, type AxisOcrNameRow, type AxisUploadRole } from "../axis-match-submission.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- node:sqlite is loaded dynamically, as in the other admin stores.
 type SqliteDatabase = any;
@@ -21,6 +21,7 @@ type AxisReviewSubmissionRow = {
   round_conflict: string | null;
   google_sub: string;
   uploaded_at: number;
+  name_rows: string | null;
 };
 type AxisReviewPrimaryPhotoRow = { match_number: number; revision: string };
 type AxisReviewKdaRow = { match_number: number; discord_id: string; kills: number; deaths: number; assists: number };
@@ -61,6 +62,12 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       PRIMARY KEY(match_number, photo_revision)
     );
     CREATE INDEX IF NOT EXISTS axis_match_submissions_time ON axis_match_submissions(uploaded_at DESC,match_number);
+    CREATE TABLE IF NOT EXISTS axis_match_submission_name_rows (
+      match_number INTEGER NOT NULL,
+      photo_revision TEXT NOT NULL,
+      name_rows TEXT NOT NULL,
+      PRIMARY KEY(match_number, photo_revision)
+    );
     CREATE TABLE IF NOT EXISTS axis_google_accounts (google_sub TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE IF NOT EXISTS axis_match_edits (
       match_number INTEGER PRIMARY KEY, google_sub TEXT NOT NULL, name TEXT, edited_at INTEGER NOT NULL
@@ -328,6 +335,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       recognizedNames: JSON.parse(row.recognized_names) as string[],
       unmatchedNames: JSON.parse(row.unmatched_names) as string[],
       missingDiscordIds: JSON.parse(row.missing_discord_ids) as string[],
+      nameRows: row.name_rows == null ? null : parseAxisOcrNameRows(JSON.parse(row.name_rows)),
       conflicts: JSON.parse(row.conflicts) as AxisMatchConflict[],
       roundConflict: row.round_conflict == null ? null : JSON.parse(row.round_conflict) as AxisMatchSubmissionReview["roundConflict"],
       uploadedBy: row.google_sub,
@@ -371,9 +379,10 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     const uniqueNumbers = [...new Set(numbers)];
     if (!uniqueNumbers.length) return [];
     const placeholders = uniqueNumbers.map(() => "?").join(",");
-    const submissionRows = db.prepare(`SELECT match_number,photo_revision,recognized_names,unmatched_names,missing_discord_ids,
-        conflicts,round_conflict,google_sub,uploaded_at FROM axis_match_submissions
-        WHERE match_number IN (${placeholders}) ORDER BY match_number,uploaded_at DESC,photo_revision DESC`).all(...uniqueNumbers) as AxisReviewSubmissionRow[];
+    const submissionRows = db.prepare(`SELECT s.match_number,s.photo_revision,s.recognized_names,s.unmatched_names,s.missing_discord_ids,
+        s.conflicts,s.round_conflict,s.google_sub,s.uploaded_at,n.name_rows FROM axis_match_submissions s
+        LEFT JOIN axis_match_submission_name_rows n ON n.match_number=s.match_number AND n.photo_revision=s.photo_revision
+        WHERE s.match_number IN (${placeholders}) ORDER BY s.match_number,s.uploaded_at DESC,s.photo_revision DESC`).all(...uniqueNumbers) as AxisReviewSubmissionRow[];
     const primaryRows = db.prepare(`SELECT match_number,revision FROM axis_match_photos WHERE match_number IN (${placeholders})`).all(...uniqueNumbers) as AxisReviewPrimaryPhotoRow[];
     const archiveRows = db.prepare(`SELECT number,payload FROM axis_archive_matches WHERE number IN (${placeholders})`).all(...uniqueNumbers) as { number: number; payload: string }[];
     const kdaRows = db.prepare(`SELECT match_number,discord_id,kills,deaths,assists FROM axis_match_kda WHERE match_number IN (${placeholders})`).all(...uniqueNumbers) as AxisReviewKdaRow[];
@@ -586,6 +595,9 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       if (review !== undefined && (review.matchNumber !== matchNumber || !/^[a-f0-9]{64}$/.test(review.photoRevision)
         || !Array.isArray(review.recognizedNames) || !Array.isArray(review.unmatchedNames) || !Array.isArray(review.missingDiscordIds)
         || !/^[A-Za-z0-9_-]{1,128}$/.test(review.uploadedBy) || !Number.isSafeInteger(review.uploadedAt))) throw new TypeError("Invalid match review");
+      const reviewNameRows: AxisOcrNameRow[] | null | undefined = review?.nameRows === undefined
+        ? undefined
+        : review.nameRows === null ? null : parseAxisOcrNameRows(review.nameRows);
       const changed = changes.some(change => !sameAxisKda(change.kda, change.expected))
         || rounds !== undefined && !sameAxisRoundScore(rounds.score, rounds.expected)
         || photoInput !== undefined && (photoInput.photo?.revision ?? null) !== photoInput.expected;
@@ -654,6 +666,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         if (review !== undefined && photoInput?.photo) db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(review.matchNumber, review.photoRevision, photoInput.photo.width, photoInput.photo.height, photoInput.photo.data,
           JSON.stringify(review.recognizedNames), JSON.stringify(review.unmatchedNames), JSON.stringify(review.missingDiscordIds), JSON.stringify([]), null, review.uploadedBy, review.uploadedAt);
+        if (review !== undefined && photoInput?.photo && reviewNameRows !== undefined && reviewNameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
+          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(review.matchNumber, review.photoRevision, JSON.stringify(reviewNameRows));
         if (actor && changed) {
           edited = { name: actor.name?.trim() ?? null, at: Date.now() };
           this.rememberGoogleAccount(actor.sub, edited.name);
@@ -668,7 +682,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     },
     /** Merge OCR output from a screenshot without replacing an already recorded value. */
     submitAxisMatch(matchNumber: number, photo: AxisStoredPhoto, input: AxisKdaChange[], roundInput: AxisRoundChange | undefined,
-      evidence: Pick<AxisMatchReview, "recognizedNames" | "unmatchedNames"> & Partial<Pick<AxisMatchReview, "missingDiscordIds">>,
+      evidence: Pick<AxisMatchReview, "recognizedNames" | "unmatchedNames"> & Partial<Pick<AxisMatchReview, "missingDiscordIds" | "nameRows">>,
       actor: { sub: string; name: string | null; source?: "google" | "discord" }, rosterFingerprint?: string) {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) throw new TypeError("Invalid match number");
       if (!photo || !/^[a-f0-9]{64}$/.test(photo.revision) || !Number.isSafeInteger(photo.width) || !Number.isSafeInteger(photo.height)
@@ -684,6 +698,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         || missingDiscordIds.some((discordId) => typeof discordId !== "string" || discordId.length > 200)) throw new TypeError("Invalid OCR evidence");
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(actor.sub) || actor.name !== null && (typeof actor.name !== "string" || !actor.name.trim() || actor.name.length > 200)) throw new TypeError("Invalid uploader");
       if (rosterFingerprint !== undefined && (typeof rosterFingerprint !== "string" || !rosterFingerprint.length || rosterFingerprint.length > 20_000)) throw new TypeError("Invalid match roster");
+      const nameRows: AxisOcrNameRow[] | null | undefined = evidence.nameRows === undefined
+        ? undefined : evidence.nameRows === null ? null : parseAxisOcrNameRows(evidence.nameRows);
       const archived = db.prepare("SELECT payload FROM axis_archive_matches WHERE number=?").get(matchNumber);
       let match = archived ? JSON.parse(archived.payload) as AxisHistoryPage["matches"][number] : undefined;
       if (!match) throw new RangeError("Unknown match");
@@ -741,6 +757,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
         if (!duplicate) db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, photo.revision, photo.width, photo.height, photo.data,
           JSON.stringify(evidence.recognizedNames), JSON.stringify(evidence.unmatchedNames), JSON.stringify([...new Set(missingDiscordIds)]), JSON.stringify(conflicts), roundConflict ? JSON.stringify(roundConflict) : null, actor.sub, uploadedAt);
+        if (nameRows !== undefined && nameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
+          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(matchNumber, photo.revision, JSON.stringify(nameRows));
         if (!duplicate) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
           .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
         // Discord authors are provenance for a submission, not Google
@@ -757,6 +775,14 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
       return { players: [...recorded].map(([discordId, kda]) => ({ discordId, kda })), rounds: db.prepare("SELECT team_a AS a,team_b AS b FROM axis_match_rounds WHERE match_number=?").get(matchNumber) ?? null,
         photo: this.readMatchPhotoMetadata(matchNumber), conflicts, roundConflict,
         review, missingPlayers: missingPlayers.map((player) => ({ discordId: player.id, name: player.name })) };
+    },
+    setAxisMatchSubmissionNameRows(matchNumber: number, revision: string, nameRows: AxisOcrNameRow[]): boolean {
+      if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0 || !/^[a-f0-9]{64}$/.test(revision)) throw new TypeError("Invalid submission metadata");
+      const parsed = parseAxisOcrNameRows(nameRows);
+      return withImmediateTransaction(() => db.prepare(`INSERT OR IGNORE INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
+        SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?)
+        `)
+        .run(matchNumber, revision, JSON.stringify(parsed), matchNumber, revision).changes === 1);
     },
     readAxisMatchSubmissionPhoto(matchNumber: number, revision: string): AxisStoredPhoto | null {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0 || !/^[a-f0-9]{64}$/.test(revision)) throw new TypeError("Invalid submission photo");
