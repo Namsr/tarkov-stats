@@ -311,6 +311,54 @@ test("a saved backend response is acknowledged after restart without re-download
   }
 });
 
+test("category catch-up recovers direct match channels from REST after restart and on subsequent passes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axis-discord-category-"));
+  let store;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_STATE_PATH: join(directory, "state.db"),
+      AXIS_DISCORD_MATCH_CHANNELS: "", AXIS_DISCORD_MATCH_PREFIX: "queue-" });
+    const categoryId = config.channelIds[0];
+    const attachment = { id: "300000000000000031", name: "result.png", contentType: "image/png" };
+    const message = { id: "400000000000000031", guildId: config.guildId, channelId: "200000000000000031",
+      author: { id: "500000000000000001", bot: false }, attachments: new Map([[attachment.id, attachment]]) };
+    const requests = [];
+    const matchChannel = { id: message.channelId, parentId: categoryId, guildId: config.guildId, name: "queue-5771",
+      messages: { fetch: async options => { requests.push(options); return options.after ? new Map() : new Map([[message.id, message]]); } } };
+    message.channel = matchChannel;
+    let forbiddenFetches = 0;
+    const forbidden = { id: "200000000000000032", parentId: "200000000000000099", name: "queue-5772",
+      messages: { fetch: async () => { forbiddenFetches++; return new Map(); } } };
+    const nested = { ...forbidden, id: "200000000000000033", parentId: matchChannel.id, name: "queue-5771" };
+    const unrelated = { ...forbidden, id: "200000000000000034", parentId: categoryId, name: "general" };
+    let discoveries = 0;
+    const category = { id: categoryId, type: 4, guildId: config.guildId, guild: { channels: { fetch: async () => {
+      discoveries++;
+      return new Map([matchChannel, forbidden, nested, unrelated].map(channel => [channel.id, channel]));
+    } } } };
+    const client = { channels: { fetch: async () => category } };
+    store = new DiscordJobStore(config.statePath);
+    const worker = new DiscordBotWorker({ config, client, store });
+    await worker.catchUpConfiguredChannels();
+    assert.equal(store.checkpoint(matchChannel.id), message.id);
+    const claimed = store.claimDue();
+    assert.equal(claimed.match_number, 5771);
+    assert.equal(claimed.parent_channel_id, categoryId);
+    store.markAcked(claimed);
+    await worker.catchUpConfiguredChannels();
+    assert.equal(discoveries, 2, "periodic catch-up refreshes category children instead of relying on a stale cache");
+    assert.equal(requests[1].after, message.id);
+    store.close();
+    store = new DiscordJobStore(config.statePath);
+    await new DiscordBotWorker({ config, client, store }).catchUpConfiguredChannels();
+    assert.equal(requests[2].after, message.id, "restart uses the persisted history checkpoint");
+    assert.equal(forbiddenFetches, 0, "foreign, nested and unrelated channels are never read");
+    assert.equal(store.claimDue(), null, "checkpointed images are not enqueued again");
+  } finally {
+    closeStore(store);
+    await removeDirectory(directory);
+  }
+});
+
 test("startup catch-up includes active threads under an allowed parent channel", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axis-discord-threads-"));
   let store;
