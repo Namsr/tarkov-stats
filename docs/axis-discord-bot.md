@@ -171,6 +171,12 @@ and list players still missing statistics, unmatched screenshot nicknames and
 conflicting player results. A screenshot must contain a supported scoreboard
 with enough reliably matched roster names to be accepted.
 
+New uploads preserve each originally matched row's player ID. Later Arena
+nickname refreshes can clear name warnings only while those original identities
+remain unchanged. Older evidence without these IDs keeps its warnings for
+moderator review; rerunning OCR cannot reconstruct who owned an Arena nickname
+at upload time. Reuploading the same photo preserves its original evidence.
+
 The match archive can lag behind the final Discord screenshot. A match-not-found
 response is retried for a bounded period so that the normal archive importer has
 time to publish it. A permanently invalid match binding eventually produces an
