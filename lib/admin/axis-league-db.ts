@@ -663,11 +663,13 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
             .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
           else db.prepare("DELETE FROM axis_match_photos WHERE match_number=?").run(matchNumber);
         }
-        if (review !== undefined && photoInput?.photo) db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
+        if (review !== undefined && photoInput?.photo) {
+          const inserted = db.prepare(`INSERT OR IGNORE INTO axis_match_submissions(match_number,photo_revision,width,height,data,recognized_names,unmatched_names,missing_discord_ids,conflicts,round_conflict,google_sub,uploaded_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(review.matchNumber, review.photoRevision, photoInput.photo.width, photoInput.photo.height, photoInput.photo.data,
           JSON.stringify(review.recognizedNames), JSON.stringify(review.unmatchedNames), JSON.stringify(review.missingDiscordIds), JSON.stringify([]), null, review.uploadedBy, review.uploadedAt);
-        if (review !== undefined && photoInput?.photo && reviewNameRows !== undefined && reviewNameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
-          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(review.matchNumber, review.photoRevision, JSON.stringify(reviewNameRows));
+          if (reviewNameRows !== undefined && reviewNameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
+          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(review.matchNumber, review.photoRevision, JSON.stringify(inserted.changes === 1 ? reviewNameRows : reviewNameRows.map(({ id, side, nickname }) => ({ id, side, nickname }))));
+        }
         if (actor && changed) {
           edited = { name: actor.name?.trim() ?? null, at: Date.now() };
           this.rememberGoogleAccount(actor.sub, edited.name);
@@ -758,7 +760,7 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(matchNumber, photo.revision, photo.width, photo.height, photo.data,
           JSON.stringify(evidence.recognizedNames), JSON.stringify(evidence.unmatchedNames), JSON.stringify([...new Set(missingDiscordIds)]), JSON.stringify(conflicts), roundConflict ? JSON.stringify(roundConflict) : null, actor.sub, uploadedAt);
         if (nameRows !== undefined && nameRows !== null) db.prepare(`INSERT INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
-          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(matchNumber, photo.revision, JSON.stringify(nameRows));
+          VALUES(?,?,?) ON CONFLICT(match_number,photo_revision) DO NOTHING`).run(matchNumber, photo.revision, JSON.stringify(duplicate ? nameRows.map(({ id, side, nickname }) => ({ id, side, nickname })) : nameRows));
         if (!duplicate) db.prepare("INSERT INTO axis_match_photos(match_number,revision,width,height,data) VALUES(?,?,?,?,?) ON CONFLICT(match_number) DO UPDATE SET revision=excluded.revision,width=excluded.width,height=excluded.height,data=excluded.data")
           .run(matchNumber, photo.revision, photo.width, photo.height, photo.data);
         // Discord authors are provenance for a submission, not Google
@@ -778,7 +780,8 @@ export function createAxisLeagueStore(db: SqliteDatabase) {
     },
     setAxisMatchSubmissionNameRows(matchNumber: number, revision: string, nameRows: AxisOcrNameRow[]): boolean {
       if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0 || !/^[a-f0-9]{64}$/.test(revision)) throw new TypeError("Invalid submission metadata");
-      const parsed = parseAxisOcrNameRows(nameRows);
+      // Recovery happens after upload and cannot recreate original player identities.
+      const parsed = parseAxisOcrNameRows(nameRows).map(({ id, side, nickname }) => ({ id, side, nickname }));
       return withImmediateTransaction(() => db.prepare(`INSERT OR IGNORE INTO axis_match_submission_name_rows(match_number,photo_revision,name_rows)
         SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM axis_match_submissions WHERE match_number=? AND photo_revision=?)
         `)

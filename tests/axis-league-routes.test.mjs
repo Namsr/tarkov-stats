@@ -376,6 +376,7 @@ test("match photos validate access, origin and input, stay independent of stats,
   const response = await photoPost(photoRequest(input));
   assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
   const saved = (await response.json()).photo;
+  assert.equal(globalThis.axisStore.readAxisMatchReview(5).submissions[0].nameRows[0].matchedDiscordId, id, "moderator uploads persist the original OCR assignment");
   assert.equal(saved.width, 128); assert.equal(saved.height, 72); assert.match(saved.revision, /^[a-f0-9]{64}$/);
   assert.equal("data" in saved, false);
   assert.equal((await photoPost(photoRequest(input))).status, 409);
