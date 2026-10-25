@@ -162,6 +162,37 @@ test("custom SQL schema readers of unprojected fields are rejected before conver
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
+test("direct, length-based and implicit SQL readers cannot silently change their contract", async () => {
+  const f = await fixture();
+  try {
+    const readers = [
+      "CREATE VIEW raw_reader AS SELECT stats_json FROM mode_players",
+      "CREATE VIEW raw_reader AS SELECT length(stats_json) AS n FROM mode_players",
+      "CREATE VIEW raw_reader AS SELECT * FROM mode_players",
+      "CREATE VIEW raw_reader AS SELECT DISTINCT * FROM mode_players",
+      'CREATE VIEW raw_reader AS SELECT "p".* FROM mode_players AS p',
+      "CREATE INDEX raw_reader ON mode_players(length(stats_json))",
+      "CREATE TRIGGER raw_reader AFTER UPDATE ON mode_players BEGIN INSERT INTO changes(action) VALUES(NEW.stats_json); END",
+    ];
+    for (const ddl of readers) {
+      const db = new DatabaseSync(f.source);
+      try { db.exec(ddl); } finally { db.close(); }
+      await assert.rejects(compactStorage(f), /Unsupported JSON schema reader in raw_reader/);
+      const cleanup = new DatabaseSync(f.source);
+      try { cleanup.exec(`DROP ${ddl.split(" ")[1]} raw_reader`); } finally { cleanup.close(); }
+    }
+    const db = new DatabaseSync(f.source);
+    try { db.exec("CREATE VIEW pve_players AS SELECT * FROM mode_players WHERE mode = 'pve'"); }
+    finally { db.close(); }
+    const alias = new DatabaseSync(f.source);
+    try { alias.exec("CREATE VIEW raw_reader AS SELECT * FROM pve_players"); } finally { alias.close(); }
+    await assert.rejects(compactStorage(f), /Unsupported JSON schema reader in raw_reader/);
+    const cleanup = new DatabaseSync(f.source);
+    try { cleanup.exec("DROP VIEW raw_reader"); } finally { cleanup.close(); }
+    await compactStorage(f);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
 test("an oversized JSON row fails safely instead of filling a whole batch in memory", async () => {
   const f = await fixture();
   try {

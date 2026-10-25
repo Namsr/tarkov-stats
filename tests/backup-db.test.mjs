@@ -43,6 +43,10 @@ async function fixture(scenario) {
   const mock = `
     renice() { echo "renice $*" >> calls; }
     ionice() { echo "ionice $*" >> calls; }
+    sync() {
+      echo "sync $*" >> calls
+      [ "$SCENARIO" != sync-fail ]
+    }
     flock() {
       echo "flock $*" >> calls
       if [ "$SCENARIO" = sync-wait ] && [ "$*" = 8 ]; then
@@ -100,7 +104,7 @@ async function fixture(scenario) {
   } };
 }
 
-for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'estimate-full', 'wal-full', 'compression-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'sync-fail', 'disk-full', 'below-reserve', 'estimate-full', 'wal-full', 'compression-full', 'invalid-volume']) {
   test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {
@@ -117,6 +121,8 @@ for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-f
       assert.ok(calls.indexOf('flock 7') < calls.indexOf('docker volume'));
       assert.equal(await readFile(join(f.backups, 'source-before.tar.gz'), 'utf8'), 'unrelated operator archive');
       if (success) {
+        assert.match(calls, /sync .*\.db\.gz/);
+        assert.match(calls, /sync .*\.complete/);
         assert.equal(sets.length, 1);
         assert.match(calls, /runner worker nice -n 19 ionice -c 3 node/);
         assert.doesNotMatch(sets[0], /old/);

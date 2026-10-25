@@ -69,7 +69,8 @@ The backup format remains five independently verified SQLite `.db.gz` files and
 a `.complete` marker. Each archive is produced from a consistent `VACUUM INTO`
 snapshot, never from a raw live database file. The last verified set is retained
 until the entire new set passes verification. The runtime free-space guard
-preserves 1 GiB while gzip writes the output.
+preserves 1 GiB while gzip writes the output. Archive files, the completion
+marker and directory entries are synced before an older verified set is removed.
 
 Preflight includes the database size plus WAL, the last completed archive's size
 as an estimate of the next archive, and the reserve. The estimate is not a bound

@@ -191,6 +191,16 @@ test("corrupt marked payloads fail closed", () => {
   assert.throws(() => decodeStorageJsonText(JSON.stringify(oversized)), /invalid stored JSON envelope/);
 });
 
+test("damaged or missing envelope magic cannot fall back to an opaque legacy object", () => {
+  const encoded = encodeStorageJson(JSON.stringify(largeStats()));
+  for (const magic of ["damaged", null, undefined]) {
+    const envelope = JSON.parse(encoded);
+    if (magic === undefined) delete envelope.__tarkovstats_storage.magic;
+    else envelope.__tarkovstats_storage.magic = magic;
+    assert.throws(() => decodeStorageJsonText(JSON.stringify(envelope)), /invalid magic/);
+  }
+});
+
 test("small and incompressible payloads never grow", () => {
   const small = JSON.stringify({ nickname: "short" });
   assert.equal(encodeStorageJson(small), small);

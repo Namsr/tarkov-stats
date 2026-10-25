@@ -135,12 +135,18 @@ for NAME in $DATABASES; do
   ' "$NAME"
   mv -- "$SNAPSHOT.gz" "$STAGE/$NAME.db.gz"
   gzip -t "$STAGE/$NAME.db.gz"
+  # GNU sync with file arguments uses fsync, including file metadata. Persist
+  # the verified archive before any marker can advertise a completed set.
+  sync "$STAGE/$NAME.db.gz"
   rm -f -- "$SNAPSHOT"
 done
 
 # Publish the whole verified set before removing any previous backup.
+sync "$STAGE"
 touch "$STAGE/.complete"
+sync "$STAGE/.complete" "$STAGE"
 mv -T -- "$STAGE" "$FINAL"
+sync "$DIR"
 for OLD in "$DIR"/backup-*; do
   [ -d "$OLD" ] && [ ! -L "$OLD" ] && [ -f "$OLD/.complete" ] || continue
   [ "$OLD" != "$FINAL" ] || continue

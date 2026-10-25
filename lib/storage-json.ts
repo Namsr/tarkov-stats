@@ -82,9 +82,10 @@ function storageJsonText(value: unknown): string {
 function isEnvelopeCandidate(value: unknown): value is { [STORAGE_MARKER]: unknown } {
   if (!isObject(value) || !Object.hasOwn(value, STORAGE_MARKER)) return false;
   const marker = value[STORAGE_MARKER];
-  // A legacy payload is allowed to contain the reserved property.  Only the
-  // unmistakable magic value enters strict envelope validation.
-  return isObject(marker) && marker.magic === STORAGE_MAGIC;
+  // A legacy payload may contain an unrelated reserved property. A marker
+  // shaped like our envelope must still fail closed if its magic is damaged.
+  return isObject(marker) && (marker.magic === STORAGE_MAGIC ||
+    ["version", "codec", "sha256", "data"].every((key) => Object.hasOwn(marker, key)));
 }
 
 function projectionFor(parsed: JsonObject): JsonObject {
@@ -108,7 +109,7 @@ function validateProjection(envelope: JsonObject, decoded: JsonObject): void {
 function readMarker(value: JsonObject): StorageEnvelopeMarker | null {
   if (!isEnvelopeCandidate(value)) return null;
   const marker = value[STORAGE_MARKER];
-  if (!isObject(marker) || marker.magic !== STORAGE_MAGIC) return null;
+  if (!isObject(marker) || marker.magic !== STORAGE_MAGIC) throw new StorageJsonError("invalid magic");
   if (marker.version !== STORAGE_VERSION || marker.codec !== STORAGE_CODEC) {
     throw new StorageJsonError("unsupported version or codec");
   }

@@ -3,7 +3,7 @@ import type { ArenaModeKey } from "@/types/arena";
 import type { ArenaLeaderboardTab } from "@/types/leaderboard";
 import type { LeaderboardScopeConfig } from "./config";
 import type { LeaderboardSourceRow } from "./materialize";
-import { decodeStorageJson } from "@/lib/storage-json";
+import { decodeStorageJson } from "../storage-json.ts";
 
 function columns(db: any, table: string): Set<string> {
   return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row: any) => String(row.name)));

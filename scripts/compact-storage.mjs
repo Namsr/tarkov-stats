@@ -33,9 +33,27 @@ function assertSchemaJsonAccess(schema) {
   // JSON paths whose values the envelope does not expose to native SQLite.
   // A false positive is safe: it asks the operator to review that object.
   const paths = new Set(STORAGE_JSON_PROJECTION_KEYS.map((key) => `$.${key}`));
+  const name = '(?:stats_json|raw_json|"stats_json"|"raw_json"|`stats_json`|`raw_json`|\\[stats_json\\]|\\[raw_json\\])';
+  const column = `(?:(?:[a-z_]\\w*|"[^"]+"|\x60[^\x60]+\x60|\\[[^\\]]+\\])\\s*\\.\\s*)?${name}`;
+  const projection = new RegExp(`\\bjson(?:b)?_(?:extract|type|array_length|valid)\\s*\\(\\s*${column}\\s*(?:,\\s*(['"])\\$[^'"]*\\1\\s*)?\\)`, "gi");
+  const declaration = new RegExp(`${name}\\s+TEXT\\b`, "gi");
   for (const item of schema) {
     const sql = item.sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, " ");
-    if (!/\b(?:stats_json|raw_json)\b/i.test(sql) || !/\bjson(?:b)?_\w+\s*\(|->/i.test(sql)) continue;
+    // These are the project's two decoder-aware transparent aliases. Unknown
+    // SELECT * views/triggers can copy envelopes into a plaintext contract.
+    const transparentMode = new Map([["pve_players", "pve"], ["arena_players", "arena"]]).get(item.name.toLowerCase());
+    const normalized = sql.replace(/["`\[\]]/g, "").replace(/\s+/g, " ").trim().replace(/;$/, "");
+    if (item.type === "view" && transparentMode && new RegExp(
+      `^CREATE VIEW ${item.name} AS SELECT \\* FROM mode_players WHERE mode\\s*=\\s*'${transparentMode}'$`, "i",
+    ).test(normalized)) continue;
+    const referencesTarget = /\b(?:mode_players|progression_snapshots|arena_mode_stats|arena_mode_stats_history|pve_players|arena_players)\b/i.test(sql);
+    // Conservative on purpose: DISTINCT, quoted aliases, CTEs and SELECT via
+    // a transparent alias must not conceal an implicit payload copy. Even
+    // COUNT(*) in a custom schema object requires operator review here.
+    if (item.type !== "table" && referencesTarget && /\b(?:SELECT|RETURNING)\b[\s\S]*\*/i.test(sql)) {
+      throw new Error(`Unsupported JSON schema reader in ${item.name}; implicit columns require an explicit contract`);
+    }
+    if (!/\b(?:stats_json|raw_json)\b/i.test(sql)) continue;
     const accessed = [...sql.matchAll(/['"](\$[^'"]*)['"]/g)].map((match) => match[1]);
     const functions = [...sql.matchAll(/\b(json(?:b)?_\w+|json|jsonb)\s*\(/gi)].map((match) => match[1].toLowerCase());
     const extracts = [...sql.matchAll(/\bjson(?:b)?_extract\s*\(/gi)].length;
@@ -46,6 +64,14 @@ function assertSchemaJsonAccess(schema) {
       functions.some((name) => !/^json(?:b)?_(?:extract|type|array_length|valid)$/.test(name)) ||
       extracts !== simpleExtracts || dynamicType || (!accessed.length && /->/i.test(sql))) {
       throw new Error(`Unsupported JSON schema reader in ${item.name}; review its paths before compaction`);
+    }
+    let remaining = sql.replace(projection, "");
+    if (item.type === "table" && TARGETS.has(item.name.toLowerCase())) remaining = remaining.replace(declaration, "");
+    if (item.type === "trigger" && TARGETS.has(item.tbl_name.toLowerCase())) {
+      remaining = remaining.replace(/\bOLD\.(stats_json|raw_json)\s+IS\s+NOT\s+NEW\.\1\b/gi, "");
+    }
+    if (/\b(?:stats_json|raw_json)\b/i.test(remaining)) {
+      throw new Error(`Unsupported JSON schema reader in ${item.name}; direct representation access requires review`);
     }
   }
 }
