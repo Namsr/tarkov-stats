@@ -1,4 +1,5 @@
 import type { ParsedPlayerStats } from "@/types/tarkov";
+import { decodeStorageJsonText } from "./storage-json.ts";
 
 export interface PlayerSnapshotInput {
   aid: number;
@@ -130,6 +131,7 @@ const ARCHIVE_HISTORY_SQL =
   `INSERT OR IGNORE INTO banned_snapshots (${SNAPSHOT_COLS.join(", ")}) ` +
   `SELECT ${SNAPSHOT_COLS.map((column) => (column in ARCHIVE_COALESCE
     ? `COALESCE(${column}, ${ARCHIVE_COALESCE[column]})`
+    : column === "stats_json" ? "decode_storage_json(stats_json)"
     : column)).join(", ")} ` +
   `FROM progression_db.progression_snapshots WHERE aid = ?`;
 
@@ -210,6 +212,12 @@ async function getSqliteBanDb(): Promise<any | null> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createSqliteBanStore(db: any): BanStore {
   db.exec(BAN_SCHEMA);
+  // The live progression representation may be compressed, but banned_snapshots
+  // remains the portable plaintext archive contract.  A connection-local UDF
+  // lets the SQL history copy decode each row without loading the whole history
+  // into JavaScript; malformed envelopes abort the transaction instead of being
+  // silently archived as an opaque marker.
+  db.function("decode_storage_json", { deterministic: true }, (value: unknown) => decodeStorageJsonText(value));
   return {
     async isBanned(aid) {
       return Boolean(db.prepare("SELECT 1 FROM banned_accounts WHERE aid = ?").get(aid));

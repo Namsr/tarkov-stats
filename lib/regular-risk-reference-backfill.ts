@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ParsedPlayerStats } from "../types/tarkov.ts";
 import { storedRegularRiskInputs } from "./regular-risk-score.ts";
+import { decodeStorageJson } from "./storage-json.ts";
 
 /** Populate derived comparison columns from the matching saved profile version. */
 export function backfillRegularRiskReferences(players: DatabaseSync, snapshots: DatabaseSync): number {
@@ -24,7 +25,7 @@ export function backfillRegularRiskReferences(players: DatabaseSync, snapshots: 
         const saved = snapshot.get(row.aid, row.profile_updated_at);
         if (!saved?.stats_json) continue;
         let stats: Partial<ParsedPlayerStats>;
-        try { stats = JSON.parse(String(saved.stats_json)); } catch { continue; }
+        try { stats = decodeStorageJson<Partial<ParsedPlayerStats>>(String(saved.stats_json)); } catch { continue; }
         if (!stats || typeof stats !== "object" || Array.isArray(stats) || stats.profileUpdatedAt !== row.profile_updated_at) continue;
         const raw = storedRegularRiskInputs(stats);
         if (raw.raids === null) continue;

@@ -24,6 +24,7 @@ import {
 } from "@/types/arena";
 import type { PlayerProfile } from "@/types/tarkov";
 import { ARENA_PARSER_VERSION, ARENA_RISK_UPSERT_SQL, arenaRiskValues, isArenaMode } from "@/lib/arena/storage";
+import { decodeStorageJson } from "@/lib/storage-json";
 import { markAveragePublicationDirty, standardArenaVariant } from "@/lib/average-publication";
 import { STANDARD_AVERAGE_STATISTICS } from "@/lib/average-publication-variants";
 import { singleFlight } from "@/lib/seasonal/progression-flight";
@@ -32,6 +33,7 @@ export { ARENA_PARSER_VERSION } from "@/lib/arena/storage";
 
 type Backend = NonNullable<Awaited<ReturnType<typeof getArenaBackend>>>;
 type Row = Record<string, unknown>;
+type StoredArenaRaw = { normalized?: { source?: unknown }; source?: unknown };
 
 const COHORT_PERCENTS = [10, 15, 20, 30] as const;
 const RISK_METRICS = ["kd_ratio", "win_rate", "kills_per_match", "damage_per_match"] as const;
@@ -522,7 +524,7 @@ function modeFrom(row: Row, mode: ArenaModeKey): ArenaModeStats {
 
 function sourceFrom(row: Row): ArenaOverallStats["source"] {
   try {
-    const raw = JSON.parse(String(row.raw_json));
+    const raw = decodeStorageJson<StoredArenaRaw>(String(row.raw_json));
     const source = raw?.normalized?.source ?? raw?.source;
     return source === "upstream" || source === "complete_mode_sum" || source === "unavailable" ? source : "unavailable";
   } catch {

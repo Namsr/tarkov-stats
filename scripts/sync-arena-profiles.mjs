@@ -25,6 +25,7 @@ const {
   ARENA_PARSER_VERSION,
   upsertArenaSqlite,
 } = await import("../lib/arena/storage.ts");
+const { decodeStorageJson } = await import("../lib/storage-json.ts");
 const { ARENA_MODE_KEYS } = await import("../types/arena.ts");
 const { markAveragePublicationDirty } = await import("../lib/average-publication.ts");
 // The collector runs under Node's type-strip loader, which cannot resolve the
@@ -394,7 +395,7 @@ function classifyArenaRows(rows, parserVersion) {
   for (const row of rows) {
     let raw;
     try {
-      raw = JSON.parse(String(row.raw_json));
+      raw = decodeStorageJson(String(row.raw_json));
     } catch {
       return { kind: "invalid" };
     }

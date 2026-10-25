@@ -7,10 +7,24 @@ DATABASES='players bans progression community-reports admin-analytics'
 
 # Read-only age probe for operators and the backup service's postcondition.
 latest=0
+latest_set=
 for marker in "$DIR"/backup-*/.complete; do
   [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+  candidate=${marker%/.complete}
+  [ -d "$candidate" ] && [ ! -L "$candidate" ] || continue
+  candidate_valid=1
+  for NAME in $DATABASES; do
+    archive="$candidate/$NAME.db.gz"
+    [ -f "$archive" ] && [ ! -L "$archive" ] || { candidate_valid=0; break; }
+    archive_bytes=$(stat -c %s "$archive") || { candidate_valid=0; break; }
+    [ "$archive_bytes" -gt 0 ] || { candidate_valid=0; break; }
+  done
+  [ "$candidate_valid" -eq 1 ] || continue
   completed=$(stat -c %Y "$marker")
-  [ "$completed" -le "$latest" ] || latest=$completed
+  if [ "$completed" -gt "$latest" ]; then
+    latest=$completed
+    latest_set=$candidate
+  fi
 done
 now=$(date +%s)
 age=$(( now - latest ))
@@ -59,22 +73,29 @@ mkdir "$STAGE"
 for NAME in $DATABASES; do
   database_bytes=$(stat -c %s "$VOL/$NAME.db")
   wal_bytes=0
-  source_bytes=$database_bytes
   if [ -f "$VOL/$NAME.db-wal" ]; then
     wal_bytes=$(stat -c %s "$VOL/$NAME.db-wal")
-    source_bytes=$(( source_bytes + wal_bytes ))
+  fi
+  archive_estimate_bytes=0
+  archive_estimate_source=unknown
+  if [ -n "$latest_set" ] && [ -f "$latest_set/$NAME.db.gz" ]; then
+    archive_estimate_bytes=$(stat -c %s "$latest_set/$NAME.db.gz")
+    archive_estimate_source=latest_completed
   fi
   available_kb=$(df -Pk "$VOL" | awk 'NR == 2 { print $4 }')
-  # Reserve the snapshot first. Compression checks actual free space on every
-  # output chunk rather than rejecting a small archive as another full database.
-  required_kb=$(( (source_bytes + 1023) / 1024 + 1048576 ))
-  printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s available_kb=%s required_kb=%s\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$available_kb" "$required_kb"
+  # VACUUM INTO needs a second database-sized file. The previous verified
+  # archive is the only useful bounded estimate for the gzip output; it is
+  # deliberately advisory because compression ratio can change. The runtime
+  # guard below remains authoritative and keeps the 1 GiB reserve on every
+  # output chunk.
+  required_kb=$(( (database_bytes + wal_bytes + 1023) / 1024 + (archive_estimate_bytes + 1023) / 1024 + 1048576 ))
+  printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s archive_estimate_bytes=%s archive_estimate_source=%s available_kb=%s required_kb=%s reserve_kb=1048576\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$archive_estimate_bytes" "$archive_estimate_source" "$available_kb" "$required_kb"
   if [ "$available_kb" -lt "$required_kb" ]; then
-    echo "insufficient free space for $NAME backup; retaining previous set" >&2
+    echo "insufficient estimated free space for $NAME backup (snapshot=${database_bytes} wal=${wal_bytes} archive_estimate=${archive_estimate_bytes} reserve=1073741824); retaining previous set" >&2
     exit 1
   fi
   # SQLite snapshots use the same bounded offline service, independently of HTTP.
-  /usr/local/sbin/tarkovstats-run-background worker nice -n 19 ionice -c 3 node --experimental-sqlite -e '
+  /usr/local/sbin/tarkovstats-run-background worker nice -n 19 ionice -c 3 node --experimental-strip-types --experimental-sqlite -e '
     const fs = require("node:fs");
     const { DatabaseSync } = require("node:sqlite");
     const name = process.argv[1];
@@ -91,6 +112,17 @@ for NAME in $DATABASES; do
       const rows = snapshot.prepare("PRAGMA quick_check").all();
       if (rows.length !== 1 || rows[0].quick_check !== "ok") {
         throw new Error(`Invalid backup database: ${name}`);
+      }
+      if (snapshot.prepare("SELECT 1 FROM sqlite_schema WHERE type=? AND lower(name)=?")
+        .get("table", "arena_mode_stats_history")) {
+        const { createArenaHistoryPayloadReader } = require("/app/lib/arena/history-payloads.ts");
+        const readHistory = createArenaHistoryPayloadReader(snapshot);
+        let checked = 0;
+        for (const row of snapshot.prepare("SELECT raw_json FROM arena_mode_stats_history").iterate()) {
+          readHistory(row.raw_json);
+          checked++;
+        }
+        console.log(`BACKUP_HISTORY_VERIFIED rows=${checked}`);
       }
     } finally { snapshot.close(); }
     const { createGzip } = require("node:zlib");
@@ -114,12 +146,18 @@ for NAME in $DATABASES; do
   ' "$NAME"
   mv -- "$SNAPSHOT.gz" "$STAGE/$NAME.db.gz"
   gzip -t "$STAGE/$NAME.db.gz"
+  # GNU sync with file arguments uses fsync, including file metadata. Persist
+  # the verified archive before any marker can advertise a completed set.
+  sync "$STAGE/$NAME.db.gz"
   rm -f -- "$SNAPSHOT"
 done
 
 # Publish the whole verified set before removing any previous backup.
+sync "$STAGE"
 touch "$STAGE/.complete"
+sync "$STAGE/.complete" "$STAGE"
 mv -T -- "$STAGE" "$FINAL"
+sync "$DIR"
 for OLD in "$DIR"/backup-*; do
   [ -d "$OLD" ] && [ ! -L "$OLD" ] && [ -f "$OLD/.complete" ] || continue
   [ "$OLD" != "$FINAL" ] || continue

@@ -7,6 +7,7 @@ import { PLAYTIME_RANGES, rangeForHours } from "../playtime-brackets.ts";
 import { buildProgressionPercentileDistributions, buildSeasonalProgressionDetails, type ProgressionDetailIntervalRow, type ProgressionPercentileDistributions, type SeasonalProgressionDetails } from "./progression-details.ts";
 import { achievementUnlockHours, firstFiniteHours } from "../achievement-unlock-hours.ts";
 import { buildPublishedProgressionAverage } from "./progression-average-publication.ts";
+import { decodeStorageJson } from "../storage-json.ts";
 import type { ParsedPlayerStats } from "../../types/tarkov";
 import type {
   ProgressionAverageResponse,
@@ -268,7 +269,7 @@ function zeroCounters(): SeasonalCounters {
 function parseSnapshotStats(value: unknown): Record<string, unknown> {
   if (typeof value !== "string") return {};
   try {
-    const parsed = JSON.parse(value) as unknown;
+    const parsed = decodeStorageJson(value) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : {};

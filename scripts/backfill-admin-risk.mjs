@@ -13,6 +13,7 @@ import {
 } from "../lib/profile-cohort.ts";
 import { getSeasonalAchievementBaseline, getSeasonalRiskBaseline } from "../lib/seasonal/average-db.ts";
 import { saveRiskEvaluation } from "../lib/admin/moderation-db.ts";
+const { decodeStorageJson } = await import("../lib/storage-json.ts");
 
 const playersPath = process.env.SQLITE_PATH || "/data/players.db";
 const progressionPath = process.env.PROGRESSION_SQLITE_PATH || process.env.PROGRESSION_DB_PATH || "/data/progression.db";
@@ -23,7 +24,7 @@ if (!existsSync(playersPath)) throw new Error(`players database does not exist: 
 if (!existsSync(progressionPath)) throw new Error(`progression database does not exist: ${progressionPath}`);
 
 function parsedJson(value, fallback) {
-  try { return JSON.parse(String(value ?? "")); } catch { return fallback; }
+  try { return decodeStorageJson(String(value ?? "")); } catch { return fallback; }
 }
 
 function statsFromRow(row, mode) {

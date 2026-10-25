@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { reissueEditedTriggers, sqliteTrigger } from "./sqlite-trigger-ddl.ts";
+import { decodeStorageJsonText } from "./storage-json.ts";
 import { TEMPO_TTL_MS, TEMPO_VERSION, TEMPO_TRANSITIONS, parseTempoUnlocks, measureTempo,
   evaluateTempo, summarizeTempo, type TempoScope, type TempoUnlocks, type TempoCohort,
   type TempoPublication } from "./achievement-tempo.ts";
@@ -102,7 +103,8 @@ export function materializeTempo(source: DatabaseSync, output: DatabaseSync, sco
           if (!snapshot) continue;
           const observedAt = Number(snapshot.profile_updated_at);
           profile = { revision, observedAt,
-            unlocks: parseTempoUnlocks(String(snapshot.stats_json), snapshot.achievements == null ? null : String(snapshot.achievements), Math.min(now, observedAt)) };
+            unlocks: parseTempoUnlocks(decodeStorageJsonText(String(snapshot.stats_json)),
+              snapshot.achievements == null ? null : String(snapshot.achievements), Math.min(now, observedAt)) };
           save.run(scope.mode, scope.cycleId, aid, revision, profile.observedAt, JSON.stringify(profile.unlocks));
           decoded++;
         }

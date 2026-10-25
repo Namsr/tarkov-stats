@@ -72,6 +72,7 @@ GEMINI.md
 !/docs/axis-discord-bot.md
 !/docs/progression-materialization-performance.md
 !/docs/progression-materialization-benchmark.json
+!/docs/storage-format.md
 /ops/*
 !/ops/Caddyfile
 !/ops/deploy.sh

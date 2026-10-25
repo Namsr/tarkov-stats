@@ -41,6 +41,7 @@ import { buildRegularRiskBaseline, storedRegularRiskInputs, REGULAR_RISK_MAX_COH
 import { initializeRiskPopulationRevision } from "./risk-population-revision.ts";
 import { retrySqliteBusy } from "@/lib/sqlite-busy-retry";
 import { initializeProfileChangeJournal } from "@/lib/profile-change-journal";
+import { decodeStorageJson, encodeStorageJsonForWrite } from "./storage-json.ts";
 
 // The cohort and population scans filter on these five columns and read the
 // radar metrics straight out of the index. Carrying them makes every cohort
@@ -1251,7 +1252,7 @@ function parseStoredPlayer(
 ): { stats: ParsedPlayerStats; achievementIds: string[]; capturedAt: number | null } | null {
   if (!row?.stats_json) return null;
   try {
-    const stats = JSON.parse(row.stats_json) as ParsedPlayerStats;
+    const stats = decodeStorageJson<ParsedPlayerStats>(row.stats_json);
     const achievementIds = JSON.parse(row.achievements ?? "[]") as unknown;
     if (!stats || typeof stats !== "object" || typeof stats.nickname !== "string") return null;
     return {
@@ -1486,6 +1487,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
                 throw error;
               }
             } else {
+              const encodedStats = encodeStorageJsonForWrite(stats);
               if (mode === "arena" && stats.arenaProfile) {
                 rawDb.exec("BEGIN IMMEDIATE");
                 try {
@@ -1501,7 +1503,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
                     }
                   }
                   rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                    .run(mode, ...argsFor(aid, stats, ids, now), encodedStats, aid);
                   upsertArenaSqlite(rawDb, stats.arenaProfile, now);
                   updateSearchIndex(aid, stats, now);
                   rawDb.exec("COMMIT");
@@ -1513,7 +1515,7 @@ async function sqliteStore(mode: CrossSectionMode): Promise<PlayerStore | null> 
                 rawDb.exec("BEGIN IMMEDIATE");
                 try {
                   rawDb.prepare(SQLITE_MODE_UPSERT_SQL)
-                    .run(mode, ...argsFor(aid, stats, ids, now), JSON.stringify(stats), aid);
+                    .run(mode, ...argsFor(aid, stats, ids, now), encodedStats, aid);
                   updateSearchIndex(aid, stats, now);
                   rawDb.exec("COMMIT");
                 } catch (error) {

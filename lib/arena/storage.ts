@@ -8,6 +8,7 @@ import {
   type ArenaStoredMode,
 }
 from "../../types/arena.ts";
+import { encodeStorageJsonForWrite } from "../storage-json.ts";
 
 export const ARENA_PARSER_VERSION = 5;
 
@@ -210,7 +211,7 @@ function valuesFor(profile: ArenaProfile, snapshot: ArenaStoredSnapshot, now: nu
     Number.isInteger(profile.parserVersion) && profile.parserVersion >= 0
       ? profile.parserVersion
       : ARENA_PARSER_VERSION,
-    JSON.stringify({ sourceCounters, normalized: snapshot }),
+    encodeStorageJsonForWrite({ sourceCounters, normalized: snapshot }),
     now,
     profile.aid,
   ];

@@ -4,6 +4,8 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { BAN_SCHEMA } from "./ban-db.ts";
 import { lastSkillAccessSeconds, parseArenaProfileStats, parseProfileStats, PLAYER_LEVELS_V2026_07_22 } from "./tarkov-api.ts";
 import type { PlayerProfile } from "../types/tarkov.ts";
+import { decodeStorageJsonText } from "./storage-json.ts";
+import { createArenaHistoryPayloadReader } from "./arena/history-payloads.ts";
 
 export const BAN_PROFILE_PATHS = { regular: "profile", pve: "pve", arena: "arena", seasonal: "pvp-season" } as const;
 export const BAN_IMPORT_MODES = ["regular", "pve", "arena"] as const;
@@ -119,6 +121,7 @@ export function prepareBanLocalArchive(db: DatabaseSync, aids: ReadonlySet<numbe
   const copies: ((aid: number) => void)[] = [];
   const exclusions: ((aid: number) => void)[] = [];
   const insert = db.prepare("INSERT OR IGNORE INTO banned_stored_rows VALUES(?,?,?,?)");
+  const readArenaHistory = createArenaHistoryPayloadReader(db, { schema: "players_db" });
   for (const [schema, names] of Object.entries(tables)) {
     if (!attached.has(schema)) continue;
     if (!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type='table' AND name='excluded_players'`).get()) throw new Error(`${schema} exclusion schema missing`);
@@ -151,6 +154,13 @@ export function prepareBanLocalArchive(db: DatabaseSync, aids: ReadonlySet<numbe
         for (const values of matches.get(aid) ?? []) {
           const row = read.get(...values);
           if (!row || Number(row.aid) !== aid) throw new Error(`archive source changed: ${source} aid=${aid}; shared writer locks required`);
+          // Archives must remain portable after their source database or chunks are removed.
+          const jsonField = name === "mode_players" || name === "progression_snapshots" ? "stats_json"
+            : name === "arena_mode_stats" || name === "arena_mode_stats_history" ? "raw_json" : null;
+          if (jsonField && Object.hasOwn(row, jsonField) && row[jsonField] !== null) {
+            row[jsonField] = name === "arena_mode_stats_history"
+              ? readArenaHistory(row[jsonField]) : decodeStorageJsonText(row[jsonField]);
+          }
           const identity = [...new Set([...keys, "profile_updated_at", "upstream_version", "parser_version"].filter(k => Object.hasOwn(row, k)))];
           insert.run(aid, source, JSON.stringify(identity.map(k => row[k])), gzipSync(Buffer.from(JSON.stringify(row))));
           mark?.run(...values);
