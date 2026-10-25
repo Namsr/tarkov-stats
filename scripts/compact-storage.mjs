@@ -56,7 +56,10 @@ function assertSchemaJsonAccess(schema) {
   const projection = new RegExp(`\\bjson(?:b)?_(?:extract|type|array_length|valid)\\s*\\(\\s*${column}\\s*(?:,\\s*(['"])\\$[^'"]*\\1\\s*)?\\)`, "gi");
   const declaration = new RegExp(`${name}\\s+TEXT\\b`, "gi");
   for (const item of schema) {
-    const sql = item.sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, " ");
+    // Keep comments: stripping them with a regex can erase SQL inside quoted
+    // literals/identifiers and hide an incompatible reader. False positives
+    // require operator review, as with the other conservative checks below.
+    const sql = item.sql;
     // These are the project's two decoder-aware transparent aliases. Unknown
     // SELECT * views/triggers can copy envelopes into a plaintext contract.
     const transparentMode = new Map([["pve_players", "pve"], ["arena_players", "arena"]]).get(item.name.toLowerCase());

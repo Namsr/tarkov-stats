@@ -257,3 +257,24 @@ test("large stored envelopes with small decoded values can be grouped without re
     } finally { result.close(); }
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
+
+for (const [name, select] of [
+  ["line-comment literal", "'--' AS label, json_extract(stats_json, '$.futureField') AS value"],
+  ["block-comment literals", "'/*' AS label, json_extract(stats_json, '$.futureField') AS value, '*/' AS suffix"],
+  ["quoted identifier", '1 AS "--", json_extract(stats_json, \'$.futureField\') AS value'],
+]) {
+  test(`comment-like SQL ${name} cannot hide an unsupported JSON reader`, async () => {
+    const f = await fixture();
+    try {
+      const db = new DatabaseSync(f.source);
+      try {
+        db.exec(`CREATE VIEW unsupported_literal AS SELECT ${select} FROM mode_players`);
+        assert.notEqual(db.prepare("SELECT value FROM unsupported_literal LIMIT 1").get().value, null);
+      } finally { db.close(); }
+      const original = await readFile(f.source);
+      await assert.rejects(compactStorage(f), /Unsupported JSON schema reader in unsupported_literal/);
+      assert.deepEqual(await readFile(f.source), original);
+      assert.deepEqual(await readdir(f.dir), ["source.db"]);
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  });
+}
