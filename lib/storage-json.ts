@@ -31,6 +31,14 @@ const MIN_SAVINGS_BYTES = 64;
 const MAX_STORAGE_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_ENVELOPE_BYTES = 12 * 1024 * 1024;
 
+export const ARENA_HISTORY_REFERENCE_MARKER = "__tarkovstats_arena_history";
+
+/** Arrays under this reserved marker belong to the database-backed history format. */
+export function isArenaHistoryPayloadReferenceCandidate(value: unknown): boolean {
+  return isObject(value) && Object.hasOwn(value, ARENA_HISTORY_REFERENCE_MARKER) &&
+    Array.isArray(value[ARENA_HISTORY_REFERENCE_MARKER]);
+}
+
 type JsonObject = Record<string, unknown>;
 
 interface StorageEnvelopeMarker {
@@ -170,6 +178,9 @@ export function decodeStorageJsonText(value: unknown): string {
   if (typeof value !== "string") throw new StorageJsonError("value is not text");
   const parsed = parseObject(value);
   if (!parsed) return value;
+  if (isArenaHistoryPayloadReferenceCandidate(parsed)) {
+    throw new StorageJsonError("Arena history reference requires its database resolver");
+  }
   const marker = readMarker(parsed);
   if (!marker) return value;
 
@@ -187,6 +198,9 @@ export function decodeStorageJsonText(value: unknown): string {
   const decoded = decodedBytes.toString("utf8");
   const decodedObject = parseObject(decoded);
   if (!decodedObject) throw new StorageJsonError("payload is not a JSON object");
+  if (isArenaHistoryPayloadReferenceCandidate(decodedObject)) {
+    throw new StorageJsonError("Arena history reference requires its database resolver");
+  }
   validateProjection(parsed, decodedObject);
   return decoded;
 }

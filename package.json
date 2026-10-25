@@ -17,7 +17,7 @@
     "test:average-publication": "node --experimental-strip-types --experimental-sqlite --test tests/average-publication.test.ts",
     "test:average-client": "node --experimental-strip-types --test tests/client-average-request.test.ts",
     "pretest": "npm run test:ops && npm run test:storage && npm run test:average-publication && npm run test:average-client && npm run test:leaderboard && npm run test:axis-ocr && npm run test:discord",
-    "test:storage": "node --experimental-strip-types --experimental-sqlite --test tests/storage-json.test.ts tests/compact-storage.test.mjs",
+    "test:storage": "node --experimental-strip-types --experimental-sqlite --test tests/storage-json.test.ts tests/arena-history-payloads.test.ts tests/compact-storage.test.mjs",
     "storage:compact": "node --experimental-strip-types --experimental-sqlite scripts/compact-storage.mjs",
     "test:arena-ui": "node --experimental-strip-types --test tests/arena-ui.test.mjs",
     "test:regular-progression": "node --experimental-strip-types --test tests/regular-progression.test.ts",

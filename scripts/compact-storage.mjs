@@ -4,7 +4,9 @@ import { basename, dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { decodeStorageJsonText, encodeStorageJson, STORAGE_JSON_PROJECTION_KEYS } from "../lib/storage-json.ts";
+import { ARENA_HISTORY_REFERENCE_MARKER, decodeStorageJsonText, encodeStorageJson, STORAGE_JSON_PROJECTION_KEYS } from "../lib/storage-json.ts";
+import { ARENA_HISTORY_PAYLOAD_TABLE, ARENA_HISTORY_PAYLOAD_SCHEMA,
+  createArenaHistoryPayloadReader, storeArenaHistoryPayloadGroup } from "../lib/arena/history-payloads.ts";
 
 const TARGET_COLUMNS = {
   mode_players: "stats_json",
@@ -26,6 +28,22 @@ function assertCheck(db, pragma) {
 
 function inventory(db) {
   return db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type, name").all();
+}
+
+function coreSchema(schema) {
+  const normalize = (sql) => sql.replace(/\bIF\s+NOT\s+EXISTS\b/gi, "").replace(/\s+/g, " ").trim().replace(/;$/, "").toLowerCase();
+  return schema.filter((item) => {
+    if (item.name.toLowerCase() !== ARENA_HISTORY_PAYLOAD_TABLE) {
+      if (new RegExp(`\\b${ARENA_HISTORY_PAYLOAD_TABLE}\\b`, "i").test(item.sql)) {
+        throw new Error(`Unsupported private Arena storage schema reader in ${item.name}`);
+      }
+      return true;
+    }
+    if (item.type !== "table" || normalize(item.sql) !== normalize(ARENA_HISTORY_PAYLOAD_SCHEMA)) {
+      throw new Error("Unsupported Arena history storage schema");
+    }
+    return false;
+  });
 }
 
 function assertSchemaJsonAccess(schema) {
@@ -54,6 +72,9 @@ function assertSchemaJsonAccess(schema) {
       throw new Error(`Unsupported JSON schema reader in ${item.name}; implicit columns require an explicit contract`);
     }
     if (!/\b(?:stats_json|raw_json)\b/i.test(sql)) continue;
+    if (/\braw_json\b/i.test(sql) && /\bjson(?:b)?_\w+\s*\(|->/i.test(sql)) {
+      throw new Error(`Unsupported JSON schema reader in ${item.name}; history payloads require a database resolver`);
+    }
     const accessed = [...sql.matchAll(/['"](\$[^'"]*)['"]/g)].map((match) => match[1]);
     const functions = [...sql.matchAll(/\b(json(?:b)?_\w+|json|jsonb)\s*\(/gi)].map((match) => match[1].toLowerCase());
     const extracts = [...sql.matchAll(/\bjson(?:b)?_extract\s*\(/gi)].length;
@@ -94,7 +115,8 @@ function hashValue(hash, value) {
 // avoid rounding SQLite integers that are outside JavaScript's safe range.
 function fingerprint(db) {
   const result = [];
-  for (const { name } of db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()) {
+  const historyPayload = createArenaHistoryPayloadReader(db);
+  for (const { name } of db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND lower(name) <> ? ORDER BY name").all(ARENA_HISTORY_PAYLOAD_TABLE)) {
     const columns = db.prepare(`PRAGMA table_info(${quote(name)})`).all();
     const keys = columns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk);
     const order = (keys.length ? keys : columns).map((column) => quote(column.name)).join(", ");
@@ -106,7 +128,8 @@ function fingerprint(db) {
       hash.update("row:");
       for (const [column, raw] of Object.entries(row)) {
         hashValue(hash, column);
-        hashValue(hash, TARGET_COLUMNS[name.toLowerCase()] === column.toLowerCase() ? decodeStorageJsonText(raw) : raw);
+        hashValue(hash, TARGET_COLUMNS[name.toLowerCase()] === column.toLowerCase()
+          ? (name.toLowerCase() === "arena_mode_stats_history" ? historyPayload(raw) : decodeStorageJsonText(raw)) : raw);
       }
       rows++;
     }
@@ -154,7 +177,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     if (space.bavail * space.bsize < required) throw new Error(`Insufficient offline disk space: require ${required} bytes free`);
     assertCheck(sourceDb, "quick_check");
     const schema = inventory(sourceDb);
-    assertSchemaJsonAccess(schema);
+    const originalCoreSchema = coreSchema(schema);
+    assertSchemaJsonAccess(originalCoreSchema);
     const metadata = {
       applicationId: sourceDb.prepare("PRAGMA application_id").get().application_id,
       userVersion: sourceDb.prepare("PRAGMA user_version").get().user_version,
@@ -178,6 +202,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     const tables = [];
     for (const table of targets) {
       const column = TARGET_COLUMNS[table.toLowerCase()];
+      const isHistory = table.toLowerCase() === "arena_mode_stats_history";
+      const readPayload = isHistory ? createArenaHistoryPayloadReader(targetDb) : decodeStorageJsonText;
       // Batch only rowids, not JSON payloads: 1024 large legacy profiles must
       // not become a multi-gigabyte JavaScript array.
       const select = targetDb.prepare(`SELECT rowid AS storage_rowid FROM ${quote(table)} WHERE rowid > ? ORDER BY rowid LIMIT ?`);
@@ -195,17 +221,39 @@ export async function compactStorage({ source, output, decompress = false, batch
         if (!batch.length) break;
         targetDb.exec("BEGIN IMMEDIATE");
         try {
+          let group = [];
+          let groupBytes = 2;
+          const save = (row, replacement) => {
+            if (readPayload(replacement) !== row.original) throw new Error(`JSON round-trip failed in ${table}`);
+            const replacementHash = createHash("sha256").update(replacement).digest("hex");
+            if (replacementHash !== row.storedHash) { update.run(replacement, row.storage_rowid); changed++; }
+            textBytesBefore += row.storedBytes;
+            textBytesAfter += Buffer.byteLength(replacement);
+            rows++; last = row.storage_rowid;
+          };
+          const flush = () => {
+            if (!group.length) return;
+            const refs = storeArenaHistoryPayloadGroup(targetDb, group.map((row) => row.original));
+            for (let i = 0; i < group.length; i++) save(group[i], refs?.[i] ?? encodeStorageJson(group[i].original));
+            group = []; groupBytes = 2;
+          };
           for (const row of batch) {
             if (size.get(row.storage_rowid).bytes > MAX_JSON_ROW_BYTES) throw new Error(`JSON row exceeds migration limit in ${table}`);
             const { storage_json: stored } = read.get(row.storage_rowid);
-            const original = decodeStorageJsonText(stored);
-            const replacement = decompress ? original : encodeStorageJson(original);
-            if (decodeStorageJsonText(replacement) !== original) throw new Error(`JSON round-trip failed in ${table}`);
-            if (replacement !== stored) { update.run(replacement, row.storage_rowid); changed++; }
-            textBytesBefore += Buffer.byteLength(stored);
-            textBytesAfter += Buffer.byteLength(replacement);
-            rows++; last = row.storage_rowid;
+            const original = readPayload(stored);
+            // Do not retain the encoded source in a group: accepted legacy
+            // envelopes can be much larger than their decoded JSON text.
+            const entry = { storage_rowid: row.storage_rowid, original,
+              storedBytes: Buffer.byteLength(stored), storedHash: createHash("sha256").update(stored).digest("hex") };
+            if (isHistory && !decompress) {
+              // Bound serialized bytes, including escaping inside the array.
+              const itemBytes = Buffer.byteLength(JSON.stringify(original)) + 1;
+              if (group.length >= 64 || groupBytes + itemBytes > 1024 * 1024) flush();
+              if (itemBytes + 2 <= 1024 * 1024) { group.push(entry); groupBytes += itemBytes; }
+              else save(entry, encodeStorageJson(original));
+            } else save(entry, decompress ? original : encodeStorageJson(original));
           }
+          if (isHistory && !decompress) flush();
           targetDb.exec("COMMIT");
         } catch (error) { targetDb.exec("ROLLBACK"); throw error; }
         if (rows % (batchSize * 64) === 0) onProgress({ phase: "encode", table, rows, changed });
@@ -215,6 +263,19 @@ export async function compactStorage({ source, output, decompress = false, batch
       }
       tables.push({ table, column, rows, changed, textBytesBefore, textBytesAfter });
       onProgress({ phase: "table_done", ...tables.at(-1) });
+    }
+    const storageExists = targetDb.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND lower(name)=?").get(ARENA_HISTORY_PAYLOAD_TABLE);
+    if (storageExists) {
+      if (decompress) targetDb.exec(`DROP TABLE ${quote(ARENA_HISTORY_PAYLOAD_TABLE)}`);
+      else {
+        // Offline-only garbage collection. The immutable chunks referenced by
+        // surviving history rows remain; old/repacked orphan chunks are pruned.
+        const history = targets.find((name) => name.toLowerCase() === "arena_mode_stats_history");
+        if (!history) throw new Error("Arena payload storage has no history table");
+        targetDb.prepare(`DELETE FROM ${quote(ARENA_HISTORY_PAYLOAD_TABLE)} WHERE sha256 NOT IN
+          (SELECT sha FROM (SELECT CASE WHEN json_valid(raw_json) THEN json_extract(raw_json, ?) END AS sha
+            FROM ${quote(history)}) WHERE typeof(sha)='text')`).run(`$.${ARENA_HISTORY_REFERENCE_MARKER}[1]`);
+      }
     }
     targetDb.exec("BEGIN IMMEDIATE");
     try {
@@ -226,7 +287,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     targetDb.exec("VACUUM");
     onProgress({ phase: "verify" });
     assertCheck(targetDb, "integrity_check");
-    assertSame(inventory(targetDb), schema, "Schema/trigger inventory");
+    const finalSchema = inventory(targetDb);
+    assertSame(coreSchema(finalSchema), originalCoreSchema, "Core schema/trigger inventory");
     assertSame({
       applicationId: targetDb.prepare("PRAGMA application_id").get().application_id,
       userVersion: targetDb.prepare("PRAGMA user_version").get().user_version,
@@ -234,6 +296,9 @@ export async function compactStorage({ source, output, decompress = false, batch
     const before = fingerprint(sourceDb);
     const after = fingerprint(targetDb);
     assertSame(after, before, "Logical table contents");
+    const chunkStorage = targetDb.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND lower(name)=?").get(ARENA_HISTORY_PAYLOAD_TABLE)
+      ? targetDb.prepare(`SELECT COUNT(*) AS chunks, COALESCE(SUM(length(payload)),0) AS compressedBytes FROM ${quote(ARENA_HISTORY_PAYLOAD_TABLE)}`).get()
+      : { chunks: 0, compressedBytes: 0 };
     targetDb.close(); targetDb = undefined;
     sourceDb.exec("ROLLBACK"); sourceDb.close(); sourceDb = undefined;
     signal?.throwIfAborted();
@@ -244,7 +309,8 @@ export async function compactStorage({ source, output, decompress = false, batch
     unlinkSync(stage); ownsStage = false;
     return { version: 1, direction: decompress ? "decompress" : "compress", source: input, output: destination,
       bytesBefore, bytesAfter: statSync(destination).size, elapsedMs: Date.now() - started,
-      integrityCheck: "ok", schemaUnchanged: true, tables, verifiedTables: after };
+      integrityCheck: "ok", schemaUnchanged: JSON.stringify(finalSchema) === JSON.stringify(schema),
+      coreSchemaUnchanged: true, arenaHistoryStorage: chunkStorage, tables, verifiedTables: after };
   } finally {
     targetDb?.close(); sourceDb?.close();
     if (ownsStage) {

@@ -95,7 +95,7 @@ for NAME in $DATABASES; do
     exit 1
   fi
   # SQLite snapshots use the same bounded offline service, independently of HTTP.
-  /usr/local/sbin/tarkovstats-run-background worker nice -n 19 ionice -c 3 node --experimental-sqlite -e '
+  /usr/local/sbin/tarkovstats-run-background worker nice -n 19 ionice -c 3 node --experimental-strip-types --experimental-sqlite -e '
     const fs = require("node:fs");
     const { DatabaseSync } = require("node:sqlite");
     const name = process.argv[1];
@@ -112,6 +112,17 @@ for NAME in $DATABASES; do
       const rows = snapshot.prepare("PRAGMA quick_check").all();
       if (rows.length !== 1 || rows[0].quick_check !== "ok") {
         throw new Error(`Invalid backup database: ${name}`);
+      }
+      if (snapshot.prepare("SELECT 1 FROM sqlite_schema WHERE type=? AND lower(name)=?")
+        .get("table", "arena_mode_stats_history")) {
+        const { createArenaHistoryPayloadReader } = require("/app/lib/arena/history-payloads.ts");
+        const readHistory = createArenaHistoryPayloadReader(snapshot);
+        let checked = 0;
+        for (const row of snapshot.prepare("SELECT raw_json FROM arena_mode_stats_history").iterate()) {
+          readHistory(row.raw_json);
+          checked++;
+        }
+        console.log(`BACKUP_HISTORY_VERIFIED rows=${checked}`);
       }
     } finally { snapshot.close(); }
     const { createGzip } = require("node:zlib");

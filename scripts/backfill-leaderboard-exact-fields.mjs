@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { decodeStorageJson } from "../lib/storage-json.ts";
+import { createArenaHistoryPayloadReader } from "../lib/arena/history-payloads.ts";
 
 function nonNegativeInteger(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -60,6 +61,7 @@ export function backfillLeaderboardExactFields(db) {
   };
   db.exec("SAVEPOINT backfill_leaderboard_exact_fields");
   try {
+    const readArenaHistory = createArenaHistoryPayloadReader(db);
     const pveRows = db.prepare(`SELECT aid, profile_updated_at, stats_json,
         pmc_killed_pmc, last_played_at, pvp_stats_version
       FROM mode_players
@@ -91,7 +93,8 @@ export function backfillLeaderboardExactFields(db) {
           AND parser_version = ? AND best_arp IS NULL`);
       for (const row of rows) {
         summary.arenaScanned += 1;
-        const bestArp = bestArpFromArenaRaw(row.raw_json);
+        const raw = table === "arena_mode_stats_history" ? readArenaHistory(row.raw_json) : row.raw_json;
+        const bestArp = bestArpFromArenaRaw(raw);
         if (bestArp === null) continue;
         const result = update.run(bestArp, row.aid, row.upstream_version, row.parser_version);
         if (Number(result.changes) > 0) summary.arenaUpdated += 1;

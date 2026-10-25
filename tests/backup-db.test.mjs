@@ -7,7 +7,9 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { storeArenaHistoryPayloadGroup } from '../lib/arena/history-payloads.ts';
 
 const shell = process.platform === 'win32'
   ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../bin/bash.exe') : '/bin/sh';
@@ -24,6 +26,16 @@ async function fixture(scenario) {
     try {
       db.exec('CREATE TABLE fixture (name TEXT);');
       db.prepare('INSERT INTO fixture VALUES (?)').run(name);
+    } finally { db.close(); }
+  }
+  if (scenario === 'history-verified' || scenario === 'history-corrupt') {
+    const db = new DatabaseSync(join(volume, 'players.db'));
+    try {
+      db.exec('CREATE TABLE ARENA_MODE_STATS_HISTORY (id INTEGER PRIMARY KEY, raw_json TEXT)');
+      const refs = storeArenaHistoryPayloadGroup(db, [JSON.stringify({ unknown: 'history'.repeat(200) }), JSON.stringify({ unknown: 'future'.repeat(200) })]);
+      assert.ok(refs);
+      for (const ref of refs) db.prepare('INSERT INTO arena_mode_stats_history(raw_json) VALUES(?)').run(ref);
+      if (scenario === 'history-corrupt') db.exec('UPDATE arena_history_payload_chunks SET payload=zeroblob(length(payload))');
     } finally { db.close(); }
   }
   for (const old of ['backup-old-1', 'backup-old-2']) {
@@ -78,7 +90,7 @@ async function fixture(scenario) {
           [ "$#" -ge 3 ] || return 99
           shift
           if [ "$SCENARIO" = gzip-fail ]; then return 1; fi
-          "$TEST_NODE" --experimental-sqlite -e "$1" "$2";;
+          "$TEST_NODE" --experimental-strip-types --experimental-sqlite -e "$1" "$2";;
         *) return 99;;
       esac
     }
@@ -93,6 +105,7 @@ async function fixture(scenario) {
     .replace('exec 7>/run/tarkovstats-leaderboard.lock', 'exec 7>"$DIR/../leaderboard.lock"')
     .replace('const source = `/data/${name}.db`;', 'const source = `${process.env.TEST_VOLUME}/${name}.db`;')
     .replace('const target = "/data/.tarkovstats-backup.db";', 'const target = `${process.env.TEST_VOLUME}/.tarkovstats-backup.db`;')
+    .replace('require("/app/lib/arena/history-payloads.ts")', `require(require("node:url").fileURLToPath(${JSON.stringify(pathToFileURL(resolve('lib/arena/history-payloads.ts')).href)}))`)
     .replace('const space = fs.statfsSync(target);', 'const space = process.env.SCENARIO === "compression-full" ? { bavail: 0, bsize: 4096 } : fs.statfsSync(target);');
   for (const path of ['/opt/tarkovstats/backups', '/run/tarkovstats-data-sync.lock', '/run/tarkovstats-leaderboard.lock', '/usr/local/sbin/tarkovstats-run-background', '/data/']) {
     assert.ok(!script.includes(path), `backup sandbox left production path ${path}`);
@@ -104,13 +117,13 @@ async function fixture(scenario) {
   } };
 }
 
-for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'sync-fail', 'disk-full', 'below-reserve', 'estimate-full', 'wal-full', 'compression-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'history-verified', 'history-corrupt', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'sync-fail', 'disk-full', 'below-reserve', 'estimate-full', 'wal-full', 'compression-full', 'invalid-volume']) {
   test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {
       const result = spawnSync(shell, [f.file], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
       assert.ifError(result.error);
-      const success = ['success', 'snapshot-only-space'].includes(scenario);
+      const success = ['success', 'snapshot-only-space', 'history-verified'].includes(scenario);
       assert.equal(result.status === 0, success, `${scenario}: ${result.stderr}`);
       const entries = await readdir(f.backups);
       const sets = entries.filter((name) => name.startsWith('backup-'));
@@ -121,6 +134,7 @@ for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-f
       assert.ok(calls.indexOf('flock 7') < calls.indexOf('docker volume'));
       assert.equal(await readFile(join(f.backups, 'source-before.tar.gz'), 'utf8'), 'unrelated operator archive');
       if (success) {
+        if (scenario === 'history-verified') assert.match(result.stdout, /BACKUP_HISTORY_VERIFIED rows=2/);
         assert.match(calls, /sync .*\.db\.gz/);
         assert.match(calls, /sync .*\.complete/);
         assert.equal(sets.length, 1);

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { compactStorage } from "../scripts/compact-storage.mjs";
 import { decodeStorageJsonText, encodeStorageJson } from "../lib/storage-json.ts";
+import { createArenaHistoryPayloadReader } from "../lib/arena/history-payloads.ts";
 
 const largeStats = (n) => JSON.stringify({ nickname: `player-${n}`, pmcKilledPmc: n,
   pvpStatsKnown: n % 2 === 0, lastPlayedAt: null,
@@ -47,7 +48,8 @@ test("offline compaction preserves all decoded data, SQL projections, triggers, 
     const originalFile = await readFile(f.source);
     const result = await compactStorage({ ...f, batchSize: 2 });
     assert.equal(result.integrityCheck, "ok");
-    assert.equal(result.schemaUnchanged, true);
+    assert.equal(result.coreSchemaUnchanged, true);
+    assert.ok(result.arenaHistoryStorage.chunks > 0);
     assert.equal(result.tables.length, 4);
     assert.equal(result.tables.every((table) => table.changed === 9 && table.textBytesAfter < table.textBytesBefore), true);
     assert.deepEqual(await readFile(f.source), originalFile);
@@ -62,8 +64,9 @@ test("offline compaction preserves all decoded data, SQL projections, triggers, 
       for (const row of db.prepare("SELECT aid, stats_json FROM mode_players").all()) {
         assert.equal(decodeStorageJsonText(row.stats_json), largeStats(row.aid));
       }
+      const historyPayload = createArenaHistoryPayloadReader(db);
       for (const row of db.prepare("SELECT aid, raw_json FROM arena_mode_stats_history").all()) {
-        assert.equal(decodeStorageJsonText(row.raw_json), largeStats(row.aid));
+        assert.equal(historyPayload(row.raw_json), largeStats(row.aid));
       }
       db.exec("UPDATE mode_players SET stats_json=stats_json WHERE aid=2; UPDATE progression_snapshots SET stats_json=stats_json WHERE id=2");
       assert.deepEqual(db.prepare("SELECT id, action FROM changes ORDER BY id").all().map((row) => [row.id, row.action]), [[2, "mode"], [3, "progression"]]);
@@ -81,6 +84,8 @@ test("offline decompression produces a verified legacy-compatible copy and can c
     const db = new DatabaseSync(rollback, { readOnly: true });
     try {
       assert.equal(db.prepare("SELECT stats_json FROM mode_players WHERE aid=4").get().stats_json, largeStats(4));
+      assert.equal(db.prepare("SELECT raw_json FROM arena_mode_stats_history WHERE aid=4").get().raw_json, largeStats(4));
+      assert.equal(db.prepare("SELECT 1 FROM sqlite_schema WHERE name='arena_history_payload_chunks'").get(), undefined);
     } finally { db.close(); }
     const mixed = new DatabaseSync(f.output);
     try { mixed.prepare("UPDATE mode_players SET stats_json=? WHERE aid=4").run(largeStats(4)); }
@@ -201,5 +206,54 @@ test("an oversized JSON row fails safely instead of filling a whole batch in mem
     finally { db.close(); }
     await assert.rejects(compactStorage(f), /JSON row exceeds migration limit/);
     assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("native history JSON projections cannot bypass the chunk resolver", async () => {
+  const f = await fixture();
+  try {
+    const db = new DatabaseSync(f.source);
+    try { db.exec("CREATE VIEW unsupported_history AS SELECT json_extract(raw_json, '$.pmcKilledPmc') FROM arena_mode_stats_history"); }
+    finally { db.close(); }
+    await assert.rejects(compactStorage(f), /history payloads require a database resolver/);
+    assert.deepEqual(await readdir(f.dir), ["source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("a damaged shared chunk aborts conversion and cannot publish a legacy rollback copy", async () => {
+  const f = await fixture();
+  try {
+    await compactStorage(f);
+    const db = new DatabaseSync(f.output);
+    try { db.exec("UPDATE arena_history_payload_chunks SET payload=zeroblob(length(payload))"); }
+    finally { db.close(); }
+    const rollback = join(f.dir, "rollback.db");
+    await assert.rejects(compactStorage({ source: f.output, output: rollback, decompress: true }), /Arena history/);
+    assert.deepEqual((await readdir(f.dir)).sort(), ["compressed.db", "source.db"]);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test("large stored envelopes with small decoded values can be grouped without retaining their padding", async () => {
+  const f = await fixture();
+  try {
+    const db = new DatabaseSync(f.source);
+    try {
+      db.exec("BEGIN");
+      for (let aid = 0; aid < 9; aid++) {
+        const envelope = JSON.parse(encodeStorageJson(largeStats(aid)));
+        envelope.unusedPadding = "x".repeat(512 * 1024);
+        db.prepare("UPDATE arena_mode_stats_history SET raw_json=? WHERE aid=?").run(JSON.stringify(envelope), aid);
+      }
+      db.exec("COMMIT");
+    } finally { db.close(); }
+    const report = await compactStorage({ ...f, batchSize: 64 });
+    assert.ok(report.coreSchemaUnchanged);
+    const result = new DatabaseSync(f.output, { readOnly: true });
+    try {
+      const read = createArenaHistoryPayloadReader(result);
+      for (const row of result.prepare("SELECT aid,raw_json FROM arena_mode_stats_history").all()) {
+        assert.equal(read(row.raw_json), largeStats(row.aid));
+      }
+    } finally { result.close(); }
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
