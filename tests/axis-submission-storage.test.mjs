@@ -318,6 +318,29 @@ if (!isMainThread && workerData?.mode === "submit") {
     persistedDb.close();
   });
 
+  test("original name assignments remain immutable across duplicate deliveries", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    const rows = nameRowsFor(match).map((row, i) => ({ ...row, matchedDiscordId: allPlayers(match)[i].id }));
+    store.submitAxisMatch(match.number, photo("a"), [], undefined, { ...evidenceFor(match), nameRows: rows }, { sub: "uploader", name: "Uploader" });
+    const renamed = rows.map((row, i) => ({ ...row, matchedDiscordId: rows[(i + 1) % rows.length].matchedDiscordId }));
+    store.submitAxisMatch(match.number, photo("a"), [], undefined, { ...evidenceFor(match), nameRows: renamed }, { sub: "uploader", name: "Uploader" });
+    assert.deepEqual(createAxisLeagueStore(db).readAxisMatchReview(match.number).submissions[0].nameRows, rows);
+  });
+
+  for (const method of ["submit", "moderator", "recovery"]) test(method + " supplementation cannot claim current assignments as original legacy identities", t => {
+    const { db, store, match } = openStore();
+    t.after(() => db.close());
+    submitInStore(store, match, "a", []);
+    const rows = nameRowsFor(match).map((row, i) => ({ ...row, matchedDiscordId: allPlayers(match)[i].id }));
+    const evidence = { ...evidenceFor(match), nameRows: rows };
+    if (method === "submit") store.submitAxisMatch(match.number, photo("a"), [], undefined, evidence, { sub: "uploader", name: "Uploader" });
+    if (method === "moderator") store.setMatchStats(match.number, [], undefined, { expected: photo("a").revision, photo: photo("a") }, undefined,
+      { ...evidence, matchNumber: match.number, photoRevision: photo("a").revision, uploadedBy: "moderator", uploadedAt: Date.now() });
+    if (method === "recovery") store.setAxisMatchSubmissionNameRows(match.number, photo("a").revision, rows);
+    assert.deepEqual(store.readAxisMatchReview(match.number).submissions[0].nameRows, nameRowsFor(match));
+  });
+
   test("name-row metadata trigger failure rolls back screenshot, KDA, evidence and metadata", t => {
     const { db, store, match } = openStore();
     t.after(() => db.close());

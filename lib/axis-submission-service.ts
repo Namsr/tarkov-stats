@@ -131,7 +131,7 @@ export async function submitAxisScreenshot(request: AxisSubmissionRequest): Prom
     photo,
     changes,
     rounds,
-    { recognizedNames, unmatchedNames, missingDiscordIds, nameRows: parseAxisOcrNameRows(result.rows) },
+    { recognizedNames, unmatchedNames, missingDiscordIds, nameRows: parseAxisOcrNameRows(result.rows.map((row) => ({ ...row, matchedDiscordId: validation.assignments[row.id] ?? null }))) },
     actor,
     axisOcrRosterFingerprint(match),
   );

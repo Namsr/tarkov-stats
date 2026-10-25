@@ -3,22 +3,32 @@ import { inferAxisOcrLeftTeam, matchAxisOcrRows, type AxisOcrParticipant, type A
 import { analyzeAxisOcrMappingSafety } from "./axis-ocr-mapping.ts";
 
 export type AxisUploadRole = "player" | "moderator";
-export type AxisOcrNameRow = Pick<AxisOcrRow, "id" | "side" | "nickname">;
+export type AxisOcrNameRow = Pick<AxisOcrRow, "id" | "side" | "nickname"> & {
+  /** Original trusted assignment, before any later Arena nickname changes. */
+  matchedDiscordId?: string | null;
+};
 
 /** Bound persisted metadata to the trusted two-sided scoreboard shape. */
 export function parseAxisOcrNameRows(input: unknown): AxisOcrNameRow[] {
   if (!Array.isArray(input) || input.length !== 10) throw new TypeError("Invalid OCR name rows");
   const ids = new Set<string>();
   const sides = { left: 0, right: 0 };
+  const matchedIds = new Set<string>();
   return input.map((row) => {
     if (!row || typeof row.id !== "string" || !row.id.length || row.id.length > 200 || ids.has(row.id)
       || (row.side !== "left" && row.side !== "right") || typeof row.nickname !== "string" || row.nickname.length > 200) {
       throw new TypeError("Invalid OCR name row");
     }
+    if (row.matchedDiscordId !== undefined && row.matchedDiscordId !== null) {
+      if (typeof row.matchedDiscordId !== "string" || !row.matchedDiscordId.length || row.matchedDiscordId.length > 200
+        || matchedIds.has(row.matchedDiscordId)) throw new TypeError("Invalid OCR name assignment");
+      matchedIds.add(row.matchedDiscordId);
+    }
     ids.add(row.id);
     sides[row.side as "left" | "right"]++;
     if (sides[row.side as "left" | "right"] > 5) throw new TypeError("Invalid OCR name sides");
-    return { id: row.id, side: row.side, nickname: row.nickname };
+    return { id: row.id, side: row.side, nickname: row.nickname,
+      ...(row.matchedDiscordId === undefined ? {} : { matchedDiscordId: row.matchedDiscordId }) };
   });
 }
 
@@ -79,10 +89,15 @@ export function recheckAxisMatchReviewNames(
       return submission.unmatchedNames;
     }
     const assignments = matchAxisOcrRows(rows, participants);
-    // A nickname must not move from an already matched player to an old
-    // unmatched row while that player's former alias silently disappears.
+    // A later alias swap must not move an originally matched row to another
+    // player. Neither refreshed Arena aliases nor refreshed archive names can
+    // prove a legacy row's identity: only the original upload may supply it.
     const originallyUnmatched = new Set(submission.unmatchedNames.map((name) => name.trim()));
-    if (rows.some((row) => row.nickname.trim() && !originallyUnmatched.has(row.nickname.trim()) && !assignments[row.id])) {
+    if (rows.some((row) => {
+      if (!row.nickname.trim() || originallyUnmatched.has(row.nickname.trim())) return false;
+      const originalId = row.matchedDiscordId;
+      return !originalId || assignments[row.id] !== originalId;
+    })) {
       return submission.unmatchedNames;
     }
     const safety = analyzeAxisOcrMappingSafety(rows, assignments, participants);

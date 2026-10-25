@@ -78,9 +78,15 @@ without a supported name or an explicit binding are ignored. The worker does
 not infer matches from a player's latest game or OCR alone. Clear the prefix
 if a server uses a different naming convention.
 
-On first use the worker inspects the most recent 100 messages per configured
-channel. With a saved history checkpoint it recovers subsequent messages, and
-also discovers active threads under allowed text channels. Configure important
+For newly created text match channels, allow their category ID. The permanent
+Join Queue text channel is not their parent. Category discovery includes only
+direct child channels with a supported name or explicit binding; it does not
+extend the category allowlist to threads nested under those children.
+
+On first use the worker inspects the most recent 100 messages per configured or
+discovered match channel. With a saved history checkpoint it recovers subsequent
+messages. Startup, reconnect and periodic catch-up refresh direct match channels
+under allowed categories and discover active threads under allowed text channels. Configure important
 threads explicitly if they may be archived while the worker is offline.
 `AXIS_DISCORD_BOOTSTRAP_MESSAGES` controls the initial window (0–100, default 100;
 zero disables history recovery).
@@ -164,6 +170,12 @@ values remain for moderator review. Replies report cumulative saved coverage
 and list players still missing statistics, unmatched screenshot nicknames and
 conflicting player results. A screenshot must contain a supported scoreboard
 with enough reliably matched roster names to be accepted.
+
+New uploads preserve each originally matched row's player ID. Later Arena
+nickname refreshes can clear name warnings only while those original identities
+remain unchanged. Older evidence without these IDs keeps its warnings for
+moderator review; rerunning OCR cannot reconstruct who owned an Arena nickname
+at upload time. Reuploading the same photo preserves its original evidence.
 
 The match archive can lag behind the final Discord screenshot. A match-not-found
 response is retried for a bounded period so that the normal archive importer has

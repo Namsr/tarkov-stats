@@ -259,7 +259,7 @@ test("worker reads a fresh attachment URL, submits it and replies once", async (
       attachments: new Map([["300000000000000001", { id: "300000000000000001", name: "result.png", contentType: "image/png", url: "https://cdn.discordapp.com/attachments/200000000000000001/300000000000000001/result.png?sig=1" }]]),
       reply: async (value) => replies.push(value),
     };
-    const channel = { id: "200000000000000001", parentId: null, name: "match-42", messages: { fetch: async (arg) => typeof arg === "string" ? sourceMessage : new Map() } };
+    const channel = { id: "200000000000000001", parentId: null, name: "match-42", messages: { fetch: async (arg) => (typeof arg === "string" || arg?.message) ? sourceMessage : new Map() } };
     sourceMessage.channel = channel;
     const client = { user: { id: "900000000000000001" }, channels: { fetch: async () => channel } };
     const apiFetch = async (url) => {
@@ -297,7 +297,7 @@ test("a saved backend response is acknowledged after restart without re-download
     store = new DiscordJobStore(config.statePath);
     const replies = [];
     const source = { id: job.messageId, guildId: config.guildId, channelId: job.channelId, author: { id: job.authorId, bot: false }, webhookId: null, attachments: new Map(), channel: null, reply: async (value) => replies.push(value) };
-    const channel = { id: job.channelId, parentId: null, name: "match-42", messages: { fetch: async (arg) => typeof arg === "string" ? source : new Map() } };
+    const channel = { id: job.channelId, parentId: null, name: "match-42", messages: { fetch: async (arg) => (typeof arg === "string" || arg?.message) ? source : new Map() } };
     source.channel = channel;
     const client = { user: { id: "900000000000000001" }, channels: { fetch: async () => channel } };
     const worker = new DiscordBotWorker({ config, client, store, fetchImpl: async () => { throw new Error("download must not run"); } });
@@ -306,6 +306,54 @@ test("a saved backend response is acknowledged after restart without re-download
     assert.equal(store.get({ guild_id: job.guildId, channel_id: job.channelId, message_id: job.messageId, attachment_id: job.attachmentId }).status, "done");
   } finally {
     closeStore(first);
+    closeStore(store);
+    await removeDirectory(directory);
+  }
+});
+
+test("category catch-up recovers direct match channels from REST after restart and on subsequent passes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axis-discord-category-"));
+  let store;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_STATE_PATH: join(directory, "state.db"),
+      AXIS_DISCORD_MATCH_CHANNELS: "", AXIS_DISCORD_MATCH_PREFIX: "queue-" });
+    const categoryId = config.channelIds[0];
+    const attachment = { id: "300000000000000031", name: "result.png", contentType: "image/png" };
+    const message = { id: "400000000000000031", guildId: config.guildId, channelId: "200000000000000031",
+      author: { id: "500000000000000001", bot: false }, attachments: new Map([[attachment.id, attachment]]) };
+    const requests = [];
+    const matchChannel = { id: message.channelId, parentId: categoryId, guildId: config.guildId, name: "queue-5771",
+      messages: { fetch: async options => { requests.push(options); return options.after ? new Map() : new Map([[message.id, message]]); } } };
+    message.channel = matchChannel;
+    let forbiddenFetches = 0;
+    const forbidden = { id: "200000000000000032", parentId: "200000000000000099", name: "queue-5772",
+      messages: { fetch: async () => { forbiddenFetches++; return new Map(); } } };
+    const nested = { ...forbidden, id: "200000000000000033", parentId: matchChannel.id, name: "queue-5771" };
+    const unrelated = { ...forbidden, id: "200000000000000034", parentId: categoryId, name: "general" };
+    let discoveries = 0;
+    const category = { id: categoryId, type: 4, guildId: config.guildId, guild: { channels: { fetch: async () => {
+      discoveries++;
+      return new Map([matchChannel, forbidden, nested, unrelated].map(channel => [channel.id, channel]));
+    } } } };
+    const client = { channels: { fetch: async () => category } };
+    store = new DiscordJobStore(config.statePath);
+    const worker = new DiscordBotWorker({ config, client, store });
+    await worker.catchUpConfiguredChannels();
+    assert.equal(store.checkpoint(matchChannel.id), message.id);
+    const claimed = store.claimDue();
+    assert.equal(claimed.match_number, 5771);
+    assert.equal(claimed.parent_channel_id, categoryId);
+    store.markAcked(claimed);
+    await worker.catchUpConfiguredChannels();
+    assert.equal(discoveries, 2, "periodic catch-up refreshes category children instead of relying on a stale cache");
+    assert.equal(requests[1].after, message.id);
+    store.close();
+    store = new DiscordJobStore(config.statePath);
+    await new DiscordBotWorker({ config, client, store }).catchUpConfiguredChannels();
+    assert.equal(requests[2].after, message.id, "restart uses the persisted history checkpoint");
+    assert.equal(forbiddenFetches, 0, "foreign, nested and unrelated channels are never read");
+    assert.equal(store.claimDue(), null, "checkpointed images are not enqueued again");
+  } finally {
     closeStore(store);
     await removeDirectory(directory);
   }
@@ -381,7 +429,7 @@ test("distinct multi-image replies are not suppressed by history entries without
     };
     const channel = {
       id: sourceMessage.channelId, parentId: null, name: "match-42", messages: {
-        fetch: async (arg) => typeof arg === "string" ? sourceMessage : new Map(history.map((item, index) => [String(index), item])),
+        fetch: async (arg) => (typeof arg === "string" || arg?.message) ? sourceMessage : new Map(history.map((item, index) => [String(index), item])),
       },
     };
     sourceMessage.channel = channel;
@@ -445,7 +493,7 @@ test("a fresh message whose match binding changed is failed without acknowledgem
     const replies = [];
     const source = { id: job.messageId, guildId: config.guildId, channelId: job.channelId, author: { id: job.authorId, bot: false }, webhookId: null, attachments: new Map([[job.attachmentId, { id: job.attachmentId, name: "result.png", contentType: "image/png", url: `https://cdn.discordapp.com/attachments/${job.channelId}/${job.attachmentId}/result.png?sig=1` }]]), channel: null,
       reply: async (value) => replies.push(value) };
-    const channel = { id: job.channelId, parentId: null, name: "match-43", messages: { fetch: async (arg) => typeof arg === "string" ? source : new Map() } };
+    const channel = { id: job.channelId, parentId: null, name: "match-43", messages: { fetch: async (arg) => (typeof arg === "string" || arg?.message) ? source : new Map() } };
     source.channel = channel;
     let apiCalls = 0;
     store = new DiscordJobStore(config.statePath);
@@ -527,7 +575,7 @@ test("a Discord permission error retries without saving a failure and succeeds a
     const attachment = { id: job.attachmentId, name: "result.png", contentType: "image/png", url: `https://cdn.discordapp.com/attachments/${job.channelId}/${job.attachmentId}/result.png?sig=1` };
     const replies = [];
     const source = { id: job.messageId, guildId: config.guildId, channelId: job.channelId, author: { id: job.authorId, bot: false }, webhookId: null, attachments: new Map([[attachment.id, attachment]]), channel: null, reply: async (value) => replies.push(value) };
-    const channel = { id: job.channelId, parentId: null, name: "match-42", messages: { fetch: async (arg) => typeof arg === "string" ? source : new Map() } };
+    const channel = { id: job.channelId, parentId: null, name: "match-42", messages: { fetch: async (arg) => (typeof arg === "string" || arg?.message) ? source : new Map() } };
     source.channel = channel;
     let denied = true;
     let channelFetches = 0;
@@ -597,5 +645,87 @@ test("catch-up processes same-timestamp messages by snowflake ID order", async (
   } finally {
     closeStore(store);
     await removeDirectory(directory);
+  }
+});
+
+// Use the SDK manager here: a string lookup can silently use its cached message.
+test("source verification bypasses Discord's message cache and refreshes signed attachments", async () => {
+  const { Client, GatewayIntentBits, MessageManager } = await import("discord.js");
+  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  let store;
+  try {
+    const config = loadDiscordBotConfig(ENV);
+    const channel = { id: ENV.AXIS_DISCORD_CHANNEL_IDS, guildId: config.guildId, parentId: null, name: "match-42", client, _patch(data) { this.name = data.name; this.parentId = data.parent_id; } };
+    client.channels.cache.set(channel.id, channel);
+    channel.messages = new MessageManager(channel);
+    const attachmentId = "300000000000000020";
+    const messageId = "400000000000000020";
+    const raw = {
+      id: messageId, channel_id: channel.id, guild_id: config.guildId,
+      author: { id: "500000000000000001", username: "player", discriminator: "0", bot: false },
+      content: "", timestamp: "2026-10-25T00:00:00.000Z", edited_timestamp: null, type: 0,
+      attachments: [{ id: attachmentId, filename: "result.png", size: 3, content_type: "image/png",
+        url: `https://cdn.discordapp.com/attachments/${channel.id}/${attachmentId}/result.png?sig=expired` }],
+    };
+    channel.messages._add(raw);
+    let fetches = 0;
+    let deleted = false;
+    client.rest.get = async (route) => {
+      if (route === `/channels/${channel.id}`) return { id: channel.id, name: "match-42", parent_id: null };
+      fetches++;
+      if (deleted) throw discordApiError(10008, 404, "Unknown Message");
+      return { ...raw, attachments: [{ ...raw.attachments[0], url: raw.attachments[0].url.replace("expired", "fresh") }] };
+    };
+    store = new DiscordJobStore(":memory:");
+    const worker = new DiscordBotWorker({ config, client, store });
+    const job = { guild_id: config.guildId, channel_id: channel.id, parent_channel_id: null,
+      message_id: messageId, attachment_id: attachmentId, author_id: raw.author.id, match_number: 42 };
+    const source = await worker.fetchFreshAttachment(job);
+    assert.match(source.attachment.url, /sig=fresh$/);
+    assert.equal(fetches, 1);
+    deleted = true;
+    await assert.rejects(() => worker.fetchFreshAttachment(job), { code: 10008, status: 404 });
+    assert.equal(fetches, 2, "a cached success must not hide deletion on a retry");
+  } finally {
+    closeStore(store);
+    try { await client.destroy(); } catch { /* cleanup must not replace the test assertion */ }
+  }
+});
+
+test("source checks refresh a cached channel binding before reading a screenshot or sending a reminder", async () => {
+  const { Client, GatewayIntentBits, MessageManager } = await import("discord.js");
+  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  let store;
+  try {
+    const config = loadDiscordBotConfig({ ...ENV, AXIS_DISCORD_MATCH_CHANNELS: "{}", AXIS_DISCORD_MATCH_PREFIX: "match-" });
+    let sends = 0;
+    const channel = { id: ENV.AXIS_DISCORD_CHANNEL_IDS, guildId: config.guildId, parentId: null, name: "match-42", client,
+      _patch(data) { this.name = data.name; this.parentId = data.parent_id; },
+      send: async () => { sends++; return { id: "600000000000000020" }; } };
+    client.channels.cache.set(channel.id, channel);
+    channel.messages = new MessageManager(channel);
+    let channelFetches = 0;
+    client.rest.get = async (route) => {
+      if (route === `/channels/${channel.id}`) {
+        channelFetches++;
+        return { id: channel.id, name: "match-43", parent_id: null };
+      }
+      return { id: job.message_id, channel_id: channel.id, guild_id: config.guildId,
+        author: { id: job.author_id, username: "player", discriminator: "0", bot: false },
+        content: "", timestamp: "2026-10-25T00:00:00.000Z", edited_timestamp: null, type: 0, attachments: [] };
+    };
+    store = new DiscordJobStore(":memory:");
+    const worker = new DiscordBotWorker({ config, client, store, logger: { warn() {} } });
+    const job = { guild_id: config.guildId, channel_id: channel.id, parent_channel_id: null,
+      message_id: "400000000000000021", attachment_id: "300000000000000021", author_id: "500000000000000001", match_number: 42 };
+    await assert.rejects(() => worker.fetchSourceMessage(job), /source_revoked/);
+    channel.name = "match-42";
+    worker.queueMatchReminder(channel);
+    await worker.processMatchReminder(store.claimReminderDue());
+    assert.equal(sends, 0, "a stale cached binding must not authorize a reminder");
+    assert.equal(channelFetches, 2);
+  } finally {
+    closeStore(store);
+    try { await client.destroy(); } catch { /* cleanup must not replace the test assertion */ }
   }
 });
