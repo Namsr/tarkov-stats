@@ -1,4 +1,5 @@
 import type { AxisKda } from "./axis-kda.ts";
+import { matchAxisOcrRows, type AxisOcrParticipant } from "./axis-ocr.ts";
 
 export type AxisUploadRole = "player" | "moderator";
 
@@ -41,4 +42,32 @@ export interface AxisMatchReviewView extends AxisMatchReview {
   conflicts: AxisMatchConflict[];
   roundConflict: { existing: { a: number; b: number }; incoming: { a: number; b: number } } | null;
   submissions: AxisMatchSubmissionReview[];
+}
+
+/** Recheck saved name warnings against current aliases, keeping original upload evidence. */
+export function recheckAxisMatchReviewNames(
+  review: AxisMatchReviewView,
+  participants: readonly AxisOcrParticipant[],
+): AxisMatchReviewView {
+  const unresolved = review.submissions.flatMap((submission) => {
+    // Older evidence may omit unmatched names from recognizedNames. Include
+    // each occurrence once so duplicate OCR names still abstain in the matcher.
+    const names = [...submission.recognizedNames];
+    const remaining = new Map<string, number>();
+    for (const name of names) remaining.set(name.trim(), (remaining.get(name.trim()) ?? 0) + 1);
+    for (const name of submission.unmatchedNames) {
+      const count = remaining.get(name.trim()) ?? 0;
+      if (count) remaining.set(name.trim(), count - 1);
+      else names.push(name);
+    }
+    const rows = names.map((nickname, index) => ({ id: String(index), nickname }));
+    const assignments = matchAxisOcrRows(rows, participants);
+    const resolved = new Set(rows.filter((row) => assignments[row.id]).map((row) => row.nickname.trim()));
+    return submission.unmatchedNames.filter((name) => !resolved.has(name.trim()));
+  });
+  return { ...review,
+    unmatchedNames: [...new Set(unresolved)],
+    nicknameMismatches: [...new Set(unresolved.filter((name) => name.trim()))],
+    unreadableNames: unresolved.filter((name) => !name.trim()).length,
+  };
 }

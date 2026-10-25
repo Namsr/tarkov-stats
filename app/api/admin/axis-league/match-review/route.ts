@@ -1,6 +1,8 @@
 import { ADMIN_NO_STORE_HEADERS } from "@/lib/admin/mutation";
 import { getAxisLeagueStore } from "@/lib/admin/axis-league-db";
 import { requireAxisModerator } from "@/lib/axis-access";
+import { axisOcrContextForMatch, AxisOcrMatchMismatchError } from "@/lib/axis-server-match-validation";
+import { recheckAxisMatchReviewNames } from "@/lib/axis-match-submission";
 
 export const runtime = "nodejs";
 
@@ -20,7 +22,20 @@ export async function GET(request: Request) {
   if (!numbers) return Response.json({ error: "invalid_matches" }, { status: 400, headers: ADMIN_NO_STORE_HEADERS });
   try {
     const store = await getAxisLeagueStore();
-    const reviews = store.readAxisMatchReviews(numbers).filter((review) => review.submissions.length > 0);
+    const savedReviews = store.readAxisMatchReviews(numbers).filter((review) => review.submissions.length > 0);
+    const reviews = await Promise.all(savedReviews.map(async (review) => {
+      if (!review.nicknameMismatches.length) return review;
+      const match = store.readMatchHistory(review.matchNumber).matches[0];
+      if (!match) return review;
+      try {
+        const context = await axisOcrContextForMatch(match);
+        return recheckAxisMatchReviewNames(review, context.participants);
+      } catch (error) {
+        // Unsupported historical rosters retain their original warnings.
+        if (error instanceof AxisOcrMatchMismatchError) return review;
+        throw error;
+      }
+    }));
     return Response.json({ reviews }, { headers: ADMIN_NO_STORE_HEADERS });
   } catch { return Response.json({ error: "match_review_unavailable" }, { status: 503, headers: ADMIN_NO_STORE_HEADERS }); }
 }
