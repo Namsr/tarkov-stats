@@ -7,10 +7,14 @@ DATABASES='players bans progression community-reports admin-analytics'
 
 # Read-only age probe for operators and the backup service's postcondition.
 latest=0
+latest_set=
 for marker in "$DIR"/backup-*/.complete; do
   [ -f "$marker" ] && [ ! -L "$marker" ] || continue
   completed=$(stat -c %Y "$marker")
-  [ "$completed" -le "$latest" ] || latest=$completed
+  if [ "$completed" -gt "$latest" ]; then
+    latest=$completed
+    latest_set=${marker%/.complete}
+  fi
 done
 now=$(date +%s)
 age=$(( now - latest ))
@@ -59,18 +63,25 @@ mkdir "$STAGE"
 for NAME in $DATABASES; do
   database_bytes=$(stat -c %s "$VOL/$NAME.db")
   wal_bytes=0
-  source_bytes=$database_bytes
   if [ -f "$VOL/$NAME.db-wal" ]; then
     wal_bytes=$(stat -c %s "$VOL/$NAME.db-wal")
-    source_bytes=$(( source_bytes + wal_bytes ))
+  fi
+  archive_estimate_bytes=0
+  archive_estimate_source=unknown
+  if [ -n "$latest_set" ] && [ -f "$latest_set/$NAME.db.gz" ]; then
+    archive_estimate_bytes=$(stat -c %s "$latest_set/$NAME.db.gz")
+    archive_estimate_source=latest_completed
   fi
   available_kb=$(df -Pk "$VOL" | awk 'NR == 2 { print $4 }')
-  # Reserve the snapshot first. Compression checks actual free space on every
-  # output chunk rather than rejecting a small archive as another full database.
-  required_kb=$(( (source_bytes + 1023) / 1024 + 1048576 ))
-  printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s available_kb=%s required_kb=%s\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$available_kb" "$required_kb"
+  # VACUUM INTO needs a second database-sized file. The previous verified
+  # archive is the only useful bounded estimate for the gzip output; it is
+  # deliberately advisory because compression ratio can change. The runtime
+  # guard below remains authoritative and keeps the 1 GiB reserve on every
+  # output chunk.
+  required_kb=$(( (database_bytes + 1023) / 1024 + (archive_estimate_bytes + 1023) / 1024 + 1048576 ))
+  printf 'BACKUP_SPACE at=%s database=%s db_bytes=%s wal_bytes=%s archive_estimate_bytes=%s archive_estimate_source=%s available_kb=%s required_kb=%s reserve_kb=1048576\n' "$(date +%s)" "$NAME" "$database_bytes" "$wal_bytes" "$archive_estimate_bytes" "$archive_estimate_source" "$available_kb" "$required_kb"
   if [ "$available_kb" -lt "$required_kb" ]; then
-    echo "insufficient free space for $NAME backup; retaining previous set" >&2
+    echo "insufficient estimated free space for $NAME backup (snapshot=${database_bytes} archive_estimate=${archive_estimate_bytes} reserve=1073741824); retaining previous set" >&2
     exit 1
   fi
   # SQLite snapshots use the same bounded offline service, independently of HTTP.

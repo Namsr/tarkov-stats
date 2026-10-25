@@ -54,6 +54,7 @@ async function fixture(scenario) {
       if [ "$SCENARIO" = disk-full ]; then echo 'fixture 1000 999 1 99% volume'
       elif [ "$SCENARIO" = snapshot-only-space ]; then echo 'fixture 2000000 1 1048587 48% volume'
       elif [ "$SCENARIO" = below-reserve ]; then echo 'fixture 2000000 1 1048575 48% volume'
+      elif [ "$SCENARIO" = estimate-full ]; then echo 'fixture 2000000 1 1048584 48% volume'
       else echo 'fixture 100000000 1 99999999 1% volume'; fi
     }
     gzip() {
@@ -97,7 +98,7 @@ async function fixture(scenario) {
   } };
 }
 
-for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'compression-full', 'invalid-volume']) {
+for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-fail', 'verify-fail', 'disk-full', 'below-reserve', 'estimate-full', 'compression-full', 'invalid-volume']) {
   test(`backup verifies publication and retains the last good set: ${scenario}`, { timeout: 20_000 }, async () => {
     const f = await fixture(scenario);
     try {
@@ -134,6 +135,11 @@ for (const scenario of ['success', 'snapshot-only-space', 'sqlite-fail', 'gzip-f
           await access(join(f.backups, set, '.complete'));
         }
         assert.ok(entries.includes('players-20261001-040001.db.gz'));
+        if (scenario === 'estimate-full') {
+          assert.match(result.stdout, /archive_estimate_source=latest_completed/);
+          assert.match(result.stderr, /insufficient estimated free space/);
+          assert.doesNotMatch(calls, /runner worker/);
+        }
       }
       await assert.rejects(access(join(f.backups, '.tarkovstats-backup-pending')), { code: 'ENOENT' });
       await assert.rejects(access(join(f.volume, '.tarkovstats-backup.db')), { code: 'ENOENT' });
@@ -193,7 +199,7 @@ test('backup failure diagnostics expose the storage budget and service retries a
   try {
     const result = spawnSync(shell, [f.file], { cwd: f.dir, env: f.env, encoding: 'utf8', timeout: 10_000 });
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /BACKUP_SPACE at=\d+ database=players db_bytes=\d+ wal_bytes=0 available_kb=1 required_kb=\d+/);
+    assert.match(result.stdout, /BACKUP_SPACE at=\d+ database=players db_bytes=\d+ wal_bytes=0 archive_estimate_bytes=\d+ archive_estimate_source=latest_completed available_kb=1 required_kb=\d+ reserve_kb=1048576/);
     assert.match(result.stderr, /retaining previous set/);
     const service = await readFile('ops/systemd/tarkovstats-backup.service', 'utf8');
     const timer = await readFile('ops/systemd/tarkovstats-backup.timer', 'utf8');
