@@ -324,12 +324,14 @@ test("banned snapshot archive preserves and decodes compressed progression histo
     new DatabaseSync(paths.players).close();
     const progression = new DatabaseSync(paths.progression);
     const stats = largeStats();
-    await createSqliteProgressionStore(progression).recordSnapshot({
-      aid: 8_882, upstreamUpdatedAt: stats.profileUpdatedAt, capturedAt: stats.profileUpdatedAt + 1,
-      stats: asSnapshotStats(stats), achievementIds: [],
-    });
-    const source = (progression.prepare("SELECT stats_json FROM progression_snapshots WHERE aid = ?").get(8_882) as { stats_json: string }).stats_json;
-    progression.close();
+    let source: string;
+    try {
+      await createSqliteProgressionStore(progression).recordSnapshot({
+        aid: 8_882, upstreamUpdatedAt: stats.profileUpdatedAt, capturedAt: stats.profileUpdatedAt + 1,
+        stats: asSnapshotStats(stats), achievementIds: [],
+      });
+      source = (progression.prepare("SELECT stats_json FROM progression_snapshots WHERE aid = ?").get(8_882) as { stats_json: string }).stats_json;
+    } finally { progression.close(); }
 
     const bans = new DatabaseSync(paths.bans);
     try {

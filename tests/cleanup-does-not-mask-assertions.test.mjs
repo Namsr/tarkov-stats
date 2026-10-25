@@ -723,6 +723,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   // All SQLite handles belong to synchronously waited subprocesses; file I/O is awaited.
   "tests/background-isolation.test.mjs",
   "tests/caddy-overload.test.mjs",
+  // The converter closes its source/staging handles in finally; fixture handles also close.
+  "tests/compact-storage.test.mjs",
   "tests/deploy-wrapper.test.mjs",
   "tests/leaderboard-publication.test.ts",
   "tests/leaderboard-warmup.test.mjs",
@@ -739,6 +741,8 @@ const suitesThatCloseTheHandleOrTheProcessFirst = [
   "tests/seasonal-profile-sync.test.mjs",
   "tests/seasonal-storage.test.ts",
   "tests/showcase-store.test.mjs",
+  // Ban/archive fixtures close every connection in finally before deleting their directory.
+  "tests/storage-json.test.ts",
   "tests/system-metrics.test.ts",
   "tests/tarkov-json-api.test.mjs",
 ];
